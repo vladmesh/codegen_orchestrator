@@ -84,7 +84,7 @@
 
 ## 🔧 DevOps (Subgraph)
 
-**Роль**: Деплой с интеллектуальным анализом секретов.
+**Роль**: Деплой с типизированным контрактом окружения.
 
 **Когда вызывается**:
 - После Engineering Subgraph
@@ -96,7 +96,7 @@
 devops/
 ├── __init__.py          # Экспорты
 ├── state.py             # DevOpsState TypedDict
-├── env_analyzer.py      # EnvAnalyzer + helper функции
+├── env_contract_loader.py # Загрузка и валидация обязательного контракта
 ├── env_groups.py        # EnvGroup ABC, PostgresGroup, RedisGroup, resolve_with_groups
 ├── nodes.py             # SecretResolver, ReadinessCheck, Deployer, SmokeTester
 └── graph.py             # Routing + create_devops_subgraph
@@ -104,10 +104,9 @@ devops/
 
 **Ноды внутри subgraph**:
 
-1. **EnvAnalyzer (LLM)**: Анализирует .env.example, классифицирует переменные
-   - `infra`: генерируются автоматически (REDIS_URL, DATABASE_URL)
-   - `computed`: вычисляются из контекста (APP_NAME, APP_ENV)
-   - `user`: запрашиваются у пользователя (TELEGRAM_BOT_TOKEN)
+1. **EnvironmentContractLoader**: Загружает фрагменты `env.contract.yaml` из
+   репозитория. Отсутствующий или некорректный контракт завершает deploy с
+   различимым contract-outcome.
 
 2. **SecretResolver (Functional)**:
    - Дешифрует существующие секреты из БД (`decrypt_dict`)

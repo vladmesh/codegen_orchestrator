@@ -2,7 +2,7 @@
 
 ## Status
 
-Design note recorded during Stage 7 live validation on 2026-07-15. It is not a current implementation task. Finish `codegen_orchestrator-536`, rerun live mega, then use the result to decide whether this migration enters the next stabilization stage.
+Slice 3 requires the contract for every deploy. `codegen_orchestrator-607` completed the Slice 4 removal of environment classification: deployment no longer has an analyzer fallback or an LLM path.
 
 ## Problem
 
@@ -136,13 +136,13 @@ An LLM is not authoritative in the production deploy path.
 ### Slice 3: typed deploy resolution
 
 - Resolve production entries by source type.
-- Keep old analyzer only as an explicit legacy fallback for repositories without a contract.
+- Require a valid environment contract for every deploy.
 - Emit typed failure outcomes.
 - Run Stage 7 mega on the typed path.
 
 ### Slice 4: remove inference from the normal path
 
-- Remove LLM classification from repositories carrying a valid contract.
+- Complete: remove environment-name heuristics and LLM classification from deploy.
 - Retain env-audit as an import/reconciliation tool.
 - Split `resolved_secrets` into secret, computed, and allocation state.
 

@@ -7,7 +7,7 @@ Real flow:
   1. deploy:queue → deploy consumer picks up job
   2. _allocate_resources → managed server + port
   3. _pre_check_server → SSH to server, verify state
-  4. DevOps subgraph: env_analyzer → secret_resolver → readiness_check → deployer
+  4. DevOps subgraph: env_contract_loader → secret_resolver → readiness_check → deployer
   5. deployer: write secrets to GitHub → trigger deploy.yml → wait → smoke test
 
 This test checks each link in that chain.
