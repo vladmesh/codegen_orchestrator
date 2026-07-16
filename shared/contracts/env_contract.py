@@ -8,6 +8,7 @@ template and CI callers without changing current deploy behaviour.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -24,11 +25,7 @@ EnvSource = Literal[
 EnvLiteralValue = str | int | float | bool
 
 
-class EnvContractError(ValueError):
-    """Raised when an environment contract fragment is invalid."""
-
-
-class EnvContractMergeError(EnvContractError):
+class EnvContractMergeError(ValueError):
     """Raised when fragments cannot form one canonical contract."""
 
 
@@ -122,6 +119,12 @@ class CanonicalEnvContract(BaseModel):
             separators=(",", ":"),
             sort_keys=True,
         ).encode()
+
+
+def export_env_contract_json_schema(path: Path) -> None:
+    """Write the committed JSON Schema from the Pydantic source of truth."""
+    schema = EnvContractFragment.model_json_schema()
+    path.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n")
 
 
 def validate_env_contract_fragment(fragment: EnvContractFragment | dict) -> EnvContractFragment:

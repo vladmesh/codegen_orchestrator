@@ -1,6 +1,7 @@
 """Tests for the versioned environment contract."""
 
 import json
+from pathlib import Path
 
 from pydantic import ValidationError
 import pytest
@@ -9,8 +10,11 @@ from shared.contracts.env_contract import (
     ENV_CONTRACT_VERSION,
     EnvContractFragment,
     EnvContractMergeError,
+    export_env_contract_json_schema,
     merge_env_contract_fragments,
 )
+
+SCHEMA_PATH = Path(__file__).parents[2] / "contracts/schemas/env-contract.schema.json"
 
 
 def test_valid_fragment_accepts_each_source_type():
@@ -194,7 +198,14 @@ def test_merge_produces_byte_stable_canonical_artifact():
     ]
 
     first = merge_env_contract_fragments(fragments).to_json_bytes()
-    second = merge_env_contract_fragments(fragments).to_json_bytes()
+    second = merge_env_contract_fragments(list(reversed(fragments))).to_json_bytes()
 
     assert first == second
     assert list(json.loads(first)["entries"]) == ["BACKEND_PORT", "PUBLIC_API_URL"]
+
+
+def test_committed_json_schema_is_exported_from_pydantic_model(tmp_path):
+    exported_path = tmp_path / "env-contract.schema.json"
+    export_env_contract_json_schema(exported_path)
+
+    assert json.loads(SCHEMA_PATH.read_text()) == json.loads(exported_path.read_text())
