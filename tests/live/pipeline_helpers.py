@@ -18,9 +18,12 @@ import uuid
 from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import httpx
 from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
+from pydantic import ValidationError
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.run import RunType
+from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.queues import SCAFFOLD_QUEUE
@@ -44,6 +47,13 @@ DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
 # HTTP /health, so the deployed URL must not point at an infra port.
 INFRA_PORT_SERVICES = frozenset({"postgres", "redis"})
 SCAFFOLD_FENCE_TIMEOUT = 900
+# Merged PR → pr_poller cycle → deploy run carrying the merged head SHA.
+DEPLOY_RUN_TIMEOUT = 420
+DEPLOY_RUN_POLL_INTERVAL = 5
+# The deploy consumer writes the run result right after the app reports its
+# status, so this only covers that last write.
+DEPLOY_OUTCOME_TIMEOUT = 120
+DEPLOY_OUTCOME_POLL_INTERVAL = 3
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
 RUN_CANCELLATION_TIMEOUT = 30
@@ -51,8 +61,33 @@ RUN_CANCELLATION_POLL_INTERVAL = 0.5
 _ACTIVE_RUN_STATUSES = {"queued", "running"}
 _TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
+# Deploy resolves its environment from the committed contract fragments, so the
+# noop project must carry them. It selects only the backend module, and
+# service-template renders exactly these owner fragments for that selection.
+ENV_CONTRACT_FILENAME = "env.contract.yaml"
+EXPECTED_ENV_CONTRACT_FRAGMENTS = frozenset(
+    {
+        "infra/env.contract.yaml",
+        "services/backend/env.contract.yaml",
+    }
+)
+# The probe prints one marked line so container log output cannot be parsed as
+# its payload.
+ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
+
 
 # ── Low-level helpers ────────────────────────────────────────────────────
+
+
+def internal_headers() -> dict[str, str]:
+    """Auth headers for internal-service endpoints, as the real consumers send them.
+
+    /api/servers/* is gated by require_internal_or_admin, and /api/runs/ hides
+    other owners' runs from a non-admin caller. The harness user carries only
+    X-Telegram-ID and is not admin, so without this header those endpoints answer
+    401/403 or silently return nothing.
+    """
+    return {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
 
 
 def docker_exec(service: str, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -357,16 +392,15 @@ async def wait_deploy(
         return
 
     # Port allocations belong to an application, not directly to a project.
-    # /api/servers/ and its ports are gated by require_internal_or_admin: they need
-    # X-Internal-Key or an admin user. A bare X-Telegram-ID from the non-admin harness
-    # user gets 403, so authenticate as an internal service, like the real consumers.
-    # raise_for_status keeps a non-200 loud instead of iterating an error body and
-    # crashing with TypeError before the deploy reaches the ownership manifest.
-    internal_headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
-    resp = await api.get("/api/servers/", headers=internal_headers)
+    # /api/servers/ and its ports need internal-service auth, so authenticate like
+    # the real consumers. raise_for_status keeps a non-200 loud instead of iterating
+    # an error body and crashing with TypeError before the deploy reaches the
+    # ownership manifest.
+    headers = internal_headers()
+    resp = await api.get("/api/servers/", headers=headers)
     resp.raise_for_status()
     for srv in resp.json():
-        resp = await api.get(f"/api/servers/{srv['handle']}/ports", headers=internal_headers)
+        resp = await api.get(f"/api/servers/{srv['handle']}/ports", headers=headers)
         resp.raise_for_status()
         for alloc in resp.json():
             # Skip the app's postgres/redis infra ports: only the web module
@@ -396,6 +430,230 @@ async def wait_deploy(
 
     if "port" in ctx:
         ctx["deployed_url"] = f"http://{ctx['server_ip']}:{ctx['port']}"
+
+
+# ── Environment contract probes ──────────────────────────────────────────
+
+
+def build_env_contract_probe_script(
+    repo_name: str,
+    ref: str,
+    *,
+    verify_merged_into_main: bool,
+) -> str:
+    """Build the container-side environment-contract probe for one repository ref.
+
+    Runs inside langgraph for the GitHub App credentials and reads the contract
+    the way devops.env_contract_loader does: list the tree at ``ref``, take every
+    env.contract.yaml and merge the fragments. Deploy resolves the contract at
+    one exact ref, so probing any other ref proves nothing about that deploy.
+
+    With ``verify_merged_into_main`` the probe also compares ``ref`` against main
+    and reports whether main already contains it.
+
+    The probe reads a repository; it creates nothing and owns nothing.
+    """
+    return (
+        "import asyncio, json, sys\n"
+        "sys.path.insert(0, '/app')\n"
+        "import httpx\n"
+        "import yaml\n"
+        "from shared.clients.github import GitHubAppClient\n"
+        "from shared.contracts.env_contract import merge_env_contract_fragments\n"
+        f"owner = {GITHUB_ORG!r}\n"
+        f"repo = {repo_name!r}\n"
+        f"ref = {ref!r}\n"
+        f"verify_merged = {verify_merged_into_main!r}\n"
+        "async def probe():\n"
+        "    gh = GitHubAppClient()\n"
+        "    paths = await gh.list_repo_files_recursive(owner, repo, ref)\n"
+        f"    fragment_paths = sorted(p for p in paths if p.endswith({ENV_CONTRACT_FILENAME!r}))\n"
+        "    fragments = []\n"
+        "    for path in fragment_paths:\n"
+        "        content = await gh.get_file_contents(owner, repo, path, ref)\n"
+        "        if content is None:\n"
+        "            raise RuntimeError(f'contract fragment disappeared: {path}')\n"
+        "        fragments.append(yaml.safe_load(content))\n"
+        "    entries = (\n"
+        "        sorted(merge_env_contract_fragments(fragments).entries) if fragments else []\n"
+        "    )\n"
+        "    merged_into_main = None\n"
+        "    if verify_merged:\n"
+        "        token = await gh.get_token(owner, repo)\n"
+        "        async with httpx.AsyncClient(timeout=20) as client:\n"
+        "            resp = await client.get(\n"
+        "                f'https://api.github.com/repos/{owner}/{repo}/compare/main...{ref}',\n"
+        "                headers={'Authorization': f'token {token}',\n"
+        "                         'Accept': 'application/vnd.github+json'},\n"
+        "            )\n"
+        "            resp.raise_for_status()\n"
+        "            merged_into_main = resp.json()['status'] in ('identical', 'behind')\n"
+        "    payload = {'ref': ref, 'fragment_paths': fragment_paths,\n"
+        "               'entries': entries, 'merged_into_main': merged_into_main}\n"
+        f"    print({ENV_CONTRACT_PROBE_MARKER!r} + json.dumps(payload))\n"
+        "asyncio.run(probe())\n"
+    )
+
+
+def parse_env_contract_probe(stdout: str) -> dict:
+    """Read the probe payload out of the container's stdout."""
+    for line in stdout.splitlines():
+        if line.startswith(ENV_CONTRACT_PROBE_MARKER):
+            return json.loads(line[len(ENV_CONTRACT_PROBE_MARKER) :])
+    raise RuntimeError(f"environment contract probe printed no payload: {stdout[:300]}")
+
+
+def probe_env_contract(repo_name: str, ref: str, *, verify_merged_into_main: bool = False) -> dict:
+    """Read the committed environment contract of one repository ref."""
+    script = build_env_contract_probe_script(
+        repo_name, ref, verify_merged_into_main=verify_merged_into_main
+    )
+    result = docker_exec("langgraph", script, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"environment contract probe for {repo_name}@{ref} failed: "
+            f"{result.stderr or result.stdout}"
+        )
+    return parse_env_contract_probe(result.stdout)
+
+
+def _env_contract_failure(probe: dict, phase: str, verify_merged_into_main: bool) -> str | None:
+    """Return why a probe fails the contract expectation, or None when it holds."""
+    ref = probe["ref"]
+    missing = sorted(EXPECTED_ENV_CONTRACT_FRAGMENTS - set(probe["fragment_paths"]))
+    if missing:
+        return (
+            f"{phase}: environment contract fragments missing at {ref}: "
+            f"{', '.join(missing)}; found {probe['fragment_paths']}"
+        )
+    if not probe["entries"]:
+        return f"{phase}: environment contract at {ref} declares no entries"
+    if verify_merged_into_main and not probe["merged_into_main"]:
+        return f"{phase}: {ref} is not contained in main — deploy would run an unmerged tree"
+    return None
+
+
+def record_env_contract(
+    ctx: dict,
+    ref: str,
+    *,
+    phase: str,
+    verify_merged_into_main: bool = False,
+) -> bool:
+    """Probe one ref and record the result. True when the expectation holds.
+
+    The probe lands in ``ctx['env_contract_probes'][phase]`` before it is judged,
+    so a failing phase still leaves the observed paths in the debug dump.
+
+    A probe that cannot run at all — GitHub 5xx, an unparseable fragment, a dead
+    or slow container — is recorded as that phase's error rather than raised. The
+    mega still fails on it, but through the same record-and-report path as a
+    contract that merely misses a fragment, so the caller reaches its debug dump
+    instead of losing the artifact to an exception.
+    """
+    try:
+        probe = probe_env_contract(
+            ctx["repo_name"], ref, verify_merged_into_main=verify_merged_into_main
+        )
+    except Exception as error:
+        ctx.setdefault("env_contract_errors", {})[phase] = (
+            f"{phase}: environment contract probe at {ref} could not run: "
+            f"{type(error).__name__}: {error}"
+        )
+        return False
+
+    ctx.setdefault("env_contract_probes", {})[phase] = probe
+    error = _env_contract_failure(probe, phase, verify_merged_into_main)
+    if error:
+        ctx.setdefault("env_contract_errors", {})[phase] = error
+        return False
+    return True
+
+
+# ── Deploy run outcome ───────────────────────────────────────────────────
+
+
+async def wait_deploy_run(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: int = DEPLOY_RUN_TIMEOUT,
+    poll_interval: float = DEPLOY_RUN_POLL_INTERVAL,
+) -> dict | None:
+    """Wait for this project's deploy run that carries the merged head SHA.
+
+    pr_poller creates it only once the story PR reports merged_at, and records
+    the merged head SHA in run_metadata — the exact ref deploy resolves the
+    environment contract at. Engineering-triggered deploy runs carry no head_sha,
+    so a run without one is not the run this mega deploys.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = await api.get(
+            "/api/runs/",
+            params={"project_id": ctx["project_id"], "run_type": RunType.DEPLOY.value},
+            headers=internal_headers(),
+        )
+        resp.raise_for_status()
+        # The API orders runs newest first.
+        for run in resp.json():
+            head_sha = (run.get("run_metadata") or {}).get("head_sha")
+            if head_sha:
+                ctx["deploy_run_id"] = run["id"]
+                ctx["deploy_head_sha"] = head_sha
+                return run
+        await asyncio.sleep(poll_interval)
+    ctx["deploy_run_error"] = (
+        f"no deploy run with a merged head_sha appeared for project "
+        f"{ctx['project_id']} within {timeout}s"
+    )
+    return None
+
+
+async def wait_deploy_outcome(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: int = DEPLOY_OUTCOME_TIMEOUT,
+    poll_interval: float = DEPLOY_OUTCOME_POLL_INTERVAL,
+) -> DeployRunResult | None:
+    """Type this project's own deploy run result and record its outcome.
+
+    A running application only proves some container answers; the deploy run
+    result is what the pipeline itself concluded about the deploy, so the mega
+    reads the typed outcome rather than trusting ApplicationStatus.
+    """
+    run_id = ctx["deploy_run_id"]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = await api.get(f"/api/runs/{run_id}", headers=internal_headers())
+        resp.raise_for_status()
+        run = resp.json()
+        if run["status"] in _TERMINAL_RUN_STATUSES:
+            break
+        await asyncio.sleep(poll_interval)
+    else:
+        ctx["deploy_outcome_error"] = (
+            f"deploy run {run_id} did not reach a terminal state in {timeout}s"
+        )
+        return None
+
+    ctx["deploy_run_status"] = run["status"]
+    if run["result"] is None:
+        ctx["deploy_outcome_error"] = (
+            f"deploy run {run_id} is {run['status']} but carries no result"
+        )
+        return None
+    try:
+        result = DeployRunResult(**run["result"])
+    except ValidationError as error:
+        ctx["deploy_outcome_error"] = (
+            f"deploy run {run_id} result is not a DeployRunResult: {error}"
+        )
+        return None
+    ctx["deploy_outcome"] = result.deploy_outcome.value
+    ctx["deploy_error_details"] = result.error_details
+    return result
 
 
 # ── Cleanup helpers ──────────────────────────────────────────────────────
@@ -1015,9 +1273,8 @@ async def cleanup_all(
             # /api/servers/{handle}/ports is gated by require_internal_or_admin, so
             # authenticate as an internal service like the real consumers, not the
             # header-less api_no_auth client which gets 401.
-            internal_headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
             ports = await api_no_auth.get(
-                f"/api/servers/{ctx['server_handle']}/ports", headers=internal_headers
+                f"/api/servers/{ctx['server_handle']}/ports", headers=internal_headers()
             )
             ports.raise_for_status()
             if any(str(item["id"]) == str(ctx["allocation_id"]) for item in ports.json()):
@@ -1170,9 +1427,37 @@ def dump_debug(ctx: dict, test_name: str) -> None:
         f"- final_app_status: `{ctx.get('final_app_status')}`",
         f"- deployed_url: `{ctx.get('deployed_url')}`",
         f"- engineering_elapsed: `{ctx.get('engineering_elapsed')}`",
+        f"- deploy_run_id: `{ctx.get('deploy_run_id')}`",
+        f"- deploy_head_sha: `{ctx.get('deploy_head_sha')}`",
+        f"- deploy_run_status: `{ctx.get('deploy_run_status')}`",
+        f"- deploy_outcome: `{ctx.get('deploy_outcome')}`",
+        f"- deploy_error_details: `{ctx.get('deploy_error_details')}`",
+        f"- deploy_run_error: `{ctx.get('deploy_run_error')}`",
+        f"- deploy_outcome_error: `{ctx.get('deploy_outcome_error')}`",
         "",
-        "## CI failure evidence",
+        "## Environment contract",
     ]
+    probes = ctx.get("env_contract_probes") or {}
+    if probes:
+        for phase, probe in sorted(probes.items()):
+            lines.extend(
+                [
+                    f"- {phase} @ `{probe['ref']}`",
+                    f"  fragments: `{json.dumps(probe['fragment_paths'], sort_keys=True)}`",
+                    f"  entries: `{json.dumps(probe['entries'], sort_keys=True)}`",
+                    f"  merged_into_main: `{probe['merged_into_main']}`",
+                ]
+            )
+    else:
+        lines.append("- none captured")
+    for phase, error in sorted((ctx.get("env_contract_errors") or {}).items()):
+        lines.append(f"- {phase} FAILED: {error}")
+    lines.extend(
+        [
+            "",
+            "## CI failure evidence",
+        ]
+    )
     evidence = ctx.get("ci_failure_evidence") or []
     if evidence:
         for failure in evidence:

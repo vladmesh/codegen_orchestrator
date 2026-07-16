@@ -15,7 +15,7 @@ import uuid
 
 import httpx
 from live_harness import OwnershipManifest, cleanup_guard, resolve_repo_root
-from pipeline_helpers import cleanup_all
+from pipeline_helpers import cleanup_all, internal_headers
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
@@ -46,6 +46,20 @@ async def api():
 async def api_no_auth():
     """Async httpx client WITHOUT auth header (for health checks etc.)."""
     async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+        yield client
+
+
+@pytest.fixture
+async def api_internal():
+    """Async httpx client authenticated as an internal service.
+
+    Server, ssh-key and allocation endpoints are gated by require_internal_or_admin,
+    exactly as production consumers reach them. Use this client for those, not
+    api_no_auth, which they answer with 401.
+    """
+    async with httpx.AsyncClient(
+        base_url=API_URL, timeout=10, headers=internal_headers()
+    ) as client:
         yield client
 
 

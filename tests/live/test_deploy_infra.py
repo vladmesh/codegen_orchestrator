@@ -32,9 +32,9 @@ SERVICE_TEMPLATE_ROOT = Path(
 
 
 @pytest.fixture
-async def managed_server(api_no_auth):
+async def managed_server(api_internal):
     """Get first managed server with active-ish status, or skip."""
-    resp = await api_no_auth.get("/api/servers/")
+    resp = await api_internal.get("/api/servers/")
     assert resp.status_code == 200, f"List servers failed: {resp.text}"
     servers = resp.json()
 
@@ -49,9 +49,9 @@ class TestManagedServer:
     """Step 2 of deploy flow: resource allocation needs a managed server."""
 
     @pytest.mark.asyncio
-    async def test_managed_server_exists(self, api_no_auth):
+    async def test_managed_server_exists(self, api_internal):
         """At least one managed server with operational status in DB."""
-        resp = await api_no_auth.get("/api/servers/")
+        resp = await api_internal.get("/api/servers/")
         assert resp.status_code == 200
         servers = resp.json()
 
@@ -64,10 +64,10 @@ class TestManagedServer:
         )
 
     @pytest.mark.asyncio
-    async def test_server_has_ssh_key(self, api_no_auth, managed_server):
+    async def test_server_has_ssh_key(self, api_internal, managed_server):
         """Managed server has a decryptable SSH key (deployer fetches it at step 5)."""
         handle = managed_server["handle"]
-        resp = await api_no_auth.get(f"/api/servers/{handle}/ssh-key")
+        resp = await api_internal.get(f"/api/servers/{handle}/ssh-key")
         assert resp.status_code == 200, f"SSH key endpoint failed: {resp.text}"
         body = resp.json()
         key = body.get("ssh_key", "")
@@ -81,14 +81,19 @@ class TestManagedServer:
         user = managed_server.get("ssh_user", "root")
         handle = managed_server["handle"]
 
-        # Mirrors _pre_check_server: fetch SSH key from API, connect to server
+        # Mirrors _pre_check_server: fetch SSH key from API, connect to server.
+        # The ssh-key endpoint is gated by require_internal_or_admin, so the fetch
+        # carries the internal key like the real deployer does.
         script = (
             "import asyncio, sys, os\n"
             "sys.path.insert(0, '/app')\n"
             "async def main():\n"
             "    import httpx\n"
             "    api_url = os.environ.get('API_URL', 'http://api:8000')\n"
-            "    async with httpx.AsyncClient(base_url=api_url, timeout=10) as client:\n"
+            "    headers = {'X-Internal-Key': os.environ['INTERNAL_API_KEY']}\n"
+            "    async with httpx.AsyncClient(\n"
+            "        base_url=api_url, timeout=10, headers=headers\n"
+            "    ) as client:\n"
             f"        resp = await client.get('/api/servers/{handle}/ssh-key')\n"
             "        if resp.status_code != 200:\n"
             "            print(f'FAILED:ssh-key-fetch:{resp.status_code}')\n"
@@ -133,12 +138,12 @@ class TestPortAllocation:
     """Step 2 of deploy flow: allocator assigns next available port per module."""
 
     @pytest.mark.asyncio
-    async def test_allocate_and_release_port(self, api_no_auth, managed_server):
+    async def test_allocate_and_release_port(self, api_internal, managed_server):
         """Allocate next port, verify, then release — same as ensure_project_allocations()."""
         handle = managed_server["handle"]
 
         # Allocate (mirrors allocator.py: api_client.allocate_next_port)
-        resp = await api_no_auth.post(
+        resp = await api_internal.post(
             f"/api/servers/{handle}/ports/allocate-next",
             json={"service_name": "live-test-deploy-infra", "start_port": 19000},
         )
@@ -150,13 +155,13 @@ class TestPortAllocation:
 
         try:
             # Verify it shows up in listings
-            resp = await api_no_auth.get(f"/api/servers/{handle}/ports")
+            resp = await api_internal.get(f"/api/servers/{handle}/ports")
             assert resp.status_code == 200
             allocated_ports = [p["port"] for p in resp.json()]
             assert port in allocated_ports, f"Port {port} not found in server ports list"
         finally:
-            # Always release — cleanup
-            await api_no_auth.delete(f"/api/allocations/{alloc_id}")
+            # Always release — this test owns only the allocation it just created.
+            await api_internal.delete(f"/api/allocations/{alloc_id}")
 
 
 class TestDeploySecrets:

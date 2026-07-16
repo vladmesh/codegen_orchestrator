@@ -21,16 +21,22 @@ from live_harness import cleanup_guard, run_non_llm_qa
 from pipeline_helpers import (
     API_URL,
     AUTH_HEADERS,
+    DEPLOY_OUTCOME_TIMEOUT,
+    DEPLOY_RUN_TIMEOUT,
     DEPLOY_TIMEOUT,
     ENGINEERING_TIMEOUT,
+    EXPECTED_ENV_CONTRACT_FRAGMENTS,
     SCAFFOLD_TIMEOUT,
     cleanup_all,
     create_noop_project,
     create_story_and_task,
     dump_debug,
     ensure_test_user,
+    record_env_contract,
     trigger_scaffold,
     wait_deploy,
+    wait_deploy_outcome,
+    wait_deploy_run,
     wait_engineering,
     wait_scaffold,
 )
@@ -40,6 +46,7 @@ import pytest_asyncio
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.queues.deploy import DeployOutcome
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
@@ -62,6 +69,13 @@ async def pipeline():
                     dump_debug(ctx, "full-scaffold")
                     return
 
+                # The scaffolded repo must already carry the contract deploy
+                # resolves its environment from.
+                if not record_env_contract(ctx, "main", phase="scaffold"):
+                    yield ctx
+                    dump_debug(ctx, "full-env-contract-scaffold")
+                    return
+
                 # Phase 2: Engineering
                 await create_story_and_task(api, ctx)
                 await wait_engineering(api, ctx, timeout=ENGINEERING_TIMEOUT)
@@ -70,9 +84,31 @@ async def pipeline():
                     dump_debug(ctx, "full-engineering")
                     return
 
-                # Phase 3: Deploy
+                # Phase 3: Deploy. The story branch merges into main and only then
+                # does a deploy run appear carrying the merged head SHA — the ref
+                # deploy reads the contract at. Re-check the contract there: the
+                # scaffolded tree proves nothing about what engineering merged.
+                deploy_run = await wait_deploy_run(api, ctx, timeout=DEPLOY_RUN_TIMEOUT)
+                if deploy_run is None:
+                    yield ctx
+                    dump_debug(ctx, "full-deploy-run")
+                    return
+                if not record_env_contract(
+                    ctx,
+                    ctx["deploy_head_sha"],
+                    phase="merged",
+                    verify_merged_into_main=True,
+                ):
+                    yield ctx
+                    dump_debug(ctx, "full-env-contract-merged")
+                    return
+
                 await wait_deploy(api, api_no_auth, ctx, timeout=DEPLOY_TIMEOUT)
-                if ctx.get("final_app_status") == ApplicationStatus.RUNNING.value:
+                await wait_deploy_outcome(api, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT)
+                if (
+                    ctx.get("final_app_status") == ApplicationStatus.RUNNING.value
+                    and ctx.get("deploy_outcome") == DeployOutcome.SUCCESS.value
+                ):
                     ctx["qa_result"] = await run_non_llm_qa(
                         api_no_auth,
                         ctx["deployed_url"],
@@ -81,7 +117,10 @@ async def pipeline():
 
                 yield ctx
 
-                if ctx.get("final_app_status") != ApplicationStatus.RUNNING.value:
+                if (
+                    ctx.get("final_app_status") != ApplicationStatus.RUNNING.value
+                    or ctx.get("deploy_outcome") != DeployOutcome.SUCCESS.value
+                ):
                     dump_debug(ctx, "full-deploy")
 
 
@@ -98,6 +137,48 @@ class TestFullPipeline:
         )
         assert pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
             f"Deploy failed — app_status: {pipeline.get('final_app_status')}"
+        )
+
+    async def test_env_contract_committed_by_scaffold(self, pipeline):
+        """The scaffolded repo carries the contract fragments deploy requires."""
+        if pipeline.get("scaffold_status") != ProjectStatus.ACTIVE:
+            pytest.skip("scaffold failed")
+        errors = pipeline.get("env_contract_errors") or {}
+        assert "scaffold" not in errors, errors.get("scaffold")
+        probe = pipeline["env_contract_probes"]["scaffold"]
+        assert set(probe["fragment_paths"]) >= EXPECTED_ENV_CONTRACT_FRAGMENTS
+        assert probe["entries"], "scaffolded contract declares no entries"
+
+    async def test_env_contract_present_on_merged_sha(self, pipeline):
+        """The contract also holds on the SHA deploy actually resolves it at.
+
+        Deploy reads the contract at the merged head SHA, not at the scaffolded
+        tree, so a fragment lost or broken during engineering only shows here.
+        """
+        if pipeline.get("task_status") != TaskStatus.DONE:
+            pytest.skip("engineering failed")
+        assert pipeline.get("deploy_run_error") is None, pipeline["deploy_run_error"]
+        errors = pipeline.get("env_contract_errors") or {}
+        assert "merged" not in errors, errors.get("merged")
+        probe = pipeline["env_contract_probes"]["merged"]
+        assert probe["ref"] == pipeline["deploy_head_sha"]
+        assert probe["merged_into_main"] is True, "deploy head SHA is not contained in main"
+        assert set(probe["fragment_paths"]) >= EXPECTED_ENV_CONTRACT_FRAGMENTS
+
+    async def test_deploy_run_outcome_success(self, pipeline):
+        """The deploy run this mega triggered must conclude deploy_outcome=success.
+
+        A running application only proves some container answers on the port;
+        the typed outcome is what the pipeline itself concluded about the deploy.
+        """
+        if pipeline.get("task_status") != TaskStatus.DONE:
+            pytest.skip("engineering failed")
+        assert pipeline.get("deploy_run_error") is None, pipeline["deploy_run_error"]
+        assert pipeline.get("deploy_outcome_error") is None, pipeline["deploy_outcome_error"]
+        assert pipeline.get("deploy_outcome") == DeployOutcome.SUCCESS.value, (
+            f"Deploy run {pipeline.get('deploy_run_id')} ended "
+            f"deploy_outcome={pipeline.get('deploy_outcome')} "
+            f"({pipeline.get('deploy_error_details')})"
         )
 
     async def test_port_allocated(self, pipeline):
@@ -133,7 +214,10 @@ class TestFullPipeline:
 
     async def test_non_llm_qa_passed(self, pipeline):
         """A separate post-deploy QA run must terminate as passed."""
-        if pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
+        if (
+            pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
+            or pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
+        ):
             pytest.skip("deploy failed")
         assert pipeline.get("qa_result") == {
             "run_id": pipeline["qa_result"]["run_id"],
