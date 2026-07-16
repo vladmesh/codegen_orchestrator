@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 import pytest
 
@@ -15,6 +16,14 @@ from shared.contracts.env_contract import (
 )
 
 SCHEMA_PATH = Path(__file__).parents[2] / "contracts/schemas/env-contract.schema.json"
+
+
+def _fragment(entry: dict) -> dict:
+    return {
+        "version": ENV_CONTRACT_VERSION,
+        "owner": "services/backend",
+        "entries": {"KEY": entry},
+    }
 
 
 def test_valid_fragment_accepts_each_source_type():
@@ -209,3 +218,80 @@ def test_committed_json_schema_is_exported_from_pydantic_model(tmp_path):
     export_env_contract_json_schema(exported_path)
 
     assert json.loads(SCHEMA_PATH.read_text()) == json.loads(exported_path.read_text())
+
+
+@pytest.mark.parametrize(
+    "entry, valid",
+    [
+        (
+            {
+                "source": "allocation",
+                "environments": ["production"],
+                "consumers": ["backend"],
+                "required": True,
+                "service": "backend",
+            },
+            True,
+        ),
+        (
+            {
+                "source": "allocation",
+                "environments": ["production"],
+                "consumers": ["backend"],
+                "required": True,
+                "resource": "port",
+            },
+            True,
+        ),
+        (
+            {
+                "source": "allocation",
+                "environments": ["production"],
+                "consumers": ["backend"],
+                "required": True,
+                "service": None,
+                "resource": "port",
+            },
+            True,
+        ),
+        (
+            {
+                "source": "allocation",
+                "environments": ["production"],
+                "consumers": ["backend"],
+                "required": True,
+            },
+            False,
+        ),
+        (
+            {
+                "source": "allocation",
+                "environments": ["production"],
+                "consumers": ["backend"],
+                "required": True,
+                "service": None,
+            },
+            False,
+        ),
+        (
+            {
+                "source": "allocation",
+                "environments": ["production"],
+                "consumers": ["backend"],
+                "required": True,
+                "service": "",
+            },
+            False,
+        ),
+    ],
+)
+def test_json_schema_matches_allocation_selector_validation(entry, valid):
+    fragment = _fragment(entry)
+    schema_validator = Draft202012Validator(json.loads(SCHEMA_PATH.read_text()))
+
+    assert schema_validator.is_valid(fragment) is valid
+    if valid:
+        EnvContractFragment.model_validate(fragment)
+    else:
+        with pytest.raises(ValidationError):
+            EnvContractFragment.model_validate(fragment)

@@ -2,6 +2,30 @@
   "$defs": {
     "AllocationEntry": {
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "service": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "service"
+          ]
+        },
+        {
+          "properties": {
+            "resource": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource"
+          ]
+        }
+      ],
       "description": "A value resolved from a named allocation service or resource.",
       "properties": {
         "consumers": {
@@ -38,6 +62,7 @@
         "resource": {
           "anyOf": [
             {
+              "minLength": 1,
               "type": "string"
             },
             {
@@ -55,6 +80,7 @@
         "service": {
           "anyOf": [
             {
+              "minLength": 1,
               "type": "string"
             },
             {

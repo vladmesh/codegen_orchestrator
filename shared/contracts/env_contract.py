@@ -61,9 +61,25 @@ class GeneratedSecretEntry(EnvContractEntryBase):
 class AllocationEntry(EnvContractEntryBase):
     """A value resolved from a named allocation service or resource."""
 
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "required": ["service"],
+                    "properties": {"service": {"type": "string", "minLength": 1}},
+                },
+                {
+                    "required": ["resource"],
+                    "properties": {"resource": {"type": "string", "minLength": 1}},
+                },
+            ]
+        },
+    )
+
     source: Literal["allocation"]
-    service: str | None = None
-    resource: str | None = None
+    service: str | None = Field(default=None, min_length=1)
+    resource: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def require_selector(self) -> AllocationEntry:
