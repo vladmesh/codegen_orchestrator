@@ -1,0 +1,395 @@
+{
+  "$defs": {
+    "AllocationEntry": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "service": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "service"
+          ]
+        },
+        {
+          "properties": {
+            "resource": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource"
+          ]
+        }
+      ],
+      "description": "A value resolved from a named allocation service or resource.",
+      "properties": {
+        "consumers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumers",
+          "type": "array"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "environments": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Environments",
+          "type": "array"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "resource": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource"
+        },
+        "sensitive": {
+          "default": false,
+          "title": "Sensitive",
+          "type": "boolean"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "source": {
+          "const": "allocation",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "environments",
+        "required"
+      ],
+      "title": "AllocationEntry",
+      "type": "object"
+    },
+    "DerivedEntry": {
+      "additionalProperties": false,
+      "description": "A non-secret value derived from trusted deployment context.",
+      "properties": {
+        "consumers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumers",
+          "type": "array"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "environments": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Environments",
+          "type": "array"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "sensitive": {
+          "const": false,
+          "default": false,
+          "title": "Sensitive",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "derived",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "environments",
+        "required"
+      ],
+      "title": "DerivedEntry",
+      "type": "object"
+    },
+    "GeneratedSecretEntry": {
+      "additionalProperties": false,
+      "description": "A secret generated and persisted by the platform.",
+      "properties": {
+        "consumers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumers",
+          "type": "array"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "environments": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Environments",
+          "type": "array"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "sensitive": {
+          "const": true,
+          "default": true,
+          "title": "Sensitive",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "generated_secret",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "environments",
+        "required"
+      ],
+      "title": "GeneratedSecretEntry",
+      "type": "object"
+    },
+    "LiteralEntry": {
+      "additionalProperties": false,
+      "description": "A committed non-secret value, typically for local or test environments.",
+      "properties": {
+        "consumers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Consumers",
+          "type": "array"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "environments": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Environments",
+          "type": "array"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "sensitive": {
+          "const": false,
+          "default": false,
+          "title": "Sensitive",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "literal",
+          "title": "Source",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "source",
+        "environments",
+        "required",
+        "value"
+      ],
+      "title": "LiteralEntry",
+      "type": "object"
+    },
+    "UserSecretEntry": {
+      "additionalProperties": false,
+      "description": "A secret supplied by a user and persisted at project scope.",
+      "properties": {
+        "consumers": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Consumers",
+          "type": "array"
+        },
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "environments": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Environments",
+          "type": "array"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "sensitive": {
+          "const": true,
+          "default": true,
+          "title": "Sensitive",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "user_secret",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "environments",
+        "consumers",
+        "required",
+        "description"
+      ],
+      "title": "UserSecretEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One owner-maintained piece of an environment contract.",
+  "properties": {
+    "entries": {
+      "additionalProperties": {
+        "discriminator": {
+          "mapping": {
+            "allocation": "#/$defs/AllocationEntry",
+            "derived": "#/$defs/DerivedEntry",
+            "generated_secret": "#/$defs/GeneratedSecretEntry",
+            "literal": "#/$defs/LiteralEntry",
+            "user_secret": "#/$defs/UserSecretEntry"
+          },
+          "propertyName": "source"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/UserSecretEntry"
+          },
+          {
+            "$ref": "#/$defs/GeneratedSecretEntry"
+          },
+          {
+            "$ref": "#/$defs/AllocationEntry"
+          },
+          {
+            "$ref": "#/$defs/DerivedEntry"
+          },
+          {
+            "$ref": "#/$defs/LiteralEntry"
+          }
+        ]
+      },
+      "title": "Entries",
+      "type": "object"
+    },
+    "owner": {
+      "minLength": 1,
+      "title": "Owner",
+      "type": "string"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "owner"
+  ],
+  "title": "EnvContractFragment",
+  "type": "object"
+}

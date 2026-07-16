@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations init-langfuse-db \
 	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -172,6 +172,9 @@ format:
 
 ci-contract:
 	@uv run python scripts/check-ci-gate.py
+
+export-env-contract-schema:
+	@PYTHONPATH=. uv run python scripts/export-env-contract-schema.py
 
 # === Git Hooks ===
 
