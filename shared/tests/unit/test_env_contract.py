@@ -13,6 +13,7 @@ from shared.contracts.env_contract import (
     EnvContractMergeError,
     export_env_contract_json_schema,
     merge_env_contract_fragments,
+    validate_env_contract_fragment,
 )
 
 SCHEMA_PATH = Path(__file__).parents[2] / "contracts/schemas/env-contract.schema.json"
@@ -26,50 +27,169 @@ def _fragment(entry: dict) -> dict:
     }
 
 
-def test_valid_fragment_accepts_each_source_type():
-    fragment = EnvContractFragment.model_validate(
+VALID_FRAGMENT = {
+    "version": ENV_CONTRACT_VERSION,
+    "owner": "services/backend",
+    "entries": {
+        "STRIPE_SECRET_KEY": {
+            "source": "user_secret",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "description": "Stripe server API key",
+        },
+        "DJANGO_SECRET_KEY": {
+            "source": "generated_secret",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "description": "Django signing key",
+        },
+        "BACKEND_PORT": {
+            "source": "allocation",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "service": "backend",
+        },
+        "APP_NAME": {
+            "source": "derived",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "description": "Project name",
+        },
+        "POSTGRES_HOST_PORT": {
+            "source": "literal",
+            "environments": ["local"],
+            "consumers": ["backend"],
+            "required": False,
+            "value": 5432,
+        },
+    },
+}
+
+
+INVALID_ENTRY_CASES = [
+    ({"source": "infra"}, "source"),
+    (
         {
-            "version": ENV_CONTRACT_VERSION,
-            "owner": "services/backend",
-            "entries": {
-                "STRIPE_SECRET_KEY": {
-                    "source": "user_secret",
-                    "environments": ["production"],
-                    "consumers": ["backend"],
-                    "required": True,
-                    "description": "Stripe server API key",
-                },
-                "DJANGO_SECRET_KEY": {
-                    "source": "generated_secret",
-                    "environments": ["production"],
-                    "consumers": ["backend"],
-                    "required": True,
-                    "description": "Django signing key",
-                },
-                "BACKEND_PORT": {
-                    "source": "allocation",
-                    "environments": ["production"],
-                    "consumers": ["backend"],
-                    "required": True,
-                    "service": "backend",
-                },
-                "APP_NAME": {
-                    "source": "derived",
-                    "environments": ["production"],
-                    "consumers": ["backend"],
-                    "required": True,
-                    "description": "Project name",
-                },
-                "POSTGRES_HOST_PORT": {
-                    "source": "literal",
-                    "environments": ["local"],
-                    "consumers": ["backend"],
-                    "required": False,
-                    "value": 5432,
-                },
-            },
-        }
-    )
+            "source": "user_secret",
+            "environments": ["production"],
+            "consumers": [],
+            "required": True,
+            "description": "Credential",
+        },
+        "consumers",
+    ),
+    (
+        {
+            "source": "user_secret",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+        },
+        "description",
+    ),
+    (
+        {
+            "source": "allocation",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+        },
+        "service or resource",
+    ),
+    (
+        {
+            "source": "literal",
+            "environments": ["local"],
+            "consumers": ["backend"],
+            "required": False,
+            "value": "not-allowed",
+            "sensitive": True,
+        },
+        "sensitive",
+    ),
+    (
+        {
+            "source": "derived",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "sensitive": True,
+        },
+        "sensitive",
+    ),
+]
+
+
+ALLOCATION_SELECTOR_CASES = [
+    (
+        {
+            "source": "allocation",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "service": "backend",
+        },
+        True,
+    ),
+    (
+        {
+            "source": "allocation",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "resource": "port",
+        },
+        True,
+    ),
+    (
+        {
+            "source": "allocation",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "service": None,
+            "resource": "port",
+        },
+        True,
+    ),
+    (
+        {
+            "source": "allocation",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+        },
+        False,
+    ),
+    (
+        {
+            "source": "allocation",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "service": None,
+        },
+        False,
+    ),
+    (
+        {
+            "source": "allocation",
+            "environments": ["production"],
+            "consumers": ["backend"],
+            "required": True,
+            "service": "",
+        },
+        False,
+    ),
+]
+
+
+def test_valid_fragment_accepts_each_source_type():
+    fragment = EnvContractFragment.model_validate(VALID_FRAGMENT)
 
     assert set(fragment.entries) == {
         "STRIPE_SECRET_KEY",
@@ -82,58 +202,7 @@ def test_valid_fragment_accepts_each_source_type():
 
 @pytest.mark.parametrize(
     "entry, error",
-    [
-        ({"source": "infra"}, "source"),
-        (
-            {
-                "source": "user_secret",
-                "environments": ["production"],
-                "consumers": [],
-                "required": True,
-                "description": "Credential",
-            },
-            "consumers",
-        ),
-        (
-            {
-                "source": "user_secret",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-            },
-            "description",
-        ),
-        (
-            {
-                "source": "allocation",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-            },
-            "service or resource",
-        ),
-        (
-            {
-                "source": "literal",
-                "environments": ["local"],
-                "consumers": ["backend"],
-                "required": False,
-                "value": "not-allowed",
-                "sensitive": True,
-            },
-            "sensitive",
-        ),
-        (
-            {
-                "source": "derived",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-                "sensitive": True,
-            },
-            "sensitive",
-        ),
-    ],
+    INVALID_ENTRY_CASES,
 )
 def test_invalid_fragment_entries_fail_validation(entry, error):
     with pytest.raises(ValidationError, match=error):
@@ -221,72 +290,14 @@ def test_committed_json_schema_is_exported_from_pydantic_model(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "entry, valid",
+    "fragment, valid",
     [
-        (
-            {
-                "source": "allocation",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-                "service": "backend",
-            },
-            True,
-        ),
-        (
-            {
-                "source": "allocation",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-                "resource": "port",
-            },
-            True,
-        ),
-        (
-            {
-                "source": "allocation",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-                "service": None,
-                "resource": "port",
-            },
-            True,
-        ),
-        (
-            {
-                "source": "allocation",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-            },
-            False,
-        ),
-        (
-            {
-                "source": "allocation",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-                "service": None,
-            },
-            False,
-        ),
-        (
-            {
-                "source": "allocation",
-                "environments": ["production"],
-                "consumers": ["backend"],
-                "required": True,
-                "service": "",
-            },
-            False,
-        ),
+        (VALID_FRAGMENT, True),
+        *[(_fragment(entry), False) for entry, _ in INVALID_ENTRY_CASES],
+        *[(_fragment(entry), valid) for entry, valid in ALLOCATION_SELECTOR_CASES],
     ],
 )
-def test_json_schema_matches_allocation_selector_validation(entry, valid):
-    fragment = _fragment(entry)
+def test_json_schema_matches_pydantic_validation(fragment, valid):
     schema_validator = Draft202012Validator(json.loads(SCHEMA_PATH.read_text()))
 
     assert schema_validator.is_valid(fragment) is valid
@@ -295,3 +306,10 @@ def test_json_schema_matches_allocation_selector_validation(entry, valid):
     else:
         with pytest.raises(ValidationError):
             EnvContractFragment.model_validate(fragment)
+
+
+def test_validate_fragment_revalidates_constructed_model():
+    fragment = EnvContractFragment.model_construct(owner="", entries={})
+
+    with pytest.raises(ValidationError, match="owner"):
+        validate_env_contract_fragment(fragment)
