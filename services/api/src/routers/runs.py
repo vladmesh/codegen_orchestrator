@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -127,7 +127,9 @@ async def list_runs(
     task_id: str | None = None,
     story_id: str | None = None,
     run_type: str | None = None,
-    status: str | None = None,
+    # alias keeps the public query param name; a parameter literally named
+    # `status` would shadow the fastapi.status module used below
+    run_status: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
@@ -150,8 +152,8 @@ async def list_runs(
         query = query.where(Run.story_id == story_id)
     if run_type:
         query = query.where(Run.type == run_type)
-    if status:
-        query = query.where(Run.status == status)
+    if run_status:
+        query = query.where(Run.status == run_status)
 
     # If user provided, filter by ownership
     if x_telegram_id:
