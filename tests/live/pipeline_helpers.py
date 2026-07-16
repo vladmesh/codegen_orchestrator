@@ -544,10 +544,24 @@ def record_env_contract(
 
     The probe lands in ``ctx['env_contract_probes'][phase]`` before it is judged,
     so a failing phase still leaves the observed paths in the debug dump.
+
+    A probe that cannot run at all — GitHub 5xx, an unparseable fragment, a dead
+    or slow container — is recorded as that phase's error rather than raised. The
+    mega still fails on it, but through the same record-and-report path as a
+    contract that merely misses a fragment, so the caller reaches its debug dump
+    instead of losing the artifact to an exception.
     """
-    probe = probe_env_contract(
-        ctx["repo_name"], ref, verify_merged_into_main=verify_merged_into_main
-    )
+    try:
+        probe = probe_env_contract(
+            ctx["repo_name"], ref, verify_merged_into_main=verify_merged_into_main
+        )
+    except Exception as error:
+        ctx.setdefault("env_contract_errors", {})[phase] = (
+            f"{phase}: environment contract probe at {ref} could not run: "
+            f"{type(error).__name__}: {error}"
+        )
+        return False
+
     ctx.setdefault("env_contract_probes", {})[phase] = probe
     error = _env_contract_failure(probe, phase, verify_merged_into_main)
     if error:

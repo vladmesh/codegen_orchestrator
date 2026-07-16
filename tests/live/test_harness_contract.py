@@ -1472,3 +1472,70 @@ def test_env_contract_probe_script_reports_a_repo_without_fragments(monkeypatch,
 
     assert probe["fragment_paths"] == []
     assert probe["entries"] == []
+
+
+def test_record_env_contract_records_unreachable_probe_instead_of_raising(monkeypatch):
+    """A probe that cannot run must not lose the mega's debug artifact.
+
+    record_env_contract is called outside the fixture's try block, so an escaping
+    exception skips the `yield ctx` + dump_debug path and the early failure leaves
+    no artifact behind. GitHub 5xx, a dead container or a non-zero exit must be
+    recorded as the phase error and reported like any other contract failure.
+    """
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="502 Bad Gateway"),
+    )
+    ctx = {"repo_name": "run-repo"}
+
+    assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="merged") is False
+    assert "could not run" in ctx["env_contract_errors"]["merged"]
+    assert "502 Bad Gateway" in ctx["env_contract_errors"]["merged"]
+
+
+def test_record_env_contract_records_unparseable_probe_output(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="[info] no payload\n", stderr=""),
+    )
+    ctx = {"repo_name": "run-repo"}
+
+    assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="scaffold") is False
+    assert "could not run" in ctx["env_contract_errors"]["scaffold"]
+    assert "printed no payload" in ctx["env_contract_errors"]["scaffold"]
+
+
+def test_record_env_contract_records_container_timeout(monkeypatch):
+    """A hung container raises TimeoutExpired out of subprocess, not a RuntimeError."""
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="docker compose exec", timeout=60)
+
+    monkeypatch.setattr(pipeline_helpers, "docker_exec", timeout)
+    ctx = {"repo_name": "run-repo"}
+
+    assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="merged") is False
+    assert "TimeoutExpired" in ctx["env_contract_errors"]["merged"]
+
+
+def test_debug_dump_retains_probe_exception_without_a_probe(monkeypatch, tmp_path):
+    """The dump for a phase whose probe never returned still names the reason."""
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    monkeypatch.setattr(
+        pipeline_helpers.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="502 Bad Gateway"),
+    )
+    ctx = {"project_id": "project-1", "repo_name": "run-repo"}
+
+    assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="merged") is False
+    pipeline_helpers.dump_debug(ctx, "probe-exception")
+
+    text = next((tmp_path / "docs" / "e2e_results").glob("debug-probe-exception-*.md")).read_text()
+    assert "merged FAILED" in text
+    assert "502 Bad Gateway" in text
