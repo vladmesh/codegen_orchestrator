@@ -115,6 +115,9 @@ jobs:
       - name: Run live cleanup ssh_user regression
         run: uv run pytest -q tests/live/test_cleanup_ssh_user.py
 
+      - name: Run live harness contract regression
+        run: uv run pytest -q tests/live/test_harness_contract.py
+
       - name: Run Redis capability cleanup regression
         run: |
           docker run --detach --rm --name redis-cleanup-contract redis:7-alpine
