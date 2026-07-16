@@ -10,7 +10,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
+import respx
 
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
@@ -346,6 +348,64 @@ class TestHealthOnlyCriteriaRouting:
         run_data = mock_api_client.patch.call_args[1]["json"]
         assert run_data["result"]["qa_outcome"] == QAOutcome.FAILED.value
         assert run_data["result"]["failed_checks"][0]["detail"] == "got 502, expected 200"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_http_200_passes_when_the_server_cannot_be_resolved(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """An HTTP-decidable check must not fail over agent scaffolding it never uses.
+
+        The server's SSH key is what the coding agent needs to log in. A criteria
+        block of plain GET expectations is answered by the deployed URL alone, so a
+        missing key must not turn a service that answers 200 into a terminal error.
+        """
+        route = respx.get("https://weather.example.com/health").mock(
+            return_value=httpx.Response(200)
+        )
+        # Server resolution would fail outright: no SSH key for this application.
+        mock_api_client.get_server_ssh_key.return_value = None
+        qa_message_data["acceptance_criteria"] = "- GET /health returns 200"
+
+        result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        assert route.called
+        # Nothing about the server — or its private key — is read on this path.
+        mock_api_client.get_application.assert_not_called()
+        mock_api_client.get_server.assert_not_called()
+        mock_api_client.get_server_ssh_key.assert_not_called()
+
+        run_data = mock_api_client.patch.call_args_list[-1][1]["json"]
+        assert run_data["status"] == RunStatus.COMPLETED.value
+        assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_http_200_passes_for_a_tg_bot_project_without_a_bot_username(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """bot_username is what the agent talks to Telegram with, not a GET check.
+
+        A tg_bot project's first story carries the seeded health check, so it must
+        not error out before the architect has written any Telegram criteria.
+        """
+        respx.get("https://weather.example.com/health").mock(return_value=httpx.Response(200))
+        mock_api_client.get_project.return_value = ProjectDTO(
+            id="116c9678-5872-4ce5-8332-9a267ab27604",
+            name="tg_bot_project",
+            status=ProjectStatus.ACTIVE,
+            config={"modules": ["tg_bot"]},
+            owner_id=1,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        qa_message_data["bot_username"] = None
+        qa_message_data["acceptance_criteria"] = "- GET /health returns 200"
+
+        result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
 
     @pytest.mark.asyncio
     async def test_prose_criteria_still_go_to_the_agent(

@@ -99,33 +99,40 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         return {"status": "skipped", "reason": "already_inflight"}
 
     try:
-        # Resolve server info
-        server_info = await _resolve_server_info(msg.application_id)
-        if not server_info:
-            error = f"Cannot resolve server for application {msg.application_id}"
-            logger.error(
-                "qa_server_resolve_failed",
-                application_id=msg.application_id,
-            )
-            await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
-            return {"status": "error", "error": error}
+        # The criteria travel on the message — the producer resolves them from the
+        # repository before it creates this run. They decide how QA runs, so parse
+        # them first: criteria that only state GET expectations need nothing but
+        # the deployed URL.
+        acceptance_criteria = msg.acceptance_criteria
+        health_checks = parse_health_only_criteria(acceptance_criteria)
 
-        # Fail-fast: if project has tg_bot module, bot_username is required
-        if not msg.bot_username:
-            project = await api_client.get_project(msg.project_id)
-            modules = (project.config or {}).get("modules", [])
-            if "tg_bot" in modules:
-                error = (
-                    "Project has tg_bot module but bot_username is missing in QAMessage. "
-                    "Deploy smoke test should have resolved it via getMe."
+        # A server to SSH into and a bot to talk to are what the agent needs, not
+        # what the criteria ask for. Resolve them inside the agent branch only —
+        # an HTTP check must not fail over an SSH key it never reads.
+        server_info = None
+        if health_checks is None:
+            server_info = await _resolve_server_info(msg.application_id)
+            if not server_info:
+                error = f"Cannot resolve server for application {msg.application_id}"
+                logger.error(
+                    "qa_server_resolve_failed",
+                    application_id=msg.application_id,
                 )
-                logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
                 await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
                 return {"status": "error", "error": error}
 
-        # The criteria travel on the message — the producer resolves them from the
-        # repository before it creates this run.
-        acceptance_criteria = msg.acceptance_criteria
+            # Fail-fast: if project has tg_bot module, bot_username is required
+            if not msg.bot_username:
+                project = await api_client.get_project(msg.project_id)
+                modules = (project.config or {}).get("modules", [])
+                if "tg_bot" in modules:
+                    error = (
+                        "Project has tg_bot module but bot_username is missing in QAMessage. "
+                        "Deploy smoke test should have resolved it via getMe."
+                    )
+                    logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
+                    await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
+                    return {"status": "error", "error": error}
 
         # Mark run as running before starting the checks
         if run_id:
@@ -134,9 +141,6 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={"status": RunStatus.RUNNING.value},
             )
 
-        # Criteria that only state GET expectations are decidable over HTTP, so
-        # run them here rather than paying for a coding agent on the server.
-        health_checks = parse_health_only_criteria(acceptance_criteria)
         if health_checks is not None:
             logger.info("qa_health_only_criteria", story_id=story_id, checks=len(health_checks))
             qa_result = await run_health_checks(

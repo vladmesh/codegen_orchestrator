@@ -155,6 +155,43 @@ class TestRunHealthChecks:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_a_redirect_criterion_checks_the_redirect_itself(self):
+        """ "returns 301" means the path answers 301, not that it leads somewhere 200."""
+        redirect = respx.get("http://svc.example.com/old").mock(
+            return_value=httpx.Response(301, headers={"Location": "http://svc.example.com/new"})
+        )
+        destination = respx.get("http://svc.example.com/new").mock(return_value=httpx.Response(200))
+
+        result = await run_health_checks(
+            deployed_url="http://svc.example.com",
+            checks=[HealthCriterion(path="/old", expected_status=301)],
+        )
+
+        assert result.passed is True
+        assert redirect.called
+        # Following the redirect would report the destination's 200 and fail a
+        # criterion the service actually satisfies.
+        assert not destination.called
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_redirected_path_does_not_pass_a_200_criterion(self):
+        """The inverse: a 301 must not be laundered into the 200 the criterion wants."""
+        respx.get("http://svc.example.com/health").mock(
+            return_value=httpx.Response(301, headers={"Location": "http://svc.example.com/ok"})
+        )
+        respx.get("http://svc.example.com/ok").mock(return_value=httpx.Response(200))
+
+        result = await run_health_checks(
+            deployed_url="http://svc.example.com",
+            checks=[HealthCriterion(path="/health", expected_status=200)],
+        )
+
+        assert result.passed is False
+        assert result.checks[0]["detail"] == "got 301, expected 200"
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_wrong_status_fails_with_detail(self):
         respx.get("http://svc.example.com/health").mock(return_value=httpx.Response(502))
 

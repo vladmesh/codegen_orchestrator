@@ -1047,6 +1047,10 @@ Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the
 
 **Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to Claude Code on the server instead.
 
+`returns <status>` means the path itself answers that status, so the checks do not follow redirects: a criterion naming a redirect is checked against the redirect, and a criterion naming 200 is not satisfied by a path that redirects to a 200. Checks are retried while the service is still coming up.
+
+The consumer parses the criteria *before* resolving anything else, and only the agent branch reads the server, its SSH key, and `bot_username`. A criteria block the deployed URL alone can answer must not fail over agent scaffolding it never uses.
+
 **Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or Claude Code on the prod server) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story.
 
 **Lifecycle operations:** `stop` and `undeploy` actions are handled by the `deploy_lifecycle` module, which SSHes to the server and runs `docker compose stop/down` directly — skipping the full DevOps subgraph.

@@ -108,7 +108,10 @@ async def run_health_checks(
     never answers with its expected status fails the run.
     """
     results = []
-    async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=True) as client:
+    # "returns 200" means the path itself answers 200. Following redirects would
+    # report the destination's status instead, so a criterion naming a redirect
+    # could never pass and one naming 200 would pass on a redirected path.
+    async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=False) as client:
         for check in checks:
             results.append(await _run_health_check(client, deployed_url, check))
 
