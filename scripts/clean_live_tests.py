@@ -175,7 +175,12 @@ def cleanup_manifest_resources(data: dict) -> list[str]:
             ctx.update(resource.metadata)
 
     async def resume() -> None:
-        async with httpx.AsyncClient(base_url="http://localhost:8000", timeout=20) as api:
+        # cleanup_all cancels runs via /api/runs/, which rejects unauthenticated
+        # callers; authenticate as an internal service like the live harness does
+        headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
+        async with httpx.AsyncClient(
+            base_url="http://localhost:8000", timeout=20, headers=headers
+        ) as api:
             await cleanup_all(api, api, ctx)
 
     try:

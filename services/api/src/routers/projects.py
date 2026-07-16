@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -169,7 +169,9 @@ async def get_project(
 
 @router.get("/", response_model=list[ProjectRead])
 async def list_projects(
-    status: str | None = None,
+    # alias keeps the public query param name; a parameter literally named
+    # `status` would shadow the fastapi.status module used below
+    project_status: str | None = Query(None, alias="status"),
     owner_id: int | None = None,
     owner_only: bool = False,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
@@ -201,8 +203,8 @@ async def list_projects(
             # Regular user or explicit owner_only request: only their projects
             query = query.where(Project.owner_id == user.id)
 
-    if status:
-        query = query.where(Project.status == status)
+    if project_status:
+        query = query.where(Project.status == project_status)
 
     result = await db.execute(query)
     return list(result.scalars().all())
