@@ -11,6 +11,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.story import StoryDTO
@@ -77,6 +78,7 @@ def _make_repo(
     role: str = "primary",
     visibility: str = "private",
     is_managed: bool = True,
+    acceptance_criteria: str | None = BASELINE_ACCEPTANCE_CRITERIA,
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
 ) -> RepositoryDTO:
@@ -88,6 +90,7 @@ def _make_repo(
         role=role,
         visibility=visibility,
         is_managed=is_managed,
+        acceptance_criteria=acceptance_criteria,
         created_at=created_at or _NOW,
         updated_at=updated_at,
     )

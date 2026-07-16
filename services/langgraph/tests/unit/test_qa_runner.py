@@ -1,12 +1,15 @@
-"""Unit tests for QA runner — SSH to server, run Claude Code, parse result."""
+"""Unit tests for QA runner — HTTP health checks, SSH to server, parse result."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 
-from src.consumers._qa_runner import parse_qa_result, run_qa_on_server
+from shared.contracts.acceptance import HealthCriterion
+from src.consumers._qa_runner import parse_qa_result, run_health_checks, run_qa_on_server
 from src.prompts.qa import build_qa_prompt
 
 
@@ -109,6 +112,116 @@ class TestParseQAResult:
         result = parse_qa_result(wrapper)
         assert result.passed is False
         assert "parse" in result.summary.lower() or "failed" in result.summary.lower()
+
+
+class TestRunHealthChecks:
+    """GET criteria are decided against the deployed URL — no SSH, no LLM."""
+
+    @pytest.fixture(autouse=True)
+    def _no_retry_delay(self):
+        """Keep the retry loop's timing out of the test's wall clock."""
+        with patch("src.consumers._qa_runner.HEALTH_CHECK_RETRY_DELAY", 0):
+            yield
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_http_200_passes(self):
+        """The mega health-only case: service answers 200 → QA passes."""
+        route = respx.get("http://svc.example.com/health").mock(return_value=httpx.Response(200))
+
+        result = await run_health_checks(
+            deployed_url="http://svc.example.com",
+            checks=[HealthCriterion(path="/health", expected_status=200)],
+        )
+
+        assert result.passed is True
+        assert route.called
+        assert result.checks == [
+            {"name": "GET /health returns 200", "pass": True, "detail": "got 200"}
+        ]
+        assert "http://svc.example.com" in result.summary
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_trailing_slash_does_not_double_up(self):
+        respx.get("http://svc.example.com/health").mock(return_value=httpx.Response(200))
+
+        result = await run_health_checks(
+            deployed_url="http://svc.example.com/",
+            checks=[HealthCriterion(path="/health", expected_status=200)],
+        )
+
+        assert result.passed is True
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_wrong_status_fails_with_detail(self):
+        respx.get("http://svc.example.com/health").mock(return_value=httpx.Response(502))
+
+        result = await run_health_checks(
+            deployed_url="http://svc.example.com",
+            checks=[HealthCriterion(path="/health", expected_status=200)],
+        )
+
+        assert result.passed is False
+        assert result.checks[0]["pass"] is False
+        assert result.checks[0]["detail"] == "got 502, expected 200"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_retries_while_the_service_comes_up(self):
+        """A service still starting must not fail the run on the first 503."""
+        route = respx.get("http://svc.example.com/health").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.ConnectError("connection refused"),
+                httpx.Response(200),
+            ]
+        )
+
+        result = await run_health_checks(
+            deployed_url="http://svc.example.com",
+            checks=[HealthCriterion(path="/health", expected_status=200)],
+        )
+
+        assert result.passed is True
+        assert route.call_count == 3
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_unreachable_service_fails_after_attempts(self):
+        from src.consumers._qa_runner import HEALTH_CHECK_ATTEMPTS
+
+        route = respx.get("http://svc.example.com/health").mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+
+        result = await run_health_checks(
+            deployed_url="http://svc.example.com",
+            checks=[HealthCriterion(path="/health", expected_status=200)],
+        )
+
+        assert result.passed is False
+        assert route.call_count == HEALTH_CHECK_ATTEMPTS
+        assert "request failed" in result.checks[0]["detail"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_one_failing_check_fails_the_run(self):
+        respx.get("http://svc.example.com/health").mock(return_value=httpx.Response(200))
+        respx.get("http://svc.example.com/ready").mock(return_value=httpx.Response(404))
+
+        result = await run_health_checks(
+            deployed_url="http://svc.example.com",
+            checks=[
+                HealthCriterion(path="/health", expected_status=200),
+                HealthCriterion(path="/ready", expected_status=200),
+            ],
+        )
+
+        assert result.passed is False
+        assert [c["pass"] for c in result.checks] == [True, False]
+        assert "1/2" in result.summary
 
 
 class TestRunQAOnServer:

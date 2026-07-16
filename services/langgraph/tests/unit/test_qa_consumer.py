@@ -14,7 +14,6 @@ import pytest
 
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
-from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
@@ -24,6 +23,10 @@ from src.consumers.qa import (
     _resolve_server_info,
     process_qa_job,
 )
+
+# Criteria with a prose line — not decidable over HTTP, so QA hands these to the
+# agent on the server. Tests that want the HTTP path override this.
+AGENT_CRITERIA = "- GET /health returns 200\n- GET /api/weather returns forecast"
 
 
 def _application(**overrides) -> ApplicationDTO:
@@ -94,22 +97,6 @@ def mock_api_client():
         mock.get_server_ssh_key = AsyncMock(
             return_value="-----BEGIN RSA KEY-----\nfake\n-----END RSA KEY-----"
         )
-        mock.get_repository = AsyncMock(
-            return_value=RepositoryDTO(
-                id="repo-1",
-                project_id="116c9678-5872-4ce5-8332-9a267ab27604",
-                name="weather_bot",
-                git_url="https://github.com/test/weather_bot.git",
-                role="primary",
-                visibility="private",
-                is_managed=True,
-                acceptance_criteria=(
-                    "- GET /health returns 200\n- GET /api/weather returns forecast"
-                ),
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-            )
-        )
         mock.patch = AsyncMock(return_value={})
         mock.create_task = AsyncMock(return_value={"id": "task-fix-1"})
         yield mock
@@ -134,6 +121,7 @@ def qa_message_data():
         "user_id": "12345",
         "deployed_url": "https://weather.example.com",
         "application_id": 1,
+        "acceptance_criteria": AGENT_CRITERIA,
         "run_id": "qa-run-1",
         "bot_username": None,
         "qa_attempt": 0,
@@ -297,6 +285,89 @@ class TestProcessQAJobFail:
         assert run_data["result"]["qa_outcome"] == QAOutcome.EXHAUSTED.value
 
 
+class TestHealthOnlyCriteriaRouting:
+    """Criteria that only state GET expectations are decided over HTTP, no agent."""
+
+    @pytest.mark.asyncio
+    async def test_health_only_criteria_pass_without_the_agent(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """A health-only story (the mega case) completes with outcome passed."""
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data["acceptance_criteria"] = "- GET /health returns 200"
+
+        with (
+            patch("src.consumers.qa.run_health_checks", new_callable=AsyncMock) as mock_health,
+            patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_agent,
+        ):
+            mock_health.return_value = QAResult(
+                passed=True,
+                checks=[{"name": "GET /health returns 200", "pass": True, "detail": "got 200"}],
+                summary="1 GET check(s) passed",
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        mock_agent.assert_not_called()
+
+        checks = mock_health.call_args[1]["checks"]
+        assert [(c.path, c.expected_status) for c in checks] == [("/health", 200)]
+        assert mock_health.call_args[1]["deployed_url"] == "https://weather.example.com"
+
+        completed_call = mock_api_client.patch.call_args_list[-1]
+        run_data = completed_call[1]["json"]
+        assert run_data["status"] == RunStatus.COMPLETED.value
+        assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
+
+    @pytest.mark.asyncio
+    async def test_failing_health_check_stores_failed_outcome(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data["acceptance_criteria"] = "- GET /health returns 200"
+
+        with patch("src.consumers.qa.run_health_checks", new_callable=AsyncMock) as mock_health:
+            mock_health.return_value = QAResult(
+                passed=False,
+                checks=[
+                    {
+                        "name": "GET /health returns 200",
+                        "pass": False,
+                        "detail": "got 502, expected 200",
+                    }
+                ],
+                summary="1/1 GET check(s) failed",
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_failed"
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert run_data["result"]["qa_outcome"] == QAOutcome.FAILED.value
+        assert run_data["result"]["failed_checks"][0]["detail"] == "got 502, expected 200"
+
+    @pytest.mark.asyncio
+    async def test_prose_criteria_still_go_to_the_agent(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """Only fully machine-checkable criteria skip the agent."""
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data["acceptance_criteria"] = AGENT_CRITERIA
+
+        with (
+            patch("src.consumers.qa.run_health_checks", new_callable=AsyncMock) as mock_health,
+            patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_agent,
+        ):
+            mock_agent.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        mock_health.assert_not_called()
+        mock_agent.assert_called_once()
+
+
 class TestProcessQAJobEdgeCases:
     @pytest.mark.asyncio
     async def test_application_not_found(self, mock_api_client, mock_redis, qa_message_data):
@@ -335,6 +406,7 @@ class TestProcessQAJobEdgeCases:
             "user_id": "12345",
             "deployed_url": "https://weather.example.com",
             "application_id": 42,
+            "acceptance_criteria": AGENT_CRITERIA,
             "run_id": "qa-run-1",
             "qa_attempt": 0,
         }
@@ -350,8 +422,12 @@ class TestProcessQAJobEdgeCases:
         assert inflight_key != "qa:inflight:"  # not empty
 
     @pytest.mark.asyncio
-    async def test_standalone_qa_uses_acceptance_criteria(self, mock_api_client, mock_redis):
-        """Standalone QA (no story_id) uses repo acceptance_criteria, not story description."""
+    async def test_qa_runs_the_criteria_from_the_message(self, mock_api_client, mock_redis):
+        """QA tests against the criteria the producer resolved, not its own lookup.
+
+        The producer resolves them from the repository before creating the run, so
+        the consumer must not re-read them — that split is what lost them before.
+        """
         from src.consumers._qa_runner import QAResult
 
         data = {
@@ -360,6 +436,7 @@ class TestProcessQAJobEdgeCases:
             "user_id": "12345",
             "deployed_url": "https://weather.example.com",
             "application_id": 1,
+            "acceptance_criteria": AGENT_CRITERIA,
             "run_id": "qa-run-1",
             "qa_attempt": 0,
         }
@@ -369,8 +446,7 @@ class TestProcessQAJobEdgeCases:
             result = await process_qa_job(data, mock_redis)
 
         assert result["status"] == "passed"
-        # Acceptance criteria fetched from repo, not story
-        mock_api_client.get_repository.assert_called_once()
+        assert mock_run.call_args[1]["acceptance_criteria"] == AGENT_CRITERIA
         mock_api_client.get_story.assert_not_called()
 
     @pytest.mark.asyncio

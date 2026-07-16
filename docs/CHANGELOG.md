@@ -2,6 +2,15 @@
 
 ## 2026-07-16
 
+- Give post-deploy QA one source of truth for acceptance criteria. `Repository.acceptance_criteria`
+  is seeded with a baseline health check at repository creation, so an automatically created story
+  reaches QA without anyone filling the repository in by hand. The deploy → QA handoff resolves the
+  criteria and carries them on `QAMessage`; missing criteria now fail the story visibly before it
+  reaches TESTING (and answer 422 on admin `run-e2e`) instead of leaving a QA run that can only
+  error with `qa_no_acceptance_criteria`. Criteria stating only `GET <path> returns <status>` are
+  checked over HTTP by the QA consumer, so a health-only story completes with outcome `passed` and
+  no LLM. The mega now gates on the QA run the pipeline itself produced rather than its own health
+  request.
 - Fix live server cleanup for service-template compose names that normalize project slugs with
   underscores. Teardown now discovers actual `com.docker.compose.project` labels from live
   containers, runs compose down for both manifest and discovered names, removes by label and

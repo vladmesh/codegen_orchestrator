@@ -72,7 +72,7 @@ cannot poison-loop the reclaim.
 |-------|-------|-----|-----------|----------|---------|
 | `engineering:queue` | `capability-workers` | EngineeringMessage | Task Dispatcher (scheduler) | langgraph | Start development task |
 | `deploy:queue` | `capability-workers` | DeployMessage | Task Dispatcher (scheduler) / PO | langgraph | Start deploy task |
-| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA testing via Claude Code on prod server |
+| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA: HTTP checks for GET-only criteria, else Claude Code on prod server |
 
 ---
 
@@ -1035,12 +1035,19 @@ class QAMessage(BaseMessage):
     user_id: str
     deployed_url: str
     application_id: int
+    acceptance_criteria: str      # resolved by the producer, never by the consumer
     run_id: str = ""
     bot_username: str | None = None
     qa_attempt: int = 0
 ```
 
-**Flow:** Deploy succeeds → supervisor creates QA run → publishes QAMessage → QA consumer SSHes to prod server → runs Claude Code with QA prompt → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story.
+**Acceptance criteria:** `Repository.acceptance_criteria` is the single source of truth for what QA tests. `POST /api/repositories/` seeds every repository with `BASELINE_ACCEPTANCE_CRITERIA` (`shared/contracts/acceptance.py`), so a story that never reached the architect still has criteria; the architect's `update_acceptance_criteria` tool extends the list as stories add functionality. Story and task criteria describe work to be done and are not what QA runs.
+
+Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the message. Both refuse to create a QA run without them — the supervisor fails the story visibly before it reaches TESTING, and `run-e2e` answers 422 — so QA never starts a run it can only error out of.
+
+**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to Claude Code on the server instead.
+
+**Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or Claude Code on the prod server) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story.
 
 **Lifecycle operations:** `stop` and `undeploy` actions are handled by the `deploy_lifecycle` module, which SSHes to the server and runs `docker compose stop/down` directly — skipping the full DevOps subgraph.
 

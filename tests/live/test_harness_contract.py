@@ -15,13 +15,13 @@ from live_harness import (
     OwnershipManifest,
     cleanup_guard,
     resolve_repo_root,
-    run_non_llm_qa,
 )
 import pipeline_helpers
 from pipeline_helpers import (
     _build_server_remote_cleanup_command,
     build_github_cleanup_script,
     build_registry_cleanup_script,
+    run_non_llm_qa,
 )
 import pytest
 import structlog
@@ -973,28 +973,79 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
     ]
 
 
-@pytest.mark.asyncio
-async def test_qa_gate_requires_separate_passed_terminal_run():
+def _qa_run(**overrides) -> dict:
+    run = {
+        "id": "qa-1",
+        "story_id": "story-1",
+        "status": "completed",
+        "result": {"qa_outcome": "passed", "summary": "1 GET check(s) passed"},
+    }
+    run.update(overrides)
+    return run
+
+
+def _runs_transport(runs: list[dict]) -> httpx.MockTransport:
     async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200)
+        return httpx.Response(200, json=runs)
 
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        result = await run_non_llm_qa(api, "http://deployed", timeout=1, poll_interval=0)
-
-    assert result["status"] == "completed"
-    assert result["qa_outcome"] == "passed"
+    return httpx.MockTransport(handler)
 
 
 @pytest.mark.asyncio
-async def test_qa_gate_rejects_non_passing_terminal_outcome():
-    async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(503)
+async def test_qa_gate_requires_separate_passed_terminal_run(monkeypatch):
+    """The gate reports the pipeline's own QA run, not a health probe of its own."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    async with httpx.AsyncClient(
+        transport=_runs_transport([_qa_run()]), base_url="http://test"
+    ) as api:
+        result = await run_non_llm_qa(api, "story-1", timeout=1, poll_interval=0)
 
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+    assert result == {"run_id": "qa-1", "status": "completed", "qa_outcome": "passed"}
+
+
+@pytest.mark.asyncio
+async def test_qa_gate_rejects_non_passing_terminal_outcome(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    runs = [
+        _qa_run(
+            status="failed",
+            result={"qa_outcome": "failed", "summary": "1/1 GET check(s) failed"},
+        )
+    ]
+    async with httpx.AsyncClient(transport=_runs_transport(runs), base_url="http://test") as api:
         with pytest.raises(AssertionError, match="status=failed outcome=failed"):
-            await run_non_llm_qa(api, "http://deployed", timeout=0.001, poll_interval=0)
+            await run_non_llm_qa(api, "story-1", timeout=1, poll_interval=0)
+
+
+@pytest.mark.asyncio
+async def test_qa_gate_ignores_runs_of_other_stories(monkeypatch):
+    """A project carries QA runs of other stories; only this mega's run counts."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    runs = [_qa_run(id="qa-other", story_id="story-other")]
+    async with httpx.AsyncClient(transport=_runs_transport(runs), base_url="http://test") as api:
+        with pytest.raises(AssertionError, match="no QA run reached a terminal state"):
+            await run_non_llm_qa(api, "story-1", timeout=0.01, poll_interval=0)
+
+
+@pytest.mark.asyncio
+async def test_qa_gate_waits_out_a_non_terminal_run(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    runs = [_qa_run(status="running", result=None)]
+    async with httpx.AsyncClient(transport=_runs_transport(runs), base_url="http://test") as api:
+        with pytest.raises(AssertionError, match="no QA run reached a terminal state"):
+            await run_non_llm_qa(api, "story-1", timeout=0.01, poll_interval=0)
+
+
+@pytest.mark.asyncio
+async def test_qa_gate_rejects_a_user_scoped_observer():
+    """list_runs hides unowned runs from a user-scoped caller — crash, don't blind-poll."""
+    async with httpx.AsyncClient(
+        transport=_runs_transport([_qa_run()]),
+        base_url="http://test",
+        headers={"X-Telegram-ID": "12345"},
+    ) as api:
+        with pytest.raises(RuntimeError, match="X-Telegram-ID"):
+            await run_non_llm_qa(api, "story-1", timeout=1, poll_interval=0)
 
 
 # ── Environment contract preflight ───────────────────────────────────────
