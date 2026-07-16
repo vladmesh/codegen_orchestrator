@@ -1147,47 +1147,201 @@ def test_record_env_contract_rejects_sha_absent_from_main(monkeypatch):
 
 # ── Typed deploy outcome ─────────────────────────────────────────────────
 
+HARNESS_USER_ID = 7
+
+
+def _deploy_run(
+    run_id: str,
+    *,
+    story_id: str = "story-1",
+    head_sha: str | None = "abc123",
+    user_id: int | None = None,
+) -> dict:
+    """One /api/runs/ record shaped as the API returns it.
+
+    ``head_sha=None`` is the engineering-triggered deploy run: pr_poller records
+    the merged SHA, engineering does not. ``user_id=None`` is how every deploy
+    run is really stored — neither producer attributes it to a user.
+    """
+    metadata = {"triggered_by": "pr_poll", "head_sha": head_sha} if head_sha else {}
+    return {
+        "id": run_id,
+        "type": "deploy",
+        "project_id": "project-1",
+        "story_id": story_id,
+        "user_id": user_id,
+        "status": "completed",
+        "run_metadata": metadata,
+    }
+
+
+def _runs_api(runs: list[dict]):
+    """A GET /api/runs/ that answers as services/api/src/routers/runs.py does.
+
+    The ownership narrowing is the part that matters: list_runs restricts the
+    result to the caller's own runs for any non-admin X-Telegram-ID, and the
+    internal key does not lift it. Faking the endpoint without that rule is what
+    let the 2026-07-16 blindness through a green contract suite.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        selected = [
+            run
+            for run in runs
+            if ("story_id" not in params or run["story_id"] == params["story_id"])
+            and ("project_id" not in params or run["project_id"] == params["project_id"])
+            and ("run_type" not in params or run["type"] == params["run_type"])
+        ]
+        if pipeline_helpers.USER_AUTH_HEADER in request.headers:
+            selected = [run for run in selected if run["user_id"] == HARNESS_USER_ID]
+        return httpx.Response(200, json=selected)
+
+    return handler
+
+
+def _runs_client(runs: list[dict], *, as_user: bool = False) -> httpx.AsyncClient:
+    """Client for the fake runs API, authenticated the way the harness would."""
+    headers = dict(pipeline_helpers.internal_headers())
+    if as_user:
+        headers.update(pipeline_helpers.AUTH_HEADERS)
+    return httpx.AsyncClient(
+        base_url="http://test",
+        transport=httpx.MockTransport(_runs_api(runs)),
+        headers=headers,
+    )
+
 
 @pytest.mark.asyncio
 async def test_wait_deploy_run_selects_the_run_carrying_the_merged_sha(monkeypatch):
     """Only the pr_poller run records head_sha; the engineering-triggered deploy
     run does not, so it is not the run this mega's contract check must follow."""
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    seen = {}
+    runs = [
+        _deploy_run("deploy-eng-1", head_sha=None),
+        _deploy_run("deploy-poll-1", head_sha="abc123"),
+    ]
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
 
-    async def get(url, params=None, headers=None):
-        seen["params"] = params
-        seen["headers"] = headers
-        return httpx.Response(
-            200,
-            json=[
-                {"id": "deploy-eng-1", "run_metadata": {}},
-                {"id": "deploy-poll-1", "run_metadata": {"head_sha": "abc123"}},
-            ],
-            request=httpx.Request("GET", "http://test/api/runs/"),
-        )
-
-    ctx = {"project_id": "project-1"}
-    run = await pipeline_helpers.wait_deploy_run(SimpleNamespace(get=get), ctx, timeout=1)
+    async with _runs_client(runs) as api_internal:
+        run = await pipeline_helpers.wait_deploy_run(api_internal, ctx, timeout=1)
 
     assert run["id"] == "deploy-poll-1"
     assert ctx["deploy_run_id"] == "deploy-poll-1"
     assert ctx["deploy_head_sha"] == "abc123"
-    assert seen["params"] == {"project_id": "project-1", "run_type": "deploy"}
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_run_finds_the_unowned_run_the_user_filter_hid(monkeypatch):
+    """Regression, 2026-07-16: deploy `deploy-poll-ea0bed35` succeeded while the
+    mega waited 420s for a run it could not see.
+
+    list_runs narrows to `Run.user_id == caller` for any non-admin X-Telegram-ID,
+    internal key or not, and pr_poller's deploy run has no user_id — so the
+    harness user was answered `[]` for the whole wait. Observed as a plain
+    internal service, the same run is found, and the request must reach the API
+    with the internal key and without the user header.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    seen = {}
+    runs = [_deploy_run("deploy-poll-ea0bed35", head_sha="ea0bed35c0ffee", user_id=None)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        seen["headers"] = request.headers
+        return _runs_api(runs)(request)
+
+    async with httpx.AsyncClient(
+        base_url="http://test",
+        transport=httpx.MockTransport(handler),
+        headers=pipeline_helpers.internal_headers(),
+    ) as api_internal:
+        ctx = {"project_id": "project-1", "story_id": "story-1"}
+        run = await pipeline_helpers.wait_deploy_run(api_internal, ctx, timeout=1)
+
+    assert run["id"] == "deploy-poll-ea0bed35"
+    assert ctx["deploy_head_sha"] == "ea0bed35c0ffee"
+    assert seen["params"] == {"story_id": "story-1", "run_type": "deploy"}
     assert seen["headers"]["X-Internal-Key"] == "test-internal-key"
+    assert pipeline_helpers.USER_AUTH_HEADER not in seen["headers"]
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_run_rejects_a_user_scoped_client(monkeypatch):
+    """The 2026-07-16 client must fail loudly instead of polling a blind endpoint.
+
+    Proven against the same fake API: as a user it sees nothing, so a wait would
+    only ever end in a false timeout.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    runs = [_deploy_run("deploy-poll-ea0bed35")]
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
+
+    async with _runs_client(runs, as_user=True) as api_as_user:
+        blind = await api_as_user.get(
+            "/api/runs/", params={"story_id": "story-1", "run_type": "deploy"}
+        )
+        assert blind.json() == []
+
+        with pytest.raises(RuntimeError, match=pipeline_helpers.USER_AUTH_HEADER):
+            await pipeline_helpers.wait_deploy_run(api_as_user, ctx, timeout=1)
+
+    assert "deploy_run_id" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_run_ignores_another_storys_deploy_run(monkeypatch):
+    """A project outlives one story: an earlier story's deploy run also carries a
+    merged head_sha, and deploying that SHA is not what this mega asserts about.
+
+    The run is checked against this story even if the API were to widen its
+    filter, so the contract check cannot silently follow a foreign deploy.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    runs = [_deploy_run("deploy-poll-other", story_id="story-earlier", head_sha="dead00")]
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
+
+    async with httpx.AsyncClient(
+        base_url="http://test",
+        # A deliberately over-wide API: it ignores the story_id filter entirely.
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=runs)),
+        headers=pipeline_helpers.internal_headers(),
+    ) as api_internal:
+        run = await pipeline_helpers.wait_deploy_run(
+            api_internal, ctx, timeout=0.001, poll_interval=0
+        )
+
+    assert run is None
+    assert "deploy_run_id" not in ctx
+    assert "story-1" in ctx["deploy_run_error"]
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_run_rejects_a_deploy_run_without_a_merged_sha(monkeypatch):
+    """An engineering-triggered deploy run records no head_sha, so the mega has no
+    ref to check the environment contract at and must not accept it."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
+
+    async with _runs_client([_deploy_run("deploy-eng-1", head_sha=None)]) as api_internal:
+        run = await pipeline_helpers.wait_deploy_run(
+            api_internal, ctx, timeout=0.001, poll_interval=0
+        )
+
+    assert run is None
+    assert "deploy_run_id" not in ctx
+    assert "no deploy run with a merged head_sha" in ctx["deploy_run_error"]
 
 
 @pytest.mark.asyncio
 async def test_wait_deploy_run_times_out_without_a_merged_deploy_run(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    ctx = {"project_id": "project-1", "story_id": "story-1"}
 
-    async def get(url, params=None, headers=None):
-        return httpx.Response(200, json=[], request=httpx.Request("GET", "http://test/api/runs/"))
-
-    ctx = {"project_id": "project-1"}
-    run = await pipeline_helpers.wait_deploy_run(
-        SimpleNamespace(get=get), ctx, timeout=0.001, poll_interval=0
-    )
+    async with _runs_client([]) as api_internal:
+        run = await pipeline_helpers.wait_deploy_run(
+            api_internal, ctx, timeout=0.001, poll_interval=0
+        )
 
     assert run is None
     assert "no deploy run with a merged head_sha" in ctx["deploy_run_error"]

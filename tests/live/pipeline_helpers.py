@@ -31,7 +31,8 @@ from shared.queues import SCAFFOLD_QUEUE
 # ── Constants ────────────────────────────────────────────────────────────
 API_URL = "http://localhost:8000"
 TEST_TELEGRAM_ID = 999_000_001
-AUTH_HEADERS = {"X-Telegram-ID": str(TEST_TELEGRAM_ID)}
+USER_AUTH_HEADER = "X-Telegram-ID"
+AUTH_HEADERS = {USER_AUTH_HEADER: str(TEST_TELEGRAM_ID)}
 
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
@@ -82,10 +83,13 @@ ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 def internal_headers() -> dict[str, str]:
     """Auth headers for internal-service endpoints, as the real consumers send them.
 
-    /api/servers/* is gated by require_internal_or_admin, and /api/runs/ hides
-    other owners' runs from a non-admin caller. The harness user carries only
-    X-Telegram-ID and is not admin, so without this header those endpoints answer
-    401/403 or silently return nothing.
+    /api/servers/* is gated by require_internal_or_admin, and the harness user is
+    not admin, so without this header those endpoints answer 401/403.
+
+    This key alone does not make /api/runs/ show every run: list_runs still
+    narrows its result to the caller's own runs whenever it sees a non-admin
+    X-Telegram-ID. Unowned runs are only visible to a client that sends no user
+    header at all — see ``require_unscoped_run_observer``.
     """
     return {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
 
@@ -573,51 +577,82 @@ def record_env_contract(
 # ── Deploy run outcome ───────────────────────────────────────────────────
 
 
+def require_unscoped_run_observer(api_internal: httpx.AsyncClient) -> None:
+    """Reject a run-observing client that authenticates as a user.
+
+    list_runs narrows its result to ``Run.user_id == caller`` for every non-admin
+    ``X-Telegram-ID`` it sees, and a valid internal key does not lift that
+    narrowing. pr_poller creates deploy runs with no user_id, so a user-scoped
+    client is answered `[]` for them no matter which filter it passes.
+
+    On 2026-07-16 that silently cost the mega a 420s wait for the already
+    successful deploy `deploy-poll-ea0bed35`, so this is a loud crash rather than
+    a blind poll.
+    """
+    if USER_AUTH_HEADER in api_internal.headers:
+        raise RuntimeError(
+            f"deploy runs must be observed without {USER_AUTH_HEADER}: list_runs "
+            "narrows its result to runs the non-admin harness user owns, and "
+            "pr_poller's deploy run has no user_id"
+        )
+
+
 async def wait_deploy_run(
-    api: httpx.AsyncClient,
+    api_internal: httpx.AsyncClient,
     ctx: dict,
     *,
     timeout: int = DEPLOY_RUN_TIMEOUT,
     poll_interval: float = DEPLOY_RUN_POLL_INTERVAL,
 ) -> dict | None:
-    """Wait for this project's deploy run that carries the merged head SHA.
+    """Wait for this story's deploy run that carries the merged head SHA.
 
     pr_poller creates it only once the story PR reports merged_at, and records
     the merged head SHA in run_metadata — the exact ref deploy resolves the
     environment contract at. Engineering-triggered deploy runs carry no head_sha,
     so a run without one is not the run this mega deploys.
+
+    The story is the link the API really supports for this: pr_poller stamps
+    story_id on the run it creates, and a project can carry deploy runs of other
+    stories. Both the filter and the returned run are checked against this mega's
+    story, so a foreign run cannot be mistaken for it.
+
+    Reads /api/runs/ as an internal service with no user header — see
+    ``require_unscoped_run_observer``.
     """
+    require_unscoped_run_observer(api_internal)
+    story_id = ctx["story_id"]
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        resp = await api.get(
+        resp = await api_internal.get(
             "/api/runs/",
-            params={"project_id": ctx["project_id"], "run_type": RunType.DEPLOY.value},
+            params={"story_id": story_id, "run_type": RunType.DEPLOY.value},
             headers=internal_headers(),
         )
         resp.raise_for_status()
         # The API orders runs newest first.
         for run in resp.json():
-            head_sha = (run.get("run_metadata") or {}).get("head_sha")
+            if run["story_id"] != story_id:
+                continue
+            head_sha = (run["run_metadata"] or {}).get("head_sha")
             if head_sha:
                 ctx["deploy_run_id"] = run["id"]
                 ctx["deploy_head_sha"] = head_sha
                 return run
         await asyncio.sleep(poll_interval)
     ctx["deploy_run_error"] = (
-        f"no deploy run with a merged head_sha appeared for project "
-        f"{ctx['project_id']} within {timeout}s"
+        f"no deploy run with a merged head_sha appeared for story {story_id} within {timeout}s"
     )
     return None
 
 
 async def wait_deploy_outcome(
-    api: httpx.AsyncClient,
+    api_internal: httpx.AsyncClient,
     ctx: dict,
     *,
     timeout: int = DEPLOY_OUTCOME_TIMEOUT,
     poll_interval: float = DEPLOY_OUTCOME_POLL_INTERVAL,
 ) -> DeployRunResult | None:
-    """Type this project's own deploy run result and record its outcome.
+    """Type this story's own deploy run result and record its outcome.
 
     A running application only proves some container answers; the deploy run
     result is what the pipeline itself concluded about the deploy, so the mega
@@ -626,7 +661,7 @@ async def wait_deploy_outcome(
     run_id = ctx["deploy_run_id"]
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        resp = await api.get(f"/api/runs/{run_id}", headers=internal_headers())
+        resp = await api_internal.get(f"/api/runs/{run_id}", headers=internal_headers())
         resp.raise_for_status()
         run = resp.json()
         if run["status"] in _TERMINAL_RUN_STATUSES:
