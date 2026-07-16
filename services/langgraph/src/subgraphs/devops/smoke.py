@@ -233,13 +233,13 @@ class SmokeTesterNode(FunctionalNode):
             }
 
         # Get bot username via Bot API getMe
-        resolved_secrets = state.get("resolved_secrets", {})
-        bot_token = resolved_secrets.get("TELEGRAM_BOT_TOKEN")
+        secret_values = state.get("secret_values", {})
+        bot_token = secret_values.get("TELEGRAM_BOT_TOKEN")
         if not bot_token:
             return {
                 "module": "tg_bot",
                 "result": "skip",
-                "detail": "No TELEGRAM_BOT_TOKEN in resolved_secrets",
+                "detail": "No TELEGRAM_BOT_TOKEN in secret_values",
             }
 
         try:

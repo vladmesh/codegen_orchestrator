@@ -25,12 +25,7 @@ from ..subgraphs.devops import create_devops_subgraph
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
 from ._events import publish_callback_event
-from .deploy_failure_handler import (
-    CLASSIFY_PROMPT,
-    _classification_to_outcome,
-    _classify_deploy_failure,
-    _handle_deploy_failure,
-)
+from .deploy_failure_handler import _handle_deploy_failure
 from .deploy_lifecycle import process_lifecycle_action
 from .deploy_precheck import (
     SERVICE_BASE_DIR,
@@ -44,10 +39,8 @@ from .deploy_result_handler import (
 
 # Re-export for backward compatibility with tests
 __all__ = [
-    "CLASSIFY_PROMPT",
     "SERVICE_BASE_DIR",
     "_build_subgraph_input",
-    "_classify_deploy_failure",
     "_handle_deploy_failure",
     "_handle_deploy_success",
     "_handle_smoke_failure",
@@ -127,11 +120,8 @@ def _build_subgraph_input(
         "provided_secrets": job_data.get("provided_secrets", {}),
         "head_sha": head_sha or None,
         "messages": [],
-        "env_variables": [],
-        "env_analysis": {},
         "environment_contract": None,
         "resolution_outcome": None,
-        "resolved_secrets": {},
         "secret_values": {},
         "non_secret_values": {},
         "missing_user_secrets": [],
@@ -430,10 +420,6 @@ async def process_deploy_job(  # noqa: PLR0915
             logger.error("deploy_job_failed", task_id=task_id, errors=errors)
             error_msg = "; ".join(errors)
 
-            # Classify failure and store outcome for dispatcher
-            classification = await _classify_deploy_failure(error_msg)
-            deploy_outcome = _classification_to_outcome(classification)
-
             return await _handle_deploy_failure(
                 task_id=task_id,
                 project_id=project_id,
@@ -442,7 +428,7 @@ async def process_deploy_job(  # noqa: PLR0915
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
-                deploy_outcome=deploy_outcome,
+                deploy_outcome=DeployOutcome.RETRY,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 

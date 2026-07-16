@@ -1,14 +1,13 @@
 """Typed environment-contract resolution at the deploy boundary."""
 
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from shared.contracts.env_contract import merge_env_contract_fragments
 from shared.contracts.env_usage import load_env_contract_fragments
-from src.subgraphs.devops.env_analyzer import env_analyzer_run
+from src.subgraphs.devops.env_contract_loader import load_environment_contract
 from src.subgraphs.devops.graph import resolve_secrets
 from src.subgraphs.devops.secret_resolver import SecretResolverNode, TypedSecretResolutionError
 
@@ -145,9 +144,8 @@ async def test_unknown_derived_value_is_a_resolution_failure():
 
 
 @pytest.mark.asyncio
-@patch("src.subgraphs.devops.env_analyzer._fetch_env_contract")
-@patch("src.subgraphs.devops.env_analyzer.api_client")
-async def test_contract_path_does_not_run_legacy_llm_analyzer(api_client, fetch_contract):
+@patch("src.subgraphs.devops.env_contract_loader._fetch_env_contract")
+async def test_contract_path_loads_typed_contract(fetch_contract):
     fetch_contract.return_value = {
         "version": "1",
         "entries": {
@@ -158,67 +156,47 @@ async def test_contract_path_does_not_run_legacy_llm_analyzer(api_client, fetch_
             }
         },
     }
-    api_client.get_project = AsyncMock(return_value=SimpleNamespace(name="Test Project"))
     state = {
         "project_id": "project-1",
         "repo_info": {"html_url": "https://github.com/org/repo"},
         "head_sha": "a" * 40,
     }
 
-    with patch("src.subgraphs.devops.env_analyzer._classify_variables_with_llm") as classify:
-        result = await env_analyzer_run(state)
+    result = await load_environment_contract(state)
 
-    classify.assert_not_called()
     assert result["environment_contract"] == fetch_contract.return_value
 
 
 @pytest.mark.asyncio
-@patch("src.subgraphs.devops.env_analyzer._fetch_env_contract", side_effect=RuntimeError)
-@patch("src.subgraphs.devops.env_analyzer.api_client")
-async def test_contract_fetch_failure_does_not_fall_back_to_llm(_api_client, _fetch_contract):
-    _api_client.get_project = AsyncMock(return_value=SimpleNamespace(name="Test Project"))
+@patch("src.subgraphs.devops.env_contract_loader._fetch_env_contract", side_effect=RuntimeError)
+async def test_contract_fetch_failure_is_a_resolution_failure(_fetch_contract):
     state = {
         "project_id": "project-1",
         "repo_info": {"html_url": "https://github.com/org/repo"},
     }
 
-    with patch("src.subgraphs.devops.env_analyzer._classify_variables_with_llm") as classify:
-        result = await env_analyzer_run(state)
+    result = await load_environment_contract(state)
 
-    classify.assert_not_called()
     assert result["resolution_outcome"] == "environment_resolution_failed"
 
 
 @pytest.mark.asyncio
-@patch("src.subgraphs.devops.env_analyzer.api_client")
-@patch("src.subgraphs.devops.env_analyzer.GitHubAppClient")
-async def test_repository_without_contract_uses_legacy_analyzer(github_class, api_client):
+@patch("src.subgraphs.devops.env_contract_loader.GitHubAppClient")
+async def test_repository_without_contract_has_an_invalid_contract_outcome(github_class):
     github = AsyncMock()
     github.list_repo_files_recursive.return_value = []
 
-    async def get_file_contents(_owner, _repo, path, _ref):
-        if path == ".env.example":
-            return "WEIRD_CUSTOM_KEY=\n"
-        return None
-
-    github.get_file_contents.side_effect = get_file_contents
     github_class.return_value = github
-    api_client.get_project = AsyncMock(return_value=SimpleNamespace(name="Test Project"))
     state = {
         "project_id": "project-1",
         "repo_info": {"html_url": "https://github.com/org/repo"},
         "head_sha": "a" * 40,
     }
 
-    with patch(
-        "src.subgraphs.devops.env_analyzer._classify_variables_with_llm",
-        AsyncMock(return_value=({"WEIRD_CUSTOM_KEY": "user"}, None)),
-    ) as classify:
-        result = await env_analyzer_run(state)
+    result = await load_environment_contract(state)
 
-    classify.assert_awaited_once()
-    assert result["env_analysis"] == {"WEIRD_CUSTOM_KEY": "user"}
-    assert "environment_contract" not in result
+    assert result["resolution_outcome"] == "environment_contract_invalid"
+    assert result["errors"] == ["environment contract is required"]
 
 
 @pytest.mark.asyncio

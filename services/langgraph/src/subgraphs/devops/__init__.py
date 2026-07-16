@@ -1,6 +1,6 @@
 """DevOps subgraph package.
 
-Handles intelligent secret classification and deployment.
+Handles typed environment-contract resolution and deployment.
 """
 
 from .graph import create_devops_subgraph

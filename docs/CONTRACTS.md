@@ -241,7 +241,7 @@ sequenceDiagram
     Redis-->>TG: XREAD po:response:{request_id}
     TG->>User: "Запускаю деплой!"
     Redis-->>LG: Consumer reads
-    LG->>LG: DevOps Subgraph (EnvAnalyzer → SecretResolver)
+    LG->>LG: DevOps Subgraph (EnvironmentContractLoader → SecretResolver)
     LG->>GH: POST /repos/{owner}/{repo}/actions/workflows/deploy.yml/dispatches
     Note over LG: Poll workflow status
     loop Every 15s
@@ -272,7 +272,7 @@ sequenceDiagram
     SCH->>DB: Create Run (type=deploy)
     SCH->>Redis: XADD deploy:queue {task_id, project_id, user_id, story_id}
     Redis-->>DW: Consumer reads deploy:queue
-    DW->>DW: DevOps Subgraph (EnvAnalyzer → SecretResolver → Deployer)
+    DW->>DW: DevOps Subgraph (EnvironmentContractLoader → SecretResolver → Deployer)
     DW->>API: PATCH run.result = DeployOutcome (SUCCESS/CODE_FIX/RETRY/GIVE_UP)
     Note over SCH: supervise_deploying_stories() — every 30s
     SCH->>API: Read deploy run outcome

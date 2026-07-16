@@ -24,22 +24,22 @@ def _api_url(base_url: str, path: str) -> str:
     return f"{base}/api/{path.lstrip('/')}"
 
 
-def load_configs(path: Path) -> list[dict]:
+def load_configs(path: Path) -> list[dict] | None:
     try:
         raw_data = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         print(f"  Config file not found: {path}")
-        return []
+        return None
 
     try:
         configs = yaml.safe_load(raw_data)
     except yaml.YAMLError as exc:
         print(f"  Failed to parse YAML: {exc}")
-        return []
+        return None
 
     if not isinstance(configs, list):
         print(f"  Expected a list of configs in {path.name}")
-        return []
+        return None
 
     return configs
 
@@ -48,10 +48,10 @@ def seed_agent_configs(api_base_url: str, configs_path: Path) -> bool:
     """Seed agent configurations to the database.
 
     Returns:
-        True if all configs were created successfully
+        True if all configs were processed successfully
     """
     configs = load_configs(configs_path)
-    if not configs:
+    if configs is None:
         return False
 
     success = True

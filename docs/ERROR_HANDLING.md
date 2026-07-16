@@ -94,10 +94,17 @@ All consumers use unified `RedisStreamClient.consume()` API with two ACK modes:
 ## 5. Deploy Error Handling
 
 ### Deploy Retry Limit
-Deploy worker writes `DeployOutcome` (SUCCESS / SMOKE_FAILURE / CODE_FIX / RETRY / GIVE_UP) to `run.result`. The supervisor (`supervise_deploying_stories()` in scheduler) reads this outcome and routes accordingly. After **3 consecutive RETRY outcomes**, the supervisor transitions the story to `failed`. This prevents the infinite deploy→fail→redispatch loop.
+Deploy worker writes a typed `DeployOutcome` to `run.result`. Environment-contract failures keep
+their specific outcome; unclassified subgraph and smoke failures produce `RETRY`. The supervisor
+(`supervise_deploying_stories()` in scheduler) reads the outcome and routes accordingly. After
+**3 consecutive RETRY outcomes**, the supervisor transitions the story to `failed`. This prevents
+the infinite deploy→fail→redispatch loop.
 
 ### Deploy→Engineering Feedback Loop
-When deploy returns `CODE_FIX` outcome (smoke test failure classified as code issue), the supervisor creates a fix task and dispatches to `engineering:queue`. Capped at **2 retry attempts** via `deploy_fix_attempt` counter on `DeployMessage`. After limit (`GIVE_UP`), story fails permanently and admin is notified.
+The supervisor still accepts legacy `CODE_FIX` and `SMOKE_FAILURE` outcomes by creating a fix task
+and dispatching it to `engineering:queue`. The current deploy worker does not infer those outcomes:
+unknown failures use the bounded `RETRY` path. A future remediation agent may diagnose failed runs
+asynchronously and propose a tested code fix outside the deploy path.
 
 ### Deploy Deduplication
 Atomic `SET NX` Redis lock per project prevents duplicate deploys. Replaces the non-atomic DB-based check that had a race window. Lock held for duration of deploy, released in `finally` block.
