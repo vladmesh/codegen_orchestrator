@@ -76,6 +76,54 @@ async def test_filter_runs_by_story_id(async_client: AsyncClient, _tasks_project
 
 
 @pytest.mark.asyncio
+async def test_list_runs_hides_unowned_runs_from_a_non_admin_caller(
+    async_client: AsyncClient, _tasks_project
+):
+    """A non-admin X-Telegram-ID narrows the result even with a valid internal key.
+
+    pr_poller creates deploy runs with no user_id, so this rule answers `[]` for
+    them to any user-scoped caller. The live mega harness relies on it: it must
+    observe deploy runs as a plain internal service, never as its own non-admin
+    user, or it waits out a deploy that already succeeded (2026-07-16).
+    """
+    telegram_id = 999000998
+    await async_client.post(
+        "/api/users/upsert",
+        json={"telegram_id": telegram_id, "username": "non_admin", "first_name": "Non"},
+    )
+    story_id = await _create_story(async_client, "Ownership narrowing test")
+
+    run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
+    resp = await async_client.post(
+        "/api/runs/",
+        json={
+            "id": run_id,
+            "type": "deploy",
+            "project_id": TASK_TEST_PROJECT_ID,
+            "story_id": story_id,
+            "run_metadata": {"triggered_by": "pr_poll", "head_sha": "abc123"},
+        },
+    )
+    assert resp.status_code == HTTPStatus.CREATED
+    assert resp.json()["user_id"] is None
+
+    as_user = await async_client.get(
+        "/api/runs/",
+        params={"story_id": story_id, "run_type": "deploy"},
+        headers={"X-Telegram-ID": str(telegram_id)},
+    )
+    assert as_user.status_code == HTTPStatus.OK
+    assert as_user.json() == []
+
+    as_service = await async_client.get(
+        "/api/runs/",
+        params={"story_id": story_id, "run_type": "deploy"},
+    )
+    assert as_service.status_code == HTTPStatus.OK
+    assert [run["id"] for run in as_service.json()] == [run_id]
+
+
+@pytest.mark.asyncio
 async def test_create_run_without_story_id(async_client: AsyncClient, _tasks_project):
     """Run without story_id has null story_id (standalone deploy)."""
     run_id = f"run-nostory-{uuid.uuid4().hex[:8]}"

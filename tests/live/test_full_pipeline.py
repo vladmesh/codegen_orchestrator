@@ -32,6 +32,7 @@ from pipeline_helpers import (
     create_story_and_task,
     dump_debug,
     ensure_test_user,
+    internal_headers,
     record_env_contract,
     trigger_scaffold,
     wait_deploy,
@@ -56,7 +57,15 @@ async def pipeline():
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions."""
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
         await ensure_test_user(api)
-        async with httpx.AsyncClient(base_url=API_URL, timeout=10) as api_no_auth:
+        # Deploy runs belong to no user, and list_runs hides unowned runs from the
+        # non-admin harness user, so they are observed through a client that
+        # authenticates only as an internal service.
+        async with (
+            httpx.AsyncClient(base_url=API_URL, timeout=10) as api_no_auth,
+            httpx.AsyncClient(
+                base_url=API_URL, timeout=10, headers=internal_headers()
+            ) as api_internal,
+        ):
             ctx = await create_noop_project(api)
             async with cleanup_guard(
                 lambda: cleanup_all(api, api_no_auth, ctx), manifest=ctx["manifest"]
@@ -88,7 +97,7 @@ async def pipeline():
                 # does a deploy run appear carrying the merged head SHA — the ref
                 # deploy reads the contract at. Re-check the contract there: the
                 # scaffolded tree proves nothing about what engineering merged.
-                deploy_run = await wait_deploy_run(api, ctx, timeout=DEPLOY_RUN_TIMEOUT)
+                deploy_run = await wait_deploy_run(api_internal, ctx, timeout=DEPLOY_RUN_TIMEOUT)
                 if deploy_run is None:
                     yield ctx
                     dump_debug(ctx, "full-deploy-run")
@@ -104,7 +113,7 @@ async def pipeline():
                     return
 
                 await wait_deploy(api, api_no_auth, ctx, timeout=DEPLOY_TIMEOUT)
-                await wait_deploy_outcome(api, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT)
+                await wait_deploy_outcome(api_internal, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT)
                 if (
                     ctx.get("final_app_status") == ApplicationStatus.RUNNING.value
                     and ctx.get("deploy_outcome") == DeployOutcome.SUCCESS.value
