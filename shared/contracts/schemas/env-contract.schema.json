@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Environment Contract Fragment",
+  "description": "Exported schema for version 1 owner environment contract fragments.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["owner"],
+  "properties": {
+    "version": {"const": "1", "default": "1"},
+    "owner": {"type": "string", "minLength": 1},
+    "entries": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/entry"}
+    }
+  },
+  "$defs": {
+    "base": {
+      "type": "object",
+      "properties": {
+        "source": {"type": "string"},
+        "environments": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "consumers": {"type": "array", "items": {"type": "string"}},
+        "required": {"type": "boolean"},
+        "description": {"type": ["string", "null"]},
+        "sensitive": {"type": "boolean", "default": false}
+      },
+      "required": ["source", "environments", "required"]
+    },
+    "entry": {
+      "oneOf": [
+        {"$ref": "#/$defs/userSecret"},
+        {"$ref": "#/$defs/generatedSecret"},
+        {"$ref": "#/$defs/allocation"},
+        {"$ref": "#/$defs/derived"},
+        {"$ref": "#/$defs/literal"}
+      ],
+      "discriminator": {
+        "propertyName": "source",
+        "mapping": {
+          "user_secret": "#/$defs/userSecret",
+          "generated_secret": "#/$defs/generatedSecret",
+          "allocation": "#/$defs/allocation",
+          "derived": "#/$defs/derived",
+          "literal": "#/$defs/literal"
+        }
+      }
+    },
+    "userSecret": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "properties": {
+            "source": {"const": "user_secret"},
+            "consumers": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+            "description": {"type": "string", "minLength": 1},
+            "sensitive": {"const": true, "default": true}
+          },
+          "required": ["consumers", "description"]
+        }
+      ]
+    },
+    "generatedSecret": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"properties": {"source": {"const": "generated_secret"}, "sensitive": {"const": true, "default": true}}}
+      ]
+    },
+    "allocation": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "properties": {
+            "source": {"const": "allocation"},
+            "service": {"type": ["string", "null"]},
+            "resource": {"type": ["string", "null"]}
+          },
+          "anyOf": [{"required": ["service"]}, {"required": ["resource"]}]
+        }
+      ]
+    },
+    "derived": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {"properties": {"source": {"const": "derived"}, "sensitive": {"const": false, "default": false}}}
+      ]
+    },
+    "literal": {
+      "allOf": [
+        {"$ref": "#/$defs/base"},
+        {
+          "properties": {
+            "source": {"const": "literal"},
+            "value": {"type": ["string", "number", "integer", "boolean"]},
+            "sensitive": {"const": false, "default": false}
+          },
+          "required": ["value"]
+        }
+      ]
+    }
+  }
+}
