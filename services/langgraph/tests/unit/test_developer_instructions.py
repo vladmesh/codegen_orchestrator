@@ -31,3 +31,7 @@ class TestDeveloperInstructions:
         assert "orchestrator respond" not in self.content
         assert "orch reject" not in self.content
         assert "orch report-blocker" not in self.content
+
+    def test_requires_env_contract_update_with_env_changes(self):
+        assert "env.contract.yaml" in self.content
+        assert "same commit" in self.content

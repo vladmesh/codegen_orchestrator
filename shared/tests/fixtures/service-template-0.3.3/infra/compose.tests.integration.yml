@@ -1,0 +1,77 @@
+
+services:
+  backend:
+    extends:
+      file: compose.base.yml
+      service: backend
+    build:
+      context: ..
+      dockerfile: services/backend/Dockerfile
+      args:
+        INSTALL_DEV_DEPS: "true"
+    user: "${HOST_UID:?set HOST_UID to the checkout owner UID}:${HOST_GID:?set HOST_GID to the checkout owner GID}"
+    env_file:
+      - ../.env
+      - ./.env.test
+    environment:
+      PYTHONPATH: /workspace
+      PATH: /app/services/backend/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-service_template}
+      ASYNC_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-service_template}
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ../:/workspace:delegated
+      - /app/services/backend/.venv
+    working_dir: /workspace
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    stop_grace_period: 2s
+
+  db:
+    extends:
+      file: compose.base.yml
+      service: db
+    volumes:
+      - type: tmpfs
+        target: /var/lib/postgresql/data
+
+  redis:
+    extends:
+      file: compose.base.yml
+      service: redis
+
+  integration-tests:
+    image: ${BACKEND_IMAGE:-env_fixture-backend:latest}
+    build:
+      context: ..
+      dockerfile: services/backend/Dockerfile
+      args:
+        INSTALL_DEV_DEPS: "true"
+    user: "${HOST_UID:?set HOST_UID to the checkout owner UID}:${HOST_GID:?set HOST_GID to the checkout owner GID}"
+    command: sh -c "python -m framework.generate && pytest -q tests/integration"
+    working_dir: /workspace
+    volumes:
+      - ../:/workspace:delegated
+      - /app/services/backend/.venv
+    env_file:
+      - ../.env
+      - ./.env.test
+    environment:
+      PYTHONPATH: /workspace
+      SERVICE_TEMPLATE_ROOT: /workspace
+      PATH: /app/services/backend/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-service_template}
+      ASYNC_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-service_template}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      backend:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+

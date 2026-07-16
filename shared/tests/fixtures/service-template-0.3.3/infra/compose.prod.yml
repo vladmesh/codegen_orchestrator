@@ -1,0 +1,66 @@
+services:
+  backend:
+    extends:
+      file: compose.base.yml
+      service: backend
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to the published backend image}
+    env_file:
+      - ../.env
+    ports:
+      - "${BACKEND_PORT:?Set BACKEND_PORT to a unique host port for this app}:8000"
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-1}
+      restart_policy:
+        condition: on-failure
+
+  db:
+    extends:
+      file: compose.base.yml
+      service: db
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  tg_bot:
+    extends:
+      file: compose.base.yml
+      service: tg_bot
+    image: ${TG_BOT_IMAGE:?Set TG_BOT_IMAGE to the published tg_bot image}
+    env_file:
+      - ../.env
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  notifications_worker:
+    extends:
+      file: compose.base.yml
+      service: notifications_worker
+    image: ${NOTIFICATIONS_WORKER_IMAGE:?Set NOTIFICATIONS_WORKER_IMAGE to the published image}
+    env_file:
+      - ../.env
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  frontend:
+    extends:
+      file: compose.base.yml
+      service: frontend
+    image: ${FRONTEND_IMAGE:?Set FRONTEND_IMAGE to the published frontend image}
+    env_file:
+      - ../.env
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  redis:
+    extends:
+      file: compose.base.yml
+      service: redis
+    deploy:
+      restart_policy:
+        condition: on-failure

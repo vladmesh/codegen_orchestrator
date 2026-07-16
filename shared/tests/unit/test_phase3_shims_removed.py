@@ -4,9 +4,9 @@ import importlib
 
 import pytest
 
-import shared
 from shared import models, queues
 from shared.contracts.queues.worker import WorkerChannels
+from shared.redis_client import RedisStreamClient
 
 
 def test_worker_lifecycle_contract_removed():
@@ -27,6 +27,5 @@ def test_service_deployment_aliases_removed():
     assert not hasattr(models, "DeploymentStatus")
 
 
-def test_shared_redis_export_no_longer_silently_none():
-    # The old try/except shim left RedisStreamClient = None on import failure.
-    assert shared.RedisStreamClient is not None
+def test_redis_client_has_no_shared_package_shim():
+    assert RedisStreamClient is not None

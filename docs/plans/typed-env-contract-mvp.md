@@ -82,6 +82,16 @@ CI must fail when:
 
 Declared-but-not-observed keys are warnings in the MVP because dynamic settings access exists. They can become errors after the scanner matures.
 
+Shell entrypoints are also warnings in the MVP. Their scanner is deliberately
+limited to shell files and shell shebangs, but is not yet a syntax-complete
+shell parser. An undeclared static shell reference is reported in CI without
+blocking artifact publication; it becomes an error when the scanner matures.
+
+Workflow references are observable deployment wiring, not runtime entries of a
+generated project's contract. CI records them for audit, but excludes them from
+the undeclared-key and required-but-not-observed gates. The orchestrator
+supplies deployment credentials such as DOTENV, REGISTRY_*, and DEPLOY_*.
+
 ## Runtime outcomes
 
 Replace the generic missing-secret branch with distinct outcomes:

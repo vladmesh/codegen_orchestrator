@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  DOCKER_BUILDKIT: "1"
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'push' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up project
+        run: make setup
+
+      - name: Prepare environment files
+        run: |
+          cp .env.example .env
+          if [ ! -f infra/.env.test ]; then
+            echo "infra/.env.test missing" >&2
+            exit 1
+          fi
+
+      - name: Export checkout ownership
+        run: |
+          echo "HOST_UID=$(stat -c '%u' .)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(stat -c '%g' .)" >> "$GITHUB_ENV"
+
+      - name: Generate from spec
+        run: make generate-from-spec
+
+      - name: Check generated files are up to date
+        run: git diff --exit-code -- shared/shared/generated/ services/*/src/generated/
+
+      - name: Run linters
+        run: make lint
+
+      - name: Run tests
+        run: make tests
+
+      - name: Smoke dev compose
+        run: make dev-smoke
+
+      - name: Run integration tests
+        run: make test-integration
+
+      - name: Clean up
+        if: always()
+        run: |
+          COMPOSE_PROJECT_NAME=tests-integration docker compose -f infra/compose.tests.integration.yml down --volumes --remove-orphans 2>/dev/null || true
+
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    strategy:
+      matrix:
+        include:
+          
+          - id: backend
+            context: .
+            dockerfile: services/backend/Dockerfile
+            image-suffix: backend
+          
+          
+          - id: frontend
+            context: services/frontend
+            dockerfile: services/frontend/Dockerfile
+            image-suffix: frontend
+          
+          
+          - id: tg-bot
+            context: .
+            dockerfile: services/tg_bot/Dockerfile
+            image-suffix: tg-bot
+          
+          
+          - id: notifications-worker
+            context: .
+            dockerfile: services/notifications_worker/Dockerfile
+            image-suffix: notifications-worker
+          
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare .env placeholder
+        run: cp .env.example .env
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Generate code from specs
+        run: |
+          uv venv
+          uv pip install -e .framework/ ruff
+          make generate-from-spec
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Registry
+        run: |
+          for attempt in 1 2 3; do
+            echo "Docker login attempt $attempt/3"
+            if echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login \
+              "${{ secrets.REGISTRY_URL }}" \
+              --username "${{ secrets.REGISTRY_USER }}" \
+              --password-stdin; then
+              echo "Docker login succeeded"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              wait=$((attempt * 10 - 5))
+              echo "Docker login failed, retrying in ${wait}s..."
+              sleep $wait
+            fi
+          done
+          echo "Docker login failed after 3 attempts"
+          exit 1
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.REGISTRY_URL }}/${{ github.repository }}-${{ matrix.image-suffix }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha
+
+      - name: Build and push ${{ matrix.id }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
