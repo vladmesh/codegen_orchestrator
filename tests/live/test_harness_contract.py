@@ -222,6 +222,93 @@ fi
     assert not (tmp_path / "services" / "live-test-2c3e830f").exists()
 
 
+def test_server_cleanup_removes_labelled_resources_without_infra_directory(tmp_path):
+    calls = tmp_path / "docker-calls"
+    _write_fake_docker(
+        tmp_path,
+        """
+calls=${FAKE_DOCKER_CALLS:?}
+if [ "$1" = "ps" ]; then
+  exit 0
+elif [ "$1" = "volume" ] || [ "$1" = "network" ]; then
+  resource=$1
+  command=$2
+  if [ "$command" = "ls" ]; then
+    state=${FAKE_DOCKER_STATE:?}/$resource
+    if [ -s "$state" ]; then
+      cat "$state"
+    fi
+  elif [ "$command" = "rm" ]; then
+    echo "$resource:${*: -1}" >> "$calls"
+    : > "${FAKE_DOCKER_STATE:?}/$resource"
+  fi
+fi
+""",
+    )
+    state = tmp_path / "resource-state"
+    state.mkdir()
+    (state / "volume").write_text("v1\n")
+    (state / "network").write_text("n1\n")
+    env = {
+        **os.environ,
+        "FAKE_DOCKER_STATE": str(state),
+        "FAKE_DOCKER_CALLS": str(calls),
+        "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
+    }
+
+    result = subprocess.run(
+        [
+            "sh",
+            "-c",
+            _build_server_remote_cleanup_command(
+                "live-test-2c3e830f", service_base=str(tmp_path / "services")
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text().splitlines() == ["volume:v1", "network:n1"]
+
+
+def test_server_cleanup_verifies_labelled_volume_residue_without_infra_directory(tmp_path):
+    _write_fake_docker(
+        tmp_path,
+        """
+if [ "$1" = "ps" ]; then
+  exit 0
+elif [ "$1" = "volume" ]; then
+  if [ "$2" = "ls" ]; then
+    echo v1
+  fi
+elif [ "$1" = "network" ]; then
+  exit 0
+fi
+""",
+    )
+    env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        [
+            "sh",
+            "-c",
+            _build_server_remote_cleanup_command(
+                "live-test-2c3e830f", service_base=str(tmp_path / "services")
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert "volume:live-test-2c3e830f:v1" in result.stderr
+
+
 def test_server_cleanup_verifies_underscored_container_name_residue(tmp_path):
     service_dir = tmp_path / "services" / "live-test-2c3e830f" / "infra"
     service_dir.mkdir(parents=True)

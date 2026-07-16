@@ -867,6 +867,11 @@ for project in $PROJECTS; do
   for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
     docker rm -f "$c"
   done
+  for resource in volume network; do
+    for id in $(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project"); do
+      docker "$resource" rm "$id"
+    done
+  done
 done
 rm -rf "$SVC_DIR"
 remaining=
@@ -879,6 +884,12 @@ for project in $PROJECTS; do
   if [ -n "$ids" ]; then
     remaining="$remaining name:$project:$ids"
   fi
+  for resource in volume network; do
+    ids=$(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project")
+    if [ -n "$ids" ]; then
+      remaining="$remaining $resource:$project:$ids"
+    fi
+  done
 done
 if [ -n "$remaining" ]; then
   echo "compose residue remains:$remaining" >&2
@@ -902,8 +913,8 @@ def build_server_cleanup_script(project_name: str, server_ip: str, server_handle
     Remote steps mirror how deploy.yml creates resources:
     1. discover actual compose project labels from live containers
     2. docker compose down by manifest and discovered project names
-    3. docker rm -f by project label and container-name prefix
-    4. verify no project-labelled or project-named container remains
+    3. remove containers, volumes and networks by project label
+    4. verify no project-owned Docker resource remains
     5. remove and verify `/opt/services/{name}`
     """
     remote_cmd = _build_server_remote_cleanup_command(project_name)
