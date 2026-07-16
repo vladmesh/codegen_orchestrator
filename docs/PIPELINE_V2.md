@@ -193,14 +193,15 @@ If the developer agent encounters an unsolvable problem:
 3. Trigger GitHub Actions deploy workflow
 4. Wait for deploy to complete
 5. Smoke test: HTTP `/health` for backends, Telethon `/start` for tg_bot
-6. On smoke failure: LLM classifier (haiku) categorizes failure as CODE_FIX / RETRY / GIVE_UP
-7. Write `DeployOutcome` to `run.result` (SUCCESS / SMOKE_FAILURE / CODE_FIX / RETRY / GIVE_UP)
+6. Resolve failures deterministically: typed environment failures keep their specific outcome;
+   unclassified subgraph and smoke failures become RETRY
+7. Write `DeployOutcome` to `run.result`
 8. Deploy worker does NOT transition stories or create tasks — it is a pure technical worker
 
 **Supervisor routing** (`supervise_deploying_stories()` in scheduler, 30s poll):
 - Reads deploy run outcome from DB
 - SUCCESS → story `testing`, create QA run, publish `QAMessage` to `qa:queue`
-- CODE_FIX → create fix task, dispatch to `engineering:queue`
+- CODE_FIX / SMOKE_FAILURE → create fix task, dispatch to `engineering:queue` (legacy outcomes only)
 - RETRY → redeploy with counter (max 3 consecutive failures)
 - GIVE_UP → story `failed`, admin notified
 
