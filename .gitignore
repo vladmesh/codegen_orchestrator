@@ -50,3 +50,6 @@ Thumbs.db
 secrets
 # Per-run live harness ownership records
 .live-manifests/
+
+# Task-pipeline board runtime state (never committed)
+secretary-data/

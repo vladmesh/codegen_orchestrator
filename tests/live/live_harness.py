@@ -10,16 +10,55 @@ from pathlib import Path
 import time
 
 import httpx
+import structlog
+
+logger = structlog.get_logger()
+
+# Set LIVE_NO_CLEANUP=1 to leave owned resources in place after a live run so a
+# failed/timed-out pipeline can be inspected live. The manifest under
+# .live-manifests/ still records them for later `make test-live-clean`.
+LIVE_NO_CLEANUP_ENV = "LIVE_NO_CLEANUP"
+
+
+def no_cleanup_enabled() -> bool:
+    """True when LIVE_NO_CLEANUP asks teardown to leave owned resources in place."""
+    return os.environ.get(LIVE_NO_CLEANUP_ENV) == "1"
+
+
+def _log_cleanup_skipped(manifest: "OwnershipManifest") -> None:
+    """Emit a visible warning listing the owned resources teardown left behind."""
+    logger.warning(
+        "cleanup skipped — resources left for debugging",
+        env_flag=LIVE_NO_CLEANUP_ENV,
+        run_id=manifest.run_id,
+        manifest_file=f".live-manifests/{manifest.run_id}.json",
+        left=[f"{resource.kind} {resource.identifier}" for resource in manifest.resources],
+    )
 
 
 @asynccontextmanager
-async def cleanup_guard(cleanup: Callable[[], Awaitable[None]]):
-    """Always clean a live context and retain both body and cleanup failures."""
+async def cleanup_guard(
+    cleanup: Callable[[], Awaitable[None]],
+    *,
+    manifest: "OwnershipManifest",
+):
+    """Always clean a live context and retain both body and cleanup failures.
+
+    With LIVE_NO_CLEANUP set, teardown is skipped so owned resources stay live for
+    debugging and a warning lists what remains. The run's primary error is still
+    raised unchanged — the flag only affects teardown, never the test result.
+    """
     primary_error: BaseException | None = None
     try:
         yield
     except BaseException as exc:
         primary_error = exc
+
+    if no_cleanup_enabled():
+        _log_cleanup_skipped(manifest)
+        if primary_error is not None:
+            raise primary_error
+        return
 
     try:
         await cleanup()

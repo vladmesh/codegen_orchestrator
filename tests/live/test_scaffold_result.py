@@ -74,7 +74,7 @@ async def scaffolded_project(api, compose_exec):
         assert resp.status_code == 201, f"Create repository failed: {resp.text}"
         repo_id = resp.json()["id"]
 
-    async with cleanup_guard(lambda: cleanup_all(api, None, ctx)):
+    async with cleanup_guard(lambda: cleanup_all(api, None, ctx), manifest=ctx["manifest"]):
         # 3. Publish ScaffoldMessage to scaffold:queue via redis
         manifest.own("github_repository", f"{GITHUB_ORG}/{repo_name}")
         manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")

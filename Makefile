@@ -271,6 +271,8 @@ else
 endif
 
 # Pipeline tests: scaffold → engineering → deploy (real GitHub, real queues)
+# Set LIVE_NO_CLEANUP=1 to leave owned resources in place after a failed/timed-out
+# run for live debugging (manifest kept for `make test-live-clean`). See tests/live/README.md.
 test-live-smoke:
 	@echo "Running scaffold pipeline test (~1-2 min)..."
 	@uv run pytest tests/live/test_pipeline_scaffold.py -v --tb=long -x -s
