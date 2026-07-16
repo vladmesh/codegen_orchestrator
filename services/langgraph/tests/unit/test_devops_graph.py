@@ -118,7 +118,6 @@ class TestSmokeResultPropagation:
             },
             "repo_info": None,
             "provided_secrets": {},
-            "resolved_secrets": {},
             "missing_user_secrets": [],
             "deployment_result": None,
             "deployed_url": None,

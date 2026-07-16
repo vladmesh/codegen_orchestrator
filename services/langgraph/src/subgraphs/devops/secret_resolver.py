@@ -84,7 +84,7 @@ class SecretResolverNode(FunctionalNode):
                 elif entry.source == "generated_secret":
                     value = config_secrets.get(key)
                     if value is None:
-                        value = self._generate_infra_secret(key, project_id)
+                        value = self._generate_infra_secret()
                         generated[key] = value
                     secret_values[key] = str(value)
                 elif entry.source == "allocation":
@@ -138,7 +138,6 @@ class SecretResolverNode(FunctionalNode):
             missing_user_count=len(missing_user),
         )
         return {
-            "resolved_secrets": {},
             "secret_values": secret_values,
             "non_secret_values": non_secret_values,
             "missing_user_secrets": missing_user,
@@ -217,14 +216,9 @@ class SecretResolverNode(FunctionalNode):
             return ip, port
         return None
 
-    def _generate_infra_secret(self, key: str, project_id: str) -> str:
-        """Generate infrastructure secret value (fallback for vars not covered by groups)."""
-        key_upper = key.upper()
-
-        if "SECRET" in key_upper or ("KEY" in key_upper and "API" not in key_upper):
-            return secrets_module.token_urlsafe(32)
-
-        # Default random for unknown infra
+    @staticmethod
+    def _generate_infra_secret() -> str:
+        """Generate a random value for a generated contract secret."""
         return secrets_module.token_urlsafe(32)
 
     # Static key → value mappings for computed secrets

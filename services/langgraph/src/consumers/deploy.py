@@ -129,7 +129,6 @@ def _build_subgraph_input(
         "messages": [],
         "environment_contract": None,
         "resolution_outcome": None,
-        "resolved_secrets": {},
         "secret_values": {},
         "non_secret_values": {},
         "missing_user_secrets": [],

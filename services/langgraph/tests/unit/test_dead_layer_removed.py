@@ -54,6 +54,7 @@ def test_legacy_environment_classification_state_is_removed():
 
     assert "env_analysis" not in annotations
     assert "env_variables" not in annotations
+    assert "resolved_secrets" not in annotations
 
 
 def test_devops_classification_agent_config_is_removed():

@@ -34,7 +34,6 @@ class DevOpsState(TypedDict):
     # Internal environment resolution state
     environment_contract: dict | None
     resolution_outcome: str | None
-    resolved_secrets: dict  # generated/computed secrets
     secret_values: dict[str, str]
     non_secret_values: dict[str, str]
 

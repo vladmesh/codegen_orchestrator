@@ -19,7 +19,7 @@ def _make_state(
     modules=None,
     allocated_resources=None,
     deployed_url="http://1.2.3.4:8000",
-    resolved_secrets=None,
+    secret_values=None,
 ):
     """Helper to build a minimal DevOpsState dict for smoke tests."""
     if modules is None:
@@ -39,7 +39,8 @@ def _make_state(
         "allocated_resources": allocated_resources,
         "repo_info": None,
         "provided_secrets": {},
-        "resolved_secrets": resolved_secrets or {},
+        "secret_values": secret_values or {},
+        "non_secret_values": {},
         "missing_user_secrets": [],
         "deployment_result": {"status": "success"},
         "deployed_url": deployed_url,
@@ -167,7 +168,7 @@ def _tg_bot_state(**kwargs):
                 "service_name": "tg_bot",
             }
         },
-        resolved_secrets={"TELEGRAM_BOT_TOKEN": "123456:ABC-DEF"},
+        secret_values={"TELEGRAM_BOT_TOKEN": "123456:ABC-DEF"},
         **kwargs,
     )
 
@@ -324,7 +325,8 @@ def _make_state_with_handle(*, modules=None, server_handle="srv-abc"):
         },
         "repo_info": None,
         "provided_secrets": {},
-        "resolved_secrets": {},
+        "secret_values": {},
+        "non_secret_values": {},
         "missing_user_secrets": [],
         "deployment_result": {"status": "success"},
         "deployed_url": "http://1.2.3.4:8000",

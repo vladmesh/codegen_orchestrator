@@ -42,7 +42,7 @@ def base_state():
                 "port": 8080,
             }
         },
-        "resolved_secrets": {"DB_HOST": "localhost", "DB_PORT": "5432"},
+        "non_secret_values": {"DB_HOST": "localhost", "DB_PORT": "5432"},
         "messages": [],
         "errors": [],
     }

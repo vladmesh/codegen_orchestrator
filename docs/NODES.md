@@ -97,7 +97,6 @@ devops/
 ├── __init__.py          # Экспорты
 ├── state.py             # DevOpsState TypedDict
 ├── env_contract_loader.py # Загрузка и валидация обязательного контракта
-├── env_groups.py        # EnvGroup ABC, PostgresGroup, RedisGroup, resolve_with_groups
 ├── nodes.py             # SecretResolver, ReadinessCheck, Deployer, SmokeTester
 └── graph.py             # Routing + create_devops_subgraph
 ```
@@ -110,10 +109,8 @@ devops/
 
 2. **SecretResolver (Functional)**:
    - Дешифрует существующие секреты из БД (`decrypt_dict`)
-   - Двухфазная резолюция infra-переменных:
-     * Фаза 1: cached secrets из `config_secrets` (приоритет)
-     * Фаза 2: uncached → `resolve_with_groups()` (когерентные пароли для связанных переменных, например DATABASE_URL + POSTGRES_PASSWORD) → fallback `_generate_infra_secret()` для остальных
-   - Подставляет computed значения, проверяет наличие user секретов
+   - Резолвит production-значения обязательного типизированного контракта: user secrets, generated secrets, allocations, derived и literal values
+   - Сохраняет generated secrets, проверяет наличие обязательных user secrets
    - Шифрует и сохраняет новые секреты обратно в БД (`encrypt_dict`)
 
 3. **ReadinessCheck (Functional)**:
@@ -122,7 +119,7 @@ devops/
    - Если всё готово → Deployer
 
 4. **Deployer (Functional)**:
-   - Собирает DOTENV из resolved_secrets (`build_dotenv` → `encode_dotenv` → base64)
+   - Собирает DOTENV из `secret_values` и `non_secret_values` (`build_dotenv` → `encode_dotenv` → base64)
    - Записывает 9 GitHub Secrets: DOTENV, DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PORT, PROJECT_NAME, REGISTRY_URL, REGISTRY_USER, REGISTRY_PASSWORD
    - Тригерит `deploy.yml` через `trigger_workflow_dispatch`
    - Ждёт завершения через `wait_for_workflow_completion` (poll, timeout 600s)
