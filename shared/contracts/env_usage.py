@@ -38,7 +38,6 @@ _SHELL_BUILTINS = {
     "LOGNAME",
     "OLDPWD",
     "PATH",
-    "PORT",
     "PWD",
     "PYTHONPATH",
     "SHELL",
@@ -120,8 +119,14 @@ def _is_settings_class(node: ast.ClassDef) -> bool:
 
 def _settings_env_prefix(node: ast.ClassDef) -> str:
     for statement in node.body:
-        value = statement.value if isinstance(statement, (ast.Assign, ast.AnnAssign)) else None
-        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        else:
+            continue
         is_model_config = any(
             isinstance(target, ast.Name) and target.id == "model_config" for target in targets
         )
@@ -227,12 +232,20 @@ def _shell_references(root: Path, path: Path) -> list[EnvReference]:
         lines = path.read_text().splitlines()
     except (OSError, UnicodeDecodeError):
         return []
-    local_names = {
-        match.group(1)
-        for line in lines
-        for match in (_SHELL_ASSIGNMENT.match(line), _SHELL_READ.search(line))
-        if match is not None
-    }
+    local_names: set[str] = set()
+    for line in lines:
+        assignment = _SHELL_ASSIGNMENT.match(line)
+        if assignment:
+            assigned_name = assignment.group(1)
+            value_references = {
+                next((value for value in match.groups() if value is not None), None)
+                for match in _SHELL_REFERENCE.finditer(line[assignment.end() :])
+            }
+            if assigned_name not in value_references:
+                local_names.add(assigned_name)
+        read = _SHELL_READ.search(line)
+        if read:
+            local_names.add(read.group(1))
     references = _text_references(root, path, "shell", _SHELL_REFERENCE)
     return [
         reference

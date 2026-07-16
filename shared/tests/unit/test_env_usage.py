@@ -70,6 +70,7 @@ def test_settings_fields_apply_env_prefix_and_skip_model_config(tmp_path: Path):
         """from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    '''Settings docstring from the service-template baseline.'''
     model_config: SettingsConfigDict = SettingsConfigDict(env_prefix="APP_")
     api_key: str
     debug: bool = False
@@ -149,6 +150,17 @@ def test_workflow_ignores_builtin_and_non_env_secret_references(tmp_path: Path):
     assert references == ()
 
 
+def test_shell_self_default_assignment_remains_an_environment_read(tmp_path: Path):
+    entrypoint = tmp_path / "entrypoint.sh"
+    entrypoint.write_text('export APP_ENV="${APP_ENV:-production}"\n')
+
+    references = extract_env_references(tmp_path)
+
+    assert {(reference.key, reference.source) for reference in references} == {
+        ("APP_ENV", "shell"),
+    }
+
+
 def test_shell_entrypoint_references_include_expansion_not_positional_args(tmp_path: Path):
     entrypoint = tmp_path / "entrypoint.sh"
     entrypoint.write_text("#!/bin/sh\necho ${DATABASE_URL:-missing} $LOG_LEVEL $1\n")
@@ -175,7 +187,9 @@ exec uvicorn app:main --port "${PORT:-8000}"
 
     references = extract_env_references(tmp_path)
 
-    assert references == ()
+    assert {(reference.key, reference.source) for reference in references} == {
+        ("PORT", "shell"),
+    }
 
 
 def test_service_template_0_3_3_baseline_patterns(tmp_path: Path):
@@ -209,6 +223,7 @@ exec uvicorn services.backend.src.main:app --port "${PORT:-8000}"
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    '''Base settings for the backend application.'''
     model_config = SettingsConfigDict(env_file=".env")
     app_name: str = Field(validation_alias="APP_NAME")
 """
@@ -234,6 +249,25 @@ class Settings(BaseSettings):
         ("BACKEND_IMAGE", "compose"),
         ("BACKEND_PORT", "compose"),
         ("BACKEND_REPLICAS", "compose"),
+        ("PORT", "shell"),
+    }
+
+
+def test_service_template_0_3_3_fixture_extracts_without_crashing(tmp_path: Path):
+    fixture = Path(__file__).parents[1] / "fixtures" / "service-template-0.3.3"
+    shutil.copytree(fixture, tmp_path, dirs_exist_ok=True)
+
+    references = extract_env_references(tmp_path)
+
+    assert {(reference.key, reference.source) for reference in references} == {
+        ("APP_ENV", "python-settings"),
+        ("APP_NAME", "python-settings"),
+        ("APP_SECRET_KEY", "python-settings"),
+        ("BACKEND_IMAGE", "compose"),
+        ("BACKEND_PORT", "compose"),
+        ("BACKEND_REPLICAS", "compose"),
+        ("DEBUG", "python-settings"),
+        ("PORT", "shell"),
     }
 
 
