@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 
+from pydantic import ValidationError
 import yaml
 
 from shared.contracts.env_contract import (
@@ -21,6 +22,7 @@ from shared.contracts.env_contract import (
     merge_env_contract_fragments,
     validate_env_contract_fragment,
 )
+from shared.diagnostics import redact_diagnostic, safe_validation_errors
 
 _ENV_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 _COMPOSE_REFERENCE = re.compile(r"\$\{(" + _ENV_NAME + r")(?:[}:?+-])")
@@ -360,6 +362,13 @@ def _commit_sha(root: Path) -> str:
     return completed.stdout.strip()
 
 
+def _yaml_error_location(error: yaml.YAMLError) -> str:
+    mark = getattr(error, "problem_mark", None)
+    if mark is None:
+        return ""
+    return f" at line {mark.line + 1}, column {mark.column + 1}"
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the vendorable CI entrypoint without network access."""
     parser = argparse.ArgumentParser(description="Check and build an environment contract artifact")
@@ -370,8 +379,20 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root.resolve()
     try:
         result = check_env_contract_usage(root)
-    except (OSError, ValueError, yaml.YAMLError) as error:
-        print(f"environment contract invalid: {error}", file=sys.stderr)
+    except ValidationError as error:
+        print(
+            f"environment contract invalid: {safe_validation_errors(error)}",
+            file=sys.stderr,
+        )
+        return 1
+    except yaml.YAMLError as error:
+        print(
+            f"environment contract invalid: malformed YAML{_yaml_error_location(error)}",
+            file=sys.stderr,
+        )
+        return 1
+    except (OSError, ValueError) as error:
+        print(f"environment contract invalid: {redact_diagnostic(error)}", file=sys.stderr)
         return 1
     for warning in result.warnings:
         print(f"warning: {warning}", file=sys.stderr)

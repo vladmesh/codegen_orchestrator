@@ -12,6 +12,7 @@ from shared.contracts.env_usage import (
     build_env_contract_artifact,
     check_env_contract_usage,
     extract_env_references,
+    main,
 )
 
 
@@ -278,6 +279,47 @@ def test_undeclared_usage_is_an_error_with_location(tmp_path: Path):
     result = check_env_contract_usage(tmp_path)
 
     assert result.errors == ("undeclared environment key MISSING_KEY used at app.py:2 (python)",)
+
+
+def test_cli_does_not_echo_invalid_fragment_values(tmp_path: Path, capsys):
+    secret = "_".join(("ghp", "SUPERSECRET", "TOKEN", "VALUE"))
+    fragment = tmp_path / "infra" / "env.contract.yaml"
+    fragment.parent.mkdir()
+    fragment.write_text(
+        f"""version: "1"
+owner: infra
+entries:
+  API_TOKEN:
+    source: user_secret
+    environments: [production]
+    consumers: [backend]
+    required: true
+    description: token
+    value: {secret}
+"""
+    )
+
+    exit_code = main(["--root", str(tmp_path), "--artifact", str(tmp_path / "artifact.json")])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert secret not in captured.err
+    assert "API_TOKEN" in captured.err
+    assert "value" in captured.err
+
+
+def test_cli_does_not_echo_malformed_yaml_values(tmp_path: Path, capsys):
+    secret = "_".join(("ghp", "SUPERSECRET", "TOKEN", "VALUE"))
+    fragment = tmp_path / "infra" / "env.contract.yaml"
+    fragment.parent.mkdir()
+    fragment.write_text(f"entries: [{secret}\n")
+
+    exit_code = main(["--root", str(tmp_path), "--artifact", str(tmp_path / "artifact.json")])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert secret not in captured.err
+    assert "malformed YAML at line 2, column 1" in captured.err
 
 
 def test_required_declared_but_unobserved_key_is_a_warning(tmp_path: Path):
