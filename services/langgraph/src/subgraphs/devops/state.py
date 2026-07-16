@@ -20,7 +20,7 @@ def _merge_errors(left: list[str], right: list[str]) -> list[str]:
 class DevOpsState(TypedDict):
     """State for the DevOps subgraph."""
 
-    # Messages (conversation history for LLM)
+    # Messages passed between deploy nodes
     messages: Annotated[list, add_messages]
 
     # Input (from parent graph)
@@ -31,9 +31,7 @@ class DevOpsState(TypedDict):
     repo_info: dict | None
     provided_secrets: dict  # secrets provided by PO
 
-    # Internal (analysis results)
-    env_variables: list[str]  # Raw list of env vars from .env.example
-    env_analysis: dict  # {var_name: "infra"|"computed"|"user"}
+    # Internal environment resolution state
     environment_contract: dict | None
     resolution_outcome: str | None
     resolved_secrets: dict  # generated/computed secrets

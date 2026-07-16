@@ -221,7 +221,7 @@ PO ReactAgent (in langgraph container)
      │                     │
      │                     ▼
      │               DevOps Subgraph
-     │               EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
+     │               EnvironmentContractLoader → SecretResolver → ReadinessCheck → Deployer
      │                                                      │
      └──────────────▶ (завершение) ◄─────────────────────────┘
 

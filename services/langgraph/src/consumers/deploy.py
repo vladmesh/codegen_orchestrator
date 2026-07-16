@@ -127,8 +127,6 @@ def _build_subgraph_input(
         "provided_secrets": job_data.get("provided_secrets", {}),
         "head_sha": head_sha or None,
         "messages": [],
-        "env_variables": [],
-        "env_analysis": {},
         "environment_contract": None,
         "resolution_outcome": None,
         "resolved_secrets": {},

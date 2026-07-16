@@ -12,7 +12,7 @@ logger = structlog.get_logger()
 class ResourceAllocatorNode(FunctionalNode):
     """Allocate server resources for a project before deployment.
 
-    This is a FUNCTIONAL node (no LLM) - deterministic logic only.
+    This is a deterministic functional node.
     Uses shared allocation logic from tools/allocator.py.
     """
 

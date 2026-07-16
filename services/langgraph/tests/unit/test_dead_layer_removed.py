@@ -17,6 +17,7 @@ import pytest
         "src.schemas.tools",
         "src.config.agent_config_cache",
         "src.subgraphs.devops.env_analyzer",
+        "src.subgraphs.devops.env_groups",
     ],
 )
 def test_dead_module_removed(module):
@@ -32,10 +33,30 @@ def test_allocator_lives_at_new_location():
 
 def test_deploy_environment_path_has_no_llm_dependency():
     devops_dir = Path(__file__).parents[2] / "src/subgraphs/devops"
-    deploy_path = "\n".join(
-        (devops_dir / filename).read_text()
-        for filename in ("env_contract_loader.py", "graph.py", "secret_resolver.py")
+    deploy_files = [
+        *devops_dir.glob("*.py"),
+        devops_dir.parents[1] / "consumers/deploy.py",
+        devops_dir.parents[1] / "nodes/resource_allocator.py",
+    ]
+    deploy_path = "\n".join(file.read_text() for file in deploy_files)
+
+    forbidden_dependencies = (
+        "LLMFactory",
+        "ChatOpenAI",
+        "get_agent_config",
     )
 
-    assert "LLM" not in deploy_path
-    assert "llm" not in deploy_path
+    assert not any(dependency in deploy_path for dependency in forbidden_dependencies)
+
+
+def test_legacy_environment_classification_state_is_removed():
+    annotations = importlib.import_module("src.subgraphs.devops.state").DevOpsState.__annotations__
+
+    assert "env_analysis" not in annotations
+    assert "env_variables" not in annotations
+
+
+def test_devops_classification_agent_config_is_removed():
+    config = Path(__file__).parents[4] / "scripts/agent_configs.yaml"
+
+    assert config.read_text().strip() == "[]"

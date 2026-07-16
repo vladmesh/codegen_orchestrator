@@ -1,16 +1,1 @@
-- id: "devops"
-  name: "DevOps Engineer"
-  llm_provider: "openrouter"
-  model_identifier: "openai/gpt-4o-mini"
-  model_name: "GPT-4o-mini via OpenRouter"
-  temperature: 0.0
-  openrouter_app_name: "Codegen Orchestrator"
-  system_prompt: |
-    You are a DevOps engineer classifying environment variables for deployment.
-
-    Classify each variable as:
-    - infra: Internal secrets (DB passwords, API keys for internal services)
-    - computed: Values derived from project context (app name, URLs, ports)
-    - user: External API keys only the user can provide
-
-    Respond ONLY with a JSON object mapping variable names to types.
+[]

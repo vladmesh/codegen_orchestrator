@@ -9,7 +9,6 @@ from src.subgraphs.devops.graph import (
     create_devops_subgraph,
     resolve_secrets,
     route_after_deployer,
-    route_after_readiness_check,
     route_after_secret_resolver,
 )
 from src.subgraphs.devops.state import DevOpsState
@@ -71,45 +70,10 @@ class TestRouteAfterSecretResolver:
     async def test_typed_resolver_error_is_returned_to_deploy_result_path(self):
         """A resolver failure remains visible without running downstream deployment."""
         result = await resolve_secrets(
-            {"project_id": None, "project_spec": {"name": "test"}, "env_analysis": {}}
+            {"project_id": None, "project_spec": {"name": "test"}}
         )
 
         assert result == {"errors": ["project_id is required for secret resolution"]}
-
-    @pytest.mark.asyncio
-    async def test_template_host_ports_advance_to_deployer_with_existing_allocations(self):
-        """Template 0.3.1 host ports resolve without becoming user secrets."""
-        state = {
-            "project_id": "project-1",
-            "project_spec": {"name": "test", "config": {"secrets": {}}},
-            "provided_secrets": {},
-            "env_analysis": {
-                "POSTGRES_HOST_PORT": "computed",
-                "REDIS_HOST_PORT": "computed",
-            },
-            "allocated_resources": {
-                "srv:18001": {
-                    "server_ip": "10.0.0.1",
-                    "port": 18001,
-                    "service_name": "postgres",
-                },
-                "srv:18002": {
-                    "server_ip": "10.0.0.1",
-                    "port": 18002,
-                    "service_name": "redis",
-                },
-            },
-        }
-
-        result = await resolve_secrets(state)
-
-        assert result["resolved_secrets"] == {
-            "POSTGRES_HOST_PORT": "18001",
-            "REDIS_HOST_PORT": "18002",
-        }
-        assert result["missing_user_secrets"] == []
-        assert route_after_readiness_check(result) == "deployer"
-
 
 class TestSmokeResultPropagation:
     """Verify smoke_result survives ainvoke() — the #25 regression."""
@@ -155,8 +119,6 @@ class TestSmokeResultPropagation:
             },
             "repo_info": None,
             "provided_secrets": {},
-            "env_variables": [],
-            "env_analysis": {},
             "resolved_secrets": {},
             "missing_user_secrets": [],
             "deployment_result": None,
