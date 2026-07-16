@@ -104,6 +104,14 @@ class MockGitHubClient:
                 files.append(file_path)
         return files
 
+    async def list_repo_files_recursive(
+        self, owner: str, repo: str, ref: str = "main"
+    ) -> list[str]:
+        self._check_failure()
+        if repo not in self.repos:
+            return []
+        return sorted(self.files[repo])
+
     async def create_or_update_file(
         self,
         owner: str,

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 import structlog
 
+from shared.contracts.env_contract import CanonicalEnvContract
 from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
@@ -24,6 +25,14 @@ class SecretResolutionError(RuntimeError):
     """Raised when deploy secrets cannot be resolved from trusted state."""
 
 
+class TypedSecretResolutionError(SecretResolutionError):
+    """A resolver error with a deploy outcome that callers must preserve."""
+
+    def __init__(self, outcome: str, message: str):
+        super().__init__(message)
+        self.outcome = outcome
+
+
 class SecretResolverNode(FunctionalNode):
     """Resolve secrets by generating infra, computing context-based, and checking user-provided."""
 
@@ -33,6 +42,9 @@ class SecretResolverNode(FunctionalNode):
     async def run(self, state: DevOpsState) -> dict:
         """Resolve all secrets based on classification."""
         logger.info("secret_resolver_start")
+
+        if state.get("environment_contract") is not None:
+            return await self._resolve_contract(state)
 
         env_analysis = state.get("env_analysis", {})
         provided_secrets = state.get("provided_secrets", {})
@@ -119,6 +131,86 @@ class SecretResolverNode(FunctionalNode):
         return {
             "resolved_secrets": resolved,
             "missing_user_secrets": missing_user,
+        }
+
+    async def _resolve_contract(self, state: DevOpsState) -> dict:
+        """Resolve only production entries from a validated typed contract."""
+        project_spec = state.get("project_spec")
+        project_id = state.get("project_id")
+        self._validate_project_context(project_id, project_spec)
+        assert isinstance(project_id, str)
+        assert isinstance(project_spec, dict)
+        try:
+            contract = CanonicalEnvContract.model_validate(state["environment_contract"])
+        except ValueError as error:
+            raise TypedSecretResolutionError(
+                "environment_contract_invalid", "environment contract is invalid"
+            ) from error
+
+        encrypted = project_spec.get("config", {}).get("secrets", {})
+        config_secrets = decrypt_dict(encrypted) if encrypted else {}
+        provided_secrets = state.get("provided_secrets", {})
+        secret_values: dict[str, str] = {}
+        non_secret_values: dict[str, str] = {}
+        generated: dict[str, str] = {}
+        missing_user: list[str] = []
+
+        for key, entry in contract.entries.items():
+            if "production" not in entry.environments:
+                continue
+            try:
+                if entry.source == "user_secret":
+                    value = provided_secrets.get(key, config_secrets.get(key))
+                    if value is None:
+                        if entry.required:
+                            missing_user.append(key)
+                        continue
+                    secret_values[key] = str(value)
+                elif entry.source == "generated_secret":
+                    value = config_secrets.get(key)
+                    if value is None:
+                        value = self._generate_infra_secret(key, project_id)
+                        generated[key] = value
+                    secret_values[key] = str(value)
+                elif entry.source == "allocation":
+                    selector = entry.service or entry.resource
+                    assert selector is not None
+                    allocation = self._find_allocation(state, selector)
+                    if allocation is None:
+                        raise TypedSecretResolutionError(
+                            "allocation_missing", f"Missing allocation for {selector}"
+                        )
+                    non_secret_values[key] = str(allocation[1])
+                elif entry.source == "derived":
+                    non_secret_values[key] = self._compute_secret(key, project_spec, state)
+                elif entry.source == "literal":
+                    non_secret_values[key] = str(entry.value)
+            except TypedSecretResolutionError:
+                raise
+            except SecretResolutionError as error:
+                raise TypedSecretResolutionError(
+                    "environment_resolution_failed", str(error)
+                ) from error
+
+        if generated:
+            try:
+                await self._save_secrets_to_project(project_id, generated)
+            except Exception as error:
+                raise TypedSecretResolutionError(
+                    "environment_resolution_failed", "Failed to persist generated secrets"
+                ) from error
+        logger.info(
+            "environment_contract_resolved",
+            secret_count=len(secret_values),
+            non_secret_count=len(non_secret_values),
+            missing_user_count=len(missing_user),
+        )
+        return {
+            "resolved_secrets": {**non_secret_values, **secret_values},
+            "secret_values": secret_values,
+            "non_secret_values": non_secret_values,
+            "missing_user_secrets": missing_user,
+            "resolution_outcome": "waiting_for_user_secret" if missing_user else None,
         }
 
     @staticmethod

@@ -21,7 +21,7 @@ import structlog
 from ...nodes.resource_allocator import resource_allocator_node
 from .env_analyzer import env_analyzer_run
 from .nodes import deployer_node, readiness_check_node, secret_resolver_node
-from .secret_resolver import SecretResolutionError
+from .secret_resolver import SecretResolutionError, TypedSecretResolutionError
 from .smoke import smoke_tester_node
 from .state import DevOpsState
 
@@ -46,6 +46,9 @@ async def resolve_secrets(state: DevOpsState) -> dict:
     """Convert resolver validation errors into the deploy result error path."""
     try:
         return await secret_resolver_node.run(state)
+    except TypedSecretResolutionError as error:
+        logger.error("typed_secret_resolution_failed", outcome=error.outcome)
+        return {"errors": [str(error)], "resolution_outcome": error.outcome}
     except SecretResolutionError as error:
         logger.error("secret_resolution_failed", error_type=type(error).__name__)
         return {"errors": [str(error)]}

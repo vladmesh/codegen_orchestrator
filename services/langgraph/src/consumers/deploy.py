@@ -129,6 +129,8 @@ def _build_subgraph_input(
         "messages": [],
         "env_variables": [],
         "env_analysis": {},
+        "environment_contract": None,
+        "resolution_outcome": None,
         "resolved_secrets": {},
         "missing_user_secrets": [],
         "deployment_result": None,
@@ -185,7 +187,9 @@ async def _handle_lifecycle_action(
     return lifecycle_result
 
 
-async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
+async def process_deploy_job(  # noqa: PLR0915
+    job_data: dict, redis: RedisStreamClient
+) -> dict:
     """Process a single deploy job by running DevOps Subgraph."""
     msg = validate_queued_message(DeployMessage, job_data)
     task_id = msg.task_id
@@ -385,6 +389,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         elif result.get("missing_user_secrets"):
             missing = result.get("missing_user_secrets")
             logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing)
+            outcome = (
+                DeployOutcome.WAITING_FOR_USER_SECRET
+                if result.get("resolution_outcome") == "waiting_for_user_secret"
+                else DeployOutcome.GIVE_UP
+            )
             return await _handle_deploy_failure(
                 task_id=task_id,
                 project_id=project_id,
@@ -393,10 +402,28 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
-                deploy_outcome=DeployOutcome.GIVE_UP,
+                deploy_outcome=outcome,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
         else:
+            typed_outcome = result.get("resolution_outcome")
+            if typed_outcome:
+                try:
+                    deploy_outcome = DeployOutcome(typed_outcome)
+                except ValueError:
+                    deploy_outcome = DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED
+                errors = result.get("errors", ["Environment resolution failed"])
+                return await _handle_deploy_failure(
+                    task_id=task_id,
+                    project_id=project_id,
+                    story_id=story_id,
+                    error_msg="; ".join(errors),
+                    callback_stream=callback_stream,
+                    user_id=user_id,
+                    redis=redis,
+                    deploy_outcome=deploy_outcome,
+                    deploy_fix_attempt=msg.deploy_fix_attempt,
+                )
             errors = result.get("errors", ["Unknown deployment error"])
             logger.error("deploy_job_failed", task_id=task_id, errors=errors)
             error_msg = "; ".join(errors)

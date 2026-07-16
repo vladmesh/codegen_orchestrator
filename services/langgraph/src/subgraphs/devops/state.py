@@ -34,6 +34,8 @@ class DevOpsState(TypedDict):
     # Internal (analysis results)
     env_variables: list[str]  # Raw list of env vars from .env.example
     env_analysis: dict  # {var_name: "infra"|"computed"|"user"}
+    environment_contract: dict | None
+    resolution_outcome: str | None
     resolved_secrets: dict  # generated/computed secrets
 
     # Deploy target

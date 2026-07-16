@@ -12,6 +12,7 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.project import ProjectDTO
+from shared.contracts.env_contract import EnvContractMergeError, merge_env_contract_fragments
 
 from ...clients.api import api_client
 from ...config.agent_config import get_agent_config
@@ -255,6 +256,30 @@ async def _fetch_compose_env_context(owner: str, repo: str) -> str | None:
         return None
 
 
+async def _fetch_env_contract(owner: str, repo: str, ref: str) -> dict | None:
+    """Fetch and validate all committed environment-contract fragments.
+
+    ``None`` means the repository has no contract and must use the legacy
+    analyzer. A repository that has even one invalid fragment is not legacy.
+    """
+    github = GitHubAppClient()
+    paths = await github.list_repo_files_recursive(owner, repo, ref)
+    fragment_paths = [path for path in paths if path.endswith("env.contract.yaml")]
+    if not fragment_paths:
+        return None
+    fragments = []
+    for path in fragment_paths:
+        content = await github.get_file_contents(owner, repo, path, ref)
+        if content is None:
+            raise ValueError(f"environment contract fragment disappeared: {path}")
+        loaded = yaml.safe_load(content)
+        fragments.append(loaded)
+    try:
+        return merge_env_contract_fragments(fragments).model_dump(mode="json")
+    except (EnvContractMergeError, ValueError, yaml.YAMLError) as error:
+        raise ValueError("environment contract is invalid") from error
+
+
 def _parse_llm_response(response_text: str) -> dict | None:
     """Parse JSON from LLM response.
 
@@ -402,6 +427,29 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
             "env_analysis": {},
         }
     owner, repo = parsed
+
+    ref = state.get("head_sha") or "main"
+    try:
+        contract = await _fetch_env_contract(owner, repo, ref)
+    except Exception as error:
+        logger.warning(
+            "environment_contract_invalid",
+            project_id=project_id,
+            error_type=type(error).__name__,
+        )
+        return {
+            "errors": ["environment contract is invalid"],
+            "resolution_outcome": "environment_contract_invalid",
+        }
+    if contract is not None:
+        logger.info(
+            "environment_contract_loaded",
+            project_id=project_id,
+            entry_count=len(contract["entries"]),
+        )
+        return {"environment_contract": contract, "env_analysis": {}, "env_variables": []}
+
+    logger.info("environment_contract_legacy_fallback", project_id=project_id)
 
     # Fetch .env.example content
     try:
