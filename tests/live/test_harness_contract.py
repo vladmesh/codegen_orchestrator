@@ -8,6 +8,7 @@ import conftest as live_conftest
 from conftest import create_test_project_context
 import httpx
 from live_harness import (
+    LIVE_NO_CLEANUP_ENV,
     CleanupError,
     OwnershipManifest,
     cleanup_guard,
@@ -17,6 +18,7 @@ from live_harness import (
 import pipeline_helpers
 from pipeline_helpers import build_github_cleanup_script, build_registry_cleanup_script
 import pytest
+import structlog
 
 
 def test_repo_root_is_derived_from_harness_location(monkeypatch, tmp_path):
@@ -320,7 +322,8 @@ def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cleanup_guard_runs_when_qa_fails_before_fixture_yield():
+async def test_cleanup_guard_runs_when_qa_fails_before_fixture_yield(monkeypatch):
+    monkeypatch.delenv(LIVE_NO_CLEANUP_ENV, raising=False)
     cleaned = []
 
     async def cleanup():
@@ -334,7 +337,9 @@ async def test_cleanup_guard_runs_when_qa_fails_before_fixture_yield():
 
 
 @pytest.mark.asyncio
-async def test_cleanup_guard_preserves_run_and_cleanup_failures():
+async def test_cleanup_guard_preserves_run_and_cleanup_failures(monkeypatch):
+    monkeypatch.delenv(LIVE_NO_CLEANUP_ENV, raising=False)
+
     async def cleanup():
         raise CleanupError("residue")
 
@@ -343,6 +348,68 @@ async def test_cleanup_guard_preserves_run_and_cleanup_failures():
             raise RuntimeError("QA failed")
 
     assert [str(error) for error in caught.value.exceptions] == ["QA failed", "residue"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_guard_skips_cleanup_and_still_raises_primary_error(monkeypatch):
+    """LIVE_NO_CLEANUP leaves owned resources in place but never masks the failure."""
+    monkeypatch.setenv(LIVE_NO_CLEANUP_ENV, "1")
+    manifest = OwnershipManifest("run-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+    manifest.own("server_deployment", "run", server_handle="server-1")
+    cleaned = []
+
+    async def cleanup():
+        cleaned.append(True)
+
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(RuntimeError, match="deploy timed out"):
+            async with cleanup_guard(cleanup, manifest=manifest):
+                raise RuntimeError("deploy timed out")
+
+    assert cleaned == []
+    warning = next(entry for entry in logs if entry["log_level"] == "warning")
+    assert warning["event"] == "cleanup skipped — resources left for debugging"
+    assert warning["run_id"] == "run-1"
+    assert warning["manifest_file"] == ".live-manifests/run-1.json"
+    assert set(warning["left"]) == {
+        "project project-1",
+        "github_repository org/repo",
+        "server_deployment run",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_guard_skips_cleanup_on_success_when_flag_set(monkeypatch):
+    monkeypatch.setenv(LIVE_NO_CLEANUP_ENV, "1")
+    manifest = OwnershipManifest("run-1")
+    manifest.own("project", "project-1")
+    cleaned = []
+
+    async def cleanup():
+        cleaned.append(True)
+
+    async with cleanup_guard(cleanup, manifest=manifest):
+        pass
+
+    assert cleaned == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_guard_runs_cleanup_when_flag_unset(monkeypatch):
+    monkeypatch.delenv(LIVE_NO_CLEANUP_ENV, raising=False)
+    manifest = OwnershipManifest("run-1")
+    manifest.own("project", "project-1")
+    cleaned = []
+
+    async def cleanup():
+        cleaned.append(True)
+
+    async with cleanup_guard(cleanup, manifest=manifest):
+        pass
+
+    assert cleaned == [True]
 
 
 @pytest.mark.asyncio

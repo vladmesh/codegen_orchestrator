@@ -51,7 +51,9 @@ async def pipeline():
         await ensure_test_user(api)
         async with httpx.AsyncClient(base_url=API_URL, timeout=10) as api_no_auth:
             ctx = await create_noop_project(api)
-            async with cleanup_guard(lambda: cleanup_all(api, api_no_auth, ctx)):
+            async with cleanup_guard(
+                lambda: cleanup_all(api, api_no_auth, ctx), manifest=ctx["manifest"]
+            ):
                 # Phase 1: Scaffold
                 trigger_scaffold(ctx)
                 await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
