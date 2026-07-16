@@ -18,7 +18,6 @@ from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ._events import publish_callback_event
-from .deploy_failure_handler import _classification_to_outcome, _classify_deploy_failure
 
 logger = structlog.get_logger(__name__)
 
@@ -38,8 +37,7 @@ async def _handle_smoke_failure(
 ) -> dict:
     """Handle deploy success with smoke test failure.
 
-    Classifies the failure and stores the classification in run.result
-    for the dispatcher to act on.
+    Stores a deterministic retry outcome for the dispatcher to act on.
     """
     smoke_details = "; ".join(
         f"{c['module']}: {c['detail']}"
@@ -54,12 +52,8 @@ async def _handle_smoke_failure(
         smoke_details=smoke_details,
     )
 
-    # Classify failure for dispatcher routing
-    classification = await _classify_deploy_failure(smoke_details)
-    deploy_outcome = _classification_to_outcome(classification)
-
     run_result = DeployRunResult(
-        deploy_outcome=deploy_outcome,
+        deploy_outcome=DeployOutcome.RETRY,
         deployed_url=result["deployed_url"],
         deployment_result=result.get("deployment_result"),
         smoke_result=smoke_result,

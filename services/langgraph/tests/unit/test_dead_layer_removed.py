@@ -35,7 +35,7 @@ def test_deploy_environment_path_has_no_llm_dependency():
     devops_dir = Path(__file__).parents[2] / "src/subgraphs/devops"
     deploy_files = [
         *devops_dir.glob("*.py"),
-        devops_dir.parents[1] / "consumers/deploy.py",
+        *(devops_dir.parents[1] / "consumers").glob("deploy*.py"),
         devops_dir.parents[1] / "nodes/resource_allocator.py",
     ]
     deploy_path = "\n".join(file.read_text() for file in deploy_files)

@@ -110,23 +110,16 @@ class TestHandleDeploySuccess:
 
 
 class TestHandleSmokeFailure:
-    """_handle_smoke_failure classifies and stores outcome, no story transitions."""
+    """_handle_smoke_failure stores a retry outcome, no story transitions."""
 
     @pytest.mark.asyncio
-    async def test_stores_classified_outcome(self):
+    async def test_stores_retry_outcome(self):
         from src.consumers.deploy_result_handler import _handle_smoke_failure
 
         mock_redis = AsyncMock()
         msg = _make_deploy_msg()
 
-        with (
-            patch(f"{_HANDLER_PATCH}.api_client") as mock_api,
-            patch(
-                f"{_HANDLER_PATCH}._classify_deploy_failure",
-                new_callable=AsyncMock,
-                return_value="CODE_FIX",
-            ),
-        ):
+        with patch(f"{_HANDLER_PATCH}.api_client") as mock_api:
             mock_api.patch = AsyncMock()
             result = await _handle_smoke_failure(
                 result={"deployed_url": "https://example.com"},
@@ -146,6 +139,6 @@ class TestHandleSmokeFailure:
 
             patch_call = mock_api.patch.call_args
             run_result = patch_call[1]["json"]["result"]
-            assert run_result["deploy_outcome"] == DeployOutcome.CODE_FIX.value
+            assert run_result["deploy_outcome"] == DeployOutcome.RETRY.value
 
         assert result["status"] == "failed"

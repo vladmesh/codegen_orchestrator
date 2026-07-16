@@ -95,13 +95,13 @@ def _find_failed_patches(mock_api):
 
 
 class TestSmokeFailureOutcome:
-    """Smoke failure stores classified deploy_outcome for dispatcher."""
+    """Smoke failure stores a deterministic deploy outcome for dispatcher."""
 
     @pytest.mark.asyncio
-    async def test_smoke_failure_stores_code_fix_outcome(
+    async def test_smoke_failure_stores_retry_outcome(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Smoke failure classified as CODE_FIX stores outcome in run.result."""
+        """Smoke failure stores a retry outcome in run.result."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": "http://1.2.3.4:8080",
@@ -116,17 +116,13 @@ class TestSmokeFailureOutcome:
             }
         )
 
-        with patch(
-            "src.consumers.deploy_result_handler._classify_deploy_failure",
-            AsyncMock(return_value="CODE_FIX"),
-        ):
-            from src.consumers.deploy import process_deploy_job
+        from src.consumers.deploy import process_deploy_job
 
-            result = await process_deploy_job(_job(), mock_redis)
+        result = await process_deploy_job(_job(), mock_redis)
 
         assert result["status"] == "failed"
         results = _find_failed_patches(mock_api)
-        assert any(r["deploy_outcome"] == DeployOutcome.CODE_FIX.value for r in results)
+        assert any(r["deploy_outcome"] == DeployOutcome.RETRY.value for r in results)
 
     @pytest.mark.asyncio
     async def test_smoke_failure_stores_error_details(
@@ -146,26 +142,22 @@ class TestSmokeFailureOutcome:
             }
         )
 
-        with patch(
-            "src.consumers.deploy_result_handler._classify_deploy_failure",
-            AsyncMock(return_value="CODE_FIX"),
-        ):
-            from src.consumers.deploy import process_deploy_job
+        from src.consumers.deploy import process_deploy_job
 
-            await process_deploy_job(_job(), mock_redis)
+        await process_deploy_job(_job(), mock_redis)
 
         results = _find_failed_patches(mock_api)
         assert any("502" in r.get("error_details", "") for r in results)
 
 
 class TestDeployWorkflowFailureOutcome:
-    """Deploy workflow failure stores classified outcome for dispatcher."""
+    """Deploy workflow failure stores a deterministic outcome for dispatcher."""
 
     @pytest.mark.asyncio
-    async def test_deploy_failure_stores_code_fix_outcome(
+    async def test_deploy_failure_stores_retry_outcome(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Deploy workflow failure classified as CODE_FIX stores outcome."""
+        """Deploy workflow failure stores a retry outcome."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": None,
@@ -175,17 +167,13 @@ class TestDeployWorkflowFailureOutcome:
             }
         )
 
-        with patch(
-            "src.consumers.deploy._classify_deploy_failure",
-            AsyncMock(return_value="CODE_FIX"),
-        ):
-            from src.consumers.deploy import process_deploy_job
+        from src.consumers.deploy import process_deploy_job
 
-            result = await process_deploy_job(_job(), mock_redis)
+        result = await process_deploy_job(_job(), mock_redis)
 
         assert result["status"] == "failed"
         results = _find_failed_patches(mock_api)
-        assert any(r["deploy_outcome"] == DeployOutcome.CODE_FIX.value for r in results)
+        assert any(r["deploy_outcome"] == DeployOutcome.RETRY.value for r in results)
 
     @pytest.mark.asyncio
     async def test_missing_secrets_stores_give_up_outcome(
@@ -229,14 +217,10 @@ class TestDeployFixAttempt:
             }
         )
 
-        with patch(
-            "src.consumers.deploy_result_handler._classify_deploy_failure",
-            AsyncMock(return_value="CODE_FIX"),
-        ):
-            from src.consumers.deploy import process_deploy_job
+        from src.consumers.deploy import process_deploy_job
 
-            job = _job(deploy_fix_attempt=1)
-            await process_deploy_job(job, mock_redis)
+        job = _job(deploy_fix_attempt=1)
+        await process_deploy_job(job, mock_redis)
 
         results = _find_failed_patches(mock_api)
         assert any(r.get("deploy_fix_attempt") == 1 for r in results)
