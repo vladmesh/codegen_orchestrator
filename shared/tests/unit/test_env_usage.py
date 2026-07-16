@@ -95,6 +95,21 @@ def test_compose_references_include_interpolation_not_literals(tmp_path: Path):
     ]
 
 
+def test_compose_ignores_comments_and_dollar_escapes(tmp_path: Path):
+    (tmp_path / "compose.yaml").write_text(
+        "# stale: ${COMMENT_ONLY}\n"
+        "services:\n"
+        "  app:\n"
+        '    command: sh -c "echo $${LITERAL} ${REAL_VALUE:-ok}"\n'
+    )
+
+    references = extract_env_references(tmp_path)
+
+    assert [(reference.key, reference.source) for reference in references] == [
+        ("REAL_VALUE", "compose")
+    ]
+
+
 def test_compose_project_files_include_template_compose_variants(tmp_path: Path):
     compose = tmp_path / "infra" / "compose.prod.yml"
     compose.parent.mkdir()
@@ -130,7 +145,7 @@ def test_workflow_references_include_env_and_secrets_forwarding(tmp_path: Path):
     }
 
 
-def test_workflow_ignores_builtin_and_non_env_secret_references(tmp_path: Path):
+def test_workflow_references_include_env_and_secret_forwarding(tmp_path: Path):
     workflow = tmp_path / ".github" / "workflows" / "deploy.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
@@ -148,7 +163,10 @@ def test_workflow_ignores_builtin_and_non_env_secret_references(tmp_path: Path):
 
     references = extract_env_references(tmp_path)
 
-    assert references == ()
+    assert {(reference.key, reference.source) for reference in references} == {
+        ("DEPLOY_TOKEN", "workflow"),
+        ("REGISTRY_PASSWORD", "workflow"),
+    }
 
 
 def test_shell_self_default_assignment_remains_an_environment_read(tmp_path: Path):
@@ -190,6 +208,21 @@ exec uvicorn app:main --port "${PORT:-8000}"
 
     assert {(reference.key, reference.source) for reference in references} == {
         ("PORT", "shell"),
+    }
+
+
+def test_shell_ignores_single_quoted_text_and_non_shell_shebang(tmp_path: Path):
+    shell = tmp_path / "scripts" / "backup.sh"
+    shell.parent.mkdir()
+    shell.write_text("awk '{print $NF}' input\necho 'literal $NOT_AN_ENV_VAR'\necho $REAL\n")
+    javascript = tmp_path / "tools" / "gen.js"
+    javascript.parent.mkdir()
+    javascript.write_text("#!/usr/bin/env node\nconst value = `${userName}`\n")
+
+    references = extract_env_references(tmp_path)
+
+    assert {(reference.key, reference.source) for reference in references} == {
+        ("REAL", "shell"),
     }
 
 
@@ -250,7 +283,9 @@ class Settings(BaseSettings):
         ("BACKEND_IMAGE", "compose"),
         ("BACKEND_PORT", "compose"),
         ("BACKEND_REPLICAS", "compose"),
+        ("DEPLOY_SSH_KEY", "workflow"),
         ("PORT", "shell"),
+        ("REGISTRY_PASSWORD", "workflow"),
     }
 
 
@@ -260,16 +295,57 @@ def test_service_template_0_3_3_fixture_extracts_without_crashing(tmp_path: Path
 
     references = extract_env_references(tmp_path)
 
-    assert {(reference.key, reference.source) for reference in references} == {
-        ("APP_ENV", "python-settings"),
-        ("APP_NAME", "python-settings"),
-        ("APP_SECRET_KEY", "python-settings"),
-        ("BACKEND_IMAGE", "compose"),
-        ("BACKEND_PORT", "compose"),
-        ("BACKEND_REPLICAS", "compose"),
-        ("DEBUG", "python-settings"),
-        ("PORT", "shell"),
+    assert {
+        ("DOTENV", "workflow"),
+        ("REGISTRY_URL", "workflow"),
+        ("REGISTRY_USER", "workflow"),
+        ("REGISTRY_PASSWORD", "workflow"),
+        ("DEPLOY_HOST", "workflow"),
+        ("DEPLOY_PORT", "workflow"),
+        ("DEPLOY_SSH_KEY", "workflow"),
+        ("DEPLOY_USER", "workflow"),
+        ("POSTGRES_USER", "compose"),
+        ("DATABASE_URL", "shell"),
+        ("SQLALCHEMY_SYNC_DRIVER", "python-settings"),
+    }.issubset({(reference.key, reference.source) for reference in references})
+
+
+def test_service_template_0_3_3_fixture_has_known_contract_gaps(tmp_path: Path):
+    fixture = Path(__file__).parents[1] / "fixtures" / "service-template-0.3.3"
+    shutil.copytree(fixture, tmp_path, dirs_exist_ok=True)
+
+    result = check_env_contract_usage(tmp_path)
+
+    undeclared = {
+        message.split()[3]
+        for message in (*result.errors, *result.warnings)
+        if message.startswith("undeclared environment key ")
     }
+    assert undeclared == {
+        "ASYNC_DATABASE_URL",
+        "BACKEND_INSTALL_DEV_DEPS",
+        "BACKEND_REPLICAS",
+        "COMPOSE_PROJECT_NAME",
+        "DATABASE_URL",
+        "ENABLED_MODULES",
+        "HOST_GID",
+        "HOST_UID",
+        "PORT",
+        "SQLALCHEMY_ASYNC_DRIVER",
+        "SQLALCHEMY_SYNC_DRIVER",
+    }
+
+
+def test_shell_undeclared_usage_is_a_warning(tmp_path: Path):
+    (tmp_path / "entrypoint.sh").write_text("echo $MISSING_KEY\n")
+    write_fragment(tmp_path, {})
+
+    result = check_env_contract_usage(tmp_path)
+
+    assert result.errors == ()
+    assert result.warnings == (
+        "undeclared environment key MISSING_KEY used at entrypoint.sh:1 (shell)",
+    )
 
 
 def test_undeclared_usage_is_an_error_with_location(tmp_path: Path):

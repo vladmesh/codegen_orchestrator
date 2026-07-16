@@ -25,11 +25,7 @@ from shared.contracts.env_contract import (
 from shared.diagnostics import redact_diagnostic, safe_validation_errors
 
 _ENV_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
-_COMPOSE_REFERENCE = re.compile(r"\$\{(" + _ENV_NAME + r")(?:[}:?+-])")
 _SHELL_REFERENCE = re.compile(r"\$(?:\{(" + _ENV_NAME + r")(?:[}:?+-])|(" + _ENV_NAME + r"))")
-_SECRET_REFERENCE = re.compile(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)")
-_ENV_BLOCK = re.compile(r"^(\s*)env:\s*$")
-_ENV_ENTRY = re.compile(r"^\s*(?:['\"])?(" + _ENV_NAME + r")(?:['\"])?\s*:")
 _SHELL_ASSIGNMENT = re.compile(
     r"^\s*(?:(?:export|local|readonly|declare)\s+)?(" + _ENV_NAME + r")="
 )
@@ -180,51 +176,79 @@ def _python_references(root: Path, path: Path) -> list[EnvReference]:
     return references
 
 
-def _text_references(
-    root: Path, path: Path, source: str, pattern: re.Pattern[str]
-) -> list[EnvReference]:
-    try:
-        lines = path.read_text().splitlines()
-    except (OSError, UnicodeDecodeError):
-        return []
-    relative_path = _relative_path(root, path)
-    references: list[EnvReference] = []
-    for line_number, line in enumerate(lines, start=1):
-        for match in pattern.finditer(line):
-            key = next((value for value in match.groups() if value is not None), None)
-            if key:
-                references.append(EnvReference(key, relative_path, line_number, source))
+def _interpolation_references(value: str) -> list[str]:
+    """Return Compose interpolation names, honoring Compose's $$ literal escape."""
+    references: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "$":
+            index += 1
+            continue
+        if index + 1 < len(value) and value[index + 1] == "$":
+            index += 2
+            continue
+        start = index + 2 if index + 1 < len(value) and value[index + 1] == "{" else index + 1
+        end = start
+        if start >= len(value) or not (value[start].isalpha() or value[start] == "_"):
+            index += 1
+            continue
+        while end < len(value) and (value[end].isalnum() or value[end] == "_"):
+            end += 1
+        if (
+            index + 1 < len(value)
+            and value[index + 1] == "{"
+            and (end >= len(value) or value[end] not in "}:?+-")
+        ):
+            index += 1
+            continue
+        references.append(value[start:end])
+        index = end
     return references
 
 
-def _workflow_references(root: Path, path: Path) -> list[EnvReference]:
+def _yaml_root(path: Path) -> yaml.Node | None:
     try:
-        lines = path.read_text().splitlines()
-    except (OSError, UnicodeDecodeError):
+        return yaml.compose(path.read_text())
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+
+
+def _scalar_nodes(node: yaml.Node | None) -> Iterable[yaml.ScalarNode]:
+    if isinstance(node, yaml.ScalarNode):
+        yield node
+    elif isinstance(node, yaml.SequenceNode):
+        for child in node.value:
+            yield from _scalar_nodes(child)
+    elif isinstance(node, yaml.MappingNode):
+        for key, value in node.value:
+            yield from _scalar_nodes(key)
+            yield from _scalar_nodes(value)
+
+
+def _compose_references(root: Path, path: Path) -> list[EnvReference]:
+    node = _yaml_root(path)
+    if node is None:
+        return []
+    relative_path = _relative_path(root, path)
+    return [
+        EnvReference(key, relative_path, scalar.start_mark.line + 1, "compose")
+        for scalar in _scalar_nodes(node)
+        for key in _interpolation_references(scalar.value)
+    ]
+
+
+def _workflow_references(root: Path, path: Path) -> list[EnvReference]:
+    node = _yaml_root(path)
+    if node is None:
         return []
     relative_path = _relative_path(root, path)
     references: list[EnvReference] = []
-    env_indent: int | None = None
-    container_indent: int | None = None
-    for line_number, line in enumerate(lines, start=1):
-        indent = len(line) - len(line.lstrip())
-        if line.strip() == "container:":
-            container_indent = indent
-            continue
-        if container_indent is not None and line.strip() and indent <= container_indent:
-            container_indent = None
-        block = _ENV_BLOCK.match(line)
-        if block and container_indent is not None and len(block.group(1)) > container_indent:
-            env_indent = len(block.group(1))
-            continue
-        if env_indent is not None and line.strip() and indent <= env_indent:
-            env_indent = None
-        if env_indent is not None and indent > env_indent and "secrets." in line:
-            entry = _ENV_ENTRY.match(line)
-            secret_names = _SECRET_REFERENCE.findall(line)
-            if entry and not any(name in _GITHUB_BUILTIN_SECRETS for name in secret_names):
+    for scalar in _scalar_nodes(node):
+        for match in re.finditer(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)", scalar.value):
+            key = match.group(1)
+            if key not in _GITHUB_BUILTIN_SECRETS:
                 references.append(
-                    EnvReference(entry.group(1), relative_path, line_number, "workflow")
+                    EnvReference(key, relative_path, scalar.start_mark.line + 1, "workflow")
                 )
     return references
 
@@ -248,12 +272,35 @@ def _shell_references(root: Path, path: Path) -> list[EnvReference]:
         read = _SHELL_READ.search(line)
         if read:
             local_names.add(read.group(1))
-    references = _text_references(root, path, "shell", _SHELL_REFERENCE)
+    relative_path = _relative_path(root, path)
+    references: list[EnvReference] = []
+    for line_number, line in enumerate(lines, start=1):
+        outside_quotes = "".join(_shell_unquoted_segments(line))
+        for match in _SHELL_REFERENCE.finditer(outside_quotes):
+            key = next((value for value in match.groups() if value is not None), None)
+            if key:
+                references.append(EnvReference(key, relative_path, line_number, "shell"))
     return [
         reference
         for reference in references
         if reference.key not in local_names and reference.key not in _SHELL_BUILTINS
     ]
+
+
+def _shell_unquoted_segments(line: str) -> Iterable[str]:
+    """Yield shell text outside single quotes, where expansion cannot occur."""
+    start = 0
+    in_single_quote = False
+    for index, character in enumerate(line):
+        if character != "'":
+            continue
+        if in_single_quote:
+            start = index + 1
+        else:
+            yield line[start:index]
+        in_single_quote = not in_single_quote
+    if not in_single_quote:
+        yield line[start:]
 
 
 def _is_compose_file(path: Path) -> bool:
@@ -267,11 +314,14 @@ def _is_workflow(path: Path) -> bool:
 
 
 def _is_shell_entrypoint(path: Path) -> bool:
-    if path.suffix == ".sh" or "entrypoint" in path.name:
+    if path.suffix in {".sh", ".bash"}:
         return True
     try:
         with path.open("rb") as file:
-            return file.read(2) == b"#!"
+            first_line = file.readline().decode(errors="ignore").lower()
+            return first_line.startswith("#!") and any(
+                shell in first_line for shell in ("/sh", "bash", "zsh", "dash", "ksh")
+            )
     except OSError:
         return False
 
@@ -291,7 +341,7 @@ def extract_env_references(root: Path) -> tuple[EnvReference, ...]:
         if path.suffix == ".py":
             references.extend(_python_references(root, path))
         elif _is_compose_file(path):
-            references.extend(_text_references(root, path, "compose", _COMPOSE_REFERENCE))
+            references.extend(_compose_references(root, path))
         elif _is_workflow(path):
             references.extend(_workflow_references(root, path))
         elif _is_shell_entrypoint(path):
@@ -320,14 +370,24 @@ def check_env_contract_usage(root: Path) -> EnvUsageCheck:
         "undeclared environment key "
         f"{reference.key} used at {reference.location} ({reference.source})"
         for reference in references
-        if reference.key not in declared
+        # Workflow secret references are CI credentials, not generated-project
+        # runtime environment entries. They stay observable in extraction but
+        # do not make the project contract gate fail.
+        if reference.key not in declared and reference.source not in {"shell", "workflow"}
     )
     observed = {reference.key for reference in references}
-    warnings = tuple(
+    required_warnings = tuple(
         f"required environment contract key {key} was not observed"
         for key, entry in sorted(contract.entries.items())
         if entry.required and key not in observed
     )
+    shell_warnings = tuple(
+        "undeclared environment key "
+        f"{reference.key} used at {reference.location} ({reference.source})"
+        for reference in references
+        if reference.key not in declared and reference.source == "shell"
+    )
+    warnings = tuple(sorted(required_warnings + shell_warnings))
     return EnvUsageCheck(errors=errors, warnings=warnings, contract=contract, references=references)
 
 

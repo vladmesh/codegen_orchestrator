@@ -1,4 +1,4 @@
-Snapshot of the environment-relevant files from service-template 0.3.3.
-
-The files retain generated-project paths and are used to keep the extractor
-aligned with the baseline named by the typed environment contract MVP.
+Verbatim rendered fixture from service-template tag `0.3.3` (`89471ad2`),
+generated with backend, tg_bot, notifications, and frontend modules. It keeps
+the generated-project paths and includes Compose files, workflows, entrypoints,
+settings, and environment contract fragments used by the gate.

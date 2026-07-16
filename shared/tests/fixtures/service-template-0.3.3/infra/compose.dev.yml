@@ -1,0 +1,59 @@
+services:
+  backend:
+    extends:
+      file: compose.base.yml
+      service: backend
+    build:
+      context: ..
+      dockerfile: services/backend/Dockerfile
+      args:
+        INSTALL_DEV_DEPS: ${BACKEND_INSTALL_DEV_DEPS:-false}
+    command: >-
+      bash -c "./services/backend/scripts/migrate.sh &&
+      uvicorn services.backend.src.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ../:/workspace:delegated
+      - /app/services/backend/.venv
+    working_dir: /workspace
+    env_file:
+      - ../.env
+    environment:
+      PYTHONPATH: /workspace
+      PATH: /app/services/backend/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+  tg_bot:
+    extends:
+      file: compose.base.yml
+      service: tg_bot
+    volumes:
+      - ../:/workspace:delegated
+      - /app/services/tg_bot/.venv
+    working_dir: /workspace
+    env_file:
+      - ../.env
+    environment:
+      PYTHONPATH: /workspace
+      PATH: /app/services/tg_bot/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+      TG_BOT_ALLOW_PLACEHOLDER_TOKEN: "true"
+  notifications_worker:
+    extends:
+      file: compose.base.yml
+      service: notifications_worker
+    volumes:
+      - ../:/workspace:delegated
+      - /app/services/notifications_worker/.venv
+    working_dir: /workspace
+    env_file:
+      - ../.env
+    environment:
+      PYTHONPATH: /workspace
+      PATH: /app/services/notifications_worker/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+  db:
+    extends:
+      file: compose.base.yml
+      service: db
+
+  redis:
+    extends:
+      file: compose.base.yml
+      service: redis
