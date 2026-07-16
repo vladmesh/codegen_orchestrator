@@ -30,6 +30,10 @@ class DeployOutcome(StrEnum):
     CODE_FIX = "code_fix"
     RETRY = "retry"
     GIVE_UP = "give_up"
+    WAITING_FOR_USER_SECRET = "waiting_for_user_secret"  # noqa: S105
+    ALLOCATION_MISSING = "allocation_missing"
+    ENVIRONMENT_CONTRACT_INVALID = "environment_contract_invalid"
+    ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
 
 
 class DeployMessage(BaseMessage):

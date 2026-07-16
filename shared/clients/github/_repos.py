@@ -148,15 +148,6 @@ class ReposMixin:
             if e.response.status_code == httpx.codes.NOT_FOUND:
                 return None
             raise
-        except Exception as e:
-            logger.warning(
-                "github_file_fetch_failed",
-                owner=owner,
-                repo=repo,
-                path=path,
-                error=str(e),
-            )
-            return None
 
     async def list_repo_files(
         self, owner: str, repo: str, path: str = "", ref: str = "main"
@@ -189,6 +180,40 @@ class ReposMixin:
                 error=str(e),
             )
             return []
+
+    async def list_repo_files_recursive(
+        self, owner: str, repo: str, ref: str = "main"
+    ) -> list[str]:
+        """List file paths in a repository at ``ref``.
+
+        The contents endpoint only lists one directory level.  Callers that
+        consume owner-maintained files, such as environment-contract fragments,
+        need the complete tree rather than a guessed set of directories.
+        """
+        try:
+            token = await self.get_token(owner, repo)
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            }
+            response = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}",
+                headers=headers,
+                params={"recursive": "1"},
+            )
+            payload = response.json()
+            if payload.get("truncated"):
+                raise RuntimeError("GitHub repository tree response is truncated")
+            return sorted(
+                item["path"]
+                for item in payload.get("tree", [])
+                if item.get("type") == "blob" and isinstance(item.get("path"), str)
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == httpx.codes.NOT_FOUND:
+                return []
+            raise
 
     async def create_or_update_file(
         self,

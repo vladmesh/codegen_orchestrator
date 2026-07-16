@@ -213,6 +213,8 @@ class DeployerNode(FunctionalNode):
         project_id = state.get("project_id")
         run_id = state.get("run_id")
         project_spec = state.get("project_spec") or {}
+        secret_values = state.get("secret_values", {})
+        non_secret_values = state.get("non_secret_values", {})
         resolved_secrets = state.get("resolved_secrets", {})
         logger.info("deployer_start", project_id=project_id)
 
@@ -260,7 +262,12 @@ class DeployerNode(FunctionalNode):
                 }
 
             # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
-            all_env = {**resolved_secrets, "CODEGEN_PROJECT_ID": project_id}
+            all_env = {
+                **resolved_secrets,
+                **non_secret_values,
+                **secret_values,
+                "CODEGEN_PROJECT_ID": project_id,
+            }
             dotenv_content = build_dotenv(all_env)
             dotenv_b64 = encode_dotenv(dotenv_content)
 

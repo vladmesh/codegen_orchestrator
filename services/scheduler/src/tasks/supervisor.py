@@ -326,7 +326,13 @@ async def supervise_deploying_stories(
             else:
                 failed += 1
 
-        elif outcome == DeployOutcome.GIVE_UP:
+        elif outcome in (
+            DeployOutcome.GIVE_UP,
+            DeployOutcome.WAITING_FOR_USER_SECRET,
+            DeployOutcome.ALLOCATION_MISSING,
+            DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+            DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+        ):
             await _handle_deploy_give_up(api_client, story_id, project_id, run, log)
             failed += 1
 
