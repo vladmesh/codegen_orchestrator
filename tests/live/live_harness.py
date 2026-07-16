@@ -25,15 +25,14 @@ def no_cleanup_enabled() -> bool:
     return os.environ.get(LIVE_NO_CLEANUP_ENV) == "1"
 
 
-def _log_cleanup_skipped(manifest: "OwnershipManifest | None") -> None:
+def _log_cleanup_skipped(manifest: "OwnershipManifest") -> None:
     """Emit a visible warning listing the owned resources teardown left behind."""
-    resources = list(manifest.resources) if manifest is not None else []
     logger.warning(
         "cleanup skipped — resources left for debugging",
         env_flag=LIVE_NO_CLEANUP_ENV,
-        run_id=manifest.run_id if manifest is not None else None,
-        manifest_file=(f".live-manifests/{manifest.run_id}.json" if manifest is not None else None),
-        left=[f"{resource.kind} {resource.identifier}" for resource in resources],
+        run_id=manifest.run_id,
+        manifest_file=f".live-manifests/{manifest.run_id}.json",
+        left=[f"{resource.kind} {resource.identifier}" for resource in manifest.resources],
     )
 
 
@@ -41,7 +40,7 @@ def _log_cleanup_skipped(manifest: "OwnershipManifest | None") -> None:
 async def cleanup_guard(
     cleanup: Callable[[], Awaitable[None]],
     *,
-    manifest: "OwnershipManifest | None" = None,
+    manifest: "OwnershipManifest",
 ):
     """Always clean a live context and retain both body and cleanup failures.
 

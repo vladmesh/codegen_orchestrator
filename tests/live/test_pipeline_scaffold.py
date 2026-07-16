@@ -33,7 +33,7 @@ async def scaffold_ctx():
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
         await ensure_test_user(api)
         ctx = await create_noop_project(api)
-        async with cleanup_guard(lambda: cleanup_all(api, None, ctx)):
+        async with cleanup_guard(lambda: cleanup_all(api, None, ctx), manifest=ctx["manifest"]):
             trigger_scaffold(ctx)
             await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
 

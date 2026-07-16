@@ -330,7 +330,7 @@ async def test_cleanup_guard_runs_when_qa_fails_before_fixture_yield(monkeypatch
         cleaned.append(True)
 
     with pytest.raises(RuntimeError, match="QA failed"):
-        async with cleanup_guard(cleanup):
+        async with cleanup_guard(cleanup, manifest=OwnershipManifest("run-1")):
             raise RuntimeError("QA failed")
 
     assert cleaned == [True]
@@ -344,7 +344,7 @@ async def test_cleanup_guard_preserves_run_and_cleanup_failures(monkeypatch):
         raise CleanupError("residue")
 
     with pytest.raises(BaseExceptionGroup) as caught:
-        async with cleanup_guard(cleanup):
+        async with cleanup_guard(cleanup, manifest=OwnershipManifest("run-1")):
             raise RuntimeError("QA failed")
 
     assert [str(error) for error in caught.value.exceptions] == ["QA failed", "residue"]
