@@ -190,6 +190,59 @@ async def test_contract_fetch_failure_does_not_fall_back_to_llm(_api_client, _fe
 
 
 @pytest.mark.asyncio
+@patch("src.subgraphs.devops.env_analyzer.api_client")
+@patch("src.subgraphs.devops.env_analyzer.GitHubAppClient")
+async def test_repository_without_contract_uses_legacy_analyzer(github_class, api_client):
+    github = AsyncMock()
+    github.list_repo_files_recursive.return_value = []
+
+    async def get_file_contents(_owner, _repo, path, _ref):
+        if path == ".env.example":
+            return "WEIRD_CUSTOM_KEY=\n"
+        return None
+
+    github.get_file_contents.side_effect = get_file_contents
+    github_class.return_value = github
+    api_client.get_project = AsyncMock(return_value=SimpleNamespace(name="Test Project"))
+    state = {
+        "project_id": "project-1",
+        "repo_info": {"html_url": "https://github.com/org/repo"},
+        "head_sha": "a" * 40,
+    }
+
+    with patch(
+        "src.subgraphs.devops.env_analyzer._classify_variables_with_llm",
+        AsyncMock(return_value=({"WEIRD_CUSTOM_KEY": "user"}, None)),
+    ) as classify:
+        result = await env_analyzer_run(state)
+
+    classify.assert_awaited_once()
+    assert result["env_analysis"] == {"WEIRD_CUSTOM_KEY": "user"}
+    assert "environment_contract" not in result
+
+
+@pytest.mark.asyncio
+async def test_optional_allocation_failure_remains_fail_fast():
+    entries = {
+        "OPTIONAL_PORT": {
+            "source": "allocation",
+            "environments": ["production"],
+            "required": False,
+            "service": "backend",
+        }
+    }
+    resources = {
+        "first": {"service_name": "backend", "server_ip": "10.0.0.1", "port": 8000},
+        "second": {"service_name": "backend", "server_ip": "10.0.0.1", "port": 8001},
+    }
+
+    with pytest.raises(TypedSecretResolutionError) as error:
+        await SecretResolverNode().run(_state(entries, resources))
+
+    assert error.value.outcome == "environment_resolution_failed"
+
+
+@pytest.mark.asyncio
 @patch("src.subgraphs.devops.secret_resolver.api_client")
 @patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={})
 async def test_template_contract_fixture_resolves_production_entries(_decrypt, api_client):

@@ -26,6 +26,10 @@ class SecretResolutionError(RuntimeError):
     """Raised when deploy secrets cannot be resolved from trusted state."""
 
 
+class UnknownDerivedKeyError(SecretResolutionError):
+    """Raised when an optional derived contract entry has no platform resolver."""
+
+
 class TypedSecretResolutionError(SecretResolutionError):
     """A resolver error with a deploy outcome that callers must preserve."""
 
@@ -203,7 +207,7 @@ class SecretResolverNode(FunctionalNode):
             except TypedSecretResolutionError:
                 raise
             except SecretResolutionError as error:
-                if not entry.required:
+                if not entry.required and isinstance(error, UnknownDerivedKeyError):
                     logger.info("optional_environment_contract_entry_skipped", key=key)
                     continue
                 raise TypedSecretResolutionError(
@@ -368,7 +372,7 @@ class SecretResolverNode(FunctionalNode):
         if key_upper.endswith("_IMAGE"):
             return self._resolve_docker_image(key_upper, state)
 
-        raise SecretResolutionError(f"Unknown computed secret: {key}")
+        raise UnknownDerivedKeyError(f"Unknown computed secret: {key}")
 
     def _resolve_port(self, key_upper: str, state: DevOpsState) -> str:
         """Resolve port from resource allocator."""
