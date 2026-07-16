@@ -1,15 +1,12 @@
 """Safety contracts shared by Stage 7 live tests."""
 
-import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
-import time
 
-import httpx
 import structlog
 
 logger = structlog.get_logger()
@@ -163,27 +160,3 @@ class OwnershipManifest:
                 )
         if errors:
             raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors))
-
-
-async def run_non_llm_qa(
-    client: httpx.AsyncClient,
-    deployed_url: str,
-    *,
-    timeout: float,
-    poll_interval: float = 3,
-) -> dict[str, str]:
-    """Run an observable health-only QA gate and require terminal ``passed``."""
-    run_id = f"health-{int(time.time())}"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for path in ("/health", "/v1/health"):
-            try:
-                response = await client.get(f"{deployed_url}{path}")
-            except httpx.HTTPError:
-                continue
-            if response.status_code == 200:
-                return {"run_id": run_id, "status": "completed", "qa_outcome": "passed"}
-        await asyncio.sleep(poll_interval)
-    raise AssertionError(
-        f"non-LLM QA run {run_id} ended with status=failed outcome=failed after {timeout}s"
-    )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import structlog
 
+from shared.contracts.acceptance import parse_health_only_criteria
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QAFailedCheck, QARunResult
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
@@ -19,7 +20,12 @@ from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ._base import run_queue_worker, validate_queued_message
-from ._qa_runner import QAResult, credential_refresh_loop, run_qa_on_server
+from ._qa_runner import (
+    QAResult,
+    credential_refresh_loop,
+    run_health_checks,
+    run_qa_on_server,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -93,61 +99,64 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         return {"status": "skipped", "reason": "already_inflight"}
 
     try:
-        # Resolve server info
-        server_info = await _resolve_server_info(msg.application_id)
-        if not server_info:
-            error = f"Cannot resolve server for application {msg.application_id}"
-            logger.error(
-                "qa_server_resolve_failed",
-                application_id=msg.application_id,
-            )
-            await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
-            return {"status": "error", "error": error}
+        # The criteria travel on the message — the producer resolves them from the
+        # repository before it creates this run. They decide how QA runs, so parse
+        # them first: criteria that only state GET expectations need nothing but
+        # the deployed URL.
+        acceptance_criteria = msg.acceptance_criteria
+        health_checks = parse_health_only_criteria(acceptance_criteria)
 
-        # Fail-fast: if project has tg_bot module, bot_username is required
-        if not msg.bot_username:
-            project = await api_client.get_project(msg.project_id)
-            modules = (project.config or {}).get("modules", [])
-            if "tg_bot" in modules:
-                error = (
-                    "Project has tg_bot module but bot_username is missing in QAMessage. "
-                    "Deploy smoke test should have resolved it via getMe."
+        # A server to SSH into and a bot to talk to are what the agent needs, not
+        # what the criteria ask for. Resolve them inside the agent branch only —
+        # an HTTP check must not fail over an SSH key it never reads.
+        server_info = None
+        if health_checks is None:
+            server_info = await _resolve_server_info(msg.application_id)
+            if not server_info:
+                error = f"Cannot resolve server for application {msg.application_id}"
+                logger.error(
+                    "qa_server_resolve_failed",
+                    application_id=msg.application_id,
                 )
-                logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
                 await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
                 return {"status": "error", "error": error}
 
-        # Resolve acceptance criteria from repository
-        app = await api_client.get_application(msg.application_id)
-        repo = await api_client.get_repository(app.repo_id)
-        acceptance_criteria = repo.acceptance_criteria or ""
+            # Fail-fast: if project has tg_bot module, bot_username is required
+            if not msg.bot_username:
+                project = await api_client.get_project(msg.project_id)
+                modules = (project.config or {}).get("modules", [])
+                if "tg_bot" in modules:
+                    error = (
+                        "Project has tg_bot module but bot_username is missing in QAMessage. "
+                        "Deploy smoke test should have resolved it via getMe."
+                    )
+                    logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
+                    await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
+                    return {"status": "error", "error": error}
 
-        if not acceptance_criteria:
-            error = (
-                f"Repository {repo.id} has no acceptance_criteria. "
-                "Cannot run QA without regression test criteria."
-            )
-            logger.error("qa_no_acceptance_criteria", repo_id=repo.id)
-            await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
-            return {"status": "error", "error": error}
-
-        # Mark run as running before starting Claude Code
+        # Mark run as running before starting the checks
         if run_id:
             await api_client.patch(
                 f"runs/{run_id}",
                 json={"status": RunStatus.RUNNING.value},
             )
 
-        # Run QA on server
-        qa_result = await run_qa_on_server(
-            server_ip=server_info.server_ip,
-            ssh_user=server_info.ssh_user,
-            ssh_key=server_info.ssh_key,
-            project_name=server_info.project_name,
-            acceptance_criteria=acceptance_criteria,
-            deployed_url=msg.deployed_url,
-            bot_username=msg.bot_username,
-        )
+        if health_checks is not None:
+            logger.info("qa_health_only_criteria", story_id=story_id, checks=len(health_checks))
+            qa_result = await run_health_checks(
+                deployed_url=msg.deployed_url,
+                checks=health_checks,
+            )
+        else:
+            qa_result = await run_qa_on_server(
+                server_ip=server_info.server_ip,
+                ssh_user=server_info.ssh_user,
+                ssh_key=server_info.ssh_key,
+                project_name=server_info.project_name,
+                acceptance_criteria=acceptance_criteria,
+                deployed_url=msg.deployed_url,
+                bot_username=msg.bot_username,
+            )
 
         logger.info(
             "qa_result",

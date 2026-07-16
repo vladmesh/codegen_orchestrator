@@ -17,7 +17,7 @@ No LLM. Fully deterministic. Real queues, real GitHub, real server.
 import asyncio
 
 import httpx
-from live_harness import cleanup_guard, run_non_llm_qa
+from live_harness import cleanup_guard
 from pipeline_helpers import (
     API_URL,
     AUTH_HEADERS,
@@ -26,6 +26,7 @@ from pipeline_helpers import (
     DEPLOY_TIMEOUT,
     ENGINEERING_TIMEOUT,
     EXPECTED_ENV_CONTRACT_FRAGMENTS,
+    QA_RUN_TIMEOUT,
     SCAFFOLD_TIMEOUT,
     cleanup_all,
     create_noop_project,
@@ -34,6 +35,7 @@ from pipeline_helpers import (
     ensure_test_user,
     internal_headers,
     record_env_contract,
+    run_non_llm_qa,
     trigger_scaffold,
     wait_deploy,
     wait_deploy_outcome,
@@ -119,9 +121,9 @@ async def pipeline():
                     and ctx.get("deploy_outcome") == DeployOutcome.SUCCESS.value
                 ):
                     ctx["qa_result"] = await run_non_llm_qa(
-                        api_no_auth,
-                        ctx["deployed_url"],
-                        timeout=DEPLOY_TIMEOUT,
+                        api_internal,
+                        ctx["story_id"],
+                        timeout=QA_RUN_TIMEOUT,
                     )
 
                 yield ctx

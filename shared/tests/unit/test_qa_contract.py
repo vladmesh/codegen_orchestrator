@@ -1,8 +1,13 @@
 """Unit tests for QA queue message contract and queue topology."""
 
+from pydantic import ValidationError
+import pytest
+
 from shared.contracts.dto.run import RunType
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.queues import QA_GROUP, QA_QUEUE, QUEUE_TOPOLOGY
+
+CRITERIA = "- GET /health returns 200"
 
 
 class TestQAMessage:
@@ -13,6 +18,7 @@ class TestQAMessage:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
+            acceptance_criteria=CRITERIA,
         )
         assert msg.story_id == "story-abc"
         assert msg.project_id == "proj-123"
@@ -27,6 +33,7 @@ class TestQAMessage:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
+            acceptance_criteria=CRITERIA,
         )
         assert msg.qa_attempt == 0
         assert msg.bot_username is None
@@ -42,6 +49,7 @@ class TestQAMessage:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
+            acceptance_criteria=CRITERIA,
             bot_username="my_test_bot",
         )
         assert msg.bot_username == "my_test_bot"
@@ -53,6 +61,7 @@ class TestQAMessage:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
+            acceptance_criteria=CRITERIA,
             qa_attempt=2,
         )
         assert msg.qa_attempt == 2
@@ -64,6 +73,7 @@ class TestQAMessage:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
+            acceptance_criteria=CRITERIA,
             bot_username="bot",
             qa_attempt=1,
         )
@@ -74,6 +84,34 @@ class TestQAMessage:
         assert restored.qa_attempt == msg.qa_attempt
         assert restored.bot_username == msg.bot_username
         assert restored.application_id == 17
+        assert restored.acceptance_criteria == CRITERIA
+
+    def test_acceptance_criteria_is_required(self):
+        """QA can't run without criteria, so a message may not omit them.
+
+        The producer resolves them from the repository; a message that reaches the
+        queue without them is a bug that must surface here, not in the consumer.
+        """
+        with pytest.raises(ValidationError):
+            QAMessage(
+                story_id="story-abc",
+                project_id="proj-123",
+                user_id="user-1",
+                deployed_url="https://example.com",
+                application_id=17,
+            )
+
+    def test_acceptance_criteria_may_not_be_blank(self):
+        """Blank criteria parse to "no checks" — reject them at the contract."""
+        with pytest.raises(ValidationError):
+            QAMessage(
+                story_id="story-abc",
+                project_id="proj-123",
+                user_id="user-1",
+                deployed_url="https://example.com",
+                application_id=17,
+                acceptance_criteria="",
+            )
 
 
 class TestRunTypeQA:
@@ -108,6 +146,7 @@ class TestQAMessageRunId:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
+            acceptance_criteria=CRITERIA,
             run_id="qa-run-001",
         )
         assert msg.run_id == "qa-run-001"
@@ -119,6 +158,7 @@ class TestQAMessageRunId:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
+            acceptance_criteria=CRITERIA,
             run_id="qa-run-002",
         )
         data = msg.model_dump()
@@ -134,6 +174,7 @@ class TestQAMessageOptionalStoryId:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
+            acceptance_criteria=CRITERIA,
         )
         assert msg.story_id == ""
 
@@ -144,6 +185,7 @@ class TestQAMessageOptionalStoryId:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
+            acceptance_criteria=CRITERIA,
         )
         assert msg.story_id == "story-abc"
 
@@ -154,6 +196,7 @@ class TestQAMessageOptionalStoryId:
             user_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
+            acceptance_criteria=CRITERIA,
         )
         data = msg.model_dump()
         restored = QAMessage.model_validate(data)
@@ -166,6 +209,7 @@ class TestQAMessageOptionalStoryId:
             "user_id": "user-1",
             "deployed_url": "https://example.com",
             "application_id": 17,
+            "acceptance_criteria": CRITERIA,
         }
         msg = QAMessage.model_validate(data)
         assert msg.story_id == ""

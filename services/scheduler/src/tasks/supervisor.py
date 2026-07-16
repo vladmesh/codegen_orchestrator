@@ -354,8 +354,8 @@ async def _handle_deploy_success_story(
 ) -> bool:
     """Deploy succeeded — transition story to TESTING, create QA run, publish QA message.
 
-    Returns True if the story was handed off to QA, False if the success result
-    lacked the fields QA needs (handled as a visible failure).
+    Returns True if the story was handed off to QA, False if QA's preconditions
+    were not met (handled as a visible failure).
     """
     deployed_url = result.deployed_url
     application_id = result.application_id
@@ -376,6 +376,21 @@ async def _handle_deploy_success_story(
         await api_client.fail_story(story_id)
         await _notify_admin_failure(
             story_id, project_id, f"deploy reported success but missing {missing} — cannot run QA"
+        )
+        return False
+
+    # QA validates the story against the repository's criteria, so resolve them
+    # here and carry them on the message. Same reason as the fields above: a
+    # story whose criteria are missing must not reach TESTING with a QA run that
+    # can only error out.
+    acceptance_criteria = await _resolve_acceptance_criteria(api_client, project_id, log)
+    if acceptance_criteria is None:
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            story_id,
+            project_id,
+            "deploy succeeded but the project's repository has no acceptance criteria — "
+            "cannot run QA",
         )
         return False
 
@@ -401,12 +416,31 @@ async def _handle_deploy_success_story(
             user_id="",
             deployed_url=deployed_url,
             application_id=application_id,
+            acceptance_criteria=acceptance_criteria,
             bot_username=bot_username,
             run_id=qa_run_id,
         ),
     )
     log.info("deploy_supervisor_qa_handoff", deployed_url=deployed_url, qa_run_id=qa_run_id)
     return True
+
+
+async def _resolve_acceptance_criteria(
+    api_client: SchedulerAPIClient,
+    project_id: str,
+    log: structlog.stdlib.BoundLogger,
+) -> str | None:
+    """Read the project's QA criteria, or None if there are none to run."""
+    repo = await api_client.get_primary_repository(project_id)
+    if repo is None:
+        log.error("deploy_success_no_primary_repository")
+        return None
+
+    criteria = (repo.acceptance_criteria or "").strip()
+    if not criteria:
+        log.error("deploy_success_no_acceptance_criteria", repo_id=repo.id)
+        return None
+    return criteria
 
 
 async def _handle_deploy_code_fix(

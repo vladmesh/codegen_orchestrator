@@ -1,7 +1,9 @@
-"""QA runner — SSH to prod server, run Claude Code, parse result.
+"""QA runners — HTTP checks for criteria we can decide, Claude Code for the rest.
 
-Delegates actual testing to Claude Code CLI running on the target server.
-The prompt is built from the acceptance criteria and deployment URL.
+Criteria that only state GET expectations are run directly against the deployed
+URL by `run_health_checks`. Anything else goes to `run_qa_on_server`, which
+delegates testing to the Claude Code CLI on the target server, prompted with the
+acceptance criteria and deployment URL.
 """
 
 from __future__ import annotations
@@ -16,11 +18,16 @@ import asyncssh
 import httpx
 import structlog
 
+from shared.contracts.acceptance import HealthCriterion
+
 from ..prompts.qa import build_qa_prompt
 
 logger = structlog.get_logger(__name__)
 
 QA_TIMEOUT = 1200  # 20 minutes
+HEALTH_CHECK_TIMEOUT = 30
+HEALTH_CHECK_ATTEMPTS = 5
+HEALTH_CHECK_RETRY_DELAY = 5
 SERVICE_BASE_DIR = "/opt/services"
 CREDENTIALS_PATH = "$HOME/.claude/.credentials.json"
 LOCAL_CREDENTIALS_PATH = "/secrets/claude-credentials.json"  # mounted from host
@@ -88,6 +95,63 @@ def parse_qa_result(raw: str) -> QAResult:
         summary=data.get("summary", ""),
         raw=raw,
     )
+
+
+async def run_health_checks(
+    *,
+    deployed_url: str,
+    checks: list[HealthCriterion],
+) -> QAResult:
+    """Run GET criteria against the deployed URL. No SSH, no LLM.
+
+    Each check is retried while the service is still coming up; a check that
+    never answers with its expected status fails the run.
+    """
+    results = []
+    # "returns 200" means the path itself answers 200. Following redirects would
+    # report the destination's status instead, so a criterion naming a redirect
+    # could never pass and one naming 200 would pass on a redirected path.
+    async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=False) as client:
+        for check in checks:
+            results.append(await _run_health_check(client, deployed_url, check))
+
+    failed = [c for c in results if not c["pass"]]
+    passed = not failed
+    summary = (
+        f"{len(results)} GET check(s) passed against {deployed_url}"
+        if passed
+        else f"{len(failed)}/{len(results)} GET check(s) failed against {deployed_url}"
+    )
+    logger.info("qa_health_checks_done", deployed_url=deployed_url, passed=passed)
+    return QAResult(
+        passed=passed,
+        checks=results,
+        summary=summary,
+        report="\n".join(f"- {c['name']}: {c['detail']}" for c in results),
+    )
+
+
+async def _run_health_check(
+    client: httpx.AsyncClient,
+    deployed_url: str,
+    check: HealthCriterion,
+) -> dict:
+    """GET one path, retrying until it answers as expected or attempts run out."""
+    name = f"GET {check.path} returns {check.expected_status}"
+    detail = "no response"
+    for attempt in range(HEALTH_CHECK_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(HEALTH_CHECK_RETRY_DELAY)
+        try:
+            response = await client.get(f"{deployed_url.rstrip('/')}{check.path}")
+        except httpx.HTTPError as e:
+            detail = f"request failed: {e}"
+            continue
+        if response.status_code == check.expected_status:
+            return {"name": name, "pass": True, "detail": f"got {response.status_code}"}
+        detail = f"got {response.status_code}, expected {check.expected_status}"
+    logger.warning("qa_health_check_failed", path=check.path, detail=detail)
+    return {"name": name, "pass": False, "detail": detail}
 
 
 async def _ensure_claude_credentials(conn: asyncssh.SSHClientConnection) -> None:

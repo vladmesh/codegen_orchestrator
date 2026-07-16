@@ -26,6 +26,7 @@ from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.queues.qa import QAOutcome
 from shared.queues import SCAFFOLD_QUEUE
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -55,6 +56,10 @@ DEPLOY_RUN_POLL_INTERVAL = 5
 # status, so this only covers that last write.
 DEPLOY_OUTCOME_TIMEOUT = 120
 DEPLOY_OUTCOME_POLL_INTERVAL = 3
+# Deploy hands off to QA on the scheduler's next poll, then QA retries the health
+# check while the service finishes coming up.
+QA_RUN_TIMEOUT = 300
+QA_RUN_POLL_INTERVAL = 5
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
 RUN_CANCELLATION_TIMEOUT = 30
@@ -689,6 +694,61 @@ async def wait_deploy_outcome(
     ctx["deploy_outcome"] = result.deploy_outcome.value
     ctx["deploy_error_details"] = result.error_details
     return result
+
+
+# ── QA run outcome ───────────────────────────────────────────────────────
+
+
+async def run_non_llm_qa(
+    api_internal: httpx.AsyncClient,
+    story_id: str,
+    *,
+    timeout: float,
+    poll_interval: float = QA_RUN_POLL_INTERVAL,
+) -> dict[str, str]:
+    """Wait for this story's QA run and require a terminal ``passed``.
+
+    The scheduler hands a successful deploy off to QA, and the QA consumer runs
+    the repository's criteria — for a scaffolded project those are the seeded
+    health check, which QA decides over HTTP with no LLM involved. The gate reads
+    the run the pipeline produced: a health request issued by this test would
+    prove the service answers, not that QA concluded anything about it.
+
+    Reads /api/runs/ as an internal service with no user header — see
+    ``require_unscoped_run_observer``.
+    """
+    require_unscoped_run_observer(api_internal)
+    deadline = time.monotonic() + timeout
+    run = None
+    while time.monotonic() < deadline:
+        resp = await api_internal.get(
+            "/api/runs/",
+            params={"story_id": story_id, "run_type": RunType.QA.value},
+            headers=internal_headers(),
+        )
+        resp.raise_for_status()
+        # The API orders runs newest first. A project can carry QA runs of other
+        # stories, so the run is checked against this mega's story too.
+        for candidate in resp.json():
+            if candidate["story_id"] == story_id and candidate["status"] in _TERMINAL_RUN_STATUSES:
+                run = candidate
+                break
+        if run is not None:
+            break
+        await asyncio.sleep(poll_interval)
+    else:
+        raise AssertionError(
+            f"no QA run reached a terminal state for story {story_id} in {timeout}s"
+        )
+
+    result = run["result"] or {}
+    outcome = result.get("qa_outcome")
+    if run["status"] != "completed" or outcome != QAOutcome.PASSED.value:
+        raise AssertionError(
+            f"QA run {run['id']} ended with status={run['status']} outcome={outcome}: "
+            f"{result.get('summary') or result.get('error')}"
+        )
+    return {"run_id": run["id"], "status": run["status"], "qa_outcome": outcome}
 
 
 # ── Cleanup helpers ──────────────────────────────────────────────────────

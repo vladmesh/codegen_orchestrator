@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 from shared.models.project import Project
 from shared.models.repository import Repository
 
@@ -54,6 +55,7 @@ async def create_repository(
         role=body.role.value,
         visibility=body.visibility.value,
         is_managed=body.is_managed,
+        acceptance_criteria=BASELINE_ACCEPTANCE_CRITERIA,
         created_at=now,
         updated_at=now,
     )

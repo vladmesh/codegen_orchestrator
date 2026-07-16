@@ -12,6 +12,8 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 from redis.asyncio import Redis
 
+from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
+
 TASK_TEST_TELEGRAM_ID = 999000999
 TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -226,9 +228,9 @@ async def _create_repo(client) -> str:
     return resp.json()["id"]
 
 
-async def _create_running_app(client, server_handle, app_status="running"):
+async def _create_running_app(client, server_handle, app_status="running", repo_id=None):
     """Helper: create an application with a unique repo and a port."""
-    rid = await _create_repo(client)
+    rid = repo_id or await _create_repo(client)
     svc_name = f"svc-{uuid.uuid4().hex[:6]}"
     resp = await client.post(
         "/api/applications/",
@@ -328,6 +330,9 @@ class TestRunE2E:
         msg = await _read_last_message(redis, "qa:queue")
         assert msg["application_id"] == app_id
         assert "10.0.0.1" in msg["deployed_url"]
+        # A repository is seeded with criteria at creation, so QA gets something
+        # to test without anyone filling the repository in by hand.
+        assert msg["acceptance_criteria"] == BASELINE_ACCEPTANCE_CRITERIA
 
     @pytest.mark.asyncio
     async def test_run_e2e_not_running_fails(self, client, server_handle):
@@ -335,6 +340,22 @@ class TestRunE2E:
 
         resp = await client.post(f"/api/applications/{app_id}/run-e2e")
         assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+    @pytest.mark.asyncio
+    async def test_run_e2e_without_criteria_creates_no_run(self, client, server_handle):
+        """Criteria cleared → rejected before a Run exists, not a run that can only error."""
+        rid = await _create_repo(client)
+        app_id = await _create_running_app(client, server_handle, repo_id=rid)
+
+        resp = await client.patch(f"/api/repositories/{rid}", json={"acceptance_criteria": ""})
+        assert resp.status_code == HTTPStatus.OK
+
+        resp = await client.post(f"/api/applications/{app_id}/run-e2e", json={"actor": "test"})
+        assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+        assert "acceptance_criteria" in resp.text
+
+        runs = await client.get(f"/api/applications/{app_id}/runs")
+        assert runs.json() == []
 
 
 # ---------------------------------------------------------------------------

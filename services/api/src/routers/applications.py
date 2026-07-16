@@ -384,6 +384,15 @@ async def run_e2e(
     port = app.port_allocations[0].port if app.port_allocations else 0
     deployed_url = f"http://{server.public_ip}:{port}" if port else f"http://{server.public_ip}"
 
+    # QA validates against the repository's criteria — reject before creating the
+    # Run, so a project without them doesn't leave a QA run that can only error.
+    acceptance_criteria = (repo.acceptance_criteria or "").strip()
+    if not acceptance_criteria:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Repository {repo.id} has no acceptance_criteria. Cannot run QA.",
+        )
+
     # Create Run
     run_id = f"qa-{uuid.uuid4().hex[:12]}"
     run = Run(
@@ -403,6 +412,7 @@ async def run_e2e(
         user_id="",
         deployed_url=deployed_url,
         application_id=application_id,
+        acceptance_criteria=acceptance_criteria,
         run_id=run_id,
         bot_username=repo.bot_username,
     )
