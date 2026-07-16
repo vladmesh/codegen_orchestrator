@@ -837,9 +837,13 @@ def find_worker_container(worker_id: str) -> str | None:
 def build_server_cleanup_script(project_name: str, server_ip: str, server_handle: str) -> str:
     """Build the container-side teardown of one deployed stack.
 
-    Runs inside langgraph so it can reach the internal API. The ssh-key fetch
-    authenticates with X-Internal-Key like the real consumers: /api/servers/* is
-    gated by require_internal_or_admin and 401s without it.
+    Runs inside langgraph so it can reach the internal API. The server and
+    ssh-key fetches authenticate with X-Internal-Key like the real consumers:
+    /api/servers/* is gated by require_internal_or_admin and 401s without it.
+
+    SSH runs as the server's configured ``ssh_user`` (read from the server DTO,
+    the same user deploy authorizes), not a hardcoded ``root`` the orchestrator
+    key is not authorized for.
 
     Remote steps mirror how deploy.yml creates resources:
     1. docker compose -p {name} down (graceful, using both compose files)
@@ -873,6 +877,10 @@ def build_server_cleanup_script(project_name: str, server_ip: str, server_handle
         "    headers = {'X-Internal-Key': os.environ['INTERNAL_API_KEY']}\n"
         "    async with httpx.AsyncClient("
         "base_url=api_url, timeout=10, headers=headers) as client:\n"
+        f"        srv = await client.get('/api/servers/{server_handle}')\n"
+        "        if srv.status_code != 200:\n"
+        "            raise RuntimeError(f'server fetch failed: {srv.status_code}')\n"
+        "        ssh_user = srv.json()['ssh_user']\n"
         f"        resp = await client.get('/api/servers/{server_handle}/ssh-key')\n"
         "        if resp.status_code != 200:\n"
         "            raise RuntimeError(f'ssh key fetch failed: {resp.status_code}')\n"
@@ -888,7 +896,7 @@ def build_server_cleanup_script(project_name: str, server_ip: str, server_handle
         "        result = subprocess.run(\n"
         "            ['ssh', '-i', key_path, '-o', 'StrictHostKeyChecking=no',\n"
         "             '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',\n"
-        f"             'root@{server_ip}',\n"
+        f"             ssh_user + '@{server_ip}',\n"
         f"             {repr(remote_cmd)}],\n"
         "            capture_output=True, text=True, timeout=60,\n"
         "        )\n"
@@ -898,7 +906,7 @@ def build_server_cleanup_script(project_name: str, server_ip: str, server_handle
         "            )\n"
         "        else:\n"
         f"            logger.info('cleanup_server_done', "
-        f"project='{project_name}', server='{server_ip}')\n"
+        f"project='{project_name}', server='{server_ip}', ssh_user=ssh_user)\n"
         "    finally:\n"
         "        os.unlink(key_path)\n"
         "asyncio.run(main())\n"

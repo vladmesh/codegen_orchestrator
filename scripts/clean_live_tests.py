@@ -368,7 +368,8 @@ def clean_redis_queues(project_ids):
 def clean_remote_servers():
     sql = (
         "SELECT json_agg(json_build_object("
-        "'handle', handle, 'ip', public_ip, 'key', ssh_private_key"
+        "'handle', handle, 'ip', public_ip, 'key', ssh_private_key, "
+        "'ssh_user', ssh_user"
         ")) FROM servers;"
     )
     res = run_cmd(
@@ -421,6 +422,7 @@ def clean_remote_servers():
 
     for s in servers:
         ip = s["ip"]
+        ssh_user = s["ssh_user"]
         key = s["key"]
         if not key.endswith("\\n"):
             key += "\\n"
@@ -430,7 +432,7 @@ def clean_remote_servers():
             key_path = f.name
         os.chmod(key_path, 0o600)
 
-        print(f"Cleaning remote server {s['handle']} ({ip})...")
+        print(f"Cleaning remote server {s['handle']} ({ssh_user}@{ip})...")
         try:
             r = subprocess.run(
                 [  # noqa: S607
@@ -443,7 +445,7 @@ def clean_remote_servers():
                     "ConnectTimeout=10",
                     "-o",
                     "BatchMode=yes",
-                    f"root@{ip}",
+                    f"{ssh_user}@{ip}",
                     remote_cmd,
                 ],
                 capture_output=True,
