@@ -8,7 +8,10 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 from shared.contracts.env_usage import (
+    EnvUsageParseError,
     build_env_contract_artifact,
     check_env_contract_usage,
     extract_env_references,
@@ -211,10 +214,16 @@ exec uvicorn app:main --port "${PORT:-8000}"
     }
 
 
-def test_shell_ignores_single_quoted_text_and_non_shell_shebang(tmp_path: Path):
+def test_shell_ignores_quotes_comments_and_non_shell_shebang(tmp_path: Path):
     shell = tmp_path / "scripts" / "backup.sh"
     shell.parent.mkdir()
-    shell.write_text("awk '{print $NF}' input\necho 'literal $NOT_AN_ENV_VAR'\necho $REAL\n")
+    shell.write_text(
+        "awk '{print $NF}' input\n"
+        "echo 'literal $NOT_AN_ENV_VAR'\n"
+        'echo "don\'t drop $REAL"\n'
+        "# docs mention $COMMENTED_ONLY\n"
+        "n=$(($RANDOM % 5))\n"
+    )
     javascript = tmp_path / "tools" / "gen.js"
     javascript.parent.mkdir()
     javascript.write_text("#!/usr/bin/env node\nconst value = `${userName}`\n")
@@ -316,11 +325,7 @@ def test_service_template_0_3_3_fixture_has_known_contract_gaps(tmp_path: Path):
 
     result = check_env_contract_usage(tmp_path)
 
-    undeclared = {
-        message.split()[3]
-        for message in (*result.errors, *result.warnings)
-        if message.startswith("undeclared environment key ")
-    }
+    undeclared = {message.split()[3] for message in result.errors}
     assert undeclared == {
         "ASYNC_DATABASE_URL",
         "BACKEND_INSTALL_DEV_DEPS",
@@ -334,18 +339,61 @@ def test_service_template_0_3_3_fixture_has_known_contract_gaps(tmp_path: Path):
         "SQLALCHEMY_ASYNC_DRIVER",
         "SQLALCHEMY_SYNC_DRIVER",
     }
+    assert result.warnings == (
+        "required environment contract key BACKEND_API_URL was not observed",
+        "required environment contract key ENVIRONMENT was not observed",
+        "required environment contract key TELEGRAM_BOT_TOKEN was not observed",
+    )
 
 
-def test_shell_undeclared_usage_is_a_warning(tmp_path: Path):
+def test_shell_undeclared_usage_is_an_error(tmp_path: Path):
     (tmp_path / "entrypoint.sh").write_text("echo $MISSING_KEY\n")
     write_fragment(tmp_path, {})
 
     result = check_env_contract_usage(tmp_path)
 
-    assert result.errors == ()
-    assert result.warnings == (
+    assert result.errors == (
         "undeclared environment key MISSING_KEY used at entrypoint.sh:1 (shell)",
     )
+    assert result.warnings == ()
+
+
+@pytest.mark.parametrize(
+    ("path", "contents", "error"),
+    [
+        ("compose.yml", "services: [\n", "could not parse YAML file compose.yml"),
+        ("app.py", "def broken(:\n", "could not parse Python file app.py"),
+    ],
+)
+def test_invalid_source_syntax_fails_the_gate(tmp_path: Path, path: str, contents: str, error: str):
+    (tmp_path / path).write_text(contents)
+    write_fragment(tmp_path, {})
+
+    with pytest.raises(EnvUsageParseError, match=error):
+        check_env_contract_usage(tmp_path)
+
+
+def test_workflow_reference_does_not_observe_runtime_contract_key(tmp_path: Path):
+    workflow = tmp_path / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("jobs:\n  ci:\n    env:\n      APP_TOKEN: ${{ secrets.APP_TOKEN }}\n")
+    write_fragment(
+        tmp_path,
+        {
+            "APP_TOKEN": {
+                "source": "user_secret",
+                "environments": "[production]",
+                "consumers": "[backend]",
+                "description": "application token",
+                "required": "true",
+            }
+        },
+    )
+
+    result = check_env_contract_usage(tmp_path)
+
+    assert result.errors == ()
+    assert result.warnings == ("required environment contract key APP_TOKEN was not observed",)
 
 
 def test_undeclared_usage_is_an_error_with_location(tmp_path: Path):

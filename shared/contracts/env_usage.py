@@ -38,6 +38,7 @@ _SHELL_BUILTINS = {
     "PATH",
     "PWD",
     "PYTHONPATH",
+    "RANDOM",
     "SHELL",
     "USER",
 }
@@ -71,6 +72,10 @@ class EnvUsageCheck:
 
 class EnvContractUsageError(ValueError):
     """Raised when static environment usage is absent from the contract."""
+
+
+class EnvUsageParseError(ValueError):
+    """Raised when a supported source file cannot be parsed safely."""
 
 
 def _relative_path(root: Path, path: Path) -> str:
@@ -152,13 +157,18 @@ def _settings_references(node: ast.ClassDef, relative_path: str) -> list[EnvRefe
 
 
 def _python_references(root: Path, path: Path) -> list[EnvReference]:
+    relative_path = _relative_path(root, path)
     try:
         tree = ast.parse(path.read_text(), filename=str(path))
-    except (OSError, SyntaxError, UnicodeDecodeError):
-        return []
+    except (OSError, UnicodeDecodeError) as error:
+        raise EnvUsageParseError(f"could not read Python file {relative_path}") from error
+    except SyntaxError as error:
+        location = f":{error.lineno}" if error.lineno else ""
+        raise EnvUsageParseError(
+            f"could not parse Python file {relative_path}{location}"
+        ) from error
 
     references: list[EnvReference] = []
-    relative_path = _relative_path(root, path)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and node.args:
@@ -206,11 +216,14 @@ def _interpolation_references(value: str) -> list[str]:
     return references
 
 
-def _yaml_root(path: Path) -> yaml.Node | None:
+def _yaml_root(root: Path, path: Path) -> yaml.Node:
+    relative_path = _relative_path(root, path)
     try:
         return yaml.compose(path.read_text())
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return None
+    except (OSError, UnicodeDecodeError) as error:
+        raise EnvUsageParseError(f"could not read YAML file {relative_path}") from error
+    except yaml.YAMLError as error:
+        raise EnvUsageParseError(f"could not parse YAML file {relative_path}") from error
 
 
 def _scalar_nodes(node: yaml.Node | None) -> Iterable[yaml.ScalarNode]:
@@ -226,9 +239,7 @@ def _scalar_nodes(node: yaml.Node | None) -> Iterable[yaml.ScalarNode]:
 
 
 def _compose_references(root: Path, path: Path) -> list[EnvReference]:
-    node = _yaml_root(path)
-    if node is None:
-        return []
+    node = _yaml_root(root, path)
     relative_path = _relative_path(root, path)
     return [
         EnvReference(key, relative_path, scalar.start_mark.line + 1, "compose")
@@ -238,9 +249,7 @@ def _compose_references(root: Path, path: Path) -> list[EnvReference]:
 
 
 def _workflow_references(root: Path, path: Path) -> list[EnvReference]:
-    node = _yaml_root(path)
-    if node is None:
-        return []
+    node = _yaml_root(root, path)
     relative_path = _relative_path(root, path)
     references: list[EnvReference] = []
     for scalar in _scalar_nodes(node):
@@ -265,7 +274,9 @@ def _shell_references(root: Path, path: Path) -> list[EnvReference]:
             assigned_name = assignment.group(1)
             value_references = {
                 next((value for value in match.groups() if value is not None), None)
-                for match in _SHELL_REFERENCE.finditer(line[assignment.end() :])
+                for match in _SHELL_REFERENCE.finditer(
+                    _shell_expandable_text(line[assignment.end() :])
+                )
             }
             if assigned_name not in value_references:
                 local_names.add(assigned_name)
@@ -275,8 +286,7 @@ def _shell_references(root: Path, path: Path) -> list[EnvReference]:
     relative_path = _relative_path(root, path)
     references: list[EnvReference] = []
     for line_number, line in enumerate(lines, start=1):
-        outside_quotes = "".join(_shell_unquoted_segments(line))
-        for match in _SHELL_REFERENCE.finditer(outside_quotes):
+        for match in _SHELL_REFERENCE.finditer(_shell_expandable_text(line)):
             key = next((value for value in match.groups() if value is not None), None)
             if key:
                 references.append(EnvReference(key, relative_path, line_number, "shell"))
@@ -287,20 +297,36 @@ def _shell_references(root: Path, path: Path) -> list[EnvReference]:
     ]
 
 
-def _shell_unquoted_segments(line: str) -> Iterable[str]:
-    """Yield shell text outside single quotes, where expansion cannot occur."""
-    start = 0
-    in_single_quote = False
-    for index, character in enumerate(line):
-        if character != "'":
+def _shell_expandable_text(line: str) -> str:
+    """Keep shell text where parameter expansion is valid, excluding comments."""
+    characters: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote == "'":
+            if character == "'":
+                quote = None
+            index += 1
             continue
-        if in_single_quote:
-            start = index + 1
+        if character == "\\":
+            index += 2
+            continue
+        if quote == '"':
+            if character == '"':
+                quote = None
+            else:
+                characters.append(character)
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+        elif character == "#" and (index == 0 or line[index - 1].isspace()):
+            break
         else:
-            yield line[start:index]
-        in_single_quote = not in_single_quote
-    if not in_single_quote:
-        yield line[start:]
+            characters.append(character)
+        index += 1
+    return "".join(characters)
 
 
 def _is_compose_file(path: Path) -> bool:
@@ -370,24 +396,15 @@ def check_env_contract_usage(root: Path) -> EnvUsageCheck:
         "undeclared environment key "
         f"{reference.key} used at {reference.location} ({reference.source})"
         for reference in references
-        # Workflow secret references are CI credentials, not generated-project
-        # runtime environment entries. They stay observable in extraction but
-        # do not make the project contract gate fail.
-        if reference.key not in declared and reference.source not in {"shell", "workflow"}
+        if reference.key not in declared and reference.source != "workflow"
     )
-    observed = {reference.key for reference in references}
+    observed = {reference.key for reference in references if reference.source != "workflow"}
     required_warnings = tuple(
         f"required environment contract key {key} was not observed"
         for key, entry in sorted(contract.entries.items())
         if entry.required and key not in observed
     )
-    shell_warnings = tuple(
-        "undeclared environment key "
-        f"{reference.key} used at {reference.location} ({reference.source})"
-        for reference in references
-        if reference.key not in declared and reference.source == "shell"
-    )
-    warnings = tuple(sorted(required_warnings + shell_warnings))
+    warnings = required_warnings
     return EnvUsageCheck(errors=errors, warnings=warnings, contract=contract, references=references)
 
 
