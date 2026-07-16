@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,7 +18,11 @@ from live_harness import (
     run_non_llm_qa,
 )
 import pipeline_helpers
-from pipeline_helpers import build_github_cleanup_script, build_registry_cleanup_script
+from pipeline_helpers import (
+    _build_server_remote_cleanup_command,
+    build_github_cleanup_script,
+    build_registry_cleanup_script,
+)
 import pytest
 import structlog
 
@@ -132,6 +138,131 @@ def test_registry_cleanup_script_uses_https_for_bare_registry_host(monkeypatch):
         "https://registry.example.com/v2/"
         "project-factory-organization/owned-repository-backend/tags/list"
     ]
+
+
+def _write_fake_docker(tmp_path: Path, body: str) -> Path:
+    docker = tmp_path / "bin" / "docker"
+    docker.parent.mkdir()
+    docker.write_text("#!/usr/bin/env bash\nset -eu\n" + body)
+    docker.chmod(0o755)
+    return docker
+
+
+def test_server_cleanup_discovers_underscored_compose_project(tmp_path):
+    state = tmp_path / "container-state"
+    calls = tmp_path / "docker-calls"
+    state.write_text("up\n")
+    service_dir = tmp_path / "services" / "live-test-2c3e830f" / "infra"
+    service_dir.mkdir(parents=True)
+    _write_fake_docker(
+        tmp_path,
+        """
+state=${FAKE_DOCKER_STATE:?}
+calls=${FAKE_DOCKER_CALLS:?}
+if [ "$1" = "ps" ]; then
+  filter=
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--filter" ]; then
+      shift
+      filter=$1
+    fi
+    shift || true
+  done
+  [ -s "$state" ] || exit 0
+  case "$filter" in
+    label=com.docker.compose.project=live_test_2c3e830f|name=^/live_test_2c3e830f[-_])
+      echo c1
+      ;;
+  esac
+elif [ "$1" = "inspect" ]; then
+  echo live_test_2c3e830f
+elif [ "$1" = "compose" ]; then
+  project=
+  shift
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ]; then
+      shift
+      project=$1
+    fi
+    shift || true
+  done
+  echo "compose:$project" >> "$calls"
+  if [ "$project" = "live_test_2c3e830f" ]; then
+    : > "$state"
+  fi
+elif [ "$1" = "rm" ]; then
+  echo "rm:${*: -1}" >> "$calls"
+  : > "$state"
+fi
+""",
+    )
+    env = {
+        **os.environ,
+        "FAKE_DOCKER_STATE": str(state),
+        "FAKE_DOCKER_CALLS": str(calls),
+        "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
+    }
+
+    result = subprocess.run(
+        [
+            "sh",
+            "-c",
+            _build_server_remote_cleanup_command(
+                "live-test-2c3e830f", service_base=str(tmp_path / "services")
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "compose:live_test_2c3e830f" in calls.read_text().splitlines()
+    assert not (tmp_path / "services" / "live-test-2c3e830f").exists()
+
+
+def test_server_cleanup_verifies_underscored_container_name_residue(tmp_path):
+    service_dir = tmp_path / "services" / "live-test-2c3e830f" / "infra"
+    service_dir.mkdir(parents=True)
+    _write_fake_docker(
+        tmp_path,
+        """
+if [ "$1" = "ps" ]; then
+  filter=
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--filter" ]; then
+      shift
+      filter=$1
+    fi
+    shift || true
+  done
+  if [ "$filter" = "name=^/live_test_2c3e830f[-_]" ]; then
+    echo c1
+  fi
+elif [ "$1" = "inspect" ]; then
+  echo ''
+fi
+""",
+    )
+    env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        [
+            "sh",
+            "-c",
+            _build_server_remote_cleanup_command(
+                "live-test-2c3e830f", service_base=str(tmp_path / "services")
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert "name:live_test_2c3e830f:c1" in result.stderr
 
 
 def test_db_cleanup_follows_port_allocation_application_relation(monkeypatch):

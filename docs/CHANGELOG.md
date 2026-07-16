@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-16
+
+- Fix live server cleanup for service-template compose names that normalize project slugs with
+  underscores. Teardown now discovers actual `com.docker.compose.project` labels from live
+  containers, runs compose down for both manifest and discovered names, removes by label and
+  container-name prefix, and fails if either hyphenated or underscored residue remains.
+
 ## 2026-07-15
 
 - Resolve service-template 0.3.1 PostgreSQL and Redis host ports from persisted application

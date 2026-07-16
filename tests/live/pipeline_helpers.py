@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import subprocess
 import time
 import uuid
@@ -834,6 +835,59 @@ def find_worker_container(worker_id: str) -> str | None:
     return names[0] if names else None
 
 
+def _build_server_remote_cleanup_command(
+    project_name: str, service_base: str = "/opt/services"
+) -> str:
+    project = shlex.quote(project_name)
+    variant = shlex.quote(project_name.replace("-", "_"))
+    base = shlex.quote(service_base.rstrip("/"))
+    return f"""
+set -eu
+PROJECT_NAME={project}
+ALT_PROJECT_NAME={variant}
+SVC_DIR={base}/$PROJECT_NAME
+PROJECTS=$(printf '%s\\n%s\\n' "$PROJECT_NAME" "$ALT_PROJECT_NAME" | awk 'NF && !seen[$0]++')
+for project in $PROJECTS; do
+  for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
+    label=$(docker inspect -f '{{{{ index .Config.Labels "com.docker.compose.project" }}}}' "$c")
+    if [ -n "$label" ] && [ "$label" != "<no value>" ]; then
+      PROJECTS=$(printf '%s\\n%s\\n' "$PROJECTS" "$label" | awk 'NF && !seen[$0]++')
+    fi
+  done
+done
+if [ -d "$SVC_DIR/infra" ]; then
+  for project in $PROJECTS; do
+    (cd "$SVC_DIR/infra" && docker compose -p "$project" down --remove-orphans -v)
+  done
+fi
+for project in $PROJECTS; do
+  for c in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
+    docker rm -f "$c"
+  done
+  for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
+    docker rm -f "$c"
+  done
+done
+rm -rf "$SVC_DIR"
+remaining=
+for project in $PROJECTS; do
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$project")
+  if [ -n "$ids" ]; then
+    remaining="$remaining label:$project:$ids"
+  fi
+  ids=$(docker ps -aq --filter "name=^/${{project}}[-_]")
+  if [ -n "$ids" ]; then
+    remaining="$remaining name:$project:$ids"
+  fi
+done
+if [ -n "$remaining" ]; then
+  echo "compose residue remains:$remaining" >&2
+  exit 1
+fi
+test ! -e "$SVC_DIR"
+""".strip()
+
+
 def build_server_cleanup_script(project_name: str, server_ip: str, server_handle: str) -> str:
     """Build the container-side teardown of one deployed stack.
 
@@ -846,25 +900,13 @@ def build_server_cleanup_script(project_name: str, server_ip: str, server_handle
     key is not authorized for.
 
     Remote steps mirror how deploy.yml creates resources:
-    1. docker compose -p {name} down (graceful, using both compose files)
-    2. docker rm -f by project label (force, catches leaked containers)
-    3. verify no project-labelled container remains
-    4. remove and verify `/opt/services/{name}`
+    1. discover actual compose project labels from live containers
+    2. docker compose down by manifest and discovered project names
+    3. docker rm -f by project label and container-name prefix
+    4. verify no project-labelled or project-named container remains
+    5. remove and verify `/opt/services/{name}`
     """
-    remote_cmd = (
-        f"set -e; "
-        f"SVC_DIR=/opt/services/{project_name}; "
-        f'if [ -d "$SVC_DIR/infra" ]; then '
-        f"  cd $SVC_DIR/infra && "
-        f"  docker compose -p {project_name} down --remove-orphans -v; "
-        f"fi; "
-        f"for c in $(docker ps -aq --filter label=com.docker.compose.project={project_name}); do "
-        f"  docker rm -f $c; "
-        f"done; "
-        f"rm -rf $SVC_DIR; "
-        f'test -z "$(docker ps -aq --filter label=com.docker.compose.project={project_name})"; '
-        f"test ! -e $SVC_DIR"
-    )
+    remote_cmd = _build_server_remote_cleanup_command(project_name)
 
     return (
         "import asyncio, sys, os\n"
