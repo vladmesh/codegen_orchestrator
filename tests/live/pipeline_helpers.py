@@ -37,7 +37,7 @@ AUTH_HEADERS = {USER_AUTH_HEADER: str(TEST_TELEGRAM_ID)}
 
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
-TEMPLATE_REF = "0.3.4"
+TEMPLATE_REF = "0.3.5"
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # Timeouts (seconds)

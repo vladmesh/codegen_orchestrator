@@ -16,7 +16,7 @@ def test_production_template_is_loaded_from_system_config() -> None:
     template = load_production_template()
 
     assert template.source == "gh:vladmesh/service-template"
-    assert template.ref == "0.3.4"
+    assert template.ref == "0.3.5"
 
 
 def test_stage5_smoke_uses_an_isolated_workspace_and_project_name(tmp_path: Path) -> None:
