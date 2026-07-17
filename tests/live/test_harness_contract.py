@@ -142,6 +142,54 @@ def test_registry_cleanup_script_uses_https_for_bare_registry_host(monkeypatch):
     ]
 
 
+def test_registry_cleanup_treats_stale_tag_with_missing_manifest_as_absent(monkeypatch):
+    requested_urls = []
+
+    class Response:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.headers = {}
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise AssertionError(f"unexpected status {self.status_code}")
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            requested_urls.append(url)
+            if url.endswith("/tags/list"):
+                return Response(200, {"tags": ["sha-stale"]})
+            return Response(404)
+
+        async def delete(self, url, **kwargs):
+            raise AssertionError(f"must not delete missing manifest: {url}")
+
+    monkeypatch.setenv("ORCHESTRATOR_HOSTNAME", "registry.example.com")
+    monkeypatch.setenv("REGISTRY_USER", "user")
+    monkeypatch.setenv("REGISTRY_PASSWORD", "password")
+    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: Client())
+
+    exec(  # noqa: S102
+        build_registry_cleanup_script("project-factory-organization/owned-repository-backend"),
+        {},
+    )
+
+    assert requested_urls.count(
+        "https://registry.example.com/v2/"
+        "project-factory-organization/owned-repository-backend/manifests/sha-stale"
+    ) == 2
+
+
 def _write_fake_docker(tmp_path: Path, body: str) -> Path:
     docker = tmp_path / "bin" / "docker"
     docker.parent.mkdir()
