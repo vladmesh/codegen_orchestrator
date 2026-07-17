@@ -184,10 +184,13 @@ def test_registry_cleanup_treats_stale_tag_with_missing_manifest_as_absent(monke
         {},
     )
 
-    assert requested_urls.count(
-        "https://registry.example.com/v2/"
-        "project-factory-organization/owned-repository-backend/manifests/sha-stale"
-    ) == 2
+    assert (
+        requested_urls.count(
+            "https://registry.example.com/v2/"
+            "project-factory-organization/owned-repository-backend/manifests/sha-stale"
+        )
+        == 2
+    )
 
 
 def _write_fake_docker(tmp_path: Path, body: str) -> Path:
