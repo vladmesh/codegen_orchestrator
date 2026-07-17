@@ -79,6 +79,29 @@ def test_cleanup_accepts_concurrent_removal_only_after_verified_absence(monkeypa
     assert any("redis-cli" in cmd and "DEL" in cmd for cmd in calls)
 
 
+def test_cleanup_accepts_docker_no_such_object_as_verified_absence(monkeypatch):
+    def run(cmd, **kwargs):
+        if cmd[:3] == ["docker", "rm", "-f"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["docker", "inspect"]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="[]",
+                stderr="Error: No such object: custom-prefix-abc",
+            )
+        if "EXISTS" in cmd:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="1\n", stderr="")
+
+    monkeypatch.setattr("pipeline_helpers.subprocess.run", run)
+    monkeypatch.setattr("pipeline_helpers.capture_owned_workers", lambda ctx: None)
+    errors = []
+
+    cleanup_owned_workers(_context(), errors, timeout=0, poll_interval=0)
+
+    assert errors == []
+
+
 def test_cleanup_stays_red_when_container_remains_and_still_cleans_redis(monkeypatch):
     calls = []
 

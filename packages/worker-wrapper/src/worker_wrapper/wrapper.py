@@ -661,7 +661,8 @@ class WorkerWrapper:
             logger.error(
                 "agent_process_failed", stderr=stderr, stdout=stdout, exit_code=proc.returncode
             )
-            raise RuntimeError(f"Agent process failed with code {proc.returncode}: {stderr}")
+            detail = stderr or stdout or "no output"
+            raise RuntimeError(f"Agent process failed with code {proc.returncode}: {detail}")
 
         # Capture session_id from Claude CLI JSON output
         if self.config.agent_type == AgentType.CLAUDE and not session_id:

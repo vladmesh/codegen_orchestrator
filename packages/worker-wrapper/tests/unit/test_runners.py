@@ -49,6 +49,9 @@ class TestFactoryRunner:
         assert "exec" in cmd
 
         # Check flags
+        assert "--skip-permissions-unsafe" in cmd
+        assert "--cwd" in cmd
+        assert "/workspace" in cmd
         assert "-o" in cmd
         assert "json" in cmd
 

@@ -239,3 +239,51 @@ class TestWorkerManagerCreateWithCapabilities:
         call_kwargs = mock_docker.run_container.call_args[1]
         expected_hash = compute_image_hash(["GIT", "CURL"])
         assert expected_hash in call_kwargs["image"]
+
+    @pytest.mark.asyncio
+    @patch("src.manager.workspace_mod")
+    async def test_factory_worker_forwards_manager_api_key(
+        self, mock_workspace, mock_redis, mock_docker, monkeypatch
+    ):
+        """Factory child containers need FACTORY_API_KEY even in host-session mode."""
+        from pathlib import Path
+
+        monkeypatch.setenv("FACTORY_API_KEY", "fk-test")
+        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-1"), True)
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        await manager.create_worker_with_capabilities(
+            worker_id="factory-worker-1",
+            capabilities=["GIT"],
+            base_image="worker-base:latest",
+            agent_type="factory",
+            repo_id="repo-1",
+            env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
+        )
+
+        call_kwargs = mock_docker.run_container.call_args[1]
+        assert call_kwargs["environment"]["FACTORY_API_KEY"] == "fk-test"
+
+    @pytest.mark.asyncio
+    @patch("src.manager.workspace_mod")
+    async def test_factory_worker_fails_fast_without_api_key(
+        self, mock_workspace, mock_redis, mock_docker, monkeypatch
+    ):
+        """Missing Factory credentials should fail before launching a dead worker."""
+        from pathlib import Path
+
+        monkeypatch.delenv("FACTORY_API_KEY", raising=False)
+        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-1"), True)
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        with pytest.raises(RuntimeError, match="FACTORY_API_KEY is not set"):
+            await manager.create_worker_with_capabilities(
+                worker_id="factory-worker-1",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                agent_type="factory",
+                repo_id="repo-1",
+                env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
+            )
+
+        mock_docker.run_container.assert_not_awaited()

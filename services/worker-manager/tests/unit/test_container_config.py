@@ -59,6 +59,29 @@ class TestWorkerContainerConfig:
         kwargs = config.to_docker_run_kwargs()
         assert kwargs["network_mode"] == "host"
         assert "network" not in kwargs
+        assert kwargs["mem_limit"] == "4g"
+
+    def test_noop_worker_keeps_lower_memory_limit(self):
+        """Noop workers do not need the real-agent memory budget."""
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="noop",
+            capabilities=[],
+        )
+        kwargs = config.to_docker_run_kwargs()
+        assert kwargs["mem_limit"] == "2g"
+
+    def test_factory_worker_gets_real_agent_memory_limit(self):
+        """Factory workers need the same memory budget as other real LLM agents."""
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="factory",
+            capabilities=[],
+        )
+        kwargs = config.to_docker_run_kwargs()
+        assert kwargs["mem_limit"] == "4g"
 
     def test_to_docker_run_kwargs_with_network_name(self):
         """With network_name, should attach to that network."""

@@ -43,6 +43,7 @@ ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 # Timeouts (seconds)
 SCAFFOLD_TIMEOUT = 120
 ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
+LLM_ENGINEERING_TIMEOUT = 1800  # 30 min (worker spawn + LLM edits + CI-fix loop)
 DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
 # Deploy allocates a port per module: the web module plus these infra ports
 # (mirror of deploy._DEPLOY_INFRA_PORT_SERVICES). Only the web module serves
@@ -80,6 +81,32 @@ EXPECTED_ENV_CONTRACT_FRAGMENTS = frozenset(
 # The probe prints one marked line so container log output cannot be parsed as
 # its payload.
 ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
+
+NOOP_PROJECT_DESCRIPTION = "Pipeline E2E test - noop"
+NOOP_TASK_TITLE = "Noop implementation task"
+NOOP_TASK_DESCRIPTION = "Empty commit via NoopRunner - pipeline test"
+
+LLM_BACKEND_PROJECT_DESCRIPTION = (
+    "Backend-only live LLM pipeline test. Build a minimal HTTP API that can deploy "
+    "without any user-provided secrets."
+)
+LLM_BACKEND_DETAILED_SPEC = """Implement a backend-only service.
+
+Requirements:
+- Keep the project backend-only. Do not add frontend, Telegram, notification, or bot modules.
+- Do not require any user-provided secrets or environment variables.
+- Keep the existing deploy contract limited to generated, computed, or literal values.
+- Ensure GET /health returns HTTP 200 with a small JSON payload.
+- Add or update a focused backend test for the health endpoint if the scaffold does not already
+  cover it.
+- Run the repository's normal formatting, linting, and unit tests before committing.
+"""
+LLM_BACKEND_TASK_TITLE = "Implement backend health API"
+LLM_BACKEND_TASK_DESCRIPTION = (
+    "Use the scaffolded backend service and make the smallest code change needed to implement "
+    "a production-safe GET /health endpoint that returns HTTP 200 JSON. The app must deploy "
+    "with backend-only modules and no user-required secrets."
+)
 
 
 # ── Low-level helpers ────────────────────────────────────────────────────
@@ -145,11 +172,27 @@ async def poll_status(
 # ── Pipeline phase helpers ───────────────────────────────────────────────
 
 
-async def create_noop_project(api: httpx.AsyncClient) -> dict:
-    """Create project + repository for noop pipeline testing. Returns ctx dict."""
+async def create_pipeline_project(
+    api: httpx.AsyncClient,
+    *,
+    project_prefix: str,
+    description: str,
+    agent_type: str,
+    task_title: str,
+    task_description: str,
+    detailed_spec: str | None = None,
+) -> dict:
+    """Create project + repository for one live pipeline variant. Returns ctx dict."""
     suffix = secrets.token_hex(4)
-    project_name = f"live-test-{suffix}"
+    project_name = f"{project_prefix}-{suffix}"
     project_id = str(uuid.uuid4())
+    config = {
+        "description": description,
+        "modules": ["backend"],
+        "agent_type": agent_type,
+    }
+    if detailed_spec:
+        config["detailed_spec"] = detailed_spec
 
     resp = await api.post(
         "/api/projects/",
@@ -157,11 +200,7 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
             "id": project_id,
             "name": project_name,
             "status": ProjectStatus.DRAFT,
-            "config": {
-                "description": "Pipeline E2E test — noop",
-                "modules": ["backend"],
-                "agent_type": "noop",
-            },
+            "config": config,
         },
     )
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
@@ -173,6 +212,10 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
         "project_name": project_name,
         "repo_name": project_name,
         "manifest": manifest,
+        "agent_type": agent_type,
+        "scaffold_task_description": task_description,
+        "task_title": task_title,
+        "task_description": task_description,
     }
 
     async with cleanup_on_error(lambda: cleanup_all(api, None, ctx)):
@@ -191,6 +234,31 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
     return ctx
 
 
+async def create_noop_project(api: httpx.AsyncClient) -> dict:
+    """Create project + repository for noop pipeline testing. Returns ctx dict."""
+    return await create_pipeline_project(
+        api,
+        project_prefix="live-test",
+        description=NOOP_PROJECT_DESCRIPTION,
+        agent_type="noop",
+        task_title=NOOP_TASK_TITLE,
+        task_description=NOOP_TASK_DESCRIPTION,
+    )
+
+
+async def create_llm_backend_project(api: httpx.AsyncClient) -> dict:
+    """Create project + repository for the live LLM backend pipeline."""
+    return await create_pipeline_project(
+        api,
+        project_prefix="live-test-llm",
+        description=LLM_BACKEND_PROJECT_DESCRIPTION,
+        detailed_spec=LLM_BACKEND_DETAILED_SPEC,
+        agent_type="claude",
+        task_title=LLM_BACKEND_TASK_TITLE,
+        task_description=LLM_BACKEND_TASK_DESCRIPTION,
+    )
+
+
 def trigger_scaffold(ctx: dict) -> None:
     """Publish scaffold message to Redis stream."""
     ctx["manifest"].own("github_repository", f"{GITHUB_ORG}/{ctx['repo_name']}")
@@ -204,7 +272,7 @@ def trigger_scaffold(ctx: dict) -> None:
         "template_ref": TEMPLATE_REF,
         "project_name": ctx["project_name"],
         "modules": "backend",
-        "task_description": "Pipeline E2E test project",
+        "task_description": ctx.get("scaffold_task_description", "Pipeline E2E test project"),
     }
     result = subprocess.run(
         [
@@ -271,8 +339,8 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
             "project_id": ctx["project_id"],
             "story_id": ctx["story_id"],
             "type": "create",
-            "title": "Noop implementation task",
-            "description": "Empty commit via NoopRunner — pipeline test",
+            "title": ctx.get("task_title", NOOP_TASK_TITLE),
+            "description": ctx.get("task_description", NOOP_TASK_DESCRIPTION),
             "status": TaskStatus.BACKLOG,
         },
     )
@@ -483,8 +551,14 @@ def build_env_contract_probe_script(
         "        if content is None:\n"
         "            raise RuntimeError(f'contract fragment disappeared: {path}')\n"
         "        fragments.append(yaml.safe_load(content))\n"
-        "    entries = (\n"
-        "        sorted(merge_env_contract_fragments(fragments).entries) if fragments else []\n"
+        "    contract = merge_env_contract_fragments(fragments) if fragments else None\n"
+        "    entries = sorted(contract.entries) if contract else []\n"
+        "    user_secret_entries = (\n"
+        "        sorted(\n"
+        "            key for key, entry in contract.entries.items()\n"
+        "            if getattr(entry, 'source', None) == 'user_secret'\n"
+        "        )\n"
+        "        if contract else []\n"
         "    )\n"
         "    merged_into_main = None\n"
         "    if verify_merged:\n"
@@ -498,7 +572,8 @@ def build_env_contract_probe_script(
         "            resp.raise_for_status()\n"
         "            merged_into_main = resp.json()['status'] in ('identical', 'behind')\n"
         "    payload = {'ref': ref, 'fragment_paths': fragment_paths,\n"
-        "               'entries': entries, 'merged_into_main': merged_into_main}\n"
+        "               'entries': entries, 'user_secret_entries': user_secret_entries,\n"
+        "               'merged_into_main': merged_into_main}\n"
         f"    print({ENV_CONTRACT_PROBE_MARKER!r} + json.dumps(payload))\n"
         "asyncio.run(probe())\n"
     )
@@ -1090,7 +1165,8 @@ def _wait_for_container_absence(
             cwd=ORCHESTRATOR_ROOT,
         )
         if verify.returncode != 0:
-            if "No such container" in verify.stderr:
+            inspect_error = f"{verify.stderr}\n{verify.stdout}".lower()
+            if any(marker in inspect_error for marker in ("no such container", "no such object")):
                 return None
             return "Docker inspect failed"
         if time.monotonic() >= deadline:

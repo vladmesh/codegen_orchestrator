@@ -88,7 +88,7 @@ class WorkerContainerConfig:
             "name": f"worker-{self.worker_id}",
             "hostname": f"worker-{self.worker_id}",
             # Standard limits
-            "mem_limit": "2g",
+            "mem_limit": self._mem_limit(),
             "cpu_period": 100000,
             "cpu_quota": 100000,  # 1 CPU
         }
@@ -101,3 +101,9 @@ class WorkerContainerConfig:
             kwargs["network_mode"] = "host"
 
         return kwargs
+
+    def _mem_limit(self) -> str:
+        """Return the Docker memory limit for this worker agent."""
+        if self.agent_type in {AgentType.CLAUDE, AgentType.FACTORY}:
+            return "4g"
+        return "2g"
