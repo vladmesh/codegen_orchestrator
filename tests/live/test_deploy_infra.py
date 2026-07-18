@@ -35,6 +35,7 @@ SERVICE_TEMPLATE_ROOT = Path(
 async def managed_server(api_internal):
     """Get first managed server with active-ish status, or skip."""
     resp = await api_internal.get("/api/servers/")
+    resp.raise_for_status()
     assert resp.status_code == 200, f"List servers failed: {resp.text}"
     servers = resp.json()
 
@@ -52,6 +53,7 @@ class TestManagedServer:
     async def test_managed_server_exists(self, api_internal):
         """At least one managed server with operational status in DB."""
         resp = await api_internal.get("/api/servers/")
+        resp.raise_for_status()
         assert resp.status_code == 200
         servers = resp.json()
 
@@ -68,6 +70,7 @@ class TestManagedServer:
         """Managed server has a decryptable SSH key (deployer fetches it at step 5)."""
         handle = managed_server["handle"]
         resp = await api_internal.get(f"/api/servers/{handle}/ssh-key")
+        resp.raise_for_status()
         assert resp.status_code == 200, f"SSH key endpoint failed: {resp.text}"
         body = resp.json()
         key = body.get("ssh_key", "")
@@ -95,9 +98,7 @@ class TestManagedServer:
             "        base_url=api_url, timeout=10, headers=headers\n"
             "    ) as client:\n"
             f"        resp = await client.get('/api/servers/{handle}/ssh-key')\n"
-            "        if resp.status_code != 200:\n"
-            "            print(f'FAILED:ssh-key-fetch:{resp.status_code}')\n"
-            "            return\n"
+            "        resp.raise_for_status()\n"
             "        key = resp.json().get('ssh_key', '')\n"
             "    if not key.endswith('\\n'):\n"
             "        key += '\\n'\n"
@@ -147,6 +148,7 @@ class TestPortAllocation:
             f"/api/servers/{handle}/ports/allocate-next",
             json={"service_name": "live-test-deploy-infra", "start_port": 19000},
         )
+        resp.raise_for_status()
         assert resp.status_code in (200, 201), f"Port allocation failed: {resp.text}"
         allocation = resp.json()
         alloc_id = allocation["id"]
@@ -156,12 +158,14 @@ class TestPortAllocation:
         try:
             # Verify it shows up in listings
             resp = await api_internal.get(f"/api/servers/{handle}/ports")
+            resp.raise_for_status()
             assert resp.status_code == 200
             allocated_ports = [p["port"] for p in resp.json()]
             assert port in allocated_ports, f"Port {port} not found in server ports list"
         finally:
             # Always release — this test owns only the allocation it just created.
-            await api_internal.delete(f"/api/allocations/{alloc_id}")
+            resp = await api_internal.delete(f"/api/allocations/{alloc_id}")
+            resp.raise_for_status()
 
 
 class TestDeploySecrets:

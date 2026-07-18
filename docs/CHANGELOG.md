@@ -2,6 +2,9 @@
 
 ## 2026-07-18
 
+- Make live harness API reads fail loud before body parsing. Parsed `tests/live` API responses now
+  call `raise_for_status()` first, including scaffold/project polling and auth-gated server,
+  ssh-key and port-allocation checks, with a mock-transport regression for a rejected polling call.
 - Route live teardown run discovery through an internal-only API client. Cleanup now sees unowned
   deploy and QA runs, selects only records whose `project_id` matches the teardown manifest,
   cancels active records, and proves their terminal status before deleting external resources.

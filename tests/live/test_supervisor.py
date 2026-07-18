@@ -31,13 +31,17 @@ async def test_failure_metadata_persists(api, test_project):
             "title": "Infra failure metadata test",
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201
     task_id = resp.json()["id"]
 
     # Transition: backlog → todo → in_dev → failed
-    await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
-    await api.post(f"/api/tasks/{task_id}/start")
-    await api.post(f"/api/tasks/{task_id}/fail")
+    resp = await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
+    resp.raise_for_status()
+    resp = await api.post(f"/api/tasks/{task_id}/start")
+    resp.raise_for_status()
+    resp = await api.post(f"/api/tasks/{task_id}/fail")
+    resp.raise_for_status()
 
     # Try to set failure_metadata (this is what engineering consumer does)
     resp = await api.patch(
@@ -49,11 +53,13 @@ async def test_failure_metadata_persists(api, test_project):
             },
         },
     )
+    resp.raise_for_status()
     # Should succeed (currently 200 but silently ignores the field)
     assert resp.status_code == 200
 
     # Read back — failure_metadata should be present
     resp = await api.get(f"/api/tasks/{task_id}")
+    resp.raise_for_status()
     assert resp.status_code == 200
     task = resp.json()
     assert "failure_metadata" in task, "failure_metadata not in API response"
@@ -73,12 +79,16 @@ async def test_worker_rejected_metadata_persists(api, test_project):
             "title": "Worker rejected metadata test",
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201
     task_id = resp.json()["id"]
 
-    await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
-    await api.post(f"/api/tasks/{task_id}/start")
-    await api.post(f"/api/tasks/{task_id}/fail")
+    resp = await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
+    resp.raise_for_status()
+    resp = await api.post(f"/api/tasks/{task_id}/start")
+    resp.raise_for_status()
+    resp = await api.post(f"/api/tasks/{task_id}/fail")
+    resp.raise_for_status()
 
     resp = await api.patch(
         f"/api/tasks/{task_id}",
@@ -89,9 +99,11 @@ async def test_worker_rejected_metadata_persists(api, test_project):
             },
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 200
 
     resp = await api.get(f"/api/tasks/{task_id}")
+    resp.raise_for_status()
     task = resp.json()
     assert "failure_metadata" in task
     assert task["failure_metadata"]["failure_reason"] == "worker_rejected"
@@ -113,6 +125,7 @@ async def test_infra_failed_task_not_retried_by_supervisor(api, test_project):
             "title": "Infra failure story",
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201
     story_id = resp.json()["id"]
 
@@ -125,16 +138,20 @@ async def test_infra_failed_task_not_retried_by_supervisor(api, test_project):
             "story_id": story_id,
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201
     task_id = resp.json()["id"]
 
     # Transition to failed
-    await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
-    await api.post(f"/api/tasks/{task_id}/start")
-    await api.post(f"/api/tasks/{task_id}/fail")
+    resp = await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
+    resp.raise_for_status()
+    resp = await api.post(f"/api/tasks/{task_id}/start")
+    resp.raise_for_status()
+    resp = await api.post(f"/api/tasks/{task_id}/fail")
+    resp.raise_for_status()
 
     # Set infra failure metadata
-    await api.patch(
+    resp = await api.patch(
         f"/api/tasks/{task_id}",
         json={
             "failure_metadata": {
@@ -143,12 +160,14 @@ async def test_infra_failed_task_not_retried_by_supervisor(api, test_project):
             },
         },
     )
+    resp.raise_for_status()
 
     # Wait for supervisor cycle (runs every 30s)
     await asyncio.sleep(35)
 
     # Task should still be "failed" — supervisor should NOT have retried it
     resp = await api.get(f"/api/tasks/{task_id}")
+    resp.raise_for_status()
     task = resp.json()
     assert task["status"] == TaskStatus.FAILED, (
         f"Expected task to stay 'failed' but got '{task['status']}'. "
