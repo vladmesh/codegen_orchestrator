@@ -96,10 +96,12 @@ def redis():
 
 
 @pytest.fixture
-async def test_project(api):
+async def test_project(api, api_internal):
     """Create a manifest-owned project and prove its teardown."""
     data, ctx = await create_test_project_context(api)
-    async with cleanup_guard(lambda: cleanup_all(api, None, ctx), manifest=ctx["manifest"]):
+    async with cleanup_guard(
+        lambda: cleanup_all(api_internal, None, ctx), manifest=ctx["manifest"]
+    ):
         yield data
 
 

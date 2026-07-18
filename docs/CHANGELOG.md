@@ -2,6 +2,9 @@
 
 ## 2026-07-18
 
+- Route live teardown run discovery through an internal-only API client. Cleanup now sees unowned
+  deploy and QA runs, selects only records whose `project_id` matches the teardown manifest,
+  cancels active records, and proves their terminal status before deleting external resources.
 - Extend the live mega pipeline with a real Claude developer worker variant. The noop route still
   proves the deterministic plumbing, while the LLM route now scaffolds a backend-only project,
   runs engineering with a longer timeout, verifies the merged env contract has no user-secret

@@ -700,7 +700,7 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
         with pytest.raises(AssertionError, match="Create repository failed"):
-            await pipeline_helpers.create_noop_project(api)
+            await pipeline_helpers.create_noop_project(api, api)
 
     assert len(cleanup_contexts) == 1
     manifest = cleanup_contexts[0]["manifest"]
@@ -724,7 +724,7 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        ctx = await pipeline_helpers.create_llm_backend_project(api)
+        ctx = await pipeline_helpers.create_llm_backend_project(api, api)
 
     project_payload = requests[0][1]
     config = project_payload["config"]
@@ -798,7 +798,7 @@ async def test_common_live_project_fixture_uses_verified_cleanup(monkeypatch, tm
     monkeypatch.setattr(live_conftest, "cleanup_all", cleanup)
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        fixture = live_conftest.test_project.__wrapped__(api)
+        fixture = live_conftest.test_project.__wrapped__(api, api)
         assert await anext(fixture) == {"id": "common-project"}
         with pytest.raises(StopAsyncIteration):
             await anext(fixture)
@@ -1015,7 +1015,14 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
             events.append("list-runs")
             return httpx.Response(
                 200,
-                json=[{"id": "deploy-1", "status": "running", "type": "deploy"}],
+                json=[
+                    {
+                        "id": "deploy-1",
+                        "project_id": "project-1",
+                        "status": "running",
+                        "type": "deploy",
+                    }
+                ],
             )
         if request.method == "PATCH" and request.url.path == "/api/runs/deploy-1":
             events.append("cancel-run")
@@ -1369,6 +1376,118 @@ def _runs_client(runs: list[dict], *, as_user: bool = False) -> httpx.AsyncClien
         transport=httpx.MockTransport(_runs_api(runs)),
         headers=headers,
     )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_cancels_unowned_project_runs_through_internal_client(monkeypatch, tmp_path):
+    """Cleanup must see unowned deploy/QA runs without trusting API narrowing."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    runs = [
+        {
+            "id": "deploy-owned",
+            "type": "deploy",
+            "project_id": "project-1",
+            "story_id": "story-1",
+            "user_id": None,
+            "status": "running",
+        },
+        {
+            "id": "qa-owned",
+            "type": "qa",
+            "project_id": "project-1",
+            "story_id": "story-1",
+            "user_id": None,
+            "status": "queued",
+        },
+        {
+            "id": "deploy-foreign",
+            "type": "deploy",
+            "project_id": "project-2",
+            "story_id": "story-2",
+            "user_id": HARNESS_USER_ID,
+            "status": "running",
+        },
+    ]
+    cancelled = []
+    cancellation_requested = set()
+    internal_run_headers = []
+    external_teardown = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/runs/":
+            # Deliberately ignore project_id: the harness must enforce ownership
+            # even if an API implementation returns more than it was asked for.
+            selected = list(runs)
+            if pipeline_helpers.USER_AUTH_HEADER in request.headers:
+                selected = [run for run in selected if run["user_id"] == HARNESS_USER_ID]
+            else:
+                internal_run_headers.append(request.headers)
+                for run in selected:
+                    if run["id"] in cancellation_requested:
+                        run["status"] = "cancelled"
+            return httpx.Response(200, json=selected)
+        if request.method == "PATCH" and request.url.path.startswith("/api/runs/"):
+            internal_run_headers.append(request.headers)
+            run_id = request.url.path.rsplit("/", 1)[-1]
+            cancelled.append(run_id)
+            cancellation_requested.add(run_id)
+            return httpx.Response(200, json=next(run for run in runs if run["id"] == run_id))
+        if request.method == "GET" and request.url.path == "/api/projects/project-1":
+            return httpx.Response(404)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_scaffold", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_active_work", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_owned_capability_work", lambda ctx: None)
+
+    def cleanup_server(ctx):
+        owned_statuses = {run["status"] for run in runs if run["project_id"] == ctx["project_id"]}
+        assert owned_statuses == {"cancelled"}
+        external_teardown.append("server")
+
+    monkeypatch.setattr(pipeline_helpers, "cleanup_server_container", cleanup_server)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: None)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_registry_resources", lambda ctx, errors: None)
+    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: None)
+
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    transport = httpx.MockTransport(handler)
+    async with (
+        httpx.AsyncClient(
+            base_url="http://test",
+            transport=transport,
+            headers={**pipeline_helpers.internal_headers(), **pipeline_helpers.AUTH_HEADERS},
+        ) as api_as_user,
+        httpx.AsyncClient(
+            base_url="http://test",
+            transport=transport,
+            headers=pipeline_helpers.internal_headers(),
+        ) as api_internal,
+    ):
+        blind = await api_as_user.get("/api/runs/", params={"project_id": "project-1"})
+        assert [run["id"] for run in blind.json()] == ["deploy-foreign"]
+
+        with pytest.raises(CleanupError, match=pipeline_helpers.USER_AUTH_HEADER):
+            await pipeline_helpers.cleanup_all(
+                api_as_user,
+                None,
+                {"project_id": "project-1", "manifest": manifest},
+            )
+        assert cancelled == []
+        assert external_teardown == []
+
+        await pipeline_helpers.cleanup_all(
+            api_internal,
+            None,
+            {"project_id": "project-1", "manifest": manifest},
+        )
+
+    assert cancelled == ["deploy-owned", "qa-owned"]
+    assert external_teardown == ["server"]
+    assert all(headers["X-Internal-Key"] == "test-internal-key" for headers in internal_run_headers)
+    assert all(pipeline_helpers.USER_AUTH_HEADER not in headers for headers in internal_run_headers)
 
 
 @pytest.mark.asyncio
