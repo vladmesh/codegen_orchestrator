@@ -9,7 +9,7 @@
 
 - **Автономность**: Человек заходит раз в несколько дней, смотрит отчёты, докидывает деньги
 - **Агенты как узлы графа**: Product Owner — это агент LangGraph, управляющий процессом.
-- **Worker Manager**: Запускает изолированные контейнеры для Engineering/DevOps задач (Claude Code, Factory.ai).
+- **Worker Manager**: Запускает изолированные контейнеры для Engineering/DevOps задач (Claude Code, Factory.ai, OpenAI Codex).
 - **Нелинейность**: Агенты могут вызывать друг друга в любом порядке
 - **Spec-first**: Используем [service-template](https://github.com/vladmesh/service-template) для генерации кода
 

@@ -38,7 +38,7 @@ Path-routed checks:
 
 - Service matrix covers `api`, `langgraph`, `scheduler`, `telegram_bot`, `worker-manager`, and `infra`.
 - Integration matrix covers `backend`, `template`, `frontend`, `infra`, and `po-tools`.
-- `backend` integration stays `workflow_dispatch` only because it exercises DIND worker containers and Claude/factory worker boundaries. It is preserved for manual full-matrix runs, but it is not a deterministic PR merge-gate suite.
+- `backend` integration stays `workflow_dispatch` only because it exercises DIND worker containers and coding-agent worker boundaries. It is preserved for manual full-matrix runs, but it is not a deterministic PR merge-gate suite.
 - Shared code, packages, workflow edits, Makefile edits, dependency root changes, Docker test infrastructure, and integration test changes trigger the broad affected matrices instead of a single service subset.
 
 Skipped-command guard:

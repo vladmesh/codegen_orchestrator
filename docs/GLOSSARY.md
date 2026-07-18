@@ -30,7 +30,7 @@ Docker-контейнер с CLI coding agent внутри. Использует
 **Developer Worker** — Контейнер с coding agent. Для задач внутри Story — переиспользуется между задачами (worker_id хранится в Redis hash `story:workers`). Для standalone задач — эфемерный, удаляется после завершения. Stateless — контекст это код в репо + ошибки.
 
 **Управляется:** `worker-manager`
-**Конфигурация:** Промпты хранятся в `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory → `AGENTS.md`. Также инжектится `TASK.md` с конкретной задачей.
+**Конфигурация:** Промпты хранятся в `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory и Codex → `AGENTS.md`. Также инжектится `TASK.md` с конкретной задачей.
 
 ### Project Status (Статус проекта)
 Жизненный цикл проекта. Минимальный набор: `draft` → `active` → `paused` / `archived`. Не содержит процессных статусов (scaffolding, deploying) — активность определяется дочерними сущностями (Story, Run).
@@ -71,7 +71,7 @@ LangGraph ReactAgent, живущий внутри сервиса langgraph, вы
 
 ### CLI-Agent (CLI-Агент)
 AI который работает внутри Developer Worker контейнера.
-**Реализации:** Claude Code, Factory.ai Droid.
+**Реализации:** Claude Code, Factory.ai Droid, OpenAI Codex CLI.
 
 **Отличие от Service Agent:** CLI-Agent — это "личность" в эфемерном контейнере с доступом к bash и ФС, а Service Agent — нода в графе langgraph-сервиса, общающаяся через @tool.
 
