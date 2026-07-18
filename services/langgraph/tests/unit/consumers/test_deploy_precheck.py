@@ -252,4 +252,5 @@ class TestDeployPreCheckIntegration:
 
         assert result["status"] == "success"
         assert mock_precheck.await_args.kwargs["ssh_user"] == "dev"
+        assert mock_precheck.await_args.kwargs["project_name"] == "test-project-0000"
         mock_devops.assert_called_once()

@@ -11,7 +11,7 @@ import structlog
 logger = structlog.get_logger()
 
 
-def determine_repository(git_url: str | None, project_name: str) -> dict:
+def determine_repository(git_url: str | None, project_name: str, project_slug: str | None) -> dict:
     """Determine repository details (owner, name, full_name)."""
     if git_url and "github.com/" in git_url:
         repo_full_name = git_url.split("github.com/")[-1].rstrip("/").removesuffix(".git")
@@ -25,11 +25,13 @@ def determine_repository(git_url: str | None, project_name: str) -> dict:
         owner = os.getenv("GITHUB_ORG")
         if not owner:
             raise RuntimeError("No repository found for project and GITHUB_ORG env not set")
-        repo_name = project_name.lower().replace(" ", "-").replace("_", "-")
+        if not project_slug:
+            raise RuntimeError("No repository found for project and project slug is missing")
+        repo_name = project_slug
         repo_full_name = f"{owner}/{repo_name}"
         logger.info(
-            "inferring_repo_from_project_name",
-            project_name=project_name,
+            "inferring_repo_from_project_slug",
+            project_slug=project_slug,
             repo_full_name=repo_full_name,
         )
     return {"owner": owner, "name": repo_name, "full_name": repo_full_name}

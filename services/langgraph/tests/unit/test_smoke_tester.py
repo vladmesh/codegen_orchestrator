@@ -35,7 +35,11 @@ def _make_state(
     return {
         "messages": [],
         "project_id": "test-project",
-        "project_spec": {"config": {"modules": modules}},
+        "project_spec": {
+            "title": "Test Project",
+            "slug": "test-project-0000",
+            "config": {"modules": modules},
+        },
         "allocated_resources": allocated_resources,
         "repo_info": None,
         "provided_secrets": {},
@@ -314,7 +318,11 @@ def _make_state_with_handle(*, modules=None, server_handle="srv-abc"):
     return {
         "messages": [],
         "project_id": "test-project",
-        "project_spec": {"name": "my-cool-project", "config": {"modules": modules}},
+        "project_spec": {
+            "title": "My Cool Project",
+            "slug": "my-cool-project-0000",
+            "config": {"modules": modules},
+        },
         "allocated_resources": {
             "srv-abc:8000": {
                 "server_ip": "1.2.3.4",
@@ -378,6 +386,9 @@ class TestContainerLogCapture:
         assert check["result"] == "fail"
         assert "ModuleNotFoundError" in check["detail"]
         assert "HTTP 500" in check["detail"]
+        log_cmd = mock_conn.run.await_args.args[0]
+        assert "cd /opt/services/my-cool-project-0000" in log_cmd
+        assert "docker compose -p my-cool-project-0000" in log_cmd
 
     async def test_logs_not_fetched_on_pass(self, smoke_node):
         """Passing smoke check must NOT trigger SSH log fetch."""

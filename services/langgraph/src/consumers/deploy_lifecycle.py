@@ -5,6 +5,8 @@ Simple SSH operations that skip the full DevOps subgraph.
 
 from __future__ import annotations
 
+import shlex
+
 import asyncssh
 import structlog
 
@@ -51,8 +53,9 @@ async def process_lifecycle_action(
         }
 
     service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
+    quoted_service_dir = shlex.quote(service_dir)
     compose_cmd = (
-        f"cd {service_dir}/infra && "
+        f"cd {shlex.quote(f'{service_dir}/infra')} && "
         f"docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
     )
 
@@ -61,7 +64,7 @@ async def process_lifecycle_action(
     elif action == DeployAction.UNDEPLOY:
         # compose down first, rm -rf only if down succeeds.
         # If down fails — keep directory so retry can work.
-        cmd = f"{compose_cmd} down -v && rm -rf {service_dir}"
+        cmd = f"{compose_cmd} down -v && rm -rf {quoted_service_dir}"
     else:
         raise ValueError(f"Unexpected lifecycle action: {action}")
 

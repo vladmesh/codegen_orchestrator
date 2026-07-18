@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import shlex
+
 import asyncssh
 import structlog
 
 from shared.contracts.dto.project import ProjectDTO
 
 from ..clients.api import api_client
+from ..runtime_identity import project_runtime_slug
 
 logger = structlog.get_logger(__name__)
 
@@ -31,6 +34,7 @@ async def _pre_check_server(
         Error message string if pre-check failed, None if OK.
     """
     service_dir = f"{SERVICE_BASE_DIR}/{project_name}/"
+    quoted_service_dir = shlex.quote(service_dir)
 
     try:
         key = asyncssh.import_private_key(ssh_key)
@@ -40,7 +44,7 @@ async def _pre_check_server(
             known_hosts=None,
             client_keys=[key],
         ) as conn:
-            result = await conn.run(f"test -d {service_dir}", check=False)
+            result = await conn.run(f"test -d {quoted_service_dir}", check=False)
             dir_exists = result.exit_status == 0
 
     except Exception as e:
@@ -85,7 +89,7 @@ async def _run_deploy_precheck(
     if not server_ip or not server_handle:
         return None
 
-    project_name = (project.name or project_id).replace(" ", "_").lower()
+    project_name = project_runtime_slug(project)
     server = await api_client.get_server(server_handle)
     ssh_key = await api_client.get_server_ssh_key(server_handle)
     if not ssh_key:

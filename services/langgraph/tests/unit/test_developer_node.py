@@ -60,6 +60,7 @@ def _make_state(*, action="create", status=ProjectStatus.ACTIVE.value, modules=N
         "project_spec": {
             "id": "proj-1",
             "name": "test-project",
+            "slug": "test-project-0000",
             "status": status,
             "config": {
                 "modules": modules or ["backend"],

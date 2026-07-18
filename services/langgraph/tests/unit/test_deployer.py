@@ -28,7 +28,8 @@ def base_state():
     return {
         "project_id": "proj-123",
         "project_spec": {
-            "name": "my project",
+            "title": "My Project",
+            "slug": "my-project-0000",
             "config": {"modules": ["backend"]},
         },
         "repo_info": {
@@ -138,7 +139,7 @@ class TestDeployerNodeHappyPath:
         assert secrets_arg["DEPLOY_USER"] == "dev"
         assert secrets_arg["DEPLOY_SSH_KEY"] == "ssh-key-content"
         assert secrets_arg["DEPLOY_PORT"] == "8080"
-        assert secrets_arg["PROJECT_NAME"] == "my_project"
+        assert secrets_arg["PROJECT_NAME"] == "my-project-0000"
         assert secrets_arg["REGISTRY_URL"] == "registry.example.com"
         assert secrets_arg["REGISTRY_USER"] == "testuser"
         assert secrets_arg["REGISTRY_PASSWORD"] == "testpass"  # noqa: S105
@@ -227,7 +228,7 @@ class TestDeployerNodeHappyPath:
         mock_api.get_or_create_application.assert_called_once_with(
             repo_id="repo-test1",
             server_handle="srv-1",
-            service_name="my_project",
+            service_name="my-project-0000",
         )
         mock_api.update_application.assert_called_once_with(1, {"status": "running"})
 

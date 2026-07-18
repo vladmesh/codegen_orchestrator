@@ -82,7 +82,7 @@ class DeveloperNode(FunctionalNode):
                 "errors": state.get("errors", []) + ["No project specification"],
             }
 
-        project_name = project_spec.get("name", "project")
+        project_name = project_spec.get("title") or project_spec.get("name", "project")
         config = project_spec.get("config") or {}
         project_description = config.get("description", "")
         modules = config.get("modules", ["backend"])
@@ -198,7 +198,7 @@ class DeveloperNode(FunctionalNode):
         primary_repo = await api_client.get_primary_repository(project_id) if project_id else None
         git_url = primary_repo.git_url if primary_repo else None
         repo_id = primary_repo.id if primary_repo else None
-        repo_details = self._determine_repository(git_url, project_name)
+        repo_details = self._determine_repository(git_url, project_name, project_spec.get("slug"))
         repo_full_name = repo_details["full_name"]
         owner = repo_details["owner"]
         repo_name = repo_details["name"]
@@ -360,8 +360,10 @@ class DeveloperNode(FunctionalNode):
     # Thin delegations (keeps tests calling node._method_name working)
     # ------------------------------------------------------------------
 
-    def _determine_repository(self, git_url: str | None, project_name: str) -> dict:
-        return determine_repository(git_url, project_name)
+    def _determine_repository(
+        self, git_url: str | None, project_name: str, project_slug: str | None = None
+    ) -> dict:
+        return determine_repository(git_url, project_name, project_slug)
 
     def _get_task_title(self, action: str, project_name: str) -> str:
         return get_task_title(action, project_name)

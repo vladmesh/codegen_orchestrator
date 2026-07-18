@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-19
+
+- Route runtime project identity through immutable `project.slug` in deploy,
+  repository setup, allocation, DevOps secrets, smoke logs and QA. Deploy now
+  stores `Application.service_name` as the slug, QA uses the same slugged
+  server directory, and SSH command paths/compose names are shell-quoted at the
+  command boundary.
+
 ## 2026-07-18
 
 - Split project display titles from runtime slugs. Projects now store free-text

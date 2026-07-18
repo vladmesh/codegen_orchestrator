@@ -11,7 +11,11 @@ async def test_deploy_requests_template_infrastructure_port_allocations():
     """The deploy handoff requests host ports used by template 0.3.1."""
     from src.consumers.deploy import _allocate_resources
 
-    project = make_project(config={"modules": ["backend"]})
+    project = make_project(
+        title="Fancy_Project With Spaces",
+        slug="fancy-project-with-spaces-0000",
+        config={"modules": ["backend"]},
+    )
     repository = make_repository()
     with (
         patch(
@@ -23,3 +27,4 @@ async def test_deploy_requests_template_infrastructure_port_allocations():
         await _allocate_resources(str(project.id), project)
 
     assert allocate.await_args.kwargs["modules"] == ["backend", "postgres", "redis"]
+    assert allocate.await_args.kwargs["service_name"] == "fancy-project-with-spaces-0000"
