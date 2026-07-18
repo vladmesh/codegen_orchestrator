@@ -10,6 +10,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
+MAKEFILE = ROOT / "Makefile"
 
 EXPECTED_SERVICE_MATRIX = {
     "api",
@@ -44,6 +46,20 @@ EXPECTED_FILTERS = {
 }
 HYPHENATED_OUTPUTS = {"worker-manager", "infra-service", "docker-test", "integration-tests"}
 TEMPLATE_COMPAT_TIMEOUT_MINUTES = 30
+OFFLINE_LIVE_IGNORES = {
+    "tests/live/test_api_crud.py",
+    "tests/live/test_capability_cleanup_redis.py",
+    "tests/live/test_ci_prompt.py",
+    "tests/live/test_deploy_infra.py",
+    "tests/live/test_full_pipeline.py",
+    "tests/live/test_health.py",
+    "tests/live/test_pipeline_engineering.py",
+    "tests/live/test_pipeline_scaffold.py",
+    "tests/live/test_scaffold.py",
+    "tests/live/test_scaffold_result.py",
+    "tests/live/test_streams.py",
+    "tests/live/test_supervisor.py",
+}
 
 
 def fail(message: str) -> None:
@@ -139,6 +155,38 @@ def assert_fast_checks(jobs: dict[str, Any]) -> None:
             fail(f"{step_name} must not be conditional")
         if step.get("run") != command:
             fail(f"{step_name} must run {command}")
+    step = step_by_name(job, "Run offline live regressions")
+    if step.get("if"):
+        fail("offline live regressions must not be conditional")
+    if step.get("run") != "make test-live":
+        fail("offline live regressions must call make test-live")
+    for stale_step in [
+        "Run live cleanup auth/FK regression",
+        "Run live cleanup ssh_user regression",
+        "Run live harness contract regression",
+    ]:
+        for candidate in job.get("steps", []):
+            if isinstance(candidate, dict) and candidate.get("name") == stale_step:
+                fail(f"fast-checks must not enumerate {stale_step}")
+
+
+def assert_offline_live_unit_runner() -> None:
+    script = TEST_UNIT_LOCAL.read_text()
+    if "live-offline|tests/live|" not in script:
+        fail("test-unit-local ALL_SUITES must include offline tests/live")
+    for ignored in OFFLINE_LIVE_IGNORES:
+        if f"--ignore={ignored}" not in script:
+            fail(f"test-unit-local offline live suite is missing ignore {ignored}")
+
+
+def assert_offline_live_make_target() -> None:
+    makefile = MAKEFILE.read_text()
+    command = "uv run pytest tests/live/ -v --tb=short $(LIVE_OFFLINE_IGNORE_FLAGS)"
+    if command not in makefile:
+        fail("make test-live must run tests/live/ through LIVE_OFFLINE_IGNORE_FLAGS")
+    for ignored in OFFLINE_LIVE_IGNORES:
+        if f"--ignore={ignored}" not in makefile:
+            fail(f"make test-live is missing ignore {ignored}")
 
 
 def assert_service_tests(jobs: dict[str, Any]) -> None:
@@ -245,6 +293,8 @@ def main() -> None:
         fail("workflow has no jobs mapping")
     assert_detect_changes(jobs)
     assert_fast_checks(jobs)
+    assert_offline_live_make_target()
+    assert_offline_live_unit_runner()
     assert_service_tests(jobs)
     assert_integration_tests(jobs)
     assert_template_compatibility(jobs)

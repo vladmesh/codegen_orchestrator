@@ -2,6 +2,10 @@
 
 ## 2026-07-18
 
+- Run runnable offline `tests/live/` regressions as one discovered suite in CI and local
+  `make test-unit`. `make test-live` now uses a single directory pytest command with explicit
+  ignores for stack-dependent, Redis-only and historical expected-RED live files, while
+  `make ci-contract` rejects a return to per-file CI enumeration or a missing local live suite.
 - Add OpenAI Codex CLI as a developer-worker type alongside Claude Code and
   Factory Droid. Project config now routes `agent_type=codex` without changing
   the worker queue envelope, and unknown values fail explicitly. The dedicated

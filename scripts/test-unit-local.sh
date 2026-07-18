@@ -53,6 +53,11 @@ run_tests_serial() {
     local label="$1"
     local test_dir="$2"
     local pythonpath="${3:-}"
+    local extra_pytest_args="${4:-}"
+    local extra_args=()
+    if [ -n "$extra_pytest_args" ]; then
+        read -r -a extra_args <<< "$extra_pytest_args"
+    fi
 
     if [ ! -d "$ROOT/$test_dir" ] || [ -z "$(ls -A "$ROOT/$test_dir" 2>/dev/null)" ]; then
         echo "⏭  $label — no tests found"
@@ -63,7 +68,7 @@ run_tests_serial() {
     local workdir="${pythonpath:-$ROOT}"
     if (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}" \
-       python -m pytest "$ROOT/$test_dir" -v --tb=short -q) 2>&1; then
+       python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${extra_args[@]}") 2>&1; then
         PASSED+=("$label")
     else
         FAILED+=("$label")
@@ -78,6 +83,11 @@ run_tests_parallel() {
     local label="$1"
     local test_dir="$2"
     local pythonpath="${3:-}"
+    local extra_pytest_args="${4:-}"
+    local extra_args=()
+    if [ -n "$extra_pytest_args" ]; then
+        read -r -a extra_args <<< "$extra_pytest_args"
+    fi
 
     if [ ! -d "$ROOT/$test_dir" ] || [ -z "$(ls -A "$ROOT/$test_dir" 2>/dev/null)" ]; then
         echo 0 > "$LOGDIR/$label.rc"
@@ -88,12 +98,14 @@ run_tests_parallel() {
     local rc=0
     (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}" \
-       python -m pytest "$ROOT/$test_dir" --tb=short -q) \
+       python -m pytest "$ROOT/$test_dir" --tb=short -q "${extra_args[@]}") \
        > "$LOGDIR/$label.log" 2>&1 || rc=$?
     echo "$rc" > "$LOGDIR/$label.rc"
 }
 
 # --- Shared test list ---
+
+OFFLINE_LIVE_IGNORE_ARGS="--ignore=tests/live/test_api_crud.py --ignore=tests/live/test_capability_cleanup_redis.py --ignore=tests/live/test_ci_prompt.py --ignore=tests/live/test_deploy_infra.py --ignore=tests/live/test_full_pipeline.py --ignore=tests/live/test_health.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_scaffold.py --ignore=tests/live/test_scaffold_result.py --ignore=tests/live/test_streams.py --ignore=tests/live/test_supervisor.py"
 
 ALL_SUITES=(
     "api|services/api/tests/unit|$ROOT/services/api"
@@ -104,6 +116,7 @@ ALL_SUITES=(
     "infra-service|services/infra-service/tests/unit|$ROOT/services/infra-service"
     "worker-wrapper|packages/worker-wrapper/tests/unit|"
     "shared|shared/tests|"
+    "live-offline|tests/live||$OFFLINE_LIVE_IGNORE_ARGS"
 )
 
 FAILED=()
@@ -111,16 +124,16 @@ PASSED=()
 
 if [ "$MODE" = "--serial" ]; then
     for suite in "${ALL_SUITES[@]}"; do
-        IFS='|' read -r label test_dir pythonpath <<< "$suite"
-        run_tests_serial "$label" "$test_dir" "$pythonpath"
+        IFS='|' read -r label test_dir pythonpath extra_pytest_args <<< "$suite"
+        run_tests_serial "$label" "$test_dir" "$pythonpath" "$extra_pytest_args"
     done
 else
     LOGDIR=$(mktemp -d)
     trap 'rm -rf "$LOGDIR"' EXIT
 
     for suite in "${ALL_SUITES[@]}"; do
-        IFS='|' read -r label test_dir pythonpath <<< "$suite"
-        run_tests_parallel "$label" "$test_dir" "$pythonpath" &
+        IFS='|' read -r label test_dir pythonpath extra_pytest_args <<< "$suite"
+        run_tests_parallel "$label" "$test_dir" "$pythonpath" "$extra_pytest_args" &
     done
     wait
 
