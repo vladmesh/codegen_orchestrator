@@ -21,7 +21,8 @@ _PROJECT_ID = uuid.uuid4()
 def make_project(**overrides) -> ProjectDTO:
     base = {
         "id": _PROJECT_ID,
-        "name": "test-project",
+        "title": "test-project",
+        "slug": "test-project-0000",
         "status": ProjectStatus.ACTIVE,
         "config": {},
         "owner_id": 1,

@@ -48,7 +48,8 @@ async def test_sync_single_repo_updates_existing_project(mock_api_client, mock_g
 
     existing_project = ProjectDTO(
         id=PROJ1_UUID,
-        name="test-repo",
+        title="test-repo",
+        slug="test-repo-0000",
         status=ProjectStatus.ACTIVE,
         owner_id=1,
         modules=[],
@@ -93,14 +94,16 @@ async def test_detect_missing_projects_marks_missing(mock_api_client, mock_notif
     # Setup
     proj_ok = ProjectDTO(
         id=PROJ1_UUID,
-        name="ok",
+        title="ok",
+        slug="ok-0000",
         status=ProjectStatus.ACTIVE,
         owner_id=1,
         created_at=datetime.now(UTC),
     )
     proj_missing = ProjectDTO(
         id=PROJ2_UUID,
-        name="gone",
+        title="gone",
+        slug="gone-0000",
         status=ProjectStatus.ACTIVE,
         owner_id=1,
         created_at=datetime.now(UTC),

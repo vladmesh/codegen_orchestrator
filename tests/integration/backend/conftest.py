@@ -155,7 +155,7 @@ async def seed_project(api_client):
         config: dict | None = None,
         repository_url: str | None = None,
     ) -> dict:
-        body = {"name": name, "status": status, "config": config or {}}
+        body = {"title": name, "status": status, "config": config or {}}
         if repository_url:
             body["repository_url"] = repository_url
         resp = await api_client.post(

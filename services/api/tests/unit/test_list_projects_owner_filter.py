@@ -14,7 +14,8 @@ from src.main import app
 def _make_project(name: str, owner_id: int):
     p = MagicMock()
     p.id = uuid.uuid4()
-    p.name = name
+    p.title = name
+    p.slug = f"{name}-0000"
     p.status = "draft"
     p.config = {}
     p.owner_id = owner_id
@@ -70,7 +71,7 @@ async def test_list_projects_with_owner_id_filter():
     assert resp.status_code == HTTPStatus.OK
     data = resp.json()
     assert len(data) == 1
-    assert data[0]["name"] == "proj-a"
+    assert data[0]["title"] == "proj-a"
 
 
 @pytest.mark.asyncio

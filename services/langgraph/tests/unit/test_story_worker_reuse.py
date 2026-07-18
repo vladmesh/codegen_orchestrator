@@ -20,7 +20,8 @@ def _project(**overrides):
     """Minimal project dict for tests."""
     base = {
         "id": "proj-1",
-        "name": "test-project",
+        "title": "test-project",
+        "slug": "test-project-0000",
         "config": {"modules": ["backend"]},
         "status": ProjectStatus.ACTIVE.value,
     }
@@ -31,7 +32,8 @@ def _project(**overrides):
 def _project_dto(**overrides) -> ProjectDTO:
     base = {
         "id": _PROJECT_ID,
-        "name": "test-project",
+        "title": "test-project",
+        "slug": "test-project-0000",
         "status": ProjectStatus.ACTIVE,
         "config": {"modules": ["backend"]},
         "owner_id": 1,

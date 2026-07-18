@@ -11,6 +11,7 @@ import structlog
 from shared.contracts.dto.project import ProjectStatus
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import Application, PortAllocation, Project, Repository, Run, User
+from shared.project_slug import generate_project_slug
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
 
 from ..config import get_settings
@@ -84,7 +85,7 @@ async def create_project(
         logger.info(
             "creating_project",
             project_id=str(project_id),
-            name=project_in.name,
+            title=project_in.title,
             status=project_in.status,
             telegram_id=x_telegram_id,
         )
@@ -113,7 +114,8 @@ async def create_project(
 
         project = Project(
             id=project_id,
-            name=project_in.name,
+            title=project_in.title,
+            slug=generate_project_slug(project_in.title, project_id),
             status=project_in.status or ProjectStatus.DRAFT.value,
             config=project_in.config,
             owner_id=owner_id,
@@ -225,8 +227,8 @@ async def update_project(
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
-    if project_in.name is not None:
-        project.name = project_in.name
+    if project_in.title is not None:
+        project.title = project_in.title
     if project_in.status is not None:
         project.status = project_in.status
     if project_in.config is not None:
@@ -255,8 +257,8 @@ async def patch_project(
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
-    if project_in.name is not None:
-        project.name = project_in.name
+    if project_in.title is not None:
+        project.title = project_in.title
     if project_in.status is not None:
         project.status = project_in.status
     if project_in.config is not None:

@@ -684,7 +684,7 @@ class TestCreateRepoAndSetSecrets:
         mock_gh.get_org_token = AsyncMock(return_value="ghs_token")
         mock_gh.set_repository_secrets = AsyncMock(return_value=3)
 
-        project = make_project(name="My Project")
+        project = make_project(title="My Project", slug="my-project-0000")
 
         await _create_repo_and_set_secrets(project)
 

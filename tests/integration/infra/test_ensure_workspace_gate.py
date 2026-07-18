@@ -42,7 +42,7 @@ async def _create_project(api_client, *, status="active", config=None):
     resp = await api_client.post(
         "/api/projects/",
         json={
-            "name": f"int-test-{uuid.uuid4().hex[:8]}",
+            "title": f"int-test-{uuid.uuid4().hex[:8]}",
             "status": status,
             "config": config or {},
         },

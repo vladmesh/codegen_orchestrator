@@ -37,7 +37,8 @@ class TestGetProjectWithTelegramId:
         resp.status_code = 200
         resp.json.return_value = {
             "id": _UUID,
-            "name": "test",
+            "title": "test",
+            "slug": "test-0000",
             "status": "active",
             "owner_id": 1,
             "created_at": _NOW,
@@ -56,7 +57,8 @@ class TestGetProjectWithTelegramId:
         resp.status_code = 200
         resp.json.return_value = {
             "id": _UUID,
-            "name": "test",
+            "title": "test",
+            "slug": "test-0000",
             "status": "active",
             "owner_id": 1,
             "created_at": _NOW,
@@ -124,7 +126,14 @@ class TestListProjectsWithTelegramId:
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = 200
         resp.json.return_value = [
-            {"id": _UUID, "name": "test", "status": "active", "owner_id": 1, "created_at": _NOW}
+            {
+                "id": _UUID,
+                "title": "test",
+                "slug": "test-0000",
+                "status": "active",
+                "owner_id": 1,
+                "created_at": _NOW,
+            }
         ]
         mock_httpx_client.request.return_value = resp
 

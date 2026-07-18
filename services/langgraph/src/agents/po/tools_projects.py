@@ -36,7 +36,7 @@ TELEGRAM_API_TIMEOUT = 10
 
 @tool
 async def create_project(
-    name: str,
+    title: str,
     modules: str = "backend",
     description: str = "",
     agent_type: str = AgentType.CLAUDE.value,
@@ -46,7 +46,7 @@ async def create_project(
     """Create a new project.
 
     Args:
-        name: Project name (lowercase, starts with letter, only a-z/0-9/hyphens).
+        title: Human-readable project title.
         modules: Comma-separated modules: backend, tg_bot, notifications, frontend.
         description: What the project should do.
         agent_type: Developer worker: claude, factory, or codex.
@@ -69,13 +69,13 @@ async def create_project(
     proj_config = {
         "modules": modules_list,
         "description": description,
-        "name": name,
+        "title": title,
         "agent_type": agent_type,
     }
 
     payload = {
         "id": project_id,
-        "name": name,
+        "title": title,
         "status": ProjectStatus.DRAFT.value,
         "config": proj_config,
     }
@@ -90,14 +90,18 @@ async def create_project(
     # Scaffolder will create the actual GitHub repo and update git_url later.
     repo_payload = {
         "project_id": project_id,
-        "name": name,
-        "git_url": f"pending://{name}",  # placeholder until scaffolder creates GitHub repo
+        "name": title,
+        # Placeholder until scaffolder creates the GitHub repo.
+        "git_url": f"pending://{project['slug']}",
     }
     repo_resp = await api.post("/api/repositories/", json=repo_payload, headers=headers)
     repo_resp.raise_for_status()
     logger.info("po_repository_created", project_id=project_id, repo_id=repo_resp.json()["id"])
 
-    return f"Project created. ID: {project['id']}, Name: {project['name']}"
+    return (
+        f"Project created. ID: {project['id']}, "
+        f"Title: {project['title']}, Slug: {project['slug']}"
+    )
 
 
 @tool
@@ -114,7 +118,7 @@ async def list_projects(*, config: RunnableConfig) -> str:
 
     lines = []
     for p in projects:
-        lines.append(f"- {p['name']} (ID: {p['id']}, status: {p.get('status', 'unknown')})")
+        lines.append(f"- {p['title']} (ID: {p['id']}, status: {p.get('status', 'unknown')})")
     return "\n".join(lines)
 
 

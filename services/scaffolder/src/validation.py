@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-# Mirrors PROJECT_NAME_PATTERN in services/langgraph/src/tools/projects.py.
+# Mirrors shared.project_slug.PROJECT_SLUG_PATTERN for runtime project identifiers.
 _PROJECT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
 # A single module token, e.g. "backend" or "tg_bot".
 _MODULE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")

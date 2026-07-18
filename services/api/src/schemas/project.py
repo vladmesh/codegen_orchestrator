@@ -13,15 +13,21 @@ class ProjectBase(BaseModel):
     """Base project schema."""
 
     id: uuid.UUID
-    name: str
+    title: str
+    slug: str
     status: str = ProjectStatus.DRAFT.value
     config: dict[str, Any] = {}
 
 
-class ProjectCreate(ProjectBase):
+class ProjectCreate(BaseModel):
     """Schema for creating a project."""
 
+    model_config = ConfigDict(extra="forbid")
+
     id: uuid.UUID | None = None  # Auto-generated if not provided
+    title: str
+    status: str = ProjectStatus.DRAFT.value
+    config: dict[str, Any] = {}
     modules: list[ServiceModule] = [ServiceModule.BACKEND]
 
 
@@ -36,7 +42,9 @@ class ProjectRead(ProjectBase, TimestampedDTO):
 class ProjectUpdate(BaseModel):
     """Schema for updating a project."""
 
-    name: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
     status: str | None = None
     config: dict[str, Any] | None = None
 

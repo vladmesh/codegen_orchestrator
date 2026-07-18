@@ -67,11 +67,11 @@ def _make_config(user_id: str = "test-user") -> dict:
 class TestCreateProject:
     @pytest.mark.asyncio
     async def test_creates_project_with_modules(self, mock_api_client):
-        project_data = {"id": "abc123", "name": "my-bot"}
+        project_data = {"id": "abc123", "title": "My Bot", "slug": "my-bot-abc1"}
         mock_api_client.post.return_value = _make_response(project_data)
 
         result = await create_project.ainvoke(
-            {"name": "my-bot", "modules": "backend,tg_bot", "description": "A test bot"},
+            {"title": "My Bot", "modules": "backend,tg_bot", "description": "A test bot"},
             config=_make_config("user-42"),
         )
 
@@ -80,7 +80,7 @@ class TestCreateProject:
         project_call = mock_api_client.post.call_args_list[0]
         assert project_call[0][0] == "/api/projects/"
         payload = project_call[1]["json"]
-        assert payload["name"] == "my-bot"
+        assert payload["title"] == "My Bot"
         assert "backend" in payload["config"]["modules"]
         assert "tg_bot" in payload["config"]["modules"]
         assert "Project created" in result
@@ -89,10 +89,12 @@ class TestCreateProject:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("agent_type", ["claude", "factory", "codex"])
     async def test_persists_selected_developer_agent(self, mock_api_client, agent_type):
-        mock_api_client.post.return_value = _make_response({"id": "x", "name": "project"})
+        mock_api_client.post.return_value = _make_response(
+            {"id": "x", "title": "Project", "slug": "project-1234"}
+        )
 
         await create_project.ainvoke(
-            {"name": "project", "modules": "backend", "agent_type": agent_type},
+            {"title": "Project", "modules": "backend", "agent_type": agent_type},
             config=_make_config("user-1"),
         )
 
@@ -102,7 +104,7 @@ class TestCreateProject:
     @pytest.mark.asyncio
     async def test_rejects_unknown_developer_agent(self, mock_api_client):
         result = await create_project.ainvoke(
-            {"name": "project", "modules": "backend", "agent_type": "mystery"},
+            {"title": "Project", "modules": "backend", "agent_type": "mystery"},
             config=_make_config("user-1"),
         )
 
@@ -111,10 +113,12 @@ class TestCreateProject:
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"id": "x", "name": "y"})
+        mock_api_client.post.return_value = _make_response(
+            {"id": "x", "title": "Test", "slug": "test-1234"}
+        )
 
         await create_project.ainvoke(
-            {"name": "test", "modules": "backend"},
+            {"title": "Test", "modules": "backend"},
             config=_make_config("12345"),
         )
 
@@ -124,10 +128,12 @@ class TestCreateProject:
 
     @pytest.mark.asyncio
     async def test_ensures_backend_module(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"id": "x", "name": "y"})
+        mock_api_client.post.return_value = _make_response(
+            {"id": "x", "title": "Test", "slug": "test-1234"}
+        )
 
         await create_project.ainvoke(
-            {"name": "test", "modules": "tg_bot"},
+            {"title": "Test", "modules": "tg_bot"},
             config=_make_config("user-1"),
         )
 
@@ -138,7 +144,7 @@ class TestCreateProject:
     @pytest.mark.asyncio
     async def test_rejects_invalid_modules(self, mock_api_client):
         result = await create_project.ainvoke(
-            {"name": "test", "modules": "invalid_mod"},
+            {"title": "Test", "modules": "invalid_mod"},
             config=_make_config("user-1"),
         )
         assert "Error" in result
@@ -148,7 +154,7 @@ class TestCreateProject:
     @pytest.mark.asyncio
     async def test_repository_failure_propagates(self, mock_api_client):
         mock_api_client.post.side_effect = [
-            _make_response({"id": "abc123", "name": "my-bot"}),
+            _make_response({"id": "abc123", "title": "My Bot", "slug": "my-bot-abc1"}),
             httpx.HTTPStatusError(
                 "repository unavailable", request=MagicMock(), response=MagicMock()
             ),
@@ -156,7 +162,7 @@ class TestCreateProject:
 
         with pytest.raises(httpx.HTTPStatusError, match="repository unavailable"):
             await create_project.ainvoke(
-                {"name": "my-bot", "modules": "backend"},
+                {"title": "My Bot", "modules": "backend"},
                 config=_make_config(),
             )
 
@@ -166,15 +172,15 @@ class TestListProjects:
     async def test_lists_projects(self, mock_api_client):
         mock_api_client.get.return_value = _make_response(
             [
-                {"id": "1", "name": "proj-a", "status": "active"},
-                {"id": "2", "name": "proj-b", "status": "draft"},
+                {"id": "1", "title": "Project A", "slug": "proj-a-1111", "status": "active"},
+                {"id": "2", "title": "Project B", "slug": "proj-b-2222", "status": "draft"},
             ]
         )
 
         result = await list_projects.ainvoke({}, config=_make_config("user-42"))
 
-        assert "proj-a" in result
-        assert "proj-b" in result
+        assert "Project A" in result
+        assert "Project B" in result
         mock_api_client.get.assert_called_once()
 
     @pytest.mark.asyncio
@@ -198,13 +204,13 @@ class TestListProjects:
 class TestGetProject:
     @pytest.mark.asyncio
     async def test_gets_project(self, mock_api_client):
-        project = {"id": "abc", "name": "my-bot", "status": "active"}
+        project = {"id": "abc", "title": "My Bot", "slug": "my-bot-abc1", "status": "active"}
         mock_api_client.get.return_value = _make_response(project)
 
         result = await get_project.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
         parsed = json.loads(result)
-        assert parsed["name"] == "my-bot"
+        assert parsed["title"] == "My Bot"
         mock_api_client.get.assert_called_once()
         assert "/api/projects/abc" in mock_api_client.get.call_args[0][0]
 

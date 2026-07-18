@@ -29,7 +29,7 @@ async def test_secrets_roundtrip_persisted(async_client: AsyncClient):
         "/api/projects/",
         json={
             "id": "00000000-0000-0000-0000-000000000003",
-            "name": "Secrets Roundtrip Test",
+            "title": "Secrets Roundtrip Test",
             "status": "draft",
             "config": {"modules": ["backend"], "estimated_ram_mb": 512},
         },
@@ -83,7 +83,7 @@ async def test_secrets_merge_additive(async_client: AsyncClient):
         "/api/projects/",
         json={
             "id": "00000000-0000-0000-0000-000000000004",
-            "name": "Secrets Additive Test",
+            "title": "Secrets Additive Test",
             "status": "draft",
             "config": {},
         },

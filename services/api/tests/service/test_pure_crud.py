@@ -22,7 +22,7 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
 
     payload = {
         "id": PROJECT_UUID,
-        "name": "New Project 001",
+        "title": "New Project 001",
         "status": "created",
         "config": {"modules": ["backend"]},
         "modules": ["backend"],
@@ -41,4 +41,5 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
 
     data = response.json()
     assert data["id"] == payload["id"]
-    assert data["name"] == payload["name"]
+    assert data["title"] == payload["title"]
+    assert data["slug"] == "new-project-001-0000"

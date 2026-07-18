@@ -2,6 +2,10 @@
 
 ## 2026-07-18
 
+- Split project display titles from runtime slugs. Projects now store free-text
+  `title` plus immutable server-generated `slug`, with a unique indexed DB column,
+  API create/update rejection for client-provided slug changes, and slug
+  backfill in migration `c7d8e9f0a1b2`.
 - Run runnable offline `tests/live/` regressions as one discovered suite in CI and local
   `make test-unit`. `make test-live` now uses a single directory pytest command with explicit
   ignores for stack-dependent, Redis-only and historical expected-RED live files, while

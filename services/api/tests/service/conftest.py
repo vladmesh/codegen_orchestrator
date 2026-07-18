@@ -79,16 +79,17 @@ async def _tasks_project():
         # Ensure project exists
         resp = await client.get(f"/api/projects/{TASK_TEST_PROJECT_ID}")
         if resp.status_code == 404:
-            await client.post(
+            create_resp = await client.post(
                 "/api/projects/",
                 json={
                     "id": TASK_TEST_PROJECT_ID,
-                    "name": "Test Tasks Project",
+                    "title": "Test Tasks Project",
                     "status": "active",
                     "config": {},
                 },
                 headers={"X-Telegram-ID": str(TASK_TEST_TELEGRAM_ID)},
             )
+            assert create_resp.status_code == 201, create_resp.text
 
     return TASK_TEST_PROJECT_ID
 
