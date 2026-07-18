@@ -10,6 +10,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
 
@@ -186,6 +187,31 @@ class TestStdoutCapture:
         result = output_calls[0][0][1]
         assert result.status == WorkerResultStatus.FAILED
         assert result.agent_stdout_tail == "Partial output before crash"
+
+    async def test_codex_diagnostics_are_not_persisted_or_returned(self):
+        raw_diagnostic = "refresh-token-must-not-leak"
+        config = _make_config(agent_type="codex")
+        wrapper = WorkerWrapper(config=config, redis_client=_make_redis_mock())
+        process = MagicMock(returncode=1)
+        process.communicate = AsyncMock(
+            return_value=(
+                f"stdout {raw_diagnostic}".encode(),
+                f"stderr {raw_diagnostic}".encode(),
+            )
+        )
+
+        with patch(
+            "worker_wrapper.session.SessionManager.get_or_create_session",
+            new_callable=AsyncMock,
+            return_value="unused",
+        ):
+            with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
+                spawn.return_value = process
+                with pytest.raises(RuntimeError) as exc_info:
+                    await wrapper.execute_agent({"prompt": "do stuff"})
+
+        assert raw_diagnostic not in str(exc_info.value)
+        assert wrapper._agent_stdout_tail is None
 
 
 class TestWatchdog:

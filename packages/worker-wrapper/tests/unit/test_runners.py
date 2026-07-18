@@ -5,6 +5,7 @@ import urllib.request
 
 import pytest
 from worker_wrapper.runners.claude import ClaudeRunner
+from worker_wrapper.runners.codex import CodexRunner
 from worker_wrapper.runners.factory import FactoryRunner
 from worker_wrapper.runners.noop import NoopRunner
 
@@ -57,6 +58,21 @@ class TestFactoryRunner:
 
         # Prompt should be present
         assert "Fix bug" in cmd
+
+
+class TestCodexRunner:
+    def test_build_command_uses_non_interactive_workspace_sandbox(self):
+        cmd = CodexRunner().build_command(prompt="Read TASK.md and AGENTS.md")
+
+        assert cmd == [
+            "codex",
+            "exec",
+            "--sandbox",
+            "workspace-write",
+            "--config",
+            "sandbox_workspace_write.network_access=true",
+            "Read TASK.md and AGENTS.md",
+        ]
 
 
 class TestNoopRunner:

@@ -10,6 +10,22 @@ from shared.contracts.queues.worker import (
 
 
 class TestScaffoldConfig:
+    def test_codex_worker_config_roundtrip_keeps_auth_profile(self):
+        config = WorkerConfig(
+            name="dev-codex",
+            worker_type="developer",
+            agent_type="codex",
+            instructions="Read AGENTS.md",
+            allowed_commands=["*"],
+            capabilities=[WorkerCapability.GIT],
+            host_codex_home="/srv/codex-worker",
+        )
+
+        restored = WorkerConfig.model_validate_json(config.model_dump_json())
+
+        assert restored.agent_type is AgentType.CODEX
+        assert restored.host_codex_home == "/srv/codex-worker"
+
     def test_roundtrip_serialization(self):
         """ScaffoldConfig survives JSON round-trip through CreateWorkerCommand."""
         scaffold = ScaffoldConfig(

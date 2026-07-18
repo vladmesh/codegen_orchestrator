@@ -35,6 +35,54 @@ class TestWorkerContainerConfig:
         assert "/home/user/.claude" in volumes
         assert volumes["/home/user/.claude"]["bind"] == "/home/worker/.claude"
 
+    def test_codex_host_session_uses_dedicated_rw_mount(self):
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="codex",
+            capabilities=["GIT"],
+            auth_mode="host_session",
+            host_codex_home="/home/user/.codex-worker",
+        )
+
+        volumes = config.to_volume_mounts()
+
+        assert volumes["/home/user/.codex-worker"] == {
+            "bind": "/home/worker/.codex",
+            "mode": "rw",
+        }
+        assert all(source != "/home/user/.codex" for source in volumes)
+
+    def test_codex_host_session_exports_container_codex_home(self):
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="codex",
+            capabilities=["GIT"],
+            auth_mode="host_session",
+            host_codex_home="/home/user/.codex-worker",
+        )
+
+        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+
+        assert env["CODEX_HOME"] == "/home/worker/.codex"
+        assert "OPENAI_API_KEY" not in env
+
+    def test_codex_api_key_mode_uses_exec_scoped_variable(self):
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="codex",
+            capabilities=["GIT"],
+            auth_mode="api_key",
+            api_key="sk-openai-test",
+        )
+
+        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+
+        assert env["CODEX_API_KEY"] == "sk-openai-test"
+        assert "OPENAI_API_KEY" not in env
+
     def test_api_key_mode_adds_env_var(self):
         """API key auth mode should add ANTHROPIC_API_KEY."""
         config = WorkerContainerConfig(
@@ -82,6 +130,15 @@ class TestWorkerContainerConfig:
         )
         kwargs = config.to_docker_run_kwargs()
         assert kwargs["mem_limit"] == "4g"
+
+    def test_codex_worker_gets_real_agent_memory_limit(self):
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="codex",
+            capabilities=[],
+        )
+        assert config.to_docker_run_kwargs()["mem_limit"] == "4g"
 
     def test_to_docker_run_kwargs_with_network_name(self):
         """With network_name, should attach to that network."""

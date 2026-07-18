@@ -7,7 +7,8 @@
 #   - DB credentials have no defaults (fail-fast if .env is misconfigured)
 #   - Redis AOF persistence enabled
 #
-# Secret paths (SSH key, GitHub App PEM, Telethon session, HOST_CLAUDE_DIR)
+# Secret paths (SSH key, GitHub App PEM, Telethon session, HOST_CLAUDE_DIR,
+# HOST_CODEX_HOME)
 # are controlled via env vars in .env — see docs/DEPLOY.md for required values.
 
 services:

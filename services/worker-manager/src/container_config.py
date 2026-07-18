@@ -14,6 +14,7 @@ class WorkerContainerConfig:
     capabilities: List[str]
     auth_mode: str = "host_session"  # "host_session" or "api_key"
     host_claude_dir: Optional[str] = None
+    host_codex_home: Optional[str] = None
     api_key: Optional[str] = None
     workspace_host_path: Optional[str] = None
 
@@ -46,9 +47,14 @@ class WorkerContainerConfig:
             "WORKER_CONSUMER_NAME": self.worker_id,
         }
 
+        if self.agent_type == AgentType.CODEX:
+            env["CODEX_HOME"] = "/home/worker/.codex"
+
         if self.auth_mode == "api_key" and self.api_key:
             if self.agent_type == AgentType.FACTORY:
                 env["FACTORY_API_KEY"] = self.api_key
+            elif self.agent_type == AgentType.CODEX:
+                env["CODEX_API_KEY"] = self.api_key
             else:
                 env["ANTHROPIC_API_KEY"] = self.api_key
 
@@ -62,9 +68,15 @@ class WorkerContainerConfig:
         volumes = {}
 
         # Mount host session directory if in host_session mode
-        if self.auth_mode == "host_session" and self.host_claude_dir:
+        if self.auth_mode == "host_session" and self.agent_type == AgentType.CLAUDE and self.host_claude_dir:
             # Mount to /home/worker/.claude inside container
             volumes[self.host_claude_dir] = {"bind": "/home/worker/.claude", "mode": "rw"}
+
+        if self.auth_mode == "host_session" and self.agent_type == AgentType.CODEX and self.host_codex_home:
+            volumes[self.host_codex_home] = {
+                "bind": "/home/worker/.codex",
+                "mode": "rw",
+            }
 
         # Mount workspace directory if provided
         if self.workspace_host_path:
@@ -104,6 +116,6 @@ class WorkerContainerConfig:
 
     def _mem_limit(self) -> str:
         """Return the Docker memory limit for this worker agent."""
-        if self.agent_type in {AgentType.CLAUDE, AgentType.FACTORY}:
+        if self.agent_type in {AgentType.CLAUDE, AgentType.FACTORY, AgentType.CODEX}:
             return "4g"
         return "2g"

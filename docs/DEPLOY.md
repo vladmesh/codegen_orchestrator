@@ -102,6 +102,7 @@ All secrets must be configured in the repository's **production** environment.
 |--------|-------------|
 | `FACTORY_API_KEY` | Factory.ai API key |
 | `HOST_CLAUDE_DIR` | Path to `.claude` directory on prod server |
+| `HOST_CODEX_HOME` | Path to the dedicated file-backed Codex profile described in `docs/coding-agents.md` |
 
 ### Admin UI
 

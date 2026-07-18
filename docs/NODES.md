@@ -44,7 +44,7 @@
 2. Architect Consumer (langgraph) ждёт завершения scaffold (poll project.status != draft, до 5 мин), затем декомпозирует story в tasks (видит tree, specs summary: модели, домены, события)
 3. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue` с `branch=story/{story_id}`
 4. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets
-5. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai)
+5. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai / OpenAI Codex)
 6. Worker-manager creates/checks out `story/{story_id}` branch, инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` (в `/workspace/TASK.md`)
 7. Агент работает на feature branch и пушит туда
 

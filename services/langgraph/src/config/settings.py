@@ -12,6 +12,7 @@ from shared.config import (
     default_agent_type_field,
     redis_url_field,
 )
+from shared.contracts.vocab import AgentType
 
 
 class Settings(BaseSettings):
@@ -22,7 +23,7 @@ class Settings(BaseSettings):
     api_base_url: str = api_base_url_field(required=True)
 
     # Worker configuration
-    default_agent_type: str = default_agent_type_field()
+    default_agent_type: AgentType = default_agent_type_field()
 
     # Optional: Mount host Claude session for dev agents (avoids API key need)
     mount_claude_session: bool = True

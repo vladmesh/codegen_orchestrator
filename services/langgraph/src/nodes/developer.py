@@ -92,7 +92,13 @@ class DeveloperNode(FunctionalNode):
         try:
             agent_type = AgentType(agent_type_str)
         except ValueError:
-            agent_type = AgentType.CLAUDE
+            error = f"Unknown developer agent_type: {agent_type_str!r}"
+            logger.error("unknown_developer_agent_type", agent_type=agent_type_str)
+            return {
+                "messages": [AIMessage(content=error)],
+                "engineering_status": EngineeringStatus.FAILED,
+                "errors": state.get("errors", []) + [error],
+            }
 
         action = state.get("action", "create")
         feature_description = state.get("description")

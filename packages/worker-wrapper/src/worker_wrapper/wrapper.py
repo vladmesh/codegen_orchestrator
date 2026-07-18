@@ -591,6 +591,7 @@ class WorkerWrapper:
 
         # Select Runner
         from .runners.claude import ClaudeRunner
+        from .runners.codex import CodexRunner
         from .runners.factory import FactoryRunner
         from .runners.noop import NoopRunner
 
@@ -598,6 +599,8 @@ class WorkerWrapper:
             runner = ClaudeRunner(session_id=session_id)
         elif self.config.agent_type == AgentType.FACTORY:
             runner = FactoryRunner()
+        elif self.config.agent_type == AgentType.CODEX:
+            runner = CodexRunner()
         elif self.config.agent_type == AgentType.NOOP:
             runner = NoopRunner()
         else:
@@ -605,7 +608,11 @@ class WorkerWrapper:
 
         prompt = self._resolve_prompt(data)
         cmd = runner.build_command(prompt=prompt)
-        logger.info("executing_agent_command", cmd=cmd)
+        logger.info(
+            "executing_agent_command",
+            executable=cmd[0],
+            agent_type=self.config.agent_type,
+        )
 
         # Build subprocess env: remove /app from PYTHONPATH.
         # The worker image sets PYTHONPATH=/app so the wrapper itself can
@@ -650,17 +657,22 @@ class WorkerWrapper:
         stdout = stdout_bytes.decode().strip()
         stderr = stderr_bytes.decode().strip()
 
-        # Capture stdout tail for analytics/debugging (last ~10KB)
-        max_tail = 10_000
-        combined = stdout
-        if stderr:
-            combined = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
-        self._agent_stdout_tail = combined[-max_tail:] if combined else None
+        # Codex stdout/stderr are transport diagnostics, never business output.
+        # Do not persist or log them because CLI diagnostics can include data
+        # from the mounted session or repository.
+        if self.config.agent_type == AgentType.CODEX:
+            self._agent_stdout_tail = None
+        else:
+            max_tail = 10_000
+            combined = stdout
+            if stderr:
+                combined = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
+            self._agent_stdout_tail = combined[-max_tail:] if combined else None
 
         if proc.returncode != 0:
-            logger.error(
-                "agent_process_failed", stderr=stderr, stdout=stdout, exit_code=proc.returncode
-            )
+            logger.error("agent_process_failed", exit_code=proc.returncode)
+            if self.config.agent_type == AgentType.CODEX:
+                raise RuntimeError(f"Codex agent process failed with code {proc.returncode}")
             detail = stderr or stdout or "no output"
             raise RuntimeError(f"Agent process failed with code {proc.returncode}: {detail}")
 
@@ -763,7 +775,7 @@ class WorkerWrapper:
         if not raw:
             raise ValueError("Task data missing 'content' or 'prompt'")
 
-        if self.config.agent_type == AgentType.CLAUDE:
+        if self.config.agent_type in {AgentType.CLAUDE, AgentType.CODEX}:
             return "Read TASK.md and AGENTS.md, then complete the task described in TASK.md."
         return raw
 

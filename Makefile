@@ -62,7 +62,7 @@ help:
 	@echo "  make rebuild      - Rebuild everything (services + worker images), restart stack"
 	@echo ""
 	@echo "Worker Images:"
-	@echo "  make rebuild-worker-images      - Rebuild worker base images (common → claude)"
+	@echo "  make rebuild-worker-images      - Rebuild worker base images (common → claude/factory/codex)"
 	@echo "  make rebuild-worker-images-hard - Rebuild with --no-cache (when cache is stale)"
 
 # === Dependency Lock Files ===
@@ -122,7 +122,7 @@ cleanup-agents:
 	@echo "✅ Agent containers cleaned up"
 
 # === Worker Base Images ===
-# Build the worker image chain: common -> claude/factory
+# Build the worker image chain: common -> claude/factory/codex
 # Use rebuild-worker-images after changing worker-wrapper or worker-base Dockerfiles
 
 rebuild-worker-images:
@@ -133,6 +133,12 @@ rebuild-worker-images:
 	@echo "🔨 Building worker-base-claude..."
 	docker build -t worker-base-claude:latest \
 		-f services/worker-manager/images/worker-base-claude/Dockerfile .
+	@echo "🔨 Building worker-base-factory..."
+	docker build -t worker-base-factory:latest \
+		-f services/worker-manager/images/worker-base-factory/Dockerfile .
+	@echo "🔨 Building worker-base-codex..."
+	docker build -t worker-base-codex:latest \
+		-f services/worker-manager/images/worker-base-codex/Dockerfile .
 	@echo "🧹 Cleaning cached worker:* images..."
 	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
 	@echo "✅ Worker images rebuilt!"
@@ -146,6 +152,12 @@ rebuild-worker-images-hard:
 	@echo "🔨 Building worker-base-claude (no-cache)..."
 	docker build --no-cache -t worker-base-claude:latest \
 		-f services/worker-manager/images/worker-base-claude/Dockerfile .
+	@echo "🔨 Building worker-base-factory (no-cache)..."
+	docker build --no-cache -t worker-base-factory:latest \
+		-f services/worker-manager/images/worker-base-factory/Dockerfile .
+	@echo "🔨 Building worker-base-codex (no-cache)..."
+	docker build --no-cache -t worker-base-codex:latest \
+		-f services/worker-manager/images/worker-base-codex/Dockerfile .
 	@echo "🧹 Cleaning cached worker:* images..."
 	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
 	@echo "✅ Worker images rebuilt (no-cache)!"
@@ -153,13 +165,17 @@ rebuild-worker-images-hard:
 # Check if worker images are stale and rebuild if needed
 check-worker-images:
 	@CURRENT=$(WORKER_SOURCE_HASH); \
-	STORED=$$(docker inspect worker-base-common:latest \
-	  --format '{{index .Config.Labels "org.codegen.worker_source_hash"}}' 2>/dev/null || echo "none"); \
-	if [ "$$CURRENT" != "$$STORED" ]; then \
-	  echo "⚠️  Worker source files changed ($$STORED → $$CURRENT) — rebuilding images..."; \
+	STALE=""; \
+	for IMAGE in worker-base-common worker-base-claude worker-base-factory worker-base-codex; do \
+	  STORED=$$(docker inspect "$$IMAGE:latest" \
+	    --format '{{index .Config.Labels "org.codegen.worker_source_hash"}}' 2>/dev/null || echo "missing"); \
+	  if [ "$$CURRENT" != "$$STORED" ]; then STALE="$$STALE $$IMAGE($$STORED)"; fi; \
+	done; \
+	if [ -n "$$STALE" ]; then \
+	  echo "⚠️  Worker base images stale:$$STALE; rebuilding for hash $$CURRENT..."; \
 	  $(MAKE) rebuild-worker-images; \
 	else \
-	  echo "✅ Worker images up to date (hash: $$CURRENT)"; \
+	  echo "✅ Worker base images up to date (hash: $$CURRENT)"; \
 	fi
 
 # === Quality ===

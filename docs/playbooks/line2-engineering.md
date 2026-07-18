@@ -1,7 +1,7 @@
 # Line 2: Engineering Flow Playbook
 
 Manual test playbook: submit engineering tasks for every valid module combination,
-verify that Claude Code (or Factory.ai) builds a working project end-to-end.
+verify that Claude Code, Factory.ai, or OpenAI Codex builds a working project end-to-end.
 
 **Executor**: Human or Claude Code, step by step.
 **Not a script** — adapt commands as needed.
@@ -479,4 +479,4 @@ For running all 7 tests at a given level:
 
 - **Telegram bot token**: For Levels A/B, not needed (code generation doesn't require real tokens). For Level C with tg_bot, provide a real token from @BotFather before triggering.
 - **Parallel runs**: Possible but not recommended. Worker-manager handles one container at a time. Multiple engineering tasks will queue up.
-- **Cost**: Each test spawns a Claude Code (or Factory.ai) worker session. Budget accordingly.
+- **Cost**: Each test spawns a paid coding-agent worker session. Budget accordingly.

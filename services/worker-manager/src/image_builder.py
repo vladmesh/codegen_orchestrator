@@ -8,8 +8,7 @@ Responsibilities:
 - Compute deterministic hashes for image caching
 - Provide image tags for cache lookup
 
-Agent CLIs (Claude Code, Factory Droid) are pre-installed in agent-specific
-base images (worker-base-claude, worker-base-factory) for faster builds.
+Agent CLIs are pre-installed in agent-specific base images for faster builds.
 """
 
 import hashlib
@@ -19,15 +18,18 @@ import hashlib
 AGENT_BASE_IMAGES = {
     "claude": "worker-base-claude:latest",
     "factory": "worker-base-factory:latest",
+    "codex": "worker-base-codex:latest",
     "noop": "worker-base-claude:latest",  # Reuse claude base (has git+bash)
 }
-
-DEFAULT_BASE_IMAGE = "worker-base-claude:latest"
 
 
 def get_base_image(agent_type: str) -> str:
     """Get the appropriate base image for the agent type."""
-    return AGENT_BASE_IMAGES.get(agent_type.lower(), DEFAULT_BASE_IMAGE)
+    normalized = agent_type.value if hasattr(agent_type, "value") else str(agent_type)
+    try:
+        return AGENT_BASE_IMAGES[normalized.lower()]
+    except KeyError:
+        raise ValueError(f"Unknown agent type: {normalized}") from None
 
 
 # Capability to installation commands mapping
@@ -109,12 +111,12 @@ class ImageBuilder:
         """
         Generate Dockerfile content for given capabilities.
 
-        Agent CLI is already pre-installed in the base image (worker-base-claude
-        or worker-base-factory), so we only add capability-specific packages.
+        Agent CLI is already pre-installed in its agent-specific base image, so
+        we only add capability-specific packages.
 
         Args:
             capabilities: List of capabilities to install (e.g., ["GIT", "CURL"])
-            agent_type: Type of agent ("claude" or "factory")
+            agent_type: Type of agent ("claude", "factory", "codex", or "noop")
 
         Returns:
             Complete Dockerfile content as string
@@ -179,7 +181,7 @@ class ImageBuilder:
         Args:
             capabilities: List of capabilities
             prefix: Image name prefix (e.g., "worker" or "worker-test")
-            agent_type: Type of agent ("claude" or "factory")
+            agent_type: Type of agent ("claude", "factory", "codex", or "noop")
 
         Returns:
             Full image tag (e.g., "worker:a1b2c3d4e5f6")

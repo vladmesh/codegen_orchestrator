@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pull worker base images from GHCR and retag to local names
-# expected by worker-manager (worker-base-common:latest, worker-base-claude:latest, etc.)
+# expected by worker-manager (common, Claude, Factory, and Codex images)
 #
 # Required env vars:
 #   GHCR_TOKEN  — GitHub token with packages:read scope
@@ -21,6 +21,7 @@ IMAGES=(
     "worker-base-common"
     "worker-base-claude"
     "worker-base-factory"
+    "worker-base-codex"
 )
 
 echo "Logging in to GHCR..."

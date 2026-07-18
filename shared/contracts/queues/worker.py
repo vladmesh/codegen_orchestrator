@@ -64,6 +64,7 @@ class WorkerConfig(BaseModel):
     env_vars: dict[str, str] = {}
     auth_mode: Literal["host_session", "api_key"] = "host_session"
     host_claude_dir: str | None = None
+    host_codex_home: str | None = None
     api_key: str | None = None
     project_id: str | None = None  # Project ID for workspace persistence
     repo_id: str | None = None  # Repository ID — mount pre-scaffolded workspace
