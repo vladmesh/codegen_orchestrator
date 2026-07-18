@@ -291,8 +291,7 @@ class TestFullPipelineLLM:
         assert "merged" not in errors, errors.get("merged")
         probe = llm_pipeline["env_contract_probes"]["merged"]
         assert probe["required_user_secret_entries"] == [], (
-            "required user secrets would dead-end deploy: "
-            f"{probe['required_user_secret_entries']}"
+            f"required user secrets would dead-end deploy: {probe['required_user_secret_entries']}"
         )
 
     async def test_deploy_run_outcome_success(self, llm_pipeline):
