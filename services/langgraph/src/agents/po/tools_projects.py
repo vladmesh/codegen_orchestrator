@@ -99,8 +99,7 @@ async def create_project(
     logger.info("po_repository_created", project_id=project_id, repo_id=repo_resp.json()["id"])
 
     return (
-        f"Project created. ID: {project['id']}, "
-        f"Title: {project['title']}, Slug: {project['slug']}"
+        f"Project created. ID: {project['id']}, Title: {project['title']}, Slug: {project['slug']}"
     )
 
 
