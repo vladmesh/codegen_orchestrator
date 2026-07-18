@@ -774,26 +774,6 @@ class APIKeyDTO(BaseModel):
     created_at: str | None = None
 ```
 
-## AllocationDTO
-
-```python
-# shared/contracts/dto/allocation.py
-
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
-
-class AllocationDTO(BaseModel):
-    """Port allocation on a server."""
-    model_config = ConfigDict(from_attributes=True)
-    
-    id: int
-    server_id: int
-    project_id: str
-    service_name: str
-    port: int
-    allocated_at: datetime
-```
-
 ## TaskExecutionDTO
 
 ```python
