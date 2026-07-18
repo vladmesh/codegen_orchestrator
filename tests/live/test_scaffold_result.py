@@ -45,7 +45,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
         "/api/projects/",
         json={
             "id": project_id,
-            "name": project_name,
+            "title": project_name,
             "status": ProjectStatus.DRAFT,
             "config": {"description": "live test scaffold"},
         },

@@ -33,7 +33,8 @@ def _make_project(
 ) -> ProjectDTO:
     return ProjectDTO(
         id=project_id or PROJ_UUID,
-        name="test-project",
+        title="test-project",
+        slug="test-project-0000",
         status=ProjectStatus(status),
         modules=[ServiceModule(m) for m in (modules or ["backend"])],
         owner_id=1,

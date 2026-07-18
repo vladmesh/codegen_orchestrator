@@ -16,7 +16,8 @@ def _make_project(project_id=PROJECT_UUID, name="test", owner_id=None):
     """Create a mock Project object."""
     p = MagicMock()
     p.id = project_id
-    p.name = name
+    p.title = name
+    p.slug = f"{name}-0000"
     p.status = "draft"
     p.config = {"modules": ["backend"]}
     p.owner_id = owner_id

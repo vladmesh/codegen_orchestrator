@@ -31,7 +31,7 @@ async def test_concurrent_secret_writes_preserve_all_keys(async_client: AsyncCli
         "/api/projects/",
         json={
             "id": "00000000-0000-0000-0000-000000000002",
-            "name": "Concurrent Secrets Test",
+            "title": "Concurrent Secrets Test",
             "status": "created",
             "config": {},
         },

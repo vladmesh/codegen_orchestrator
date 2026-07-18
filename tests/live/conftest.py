@@ -113,7 +113,7 @@ async def create_test_project_context(api):
         "/api/projects/",
         json={
             "id": project_id,
-            "name": f"live-test-{secrets.token_hex(4)}",
+            "title": f"live-test-{secrets.token_hex(4)}",
             "status": ProjectStatus.DRAFT,
             "config": {"description": "live test project"},
         },

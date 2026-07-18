@@ -50,7 +50,7 @@ async def lk_user_and_project():
                 "/api/projects/",
                 json={
                     "id": LK_TEST_PROJECT_ID,
-                    "name": "LK Test Project",
+                    "title": "LK Test Project",
                     "status": "active",
                     "config": {},
                 },
@@ -321,7 +321,7 @@ class TestProjectSummary:
             "/api/projects/",
             json={
                 "id": project2_id,
-                "name": "Empty Project",
+                "title": "Empty Project",
                 "status": "active",
                 "config": {},
             },

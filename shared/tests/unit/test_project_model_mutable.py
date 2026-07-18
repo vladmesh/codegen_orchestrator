@@ -29,7 +29,8 @@ def test_config_inplace_mutation_detected():
         session.execute(
             insert(Project).values(
                 id=TEST_PROJECT_ID,
-                name="test",
+                title="test",
+                slug="test-0000",
                 status="draft",
                 config={"modules": ["backend"]},
                 owner_id=1,
@@ -61,7 +62,8 @@ def test_project_spec_inplace_mutation_detected():
         session.execute(
             insert(Project).values(
                 id=TEST_PROJECT_ID,
-                name="test",
+                title="test",
+                slug="test-0000",
                 status="draft",
                 config={},
                 project_spec={"version": "1.0"},

@@ -41,7 +41,8 @@ class TestHandleDeploySuccess:
         mock_redis = AsyncMock()
         project = ProjectDTO(
             id="00000000-0000-0000-0000-000000000001",
-            name="test-project",
+            title="test-project",
+            slug="test-project-0000",
             status=ProjectStatus.ACTIVE,
             owner_id=1,
             created_at="2026-01-01T00:00:00Z",
@@ -81,7 +82,8 @@ class TestHandleDeploySuccess:
         mock_redis = AsyncMock()
         project = ProjectDTO(
             id="00000000-0000-0000-0000-000000000001",
-            name="test",
+            title="test",
+            slug="test-0000",
             status=ProjectStatus.ACTIVE,
             owner_id=1,
             created_at="2026-01-01T00:00:00Z",

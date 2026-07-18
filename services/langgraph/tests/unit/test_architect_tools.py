@@ -16,7 +16,11 @@ def mock_api():
             return_value=make_story(id="story-abc", title="Add auth", status="created")
         )
         api.get_project = AsyncMock(
-            return_value=make_project(name="my-api", config={"detailed_spec": "REST"})
+            return_value=make_project(
+                title="my-api",
+                slug="my-api-0000",
+                config={"detailed_spec": "REST"},
+            )
         )
         api.get_tasks_by_story = AsyncMock(return_value=[])
         api.create_task = AsyncMock(return_value=make_task(id="task-new", title="New task"))
@@ -42,7 +46,7 @@ class TestGetProjectSpecTool:
 
         result = await get_project_spec.ainvoke({"project_id": "proj-1"})
 
-        assert result["name"] == "my-api"
+        assert result["title"] == "my-api"
         mock_api.get_project.assert_called_once_with("proj-1")
 
     @pytest.mark.asyncio

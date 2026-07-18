@@ -39,7 +39,7 @@ async def user_projects(api_client, seed_users):
         resp = await api_client.post(
             "/api/projects/",
             json={
-                "name": name,
+                "title": name,
                 "status": "draft",
                 "config": {"modules": ["backend"]},
             },
@@ -61,7 +61,7 @@ async def test_user_sees_only_own_projects(api_client, user_projects):
     resp = await api_client.get("/api/projects/", headers={"X-Telegram-ID": "111000"})
     assert resp.status_code == 200  # noqa: PLR2004
     projects = resp.json()
-    names = {p["name"] for p in projects}
+    names = {p["title"] for p in projects}
     assert "proj-a" in names
     assert "proj-b" not in names
 
@@ -72,7 +72,7 @@ async def test_other_user_sees_only_own_projects(api_client, user_projects):
     resp = await api_client.get("/api/projects/", headers={"X-Telegram-ID": "222000"})
     assert resp.status_code == 200  # noqa: PLR2004
     projects = resp.json()
-    names = {p["name"] for p in projects}
+    names = {p["title"] for p in projects}
     assert "proj-b" in names
     assert "proj-a" not in names
 
@@ -91,7 +91,7 @@ async def test_system_call_returns_all(api_client, user_projects):
     resp = await api_client.get("/api/projects/")
     assert resp.status_code == 200  # noqa: PLR2004
     projects = resp.json()
-    names = {p["name"] for p in projects}
+    names = {p["title"] for p in projects}
     assert "proj-a" in names
     assert "proj-b" in names
 
@@ -102,7 +102,7 @@ async def test_create_without_header_returns_400(api_client):
     resp = await api_client.post(
         "/api/projects/",
         json={
-            "name": "no-owner",
+            "title": "no-owner",
             "status": "draft",
             "config": {},
         },

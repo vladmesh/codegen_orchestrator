@@ -81,7 +81,8 @@ class TestProjectModelDefaults:
             session.execute(
                 insert(Project).values(
                     id=project_id,
-                    name="test",
+                    title="test",
+                    slug="test-0000",
                     status=ProjectStatus.DRAFT.value,
                     config={},
                     owner_id=1,
@@ -105,7 +106,8 @@ class TestRepositoryModelDefaults:
             session.execute(
                 insert(Project).values(
                     id=project_id,
-                    name="test",
+                    title="test",
+                    slug="test-0000",
                     status=ProjectStatus.DRAFT.value,
                     config={},
                     owner_id=1,

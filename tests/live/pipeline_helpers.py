@@ -199,7 +199,7 @@ async def create_pipeline_project(
         "/api/projects/",
         json={
             "id": project_id,
-            "name": project_name,
+            "title": project_name,
             "status": ProjectStatus.DRAFT,
             "config": config,
         },

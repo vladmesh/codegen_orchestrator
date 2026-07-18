@@ -18,19 +18,19 @@ async def test_create_and_get_project(api):
 
     resp = await api.post(
         "/api/projects/",
-        json={"id": project_id, "name": name, "status": ProjectStatus.DRAFT, "config": {}},
+        json={"id": project_id, "title": name, "status": ProjectStatus.DRAFT, "config": {}},
     )
     resp.raise_for_status()
     assert resp.status_code == 201
     data = resp.json()
     assert data["id"] == project_id
-    assert data["name"] == name
+    assert data["title"] == name
 
     # GET
     resp = await api.get(f"/api/projects/{project_id}")
     resp.raise_for_status()
     assert resp.status_code == 200
-    assert resp.json()["name"] == name
+    assert resp.json()["title"] == name
 
     # cleanup
     resp = await api.delete(f"/api/projects/{project_id}")

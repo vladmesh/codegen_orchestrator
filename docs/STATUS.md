@@ -14,6 +14,11 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 
 ## Current Facts
 
+- `codegen_orchestrator-646` splits project display text from runtime identity:
+  projects store free-text `title` plus immutable server-generated unique `slug`.
+  The API rejects client-supplied slug changes and migration `c7d8e9f0a1b2`
+  backfills existing development rows from the old `name` column.
+
 - `codegen_orchestrator-642` adds Codex as a developer-worker type end to end.
   `agent_type=codex` selects `worker-base-codex`, runs pinned Codex CLI 0.144.6
   through `codex exec --sandbox workspace-write`, and reports only through the

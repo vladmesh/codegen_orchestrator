@@ -728,7 +728,7 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
 
     project_payload = requests[0][1]
     config = project_payload["config"]
-    assert project_payload["name"].startswith("live-test-llm-")
+    assert project_payload["title"].startswith("live-test-llm-")
     assert config["modules"] == ["backend"]
     assert config["agent_type"] == "claude"
     assert "user-provided secrets" in config["detailed_spec"]

@@ -26,7 +26,8 @@ def _project(**overrides) -> ProjectDTO:
     """Factory for ProjectDTO with sensible defaults."""
     defaults = {
         "id": _PROJECT_UUID,
-        "name": "test-project",
+        "title": "test-project",
+        "slug": "test-project-0000",
         "status": ProjectStatus.ACTIVE,
         "config": {"modules": ["backend"], "description": "A test project"},
         "owner_id": 1,

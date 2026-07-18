@@ -46,7 +46,7 @@ def _mock_session(existing_project=None, resolve_user="NOT_SET"):
 
 PROJECT_PAYLOAD = {
     "id": PROJECT_UUID,
-    "name": "my-project",
+    "title": "My Project",
     "status": "draft",
     "config": {"modules": ["backend"]},
 }
@@ -99,6 +99,8 @@ async def test_create_project_with_header_sets_owner():
     session.add.assert_called_once()
     project = session.add.call_args[0][0]
     assert project.owner_id == 5  # noqa: PLR2004
+    assert project.title == "My Project"
+    assert project.slug == "my-proj-00000000000000000000000000000001"
 
 
 @pytest.mark.asyncio
@@ -120,3 +122,27 @@ async def test_create_project_unknown_user_returns_404():
         )
 
     assert resp.status_code == 404  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_client_slug():
+    """POST rejects client-provided slug; slugs are server generated."""
+    user = _make_user(user_id=5, telegram_id=42000)
+    session = _mock_session(existing_project=None, resolve_user=user)
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    payload = PROJECT_PAYLOAD | {"slug": "client-slug"}
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/projects/",
+            json=payload,
+            headers={"X-Telegram-ID": "42000"},
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    session.add.assert_not_called()

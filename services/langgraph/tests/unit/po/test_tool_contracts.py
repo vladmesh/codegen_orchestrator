@@ -31,19 +31,23 @@ class TestCreateProjectPayload:
         project_id = str(uuid.uuid4())
         payload = {
             "id": project_id,
-            "name": "my-bot",
+            "title": "My Bot",
             "status": "draft",
-            "config": {"modules": ["backend", "tg_bot"], "description": "A bot", "name": "my-bot"},
+            "config": {
+                "modules": ["backend", "tg_bot"],
+                "description": "A bot",
+                "title": "My Bot",
+            },
         }
         schema = ProjectCreate.model_validate(payload)
         assert schema.id == uuid.UUID(project_id)
-        assert schema.name == "my-bot"
+        assert schema.title == "My Bot"
 
     def test_uuid_string_coerced(self):
         """ProjectCreate accepts UUID as string (Pydantic coerces it)."""
         payload = {
             "id": str(uuid.uuid4()),
-            "name": "test",
+            "title": "Test",
             "status": "draft",
             "config": {},
         }
@@ -54,7 +58,7 @@ class TestCreateProjectPayload:
         """Non-UUID id is rejected by ProjectCreate."""
         payload = {
             "id": "abc123",
-            "name": "test",
+            "title": "Test",
             "status": "draft",
             "config": {},
         }
@@ -63,7 +67,7 @@ class TestCreateProjectPayload:
 
     def test_none_id_allowed(self):
         """ProjectCreate allows id=None (auto-generated)."""
-        payload = {"name": "test", "status": "draft", "config": {}}
+        payload = {"title": "Test", "status": "draft", "config": {}}
         schema = ProjectCreate.model_validate(payload)
         assert schema.id is None
 
@@ -71,12 +75,12 @@ class TestCreateProjectPayload:
         """The config field accepts any dict (modules, description, etc.)."""
         payload = {
             "id": str(uuid.uuid4()),
-            "name": "test",
+            "title": "Test",
             "status": "draft",
             "config": {
                 "modules": ["backend"],
                 "description": "test desc",
-                "name": "test",
+                "title": "Test",
                 "extra_key": 42,
             },
         }

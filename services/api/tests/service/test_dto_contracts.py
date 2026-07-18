@@ -19,6 +19,7 @@ from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.project_slug import PROJECT_SLUG_PATTERN
 
 TELEGRAM_ID = 999111999
 
@@ -43,7 +44,7 @@ async def _test_user(async_client: AsyncClient):
 async def project(async_client: AsyncClient, _test_user):
     resp = await async_client.post(
         "/api/projects/",
-        json={"name": "dto-contract-project", "status": "active", "config": {}},
+        json={"title": "DTO Contract Project", "status": "active", "config": {}},
         headers={"X-Telegram-ID": str(TELEGRAM_ID)},
     )
     assert resp.status_code == 201
@@ -56,9 +57,13 @@ async def project(async_client: AsyncClient, _test_user):
 @pytest.mark.asyncio
 async def test_project_response_validates_as_dto(project):
     dto = ProjectDTO.model_validate(project)
-    assert dto.name == "dto-contract-project"
+    assert dto.title == "DTO Contract Project"
+    assert dto.slug.startswith("dto-con-")
+    assert PROJECT_SLUG_PATTERN.fullmatch(dto.slug)
+    assert len(dto.slug) <= 40  # noqa: PLR2004
     assert dto.status == "active"
     assert dto.created_at is not None
+    assert dto.model_dump()["name"] == "DTO Contract Project"
 
 
 # ── Task ─────────────────────────────────────────────────────

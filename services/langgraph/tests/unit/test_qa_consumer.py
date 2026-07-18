@@ -86,7 +86,8 @@ def mock_api_client():
         mock.get_project = AsyncMock(
             return_value=ProjectDTO(
                 id="116c9678-5872-4ce5-8332-9a267ab27604",
-                name="weather_bot",
+                title="weather_bot",
+                slug="weather-bot-0000",
                 status=ProjectStatus.ACTIVE,
                 config={},
                 owner_id=1,
@@ -393,7 +394,8 @@ class TestHealthOnlyCriteriaRouting:
         respx.get("https://weather.example.com/health").mock(return_value=httpx.Response(200))
         mock_api_client.get_project.return_value = ProjectDTO(
             id="116c9678-5872-4ce5-8332-9a267ab27604",
-            name="tg_bot_project",
+            title="tg_bot_project",
+            slug="tg-bot-project-0000",
             status=ProjectStatus.ACTIVE,
             config={"modules": ["tg_bot"]},
             owner_id=1,
@@ -515,7 +517,8 @@ class TestProcessQAJobEdgeCases:
     ):
         mock_api_client.get_project.return_value = ProjectDTO(
             id="116c9678-5872-4ce5-8332-9a267ab27604",
-            name="tg_bot_project",
+            title="tg_bot_project",
+            slug="tg-bot-project-0000",
             status=ProjectStatus.ACTIVE,
             config={"modules": ["tg_bot"]},
             owner_id=1,
