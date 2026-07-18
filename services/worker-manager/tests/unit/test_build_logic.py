@@ -242,9 +242,7 @@ class TestWorkerManagerCreateWithCapabilities:
 
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
-    async def test_factory_worker_forwards_manager_api_key(
-        self, mock_workspace, mock_redis, mock_docker, monkeypatch
-    ):
+    async def test_factory_worker_forwards_manager_api_key(self, mock_workspace, mock_redis, mock_docker, monkeypatch):
         """Factory child containers need FACTORY_API_KEY even in host-session mode."""
         from pathlib import Path
 
