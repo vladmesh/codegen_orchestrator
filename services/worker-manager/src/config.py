@@ -24,8 +24,10 @@ class WorkerManagerSettings(BaseSettings):
     # Host path to .claude directory (for mounting into workers)
     HOST_CLAUDE_DIR: str | None = None
 
-    # Worker subprocess timeout (seconds)
-    WORKER_SUBPROCESS_TIMEOUT_SECONDS: int = 300
+    # Worker subprocess timeout (seconds). Live LLM agents (Claude/Factory) need
+    # well over the noop budget to write and iterate on real code; keep within the
+    # harness LLM_ENGINEERING_TIMEOUT. The noop runner uses its own short timeout.
+    WORKER_SUBPROCESS_TIMEOUT_SECONDS: int = 900
 
     # Path to pre-scaffolded workspaces (created by scaffolder service)
     # All workspaces live here, keyed by repo_id: /data/workspaces/{repo_id}/

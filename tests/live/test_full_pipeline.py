@@ -278,13 +278,22 @@ class TestFullPipelineLLM:
         )
 
     async def test_no_user_secrets_required(self, llm_pipeline):
-        """The backend-only LLM project must not trip the user-secret deploy path."""
+        """The backend-only LLM project must not trip the user-secret deploy path.
+
+        Only *required* user secrets dead-end the deploy (DeployOutcome
+        WAITING_FOR_USER_SECRET). Optional ``user_secret`` overrides such as the
+        template's ``DATABASE_URL`` (``required: false``) are resolved from the
+        allocated infrastructure and must not fail this project.
+        """
         if llm_pipeline.get("task_status") != TaskStatus.DONE:
             pytest.skip("engineering failed")
         errors = llm_pipeline.get("env_contract_errors") or {}
         assert "merged" not in errors, errors.get("merged")
         probe = llm_pipeline["env_contract_probes"]["merged"]
-        assert probe["user_secret_entries"] == []
+        assert probe["required_user_secret_entries"] == [], (
+            "required user secrets would dead-end deploy: "
+            f"{probe['required_user_secret_entries']}"
+        )
 
     async def test_deploy_run_outcome_success(self, llm_pipeline):
         """The deploy run this mega triggered must conclude deploy_outcome=success."""
