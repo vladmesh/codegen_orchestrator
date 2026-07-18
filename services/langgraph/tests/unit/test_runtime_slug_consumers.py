@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.unit.factories import make_project
 
 from shared.contracts.queues.deploy import DeployAction
 from src.consumers._qa_runner import run_qa_on_server
@@ -15,6 +14,7 @@ from src.consumers.deploy_lifecycle import process_lifecycle_action
 from src.consumers.deploy_precheck import _pre_check_server
 from src.subgraphs.devops.secret_resolver import SecretResolverNode
 from src.subgraphs.devops.smoke import SmokeTesterNode
+from tests.unit.factories import make_project
 
 RUNTIME_SLUG = "fancy-project-with-spaces-0000"
 DISPLAY_TITLE = "Fancy_Project With Spaces"
@@ -139,3 +139,27 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
     assert qa_result.passed is True
     qa_cmd = qa_conn.run.await_args_list[0].args[0]
     assert f"cd {SERVICE_DIR}" in qa_cmd
+
+    unsafe_project = "unsafe project; echo nope"
+    unsafe_conn = AsyncMock()
+    unsafe_conn.run = AsyncMock(return_value=MagicMock(exit_status=0, stdout="stopped"))
+    with (
+        patch("src.consumers.deploy_lifecycle.api_client") as lifecycle_api,
+        patch(
+            "src.consumers.deploy_lifecycle.asyncssh",
+            _ssh_module_for_connection(unsafe_conn),
+        ),
+    ):
+        lifecycle_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
+        lifecycle_api.get_server_ssh_key = AsyncMock(return_value="fake-key")
+        await process_lifecycle_action(
+            action=DeployAction.UNDEPLOY,
+            task_id="deploy-1",
+            project_id=str(project.id),
+            project_name=unsafe_project,
+            allocated_resources={"srv-1:8000": {"server_ip": "1.2.3.4", "server_handle": "srv-1"}},
+        )
+    unsafe_cmd = unsafe_conn.run.await_args.args[0]
+    assert "cd '/opt/services/unsafe project; echo nope/infra'" in unsafe_cmd
+    assert "docker compose -p 'unsafe project; echo nope'" in unsafe_cmd
+    assert "rm -rf '/opt/services/unsafe project; echo nope'" in unsafe_cmd

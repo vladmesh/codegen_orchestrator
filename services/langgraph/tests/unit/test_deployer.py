@@ -5,9 +5,9 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.unit.factories import make_repository
 
 from src.subgraphs.devops.deployer import DeployerNode
+from tests.unit.factories import make_repository
 
 
 class WorkflowCancelledError(RuntimeError):

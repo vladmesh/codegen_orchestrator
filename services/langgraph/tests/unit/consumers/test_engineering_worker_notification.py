@@ -16,9 +16,9 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from tests.unit.factories import make_project, make_repository
 
 from src.consumers.engineering import EngineeringSuccessParams
+from tests.unit.factories import make_project, make_repository
 
 
 @pytest.fixture

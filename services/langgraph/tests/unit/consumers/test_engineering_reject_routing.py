@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from tests.unit.factories import make_project, make_repository, make_story
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from tests.unit.factories import make_project, make_repository, make_story
 
 _PATCH = "src.consumers.engineering"
 

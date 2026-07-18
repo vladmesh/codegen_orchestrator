@@ -56,7 +56,7 @@ async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
             raise RuntimeError(
                 f"Repository {repo_full_name} already exists. "
                 "This likely means a previous run was not cleaned up. "
-                "Delete the repo and retry, or use a different project name."
+                "Delete the repo and retry, or create a new project."
             ) from e
         else:
             raise

@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
 from tests.unit.factories import make_project, make_repository
 
 

@@ -9,9 +9,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.unit.factories import make_project, make_repository
 
 from shared.contracts.queues.deploy import DeployTrigger
+from tests.unit.factories import make_project, make_repository
 
 
 @pytest.fixture
