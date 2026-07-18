@@ -109,14 +109,8 @@ jobs:
       - name: Run unit tests
         run: make test-unit
 
-      - name: Run live cleanup auth/FK regression
-        run: uv run pytest -q tests/live/test_cleanup_auth_fk.py
-
-      - name: Run live cleanup ssh_user regression
-        run: uv run pytest -q tests/live/test_cleanup_ssh_user.py
-
-      - name: Run live harness contract regression
-        run: uv run pytest -q tests/live/test_harness_contract.py
+      - name: Run offline live regressions
+        run: make test-live
 
       - name: Run Redis capability cleanup regression
         run: |

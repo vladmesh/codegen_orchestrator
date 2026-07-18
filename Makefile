@@ -278,12 +278,26 @@ test-integration: $(INTEGRATION_TESTS)
 
 
 
-# Live tests: run from host against running `make up` stack (no LLM)
+LIVE_OFFLINE_IGNORE_FLAGS = \
+	--ignore=tests/live/test_api_crud.py \
+	--ignore=tests/live/test_capability_cleanup_redis.py \
+	--ignore=tests/live/test_ci_prompt.py \
+	--ignore=tests/live/test_deploy_infra.py \
+	--ignore=tests/live/test_full_pipeline.py \
+	--ignore=tests/live/test_health.py \
+	--ignore=tests/live/test_pipeline_engineering.py \
+	--ignore=tests/live/test_pipeline_scaffold.py \
+	--ignore=tests/live/test_scaffold.py \
+	--ignore=tests/live/test_scaffold_result.py \
+	--ignore=tests/live/test_streams.py \
+	--ignore=tests/live/test_supervisor.py
+
+# Offline live regressions: no running stack or external Redis required.
 N ?= ""
 test-live:
 ifeq ($(N),"")
-	@echo "Running all live tests (excluding pipeline)..."
-	@uv run pytest tests/live/ -v --tb=short --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_full_pipeline.py
+	@echo "Running offline live regressions..."
+	@uv run pytest tests/live/ -v --tb=short $(LIVE_OFFLINE_IGNORE_FLAGS)
 else
 	@echo "Running live test: $(N)..."
 	@uv run pytest tests/live/test_$(N).py -v --tb=short
