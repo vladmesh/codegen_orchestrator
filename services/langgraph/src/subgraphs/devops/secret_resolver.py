@@ -187,9 +187,7 @@ class SecretResolverNode(FunctionalNode):
         try:
             runtime_project_slug(project_name)
         except ValueError as error:
-            raise TypedSecretResolutionError(
-                "environment_resolution_failed", str(error)
-            ) from error
+            raise TypedSecretResolutionError("environment_resolution_failed", str(error)) from error
 
     def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
         """Look up allocated server IP and port for a service.
