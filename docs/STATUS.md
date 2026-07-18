@@ -9,9 +9,8 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Stage 5 next. Sprint 002 Phase 4 (silent failures → fail-fast) is complete
-  after the [closeout audit rerun](reports/sprint-002-closeout-audit-rerun.md): all five prior
-  blocker boundaries are closed on fetched `origin/main`; deterministic mock-smoke evidence is next.
+- **Current Phase**: Stage 7 live validation. Sprint 002 Phases 0–4 are complete; the current
+  focus is safe teardown and reproducible diagnostics around the proven live pipeline.
 
 ## Current Facts
 
@@ -29,10 +28,17 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   SSH key from the same server handle. Initial provisioning and reinstall still bootstrap as root.
 
 - Stage 7 live harness hardening records exact run-owned resources, verifies targeted cleanup and
-  requires a separate non-LLM QA `passed` outcome after deploy. The external Stage 7 run remains
-  out of scope until its dedicated infrastructure and credentials are available.
+  requires a separate non-LLM QA `passed` outcome after deploy.
 - Stage 7 preflight now resumes crash-manifest cleanup fail-closed, resolves workers by ownership
   metadata, and tolerates idle Redis pubsub timeouts without ending LangGraph listeners.
+- Mega 2.0 is complete in PR #99: the noop suite passed 7/7 and the live Claude path passed 5/5,
+  including generated backend code, CI, merge, deploy success, `/health` 200 and non-LLM QA.
+  PR #98 also releases `workspace:active_projects` in `delete_worker` cleanup even when Docker
+  teardown fails.
+- PR #102 (`codegen_orchestrator-618`) moved live cleanup to an internal API client: unowned
+  deploy/QA runs are found, cancelled and confirmed terminal before external teardown. PR #103
+  (`codegen_orchestrator-549`) makes parsed live-harness API reads fail on HTTP errors before body
+  parsing.
 
 - CI normalization is complete in PR #30: `Required CI Gate`, unconditional format/lint/unit checks
   and `make ci-contract` are in place.
@@ -81,6 +87,9 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 | 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | COMPLETE — B7 enums (`codegen_orchestrator-435`), duplicated vocabularies (`codegen_orchestrator-436`), typed `Run.result` union (`codegen_orchestrator-440`) |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | COMPLETE — `consume_typed` (PR #40), B6 worker result (PR #41), engineering consumer typed + dead-layer removal (`codegen_orchestrator-457`, PR #42) |
 | 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | COMPLETE — rerun audit on `b0463fb3` closes scaffolder/auth diagnostics, worker compose, provisioner outage and notification caller-policy boundaries. |
+| 5 | Deterministic mock smoke | COMPLETE — `codegen_orchestrator-496` |
+| 6 | service-template compatibility matrix | COMPLETE — `codegen_orchestrator-499` |
+| 7 | Live mega and cleanup hardening | IN PROGRESS — Mega 2.0 is green; cleanup race `codegen_orchestrator-618` and fail-loud API reads `codegen_orchestrator-549` are complete |
 
 ## Recent Stabilization Work
 
@@ -99,7 +108,11 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 | B3 incident journal reconciliation (`codegen_orchestrator-466`) | COMPLETE | Successful provisioning writes `READY` before journal closure. An unavailable journal remains observable and gets one warning; scheduler retries only active `provisioning_failed` entries for `READY` servers, idempotently and without recovery actions or per-tick notifications. |
 | B4 secret resolver fail-fast (`codegen_orchestrator-473`) | COMPLETE | Resolver validates project context, allocations and repository metadata before deploy, rejects unknown computed values, and propagates secret-persistence failures through the deploy error path. The closeout audit tracks remaining Phase 4 boundaries separately. |
 | Worker compose and provisioner outage bounds (`codegen_orchestrator-493`) | COMPLETE | Worker recipes preserve curl, JSON and compose failures and required override installation fails the task. Incident-journal reclaim retries only the journal write, then publishes one bounded terminal failure before ACK. |
-| Sprint 002 closeout audit rerun (`codegen_orchestrator-495`) | COMPLETE, GREEN | [Original RED audit](reports/sprint-002-closeout-audit.md) is retained as historical evidence. The [rerun](reports/sprint-002-closeout-audit-rerun.md) verifies all five blocker slices on fetched `origin/main`; E2E remains pending and Stage 5 is next. |
+| Sprint 002 closeout audit rerun (`codegen_orchestrator-495`) | COMPLETE, GREEN | [Original RED audit](reports/sprint-002-closeout-audit.md) is retained as historical evidence. The [rerun](reports/sprint-002-closeout-audit-rerun.md) verifies all five blocker slices on fetched `origin/main`. |
+| Mega 2.0, live LLM worker (`codegen_orchestrator-627`) | COMPLETE | PR #99; noop 7/7 and live Claude 5/5, including deploy, `/health` and QA |
+| Worker cleanup lock (`codegen_orchestrator-626`) | COMPLETE | PR #98; `workspace:active_projects` is released in `finally` and covered by a regression test |
+| Live cleanup unowned runs (`codegen_orchestrator-618`) | COMPLETE | PR #102; internal ownership-aware run fence before teardown |
+| Live harness fail-loud API reads (`codegen_orchestrator-549`) | COMPLETE | PR #103; parsed responses raise on HTTP errors before body parsing |
 
 ## Sprint History
 
