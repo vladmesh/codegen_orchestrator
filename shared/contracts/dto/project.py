@@ -1,7 +1,7 @@
 from enum import StrEnum
 import uuid
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -69,6 +69,7 @@ class ProjectDTO(TimestampedDTO):
     owner_id: int
     project_spec: dict | None = None
 
+    @computed_field
     @property
     def name(self) -> str:
         """Legacy display-name accessor until runtime consumers move to slug."""

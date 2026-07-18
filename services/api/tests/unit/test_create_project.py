@@ -100,7 +100,7 @@ async def test_create_project_with_header_sets_owner():
     project = session.add.call_args[0][0]
     assert project.owner_id == 5  # noqa: PLR2004
     assert project.title == "My Project"
-    assert project.slug == "my-project-0000"
+    assert project.slug == "my-proj-00000000000000000000000000000001"
 
 
 @pytest.mark.asyncio

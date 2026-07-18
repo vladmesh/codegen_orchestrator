@@ -18,7 +18,7 @@ def slugify_project_title(title: str) -> str:
 
 def generate_project_slug(title: str, project_id: uuid.UUID) -> str:
     """Generate a stable runtime slug from title and project UUID."""
-    suffix = project_id.hex[:4]
+    suffix = project_id.hex
     base = slugify_project_title(title)
     prefix = "" if base and base[0].isalpha() else "p"
 

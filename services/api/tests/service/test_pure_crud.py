@@ -42,4 +42,4 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
     data = response.json()
     assert data["id"] == payload["id"]
     assert data["title"] == payload["title"]
-    assert data["slug"] == "new-project-001-0000"
+    assert data["slug"] == "new-pro-00000000000000000000000000000099"

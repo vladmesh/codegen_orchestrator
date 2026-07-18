@@ -5,7 +5,7 @@ Revises: b1c2d3e4f5a6
 Create Date: 2026-07-18 20:20:00.000000
 
 Existing development rows are backfilled in place: title copies the old name,
-and slug is generated from title plus the first four hex characters of id.
+and slug is generated from title plus the project id hex.
 The slug column is unique and indexed as a guardrail; uniqueness comes from id.
 """
 
@@ -30,7 +30,7 @@ def _slugify(title: str) -> str:
 
 
 def _generate_slug(title: str, project_id: str) -> str:
-    suffix = project_id.replace("-", "")[:4]
+    suffix = project_id.replace("-", "")
     base = _slugify(title)
     prefix = "" if base and base[0].isalpha() else "p"
 

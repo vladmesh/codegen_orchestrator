@@ -38,8 +38,8 @@ class TestCreateProjectIntegration:
         assert resp.status_code == 200
         project = resp.json()
         assert project["title"] == "integ-test-bot"
-        # Slug is derived server-side: slugified title plus the id's first four hex chars.
-        assert project["slug"] == f"integ-test-bot-{project_id.replace('-', '')[:4]}"
+        # Slug is derived server-side: slugified title plus the id hex.
+        assert project["slug"] == f"integ-t-{project_id.replace('-', '')}"
 
     async def test_invalid_modules_rejected_before_api(self):
         """Invalid modules are caught by the tool itself, no API call made."""
