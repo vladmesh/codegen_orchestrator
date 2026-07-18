@@ -673,6 +673,32 @@ class TestProjectMutex:
             )
             assert result == "w-second"
 
+    @pytest.mark.asyncio
+    async def test_delete_worker_releases_project_lock_when_container_remove_fails(self, mock_docker):
+        """Docker teardown failures must not leave the project mutex stuck."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        await redis.sadd("workspace:active_projects", "proj-1")
+        await redis.hset(
+            "worker:meta:w-first",
+            mapping={
+                "dev_network": "dev_proj_w-first",
+                "workspace_path": "/tmp/ws/repo-1",
+                "project_id": "proj-1",
+            },
+        )
+        await redis.hset("worker:status:w-first", mapping={"status": WorkerStatus.RUNNING})
+        mock_docker.remove_container.side_effect = RuntimeError("docker remove failed")
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=(0, "", ""))
+            mock_runner_cls.return_value = mock_runner
+            await manager.delete_worker("w-first")
+
+        assert not await redis.sismember("workspace:active_projects", "proj-1")
+        assert await manager._check_project_lock("proj-1") is None
+
 
 # --- Phase 6: Failure counter + force clean + retry limit ---
 
