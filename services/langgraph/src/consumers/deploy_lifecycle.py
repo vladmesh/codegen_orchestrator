@@ -56,7 +56,8 @@ async def process_lifecycle_action(
     quoted_service_dir = shlex.quote(service_dir)
     compose_cmd = (
         f"cd {shlex.quote(f'{service_dir}/infra')} && "
-        f"docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
+        f"docker compose -p {shlex.quote(project_name)} "
+        f"--env-file ../.env -f compose.base.yml -f compose.prod.yml"
     )
 
     if action == DeployAction.STOP:
