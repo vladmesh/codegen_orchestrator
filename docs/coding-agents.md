@@ -45,6 +45,7 @@ Codex is available only for developer workers. The image pins Codex CLI
 
 ```bash
 codex exec --sandbox workspace-write \
+  --config sandbox_workspace_write.network_access=true \
   "Read TASK.md and AGENTS.md, then complete the task described in TASK.md."
 ```
 
@@ -52,6 +53,9 @@ The task is in `/workspace/TASK.md`, and the shared developer instructions are
 in `/workspace/AGENTS.md`. The agent must report success or failure through
 `POST http://localhost:9090/result`. CLI stdout and stderr are diagnostics and
 are neither accepted as the business result nor persisted for Codex workers.
+The per-run network override is required because `workspace-write` otherwise
+blocks the agent's localhost result call, dependency access, and Git push. The
+Docker worker network remains the outer isolation boundary.
 
 ### Dedicated ChatGPT session profile
 

@@ -54,7 +54,7 @@ class WorkerContainerConfig:
             if self.agent_type == AgentType.FACTORY:
                 env["FACTORY_API_KEY"] = self.api_key
             elif self.agent_type == AgentType.CODEX:
-                env["OPENAI_API_KEY"] = self.api_key
+                env["CODEX_API_KEY"] = self.api_key
             else:
                 env["ANTHROPIC_API_KEY"] = self.api_key
 

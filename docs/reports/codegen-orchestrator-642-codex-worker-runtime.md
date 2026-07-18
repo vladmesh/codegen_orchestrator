@@ -10,6 +10,11 @@ the existing worker command DTO, worker-manager, the agent-specific image, and
 worker-wrapper. The queue envelope is unchanged. Unknown agent types fail at
 the typed or explicit routing boundary.
 
+The runner keeps filesystem writes in the `workspace-write` sandbox and
+enables sandboxed network commands so the agent can reach the localhost result
+bridge, dependencies, and Git remote. Optional API-key mode uses the CLI's
+`CODEX_API_KEY`; host-session mode sets neither API-key variable.
+
 `auth_mode=host_session` requires a separate `HOST_CODEX_HOME` with directory
 mode `0700`, `auth.json` and `config.toml` mode `0600`, a non-empty JSON session,
 refresh-capable access and refresh tokens, and
@@ -33,6 +38,13 @@ uv run pytest packages/worker-wrapper/tests/component -q
 
 docker compose config --quiet --no-env-resolution
 exit 0
+
+uv run pytest shared/tests/unit/test_codex_deployment_contract.py -q
+1 passed
+
+Production deploy writes `HOST_CODEX_HOME` and pulls
+`worker-base-common`, `worker-base-claude`, `worker-base-factory`, and
+`worker-base-codex` from GHCR before starting the stack.
 
 make rebuild-worker-images
 worker-base-common:latest built

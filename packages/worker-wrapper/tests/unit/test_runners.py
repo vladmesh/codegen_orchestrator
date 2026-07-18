@@ -69,6 +69,8 @@ class TestCodexRunner:
             "exec",
             "--sandbox",
             "workspace-write",
+            "--config",
+            "sandbox_workspace_write.network_access=true",
             "Read TASK.md and AGENTS.md",
         ]
 

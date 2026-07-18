@@ -74,6 +74,7 @@ jobs:
             # Worker agents
             FACTORY_API_KEY=${{ secrets.FACTORY_API_KEY }}
             HOST_CLAUDE_DIR=${{ secrets.HOST_CLAUDE_DIR }}
+            HOST_CODEX_HOME=${{ secrets.HOST_CODEX_HOME }}
 
             # Observability
             LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }}

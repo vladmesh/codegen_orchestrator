@@ -9,8 +9,12 @@
   non-root worker with the same workspace and resource limits. Host-session
   mode validates and mounts an isolated file-backed `HOST_CODEX_HOME` read-write
   for token refresh, without requiring an API key or defaulting to `~/.codex`.
+  Production deployment persists that host profile path and pulls the Codex
+  base image alongside the common, Claude, and Factory images.
   Codex runs non-interactively with workspace-only writes and reports through
-  the existing HTTP bridge; its stdout and stderr are not persisted as results.
+  the existing HTTP bridge; sandboxed network commands are enabled for the
+  bridge, dependency access, and Git push. Its stdout and stderr are not
+  persisted as results. Optional API-key mode uses `CODEX_API_KEY`.
 - Make live harness API reads fail loud before body parsing. Parsed `tests/live` API responses now
   call `raise_for_status()` first, including scaffold/project polling and auth-gated server,
   ssh-key and port-allocation checks, with a mock-transport regression for a rejected polling call.

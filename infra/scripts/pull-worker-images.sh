@@ -21,6 +21,7 @@ IMAGES=(
     "worker-base-common"
     "worker-base-claude"
     "worker-base-factory"
+    "worker-base-codex"
 )
 
 echo "Logging in to GHCR..."

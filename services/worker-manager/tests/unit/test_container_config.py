@@ -68,7 +68,7 @@ class TestWorkerContainerConfig:
         assert env["CODEX_HOME"] == "/home/worker/.codex"
         assert "OPENAI_API_KEY" not in env
 
-    def test_codex_api_key_mode_uses_openai_variable(self):
+    def test_codex_api_key_mode_uses_exec_scoped_variable(self):
         config = WorkerContainerConfig(
             worker_id="test-1",
             worker_type="developer",
@@ -80,7 +80,8 @@ class TestWorkerContainerConfig:
 
         env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
 
-        assert env["OPENAI_API_KEY"] == "sk-openai-test"
+        assert env["CODEX_API_KEY"] == "sk-openai-test"
+        assert "OPENAI_API_KEY" not in env
 
     def test_api_key_mode_adds_env_var(self):
         """API key auth mode should add ANTHROPIC_API_KEY."""
