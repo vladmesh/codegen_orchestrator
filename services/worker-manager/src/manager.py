@@ -134,6 +134,7 @@ class WorkerManager:
         meta = decode_redis_fields(await self.redis.hgetall(f"worker:meta:{worker_id}"))
         dev_network = meta.get("dev_network") if meta else None
         stored_workspace = meta.get("workspace_path") if meta else None
+        project_id = meta.get("project_id") if meta else None
 
         try:
             if stored_workspace:
@@ -160,7 +161,10 @@ class WorkerManager:
             if dev_network:
                 await self.docker.remove_network(dev_network)
 
-            project_id = meta.get("project_id") if meta else None
+        except Exception as e:
+            logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
+        finally:
             if project_id:
                 logger.info("workspace_preserved", project_id=project_id, worker_id=worker_id)
                 await self.redis.srem("workspace:active_projects", project_id)
@@ -182,10 +186,6 @@ class WorkerManager:
                 f"worker:{worker_id}:output",
             ]
             await self.redis.delete(*keys_to_delete)
-
-        except Exception as e:
-            logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
 
     async def pause_worker(self, worker_id: str) -> None:
         """Pause a running worker."""
