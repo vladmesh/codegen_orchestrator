@@ -139,3 +139,23 @@ class TestAgentSubprocessEnv:
 
         env = captured["env"]
         assert "PYTHONPATH" not in env or env["PYTHONPATH"] == ""
+
+    @pytest.mark.asyncio
+    async def test_failure_error_uses_stdout_when_stderr_empty(self):
+        """Some CLIs emit structured failures on stdout, not stderr."""
+        wrapper = _make_wrapper()
+
+        async def fake_exec(*args, **kwargs):
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b'{"result":"auth failed"}', b""))
+            proc.returncode = 1
+            proc.kill = AsyncMock()
+            proc.wait = AsyncMock()
+            return proc
+
+        with (
+            patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch.object(wrapper, "_resolve_prompt", return_value="do stuff"),
+        ):
+            with pytest.raises(RuntimeError, match="auth failed"):
+                await wrapper.execute_agent({"prompt": "test"})

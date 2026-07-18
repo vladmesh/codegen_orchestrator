@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-18
+
+- Extend the live mega pipeline with a real Claude developer worker variant. The noop route still
+  proves the deterministic plumbing, while the LLM route now scaffolds a backend-only project,
+  runs engineering with a longer timeout, verifies the merged env contract has no user-secret
+  entries, then gates on deploy success, `/health` 200, and non-LLM QA passed. Real LLM worker
+  containers now get a 4GB memory limit; noop workers keep the smaller 2GB limit. Factory worker
+  startup was also hardened to forward its API key and request Droid's non-interactive edit mode.
+
 ## 2026-07-16
 
 - Give post-deploy QA one source of truth for acceptance criteria. `Repository.acceptance_criteria`

@@ -712,6 +712,63 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypatch, tmp_path):
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.url.path, json.loads(request.content)))
+        if request.url.path == "/api/projects/":
+            return httpx.Response(201, json={"id": "project"})
+        return httpx.Response(201, json={"id": "repo-1"})
+
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        ctx = await pipeline_helpers.create_llm_backend_project(api)
+
+    project_payload = requests[0][1]
+    config = project_payload["config"]
+    assert project_payload["name"].startswith("live-test-llm-")
+    assert config["modules"] == ["backend"]
+    assert config["agent_type"] == "claude"
+    assert "user-provided secrets" in config["detailed_spec"]
+    assert "secrets" not in config
+    assert "env_hints" not in config
+    assert ctx["repo_id"] == "repo-1"
+    assert ctx["task_title"] == pipeline_helpers.LLM_BACKEND_TASK_TITLE
+    assert ctx["task_description"] == pipeline_helpers.LLM_BACKEND_TASK_DESCRIPTION
+
+
+@pytest.mark.asyncio
+async def test_create_story_and_task_uses_context_task_description():
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        requests.append((request.url.path, body))
+        if request.url.path == "/api/stories/":
+            return httpx.Response(201, json={"id": "story-1"})
+        if request.url.path == "/api/tasks/":
+            return httpx.Response(201, json={"id": "task-1"})
+        return httpx.Response(200, json={})
+
+    ctx = {
+        "project_id": "project-1",
+        "task_title": "Implement backend health API",
+        "task_description": "Create a real backend health endpoint.",
+    }
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        await pipeline_helpers.create_story_and_task(api, ctx)
+
+    task_payload = [body for path, body in requests if path == "/api/tasks/"][0]
+    assert task_payload["title"] == "Implement backend health API"
+    assert task_payload["description"] == "Create a real backend health endpoint."
+    assert ctx["story_id"] == "story-1"
+    assert ctx["task_id"] == "task-1"
+
+
+@pytest.mark.asyncio
 async def test_common_live_project_gets_persisted_manifest(monkeypatch, tmp_path):
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(201, json={"id": "common-project"})

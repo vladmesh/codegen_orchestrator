@@ -427,6 +427,11 @@ class WorkerManager:
                 worker_manager_url=settings.WORKER_MANAGER_URL,
             )
             container_env.update(env_vars)
+            if agent_type == AgentType.FACTORY and "FACTORY_API_KEY" not in container_env:
+                factory_api_key = os.getenv("FACTORY_API_KEY")
+                if not factory_api_key:
+                    raise RuntimeError("FACTORY_API_KEY is not set")
+                container_env["FACTORY_API_KEY"] = factory_api_key
 
             github_token = env_vars.get("GITHUB_TOKEN")
             if github_token:

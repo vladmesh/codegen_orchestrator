@@ -1,17 +1,18 @@
-"""Pipeline test: Full deploy (~7-10 min) — THE MEGA TEST.
+"""Pipeline test: Full deploy - THE MEGA TEST.
 
 Exercises the entire path from project creation to a live /health response:
 
-  1. API: create project (agent_type=noop) + repo
+  1. API: create project + repo
   2. scaffold:queue → scaffolder → GitHub repo (+ branch protection on main)
   3. API: create story (in_progress) + task (todo)
-  4. task_dispatcher → engineering:queue → noop worker → empty commit + push to story branch
+  4. task_dispatcher → engineering:queue → worker → commit + push to story branch
   5. All tasks done → dispatcher creates PR story/{id} → main (auto-merge enabled)
   6. CI runs on PR → green → auto-merge → webhook → deploy:queue
   7. deploy consumer → DevOps subgraph → GitHub Actions deploy.yml
   8. smoke test: GET /health → 200
 
-No LLM. Fully deterministic. Real queues, real GitHub, real server.
+The noop path stays deterministic. The LLM path exercises the product route where a
+real developer worker changes code before CI, merge, deploy, health, and QA.
 """
 
 import asyncio
@@ -26,9 +27,11 @@ from pipeline_helpers import (
     DEPLOY_TIMEOUT,
     ENGINEERING_TIMEOUT,
     EXPECTED_ENV_CONTRACT_FRAGMENTS,
+    LLM_ENGINEERING_TIMEOUT,
     QA_RUN_TIMEOUT,
     SCAFFOLD_TIMEOUT,
     cleanup_all,
+    create_llm_backend_project,
     create_noop_project,
     create_story_and_task,
     dump_debug,
@@ -54,8 +57,7 @@ from shared.contracts.queues.deploy import DeployOutcome
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
-@pytest_asyncio.fixture(loop_scope="module", scope="module")
-async def pipeline():
+async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefix: str):
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions."""
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
         await ensure_test_user(api)
@@ -68,7 +70,7 @@ async def pipeline():
                 base_url=API_URL, timeout=10, headers=internal_headers()
             ) as api_internal,
         ):
-            ctx = await create_noop_project(api)
+            ctx = await create_project(api)
             async with cleanup_guard(
                 lambda: cleanup_all(api, api_no_auth, ctx), manifest=ctx["manifest"]
             ):
@@ -77,32 +79,32 @@ async def pipeline():
                 await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
                 if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
                     yield ctx
-                    dump_debug(ctx, "full-scaffold")
+                    dump_debug(ctx, f"{debug_prefix}-scaffold")
                     return
 
                 # The scaffolded repo must already carry the contract deploy
                 # resolves its environment from.
                 if not record_env_contract(ctx, "main", phase="scaffold"):
                     yield ctx
-                    dump_debug(ctx, "full-env-contract-scaffold")
+                    dump_debug(ctx, f"{debug_prefix}-env-contract-scaffold")
                     return
 
                 # Phase 2: Engineering
                 await create_story_and_task(api, ctx)
-                await wait_engineering(api, ctx, timeout=ENGINEERING_TIMEOUT)
+                await wait_engineering(api, ctx, timeout=engineering_timeout)
                 if ctx.get("task_status") != TaskStatus.DONE:
                     yield ctx
-                    dump_debug(ctx, "full-engineering")
+                    dump_debug(ctx, f"{debug_prefix}-engineering")
                     return
 
                 # Phase 3: Deploy. The story branch merges into main and only then
-                # does a deploy run appear carrying the merged head SHA — the ref
+                # does a deploy run appear carrying the merged head SHA. The ref
                 # deploy reads the contract at. Re-check the contract there: the
                 # scaffolded tree proves nothing about what engineering merged.
                 deploy_run = await wait_deploy_run(api_internal, ctx, timeout=DEPLOY_RUN_TIMEOUT)
                 if deploy_run is None:
                     yield ctx
-                    dump_debug(ctx, "full-deploy-run")
+                    dump_debug(ctx, f"{debug_prefix}-deploy-run")
                     return
                 if not record_env_contract(
                     ctx,
@@ -111,7 +113,7 @@ async def pipeline():
                     verify_merged_into_main=True,
                 ):
                     yield ctx
-                    dump_debug(ctx, "full-env-contract-merged")
+                    dump_debug(ctx, f"{debug_prefix}-env-contract-merged")
                     return
 
                 await wait_deploy(api, api_no_auth, ctx, timeout=DEPLOY_TIMEOUT)
@@ -132,7 +134,29 @@ async def pipeline():
                     ctx.get("final_app_status") != ApplicationStatus.RUNNING.value
                     or ctx.get("deploy_outcome") != DeployOutcome.SUCCESS.value
                 ):
-                    dump_debug(ctx, "full-deploy")
+                    dump_debug(ctx, f"{debug_prefix}-deploy")
+
+
+@pytest_asyncio.fixture(loop_scope="module", scope="module")
+async def pipeline():
+    """Full noop pipeline: scaffold → engineering → deploy."""
+    async for ctx in _pipeline_run(
+        create_noop_project,
+        engineering_timeout=ENGINEERING_TIMEOUT,
+        debug_prefix="full-noop",
+    ):
+        yield ctx
+
+
+@pytest_asyncio.fixture(loop_scope="module", scope="module")
+async def llm_pipeline():
+    """Full LLM pipeline: scaffold → real worker → deploy."""
+    async for ctx in _pipeline_run(
+        create_llm_backend_project,
+        engineering_timeout=LLM_ENGINEERING_TIMEOUT,
+        debug_prefix="full-llm",
+    ):
+        yield ctx
 
 
 class TestFullPipeline:
@@ -141,13 +165,13 @@ class TestFullPipeline:
     async def test_project_active(self, pipeline):
         """Project status should be 'active' after successful scaffold + deploy."""
         assert pipeline.get("scaffold_status") == ProjectStatus.ACTIVE, (
-            f"Scaffold failed — status: {pipeline.get('scaffold_status')}"
+            f"Scaffold failed, status: {pipeline.get('scaffold_status')}"
         )
         assert pipeline.get("task_status") == TaskStatus.DONE, (
-            f"Engineering failed — task status: {pipeline.get('task_status')}"
+            f"Engineering failed, task status: {pipeline.get('task_status')}"
         )
         assert pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
-            f"Deploy failed — app_status: {pipeline.get('final_app_status')}"
+            f"Deploy failed, app_status: {pipeline.get('final_app_status')}"
         )
 
     async def test_env_contract_committed_by_scaffold(self, pipeline):
@@ -203,7 +227,7 @@ class TestFullPipeline:
         """GET /health on deployed service returns 200."""
         if pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
             pytest.skip("deploy failed")
-        assert "deployed_url" in pipeline, "No deployed_url — port allocation missing?"
+        assert "deployed_url" in pipeline, "No deployed_url, port allocation missing?"
 
         url = pipeline["deployed_url"]
         async with httpx.AsyncClient(timeout=30) as client:
@@ -232,6 +256,91 @@ class TestFullPipeline:
             pytest.skip("deploy failed")
         assert pipeline.get("qa_result") == {
             "run_id": pipeline["qa_result"]["run_id"],
+            "status": "completed",
+            "qa_outcome": "passed",
+        }
+
+
+class TestFullPipelineLLM:
+    """THE MEGA TEST with a real developer worker."""
+
+    async def test_project_active(self, llm_pipeline):
+        """Project status should be 'active' after successful scaffold + deploy."""
+        assert llm_pipeline.get("agent_type") == "claude"
+        assert llm_pipeline.get("scaffold_status") == ProjectStatus.ACTIVE, (
+            f"Scaffold failed, status: {llm_pipeline.get('scaffold_status')}"
+        )
+        assert llm_pipeline.get("task_status") == TaskStatus.DONE, (
+            f"Engineering failed, task status: {llm_pipeline.get('task_status')}"
+        )
+        assert llm_pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
+            f"Deploy failed, app_status: {llm_pipeline.get('final_app_status')}"
+        )
+
+    async def test_no_user_secrets_required(self, llm_pipeline):
+        """The backend-only LLM project must not trip the user-secret deploy path.
+
+        Only *required* user secrets dead-end the deploy (DeployOutcome
+        WAITING_FOR_USER_SECRET). Optional ``user_secret`` overrides such as the
+        template's ``DATABASE_URL`` (``required: false``) are resolved from the
+        allocated infrastructure and must not fail this project.
+        """
+        if llm_pipeline.get("task_status") != TaskStatus.DONE:
+            pytest.skip("engineering failed")
+        errors = llm_pipeline.get("env_contract_errors") or {}
+        assert "merged" not in errors, errors.get("merged")
+        probe = llm_pipeline["env_contract_probes"]["merged"]
+        assert probe["required_user_secret_entries"] == [], (
+            f"required user secrets would dead-end deploy: {probe['required_user_secret_entries']}"
+        )
+
+    async def test_deploy_run_outcome_success(self, llm_pipeline):
+        """The deploy run this mega triggered must conclude deploy_outcome=success."""
+        if llm_pipeline.get("task_status") != TaskStatus.DONE:
+            pytest.skip("engineering failed")
+        assert llm_pipeline.get("deploy_run_error") is None, llm_pipeline["deploy_run_error"]
+        assert llm_pipeline.get("deploy_outcome_error") is None, llm_pipeline[
+            "deploy_outcome_error"
+        ]
+        assert llm_pipeline.get("deploy_outcome") == DeployOutcome.SUCCESS.value, (
+            f"Deploy run {llm_pipeline.get('deploy_run_id')} ended "
+            f"deploy_outcome={llm_pipeline.get('deploy_outcome')} "
+            f"({llm_pipeline.get('deploy_error_details')})"
+        )
+
+    async def test_health_endpoint(self, llm_pipeline):
+        """GET /health on deployed service returns 200."""
+        if llm_pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
+            pytest.skip("deploy failed")
+        assert "deployed_url" in llm_pipeline, "No deployed_url, port allocation missing?"
+
+        url = llm_pipeline["deployed_url"]
+        async with httpx.AsyncClient(timeout=30) as client:
+            for _attempt in range(5):
+                try:
+                    resp = await client.get(f"{url}/health")
+                    if resp.status_code == 200:
+                        break
+                    resp = await client.get(f"{url}/v1/health")
+                    if resp.status_code == 200:
+                        break
+                except httpx.ConnectError:
+                    pass
+                await asyncio.sleep(5)
+            else:
+                pytest.fail(f"Health endpoint not reachable at {url}/health after 5 attempts")
+
+        assert resp.status_code == 200, f"Health check failed: {resp.status_code} {resp.text[:200]}"
+
+    async def test_non_llm_qa_passed(self, llm_pipeline):
+        """A separate post-deploy QA run must terminate as passed."""
+        if (
+            llm_pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value
+            or llm_pipeline.get("deploy_outcome") != DeployOutcome.SUCCESS.value
+        ):
+            pytest.skip("deploy failed")
+        assert llm_pipeline.get("qa_result") == {
+            "run_id": llm_pipeline["qa_result"]["run_id"],
             "status": "completed",
             "qa_outcome": "passed",
         }

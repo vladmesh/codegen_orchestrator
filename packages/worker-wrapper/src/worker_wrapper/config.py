@@ -16,7 +16,9 @@ class WorkerWrapperConfig(BaseSettings):
 
     # Optional execution settings
     poll_interval_ms: int = 500
-    subprocess_timeout_seconds: int = 300
+    # Fallback when WORKER_SUBPROCESS_TIMEOUT_SECONDS is unset; worker-manager
+    # normally forwards its own value. Sized for live LLM agents, not noop.
+    subprocess_timeout_seconds: int = 900
     http_server_port: int = 9090
 
     model_config = {"env_prefix": "WORKER_"}
