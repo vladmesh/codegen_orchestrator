@@ -27,7 +27,7 @@ class TestCreateProjectIntegration:
     async def test_creates_project_in_db(self, api_client):
         """create_project stores a project retrievable via API."""
         result = await create_project.ainvoke(
-            {"name": "integ-test-bot", "modules": "backend,tg_bot", "description": "Test"},
+            {"title": "integ-test-bot", "modules": "backend,tg_bot", "description": "Test"},
             config=make_config(),
         )
 
@@ -37,12 +37,14 @@ class TestCreateProjectIntegration:
         resp = await api_client.get(f"/api/projects/{project_id}")
         assert resp.status_code == 200
         project = resp.json()
-        assert project["name"] == "integ-test-bot"
+        assert project["title"] == "integ-test-bot"
+        # Slug is derived server-side: slugified title plus the id's first four hex chars.
+        assert project["slug"] == f"integ-test-bot-{project_id.replace('-', '')[:4]}"
 
     async def test_invalid_modules_rejected_before_api(self):
         """Invalid modules are caught by the tool itself, no API call made."""
         result = await create_project.ainvoke(
-            {"name": "test", "modules": "invalid_module"},
+            {"title": "test", "modules": "invalid_module"},
             config=make_config(),
         )
         assert "Error" in result
@@ -54,7 +56,7 @@ class TestListProjectsIntegration:
     async def test_lists_created_projects(self, api_client):
         """list_projects returns projects created via API."""
         await create_project.ainvoke(
-            {"name": "list-test-proj", "modules": "backend"},
+            {"title": "list-test-proj", "modules": "backend"},
             config=make_config(),
         )
 
@@ -67,14 +69,14 @@ class TestGetProjectIntegration:
     async def test_gets_project_details(self, api_client):
         """get_project returns full project JSON from DB."""
         create_result = await create_project.ainvoke(
-            {"name": "get-test-proj", "modules": "backend"},
+            {"title": "get-test-proj", "modules": "backend"},
             config=make_config(),
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
 
         result = await get_project.ainvoke({"project_id": project_id}, config=make_config())
         parsed = json.loads(result)
-        assert parsed["name"] == "get-test-proj"
+        assert parsed["title"] == "get-test-proj"
         assert parsed["id"] == project_id
 
 
@@ -83,7 +85,7 @@ class TestSetProjectSecretIntegration:
     async def test_sets_and_persists_secret(self, api_client):
         """set_project_secret stores secret retrievable via API."""
         create_result = await create_project.ainvoke(
-            {"name": "secret-test-proj", "modules": "backend"},
+            {"title": "secret-test-proj", "modules": "backend"},
             config=make_config(),
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
@@ -102,7 +104,7 @@ class TestSetProjectSecretIntegration:
     async def test_secret_without_hint(self, api_client):
         """set_project_secret works without hint."""
         create_result = await create_project.ainvoke(
-            {"name": "secret-nohint-proj", "modules": "backend"},
+            {"title": "secret-nohint-proj", "modules": "backend"},
             config=make_config(),
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
@@ -119,7 +121,7 @@ class TestCreateStoryIntegration:
     async def test_creates_story_and_publishes_architect_message(self, api_client, redis_client):
         """create_story persists story and publishes to architect:queue."""
         create_result = await create_project.ainvoke(
-            {"name": "story-test-proj", "modules": "backend"},
+            {"title": "story-test-proj", "modules": "backend"},
             config=make_config(),
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
@@ -168,7 +170,7 @@ class TestListStoriesIntegration:
     async def test_lists_stories_for_project(self, api_client):
         """list_stories returns stories created for a project."""
         create_result = await create_project.ainvoke(
-            {"name": "liststory-proj", "modules": "backend"},
+            {"title": "liststory-proj", "modules": "backend"},
             config=make_config(),
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
@@ -188,7 +190,7 @@ class TestListStoriesIntegration:
     async def test_empty_stories(self, api_client):
         """list_stories returns empty message for project with no stories."""
         create_result = await create_project.ainvoke(
-            {"name": "emptystory-proj", "modules": "backend"},
+            {"title": "emptystory-proj", "modules": "backend"},
             config=make_config(),
         )
         project_id = create_result.split("ID: ")[1].split(",")[0]
