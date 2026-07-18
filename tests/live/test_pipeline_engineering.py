@@ -18,6 +18,7 @@ from pipeline_helpers import (
     create_story_and_task,
     dump_debug,
     ensure_test_user,
+    internal_headers,
     trigger_scaffold,
     wait_engineering,
     wait_scaffold,
@@ -35,10 +36,15 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 @pytest_asyncio.fixture(loop_scope="module", scope="module")
 async def engineering_ctx():
     """Engineering pipeline: scaffold → story/task → noop worker → CI → done."""
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
+    async with (
+        httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api,
+        httpx.AsyncClient(base_url=API_URL, timeout=10, headers=internal_headers()) as api_internal,
+    ):
         await ensure_test_user(api)
-        ctx = await create_noop_project(api)
-        async with cleanup_guard(lambda: cleanup_all(api, None, ctx), manifest=ctx["manifest"]):
+        ctx = await create_noop_project(api, api_internal)
+        async with cleanup_guard(
+            lambda: cleanup_all(api_internal, None, ctx), manifest=ctx["manifest"]
+        ):
             # Phase 1: Scaffold
             trigger_scaffold(ctx)
             await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)

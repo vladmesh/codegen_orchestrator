@@ -33,7 +33,7 @@ ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 
 @pytest.fixture
-async def scaffolded_project(api, compose_exec):
+async def scaffolded_project(api, api_internal, compose_exec):
     """Create project + repo, scaffold it, yield (project, repo_name), cleanup."""
     suffix = secrets.token_hex(4)
     project_name = f"live-test-{suffix}"
@@ -61,7 +61,7 @@ async def scaffolded_project(api, compose_exec):
     }
 
     # 2. Create repository record
-    async with cleanup_on_error(lambda: cleanup_all(api, None, ctx)):
+    async with cleanup_on_error(lambda: cleanup_all(api_internal, None, ctx)):
         manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
         resp = await api.post(
             "/api/repositories/",
@@ -74,7 +74,9 @@ async def scaffolded_project(api, compose_exec):
         assert resp.status_code == 201, f"Create repository failed: {resp.text}"
         repo_id = resp.json()["id"]
 
-    async with cleanup_guard(lambda: cleanup_all(api, None, ctx), manifest=ctx["manifest"]):
+    async with cleanup_guard(
+        lambda: cleanup_all(api_internal, None, ctx), manifest=ctx["manifest"]
+    ):
         # 3. Publish ScaffoldMessage to scaffold:queue via redis
         manifest.own("github_repository", f"{GITHUB_ORG}/{repo_name}")
         manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")

@@ -174,6 +174,7 @@ async def poll_status(
 
 async def create_pipeline_project(
     api: httpx.AsyncClient,
+    api_internal: httpx.AsyncClient,
     *,
     project_prefix: str,
     description: str,
@@ -218,7 +219,7 @@ async def create_pipeline_project(
         "task_description": task_description,
     }
 
-    async with cleanup_on_error(lambda: cleanup_all(api, None, ctx)):
+    async with cleanup_on_error(lambda: cleanup_all(api_internal, None, ctx)):
         manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
         resp = await api.post(
             "/api/repositories/",
@@ -234,10 +235,11 @@ async def create_pipeline_project(
     return ctx
 
 
-async def create_noop_project(api: httpx.AsyncClient) -> dict:
+async def create_noop_project(api: httpx.AsyncClient, api_internal: httpx.AsyncClient) -> dict:
     """Create project + repository for noop pipeline testing. Returns ctx dict."""
     return await create_pipeline_project(
         api,
+        api_internal,
         project_prefix="live-test",
         description=NOOP_PROJECT_DESCRIPTION,
         agent_type="noop",
@@ -246,10 +248,13 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
     )
 
 
-async def create_llm_backend_project(api: httpx.AsyncClient) -> dict:
+async def create_llm_backend_project(
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient
+) -> dict:
     """Create project + repository for the live LLM backend pipeline."""
     return await create_pipeline_project(
         api,
+        api_internal,
         project_prefix="live-test-llm",
         description=LLM_BACKEND_PROJECT_DESCRIPTION,
         detailed_spec=LLM_BACKEND_DETAILED_SPEC,
@@ -671,8 +676,8 @@ def require_unscoped_run_observer(api_internal: httpx.AsyncClient) -> None:
 
     list_runs narrows its result to ``Run.user_id == caller`` for every non-admin
     ``X-Telegram-ID`` it sees, and a valid internal key does not lift that
-    narrowing. pr_poller creates deploy runs with no user_id, so a user-scoped
-    client is answered `[]` for them no matter which filter it passes.
+    narrowing. Deploy and QA producers can create runs with no user_id, so a
+    user-scoped client is answered `[]` for them no matter which filter it passes.
 
     On 2026-07-16 that silently cost the mega a 420s wait for the already
     successful deploy `deploy-poll-ea0bed35`, so this is a loud crash rather than
@@ -680,9 +685,9 @@ def require_unscoped_run_observer(api_internal: httpx.AsyncClient) -> None:
     """
     if USER_AUTH_HEADER in api_internal.headers:
         raise RuntimeError(
-            f"deploy runs must be observed without {USER_AUTH_HEADER}: list_runs "
-            "narrows its result to runs the non-admin harness user owns, and "
-            "pr_poller's deploy run has no user_id"
+            f"runs must be observed without {USER_AUTH_HEADER}: list_runs narrows "
+            "its result to runs the non-admin harness user owns, while internal "
+            "deploy and QA runs can have no user_id"
         )
 
 
@@ -952,18 +957,25 @@ def cleanup_owned_capability_work(ctx: dict) -> None:
     )
 
 
-async def cancel_owned_runs(api: httpx.AsyncClient, ctx: dict) -> list[str]:
+async def cancel_owned_runs(api_internal: httpx.AsyncClient, ctx: dict) -> list[str]:
     """Cancel every active run owned by this project before resource teardown."""
+    require_unscoped_run_observer(api_internal)
     project_id = ctx.get("project_id")
     if not project_id:
         return []
-    response = await api.get("/api/runs/", params={"project_id": project_id})
+    response = await api_internal.get("/api/runs/", params={"project_id": project_id})
     response.raise_for_status()
     run_ids = [
-        str(run["id"]) for run in response.json() if run.get("status") in _ACTIVE_RUN_STATUSES
+        str(run["id"])
+        for run in response.json()
+        if str(run.get("project_id")) == str(project_id)
+        and run.get("status") in _ACTIVE_RUN_STATUSES
     ]
     for run_id in run_ids:
-        response = await api.patch(f"/api/runs/{run_id}", json={"status": "cancelled"})
+        response = await api_internal.patch(
+            f"/api/runs/{run_id}",
+            json={"status": "cancelled"},
+        )
         response.raise_for_status()
         ctx["manifest"].own("run", run_id)
     if run_ids:
@@ -974,13 +986,14 @@ async def cancel_owned_runs(api: httpx.AsyncClient, ctx: dict) -> list[str]:
 
 
 async def wait_for_owned_runs(
-    api: httpx.AsyncClient,
+    api_internal: httpx.AsyncClient,
     ctx: dict,
     *,
     timeout: float = RUN_CANCELLATION_TIMEOUT,
     poll_interval: float = RUN_CANCELLATION_POLL_INTERVAL,
 ) -> None:
     """Wait until the run records owned by teardown are terminal."""
+    require_unscoped_run_observer(api_internal)
     run_ids = {
         resource.identifier for resource in ctx["manifest"].resources if resource.kind == "run"
     }
@@ -988,9 +1001,13 @@ async def wait_for_owned_runs(
         return
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        response = await api.get("/api/runs/", params={"project_id": ctx["project_id"]})
+        response = await api_internal.get("/api/runs/", params={"project_id": ctx["project_id"]})
         response.raise_for_status()
-        statuses = {str(run["id"]): run.get("status") for run in response.json()}
+        statuses = {
+            str(run["id"]): run.get("status")
+            for run in response.json()
+            if str(run.get("project_id")) == str(ctx["project_id"])
+        }
         if all(statuses.get(run_id) in _TERMINAL_RUN_STATUSES for run_id in run_ids):
             return
         await asyncio.sleep(poll_interval)
@@ -1431,19 +1448,20 @@ def cleanup_server_container(ctx: dict) -> None:
 
 
 async def cleanup_all(
-    api: httpx.AsyncClient,
+    api_internal: httpx.AsyncClient,
     api_no_auth: httpx.AsyncClient | None,
     ctx: dict,
 ) -> None:
-    """Delete only resources owned by this run and prove absence."""
+    """Delete owned resources using an unscoped internal run observer."""
     errors: list[str] = []
 
     # XDEL cannot cancel a claimed message. Fence the consumer and wait for any
     # active scaffold job before deleting or verifying external resources.
     try:
+        require_unscoped_run_observer(api_internal)
         cancel_owned_scaffold(ctx)
-        await cancel_owned_runs(api, ctx)
-        await wait_for_owned_runs(api, ctx)
+        await cancel_owned_runs(api_internal, ctx)
+        await wait_for_owned_runs(api_internal, ctx)
         cancel_owned_active_work(ctx)
         cleanup_owned_capability_work(ctx)
     except Exception as exc:
@@ -1539,7 +1557,7 @@ async def cleanup_all(
             errors.append(f"Redis entry {resource.identifier} still exists or cannot be verified")
 
     if "project_id" in ctx:
-        verify = await api.get(f"/api/projects/{ctx['project_id']}")
+        verify = await api_internal.get(f"/api/projects/{ctx['project_id']}")
         if verify.status_code != 404:
             errors.append(f"project {ctx['project_id']} still exists")
     if errors:

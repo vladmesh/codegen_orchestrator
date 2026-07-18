@@ -70,9 +70,9 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
                 base_url=API_URL, timeout=10, headers=internal_headers()
             ) as api_internal,
         ):
-            ctx = await create_project(api)
+            ctx = await create_project(api, api_internal)
             async with cleanup_guard(
-                lambda: cleanup_all(api, api_no_auth, ctx), manifest=ctx["manifest"]
+                lambda: cleanup_all(api_internal, api_no_auth, ctx), manifest=ctx["manifest"]
             ):
                 # Phase 1: Scaffold
                 trigger_scaffold(ctx)
