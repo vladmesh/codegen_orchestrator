@@ -36,26 +36,28 @@ ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 async def scaffolded_project(api, api_internal, compose_exec):
     """Create project + repo, scaffold it, yield (project, repo_name), cleanup."""
     suffix = secrets.token_hex(4)
-    project_name = f"live-test-{suffix}"
+    project_title = f"live-test-{suffix}"
     project_id = str(uuid.uuid4())
-    repo_name = project_name
 
     # 1. Create project
     resp = await api.post(
         "/api/projects/",
         json={
             "id": project_id,
-            "title": project_name,
+            "title": project_title,
             "status": ProjectStatus.DRAFT,
             "config": {"description": "live test scaffold"},
         },
     )
     resp.raise_for_status()
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
+    project_name = resp.json()["slug"]
+    repo_name = project_name
     manifest = OwnershipManifest(project_id)
     manifest.own("project", project_id)
     ctx = {
         "project_id": project_id,
+        "project_title": project_title,
         "project_name": project_name,
         "repo_name": repo_name,
         "manifest": manifest,
@@ -128,7 +130,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
                 break
         else:
             pytest.fail(
-                f"Scaffold timed out ({SCAFFOLD_TIMEOUT}s) for {project_name}, status={status}"
+                f"Scaffold timed out ({SCAFFOLD_TIMEOUT}s) for {repo_name}, status={status}"
             )
 
         yield ctx
