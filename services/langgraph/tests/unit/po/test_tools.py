@@ -87,6 +87,29 @@ class TestCreateProject:
         assert "abc123" in result
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent_type", ["claude", "factory", "codex"])
+    async def test_persists_selected_developer_agent(self, mock_api_client, agent_type):
+        mock_api_client.post.return_value = _make_response({"id": "x", "name": "project"})
+
+        await create_project.ainvoke(
+            {"name": "project", "modules": "backend", "agent_type": agent_type},
+            config=_make_config("user-1"),
+        )
+
+        project_call = mock_api_client.post.call_args_list[0]
+        assert project_call[1]["json"]["config"]["agent_type"] == agent_type
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_developer_agent(self, mock_api_client):
+        result = await create_project.ainvoke(
+            {"name": "project", "modules": "backend", "agent_type": "mystery"},
+            config=_make_config("user-1"),
+        )
+
+        assert result == "Error: invalid agent_type: mystery. Available: claude, codex, factory"
+        mock_api_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
         mock_api_client.post.return_value = _make_response({"id": "x", "name": "y"})
 

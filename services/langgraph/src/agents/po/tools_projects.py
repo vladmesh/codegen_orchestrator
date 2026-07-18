@@ -11,6 +11,7 @@ from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
+from shared.contracts.vocab import AgentType
 
 from .tools_shared import _get_api, _user_headers
 
@@ -23,6 +24,11 @@ logger = structlog.get_logger(__name__)
 # Available modules (single source of truth: ServiceModule enum)
 # ---------------------------------------------------------------------------
 AVAILABLE_MODULES = {m.value for m in ServiceModule}
+AVAILABLE_DEVELOPER_AGENTS = {
+    AgentType.CLAUDE.value,
+    AgentType.FACTORY.value,
+    AgentType.CODEX.value,
+}
 
 HTTP_OK = 200
 TELEGRAM_API_TIMEOUT = 10
@@ -33,6 +39,7 @@ async def create_project(
     name: str,
     modules: str = "backend",
     description: str = "",
+    agent_type: str = AgentType.CLAUDE.value,
     *,
     config: RunnableConfig,
 ) -> str:
@@ -42,6 +49,7 @@ async def create_project(
         name: Project name (lowercase, starts with letter, only a-z/0-9/hyphens).
         modules: Comma-separated modules: backend, tg_bot, notifications, frontend.
         description: What the project should do.
+        agent_type: Developer worker: claude, factory, or codex.
     """
     modules_list = [m.strip() for m in modules.split(",") if m.strip()]
 
@@ -50,11 +58,20 @@ async def create_project(
         available = ", ".join(sorted(AVAILABLE_MODULES))
         return f"Error: invalid modules: {', '.join(invalid)}. Available: {available}"
 
+    if agent_type not in AVAILABLE_DEVELOPER_AGENTS:
+        available = ", ".join(sorted(AVAILABLE_DEVELOPER_AGENTS))
+        return f"Error: invalid agent_type: {agent_type}. Available: {available}"
+
     if "backend" not in modules_list:
         modules_list.insert(0, "backend")
 
     project_id = str(uuid.uuid4())
-    proj_config = {"modules": modules_list, "description": description, "name": name}
+    proj_config = {
+        "modules": modules_list,
+        "description": description,
+        "name": name,
+        "agent_type": agent_type,
+    }
 
     payload = {
         "id": project_id,

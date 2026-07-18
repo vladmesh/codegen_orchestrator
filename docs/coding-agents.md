@@ -88,6 +88,12 @@ documentation for the upstream behavior.
 
 Developer node в Engineering Subgraph использует coding agents через `worker-manager` сервис (PO не использует контейнеры — это LangGraph ReactAgent):
 
+При создании проекта PO передаёт выбранного developer-воркера в
+`create_project(agent_type="claude" | "factory" | "codex")`. Значение сохраняется
+в `project.config.agent_type` и действует для engineering-задач этого проекта.
+Если выбор не указан, используется `claude`. Неизвестное значение отклоняется до
+создания проекта.
+
 1. Worker-manager создаёт контейнер из worker-base образа
 2. Монтирует pre-scaffolded workspace (`/data/workspaces/{repo_id}/`) — код уже на месте
 3. Worker-manager creates/checks out story feature branch (`story/{story_id}`)
