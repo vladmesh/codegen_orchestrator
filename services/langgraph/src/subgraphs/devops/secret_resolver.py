@@ -169,12 +169,27 @@ class SecretResolverNode(FunctionalNode):
     def _validate_project_context(project_id: str | None, project_spec: dict | None) -> None:
         """Validate project data required to persist and compute deploy secrets."""
         if not isinstance(project_id, str) or not project_id.strip() or project_id == "unknown":
-            raise SecretResolutionError("project_id is required for secret resolution")
+            raise TypedSecretResolutionError(
+                "environment_resolution_failed",
+                "project_id is required for secret resolution",
+            )
         if not isinstance(project_spec, dict):
-            raise SecretResolutionError("project context is required for secret resolution")
+            raise TypedSecretResolutionError(
+                "environment_resolution_failed",
+                "project context is required for secret resolution",
+            )
         project_name = project_spec.get("name")
         if not isinstance(project_name, str) or not project_name.strip():
-            raise SecretResolutionError("project name is required for secret resolution")
+            raise TypedSecretResolutionError(
+                "environment_resolution_failed",
+                "project name is required for secret resolution",
+            )
+        try:
+            runtime_project_slug(project_name)
+        except ValueError as error:
+            raise TypedSecretResolutionError(
+                "environment_resolution_failed", str(error)
+            ) from error
 
     def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
         """Look up allocated server IP and port for a service.

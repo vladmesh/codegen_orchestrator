@@ -119,12 +119,26 @@ async def test_invalid_contract_is_a_distinct_outcome():
     result = await resolve_secrets(
         {
             "project_id": "project-1",
-            "project_spec": {"name": "Test Project"},
+            "project_spec": {"name": "test-project"},
             "environment_contract": {"entries": {"BAD": {"source": "unknown"}}},
         }
     )
 
     assert result["resolution_outcome"] == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
+async def test_secret_resolution_rejects_malicious_project_name_before_deploy():
+    result = await resolve_secrets(
+        {
+            "project_id": "project-1",
+            "project_spec": {"name": "bad; touch /tmp/pwned"},
+            "environment_contract": {"entries": {}},
+        }
+    )
+
+    assert result["resolution_outcome"] == "environment_resolution_failed"
+    assert "bad; touch /tmp/pwned" in result["errors"][0]
 
 
 @pytest.mark.asyncio

@@ -71,7 +71,10 @@ class TestRouteAfterSecretResolver:
         """A resolver failure remains visible without running downstream deployment."""
         result = await resolve_secrets({"project_id": None, "project_spec": {"name": "test"}})
 
-        assert result == {"errors": ["project_id is required for secret resolution"]}
+        assert result == {
+            "errors": ["project_id is required for secret resolution"],
+            "resolution_outcome": "environment_resolution_failed",
+        }
 
 
 class TestSmokeResultPropagation:
