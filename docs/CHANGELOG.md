@@ -2,6 +2,11 @@
 
 ## 2026-07-18
 
+- Add canonical runtime project slug validation for API/shared project DTOs and
+  deploy runtime paths. Deploy precheck, smoke log capture, QA-on-server,
+  lifecycle SSH actions, allocation and deploy secret resolution now reject
+  non-`^[a-z][a-z0-9-]*$` project names before command construction and quote
+  shell path/compose arguments.
 - Add OpenAI Codex CLI as a developer-worker type alongside Claude Code and
   Factory Droid. Project config now routes `agent_type=codex` without changing
   the worker queue envelope, and unknown values fail explicitly. The dedicated

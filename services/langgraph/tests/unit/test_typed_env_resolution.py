@@ -15,7 +15,7 @@ from src.subgraphs.devops.secret_resolver import SecretResolverNode, TypedSecret
 def _state(entries: dict, resources: dict | None = None, secrets: dict | None = None) -> dict:
     return {
         "project_id": "project-1",
-        "project_spec": {"name": "Test Project", "config": {"secrets": secrets or {}}},
+        "project_spec": {"name": "test-project", "config": {"secrets": secrets or {}}},
         "provided_secrets": {"USER_TOKEN": "provided-token"},
         "allocated_resources": resources or {},
         "repo_info": {"html_url": "https://github.com/org/repo"},

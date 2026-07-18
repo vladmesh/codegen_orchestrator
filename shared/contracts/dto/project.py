@@ -1,9 +1,10 @@
 from enum import StrEnum
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.runtime_project import runtime_project_slug
 
 
 class ProjectStatus(StrEnum):
@@ -41,6 +42,11 @@ class ProjectCreate(BaseModel):
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
     status: ProjectStatus | None = None
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return str(runtime_project_slug(value))
+
 
 class ProjectUpdate(BaseModel):
     """Update project request."""
@@ -50,6 +56,13 @@ class ProjectUpdate(BaseModel):
     status: ProjectStatus | None = None
     modules: list[ServiceModule] | None = None
     project_spec: dict | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return str(runtime_project_slug(value))
 
 
 class ProjectDTO(TimestampedDTO):
@@ -63,3 +76,8 @@ class ProjectDTO(TimestampedDTO):
     config: dict = {}
     owner_id: int
     project_spec: dict | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return str(runtime_project_slug(value))

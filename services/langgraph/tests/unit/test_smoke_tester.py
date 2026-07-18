@@ -455,3 +455,20 @@ class TestContainerLogCapture:
         assert check["result"] == "fail"
         assert "HTTP 503" in check["detail"]
         mock_api.get_server_ssh_key.assert_not_called()
+
+    async def test_malicious_project_name_rejected_before_ssh(self, smoke_node):
+        """Container log fetch must reject invalid project slugs before SSH."""
+        with (
+            patch("src.subgraphs.devops.smoke.api_client") as mock_api,
+            patch("src.subgraphs.devops.smoke.asyncssh") as mock_asyncssh,
+        ):
+            result = await smoke_node._fetch_container_logs(
+                server_ip="1.2.3.4",
+                server_handle="srv-abc",
+                project_name="bad; touch /tmp/pwned",
+            )
+
+        assert result is None
+        mock_api.get_server.assert_not_called()
+        mock_api.get_server_ssh_key.assert_not_called()
+        mock_asyncssh.import_private_key.assert_not_called()

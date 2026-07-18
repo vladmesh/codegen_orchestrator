@@ -6,6 +6,7 @@ and update run status without running the full DevOps subgraph.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +26,10 @@ def _make_job_data(*, action: str, **overrides) -> dict:
     }
     defaults.update(overrides)
     return defaults
+
+
+def _project(name: str = "weather-bot"):
+    return SimpleNamespace(name=name, config={})
 
 
 @pytest.fixture
@@ -53,7 +58,7 @@ class TestDeployLifecycleStop:
             patch("src.consumers.deploy_lifecycle.asyncssh") as mock_ssh,
         ):
             mock_api.patch = AsyncMock(return_value={})
-            mock_api.get_project = AsyncMock(return_value=MagicMock(name="weather_bot", config={}))
+            mock_api.get_project = AsyncMock(return_value=_project())
             mock_lifecycle_api.get_primary_repository = AsyncMock(
                 return_value=MagicMock(id="repo-1")
             )
@@ -119,7 +124,7 @@ class TestDeployLifecycleStop:
             ),
         ):
             mock_api.patch = AsyncMock(return_value={})
-            mock_api.get_project = AsyncMock(return_value=MagicMock(name="weather_bot", config={}))
+            mock_api.get_project = AsyncMock(return_value=_project())
             mock_lifecycle_api.get_primary_repository = AsyncMock(
                 return_value=MagicMock(id="repo-1")
             )
@@ -165,7 +170,7 @@ class TestDeployLifecycleUndeploy:
             ),
         ):
             mock_api.patch = AsyncMock(return_value={})
-            mock_api.get_project = AsyncMock(return_value=MagicMock(name="weather_bot", config={}))
+            mock_api.get_project = AsyncMock(return_value=_project())
             mock_lifecycle_api.get_primary_repository = AsyncMock(
                 return_value=MagicMock(id="repo-1")
             )
@@ -215,7 +220,7 @@ class TestDeployLifecycleSSHFailure:
             ),
         ):
             mock_api.patch = AsyncMock(return_value={})
-            mock_api.get_project = AsyncMock(return_value=MagicMock(name="weather_bot", config={}))
+            mock_api.get_project = AsyncMock(return_value=_project())
             mock_lifecycle_api.get_primary_repository = AsyncMock(
                 return_value=MagicMock(id="repo-1")
             )
@@ -232,3 +237,40 @@ class TestDeployLifecycleSSHFailure:
         patch_calls = [c for c in mock_api.patch.call_args_list if "runs/" in str(c)]
         last_run_patch = patch_calls[-1]
         assert last_run_patch[1]["json"]["result"]["deploy_outcome"] == DeployOutcome.GIVE_UP.value
+
+
+class TestDeployLifecycleSlugValidation:
+    @pytest.mark.asyncio
+    async def test_malicious_project_name_rejected_before_ssh(self, mock_redis):
+        from src.consumers.deploy import process_deploy_job
+
+        with (
+            patch("src.consumers.deploy.api_client") as mock_api,
+            patch("src.consumers.deploy._deploy_lock_ttl", return_value=3600),
+            patch("src.consumers.deploy_lifecycle.api_client") as mock_lifecycle_api,
+            patch("src.consumers.deploy_lifecycle.asyncssh") as mock_ssh,
+            patch(
+                "src.consumers.deploy._allocate_resources",
+                new_callable=AsyncMock,
+                return_value={
+                    "primary": {
+                        "server_ip": "1.2.3.4",
+                        "server_handle": "vps-1",
+                        "port": 8080,
+                        "application_id": 1,
+                    }
+                },
+            ),
+        ):
+            mock_api.patch = AsyncMock(return_value={})
+            mock_api.get_project = AsyncMock(return_value=_project("bad; touch /tmp/pwned"))
+            mock_lifecycle_api.get_server_ssh_key = AsyncMock(return_value="fake-key")
+            mock_lifecycle_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
+
+            result = await process_deploy_job(_make_job_data(action="stop"), mock_redis)
+
+        assert result["status"] == "failed"
+        assert "invalid runtime project slug" in result["error"]
+        mock_lifecycle_api.get_server.assert_not_called()
+        mock_lifecycle_api.get_server_ssh_key.assert_not_called()
+        mock_ssh.import_private_key.assert_not_called()

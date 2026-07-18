@@ -7,10 +7,13 @@ Runs deterministic health checks after deployment:
 
 import asyncio
 import os
+import shlex
 
 import asyncssh
 import httpx
 import structlog
+
+from shared.contracts.runtime_project import runtime_project_slug
 
 try:
     from telethon import TelegramClient
@@ -147,6 +150,14 @@ class SmokeTesterNode(FunctionalNode):
 
         Returns log output (truncated) or None if fetch fails.
         """
+        try:
+            project_slug = runtime_project_slug(project_name)
+        except ValueError as e:
+            logger.warning(
+                "smoke_logs_invalid_project_slug", project_name=project_name, error=str(e)
+            )
+            return None
+
         server = await api_client.get_server(server_handle)
 
         try:
@@ -155,9 +166,10 @@ class SmokeTesterNode(FunctionalNode):
                 logger.warning("smoke_logs_no_ssh_key", server_handle=server_handle)
                 return None
             key = asyncssh.import_private_key(ssh_key)
-            service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
+            service_dir = shlex.quote(f"{SERVICE_BASE_DIR}/{project_slug}")
+            compose_project = shlex.quote(str(project_slug))
             compose = (
-                f"docker compose -p {project_name}"
+                f"docker compose -p {compose_project}"
                 f" -f infra/compose.base.yml -f infra/compose.prod.yml"
             )
             cmd = f"cd {service_dir} && {compose} logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1"

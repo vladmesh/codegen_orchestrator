@@ -2,6 +2,8 @@
 
 import structlog
 
+from shared.contracts.runtime_project import runtime_project_slug
+
 from ..allocations import AllocationError, ensure_project_allocations
 from ..clients.api import api_client
 from .base import FunctionalNode
@@ -43,7 +45,12 @@ class ResourceAllocatorNode(FunctionalNode):
         config = project_spec.get("config", {})
         modules = config.get("modules", ["backend"])
         min_ram_mb = config.get("estimated_ram_mb", 512)
-        service_name = project_spec.get("name", "project").replace(" ", "_").lower()
+        try:
+            service_name = runtime_project_slug(project_spec.get("name", "project"))
+        except ValueError as e:
+            return {
+                "errors": state.get("errors", []) + [str(e)],
+            }
 
         # Get repo_id from primary repository
         repo = await api_client.get_primary_repository(project_id)
@@ -65,7 +72,7 @@ class ResourceAllocatorNode(FunctionalNode):
             allocated = await ensure_project_allocations(
                 project_id=project_id,
                 repo_id=repo_id,
-                service_name=service_name,
+                service_name=str(service_name),
                 modules=modules,
                 min_ram_mb=min_ram_mb,
             )

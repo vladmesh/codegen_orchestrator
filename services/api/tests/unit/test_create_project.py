@@ -120,3 +120,28 @@ async def test_create_project_unknown_user_returns_404():
         )
 
     assert resp.status_code == 404  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_malicious_name_before_router_logic():
+    session = _mock_session(existing_project=None, resolve_user=_make_user())
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    payload = dict(PROJECT_PAYLOAD)
+    payload["name"] = "bad; touch /tmp/pwned"
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/projects/",
+            json=payload,
+            headers={"X-Telegram-ID": "12345"},
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    assert "invalid runtime project slug" in resp.text
+    session.add.assert_not_called()

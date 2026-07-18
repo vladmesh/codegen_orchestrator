@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import structlog
 
 from shared.contracts.env_contract import CanonicalEnvContract
+from shared.contracts.runtime_project import runtime_project_slug
 from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
@@ -252,16 +253,16 @@ class SecretResolverNode(FunctionalNode):
             return self._STATIC_SECRETS[key_upper]
 
         if key_upper == "APP_NAME":
-            return project_spec["name"].replace(" ", "_").lower()
+            return str(runtime_project_slug(project_spec["name"]))
 
         if key_upper == "PROJECT_NAME":
-            return project_spec["name"]
+            return str(runtime_project_slug(project_spec["name"]))
 
         safe_project_id = state.get("project_id", "").replace("-", "_").lower()
         if key_upper == "POSTGRES_DB":
             return f"db_{safe_project_id}"
         if key_upper == "COMPOSE_PROJECT_NAME":
-            return project_spec["name"].replace(" ", "_").lower()
+            return str(runtime_project_slug(project_spec["name"]))
         if key_upper == "ENABLED_MODULES":
             modules = project_spec.get("config", {}).get("modules", [])
             if not isinstance(modules, list) or not all(

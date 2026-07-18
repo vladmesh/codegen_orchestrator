@@ -3,10 +3,11 @@
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
+from shared.contracts.runtime_project import runtime_project_slug
 
 
 class ProjectBase(BaseModel):
@@ -16,6 +17,11 @@ class ProjectBase(BaseModel):
     name: str
     status: str = ProjectStatus.DRAFT.value
     config: dict[str, Any] = {}
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return str(runtime_project_slug(value))
 
 
 class ProjectCreate(ProjectBase):
@@ -39,6 +45,13 @@ class ProjectUpdate(BaseModel):
     name: str | None = None
     status: str | None = None
     config: dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return str(runtime_project_slug(value))
 
 
 class MergeSecretsRequest(BaseModel):

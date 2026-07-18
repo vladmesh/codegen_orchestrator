@@ -14,6 +14,12 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 
 ## Current Facts
 
+- `codegen_orchestrator-540` adds one canonical runtime project slug validator
+  for project DTO/API names and deploy runtime paths. Deploy precheck, smoke log
+  capture, QA-on-server, lifecycle SSH actions, allocation and deploy secret
+  resolution now reject non-`^[a-z][a-z0-9-]*$` names before command construction
+  and quote shell path/compose arguments.
+
 - `codegen_orchestrator-642` adds Codex as a developer-worker type end to end.
   `agent_type=codex` selects `worker-base-codex`, runs pinned Codex CLI 0.144.6
   through `codex exec --sandbox workspace-write`, and reports only through the

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import shlex
+
 import asyncssh
 import structlog
 
 from shared.contracts.dto.project import ProjectDTO
+from shared.contracts.runtime_project import runtime_project_slug
 
 from ..clients.api import api_client
 
@@ -30,7 +33,12 @@ async def _pre_check_server(
     Returns:
         Error message string if pre-check failed, None if OK.
     """
-    service_dir = f"{SERVICE_BASE_DIR}/{project_name}/"
+    try:
+        project_slug = runtime_project_slug(project_name)
+    except ValueError as e:
+        return str(e)
+    service_dir = f"{SERVICE_BASE_DIR}/{project_slug}/"
+    quoted_service_dir = shlex.quote(service_dir)
 
     try:
         key = asyncssh.import_private_key(ssh_key)
@@ -40,7 +48,7 @@ async def _pre_check_server(
             known_hosts=None,
             client_keys=[key],
         ) as conn:
-            result = await conn.run(f"test -d {service_dir}", check=False)
+            result = await conn.run(f"test -d {quoted_service_dir}", check=False)
             dir_exists = result.exit_status == 0
 
     except Exception as e:
@@ -66,7 +74,7 @@ async def _pre_check_server(
     logger.info(
         "deploy_precheck_ok",
         server_ip=server_ip,
-        project_name=project_name,
+        project_name=str(project_slug),
         action=action,
         dir_exists=dir_exists,
     )
@@ -85,7 +93,10 @@ async def _run_deploy_precheck(
     if not server_ip or not server_handle:
         return None
 
-    project_name = (project.name or project_id).replace(" ", "_").lower()
+    try:
+        project_name = runtime_project_slug(project.name or project_id)
+    except ValueError as e:
+        return str(e)
     server = await api_client.get_server(server_handle)
     ssh_key = await api_client.get_server_ssh_key(server_handle)
     if not ssh_key:
@@ -95,6 +106,6 @@ async def _run_deploy_precheck(
         server_ip=server_ip,
         ssh_user=server.ssh_user,
         ssh_key=ssh_key,
-        project_name=project_name,
+        project_name=str(project_name),
         action=action,
     )

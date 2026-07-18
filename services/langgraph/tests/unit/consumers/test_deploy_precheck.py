@@ -178,6 +178,24 @@ class TestPreCheckServer:
         assert error is not None
         assert "SSH" in error or "ssh" in error.lower()
 
+    @pytest.mark.asyncio
+    async def test_malicious_project_name_rejected_before_ssh(self):
+        """Invalid project names must fail before any SSH command is built."""
+        from src.consumers.deploy_precheck import _pre_check_server
+
+        with patch("src.consumers.deploy_precheck.asyncssh") as mock_ssh:
+            error = await _pre_check_server(
+                server_ip="1.2.3.4",
+                ssh_user="dev",
+                ssh_key="fake-key",
+                project_name="bad; touch /tmp/pwned",
+                action="create",
+            )
+
+        assert error is not None
+        assert "invalid runtime project slug" in error
+        mock_ssh.import_private_key.assert_not_called()
+
 
 class TestDeployPreCheckIntegration:
     """Test that deploy_worker.process_deploy_job calls pre-check and aborts on failure."""

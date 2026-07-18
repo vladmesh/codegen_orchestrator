@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import re
 
-# Mirrors PROJECT_NAME_PATTERN in services/langgraph/src/tools/projects.py.
-_PROJECT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
+from shared.contracts.runtime_project import runtime_project_slug
+
 # A single module token, e.g. "backend" or "tg_bot".
 _MODULE_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 
@@ -24,8 +24,10 @@ class ScaffoldInputError(ValueError):
 
 def validate_project_name(name: str) -> None:
     """Reject project names that aren't ^[a-z][a-z0-9-]*$."""
-    if not _PROJECT_NAME_PATTERN.match(name):
-        raise ScaffoldInputError(f"invalid project_name {name!r}: expected ^[a-z][a-z0-9-]*$")
+    try:
+        runtime_project_slug(name)
+    except ValueError as err:
+        raise ScaffoldInputError(str(err)) from err
 
 
 def validate_modules(modules: str) -> None:

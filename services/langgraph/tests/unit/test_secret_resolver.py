@@ -74,11 +74,11 @@ class TestSecretResolverComputeSecret:
 
     def test_compute_app_name(self):
         """APP_NAME should be derived from project name."""
-        project_spec = {"name": "My Cool App"}
+        project_spec = {"name": "my-cool-app"}
         state = {}
 
         result = self.node._compute_secret("APP_NAME", project_spec, state)
-        assert result == "my_cool_app"
+        assert result == "my-cool-app"
 
     def test_compute_app_env(self):
         """APP_ENV should default to production."""

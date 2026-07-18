@@ -287,7 +287,7 @@ class TestRunQAOnServer:
                 server_ip="1.2.3.4",
                 ssh_user="dev",
                 ssh_key="-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
-                project_name="weather_bot",
+                project_name="weather-bot",
                 acceptance_criteria="Build a weather bot",
                 deployed_url="https://weather.example.com",
             )
@@ -370,3 +370,19 @@ class TestRunQAOnServer:
         first_call = mock_conn.run.call_args_list[0]
         cmd = first_call[0][0]
         assert "600" in cmd
+
+    @pytest.mark.asyncio
+    async def test_malicious_project_name_rejected_before_ssh(self):
+        with patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh:
+            result = await run_qa_on_server(
+                server_ip="1.2.3.4",
+                ssh_user="dev",
+                ssh_key="fake",
+                project_name="bad; touch /tmp/pwned",
+                acceptance_criteria="Test",
+                deployed_url="https://test.com",
+            )
+
+        assert result.passed is False
+        assert "invalid runtime project slug" in result.summary
+        mock_asyncssh.import_private_key.assert_not_called()

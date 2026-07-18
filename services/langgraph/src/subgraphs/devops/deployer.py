@@ -9,6 +9,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.runtime_project import runtime_project_slug
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
@@ -89,6 +90,12 @@ async def _write_deploy_secrets(
     ssh_user: str,
 ) -> bool:
     """Write deployment secrets to GitHub repository for deploy.yml workflow."""
+    try:
+        project_slug = runtime_project_slug(project_name)
+    except ValueError as e:
+        logger.error("deploy_project_slug_invalid", project_name=project_name, error=str(e))
+        return False
+
     # Registry credentials for CI docker push
     registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")
     if not registry_url:
@@ -109,7 +116,7 @@ async def _write_deploy_secrets(
         "DEPLOY_USER": ssh_user,
         "DEPLOY_SSH_KEY": ssh_key,
         "DEPLOY_PORT": str(port),
-        "PROJECT_NAME": project_name,
+        "PROJECT_NAME": str(project_slug),
         "REGISTRY_URL": registry_url,
         "REGISTRY_USER": registry_user,
         "REGISTRY_PASSWORD": registry_password,
@@ -193,10 +200,15 @@ class DeployerNode(FunctionalNode):
         parts = repo_url.rstrip("/").split("/")
         first_resource = next(iter(allocated_resources.values()), {}) if allocated_resources else {}
 
+        try:
+            project_name = runtime_project_slug(project_spec.get("name", "project"))
+        except ValueError as e:
+            return {"error": str(e)}
+
         return {
             "owner": parts[-2],
             "repo": parts[-1],
-            "project_name": project_spec.get("name", "project").replace(" ", "_").lower(),
+            "project_name": str(project_name),
             "server_ip": first_resource.get("server_ip"),
             "port": first_resource.get("port"),
             "server_handle": first_resource.get("server_handle"),
@@ -228,6 +240,11 @@ class DeployerNode(FunctionalNode):
             return {
                 "deployment_result": {"status": "failed", "error": "No repository URL"},
                 "errors": ["No repository URL found in project spec"],
+            }
+        if params.get("error"):
+            return {
+                "deployment_result": {"status": "failed", "error": params["error"]},
+                "errors": [params["error"]],
             }
 
         owner, repo = params["owner"], params["repo"]

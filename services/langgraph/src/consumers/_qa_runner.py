@@ -12,6 +12,7 @@ import asyncio
 from dataclasses import dataclass, field
 import json
 import re
+import shlex
 import time
 
 import asyncssh
@@ -19,6 +20,7 @@ import httpx
 import structlog
 
 from shared.contracts.acceptance import HealthCriterion
+from shared.contracts.runtime_project import runtime_project_slug
 
 from ..prompts.qa import build_qa_prompt
 
@@ -300,14 +302,20 @@ async def run_qa_on_server(
     Returns:
         QAResult with pass/fail status and check details
     """
+    try:
+        project_slug = runtime_project_slug(project_name)
+    except ValueError as e:
+        return QAResult(passed=False, summary=str(e))
+
     prompt = build_qa_prompt(acceptance_criteria, deployed_url, bot_username)
+    service_dir = shlex.quote(f"{SERVICE_BASE_DIR}/{project_slug}")
 
     # Escape prompt for shell — use heredoc to avoid quoting issues
     # Prepend ~/.local/bin to PATH — non-interactive SSH doesn't source .bashrc
     # Permissions are configured via ~/.claude/settings.json (allowlist).
     cmd = (
         f'export PATH="$HOME/.local/bin:$PATH" && '
-        f"cd {SERVICE_BASE_DIR}/{project_name} && "
+        f"cd {service_dir} && "
         f"timeout {timeout} claude -p {_shell_quote(prompt)} "
         f"--output-format json "
         f"--max-turns 200 "
@@ -326,7 +334,7 @@ async def run_qa_on_server(
             logger.info(
                 "qa_ssh_connected",
                 server_ip=server_ip,
-                project_name=project_name,
+                project_name=str(project_slug),
                 timeout=timeout,
             )
 
@@ -336,7 +344,7 @@ async def run_qa_on_server(
             result = await conn.run(cmd, check=False)
 
             # Collect QA_REPORT.md regardless of exit status
-            report = await _collect_qa_report(conn, project_name)
+            report = await _collect_qa_report(conn, str(project_slug))
 
             if result.exit_status != 0:
                 logger.warning(
@@ -375,7 +383,12 @@ async def _collect_qa_report(
     project_name: str,
 ) -> str:
     """Read and remove QA_REPORT.md from the project directory on the server."""
-    report_path = f"{SERVICE_BASE_DIR}/{project_name}/QA_REPORT.md"
+    try:
+        project_slug = runtime_project_slug(project_name)
+    except ValueError as e:
+        logger.warning("qa_report_invalid_project_slug", project_name=project_name, error=str(e))
+        return ""
+    report_path = shlex.quote(f"{SERVICE_BASE_DIR}/{project_slug}/QA_REPORT.md")
     try:
         result = await conn.run(f"cat {report_path} 2>/dev/null", check=False)
         if result.exit_status == 0 and result.stdout:

@@ -5,10 +5,13 @@ Simple SSH operations that skip the full DevOps subgraph.
 
 from __future__ import annotations
 
+import shlex
+
 import asyncssh
 import structlog
 
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
+from shared.contracts.runtime_project import runtime_project_slug
 
 from ..clients.api import api_client
 
@@ -34,6 +37,15 @@ async def process_lifecycle_action(
     server_ip = first_resource.get("server_ip")
     server_handle = first_resource.get("server_handle")
 
+    try:
+        project_slug = runtime_project_slug(project_name)
+    except ValueError as e:
+        return {
+            "status": "failed",
+            "error": str(e),
+            "deploy_outcome": DeployOutcome.GIVE_UP.value,
+        }
+
     if not server_ip or not server_handle:
         return {
             "status": "failed",
@@ -50,9 +62,10 @@ async def process_lifecycle_action(
             "deploy_outcome": DeployOutcome.GIVE_UP.value,
         }
 
-    service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
+    service_dir = f"{SERVICE_BASE_DIR}/{project_slug}"
+    quoted_service_dir = shlex.quote(service_dir)
     compose_cmd = (
-        f"cd {service_dir}/infra && "
+        f"cd {shlex.quote(f'{service_dir}/infra')} && "
         f"docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
     )
 
@@ -61,7 +74,7 @@ async def process_lifecycle_action(
     elif action == DeployAction.UNDEPLOY:
         # compose down first, rm -rf only if down succeeds.
         # If down fails — keep directory so retry can work.
-        cmd = f"{compose_cmd} down -v && rm -rf {service_dir}"
+        cmd = f"{compose_cmd} down -v && rm -rf {quoted_service_dir}"
     else:
         raise ValueError(f"Unexpected lifecycle action: {action}")
 
@@ -93,7 +106,7 @@ async def process_lifecycle_action(
                 "deploy_lifecycle_success",
                 task_id=task_id,
                 action=action.value,
-                project_name=project_name,
+                project_name=str(project_slug),
                 server_ip=server_ip,
                 output=result.stdout[:500] if result.stdout else "",
             )

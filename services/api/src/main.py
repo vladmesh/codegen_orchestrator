@@ -7,6 +7,7 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import structlog
@@ -40,6 +41,7 @@ app = FastAPI(
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Log validation errors with full request details for debugging."""
     logger = structlog.get_logger()
+    errors = jsonable_encoder(exc.errors())
 
     try:
         body = await request.body()
@@ -51,14 +53,14 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         "validation_error",
         path=request.url.path,
         method=request.method,
-        errors=exc.errors(),
+        errors=errors,
         request_body=body_str,
         headers=dict(request.headers),
     )
 
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors(), "body": exc.body},
+        content={"detail": errors, "body": exc.body},
     )
 
 

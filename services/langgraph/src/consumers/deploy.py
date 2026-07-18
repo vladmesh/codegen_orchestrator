@@ -17,6 +17,7 @@ from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOutcome
+from shared.contracts.runtime_project import runtime_project_slug
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -84,12 +85,15 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
         if not primary_repo:
             return f"No repository found for project {project_id}"
         repo_id = primary_repo.id
-        service_name = project.name
+        try:
+            service_name = runtime_project_slug(project.name)
+        except ValueError as e:
+            return str(e)
 
         return await ensure_project_allocations(
             project_id=project_id,
             repo_id=repo_id,
-            service_name=service_name,
+            service_name=str(service_name),
             modules=modules,
             min_ram_mb=min_ram_mb,
         )
@@ -140,12 +144,25 @@ async def _handle_lifecycle_action(
     allocated_resources: dict,
 ) -> dict:
     """Handle stop/undeploy lifecycle actions — SSH only, no DevOps subgraph."""
-    project_name = (project.name or project_id).replace(" ", "_").lower()
+    try:
+        project_name = runtime_project_slug(project.name or project_id)
+    except ValueError as e:
+        error = str(e)
+        run_result = DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP, action=msg.action)
+        await api_client.patch(
+            f"runs/{task_id}",
+            json={
+                "status": RunStatus.FAILED.value,
+                "error_message": error,
+                "result": run_result.model_dump(mode="json"),
+            },
+        )
+        return {"status": "failed", "error": error}
     lifecycle_result = await process_lifecycle_action(
         action=msg.action,
         task_id=task_id,
         project_id=project_id,
-        project_name=project_name,
+        project_name=str(project_name),
         allocated_resources=allocated_resources,
     )
     run_status = (
@@ -179,7 +196,7 @@ async def _handle_lifecycle_action(
     return lifecycle_result
 
 
-async def process_deploy_job(  # noqa: PLR0915
+async def process_deploy_job(  # noqa: PLR0911, PLR0915
     job_data: dict, redis: RedisStreamClient
 ) -> dict:
     """Process a single deploy job by running DevOps Subgraph."""
@@ -352,13 +369,25 @@ async def process_deploy_job(  # noqa: PLR0915
             smoke_failed = smoke_result and smoke_result.get("status") == "fail"
 
             if smoke_failed:
-                project_name = project.name if project else project_id
+                try:
+                    project_name = runtime_project_slug(project.name if project else project_id)
+                except ValueError as e:
+                    return await _handle_deploy_failure(
+                        task_id=task_id,
+                        project_id=project_id,
+                        story_id=story_id,
+                        error_msg=str(e),
+                        callback_stream=callback_stream,
+                        user_id=user_id,
+                        redis=redis,
+                        deploy_fix_attempt=msg.deploy_fix_attempt,
+                    )
                 return await _handle_smoke_failure(
                     result=result,
                     smoke_result=smoke_result,
                     task_id=task_id,
                     project_id=project_id,
-                    project_name=project_name,
+                    project_name=str(project_name),
                     callback_stream=callback_stream,
                     user_id=user_id,
                     story_id=story_id,
