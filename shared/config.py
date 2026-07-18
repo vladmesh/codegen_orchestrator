@@ -138,13 +138,13 @@ def default_agent_type_field():
     """Default agent type field definition.
 
     Can be set via `DEFAULT_AGENT_TYPE` environment variable.
-    Valid values: "claude" or "factory"
+    Valid values: "claude", "factory", or "codex"
     Defaults to "claude".
     """
     return Field(
         default="claude",
         alias="DEFAULT_AGENT_TYPE",
-        description="Default AI agent to use (claude or factory)",
+        description="Default AI agent to use (claude, factory, or codex)",
     )
 
 

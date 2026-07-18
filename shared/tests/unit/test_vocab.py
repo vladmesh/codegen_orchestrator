@@ -27,7 +27,7 @@ from shared.schemas.worker_events import parse_worker_event
 
 class TestCanonicalValues:
     def test_agent_type_values(self):
-        assert {a.value for a in AgentType} == {"claude", "factory", "noop"}
+        assert {a.value for a in AgentType} == {"claude", "factory", "codex", "noop"}
 
     def test_action_type_values(self):
         assert {a.value for a in ActionType} == {"create", "feature", "fix"}
@@ -63,6 +63,7 @@ class TestAgentType:
             type: AgentType
 
         assert _M(type="factory").type is AgentType.FACTORY
+        assert _M(type="codex").type is AgentType.CODEX
 
     def test_dto_rejects_unknown(self):
         class _M(BaseModel):
@@ -151,8 +152,9 @@ class TestWorkerCliKind:
         assert {k.value for k in WorkerCliKind} == {"droid", "claude_code", "codex"}
 
     def test_distinct_from_agent_type(self):
-        # Explicitly NOT merged with AgentType (claude/factory/noop).
-        assert {k.value for k in WorkerCliKind}.isdisjoint({a.value for a in AgentType})
+        assert WorkerCliKind is not AgentType
+        assert WorkerCliKind.CODEX.value == AgentType.CODEX.value
+        assert WorkerCliKind.CLAUDE_CODE.value != AgentType.CLAUDE.value
 
     def test_worker_event_parses_cli_kind(self):
         ev = parse_worker_event(

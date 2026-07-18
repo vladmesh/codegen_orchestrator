@@ -264,6 +264,9 @@ services:
       SERVICE_NAME: worker-manager
       # Host path for mounting .claude dir into workers
       HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR:-/home/user/.claude}
+      # Dedicated file-backed Codex profile. Never point this at the live ~/.codex.
+      HOST_CODEX_HOME: ${HOST_CODEX_HOME:-}
+      HOST_CODEX_VALIDATION_PATH: /host-codex
       SCAFFOLDED_WORKSPACE_PATH: /data/workspaces
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
@@ -272,6 +275,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
       - ${HOST_CLAUDE_DIR:-/home/user/.claude}:/host-claude:ro
+      - ${HOST_CODEX_HOME:-./secrets/codex-unconfigured}:/host-codex:ro
     depends_on:
       redis:
         condition: service_healthy

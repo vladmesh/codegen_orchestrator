@@ -15,6 +15,7 @@ import pytest
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import SpawnResult
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -68,6 +69,48 @@ def _make_state(*, action="create", status=ProjectStatus.ACTIVE.value, modules=N
         "repo_id": repo_id,
         "errors": [],
     }
+
+
+class TestDeveloperAgentRouting:
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_codex_project_config_reaches_worker_spawn(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+        state = _make_state()
+        state["project_spec"]["config"]["agent_type"] = "codex"
+
+        from src.nodes.developer import DeveloperNode
+
+        await DeveloperNode().run(state)
+
+        assert mock_spawn.await_args.kwargs["agent_type"] is AgentType.CODEX
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    async def test_unknown_project_agent_fails_without_spawning(self, mock_spawn):
+        state = _make_state()
+        state["project_spec"]["config"]["agent_type"] = "mystery"
+
+        from src.nodes.developer import DeveloperNode
+
+        result = await DeveloperNode().run(state)
+
+        assert result["engineering_status"] == EngineeringStatus.FAILED
+        assert any("mystery" in error for error in result["errors"])
+        mock_spawn.assert_not_awaited()
 
 
 class TestDeveloperNodeCommitValidation:

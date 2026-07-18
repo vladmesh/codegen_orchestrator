@@ -16,7 +16,7 @@ instead of restating a `Literal[...]` or a local enum:
 
 | Enum | Values | Used by |
 |------|--------|---------|
-| `AgentType` | `claude`, `factory`, `noop` | `WorkerConfig.agent_type`, `AgentConfigDTO.type`, worker-manager/worker-wrapper agent branching (re-exported from `queues.worker`) |
+| `AgentType` | `claude`, `factory`, `codex`, `noop` | `WorkerConfig.agent_type`, `AgentConfigDTO.type`, worker-manager/worker-wrapper agent branching (re-exported from `queues.worker`) |
 | `ActionType` | `create`, `feature`, `fix` | `EngineeringMessage.action` |
 | `ResultStatus` | `success`, `failed`, `timeout` | `BaseResult.status` (and its subclasses) |
 | `LifecycleEvent` | `started`, `progress`, `completed`, `failed`, `stopped` (canonical member set) | via the field-specific subsets below |
@@ -34,8 +34,18 @@ enums do not, so merging them would broaden a field past what the wire supports:
 - `DeployAction` (`create`/`feature`/`fix` **plus** `stop`/`undeploy`) — deploy
   operations, a superset of `ActionType`. `TaskType` (**plus** `refactor`) — the
   planning-layer task kind.
-- `WorkerCliKind` (`droid`/`claude_code`/`codex`) — the CLI's self-reported wire
-  identity on `worker:events`, which does **not** map onto `AgentType`.
+- `WorkerCliKind` (`droid`/`claude_code`/`codex`) is the CLI's self-reported wire
+  identity on `worker:events`. It remains a separate concept from `AgentType`;
+  only the `codex` spelling currently overlaps.
+
+`WorkerConfig.host_codex_home` adds no new queue shape beyond an optional field.
+For `agent_type=codex` and `auth_mode=host_session`, worker-manager validates a
+dedicated file-backed ChatGPT profile before image resolution. It then mounts
+that host directory read-write at `/home/worker/.codex` and sets `CODEX_HOME`
+to the same path. The profile must contain access and refresh tokens so the
+non-interactive worker can refresh its session. Unknown agent values fail
+Pydantic validation or explicit
+LangGraph/image-routing checks; there is no fallback to Claude.
 
 `ResultStatus` dropped the old `error` failure synonym: a failed result is
 `failed`, never `error`. The `provisioner:results` consumer treats a message
@@ -1116,7 +1126,7 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 # shared/contracts/queues/worker.py
 
 # AgentType is the canonical enum (shared/contracts/vocab.py), re-exported here.
-from shared.contracts.vocab import AgentType  # claude / factory / noop
+from shared.contracts.vocab import AgentType  # claude / factory / codex / noop
 
 
 class WorkerCapability(StrEnum):

@@ -291,11 +291,15 @@ class WorkerManager:
 
     def _get_agent(self, agent_type: AgentType):
         """Get agent instance by type."""
-        from .agents import ClaudeCodeAgent, FactoryDroidAgent
+        from .agents import ClaudeCodeAgent, CodexAgent, FactoryDroidAgent
 
         if agent_type == AgentType.FACTORY:
             return FactoryDroidAgent()
-        return ClaudeCodeAgent()
+        if agent_type == AgentType.CODEX:
+            return CodexAgent()
+        if agent_type in {AgentType.CLAUDE, AgentType.NOOP}:
+            return ClaudeCodeAgent()
+        raise ValueError(f"Unknown agent type: {agent_type}")
 
     # Statuses that indicate the worker is no longer alive and can be cleaned up
     _TERMINAL_STATUSES = frozenset({WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED})
@@ -342,6 +346,7 @@ class WorkerManager:
         task_content: str | None = None,
         auth_mode: str = "host_session",
         host_claude_dir: str | None = None,
+        host_codex_home: str | None = None,
         api_key: str | None = None,
         env_vars: Dict[str, str] = None,
         worker_type: str = "developer",
@@ -359,6 +364,12 @@ class WorkerManager:
             worker_id=worker_id,
             project_id=project_id,
         )
+
+        if agent_type == AgentType.CODEX and auth_mode == "host_session":
+            from .codex_auth import validate_codex_host_session
+
+            validation_path = settings.HOST_CODEX_VALIDATION_PATH or host_codex_home
+            validate_codex_host_session(validation_path)
 
         if project_id:
             existing_worker = await self._check_project_lock(project_id)
@@ -396,6 +407,7 @@ class WorkerManager:
                 capabilities=capabilities,
                 auth_mode=auth_mode,
                 host_claude_dir=host_claude_dir,
+                host_codex_home=host_codex_home,
                 api_key=api_key,
             )
 

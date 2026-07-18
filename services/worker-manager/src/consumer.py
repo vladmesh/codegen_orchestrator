@@ -125,6 +125,7 @@ class WorkerCommandConsumer:
                 env_vars=env_vars,
                 auth_mode=cmd.config.auth_mode,
                 host_claude_dir=cmd.config.host_claude_dir or settings.HOST_CLAUDE_DIR,
+                host_codex_home=cmd.config.host_codex_home or settings.HOST_CODEX_HOME,
                 api_key=cmd.config.api_key,
                 worker_type=cmd.config.worker_type,
                 project_id=cmd.config.project_id,

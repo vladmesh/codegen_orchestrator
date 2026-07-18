@@ -14,6 +14,7 @@ from shared.config import (
     redis_url_field,
     telegram_token_field,
 )
+from shared.contracts.vocab import AgentType
 
 
 class Settings(BaseSettings):
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str = telegram_token_field(required=True)
 
     # Worker configuration
-    default_agent_type: str = default_agent_type_field()
+    default_agent_type: AgentType = default_agent_type_field()
 
     # LK (dashboard)
     lk_domain: str = Field(alias="LK_DOMAIN")

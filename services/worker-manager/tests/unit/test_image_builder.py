@@ -10,7 +10,7 @@ Tests cover:
 import pytest
 
 # This import will fail initially (RED phase) - module doesn't exist yet
-from src.image_builder import ImageBuilder, compute_image_hash
+from src.image_builder import ImageBuilder, compute_image_hash, get_base_image
 
 
 class TestComputeImageHash:
@@ -44,6 +44,13 @@ class TestComputeImageHash:
         hash_claude = compute_image_hash(["GIT"], agent_type="claude")
         hash_factory = compute_image_hash(["GIT"], agent_type="factory")
         assert hash_claude != hash_factory
+
+    def test_codex_has_distinct_hash(self):
+        hash_codex = compute_image_hash(["GIT"], agent_type="codex")
+        assert hash_codex not in {
+            compute_image_hash(["GIT"], agent_type="claude"),
+            compute_image_hash(["GIT"], agent_type="factory"),
+        }
 
     def test_hash_deterministic_with_agent_type(self):
         """Agent type should be part of deterministic hash."""
@@ -117,6 +124,14 @@ class TestImageBuilderDockerfileGeneration:
         assert "claude" in dockerfile_claude
         assert "factory" in dockerfile_factory
         assert dockerfile_claude != dockerfile_factory
+
+    def test_codex_uses_dedicated_base_image(self, builder):
+        dockerfile = builder.generate_dockerfile(capabilities=["GIT"], agent_type="codex")
+        assert dockerfile.startswith("FROM worker-base-codex:latest")
+
+    def test_unknown_agent_type_is_rejected(self):
+        with pytest.raises(ValueError, match="Unknown agent type"):
+            get_base_image("unknown")
 
 
 class TestImageBuilderImageTag:

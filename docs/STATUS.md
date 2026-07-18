@@ -15,6 +15,14 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 
 ## Current Facts
 
+- `codegen_orchestrator-642` adds Codex as a developer-worker type end to end.
+  `agent_type=codex` selects `worker-base-codex`, runs pinned Codex CLI 0.144.6
+  through `codex exec --sandbox workspace-write`, and reports only through the
+  existing localhost HTTP bridge. Host-session auth uses a dedicated validated
+  read-write `HOST_CODEX_HOME`; unknown agent types fail instead of falling back
+  to Claude. Image-chain and container smoke evidence is in
+  [the task report](reports/codegen-orchestrator-642-codex-worker-runtime.md).
+
 - Deploy resolves service-template 0.3.1 `POSTGRES_HOST_PORT` and `REDIS_HOST_PORT` from application
   allocations. Existing ports are reused and only missing infrastructure services are allocated.
 - Runtime deploy connections now use the selected server's required `ssh_user` together with the
@@ -85,6 +93,7 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 | Stabilization sequence (`codegen_orchestrator-434`) | COMPLETE | [stabilization plan v1](plans/codegen-stabilization-v1.md) |
 | B7 response-DTO enums (`codegen_orchestrator-435`) | COMPLETE | lifecycle fields on task/story/server/application/incident/service-deployment DTOs now use their `StrEnum`; slice of Phase 2 only |
 | Unified contract vocabularies (`codegen_orchestrator-436`) | COMPLETE | `shared/contracts/vocab.py` canonical `AgentType`/`ActionType`/`ResultStatus`/`LifecycleEvent`; inline `Literal` sets removed, `error` synonym dropped; `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct; tests in `shared/tests/unit/test_vocab.py` |
+| Codex developer worker (`codegen_orchestrator-642`) | COMPLETE | `AgentType.CODEX`, strict project routing, dedicated image and host-session profile, non-interactive runner, full image-chain build and container smoke; [report](reports/codegen-orchestrator-642-codex-worker-runtime.md) |
 | Typed `Run.result` union (`codegen_orchestrator-440`) | COMPLETE | `shared/contracts/dto/run_result.py` per-`RunType` models bound to `type`; producers emit typed models, scheduler reads typed attributes; invalid result → visible terminal state; tests in `shared/tests/unit/test_run_result.py` + `test_supervisor.py`. Closes Sprint 002 Phase 2 |
 | Typed engineering consume + dead-layer removal (`codegen_orchestrator-457`) | COMPLETE | Engineering consumer on `EngineeringMessage.model_validate`; deleted `langgraph/src/tools/` (allocator → `allocations.py`), second `agent_config_cache`, `scaffold_phase.py`, `worker:lifecycle` stream+contract, shared compat-shims; tests in `test_engineering_validation.py`, `test_dead_layer_removed.py`, `test_phase3_shims_removed.py`. Closes Sprint 002 Phase 3. PR #42 |
 | B3 incident journal reconciliation (`codegen_orchestrator-466`) | COMPLETE | Successful provisioning writes `READY` before journal closure. An unavailable journal remains observable and gets one warning; scheduler retries only active `provisioning_failed` entries for `READY` servers, idempotently and without recovery actions or per-tick notifications. |

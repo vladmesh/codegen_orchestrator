@@ -5,6 +5,8 @@ from fakeredis import FakeAsyncRedis
 import pytest
 from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
 
+from shared.contracts.vocab import AgentType
+
 
 @pytest.fixture
 def wrapper_config():
@@ -85,3 +87,35 @@ class TestWorkerWrapperComponent:
                 await wrapper.execute_agent({"content": "fail"})
 
             assert "Agent process failed" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_codex_exec_uses_workspace_sandbox_without_output_bridge(
+        self, wrapper_config, fake_redis
+    ):
+        mock_redis_client = MagicMock()
+        mock_redis_client.redis = fake_redis
+        codex_config = WorkerWrapperConfig(
+            **(wrapper_config.model_dump() | {"agent_type": AgentType.CODEX})
+        )
+        wrapper = WorkerWrapper(config=codex_config, redis_client=mock_redis_client)
+        mock_process = MockProcess(
+            stdout=b"transport output must not become a result",
+            stderr=b"transport diagnostics must not become a result",
+            returncode=0,
+        )
+
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = mock_process
+
+            result = await wrapper.execute_agent({"content": "not part of the command"})
+
+        assert result is None
+        assert mock_exec.call_args.args[:4] == (
+            "codex",
+            "exec",
+            "--sandbox",
+            "workspace-write",
+        )
+        assert "TASK.md" in mock_exec.call_args.args[4]
+        assert "not part of the command" not in mock_exec.call_args.args[4]
+        assert wrapper._agent_stdout_tail is None

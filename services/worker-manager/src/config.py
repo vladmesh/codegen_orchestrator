@@ -24,6 +24,12 @@ class WorkerManagerSettings(BaseSettings):
     # Host path to .claude directory (for mounting into workers)
     HOST_CLAUDE_DIR: str | None = None
 
+    # Dedicated host Codex profile. It must not point at the operator's live
+    # ~/.codex directory. The validation path is the same profile mounted
+    # read-only into worker-manager by Compose.
+    HOST_CODEX_HOME: str | None = None
+    HOST_CODEX_VALIDATION_PATH: str | None = None
+
     # Worker subprocess timeout (seconds). Live LLM agents (Claude/Factory) need
     # well over the noop budget to write and iterate on real code; keep within the
     # harness LLM_ENGINEERING_TIMEOUT. The noop runner uses its own short timeout.

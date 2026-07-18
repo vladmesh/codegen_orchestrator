@@ -14,6 +14,7 @@ class AgentType(StrEnum):
 
     CLAUDE = "claude"  # Claude Code
     FACTORY = "factory"  # Factory.ai Droid
+    CODEX = "codex"  # OpenAI Codex CLI
     NOOP = "noop"  # No-op runner for E2E testing (empty commit + push)
 
 
@@ -21,9 +22,10 @@ class WorkerCliKind(StrEnum):
     """CLI-agent wire identity reported on `worker:events`.
 
     Deliberately distinct from :class:`AgentType`: these are the historical
-    `worker_type` values a running CLI reports about itself, and they do not map
-    one-to-one onto the agent we ask for (claude/factory/noop). Kept separate on
-    purpose, not merged.
+    `worker_type` values a running CLI reports about itself. The Codex spelling
+    overlaps with :class:`AgentType`, while the Claude and Factory spellings do
+    not. The concepts stay separate because this field reports CLI identity,
+    not the requested developer-worker type.
     """
 
     DROID = "droid"
