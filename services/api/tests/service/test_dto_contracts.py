@@ -63,7 +63,7 @@ async def test_project_response_validates_as_dto(project):
     assert len(dto.slug) <= 40  # noqa: PLR2004
     assert dto.status == "active"
     assert dto.created_at is not None
-    assert dto.model_dump()["name"] == "DTO Contract Project"
+    assert "name" not in dto.model_dump()
 
 
 # ── Task ─────────────────────────────────────────────────────

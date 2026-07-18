@@ -136,7 +136,7 @@ async def _sync_project_docs(
 
             logger.info(
                 "project_spec_synced",
-                project_name=project.name,
+                project_name=project.title,
                 spec_version=spec_dict.get("version", "unknown"),
             )
             rag_documents.append(
@@ -146,7 +146,7 @@ async def _sync_project_docs(
                     "source_uri": f"repo://{r.full_name}/.project-spec.yaml",
                     "scope": "public",
                     "path": ".project-spec.yaml",
-                    "title": f"{project.name} Project Spec",
+                    "title": f"{project.title} Project Spec",
                     "content": spec_content,
                     "content_hash": _hash_content(spec_content),
                 }
@@ -154,11 +154,11 @@ async def _sync_project_docs(
     except ValidationError as e:
         logger.error(
             "project_spec_validation_failed",
-            project_name=project.name,
+            project_name=project.title,
             error=str(e),
         )
         await notify_admins_best_effort(
-            f"⚠️ Invalid Specification for *{project.name}*\n"
+            f"⚠️ Invalid Specification for *{project.title}*\n"
             f"The `.project-spec.yaml` file is invalid:\n"
             f"```\n{str(e)[:1000]}\n```",
             level="warning",
@@ -168,7 +168,7 @@ async def _sync_project_docs(
     except Exception as e:
         logger.debug(
             "project_spec_sync_skipped",
-            project_name=project.name,
+            project_name=project.title,
             error=str(e),
             error_type=type(e).__name__,
         )
@@ -184,7 +184,7 @@ async def _sync_project_docs(
                     "source_uri": f"repo://{r.full_name}/README.md",
                     "scope": "public",
                     "path": "README.md",
-                    "title": f"{project.name} README",
+                    "title": f"{project.title} README",
                     "content": readme_content,
                     "content_hash": _hash_content(readme_content),
                 }
@@ -192,7 +192,7 @@ async def _sync_project_docs(
     except Exception as e:
         logger.debug(
             "readme_fetch_skipped",
-            project_name=project.name,
+            project_name=project.title,
             error=str(e),
             error_type=type(e).__name__,
         )
@@ -256,7 +256,7 @@ async def _sync_single_repo(
             )
         logger.info(
             "repository_recovered",
-            project_name=project.name,
+            project_name=project.title,
             provider_repo_id=repo_id,
         )
 
@@ -288,7 +288,7 @@ async def _detect_missing_projects(
 
             logger.warning(
                 "project_missing_from_github",
-                project_name=proj.name,
+                project_name=proj.title,
                 project_id=project_id_str,
                 attempt=count,
                 threshold=_missing_threshold(),
@@ -305,12 +305,12 @@ async def _detect_missing_projects(
                         )
                 logger.error(
                     "repositories_marked_missing",
-                    project_name=proj.name,
+                    project_name=proj.title,
                     project_id=project_id_str,
                     attempts=count,
                 )
                 await notify_admins_best_effort(
-                    f"🚨 Project *{proj.name}* is MISSING! "
+                    f"🚨 Project *{proj.title}* is MISSING! "
                     f"Repository not found after {count} consecutive checks.",
                     level="critical",
                     component="github_sync",

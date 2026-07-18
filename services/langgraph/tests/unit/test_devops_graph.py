@@ -69,9 +69,7 @@ class TestRouteAfterSecretResolver:
     @pytest.mark.asyncio
     async def test_typed_resolver_error_is_returned_to_deploy_result_path(self):
         """A resolver failure remains visible without running downstream deployment."""
-        result = await resolve_secrets(
-            {"project_id": None, "project_spec": {"slug": "test-0000"}}
-        )
+        result = await resolve_secrets({"project_id": None, "project_spec": {"slug": "test-0000"}})
 
         assert result == {"errors": ["project_id is required for secret resolution"]}
 

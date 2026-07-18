@@ -78,10 +78,7 @@ class TestSecretResolverComputeSecret:
         state = {}
 
         assert self.node._compute_secret("APP_NAME", project_spec, state) == "my-cool-app-0000"
-        assert (
-            self.node._compute_secret("PROJECT_NAME", project_spec, state)
-            == "my-cool-app-0000"
-        )
+        assert self.node._compute_secret("PROJECT_NAME", project_spec, state) == "my-cool-app-0000"
         assert (
             self.node._compute_secret("COMPOSE_PROJECT_NAME", project_spec, state)
             == "my-cool-app-0000"
@@ -227,13 +224,9 @@ class TestSecretResolverComputeSecret:
         }
 
         assert (
-            self.node._compute_secret("POSTGRES_HOST_PORT", {"slug": "test-0000"}, state)
-            == "18001"
+            self.node._compute_secret("POSTGRES_HOST_PORT", {"slug": "test-0000"}, state) == "18001"
         )
-        assert (
-            self.node._compute_secret("REDIS_HOST_PORT", {"slug": "test-0000"}, state)
-            == "18002"
-        )
+        assert self.node._compute_secret("REDIS_HOST_PORT", {"slug": "test-0000"}, state) == "18002"
 
     @pytest.mark.parametrize(
         "key,service",

@@ -92,9 +92,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             task_id="deploy-1",
             project_id=str(project.id),
             project_name=RUNTIME_SLUG,
-            allocated_resources={
-                "srv-1:8000": {"server_ip": "1.2.3.4", "server_handle": "srv-1"}
-            },
+            allocated_resources={"srv-1:8000": {"server_ip": "1.2.3.4", "server_handle": "srv-1"}},
         )
     assert result["status"] == "success"
     lifecycle_cmd = lifecycle_conn.run.await_args.args[0]

@@ -47,7 +47,7 @@ class TestGetProjectWithTelegramId:
 
         result = await api_client.get_project("proj-1", telegram_id=12345)
 
-        assert result.name == "test"
+        assert result.title == "test"
         call_kwargs = mock_httpx_client.request.call_args
         assert call_kwargs[1].get("headers", {}).get("X-Telegram-ID") == "12345"
 
@@ -140,6 +140,6 @@ class TestListProjectsWithTelegramId:
         result = await api_client.list_projects(telegram_id=99999)
 
         assert len(result) == 1
-        assert result[0].name == "test"
+        assert result[0].title == "test"
         call_kwargs = mock_httpx_client.request.call_args
         assert call_kwargs[1].get("headers", {}).get("X-Telegram-ID") == "99999"

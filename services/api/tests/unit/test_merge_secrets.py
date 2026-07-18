@@ -25,7 +25,7 @@ def _make_project(project_id=PROJECT_UUID, owner_id=1, config=None):
     p.id = project_id
     p.owner_id = owner_id
     p.config = dict(config) if config else {}
-    p.name = "test"
+    p.title = "test"
     p.status = "draft"
     return p
 

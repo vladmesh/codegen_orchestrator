@@ -4,7 +4,7 @@ import uuid
 
 from sqlalchemy import JSON, ForeignKey, Integer, String, Uuid
 from sqlalchemy.ext.mutable import MutableDict
-from sqlalchemy.orm import Mapped, mapped_column, synonym
+from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.project import ProjectStatus  # Single source of truth
 
@@ -19,7 +19,6 @@ class Project(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(255))
     slug: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    name = synonym("title")
 
     status: Mapped[str] = mapped_column(String(50), default=ProjectStatus.DRAFT.value)
 
