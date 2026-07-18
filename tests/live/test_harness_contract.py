@@ -699,7 +699,7 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
     monkeypatch.setattr(pipeline_helpers, "cleanup_all", cleanup)
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        with pytest.raises(AssertionError, match="Create repository failed"):
+        with pytest.raises(httpx.HTTPStatusError):
             await pipeline_helpers.create_noop_project(api, api)
 
     assert len(cleanup_contexts) == 1
@@ -766,6 +766,22 @@ async def test_create_story_and_task_uses_context_task_description():
     assert task_payload["description"] == "Create a real backend health endpoint."
     assert ctx["story_id"] == "story-1"
     assert ctx["task_id"] == "task-1"
+
+
+@pytest.mark.asyncio
+async def test_poll_status_fails_loudly_before_parsing_error_bodies():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"detail": "internal key required"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        with pytest.raises(httpx.HTTPStatusError):
+            await pipeline_helpers.poll_status(
+                api,
+                "/api/projects/project-1",
+                {"active"},
+                timeout=3,
+            )
 
 
 @pytest.mark.asyncio

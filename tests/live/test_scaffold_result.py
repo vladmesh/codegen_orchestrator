@@ -50,6 +50,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
             "config": {"description": "live test scaffold"},
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
     manifest = OwnershipManifest(project_id)
     manifest.own("project", project_id)
@@ -71,6 +72,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
                 "git_url": f"https://github.com/{GITHUB_ORG}/{repo_name}",
             },
         )
+        resp.raise_for_status()
         assert resp.status_code == 201, f"Create repository failed: {resp.text}"
         repo_id = resp.json()["id"]
 
@@ -120,6 +122,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
         for _ in range(SCAFFOLD_TIMEOUT // 2):
             await asyncio.sleep(2)
             resp = await api.get(f"/api/projects/{project_id}")
+            resp.raise_for_status()
             status = resp.json().get("status")
             if status == ProjectStatus.ACTIVE:
                 break

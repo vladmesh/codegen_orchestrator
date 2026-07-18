@@ -139,7 +139,7 @@ def docker_exec(service: str, script: str, timeout: int = 30) -> subprocess.Comp
 
 async def ensure_test_user(api: httpx.AsyncClient) -> None:
     """Create test user if not exists."""
-    await api.post(
+    resp = await api.post(
         "/api/users/upsert",
         json={
             "telegram_id": TEST_TELEGRAM_ID,
@@ -148,6 +148,7 @@ async def ensure_test_user(api: httpx.AsyncClient) -> None:
             "last_name": "Test",
         },
     )
+    resp.raise_for_status()
 
 
 async def poll_status(
@@ -161,8 +162,7 @@ async def poll_status(
     for _ in range(timeout // 3):
         await asyncio.sleep(3)
         resp = await api.get(endpoint)
-        if resp.status_code != 200:
-            continue
+        resp.raise_for_status()
         status = resp.json().get("status")
         if status in target_statuses:
             return status
@@ -204,6 +204,7 @@ async def create_pipeline_project(
             "config": config,
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
 
     manifest = OwnershipManifest(run_id=project_id)
@@ -229,6 +230,7 @@ async def create_pipeline_project(
                 "git_url": f"https://github.com/{GITHUB_ORG}/{project_name}",
             },
         )
+        resp.raise_for_status()
         assert resp.status_code == 201, f"Create repository failed: {resp.text}"
         ctx["repo_id"] = resp.json()["id"]
 
@@ -329,6 +331,7 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
             "type": "technical",
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201, f"Create story failed: {resp.text}"
     ctx["story_id"] = resp.json()["id"]
 
@@ -336,6 +339,7 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
         f"/api/stories/{ctx['story_id']}/start",
         json={"actor": "live-test"},
     )
+    resp.raise_for_status()
     assert resp.status_code == 200, f"Story start failed: {resp.text}"
 
     resp = await api.post(
@@ -349,6 +353,7 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
             "status": TaskStatus.BACKLOG,
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201, f"Create task failed: {resp.text}"
     ctx["task_id"] = resp.json()["id"]
 
@@ -357,6 +362,7 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
         params={"to_status": TaskStatus.TODO},
         json={"actor": "live-test"},
     )
+    resp.raise_for_status()
     assert resp.status_code == 200, f"Task transition to todo failed: {resp.text}"
 
 
@@ -371,6 +377,7 @@ async def wait_engineering(
         await asyncio.sleep(5)
         elapsed += 5
         resp = await api.get(f"/api/tasks/{ctx['task_id']}")
+        resp.raise_for_status()
         status = resp.json().get("status")
         if status in done_statuses:
             break
@@ -384,20 +391,20 @@ async def wait_engineering(
         for _ in range(20):  # up to 60s
             await asyncio.sleep(3)
             resp = await api.get(f"/api/stories/{ctx['story_id']}")
-            if resp.status_code == 200:
-                story_status = resp.json().get("status")
-                ctx["story_status"] = story_status
-                if story_status in {
-                    StoryStatus.PR_REVIEW,
-                    StoryStatus.DEPLOYING,
-                    StoryStatus.COMPLETED,
-                    StoryStatus.FAILED,
-                }:
-                    break
+            resp.raise_for_status()
+            story_status = resp.json().get("status")
+            ctx["story_status"] = story_status
+            if story_status in {
+                StoryStatus.PR_REVIEW,
+                StoryStatus.DEPLOYING,
+                StoryStatus.COMPLETED,
+                StoryStatus.FAILED,
+            }:
+                break
     elif "story_id" in ctx:
         resp = await api.get(f"/api/stories/{ctx['story_id']}")
-        if resp.status_code == 200:
-            ctx["story_status"] = resp.json().get("status")
+        resp.raise_for_status()
+        ctx["story_status"] = resp.json().get("status")
 
 
 async def poll_field(
@@ -412,8 +419,7 @@ async def poll_field(
     for _ in range(timeout // 3):
         await asyncio.sleep(3)
         resp = await api.get(endpoint)
-        if resp.status_code != 200:
-            continue
+        resp.raise_for_status()
         value = resp.json().get(field)
         if value in target_values:
             return value
@@ -440,8 +446,10 @@ async def wait_deploy(
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         repos_resp = await api.get("/api/repositories/", params={"project_id": ctx["project_id"]})
+        repos_resp.raise_for_status()
         for repo in repos_resp.json():
             apps_resp = await api.get("/api/applications/", params={"repo_id": repo["id"]})
+            apps_resp.raise_for_status()
             for app in apps_resp.json():
                 if app["status"] in {s.value for s in terminal}:
                     app_status = app["status"]
@@ -457,15 +465,15 @@ async def wait_deploy(
 
     if story_id := ctx.get("story_id"):
         tasks_resp = await api.get("/api/tasks/", params={"story_id": story_id})
-        if tasks_resp.status_code == 200:
-            ctx["ci_failure_evidence"] = [
-                {
-                    "fix_task_id": task["id"],
-                    **task["failure_metadata"]["ci_failure"],
-                }
-                for task in tasks_resp.json()
-                if (task.get("failure_metadata") or {}).get("ci_failure")
-            ]
+        tasks_resp.raise_for_status()
+        ctx["ci_failure_evidence"] = [
+            {
+                "fix_task_id": task["id"],
+                **task["failure_metadata"]["ci_failure"],
+            }
+            for task in tasks_resp.json()
+            if (task.get("failure_metadata") or {}).get("ci_failure")
+        ]
 
     if app_status != ApplicationStatus.RUNNING.value:
         return

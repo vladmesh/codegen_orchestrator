@@ -9,6 +9,7 @@ from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE, SCAFF
 async def test_api_health(api_no_auth):
     """API /health returns 200."""
     resp = await api_no_auth.get("/health")
+    resp.raise_for_status()
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
 

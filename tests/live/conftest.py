@@ -30,7 +30,7 @@ async def api():
     """Async httpx client with test user auth header."""
     headers = {"X-Telegram-ID": str(TEST_TELEGRAM_ID)}
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=headers) as client:
-        await client.post(
+        resp = await client.post(
             "/api/users/upsert",
             json={
                 "telegram_id": TEST_TELEGRAM_ID,
@@ -39,6 +39,7 @@ async def api():
                 "last_name": "Test",
             },
         )
+        resp.raise_for_status()
         yield client
 
 
@@ -117,6 +118,7 @@ async def create_test_project_context(api):
             "config": {"description": "live test project"},
         },
     )
+    resp.raise_for_status()
     assert resp.status_code == 201, resp.text
     data = resp.json()
     manifest = OwnershipManifest(project_id)
