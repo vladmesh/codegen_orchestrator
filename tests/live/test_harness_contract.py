@@ -692,7 +692,7 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/projects/":
-            return httpx.Response(201, json={"id": "project"})
+            return httpx.Response(201, json={"id": "project", "slug": "live-test-slug"})
         return httpx.Response(500, text="repository unavailable")
 
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
@@ -718,7 +718,7 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append((request.url.path, json.loads(request.content)))
         if request.url.path == "/api/projects/":
-            return httpx.Response(201, json={"id": "project"})
+            return httpx.Response(201, json={"id": "project", "slug": "live-test-llm-slug"})
         return httpx.Response(201, json={"id": "repo-1"})
 
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
@@ -734,6 +734,10 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
     assert "user-provided secrets" in config["detailed_spec"]
     assert "secrets" not in config
     assert "env_hints" not in config
+    assert requests[1][1]["name"] == "live-test-llm-slug"
+    assert requests[1][1]["git_url"].endswith("/live-test-llm-slug")
+    assert ctx["project_name"] == "live-test-llm-slug"
+    assert ctx["repo_name"] == "live-test-llm-slug"
     assert ctx["repo_id"] == "repo-1"
     assert ctx["task_title"] == pipeline_helpers.LLM_BACKEND_TASK_TITLE
     assert ctx["task_description"] == pipeline_helpers.LLM_BACKEND_TASK_DESCRIPTION

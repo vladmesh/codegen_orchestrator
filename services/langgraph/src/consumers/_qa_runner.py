@@ -12,6 +12,7 @@ import asyncio
 from dataclasses import dataclass, field
 import json
 import re
+import shlex
 import time
 
 import asyncssh
@@ -307,8 +308,8 @@ async def run_qa_on_server(
     # Permissions are configured via ~/.claude/settings.json (allowlist).
     cmd = (
         f'export PATH="$HOME/.local/bin:$PATH" && '
-        f"cd {SERVICE_BASE_DIR}/{project_name} && "
-        f"timeout {timeout} claude -p {_shell_quote(prompt)} "
+        f"cd {shlex.quote(f'{SERVICE_BASE_DIR}/{project_name}')} && "
+        f"timeout {timeout} claude -p {shlex.quote(prompt)} "
         f"--output-format json "
         f"--max-turns 200 "
         f"--model claude-sonnet-4-6 "
@@ -376,20 +377,16 @@ async def _collect_qa_report(
 ) -> str:
     """Read and remove QA_REPORT.md from the project directory on the server."""
     report_path = f"{SERVICE_BASE_DIR}/{project_name}/QA_REPORT.md"
+    quoted_report_path = shlex.quote(report_path)
     try:
-        result = await conn.run(f"cat {report_path} 2>/dev/null", check=False)
+        result = await conn.run(f"cat {quoted_report_path} 2>/dev/null", check=False)
         if result.exit_status == 0 and result.stdout:
-            await conn.run(f"rm -f {report_path}", check=False)
+            await conn.run(f"rm -f {quoted_report_path}", check=False)
             logger.info("qa_report_collected", size=len(result.stdout))
             return result.stdout
     except Exception as e:
         logger.warning("qa_report_collect_failed", error=str(e))
     return ""
-
-
-def _shell_quote(s: str) -> str:
-    """Quote a string for safe use in shell commands using $'...' syntax."""
-    return "'" + s.replace("'", "'\\''") + "'"
 
 
 async def credential_refresh_loop() -> None:

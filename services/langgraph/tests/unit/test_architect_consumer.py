@@ -5,11 +5,11 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.unit.factories import make_project, make_story
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.architect import ArchitectMessage
+from tests.unit.factories import make_project, make_story
 
 # Default project response (ACTIVE = scaffold done, no waiting)
 _ACTIVE_PROJECT = make_project(status=ProjectStatus.ACTIVE, config={})

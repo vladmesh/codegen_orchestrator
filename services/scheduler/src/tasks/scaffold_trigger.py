@@ -81,7 +81,7 @@ async def trigger_scaffolds(
     triggered = 0
     for project in projects:
         project_id = str(project.id)
-        log = logger.bind(project_id=project_id, project_name=project.name)
+        log = logger.bind(project_id=project_id, project_title=project.title)
 
         if project.status == ProjectStatus.DRAFT:
             if await _trigger_full_scaffold(project, api_client, redis_client, log):
@@ -172,7 +172,7 @@ def _build_scaffold_message(project, repo_id: str, mode: str) -> ScaffoldMessage
         user_id=str(project.owner_id),
         template_repo=template_repo,
         template_ref=template_ref,
-        project_name=project.name,
+        project_name=project.slug,
         modules=modules,
         task_description=config.get("description", project.description or ""),
         mode=mode,

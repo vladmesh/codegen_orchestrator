@@ -125,6 +125,35 @@ async def test_create_project_unknown_user_returns_404():
 
 
 @pytest.mark.asyncio
+async def test_create_project_rejects_legacy_name_alias():
+    """POST requires title, not the removed name alias."""
+    user = _make_user(user_id=5, telegram_id=42000)
+    session = _mock_session(existing_project=None, resolve_user=user)
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    payload = {
+        "id": PROJECT_UUID,
+        "name": "My Project",
+        "status": "draft",
+        "config": {"modules": ["backend"]},
+    }
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/projects/",
+            json=payload,
+            headers={"X-Telegram-ID": "42000"},
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_create_project_rejects_client_slug():
     """POST rejects client-provided slug; slugs are server generated."""
     user = _make_user(user_id=5, telegram_id=42000)

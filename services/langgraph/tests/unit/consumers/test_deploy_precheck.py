@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from tests.unit.factories import make_project, make_repository
 
 
@@ -252,4 +253,5 @@ class TestDeployPreCheckIntegration:
 
         assert result["status"] == "success"
         assert mock_precheck.await_args.kwargs["ssh_user"] == "dev"
+        assert mock_precheck.await_args.kwargs["project_name"] == "test-project-0000"
         mock_devops.assert_called_once()

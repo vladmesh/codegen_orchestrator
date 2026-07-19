@@ -14,7 +14,8 @@ def _make_project(**overrides) -> ProjectDTO:
     """Build a ProjectDTO for tests."""
     base = {
         "id": "00000000-0000-0000-0000-000000000001",
-        "name": "my-project",
+        "title": "My Project",
+        "slug": "my-project",
         "status": "draft",
         "owner_id": 1,
         "config": {},

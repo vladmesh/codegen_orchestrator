@@ -9,9 +9,9 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from tests.unit.factories import make_project, make_repository
 
 from src.consumers.engineering import EngineeringSuccessParams
+from tests.unit.factories import make_project, make_repository
 
 
 @pytest.fixture
@@ -691,7 +691,7 @@ class TestCreateRepoAndSetSecrets:
         # Repo was created
         mock_gh.create_repo.assert_awaited_once_with(
             org="test-org",
-            name="my-project",
+            name="my-project-0000",
             description="Project: My Project",
             private=True,
         )
@@ -707,6 +707,7 @@ class TestCreateRepoAndSetSecrets:
         mock_api.post.assert_called()
         post_calls = [c for c in mock_api.post.call_args_list if "repositories/" in str(c)]
         assert len(post_calls) == 1
+        assert post_calls[0].kwargs["json"]["name"] == "my-project-0000"
 
     @pytest.mark.asyncio
     @patch("shared.clients.github.GitHubAppClient")

@@ -53,7 +53,13 @@ class TestDeployLifecycleStop:
             patch("src.consumers.deploy_lifecycle.asyncssh") as mock_ssh,
         ):
             mock_api.patch = AsyncMock(return_value={})
-            mock_api.get_project = AsyncMock(return_value=MagicMock(name="weather_bot", config={}))
+            mock_api.get_project = AsyncMock(
+                return_value=MagicMock(
+                    title="Weather Bot",
+                    slug="weather-bot-0000",
+                    config={},
+                )
+            )
             mock_lifecycle_api.get_primary_repository = AsyncMock(
                 return_value=MagicMock(id="repo-1")
             )
@@ -91,6 +97,7 @@ class TestDeployLifecycleStop:
             assert "compose.base.yml" in ssh_cmd
             assert "compose.prod.yml" in ssh_cmd
             assert "stop" in ssh_cmd
+            assert "cd /opt/services/weather-bot-0000/infra" in ssh_cmd
 
     @pytest.mark.asyncio
     async def test_stop_does_not_run_devops_subgraph(self, mock_redis):
@@ -119,7 +126,13 @@ class TestDeployLifecycleStop:
             ),
         ):
             mock_api.patch = AsyncMock(return_value={})
-            mock_api.get_project = AsyncMock(return_value=MagicMock(name="weather_bot", config={}))
+            mock_api.get_project = AsyncMock(
+                return_value=MagicMock(
+                    title="Weather Bot",
+                    slug="weather-bot-0000",
+                    config={},
+                )
+            )
             mock_lifecycle_api.get_primary_repository = AsyncMock(
                 return_value=MagicMock(id="repo-1")
             )
@@ -165,7 +178,13 @@ class TestDeployLifecycleUndeploy:
             ),
         ):
             mock_api.patch = AsyncMock(return_value={})
-            mock_api.get_project = AsyncMock(return_value=MagicMock(name="weather_bot", config={}))
+            mock_api.get_project = AsyncMock(
+                return_value=MagicMock(
+                    title="Weather Bot",
+                    slug="weather-bot-0000",
+                    config={},
+                )
+            )
             mock_lifecycle_api.get_primary_repository = AsyncMock(
                 return_value=MagicMock(id="repo-1")
             )
@@ -188,7 +207,7 @@ class TestDeployLifecycleUndeploy:
         assert "compose.base.yml" in ssh_cmd
         assert "compose.prod.yml" in ssh_cmd
         assert "down -v" in ssh_cmd
-        assert "rm -rf /opt/services/" in ssh_cmd
+        assert "rm -rf /opt/services/weather-bot-0000" in ssh_cmd
 
 
 class TestDeployLifecycleSSHFailure:
@@ -215,7 +234,13 @@ class TestDeployLifecycleSSHFailure:
             ),
         ):
             mock_api.patch = AsyncMock(return_value={})
-            mock_api.get_project = AsyncMock(return_value=MagicMock(name="weather_bot", config={}))
+            mock_api.get_project = AsyncMock(
+                return_value=MagicMock(
+                    title="Weather Bot",
+                    slug="weather-bot-0000",
+                    config={},
+                )
+            )
             mock_lifecycle_api.get_primary_repository = AsyncMock(
                 return_value=MagicMock(id="repo-1")
             )

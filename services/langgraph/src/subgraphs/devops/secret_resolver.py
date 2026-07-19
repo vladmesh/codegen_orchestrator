@@ -13,6 +13,7 @@ from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
+from ...runtime_identity import project_spec_runtime_slug
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -171,9 +172,9 @@ class SecretResolverNode(FunctionalNode):
             raise SecretResolutionError("project_id is required for secret resolution")
         if not isinstance(project_spec, dict):
             raise SecretResolutionError("project context is required for secret resolution")
-        project_name = project_spec.get("name")
-        if not isinstance(project_name, str) or not project_name.strip():
-            raise SecretResolutionError("project name is required for secret resolution")
+        project_slug = project_spec.get("slug")
+        if not isinstance(project_slug, str) or not project_slug.strip():
+            raise SecretResolutionError("project slug is required for secret resolution")
 
     def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
         """Look up allocated server IP and port for a service.
@@ -252,16 +253,16 @@ class SecretResolverNode(FunctionalNode):
             return self._STATIC_SECRETS[key_upper]
 
         if key_upper == "APP_NAME":
-            return project_spec["name"].replace(" ", "_").lower()
+            return project_spec_runtime_slug(project_spec)
 
         if key_upper == "PROJECT_NAME":
-            return project_spec["name"]
+            return project_spec_runtime_slug(project_spec)
 
         safe_project_id = state.get("project_id", "").replace("-", "_").lower()
         if key_upper == "POSTGRES_DB":
             return f"db_{safe_project_id}"
         if key_upper == "COMPOSE_PROJECT_NAME":
-            return project_spec["name"].replace(" ", "_").lower()
+            return project_spec_runtime_slug(project_spec)
         if key_upper == "ENABLED_MODULES":
             modules = project_spec.get("config", {}).get("modules", [])
             if not isinstance(modules, list) or not all(

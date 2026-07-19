@@ -19,6 +19,7 @@ from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
 from ._qa_runner import (
     QAResult,
@@ -33,7 +34,7 @@ MAX_QA_LOOPS = 2  # max QA→Engineering cycles before story is marked failed
 QA_INFLIGHT_TTL = 1500  # 25 min TTL for inflight marker
 
 
-async def _resolve_server_info(application_id: int) -> QAServerInfo | None:
+async def _resolve_server_info(application_id: int, project_name: str) -> QAServerInfo | None:
     """Resolve server IP, SSH key, and project name from application_id.
 
     Returns:
@@ -65,7 +66,7 @@ async def _resolve_server_info(application_id: int) -> QAServerInfo | None:
         server_ip=server.public_ip,
         ssh_user=server.ssh_user,
         ssh_key=ssh_key,
-        project_name=app.service_name,
+        project_name=project_name,
     )
 
 
@@ -111,7 +112,9 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         # an HTTP check must not fail over an SSH key it never reads.
         server_info = None
         if health_checks is None:
-            server_info = await _resolve_server_info(msg.application_id)
+            project = await api_client.get_project(msg.project_id)
+            project_name = project_runtime_slug(project)
+            server_info = await _resolve_server_info(msg.application_id, project_name)
             if not server_info:
                 error = f"Cannot resolve server for application {msg.application_id}"
                 logger.error(
@@ -123,7 +126,6 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
             # Fail-fast: if project has tg_bot module, bot_username is required
             if not msg.bot_username:
-                project = await api_client.get_project(msg.project_id)
                 modules = (project.config or {}).get("modules", [])
                 if "tg_bot" in modules:
                     error = (

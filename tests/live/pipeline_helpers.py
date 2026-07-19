@@ -185,7 +185,7 @@ async def create_pipeline_project(
 ) -> dict:
     """Create project + repository for one live pipeline variant. Returns ctx dict."""
     suffix = secrets.token_hex(4)
-    project_name = f"{project_prefix}-{suffix}"
+    project_title = f"{project_prefix}-{suffix}"
     project_id = str(uuid.uuid4())
     config = {
         "description": description,
@@ -199,18 +199,21 @@ async def create_pipeline_project(
         "/api/projects/",
         json={
             "id": project_id,
-            "title": project_name,
+            "title": project_title,
             "status": ProjectStatus.DRAFT,
             "config": config,
         },
     )
     resp.raise_for_status()
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
+    project = resp.json()
+    project_name = project["slug"]
 
     manifest = OwnershipManifest(run_id=project_id)
     manifest.own("project", project_id)
     ctx = {
         "project_id": project_id,
+        "project_title": project_title,
         "project_name": project_name,
         "repo_name": project_name,
         "manifest": manifest,

@@ -6,13 +6,13 @@ Extracted from engineering_worker.py (#18).
 from __future__ import annotations
 
 import os
-import re
 
 import structlog
 
 from shared.contracts.dto.project import ProjectDTO
 
 from ..clients.api import api_client
+from ..runtime_identity import project_runtime_slug
 
 logger = structlog.get_logger(__name__)
 
@@ -29,18 +29,13 @@ async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
     from shared.clients.github import GitHubAppClient
 
     project_id = str(project.id)
-    project_name = project.name
+    project_name = project.title
 
     org_name = os.getenv("GITHUB_ORG")
     if not org_name:
         raise RuntimeError("GITHUB_ORG environment variable is not set")
 
-    # Generate repo name from project name
-    repo_name = project_name.lower().replace(" ", "-").replace("_", "-")
-    repo_name = re.sub(r"[^a-z0-9-]", "", repo_name)
-    repo_name = re.sub(r"-+", "-", repo_name).strip("-")
-    if not repo_name:
-        repo_name = project_id[:8]
+    repo_name = project_runtime_slug(project)
     repo_full_name = f"{org_name}/{repo_name}"
 
     github_client = GitHubAppClient()
@@ -61,7 +56,7 @@ async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
             raise RuntimeError(
                 f"Repository {repo_full_name} already exists. "
                 "This likely means a previous run was not cleaned up. "
-                "Delete the repo and retry, or use a different project name."
+                "Delete the repo and retry, or create a new project."
             ) from e
         else:
             raise

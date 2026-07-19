@@ -21,6 +21,7 @@ from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ..runtime_identity import project_runtime_slug
 from ..subgraphs.devops import create_devops_subgraph
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
@@ -84,7 +85,7 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
         if not primary_repo:
             return f"No repository found for project {project_id}"
         repo_id = primary_repo.id
-        service_name = project.name
+        service_name = project_runtime_slug(project)
 
         return await ensure_project_allocations(
             project_id=project_id,
@@ -140,7 +141,7 @@ async def _handle_lifecycle_action(
     allocated_resources: dict,
 ) -> dict:
     """Handle stop/undeploy lifecycle actions — SSH only, no DevOps subgraph."""
-    project_name = (project.name or project_id).replace(" ", "_").lower()
+    project_name = project_runtime_slug(project)
     lifecycle_result = await process_lifecycle_action(
         action=msg.action,
         task_id=task_id,
@@ -352,7 +353,7 @@ async def process_deploy_job(  # noqa: PLR0915
             smoke_failed = smoke_result and smoke_result.get("status") == "fail"
 
             if smoke_failed:
-                project_name = project.name if project else project_id
+                project_name = project_runtime_slug(project)
                 return await _handle_smoke_failure(
                     result=result,
                     smoke_result=smoke_result,

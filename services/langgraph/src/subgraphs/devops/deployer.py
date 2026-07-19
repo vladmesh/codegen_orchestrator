@@ -12,6 +12,7 @@ from shared.contracts.dto.application import ApplicationStatus
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
+from ...runtime_identity import project_spec_runtime_slug
 from .dotenv_builder import build_dotenv, encode_dotenv
 from .state import DevOpsState
 
@@ -196,7 +197,7 @@ class DeployerNode(FunctionalNode):
         return {
             "owner": parts[-2],
             "repo": parts[-1],
-            "project_name": project_spec.get("name", "project").replace(" ", "_").lower(),
+            "project_name": project_spec_runtime_slug(project_spec),
             "server_ip": first_resource.get("server_ip"),
             "port": first_resource.get("port"),
             "server_handle": first_resource.get("server_handle"),

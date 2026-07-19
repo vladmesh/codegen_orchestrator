@@ -4,6 +4,7 @@ import structlog
 
 from ..allocations import AllocationError, ensure_project_allocations
 from ..clients.api import api_client
+from ..runtime_identity import project_spec_runtime_slug
 from .base import FunctionalNode
 
 logger = structlog.get_logger()
@@ -43,7 +44,7 @@ class ResourceAllocatorNode(FunctionalNode):
         config = project_spec.get("config", {})
         modules = config.get("modules", ["backend"])
         min_ram_mb = config.get("estimated_ram_mb", 512)
-        service_name = project_spec.get("name", "project").replace(" ", "_").lower()
+        service_name = project_spec_runtime_slug(project_spec)
 
         # Get repo_id from primary repository
         repo = await api_client.get_primary_repository(project_id)

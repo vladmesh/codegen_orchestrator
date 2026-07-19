@@ -134,12 +134,12 @@ def qa_message_data():
 class TestResolveServerInfo:
     @pytest.mark.asyncio
     async def test_resolves_server_info(self, mock_api_client):
-        info = await _resolve_server_info(1)
+        info = await _resolve_server_info(1, "weather-bot-0000")
         assert isinstance(info, QAServerInfo)
         assert info.server_ip == "1.2.3.4"
         assert info.ssh_user == "dev"
         assert "RSA" in info.ssh_key
-        assert info.project_name == "weather_bot"
+        assert info.project_name == "weather-bot-0000"
         mock_api_client.get_application.assert_called_once_with(1)
         mock_api_client.get_server.assert_awaited_once_with("vps-1")
         mock_api_client.get_server_ssh_key.assert_awaited_once_with("vps-1")
@@ -147,17 +147,17 @@ class TestResolveServerInfo:
     @pytest.mark.asyncio
     async def test_application_not_found(self, mock_api_client):
         mock_api_client.get_application.side_effect = Exception("Not found")
-        assert await _resolve_server_info(999) is None
+        assert await _resolve_server_info(999, "weather-bot-0000") is None
 
     @pytest.mark.asyncio
     async def test_no_ssh_key_returns_none(self, mock_api_client):
         mock_api_client.get_server_ssh_key.return_value = None
-        assert await _resolve_server_info(1) is None
+        assert await _resolve_server_info(1, "weather-bot-0000") is None
 
     @pytest.mark.asyncio
     async def test_no_server_handle_returns_none(self, mock_api_client):
         mock_api_client.get_application.return_value = _application(server_handle="")
-        assert await _resolve_server_info(1) is None
+        assert await _resolve_server_info(1, "weather-bot-0000") is None
 
 
 class TestProcessQAJobServerResolveFailure:
@@ -428,6 +428,7 @@ class TestHealthOnlyCriteriaRouting:
         assert result["status"] == "passed"
         mock_health.assert_not_called()
         mock_agent.assert_called_once()
+        assert mock_agent.call_args.kwargs["project_name"] == "weather-bot-0000"
 
 
 class TestProcessQAJobEdgeCases:

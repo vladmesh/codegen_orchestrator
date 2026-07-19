@@ -287,13 +287,15 @@ class TestRunQAOnServer:
                 server_ip="1.2.3.4",
                 ssh_user="dev",
                 ssh_key="-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
-                project_name="weather_bot",
+                project_name="weather bot",
                 acceptance_criteria="Build a weather bot",
                 deployed_url="https://weather.example.com",
             )
 
         assert result.passed is True
         assert mock_asyncssh.connect.call_args.kwargs["username"] == "dev"
+        qa_cmd = mock_conn.run.await_args_list[0].args[0]
+        assert "cd '/opt/services/weather bot'" in qa_cmd
 
     @pytest.mark.asyncio
     async def test_ssh_connection_failure(self):

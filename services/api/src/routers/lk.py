@@ -61,7 +61,7 @@ async def list_projects(
 ) -> list[LkProject]:
     """List projects owned by the current user with latest daily summary."""
     result = await db.execute(
-        select(Project).where(Project.owner_id == user.id).order_by(Project.name)
+        select(Project).where(Project.owner_id == user.id).order_by(Project.title)
     )
     projects = result.scalars().all()
 
@@ -89,7 +89,7 @@ async def list_projects(
         response.append(
             LkProject(
                 id=project.id,
-                name=project.name,
+                name=project.title,
                 status=project.status,
                 latest_daily=latest_daily,
             )

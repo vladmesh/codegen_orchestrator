@@ -103,7 +103,7 @@ class TestEngineeringFlow:
         project_resp = await api_client.post(
             "/api/projects",
             json={
-                "name": unique_project_name,
+                "title": unique_project_name,
                 "description": "E2E test project",
                 "modules": [ServiceModule.BACKEND.value],
             },
@@ -111,6 +111,8 @@ class TestEngineeringFlow:
         assert project_resp.status_code == 201, f"Failed to create project: {project_resp.text}"
         project = project_resp.json()
         project_id = project["id"]
+        project_slug = project["slug"]
+        assert project_slug
 
         # Step 2: Create task
         task_resp = await api_client.post(

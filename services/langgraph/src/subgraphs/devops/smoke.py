@@ -7,6 +7,7 @@ Runs deterministic health checks after deployment:
 
 import asyncio
 import os
+import shlex
 
 import asyncssh
 import httpx
@@ -19,6 +20,7 @@ except ImportError:
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode, RetryPolicy
+from ...runtime_identity import project_spec_runtime_slug
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -92,7 +94,7 @@ class SmokeTesterNode(FunctionalNode):
 
         # Enrich failed checks with container logs from the server
         if overall == "fail":
-            project_name = (state.get("project_spec") or {}).get("name")
+            project_name = project_spec_runtime_slug(state.get("project_spec") or {})
             # Pick server_handle from the first resource that has one
             server_handle = None
             first_server_ip = None
@@ -157,10 +159,13 @@ class SmokeTesterNode(FunctionalNode):
             key = asyncssh.import_private_key(ssh_key)
             service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
             compose = (
-                f"docker compose -p {project_name}"
+                f"docker compose -p {shlex.quote(project_name)}"
                 f" -f infra/compose.base.yml -f infra/compose.prod.yml"
             )
-            cmd = f"cd {service_dir} && {compose} logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1"
+            cmd = (
+                f"cd {shlex.quote(service_dir)} && {compose} "
+                f"logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1"
+            )
 
             async with asyncssh.connect(
                 server_ip,
