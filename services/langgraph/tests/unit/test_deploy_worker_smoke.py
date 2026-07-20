@@ -170,6 +170,46 @@ async def test_transient_deploy_error_under_teardown_fences_cleanup_without_ack(
 
 
 @pytest.mark.asyncio
+async def test_result_shaped_deploy_error_under_teardown_fences_cleanup_without_ack(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """A deployer error dict under teardown must not ACK the stream entry."""
+    from src.consumers._live_work import execute_live_work, live_work_failure_key
+    from src.consumers.deploy import process_deploy_job
+
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={
+            "deployment_result": {"status": "failed", "error": "timed out"},
+            "errors": ["Deploy timeout: timed out"],
+        }
+    )
+    mock_redis.redis.exists = AsyncMock(return_value=True)  # live:work:cancelled is set
+    mock_redis.redis.eval = AsyncMock(return_value=1)  # lease granted
+    mock_redis.redis.zrem = AsyncMock()
+    mock_redis.ack = AsyncMock()
+
+    with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0):
+        with pytest.raises(RuntimeError, match="live work returned failed"):
+            await execute_live_work(
+                mock_redis,
+                queue="jobs:deploy",
+                group="capability-workers",
+                message_id="1-0",
+                project_id="proj-1",
+                process=lambda: process_deploy_job(_job(), mock_redis),
+            )
+
+    mock_redis.ack.assert_not_awaited()
+    failure_writes = [
+        c
+        for c in mock_redis.redis.set.await_args_list
+        if c.args[:1] == (live_work_failure_key("proj-1"),)
+    ]
+    assert failure_writes, "cleanup fence marker must be written"
+    assert "cancel_settlement_failed" in failure_writes[0].args
+
+
+@pytest.mark.asyncio
 async def test_build_subgraph_input_includes_smoke_result():
     """_build_subgraph_input must include smoke_result key so LangGraph tracks it."""
     from src.consumers.deploy import _build_subgraph_input

@@ -18,6 +18,10 @@ LIVE_WORK_LEASE_SECONDS = 60
 LIVE_WORK_LEASE_REFRESH_SECONDS = 10
 
 
+class LiveWorkResultUnsettledError(RuntimeError):
+    """A result-shaped outcome could not be proven safe while teardown was active."""
+
+
 def live_work_cancel_key(project_id: str) -> str:
     return f"live:work:cancelled:{project_id}"
 
@@ -33,6 +37,26 @@ def live_work_failure_key(project_id: str) -> str:
 async def _mark_live_work_failure(redis: RedisStreamClient, project_id: str, reason: str) -> None:
     """Leave a cleanup-visible fence when a cancelled stream entry cannot settle."""
     await redis.redis.set(live_work_failure_key(project_id), reason, ex=LIVE_WORK_LEASE_SECONDS * 2)
+
+
+def _live_work_result_status(result: dict) -> str | None:
+    status = result.get("status")
+    if isinstance(status, str):
+        return status
+
+    deployment_result = result.get("deployment_result")
+    if isinstance(deployment_result, dict):
+        deployment_status = deployment_result.get("status")
+        if isinstance(deployment_status, str):
+            return deployment_status
+
+    if result.get("errors"):
+        return "failed"
+    return None
+
+
+def _live_work_result_is_success(result: dict) -> bool:
+    return _live_work_result_status(result) == "success"
 
 
 async def _begin_live_work(redis: RedisStreamClient, project_id: str) -> str | None:
@@ -132,6 +156,13 @@ async def execute_live_work(
     )
     try:
         result = await process()
+        if await redis.redis.exists(live_work_cancel_key(project_id)):
+            if not _live_work_result_is_success(result):
+                status = _live_work_result_status(result) or "unknown"
+                await _mark_live_work_failure(redis, project_id, "cancel_settlement_failed")
+                raise LiveWorkResultUnsettledError(
+                    f"live work returned failed result during teardown: {status}"
+                )
         await redis.ack(queue, group, message_id)
         return result
     except asyncio.CancelledError:
@@ -152,6 +183,8 @@ async def execute_live_work(
         # An external GitHub Actions run may still be live. This is fail-closed
         # regardless of which teardown key is set: never ACK, always fence cleanup.
         await _mark_live_work_failure(redis, project_id, "workflow_cancellation_unproven")
+        raise
+    except LiveWorkResultUnsettledError:
         raise
     except Exception:
         if await redis.redis.exists(live_work_cancel_key(project_id)):
