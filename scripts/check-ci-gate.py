@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
 MAKEFILE = ROOT / "Makefile"
+LINT_PATH_EXPR = "$(if $(LINT_PATH),$(LINT_PATH),.)"
 
 EXPECTED_SERVICE_MATRIX = {
     "api",
@@ -88,6 +89,31 @@ def step_by_name(job: dict[str, Any], name: str) -> dict[str, Any]:
     fail(f"missing step {name}")
 
 
+def make_target_commands(target: str) -> list[str]:
+    lines = MAKEFILE.read_text().splitlines()
+    commands: list[str] = []
+    in_target = False
+
+    for line in lines:
+        if not in_target:
+            in_target = line == f"{target}:"
+            continue
+        if line and not line.startswith(("\t", " ")):
+            break
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        commands.append(stripped.removeprefix("@"))
+
+    if not commands:
+        fail(f"Makefile target {target} has no commands")
+    return commands
+
+
+def normalize_lint_command(command: str) -> str:
+    return command.replace(LINT_PATH_EXPR, ".")
+
+
 def step_by_id(job: dict[str, Any], step_id: str) -> dict[str, Any]:
     for step in job.get("steps", []):
         if isinstance(step, dict) and step.get("id") == step_id:
@@ -145,6 +171,7 @@ def assert_detect_changes(jobs: dict[str, Any]) -> None:
 
 def assert_fast_checks(jobs: dict[str, Any]) -> None:
     job = require_job(jobs, "fast-checks")
+    expected_lint_commands: list[str] = []
     for step_name, command in [
         ("Check formatting with Ruff", "uv run ruff format --check ."),
         ("Lint with Ruff", "uv run ruff check ."),
@@ -155,6 +182,17 @@ def assert_fast_checks(jobs: dict[str, Any]) -> None:
             fail(f"{step_name} must not be conditional")
         if step.get("run") != command:
             fail(f"{step_name} must run {command}")
+        if step_name in {"Check formatting with Ruff", "Lint with Ruff"}:
+            expected_lint_commands.append(command)
+    lint_commands = [normalize_lint_command(command) for command in make_target_commands("lint")]
+    positions = []
+    for command in expected_lint_commands:
+        try:
+            positions.append(lint_commands.index(command))
+        except ValueError:
+            fail(f"make lint must cover CI Ruff command: {command}")
+    if positions != sorted(positions):
+        fail("make lint must run Ruff format check before Ruff lint check")
     step = step_by_name(job, "Run offline live regressions")
     if step.get("if"):
         fail("offline live regressions must not be conditional")
