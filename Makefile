@@ -1,6 +1,6 @@
 .PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations init-langfuse-db \
-	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
+	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
 	check-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
 
@@ -410,34 +410,10 @@ nuke-hard: .nuke-hard-prune .nuke-common
 	$(DOCKER_COMPOSE) up -d
 	@echo "✅ Fresh environment ready!"
 
-# === Backlog ===
-
-backlog:
-	@uv run python scripts/generate_backlog.py
-
-roadmap:
-	@uv run python scripts/generate_roadmap.py
-
-status:
-	@uv run python scripts/generate_status.py
+# === Worker reports ===
 
 pull-worker-reports:
 	@uv run python scripts/pull_worker_reports.py
-
-recent-artifacts:
-	@uv run python scripts/sync_recent_artifacts.py
-
-sync: backlog roadmap status recent-artifacts
-
-task:
-ifndef TITLE
-	$(error Usage: make task TITLE="task title" [DESC="description"])
-endif
-	@PID=$$(curl -sf "http://localhost:8000/api/projects/" | python3 -c "import sys,json; ps=json.load(sys.stdin); print(ps[0]['id'] if ps else '')") && \
-	curl -sf -X POST "http://localhost:8000/api/tasks/push" \
-		-H "Content-Type: application/json" \
-		-d "{\"title\": \"$(TITLE)\", \"description\": \"$(DESC)\", \"project_id\": \"$$PID\"}" \
-		| python3 -c "import sys,json; t=json.load(sys.stdin); print(f'Created: {t[\"id\"]} (p={t[\"priority\"]}) {t[\"title\"]}')"
 
 # === Seeding ===
 

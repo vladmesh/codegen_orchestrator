@@ -478,7 +478,6 @@ Internal tooling: task management system, skills, brainstorms, docs generation, 
 - [x] #61 Brainstorm model in DB
 - [x] Story model + API
 - [x] #64 Implement skill: PR flow + in_ci status + need_e2e
-- [x] make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms)
 - [x] Story: priority + blocked_by fields
 - [x] Seed DB — stories, repositories, historical tasks
 - [x] #58 Skills → API + Simplified Model

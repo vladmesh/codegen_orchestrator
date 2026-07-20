@@ -58,12 +58,10 @@ Items that must not get lost:
 - Deferred with triggers, recorded in the local [backlog](../backlog.md): event-driven task
   dispatcher (#1048), async deploy workflow wait (#1049), microVM worker runtime (#1050), elastic
   cloud-VM worker hosts (#1051).
-- HIGH, backlog #1052: remove the internal dogfooding machinery entirely — the orchestrator is no
-  longer managed through itself, its tasks come from the external pipeline. Kill the Makefile
-  targets `backlog`/`roadmap`/`status`/`recent-artifacts`/`sync`/`task` and their generator
-  scripts; they read the now-empty local Tasks DB and would wipe the hand-maintained
-  `docs/backlog.md` and `docs/STATUS.md` if run. Update CLAUDE.md, DEV_PIPELINE.md and related
-  workflow docs. The Tasks/Stories API itself stays — it serves client projects.
+- Done (`codegen_orchestrator-668`): the internal dogfooding machinery is gone. The orchestrator is
+  no longer managed through itself; its tasks come from the external pipeline. The doc generators and
+  their Makefile targets were removed, and `docs/backlog.md` / `docs/STATUS.md` are now maintained by
+  hand. The Tasks/Stories API itself stays — it serves client projects.
 
 ## Stages
 

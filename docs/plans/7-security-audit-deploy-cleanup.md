@@ -1,8 +1,5 @@
 # #7 Security Audit: Deploy Cleanup
 
-> [!WARNING]
-> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
-
 ## Context
 
 Task #7 — Security Audit: Deploy Cleanup. Part of the "Security hardening" story.

@@ -3,7 +3,7 @@
 Common bash recipes used by e2e-run, escort, and other pipeline-monitoring skills.
 Read this file when referenced by a skill — don't memorize it.
 
-> **Note**: These recipes require a running orchestrator (`make up`). They are used by pipeline-testing skills (e2e-run, escort, architect). Core development skills (brainstorm, triage, plan, implement, checkpoint) work locally with `docs/backlog.md` and don't need the API.
+> **Note**: These recipes require a running orchestrator (`make up`). They are used by pipeline-testing skills (e2e-run, escort, architect). The sprint development skills (`/go`, `/new-sprint`, `/plan-phase`, `/implement`, `/close-phase`, `/close-sprint`) work locally with `docs/backlog.md`/`docs/STATUS.md` and don't need the API.
 
 ---
 

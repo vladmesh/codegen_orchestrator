@@ -8,7 +8,7 @@
 |----------|-------------|
 | [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) | **ОБЯЗАТЕЛЬНО К ПРОЧТЕНИЮ** — жизненный цикл фичи и дата-дривен процесс |
 | [docs/STATUS.md](docs/STATUS.md) | **Всегда первым** — текущая задача и контекст |
-| [docs/backlog.md](docs/backlog.md) | Очередь задач, идеи (Read-only, генерируется из БД командой `make backlog`) |
+| [docs/backlog.md](docs/backlog.md) | Отложенный пул задач и идей (поддерживается вручную) |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | Перед изменением DTO, очередей, API |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Для понимания системы в целом |
 | [docs/NODES.md](docs/NODES.md) | Описание агентов-узлов LangGraph |
@@ -21,25 +21,18 @@
 
 ## Dev Pipeline
 
+Задачи по разработке самого оркестратора заводятся и ведутся во внешнем пайплайне, а не в локальной Tasks DB. Локальный процесс — спринтовый, состояние живёт в markdown-файлах, которые поддерживаются вручную (генераторов под них нет). Полное описание: [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md).
+
 ```
-Идея → /brainstorm → БД Tasks → /plan → /implement → /e2e-run → /checkpoint
+/go (диспетчер — читает docs/STATUS.md, первое совпадение выигрывает)
+ ├─ нет спринта ───────────── /new-sprint
+ ├─ фаза без задач ────────── /plan-phase
+ ├─ есть задачи ───────────── /implement (по задаче, TDD)
+ ├─ все задачи done ───────── /close-phase
+ └─ все фазы done ─────────── endgame: /audit + /e2e-run → фиксы → /update-docs → /close-sprint
 ```
 
-| Этап | Скилл | Артефакт |
-|------|-------|----------|
-| Исследование | `/brainstorm <topic>` | Запись в БД `brainstorms` (или markdown Spike) |
-| Обнаружение | `/audit` | Находки → Создание Task в БД |
-| Приоритизация | `/triage` | Создание новых Tasks в БД (API) |
-| Архитектура | `/architect` *(в разработке)* | Макро-декомпозиция Story → Tasks |
-| Декомпозиция | `/plan [#ID]` | `docs/plans/<task>.md` — шаги с Input/Output/Test |
-| Реализация | `/implement [#ID]` | Код + тесты (TDD цикл по шагам плана) |
-| Валидация | `/e2e-run` | `docs/e2e_results/<scenario>-<date>.md` |
-| Фиксация | `/checkpoint` | CHANGELOG, ROADMAP, закрытие Task в БД |
-| Аудит | `/audit` | Находки → Создание Task в БД |
-
-Скиллы по умолчанию получают свой контекст (в т.ч. текущую задачу) **через API**, а не из старого файла `docs/STATUS.md`. Скиллы больше не работают с markdown файлами напрямую (кроме планов), а пишут и читают состояние через API.
-
-**Планы не удаляются после реализации.** `/implement` дополняет план и отправляет API events с итерациями. `/checkpoint` удаляет план только если есть свежий E2E-результат.
+Скиллы получают контекст из `docs/STATUS.md` (текущий спринт и фаза) и работают с markdown-файлами спринта в `docs/sprints/NNN-slug/` напрямую.
 
 **Код вне flow** допустим для мелких фиксов (< 3 файлов). Обязательно: запись в CHANGELOG + коммит с `[hotfix]` префиксом. Крупные изменения — только через flow.
 
@@ -50,7 +43,7 @@ Red → Green → Refactor. Без исключений.
 1. **Context**: прочитай `docs/STATUS.md` и `docs/CONTRACTS.md`
 2. **Red**: напиши тест в `services/<service>/tests/{unit,integration}/`, убедись что падает
 3. **Green**: минимальный код для прохождения теста
-4. **Gate**: `make test-unit` + `make lint`. Обнови STATUS, CHANGELOG (backlog генерируется автоматически командой `make backlog`).
+4. **Gate**: `make test-unit` + `make lint`. Обнови STATUS, CHANGELOG, backlog вручную по мере необходимости.
 
 **Review Trigger**: изменение `shared/contracts/` или схемы БД, не описанное в плане → **STOP**, спроси пользователя.
 
@@ -99,12 +92,17 @@ make test-service SERVICE=api # Per-service integration test
 
 | Skill | Описание |
 |-------|----------|
-| `/plan [#ID]` | Декомпозировать задачу на шаги, обновить Task в БД (plan) |
-| `/implement [#ID]` | Взять задачу в работу (status: in_dev), TDD цикл, запись Task events |
-| `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | Запуск E2E теста (полный цикл: engineering → CI → deploy → verify, `--feature` пропускает scaffolding) |
-| `/triage` | Разбор отчётов → создание новых задач через API |
+| `/go` | Диспетчер: читает `docs/STATUS.md`, вызывает нужный скилл |
+| `/new-sprint` | Создать спринт из VISION + ROADMAP + backlog |
+| `/plan-phase` | Сгенерировать файлы задач для текущей фазы (с арх-гейтом) |
+| `/implement` | TDD-цикл по одной задаче спринта, PR + CI + merge |
+| `/close-phase` | Интеграционные тесты + переход к следующей фазе |
+| `/close-sprint` | Финальный гейт: push, CHANGELOG, ROADMAP, история STATUS |
+| `/audit` | Скан кода + проверка инвариантов VISION; находки → `docs/backlog.md` |
+| `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | E2E тест (engineering → CI → deploy → verify, `--feature` пропускает scaffolding) |
+| `/test-maintenance` | Прогон/починка интеграционных тестов локально |
+| `/brainstorm <topic>` | Структурированное обсуждение темы → `docs/brainstorms/<topic>.md` |
+| `/update-docs` | Синхронизация живой документации с кодом |
 | `/optimize` | Обработка фидбека по скиллам (`docs/skill-feedback.md`) и авто-улучшение |
-| `/architect` *(в разработке)* | Разделение крупных Story на набор технических Tasks |
-| `/brainstorm <topic>` | Создание/обсуждение Brainstorm записи в БД |
-| `/checkpoint` | Сбор статистики через API, обновление CHANGELOG/ROADMAP |
-| `/audit` | Аудит кода → создание задачи в БД |
+| `/architect` | Декомпозиция Story → Tasks (для клиентских проектов, через API) |
+| `/escort` | Сопровождение реального пользователя через полный пайплайн |
