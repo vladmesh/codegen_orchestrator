@@ -2,11 +2,14 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
 
 PROJECT_PREFIXES = ["live-test", "live-crud", "mega-test"]
+CLEANUP_API_URL = "http://localhost:8000"
+HTTP_OK = 200
 ORCHESTRATOR_ROOT = os.environ.get("ORCHESTRATOR_ROOT")
 if not ORCHESTRATOR_ROOT:
     ORCHESTRATOR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -119,7 +122,7 @@ def verify_no_residue(project_ids: list[str] | None = None):
 
 
 def _build_conditions(alias: str | None = None):
-    column = f"{alias}.name" if alias else "name"
+    column = f"{alias}.title" if alias else "title"
     return " OR ".join([f"{column} LIKE '{p}-%'" for p in PROJECT_PREFIXES])
 
 
@@ -214,7 +217,7 @@ def recover_ownership_manifests() -> None:
 
 def get_test_projects():
     conditions = _build_conditions()
-    sql = f"SELECT id, name FROM projects WHERE {conditions};"  # noqa: S608
+    sql = f"SELECT id, title, slug FROM projects WHERE {conditions};"  # noqa: S608
     res = run_cmd(
         [
             "docker",
@@ -242,9 +245,9 @@ def get_test_projects():
         if not line:
             continue
         parts = line.split("|")
-        expected_columns = 2
+        expected_columns = 3
         if len(parts) == expected_columns:
-            projects.append({"id": parts[0], "name": parts[1]})
+            projects.append({"id": parts[0], "title": parts[1], "slug": parts[2]})
     return projects
 
 
@@ -370,65 +373,141 @@ def clean_redis_queues(project_ids):
     print("Owned capability stream entries removed and verified.")
 
 
-def clean_remote_servers():
-    sql = (
-        "SELECT json_agg(json_build_object("
-        "'handle', handle, 'ip', public_ip, 'key', ssh_private_key, "
-        "'ssh_user', ssh_user"
-        ")) FROM servers;"
-    )
-    res = run_cmd(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "db",
-            "psql",
-            "-U",
-            "postgres",
-            "-d",
-            "orchestrator",
-            "-t",
-            "-A",
-            "-c",
-            sql,
-        ]
-    )
+def _internal_api_headers() -> dict[str, str]:
     try:
-        servers = json.loads(res.stdout.strip() or "[]")
-    except Exception:
-        servers = []
+        internal_key = os.environ["INTERNAL_API_KEY"]
+    except KeyError as exc:
+        raise CleanupFailure("INTERNAL_API_KEY is required for remote server cleanup") from exc
+    return {"X-Internal-Key": internal_key}
+
+
+def _fetch_remote_servers() -> list[dict]:
+    import httpx
+
+    try:
+        with httpx.Client(
+            base_url=CLEANUP_API_URL, headers=_internal_api_headers(), timeout=10
+        ) as client:
+            resp = client.get("/api/servers/")
+            if resp.status_code != HTTP_OK:
+                raise CleanupFailure(
+                    f"server list fetch failed: {resp.status_code} {resp.text[:200]}"
+                )
+            servers = resp.json()
+            if not isinstance(servers, list):
+                raise CleanupFailure("server list fetch returned a non-list response")
+            return servers
+    except CleanupFailure:
+        raise
+    except Exception as exc:
+        raise CleanupFailure(f"server list fetch failed: {exc}") from exc
+
+
+def _fetch_remote_server_key(handle: str) -> str:
+    import httpx
+
+    try:
+        with httpx.Client(
+            base_url=CLEANUP_API_URL, headers=_internal_api_headers(), timeout=10
+        ) as client:
+            resp = client.get(f"/api/servers/{handle}/ssh-key")
+            if resp.status_code != HTTP_OK:
+                raise CleanupFailure(
+                    f"ssh key fetch failed for {handle}: {resp.status_code} {resp.text[:200]}"
+                )
+            key = resp.json().get("ssh_key")
+            if not isinstance(key, str) or not key:
+                raise CleanupFailure(f"ssh key fetch failed for {handle}: empty ssh_key")
+            return key
+    except CleanupFailure:
+        raise
+    except Exception as exc:
+        raise CleanupFailure(f"ssh key fetch failed for {handle}: {exc}") from exc
+
+
+def _build_remote_sweep_command(project_slugs: list[str]) -> str:
+    quoted_projects = shlex.quote("\n".join(sorted(set(project_slugs))))
+    return f"""
+set -eu
+PROJECTS={quoted_projects}
+echo '[Remote] Cleaning live-test project resources...'
+for project_name in $PROJECTS; do
+  alt_project_name=$(printf '%s' "$project_name" | tr '-' '_')
+  projects=$(printf '%s\\n%s\\n' "$project_name" "$alt_project_name" | awk 'NF && !seen[$0]++')
+  svc_dir="/opt/services/$project_name"
+  for project in $projects; do
+    for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
+      label=$(docker inspect -f '{{{{ index .Config.Labels "com.docker.compose.project" }}}}' "$c")
+      if [ -n "$label" ] && [ "$label" != "<no value>" ]; then
+        projects=$(printf '%s\\n%s\\n' "$projects" "$label" | awk 'NF && !seen[$0]++')
+      fi
+    done
+  done
+  if [ -d "$svc_dir/infra" ]; then
+    for project in $projects; do
+      (cd "$svc_dir/infra" && docker compose -p "$project" down --remove-orphans -v)
+    done
+  fi
+  for project in $projects; do
+    for c in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
+      docker rm -f "$c"
+    done
+    for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
+      docker rm -f "$c"
+    done
+    for resource in volume network; do
+      for id in $(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project"); do
+        docker "$resource" rm "$id"
+      done
+    done
+  done
+  rm -rf "$svc_dir"
+  remaining=
+  for project in $projects; do
+    ids=$(docker ps -aq --filter "label=com.docker.compose.project=$project")
+    if [ -n "$ids" ]; then
+      remaining="$remaining label:$project:$ids"
+    fi
+    ids=$(docker ps -aq --filter "name=^/${{project}}[-_]")
+    if [ -n "$ids" ]; then
+      remaining="$remaining name:$project:$ids"
+    fi
+    for resource in volume network; do
+      ids=$(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project")
+      if [ -n "$ids" ]; then
+        remaining="$remaining $resource:$project:$ids"
+      fi
+    done
+  done
+  if [ -n "$remaining" ]; then
+    echo "compose residue remains:$remaining" >&2
+    exit 1
+  fi
+  test ! -e "$svc_dir"
+done
+docker network prune -f 2>&1 || true
+""".strip()
+
+
+def clean_remote_servers(project_slugs: list[str] | None = None):
+    servers = _fetch_remote_servers()
 
     if not servers:
         print("No remote servers found to clean.")
         return
 
-    # We want to match any project name starting with our prefixes
-    proj_conditions = " -o ".join([f'\\"$proj\\" == {p}-*' for p in PROJECT_PREFIXES])
+    if project_slugs is None:
+        project_slugs = [p["slug"] for p in get_test_projects()]
+    if not project_slugs:
+        print("No live-test project slugs found for remote cleanup.")
+        return
 
-    remote_cmd = (
-        "set -e; "
-        "echo '[Remote] Cleaning directories in /opt/services...'; "
-        "find /opt/services -mindepth 1 -maxdepth 1 \\( "
-        + " -o ".join([f"-name '{p}-*'" for p in PROJECT_PREFIXES])
-        + " \\) -exec rm -rf {} + 2>/dev/null || true; "
-        "echo '[Remote] Cleaning test containers...'; "
-        "for c in $(docker ps -aq --filter label=com.docker.compose.project); do "
-        "  proj=$(docker inspect --format "
-        "'{{ index .Config.Labels \"com.docker.compose.project\" }}' $c); "
-        f"  if [[ {proj_conditions} ]]; then "
-        '    echo "[Remote] Force removing container: $c ($proj)"; '
-        "    docker rm -f $c 2>&1 || true; "
-        "  fi; "
-        "done; "
-        "docker network prune -f 2>&1 || true;"
-    )
+    remote_cmd = _build_remote_sweep_command(project_slugs)
 
     for s in servers:
-        ip = s["ip"]
+        ip = s["public_ip"]
         ssh_user = s["ssh_user"]
-        key = s["key"]
+        key = _fetch_remote_server_key(s["handle"])
         if not key.endswith("\\n"):
             key += "\\n"
 
@@ -458,8 +537,15 @@ def clean_remote_servers():
                 timeout=60,
             )
             print(r.stdout.strip())
+            if r.returncode != 0:
+                raise CleanupFailure(
+                    f"remote cleanup failed for {s['handle']}: "
+                    f"{r.returncode} {r.stderr.strip()[:300]}"
+                )
+        except CleanupFailure:
+            raise
         except Exception as e:
-            print(f"Failed to clean remote server {s['handle']}: {e}")
+            raise CleanupFailure(f"failed to clean remote server {s['handle']}: {e}") from e
         finally:
             os.unlink(key_path)
 
@@ -559,7 +645,8 @@ def main():
     projects = get_test_projects()
     print(f"Found {len(projects)} test projects.")
 
-    repo_names = [p["name"] for p in projects]
+    repo_names = [p["slug"] for p in projects]
+    project_slugs = [p["slug"] for p in projects]
     project_ids = sorted(manifest_projects | {p["id"] for p in projects})
 
     print_step("Fencing and cleaning owned Redis capability work")
@@ -575,7 +662,7 @@ def main():
     clean_local_docker()
 
     print_step("Cleaning Remote Servers")
-    clean_remote_servers()
+    clean_remote_servers(project_slugs)
 
     print_step("Cleaning Local Workspaces")
     clean_local_workspaces()

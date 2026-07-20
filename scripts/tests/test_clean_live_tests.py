@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from scripts import clean_live_tests
@@ -44,7 +45,7 @@ def test_verify_no_residue_accepts_proven_absence(monkeypatch, tmp_path):
     clean_live_tests.verify_no_residue()
 
 
-def test_allocation_residue_query_qualifies_project_name(monkeypatch, tmp_path):
+def test_allocation_residue_query_qualifies_project_title(monkeypatch, tmp_path):
     commands = []
     results = iter([_result(), _result(), _result(stdout="")])
     monkeypatch.setattr(
@@ -58,8 +59,51 @@ def test_allocation_residue_query_qualifies_project_name(monkeypatch, tmp_path):
 
     allocation_sql = commands[1][-1]
     assert "JOIN projects p ON p.id = r.project_id" in allocation_sql
-    assert "p.name LIKE" in allocation_sql
-    assert " WHERE name LIKE" not in allocation_sql
+    assert "p.title LIKE" in allocation_sql
+    assert " WHERE title LIKE" not in allocation_sql
+    assert "name LIKE" not in allocation_sql
+
+
+def test_get_test_projects_reads_title_and_slug(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_run_cmd(cmd, **kwargs):
+        captured["sql"] = cmd[cmd.index("-c") + 1]
+        return _result("project-1|live-test-old|live-te-11111111111111111111111111111111\n")
+
+    monkeypatch.setattr(clean_live_tests, "run_cmd", fake_run_cmd)
+
+    projects = clean_live_tests.get_test_projects()
+
+    assert projects == [
+        {
+            "id": "project-1",
+            "title": "live-test-old",
+            "slug": "live-te-11111111111111111111111111111111",
+        }
+    ]
+    assert "SELECT id, title, slug FROM projects" in captured["sql"]
+    assert "name" not in captured["sql"]
+
+
+def test_remote_server_list_failure_is_not_empty_list(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("X-Internal-Key") == "test-internal-key"
+        return httpx.Response(500, text="db broke")
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", client_factory)
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="server list fetch failed: 500"):
+        clean_live_tests.clean_remote_servers(["live-te-11111111111111111111111111111111"])
 
 
 def test_recover_manifests_removes_proven_orphan(monkeypatch, tmp_path):

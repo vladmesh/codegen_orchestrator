@@ -2,6 +2,11 @@
 
 ## 2026-07-20
 
+- Fix standalone live-test sweeping after the project slug migration. `clean_live_tests.py` now
+  selects projects by `title`, carries `slug` into GitHub and remote cleanup, and fetches remote
+  server SSH users and decrypted keys through the authenticated internal API instead of querying
+  removed or encrypted DB columns. Broken server/key API reads now fail the sweep instead of
+  reporting an empty server list.
 - Stop inferring live-work teardown settlement from consumer `status` strings. Consumers now mark
   their own results as settled or unsettled for the live-work fence, so QA `passed`, duplicate
   `skipped`, architect skips and engineering `gave_up` can ACK during teardown while deploy
