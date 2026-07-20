@@ -5,6 +5,8 @@ from typing import Annotated
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
+from shared.contracts.queues.deploy import DeployOutcome
+
 
 def _merge_errors(left: list[str], right: list[str]) -> list[str]:
     """Reducer that merges error lists without duplicates."""
@@ -33,7 +35,7 @@ class DevOpsState(TypedDict):
 
     # Internal environment resolution state
     environment_contract: dict | None
-    resolution_outcome: str | None
+    resolution_outcome: DeployOutcome | None
     secret_values: dict[str, str]
     non_secret_values: dict[str, str]
 

@@ -51,7 +51,7 @@ class TestTaskStatusUpdates:
 
         result = {
             "engineering_status": "done",
-            "commit_sha": "abc123",
+            "commit_sha": "abc1230000000000000000000000000000000000",
             "worker_id": "w-1",
         }
 
@@ -82,7 +82,7 @@ class TestTaskStatusUpdates:
         assert len(event_calls) == 1
         event_data = event_calls[0][1]["json"]
         assert event_data["event_type"] == "iteration_end"
-        assert event_data["details"]["commit_sha"] == "abc123"
+        assert event_data["details"]["commit_sha"] == "abc1230000000000000000000000000000000000"
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
@@ -93,7 +93,7 @@ class TestTaskStatusUpdates:
 
         result = {
             "engineering_status": "done",
-            "commit_sha": "abc123",
+            "commit_sha": "abc1230000000000000000000000000000000000",
             "worker_id": "w-1",
         }
 
@@ -125,7 +125,7 @@ class TestTaskStatusUpdates:
 
         result = {
             "engineering_status": "done",
-            "commit_sha": "abc123",
+            "commit_sha": "abc1230000000000000000000000000000000000",
             "worker_id": "w-1",
         }
 

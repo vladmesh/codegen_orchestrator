@@ -264,7 +264,7 @@ class TestSuperviseDeployingStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"triggered_by": "pr_poll", "head_sha": "abc123"},
+            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
             result={"deploy_outcome": DeployOutcome.RETRY.value},
         )
         api_client.create_run.return_value = {}
@@ -281,10 +281,10 @@ class TestSuperviseDeployingStories:
         ]
         assert len(deploy_calls) == 1
         deploy_msg = deploy_calls[0][0][1]
-        assert deploy_msg.head_sha == "abc123"
+        assert deploy_msg.head_sha == "a" * 40
 
         run_data = api_client.create_run.call_args[0][0]
-        assert run_data["run_metadata"]["head_sha"] == "abc123"
+        assert run_data["run_metadata"]["head_sha"] == "a" * 40
 
     @pytest.mark.asyncio
     async def test_retry_without_original_head_sha_fails_story(self, api_client, redis_client):
@@ -350,7 +350,7 @@ class TestSuperviseDeployingStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
-            run_metadata={"triggered_by": "pr_poll", "head_sha": "abc123"},
+            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
             result={"deploy_outcome": DeployOutcome.RETRY.value},
         )
         api_client.fail_story.return_value = {}

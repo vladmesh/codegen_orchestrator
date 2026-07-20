@@ -1,6 +1,7 @@
 from enum import StrEnum
 
 from shared.contracts.base import BaseMessage, BaseResult
+from shared.contracts.git_ref import OptionalCommitSha
 
 
 class DeployTrigger(StrEnum):
@@ -48,8 +49,10 @@ class DeployMessage(BaseMessage):
     action: DeployAction = DeployAction.CREATE
     deploy_fix_attempt: int = 0
     # Required for commit-deploy actions. Lifecycle actions keep this empty
-    # because they do not read or deploy repository state.
-    head_sha: str = ""
+    # because they do not read or deploy repository state. A branch name is not
+    # accepted here, so a caller that failed to resolve a SHA cannot silently
+    # fall back to deploying the default branch.
+    head_sha: OptionalCommitSha = ""
 
 
 class DeployResult(BaseResult):

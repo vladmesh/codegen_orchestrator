@@ -5,6 +5,7 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.env_contract import EnvContractMergeError, merge_env_contract_fragments
+from shared.contracts.queues.deploy import DeployOutcome
 
 from .state import DevOpsState
 
@@ -49,7 +50,7 @@ async def load_environment_contract(state: DevOpsState) -> dict:
         logger.error("deploy_head_sha_missing", project_id=project_id)
         return {
             "errors": ["head_sha is required to load the environment contract"],
-            "resolution_outcome": "head_sha_missing",
+            "resolution_outcome": DeployOutcome.HEAD_SHA_MISSING,
         }
 
     repo_info = state.get("repo_info") or {}
@@ -72,7 +73,7 @@ async def load_environment_contract(state: DevOpsState) -> dict:
         )
         return {
             "errors": ["environment contract is invalid"],
-            "resolution_outcome": "environment_contract_invalid",
+            "resolution_outcome": DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
         }
     except Exception as error:
         logger.error(
@@ -82,14 +83,14 @@ async def load_environment_contract(state: DevOpsState) -> dict:
         )
         return {
             "errors": ["environment contract could not be read"],
-            "resolution_outcome": "environment_resolution_failed",
+            "resolution_outcome": DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
         }
 
     if contract is None:
         logger.warning("environment_contract_missing", project_id=project_id)
         return {
             "errors": ["environment contract is required"],
-            "resolution_outcome": "environment_contract_invalid",
+            "resolution_outcome": DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
         }
 
     logger.info(

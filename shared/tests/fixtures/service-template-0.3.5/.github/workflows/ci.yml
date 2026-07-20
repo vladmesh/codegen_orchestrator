@@ -26,7 +26,9 @@ jobs:
           python-version: "3.12"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.29"
 
       - name: Set up project
         run: make setup
@@ -38,6 +40,20 @@ jobs:
             echo "infra/.env.test missing" >&2
             exit 1
           fi
+
+      - name: Check environment contract
+        run: |
+          .venv/bin/python -m framework.contracts.env_usage \
+            --root . \
+            --artifact "artifacts/env-contract-${{ github.sha }}.json" \
+            --commit-sha "${{ github.sha }}"
+
+      - name: Upload environment contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: env-contract-${{ github.sha }}
+          path: artifacts/env-contract-${{ github.sha }}.json
+          if-no-files-found: error
 
       - name: Export checkout ownership
         run: |
@@ -111,7 +127,9 @@ jobs:
           python-version: "3.12"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.29"
 
       - name: Generate code from specs
         run: |
