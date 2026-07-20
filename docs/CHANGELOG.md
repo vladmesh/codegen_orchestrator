@@ -2,6 +2,10 @@
 
 ## 2026-07-20
 
+- Stop inferring live-work teardown settlement from consumer `status` strings. Consumers now mark
+  their own results as settled or unsettled for the live-work fence, so QA `passed`, duplicate
+  `skipped`, architect skips and engineering `gave_up` can ACK during teardown while deploy
+  failures and unmarked new outcomes still fail closed.
 - Resolve the default-branch head SHA before admin-triggered deploy creation. Admin redeploy and
   create-from-repo now publish deploy messages with a concrete `head_sha`, and fail the API request
   before Redis publication when GitHub cannot provide one.

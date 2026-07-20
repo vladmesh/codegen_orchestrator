@@ -306,7 +306,11 @@ class TestTerminalConsumerMessages:
 
     @pytest.mark.asyncio()
     async def test_failed_result_under_live_teardown_fences_cleanup_without_ack(self):
-        from src.consumers._live_work import execute_live_work, live_work_failure_key
+        from src.consumers._live_work import (
+            execute_live_work,
+            live_work_failure_key,
+            live_work_unsettled,
+        )
 
         redis = MagicMock()
         redis.ack = AsyncMock()
@@ -316,10 +320,10 @@ class TestTerminalConsumerMessages:
         redis.redis.exists = AsyncMock(return_value=True)
 
         async def process():
-            return {"status": "failed", "error": "Deploy workflow failed"}
+            return live_work_unsettled({"status": "failed", "error": "Deploy workflow failed"})
 
         with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0):
-            with pytest.raises(RuntimeError, match="live work returned failed"):
+            with pytest.raises(RuntimeError, match="live work returned unsettled"):
                 await execute_live_work(
                     redis,
                     queue="queue",
@@ -335,8 +339,13 @@ class TestTerminalConsumerMessages:
         assert "cancel_settlement_failed" in redis.redis.set.await_args.args
 
     @pytest.mark.asyncio()
-    async def test_success_result_under_live_teardown_can_ack(self):
-        from src.consumers._live_work import execute_live_work
+    @pytest.mark.parametrize("status", ["success", "passed", "skipped", "gave_up"])
+    async def test_explicitly_settled_result_under_live_teardown_can_ack(self, status):
+        from src.consumers._live_work import (
+            LIVE_WORK_SETTLED_KEY,
+            execute_live_work,
+            live_work_settled,
+        )
 
         redis = MagicMock()
         redis.ack = AsyncMock()
@@ -346,7 +355,7 @@ class TestTerminalConsumerMessages:
         redis.redis.exists = AsyncMock(return_value=True)
 
         async def process():
-            return {"status": "success"}
+            return live_work_settled({"status": status})
 
         with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0):
             result = await execute_live_work(
@@ -358,9 +367,39 @@ class TestTerminalConsumerMessages:
                 process=process,
             )
 
-        assert result == {"status": "success"}
+        assert result == {"status": status, LIVE_WORK_SETTLED_KEY: True}
         redis.ack.assert_awaited_once_with("queue", "capability-workers", "1-0")
         redis.redis.set.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    async def test_unmarked_result_under_live_teardown_fences_cleanup_without_ack(self):
+        from src.consumers._live_work import execute_live_work, live_work_failure_key
+
+        redis = MagicMock()
+        redis.ack = AsyncMock()
+        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.set = AsyncMock()
+        redis.redis.zrem = AsyncMock()
+        redis.redis.exists = AsyncMock(return_value=True)
+
+        async def process():
+            return {"status": "passed"}
+
+        with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0):
+            with pytest.raises(RuntimeError, match="live work returned unsettled"):
+                await execute_live_work(
+                    redis,
+                    queue="queue",
+                    group="capability-workers",
+                    message_id="1-0",
+                    project_id="project-1",
+                    process=process,
+                )
+
+        redis.ack.assert_not_awaited()
+        redis.redis.set.assert_awaited_once()
+        assert redis.redis.set.await_args.args[0] == live_work_failure_key("project-1")
+        assert "cancel_settlement_failed" in redis.redis.set.await_args.args
 
     @pytest.mark.asyncio()
     async def test_validation_error_is_acked_with_safe_diagnostics(self, mock_api_client):

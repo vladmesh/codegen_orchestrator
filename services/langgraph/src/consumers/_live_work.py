@@ -16,6 +16,7 @@ logger = structlog.get_logger(__name__)
 
 LIVE_WORK_LEASE_SECONDS = 60
 LIVE_WORK_LEASE_REFRESH_SECONDS = 10
+LIVE_WORK_SETTLED_KEY = "_live_work_settled"
 
 
 class LiveWorkResultUnsettledError(RuntimeError):
@@ -55,8 +56,21 @@ def _live_work_result_status(result: dict) -> str | None:
     return None
 
 
-def _live_work_result_is_success(result: dict) -> bool:
-    return _live_work_result_status(result) == "success"
+def live_work_settled(result: dict) -> dict:
+    """Mark a consumer result as safe to ACK even if teardown is active."""
+    return {**result, LIVE_WORK_SETTLED_KEY: True}
+
+
+def live_work_unsettled(result: dict) -> dict:
+    """Mark a consumer result as unsafe to ACK while teardown is active."""
+    return {**result, LIVE_WORK_SETTLED_KEY: False}
+
+
+def _live_work_result_is_settled(result: dict) -> bool:
+    settled = result.get(LIVE_WORK_SETTLED_KEY)
+    if isinstance(settled, bool):
+        return settled
+    return False
 
 
 async def _begin_live_work(redis: RedisStreamClient, project_id: str) -> str | None:
@@ -157,11 +171,11 @@ async def execute_live_work(
     try:
         result = await process()
         if await redis.redis.exists(live_work_cancel_key(project_id)):
-            if not _live_work_result_is_success(result):
+            if not _live_work_result_is_settled(result):
                 status = _live_work_result_status(result) or "unknown"
                 await _mark_live_work_failure(redis, project_id, "cancel_settlement_failed")
                 raise LiveWorkResultUnsettledError(
-                    f"live work returned failed result during teardown: {status}"
+                    f"live work returned unsettled result during teardown: {status}"
                 )
         await redis.ack(queue, group, message_id)
         return result

@@ -27,6 +27,7 @@ from ..nodes.resource_allocator import resource_allocator_node
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker
 from ._events import publish_callback_event
+from ._live_work import live_work_unsettled
 from ._repo_setup import _create_repo_and_set_secrets
 from ._validation import _safe_validation_errors
 from .engineering_result_handler import (
@@ -80,7 +81,7 @@ async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationErr
     )
     if not (isinstance(raw_task_id, str) and raw_task_id):
         # No identifiable run — nothing durable to lose; ACK so it does not reclaim forever.
-        return {"status": "failed", "error": "invalid_engineering_message"}
+        return live_work_unsettled({"status": "failed", "error": "invalid_engineering_message"})
 
     try:
         return await _fail_job(raw_task_id, "invalid engineering message", None)
@@ -91,7 +92,7 @@ async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationErr
                 task_id=raw_task_id,
                 status_code=fail_exc.response.status_code,
             )
-            return {"status": "failed", "error": "invalid_engineering_message"}
+            return live_work_unsettled({"status": "failed", "error": "invalid_engineering_message"})
         # Transient server error — terminal outcome not written; do not ACK.
         raise
 
@@ -197,7 +198,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         allocated_resources = await _resolve_allocations(task_id, project_id, project)
         if allocated_resources is None:
-            return {"status": "failed", "error": "Resource allocation failed"}
+            return live_work_unsettled({"status": "failed", "error": "Resource allocation failed"})
 
         existing_worker_id = None
         if story_id:

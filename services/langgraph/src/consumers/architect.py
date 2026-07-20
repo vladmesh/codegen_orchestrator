@@ -22,6 +22,7 @@ from ..clients.api import api_client
 from ..config.settings import get_settings
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
+from ._live_work import live_work_settled, live_work_unsettled
 
 logger = structlog.get_logger(__name__)
 
@@ -83,12 +84,12 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         story = await api_client.get_story(msg.story_id)
     except Exception:
         log.warning("architect_story_not_found", story_id=msg.story_id)
-        return {"status": "skipped", "error": "story not found"}
+        return live_work_settled({"status": "skipped", "error": "story not found"})
 
     story_status = story.status
     if story_status == StoryStatus.DEPLOYING:
         log.info("architect_skipping_deploying_story", status=story_status)
-        return {"status": "skipped", "reason": f"story already {story_status}"}
+        return live_work_settled({"status": "skipped", "reason": f"story already {story_status}"})
 
     # Skip if already in_progress with tasks (duplicate message from supervisor retry)
     # But never skip reopened stories — they need re-decomposition
@@ -96,7 +97,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         existing_tasks = await api_client.get_tasks_by_story(msg.story_id)
         if existing_tasks:
             log.info("architect_skipping_already_decomposed", task_count=len(existing_tasks))
-            return {"status": "skipped", "reason": "already decomposed"}
+            return live_work_settled({"status": "skipped", "reason": "already decomposed"})
 
     # Transition to in_progress immediately to prevent supervisor retries
     if story_status == StoryStatus.CREATED:
@@ -110,18 +111,19 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     project = await api_client.get_project(msg.project_id)
     if not project:
         log.warning("architect_project_not_found", project_id=msg.project_id)
-        return {"status": "skipped", "error": "project not found"}
+        return live_work_settled({"status": "skipped", "error": "project not found"})
 
     # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
     project, scaffold_err = await _wait_for_scaffold(msg.project_id, project, log)
     if scaffold_err:
-        return {"status": "failed" if project else "skipped", "error": scaffold_err}
+        result = {"status": "failed" if project else "skipped", "error": scaffold_err}
+        return live_work_unsettled(result) if project else live_work_settled(result)
 
     settings = get_settings()
 
     if not settings.architect_llm_api_key:
         log.error("architect_llm_not_configured")
-        return {"status": "failed", "error": "ARCHITECT_LLM_API_KEY not set"}
+        return live_work_unsettled({"status": "failed", "error": "ARCHITECT_LLM_API_KEY not set"})
 
     try:
         reset_task_chain()
@@ -177,7 +179,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             "architect_job_success",
             message_count=len(result.get("messages", [])),
         )
-        return {"status": "success"}
+        return live_work_settled({"status": "success"})
 
     except Exception as e:
         log.error(
@@ -186,7 +188,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             error_type=type(e).__name__,
             exc_info=True,
         )
-        return {"status": "failed", "error": str(e)}
+        return live_work_unsettled({"status": "failed", "error": str(e)})
 
 
 def main():

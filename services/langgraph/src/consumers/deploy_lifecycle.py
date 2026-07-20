@@ -13,6 +13,7 @@ import structlog
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 
 from ..clients.api import api_client
+from ._live_work import live_work_settled, live_work_unsettled
 
 logger = structlog.get_logger(__name__)
 
@@ -37,20 +38,24 @@ async def process_lifecycle_action(
     server_handle = first_resource.get("server_handle")
 
     if not server_ip or not server_handle:
-        return {
-            "status": "failed",
-            "error": f"No server info in allocated resources for project {project_id}",
-            "deploy_outcome": DeployOutcome.GIVE_UP.value,
-        }
+        return live_work_unsettled(
+            {
+                "status": "failed",
+                "error": f"No server info in allocated resources for project {project_id}",
+                "deploy_outcome": DeployOutcome.GIVE_UP.value,
+            }
+        )
 
     server = await api_client.get_server(server_handle)
     ssh_key = await api_client.get_server_ssh_key(server_handle)
     if not ssh_key:
-        return {
-            "status": "failed",
-            "error": f"No SSH key for server {server_handle}",
-            "deploy_outcome": DeployOutcome.GIVE_UP.value,
-        }
+        return live_work_unsettled(
+            {
+                "status": "failed",
+                "error": f"No SSH key for server {server_handle}",
+                "deploy_outcome": DeployOutcome.GIVE_UP.value,
+            }
+        )
 
     service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
     quoted_service_dir = shlex.quote(service_dir)
@@ -87,11 +92,13 @@ async def process_lifecycle_action(
                     action=action.value,
                     error=error,
                 )
-                return {
-                    "status": "failed",
-                    "error": error,
-                    "deploy_outcome": DeployOutcome.GIVE_UP.value,
-                }
+                return live_work_unsettled(
+                    {
+                        "status": "failed",
+                        "error": error,
+                        "deploy_outcome": DeployOutcome.GIVE_UP.value,
+                    }
+                )
 
             logger.info(
                 "deploy_lifecycle_success",
@@ -102,11 +109,13 @@ async def process_lifecycle_action(
                 output=result.stdout[:500] if result.stdout else "",
             )
 
-            return {
-                "status": "success",
-                "action": action.value,
-                "deploy_outcome": DeployOutcome.SUCCESS.value,
-            }
+            return live_work_settled(
+                {
+                    "status": "success",
+                    "action": action.value,
+                    "deploy_outcome": DeployOutcome.SUCCESS.value,
+                }
+            )
 
     except Exception as e:
         logger.error(
@@ -116,8 +125,10 @@ async def process_lifecycle_action(
             error=str(e),
             exc_info=True,
         )
-        return {
-            "status": "failed",
-            "error": str(e),
-            "deploy_outcome": DeployOutcome.GIVE_UP.value,
-        }
+        return live_work_unsettled(
+            {
+                "status": "failed",
+                "error": str(e),
+                "deploy_outcome": DeployOutcome.GIVE_UP.value,
+            }
+        )
