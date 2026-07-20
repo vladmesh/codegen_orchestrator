@@ -82,6 +82,7 @@ def _job(*, story_id="story-1", user_id="12345", deploy_fix_attempt=0):
         "story_id": story_id,
         "triggered_by": DeployTrigger.ENGINEERING.value,
         "deploy_fix_attempt": deploy_fix_attempt,
+        "head_sha": "a" * 40,
     }
 
 

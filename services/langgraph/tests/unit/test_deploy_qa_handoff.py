@@ -76,6 +76,7 @@ def _job(*, story_id="story-1", user_id="12345"):
         "story_id": story_id,
         "callback_stream": "",
         "triggered_by": DeployTrigger.ENGINEERING.value,
+        "head_sha": "a" * 40,
     }
 
 

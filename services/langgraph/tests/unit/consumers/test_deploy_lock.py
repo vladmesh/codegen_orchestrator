@@ -72,6 +72,7 @@ def _job(*, task_id="deploy-lock-1", project_id="proj-1"):
         "user_id": "12345",
         "callback_stream": "",
         "triggered_by": DeployTrigger.WEBHOOK.value,
+        "head_sha": "a" * 40,
     }
 
 

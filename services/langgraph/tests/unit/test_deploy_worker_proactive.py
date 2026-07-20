@@ -80,6 +80,7 @@ def _job(*, callback_stream=None, user_id="12345", triggered_by=DeployTrigger.WE
         "user_id": user_id,
         "callback_stream": callback_stream or "",
         "triggered_by": triggered_by.value,
+        "head_sha": "a" * 40,
     }
 
 
