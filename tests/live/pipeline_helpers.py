@@ -10,7 +10,6 @@ import json
 import os
 from pathlib import Path
 import secrets
-import shlex
 import subprocess
 import time
 import uuid
@@ -28,6 +27,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
+from shared.live_harness_cleanup import build_remote_cleanup_command
 from shared.queues import SCAFFOLD_QUEUE
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -127,6 +127,19 @@ def docker_exec(service: str, script: str, timeout: int = 30) -> subprocess.Comp
     """Run a Python script inside a docker compose service."""
     return subprocess.run(
         ["docker", "compose", "exec", "-T", service, "python", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=ORCHESTRATOR_ROOT,
+    )
+
+
+def docker_exec_python_module(
+    service: str, module: str, args: list[str], timeout: int = 30
+) -> subprocess.CompletedProcess:
+    """Run a Python module inside a docker compose service."""
+    return subprocess.run(
+        ["docker", "compose", "exec", "-T", service, "python", "-m", module, *args],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -522,82 +535,6 @@ async def wait_deploy(
 # ── Environment contract probes ──────────────────────────────────────────
 
 
-def build_env_contract_probe_script(
-    repo_name: str,
-    ref: str,
-    *,
-    verify_merged_into_main: bool,
-) -> str:
-    """Build the container-side environment-contract probe for one repository ref.
-
-    Runs inside langgraph for the GitHub App credentials and reads the contract
-    the way devops.env_contract_loader does: list the tree at ``ref``, take every
-    env.contract.yaml and merge the fragments. Deploy resolves the contract at
-    one exact ref, so probing any other ref proves nothing about that deploy.
-
-    With ``verify_merged_into_main`` the probe also compares ``ref`` against main
-    and reports whether main already contains it.
-
-    The probe reads a repository; it creates nothing and owns nothing.
-    """
-    return (
-        "import asyncio, json, sys\n"
-        "sys.path.insert(0, '/app')\n"
-        "import httpx\n"
-        "import yaml\n"
-        "from shared.clients.github import GitHubAppClient\n"
-        "from shared.contracts.env_contract import merge_env_contract_fragments\n"
-        f"owner = {GITHUB_ORG!r}\n"
-        f"repo = {repo_name!r}\n"
-        f"ref = {ref!r}\n"
-        f"verify_merged = {verify_merged_into_main!r}\n"
-        "async def probe():\n"
-        "    gh = GitHubAppClient()\n"
-        "    paths = await gh.list_repo_files_recursive(owner, repo, ref)\n"
-        f"    fragment_paths = sorted(p for p in paths if p.endswith({ENV_CONTRACT_FILENAME!r}))\n"
-        "    fragments = []\n"
-        "    for path in fragment_paths:\n"
-        "        content = await gh.get_file_contents(owner, repo, path, ref)\n"
-        "        if content is None:\n"
-        "            raise RuntimeError(f'contract fragment disappeared: {path}')\n"
-        "        fragments.append(yaml.safe_load(content))\n"
-        "    contract = merge_env_contract_fragments(fragments) if fragments else None\n"
-        "    entries = sorted(contract.entries) if contract else []\n"
-        "    user_secret_entries = (\n"
-        "        sorted(\n"
-        "            key for key, entry in contract.entries.items()\n"
-        "            if getattr(entry, 'source', None) == 'user_secret'\n"
-        "        )\n"
-        "        if contract else []\n"
-        "    )\n"
-        "    required_user_secret_entries = (\n"
-        "        sorted(\n"
-        "            key for key, entry in contract.entries.items()\n"
-        "            if getattr(entry, 'source', None) == 'user_secret'\n"
-        "            and getattr(entry, 'required', False)\n"
-        "        )\n"
-        "        if contract else []\n"
-        "    )\n"
-        "    merged_into_main = None\n"
-        "    if verify_merged:\n"
-        "        token = await gh.get_token(owner, repo)\n"
-        "        async with httpx.AsyncClient(timeout=20) as client:\n"
-        "            resp = await client.get(\n"
-        "                f'https://api.github.com/repos/{owner}/{repo}/compare/main...{ref}',\n"
-        "                headers={'Authorization': f'token {token}',\n"
-        "                         'Accept': 'application/vnd.github+json'},\n"
-        "            )\n"
-        "            resp.raise_for_status()\n"
-        "            merged_into_main = resp.json()['status'] in ('identical', 'behind')\n"
-        "    payload = {'ref': ref, 'fragment_paths': fragment_paths,\n"
-        "               'entries': entries, 'user_secret_entries': user_secret_entries,\n"
-        "               'required_user_secret_entries': required_user_secret_entries,\n"
-        "               'merged_into_main': merged_into_main}\n"
-        f"    print({ENV_CONTRACT_PROBE_MARKER!r} + json.dumps(payload))\n"
-        "asyncio.run(probe())\n"
-    )
-
-
 def parse_env_contract_probe(stdout: str) -> dict:
     """Read the probe payload out of the container's stdout."""
     for line in stdout.splitlines():
@@ -608,10 +545,20 @@ def parse_env_contract_probe(stdout: str) -> dict:
 
 def probe_env_contract(repo_name: str, ref: str, *, verify_merged_into_main: bool = False) -> dict:
     """Read the committed environment contract of one repository ref."""
-    script = build_env_contract_probe_script(
-        repo_name, ref, verify_merged_into_main=verify_merged_into_main
-    )
-    result = docker_exec("langgraph", script, timeout=60)
+    args = [
+        "env-contract-probe",
+        "--owner",
+        GITHUB_ORG,
+        "--repo",
+        repo_name,
+        "--ref",
+        ref,
+        "--marker",
+        ENV_CONTRACT_PROBE_MARKER,
+    ]
+    if verify_merged_into_main:
+        args.append("--verify-merged-into-main")
+    result = docker_exec_python_module("langgraph", "shared.live_harness_cleanup", args, timeout=60)
     if result.returncode != 0:
         raise RuntimeError(
             f"environment contract probe for {repo_name}@{ref} failed: "
@@ -1049,99 +996,26 @@ async def wait_for_owned_runs(
         await asyncio.sleep(poll_interval)
 
 
-def build_github_cleanup_script(repo_name: str) -> str:
-    """Build the container-side cleanup for one exact owned repository."""
-    return (
-        "import asyncio, sys\n"
-        "sys.path.insert(0, '/app')\n"
-        "from shared.clients.github import GitHubAppClient\n"
-        "import httpx\n"
-        "async def cleanup():\n"
-        "    gh = GitHubAppClient()\n"
-        f"    token = await gh.get_org_token('{GITHUB_ORG}')\n"
-        "    async with httpx.AsyncClient() as client:\n"
-        "            resp = await client.delete(\n"
-        f"                'https://api.github.com/repos/{GITHUB_ORG}/{repo_name}',\n"
-        "                headers={'Authorization': f'token {token}',\n"
-        "                         'Accept': 'application/vnd.github+json'},\n"
-        "            )\n"
-        "            if resp.status_code not in (204, 404):\n"
-        "                raise RuntimeError(f'{resp.status_code} {resp.text[:200]}')\n"
-        "            verify = await client.get(\n"
-        f"                'https://api.github.com/repos/{GITHUB_ORG}/{repo_name}',\n"
-        "                headers={'Authorization': f'token {token}'},\n"
-        "            )\n"
-        "            if verify.status_code != 404:\n"
-        "                raise RuntimeError(f'repository residue: {verify.status_code}')\n"
-        "asyncio.run(cleanup())\n"
-    )
-
-
 def cleanup_github_repo(repo_name: str) -> None:
     """Delete and verify one GitHub repo via the container's org token."""
-    script = build_github_cleanup_script(repo_name)
-    result = docker_exec("langgraph", script, timeout=30)
+    result = docker_exec_python_module(
+        "langgraph",
+        "shared.live_harness_cleanup",
+        ["github-cleanup", "--owner", GITHUB_ORG, "--repo", repo_name],
+        timeout=30,
+    )
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
 
 
-def build_registry_cleanup_script(repository: str) -> str:
-    """Build fail-closed cleanup for one manifest-owned registry repository."""
-    return (
-        "import asyncio, os\n"
-        "import httpx\n"
-        f"repository = {repository!r}\n"
-        "registry = os.environ.get('ORCHESTRATOR_HOSTNAME')\n"
-        "username = os.environ.get('REGISTRY_USER')\n"
-        "password = os.environ.get('REGISTRY_PASSWORD')\n"
-        "if not registry or not username or not password:\n"
-        "    raise RuntimeError('registry cleanup credentials are not configured')\n"
-        "base = registry if registry.startswith(('http://', 'https://')) else f'https://{registry}'\n"
-        "base = base.rstrip('/')\n"
-        "headers = {'Accept': 'application/vnd.docker.distribution.manifest.v2+json'}\n"
-        "async def cleanup():\n"
-        "    async with httpx.AsyncClient(auth=(username, password), timeout=20) as client:\n"
-        "        tags = await client.get(f'{base}/v2/{repository}/tags/list')\n"
-        "        if tags.status_code == 404:\n"
-        "            return\n"
-        "        tags.raise_for_status()\n"
-        "        digests = set()\n"
-        "        for tag in tags.json().get('tags') or []:\n"
-        "            manifest_url = f'{base}/v2/{repository}/manifests/{tag}'\n"
-        "            manifest = await client.get(manifest_url, headers=headers)\n"
-        "            if manifest.status_code == 404:\n"
-        "                continue\n"
-        "            manifest.raise_for_status()\n"
-        "            digest = manifest.headers.get('Docker-Content-Digest')\n"
-        "            if not digest:\n"
-        "                raise RuntimeError(f'manifest digest missing for {repository}:{tag}')\n"
-        "            digests.add(digest)\n"
-        "        for digest in digests:\n"
-        "            deleted = await client.delete(f'{base}/v2/{repository}/manifests/{digest}')\n"
-        "            if deleted.status_code not in (202, 404):\n"
-        "                deleted.raise_for_status()\n"
-        "        verify = await client.get(f'{base}/v2/{repository}/tags/list')\n"
-        "        if verify.status_code == 404:\n"
-        "            return\n"
-        "        verify.raise_for_status()\n"
-        "        live_tags = []\n"
-        "        for tag in verify.json().get('tags') or []:\n"
-        "            manifest = await client.get(\n"
-        "                f'{base}/v2/{repository}/manifests/{tag}', headers=headers\n"
-        "            )\n"
-        "            if manifest.status_code == 404:\n"
-        "                continue\n"
-        "            manifest.raise_for_status()\n"
-        "            live_tags.append(tag)\n"
-        "        if live_tags:\n"
-        "            raise RuntimeError(f'registry tags remain for {repository}: {live_tags}')\n"
-        "asyncio.run(cleanup())\n"
-    )
-
-
 def cleanup_registry_repository(repository: str) -> None:
     """Delete and verify registry artifacts recorded for one live run."""
-    result = docker_exec("langgraph", build_registry_cleanup_script(repository), timeout=90)
+    result = docker_exec_python_module(
+        "langgraph",
+        "shared.live_harness_cleanup",
+        ["registry-cleanup", "--repository", repository],
+        timeout=90,
+    )
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
 
@@ -1342,69 +1216,27 @@ def find_worker_container(worker_id: str) -> str | None:
 def _build_server_remote_cleanup_command(
     project_name: str, service_base: str = "/opt/services"
 ) -> str:
-    project = shlex.quote(project_name)
-    variant = shlex.quote(project_name.replace("-", "_"))
-    base = shlex.quote(service_base.rstrip("/"))
-    return f"""
-set -eu
-PROJECT_NAME={project}
-ALT_PROJECT_NAME={variant}
-SVC_DIR={base}/$PROJECT_NAME
-PROJECTS=$(printf '%s\\n%s\\n' "$PROJECT_NAME" "$ALT_PROJECT_NAME" | awk 'NF && !seen[$0]++')
-for project in $PROJECTS; do
-  for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
-    label=$(docker inspect -f '{{{{ index .Config.Labels "com.docker.compose.project" }}}}' "$c")
-    if [ -n "$label" ] && [ "$label" != "<no value>" ]; then
-      PROJECTS=$(printf '%s\\n%s\\n' "$PROJECTS" "$label" | awk 'NF && !seen[$0]++')
-    fi
-  done
-done
-if [ -d "$SVC_DIR/infra" ]; then
-  for project in $PROJECTS; do
-    (cd "$SVC_DIR/infra" && docker compose -p "$project" down --remove-orphans -v)
-  done
-fi
-for project in $PROJECTS; do
-  for c in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
-    docker rm -f "$c"
-  done
-  for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
-    docker rm -f "$c"
-  done
-  for resource in volume network; do
-    for id in $(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project"); do
-      docker "$resource" rm "$id"
-    done
-  done
-done
-rm -rf "$SVC_DIR"
-remaining=
-for project in $PROJECTS; do
-  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$project")
-  if [ -n "$ids" ]; then
-    remaining="$remaining label:$project:$ids"
-  fi
-  ids=$(docker ps -aq --filter "name=^/${{project}}[-_]")
-  if [ -n "$ids" ]; then
-    remaining="$remaining name:$project:$ids"
-  fi
-  for resource in volume network; do
-    ids=$(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project")
-    if [ -n "$ids" ]; then
-      remaining="$remaining $resource:$project:$ids"
-    fi
-  done
-done
-if [ -n "$remaining" ]; then
-  echo "compose residue remains:$remaining" >&2
-  exit 1
-fi
-test ! -e "$SVC_DIR"
-""".strip()
+    return build_remote_cleanup_command(project_name, service_base)
 
 
-def build_server_cleanup_script(project_name: str, server_ip: str, server_handle: str) -> str:
-    """Build the container-side teardown of one deployed stack.
+def _server_cleanup_args(project_name: str, server_ip: str, server_handle: str) -> list[str]:
+    return [
+        "server-cleanup",
+        "--project-name",
+        project_name,
+        "--server-ip",
+        server_ip,
+        "--server-handle",
+        server_handle,
+        "--api-url",
+        "http://api:8000",
+    ]
+
+
+def build_server_cleanup_command(
+    project_name: str, server_ip: str, server_handle: str
+) -> list[str]:
+    """Build the container-side teardown command for one deployed stack.
 
     Runs inside langgraph so it can reach the internal API. The server and
     ssh-key fetches authenticate with X-Internal-Key like the real consumers:
@@ -1421,63 +1253,26 @@ def build_server_cleanup_script(project_name: str, server_ip: str, server_handle
     4. verify no project-owned Docker resource remains
     5. remove and verify `/opt/services/{name}`
     """
-    remote_cmd = _build_server_remote_cleanup_command(project_name)
-
-    return (
-        "import asyncio, sys, os\n"
-        "sys.path.insert(0, '/app')\n"
-        "import structlog\n"
-        "logger = structlog.get_logger()\n"
-        "async def main():\n"
-        "    import httpx\n"
-        "    api_url = os.environ.get('API_URL', 'http://api:8000')\n"
-        "    headers = {'X-Internal-Key': os.environ['INTERNAL_API_KEY']}\n"
-        "    async with httpx.AsyncClient("
-        "base_url=api_url, timeout=10, headers=headers) as client:\n"
-        f"        srv = await client.get('/api/servers/{server_handle}')\n"
-        "        if srv.status_code != 200:\n"
-        "            raise RuntimeError(f'server fetch failed: {srv.status_code}')\n"
-        "        ssh_user = srv.json()['ssh_user']\n"
-        f"        resp = await client.get('/api/servers/{server_handle}/ssh-key')\n"
-        "        if resp.status_code != 200:\n"
-        "            raise RuntimeError(f'ssh key fetch failed: {resp.status_code}')\n"
-        "        key = resp.json().get('ssh_key', '')\n"
-        "    if not key.endswith('\\n'):\n"
-        "        key += '\\n'\n"
-        "    import tempfile, subprocess\n"
-        "    with tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False) as f:\n"
-        "        f.write(key)\n"
-        "        key_path = f.name\n"
-        "    os.chmod(key_path, 0o600)\n"
-        "    try:\n"
-        "        result = subprocess.run(\n"
-        "            ['ssh', '-i', key_path, '-o', 'StrictHostKeyChecking=no',\n"
-        "             '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',\n"
-        f"             ssh_user + '@{server_ip}',\n"
-        f"             {repr(remote_cmd)}],\n"
-        "            capture_output=True, text=True, timeout=60,\n"
-        "        )\n"
-        "        if result.returncode != 0:\n"
-        "            raise RuntimeError(\n"
-        "                f'cleanup ssh failed: {result.returncode} {result.stderr[:300]}'\n"
-        "            )\n"
-        "        else:\n"
-        f"            logger.info('cleanup_server_done', "
-        f"project='{project_name}', server='{server_ip}', ssh_user=ssh_user)\n"
-        "    finally:\n"
-        "        os.unlink(key_path)\n"
-        "asyncio.run(main())\n"
-    )
+    return [
+        "python",
+        "-m",
+        "shared.live_harness_cleanup",
+        *_server_cleanup_args(project_name, server_ip, server_handle),
+    ]
 
 
 def cleanup_server_container(ctx: dict) -> None:
     """Stop and remove deployed container on remote server via SSH."""
     if "server_handle" not in ctx:
         return
-    script = build_server_cleanup_script(
-        ctx["project_name"], ctx.get("server_ip", "127.0.0.1"), ctx["server_handle"]
+    result = docker_exec_python_module(
+        "langgraph",
+        "shared.live_harness_cleanup",
+        _server_cleanup_args(
+            ctx["project_name"], ctx.get("server_ip", "127.0.0.1"), ctx["server_handle"]
+        ),
+        timeout=75,
     )
-    result = docker_exec("langgraph", script, timeout=75)
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
 

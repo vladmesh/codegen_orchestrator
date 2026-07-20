@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -19,13 +21,12 @@ from live_harness import (
 import pipeline_helpers
 from pipeline_helpers import (
     _build_server_remote_cleanup_command,
-    build_github_cleanup_script,
-    build_registry_cleanup_script,
     run_non_llm_qa,
 )
 import pytest
 import structlog
 
+from shared import live_harness_cleanup
 from shared.contracts.dto.project import ServiceModule
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.service_ports import (
@@ -90,21 +91,74 @@ def test_manifest_reports_delete_failure_without_skipping_verification():
     assert verified == ["project-1"]
 
 
-def test_github_cleanup_script_is_valid_python():
-    script = build_github_cleanup_script("owned-repository")
+def test_github_cleanup_command_passes_repo_as_argv(monkeypatch):
+    captured = {}
 
-    compile(script, "<github-cleanup>", "exec")
-    assert "project-factory-organization/owned-repository" in script
+    def run_module(service, module, args, timeout=30):
+        captured.update(service=service, module=module, args=args, timeout=timeout)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(pipeline_helpers, "docker_exec_python_module", run_module)
+
+    pipeline_helpers.cleanup_github_repo("owned-repository")
+
+    assert captured == {
+        "service": "langgraph",
+        "module": "shared.live_harness_cleanup",
+        "args": [
+            "github-cleanup",
+            "--owner",
+            "project-factory-organization",
+            "--repo",
+            "owned-repository",
+        ],
+        "timeout": 30,
+    }
 
 
-def test_registry_cleanup_script_deletes_only_owned_repository_tags_and_manifests():
-    script = build_registry_cleanup_script("project-factory-organization/owned-repository-backend")
+def test_registry_cleanup_command_passes_repository_as_argv(monkeypatch):
+    captured = {}
 
-    compile(script, "<registry-cleanup>", "exec")
-    assert "repository = 'project-factory-organization/owned-repository-backend'" in script
-    assert "f'{base}/v2/{repository}/tags/list'" in script
-    assert "Docker-Content-Digest" in script
-    assert "/v2/_catalog" not in script
+    def run_module(service, module, args, timeout=30):
+        captured.update(service=service, module=module, args=args, timeout=timeout)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(pipeline_helpers, "docker_exec_python_module", run_module)
+
+    pipeline_helpers.cleanup_registry_repository(
+        "project-factory-organization/owned-repository-backend"
+    )
+
+    assert captured["args"] == [
+        "registry-cleanup",
+        "--repository",
+        "project-factory-organization/owned-repository-backend",
+    ]
+
+
+def test_cleanup_parameters_with_quotes_and_newlines_stay_in_argv(monkeypatch):
+    captured = {}
+    hostile_repo = "owned'\n--unexpected"
+
+    def run_module(service, module, args, timeout=30):
+        captured.update(service=service, module=module, args=args, timeout=timeout)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(pipeline_helpers, "docker_exec_python_module", run_module)
+
+    pipeline_helpers.cleanup_github_repo(hostile_repo)
+
+    assert captured["args"][-1] == hostile_repo
+    assert "\n" not in " ".join(captured["args"][:-1])
+
+
+def test_remote_cleanup_command_quotes_project_name_as_argv():
+    project_name = "live-test'\nrm -rf /"
+
+    command = _build_server_remote_cleanup_command(project_name)
+
+    assert shlex.split(command) == ["sh", "-s", "--", project_name, "/opt/services"]
+    assert "rm -rf" in shlex.split(command)[3]
 
 
 def test_compose_routes_public_registry_hostname_to_internal_caddy():
@@ -135,11 +189,12 @@ def test_registry_cleanup_script_uses_https_for_bare_registry_host(monkeypatch):
     monkeypatch.setenv("ORCHESTRATOR_HOSTNAME", "registry.example.com")
     monkeypatch.setenv("REGISTRY_USER", "user")
     monkeypatch.setenv("REGISTRY_PASSWORD", "password")
-    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", lambda **kwargs: Client())
 
-    exec(  # noqa: S102
-        build_registry_cleanup_script("project-factory-organization/owned-repository-backend"),
-        {},
+    asyncio.run(
+        live_harness_cleanup.cleanup_registry_repository(
+            repository="project-factory-organization/owned-repository-backend"
+        )
     )
 
     assert requested_urls == [
@@ -183,11 +238,12 @@ def test_registry_cleanup_treats_stale_tag_with_missing_manifest_as_absent(monke
     monkeypatch.setenv("ORCHESTRATOR_HOSTNAME", "registry.example.com")
     monkeypatch.setenv("REGISTRY_USER", "user")
     monkeypatch.setenv("REGISTRY_PASSWORD", "password")
-    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", lambda **kwargs: Client())
 
-    exec(  # noqa: S102
-        build_registry_cleanup_script("project-factory-organization/owned-repository-backend"),
-        {},
+    asyncio.run(
+        live_harness_cleanup.cleanup_registry_repository(
+            repository="project-factory-organization/owned-repository-backend"
+        )
     )
 
     assert (
@@ -205,6 +261,18 @@ def _write_fake_docker(tmp_path: Path, body: str) -> Path:
     docker.write_text("#!/usr/bin/env bash\nset -eu\n" + body)
     docker.chmod(0o755)
     return docker
+
+
+def _run_remote_cleanup(project_name: str, service_base: Path, env: dict[str, str]):
+    command = _build_server_remote_cleanup_command(project_name, service_base=str(service_base))
+    return subprocess.run(
+        shlex.split(command),
+        input=live_harness_cleanup.REMOTE_CLEANUP_SCRIPT.read_text(),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
 
 
 def test_server_cleanup_discovers_underscored_compose_project(tmp_path):
@@ -262,19 +330,7 @@ fi
         "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
     }
 
-    result = subprocess.run(
-        [
-            "sh",
-            "-c",
-            _build_server_remote_cleanup_command(
-                "live-test-2c3e830f", service_base=str(tmp_path / "services")
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
+    result = _run_remote_cleanup("live-test-2c3e830f", tmp_path / "services", env)
 
     assert result.returncode == 0, result.stderr
     assert "compose:live_test_2c3e830f" in calls.read_text().splitlines()
@@ -315,19 +371,7 @@ fi
         "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
     }
 
-    result = subprocess.run(
-        [
-            "sh",
-            "-c",
-            _build_server_remote_cleanup_command(
-                "live-test-2c3e830f", service_base=str(tmp_path / "services")
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
+    result = _run_remote_cleanup("live-test-2c3e830f", tmp_path / "services", env)
 
     assert result.returncode == 0, result.stderr
     assert calls.read_text().splitlines() == ["volume:v1", "network:n1"]
@@ -350,19 +394,7 @@ fi
     )
     env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}
 
-    result = subprocess.run(
-        [
-            "sh",
-            "-c",
-            _build_server_remote_cleanup_command(
-                "live-test-2c3e830f", service_base=str(tmp_path / "services")
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
+    result = _run_remote_cleanup("live-test-2c3e830f", tmp_path / "services", env)
 
     assert result.returncode != 0
     assert "volume:live-test-2c3e830f:v1" in result.stderr
@@ -393,19 +425,7 @@ fi
     )
     env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"}
 
-    result = subprocess.run(
-        [
-            "sh",
-            "-c",
-            _build_server_remote_cleanup_command(
-                "live-test-2c3e830f", service_base=str(tmp_path / "services")
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
+    result = _run_remote_cleanup("live-test-2c3e830f", tmp_path / "services", env)
 
     assert result.returncode != 0
     assert "name:live_test_2c3e830f:c1" in result.stderr
@@ -1372,18 +1392,20 @@ def test_env_contract_probe_reads_the_ref_deploy_resolves(monkeypatch):
     """
     captured = {}
 
-    def fake_exec(service, script, timeout=30):
+    def fake_exec(service, module, args, timeout=30):
         captured["service"] = service
-        captured["script"] = script
+        captured["module"] = module
+        captured["args"] = args
         return SimpleNamespace(returncode=0, stdout=_probe_stdout(_probe_payload()), stderr="")
 
-    monkeypatch.setattr(pipeline_helpers, "docker_exec", fake_exec)
+    monkeypatch.setattr(pipeline_helpers, "docker_exec_python_module", fake_exec)
 
     probe = pipeline_helpers.probe_env_contract("run-repo", "abc123")
 
     assert captured["service"] == "langgraph"
-    assert "'abc123'" in captured["script"]
-    assert "merge_env_contract_fragments" in captured["script"]
+    assert captured["module"] == "shared.live_harness_cleanup"
+    assert "--ref" in captured["args"]
+    assert "abc123" in captured["args"]
     assert probe["fragment_paths"] == sorted(pipeline_helpers.EXPECTED_ENV_CONTRACT_FRAGMENTS)
 
 
@@ -1391,7 +1413,7 @@ def test_env_contract_probe_payload_survives_container_log_noise(monkeypatch):
     """Container logs share stdout with the payload, so the marker delimits it."""
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(
             returncode=0, stdout=_probe_stdout(_probe_payload(entries=["APP_ENV"])), stderr=""
         ),
@@ -1403,7 +1425,7 @@ def test_env_contract_probe_payload_survives_container_log_noise(monkeypatch):
 def test_env_contract_probe_without_payload_is_loud(monkeypatch):
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=0, stdout="[info] nothing here\n", stderr=""),
     )
 
@@ -1414,7 +1436,7 @@ def test_env_contract_probe_without_payload_is_loud(monkeypatch):
 def test_env_contract_probe_failure_is_loud(monkeypatch):
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
     )
 
@@ -1426,7 +1448,7 @@ def test_record_env_contract_accepts_expected_fragments(monkeypatch):
     stdout = _probe_stdout(_probe_payload())
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
     )
     ctx = {"repo_name": "run-repo"}
@@ -1441,7 +1463,7 @@ def test_record_env_contract_rejects_missing_fragment(monkeypatch):
     payload = _probe_payload(fragment_paths=["infra/env.contract.yaml"])
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=0, stdout=_probe_stdout(payload), stderr=""),
     )
     ctx = {"repo_name": "run-repo"}
@@ -1456,7 +1478,7 @@ def test_record_env_contract_rejects_empty_contract(monkeypatch):
     payload = _probe_payload(entries=[])
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=0, stdout=_probe_stdout(payload), stderr=""),
     )
     ctx = {"repo_name": "run-repo"}
@@ -1474,7 +1496,7 @@ def test_record_env_contract_rejects_sha_absent_from_main(monkeypatch):
     payload = _probe_payload(merged_into_main=False)
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=0, stdout=_probe_stdout(payload), stderr=""),
     )
     ctx = {"repo_name": "run-repo"}
@@ -1992,27 +2014,24 @@ class _FakeGitHub:
         return "gh-token"
 
 
-def _run_probe_script(monkeypatch, capsys, *, ref, verify_merged_into_main=False):
-    """Execute the generated probe script against a fake repository."""
-    import shared.clients.github as github_module
-
+def _run_probe(monkeypatch, capsys, *, ref, verify_merged_into_main=False):
+    """Execute the shared probe module against a fake repository."""
     _FakeGitHub.requested_refs = []
-    monkeypatch.setattr(github_module, "GitHubAppClient", _FakeGitHub)
-    script = pipeline_helpers.build_env_contract_probe_script(
-        "run-repo", ref, verify_merged_into_main=verify_merged_into_main
+    monkeypatch.setattr(live_harness_cleanup, "GitHubAppClient", _FakeGitHub)
+    asyncio.run(
+        live_harness_cleanup.probe_env_contract(
+            owner="project-factory-organization",
+            repo="run-repo",
+            ref=ref,
+            verify_merged_into_main=verify_merged_into_main,
+            marker=pipeline_helpers.ENV_CONTRACT_PROBE_MARKER,
+        )
     )
-    compile(script, "<env-contract-probe>", "exec")
-    exec(script, {})  # noqa: S102
     return pipeline_helpers.parse_env_contract_probe(capsys.readouterr().out)
 
 
-def test_env_contract_probe_script_merges_real_fragments_at_one_ref(monkeypatch, capsys):
-    """Execute the generated script, not just compile it.
-
-    It must read only env.contract.yaml files, merge them through the same
-    schema deploy uses, and report the merged keys for the requested ref.
-    """
-    probe = _run_probe_script(monkeypatch, capsys, ref="abc123")
+def test_env_contract_probe_merges_real_fragments_at_one_ref(monkeypatch, capsys):
+    probe = _run_probe(monkeypatch, capsys, ref="abc123")
 
     assert probe["ref"] == "abc123"
     assert probe["fragment_paths"] == [
@@ -2025,7 +2044,7 @@ def test_env_contract_probe_script_merges_real_fragments_at_one_ref(monkeypatch,
     assert set(_FakeGitHub.requested_refs) == {"abc123"}
 
 
-def test_env_contract_probe_script_reports_merge_into_main(monkeypatch, capsys):
+def test_env_contract_probe_reports_merge_into_main(monkeypatch, capsys):
     """A SHA already contained in main compares as identical or behind."""
     requested = []
 
@@ -2040,9 +2059,9 @@ def test_env_contract_probe_script_reports_merge_into_main(monkeypatch, capsys):
             requested.append(url)
             return httpx.Response(200, json={"status": "behind"}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", lambda **kwargs: Client())
 
-    probe = _run_probe_script(monkeypatch, capsys, ref="abc123", verify_merged_into_main=True)
+    probe = _run_probe(monkeypatch, capsys, ref="abc123", verify_merged_into_main=True)
 
     assert probe["merged_into_main"] is True
     assert requested == [
@@ -2050,7 +2069,7 @@ def test_env_contract_probe_script_reports_merge_into_main(monkeypatch, capsys):
     ]
 
 
-def test_env_contract_probe_script_reports_sha_outside_main(monkeypatch, capsys):
+def test_env_contract_probe_reports_sha_outside_main(monkeypatch, capsys):
     """A story-branch SHA main never took compares as diverged or ahead."""
 
     class Client:
@@ -2065,18 +2084,18 @@ def test_env_contract_probe_script_reports_sha_outside_main(monkeypatch, capsys)
                 200, json={"status": "diverged"}, request=httpx.Request("GET", url)
             )
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", lambda **kwargs: Client())
 
-    probe = _run_probe_script(monkeypatch, capsys, ref="abc123", verify_merged_into_main=True)
+    probe = _run_probe(monkeypatch, capsys, ref="abc123", verify_merged_into_main=True)
 
     assert probe["merged_into_main"] is False
 
 
-def test_env_contract_probe_script_reports_a_repo_without_fragments(monkeypatch, capsys):
+def test_env_contract_probe_reports_a_repo_without_fragments(monkeypatch, capsys):
     """A repo carrying no contract is the missing-contract case deploy rejects."""
     monkeypatch.setattr(_FakeGitHub, "files", {"README.md": "# no contract"})
 
-    probe = _run_probe_script(monkeypatch, capsys, ref="abc123")
+    probe = _run_probe(monkeypatch, capsys, ref="abc123")
 
     assert probe["fragment_paths"] == []
     assert probe["entries"] == []
@@ -2092,7 +2111,7 @@ def test_record_env_contract_records_unreachable_probe_instead_of_raising(monkey
     """
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="502 Bad Gateway"),
     )
     ctx = {"repo_name": "run-repo"}
@@ -2105,7 +2124,7 @@ def test_record_env_contract_records_unreachable_probe_instead_of_raising(monkey
 def test_record_env_contract_records_unparseable_probe_output(monkeypatch):
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=0, stdout="[info] no payload\n", stderr=""),
     )
     ctx = {"repo_name": "run-repo"}
@@ -2121,7 +2140,7 @@ def test_record_env_contract_records_container_timeout(monkeypatch):
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd="docker compose exec", timeout=60)
 
-    monkeypatch.setattr(pipeline_helpers, "docker_exec", timeout)
+    monkeypatch.setattr(pipeline_helpers, "docker_exec_python_module", timeout)
     ctx = {"repo_name": "run-repo"}
 
     assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="merged") is False
@@ -2136,7 +2155,7 @@ def test_debug_dump_retains_probe_exception_without_a_probe(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(
         pipeline_helpers,
-        "docker_exec",
+        "docker_exec_python_module",
         lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="502 Bad Gateway"),
     )
     ctx = {"project_id": "project-1", "repo_name": "run-repo"}

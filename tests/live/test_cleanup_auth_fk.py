@@ -18,8 +18,9 @@ from types import SimpleNamespace
 import httpx
 from live_harness import OwnershipManifest
 import pipeline_helpers
-from pipeline_helpers import build_server_cleanup_script
 import pytest
+
+from shared import live_harness_cleanup
 
 
 def _load_clean_live_tests():
@@ -41,14 +42,46 @@ def _assert_before(sql: str, earlier: str, later: str) -> None:
 # ── ssh-key fetch is authenticated (bug #1) ──────────────────────────────
 
 
-def test_server_cleanup_script_authenticates_ssh_key_fetch():
-    script = build_server_cleanup_script("live-test-x", "203.0.113.7", "vps-1")
-    # ssh-key fetch must carry the internal key like the real consumers.
-    assert "X-Internal-Key" in script
-    assert "os.environ['INTERNAL_API_KEY']" in script
-    # The internal header must be attached to the client that fetches the key.
-    assert "/api/servers/vps-1/ssh-key" in script
-    assert "headers=headers" in script
+@pytest.mark.asyncio
+async def test_server_cleanup_authenticates_ssh_key_fetch(monkeypatch, tmp_path):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    saw_key_fetch = False
+
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(live_harness_cleanup.subprocess, "run", fake_run)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal saw_key_fetch
+        assert request.headers.get("X-Internal-Key") == "test-internal-key"
+        if request.url.path == "/api/servers/vps-1":
+            return httpx.Response(200, json={"handle": "vps-1", "ssh_user": "dev"})
+        if request.url.path == "/api/servers/vps-1/ssh-key":
+            saw_key_fetch = True
+            return httpx.Response(200, json={"ssh_key": "PRIVATE-KEY"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(live_harness_cleanup.httpx, "AsyncClient", client_factory)
+
+    remote_script = tmp_path / "remote.sh"
+    remote_script.write_text("set -eu\n")
+    await live_harness_cleanup.cleanup_server_deployment(
+        project_name="live-test-x",
+        server_ip="203.0.113.7",
+        server_handle="vps-1",
+        api_url="http://test",
+        remote_script_path=remote_script,
+    )
+
+    assert saw_key_fetch is True
 
 
 # ── port allocation lookup is authenticated (bug #2) ─────────────────────

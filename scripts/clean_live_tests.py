@@ -2,7 +2,6 @@
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -13,6 +12,13 @@ HTTP_OK = 200
 ORCHESTRATOR_ROOT = os.environ.get("ORCHESTRATOR_ROOT")
 if not ORCHESTRATOR_ROOT:
     ORCHESTRATOR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ORCHESTRATOR_ROOT not in sys.path:
+    sys.path.insert(0, ORCHESTRATOR_ROOT)
+from shared.live_harness_cleanup import (  # noqa: E402
+    REMOTE_CLEANUP_SCRIPT,
+    build_remote_cleanup_command,
+)
+
 GITHUB_ORG = "project-factory-organization"
 
 
@@ -425,70 +431,6 @@ def _fetch_remote_server_key(handle: str) -> str:
         raise CleanupFailure(f"ssh key fetch failed for {handle}: {exc}") from exc
 
 
-def _build_remote_sweep_command(project_slugs: list[str]) -> str:
-    quoted_projects = shlex.quote("\n".join(sorted(set(project_slugs))))
-    return f"""
-set -eu
-PROJECTS={quoted_projects}
-echo '[Remote] Cleaning live-test project resources...'
-for project_name in $PROJECTS; do
-  alt_project_name=$(printf '%s' "$project_name" | tr '-' '_')
-  projects=$(printf '%s\\n%s\\n' "$project_name" "$alt_project_name" | awk 'NF && !seen[$0]++')
-  svc_dir="/opt/services/$project_name"
-  for project in $projects; do
-    for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
-      label=$(docker inspect -f '{{{{ index .Config.Labels "com.docker.compose.project" }}}}' "$c")
-      if [ -n "$label" ] && [ "$label" != "<no value>" ]; then
-        projects=$(printf '%s\\n%s\\n' "$projects" "$label" | awk 'NF && !seen[$0]++')
-      fi
-    done
-  done
-  if [ -d "$svc_dir/infra" ]; then
-    for project in $projects; do
-      (cd "$svc_dir/infra" && docker compose -p "$project" down --remove-orphans -v)
-    done
-  fi
-  for project in $projects; do
-    for c in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
-      docker rm -f "$c"
-    done
-    for c in $(docker ps -aq --filter "name=^/${{project}}[-_]"); do
-      docker rm -f "$c"
-    done
-    for resource in volume network; do
-      for id in $(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project"); do
-        docker "$resource" rm "$id"
-      done
-    done
-  done
-  rm -rf "$svc_dir"
-  remaining=
-  for project in $projects; do
-    ids=$(docker ps -aq --filter "label=com.docker.compose.project=$project")
-    if [ -n "$ids" ]; then
-      remaining="$remaining label:$project:$ids"
-    fi
-    ids=$(docker ps -aq --filter "name=^/${{project}}[-_]")
-    if [ -n "$ids" ]; then
-      remaining="$remaining name:$project:$ids"
-    fi
-    for resource in volume network; do
-      ids=$(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project")
-      if [ -n "$ids" ]; then
-        remaining="$remaining $resource:$project:$ids"
-      fi
-    done
-  done
-  if [ -n "$remaining" ]; then
-    echo "compose residue remains:$remaining" >&2
-    exit 1
-  fi
-  test ! -e "$svc_dir"
-done
-docker network prune -f 2>&1 || true
-""".strip()
-
-
 def clean_remote_servers(project_slugs: list[str] | None = None):
     servers = _fetch_remote_servers()
 
@@ -502,7 +444,7 @@ def clean_remote_servers(project_slugs: list[str] | None = None):
         print("No live-test project slugs found for remote cleanup.")
         return
 
-    remote_cmd = _build_remote_sweep_command(project_slugs)
+    remote_script = REMOTE_CLEANUP_SCRIPT.read_text()
 
     for s in servers:
         ip = s["public_ip"]
@@ -518,7 +460,33 @@ def clean_remote_servers(project_slugs: list[str] | None = None):
 
         print(f"Cleaning remote server {s['handle']} ({ssh_user}@{ip})...")
         try:
-            r = subprocess.run(
+            for project_slug in sorted(set(project_slugs)):
+                r = subprocess.run(
+                    [  # noqa: S607
+                        "ssh",
+                        "-i",
+                        key_path,
+                        "-o",
+                        "StrictHostKeyChecking=no",
+                        "-o",
+                        "ConnectTimeout=10",
+                        "-o",
+                        "BatchMode=yes",
+                        f"{ssh_user}@{ip}",
+                        build_remote_cleanup_command(project_slug),
+                    ],
+                    input=remote_script,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                print(r.stdout.strip())
+                if r.returncode != 0:
+                    raise CleanupFailure(
+                        f"remote cleanup failed for {s['handle']}/{project_slug}: "
+                        f"{r.returncode} {r.stderr.strip()[:300]}"
+                    )
+            prune = subprocess.run(
                 [  # noqa: S607
                     "ssh",
                     "-i",
@@ -530,18 +498,13 @@ def clean_remote_servers(project_slugs: list[str] | None = None):
                     "-o",
                     "BatchMode=yes",
                     f"{ssh_user}@{ip}",
-                    remote_cmd,
+                    "docker network prune -f 2>&1 || true",
                 ],
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
-            print(r.stdout.strip())
-            if r.returncode != 0:
-                raise CleanupFailure(
-                    f"remote cleanup failed for {s['handle']}: "
-                    f"{r.returncode} {r.stderr.strip()[:300]}"
-                )
+            print(prune.stdout.strip())
         except CleanupFailure:
             raise
         except Exception as e:
