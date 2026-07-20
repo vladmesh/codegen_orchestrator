@@ -1,8 +1,5 @@
 # #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints
 
-> [!WARNING]
-> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
-
 ## Context
 
 Task #1034 is Phase 3 of the User Dashboard (ЛК) epic. Phase 1 (infra: Promtail, Loki, container labels — #1031, #1032) and Phase 2 (analytics models, Loki client, aggregator — #1033) are all done.

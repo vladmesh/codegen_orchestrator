@@ -9,7 +9,7 @@ Multi-agent orchestrator using LangGraph for automated code generation and deplo
 **Philosophy**: Autonomous operation (human checks in periodically), agents as graph nodes, non-linear agent calls, spec-first code generation.
 
 > [!IMPORTANT]
-> **Sprint-based development**: Work is organized in sprints (`docs/sprints/`). `docs/STATUS.md` tracks current sprint state. `/go` is the main entry point — it reads STATUS.md and invokes the right skill. `docs/backlog.md` is a deferred pool for tech debt and ideas, processed during tech sprints. Pipeline-testing skills (`/e2e-run`, `/escort`, `/architect`) still require `make up`.
+> **Sprint-based development**: Work is organized in sprints (`docs/sprints/`). `docs/STATUS.md` tracks current sprint state. `/go` is the main entry point — it reads STATUS.md and invokes the right skill. `docs/backlog.md` is a deferred pool for tech debt and ideas, processed during tech sprints. Tasks for the orchestrator itself are created and tracked in the external pipeline, not in the local Tasks DB; `docs/backlog.md` and `docs/STATUS.md` are maintained by hand and have no generators. Pipeline-testing skills (`/e2e-run`, `/escort`, `/architect`) still require `make up`.
 
 ## Commands
 
@@ -20,7 +20,6 @@ make down                  # Stop services
 make build                 # Build all Docker images
 make migrate               # Run database migrations
 make makemigrations MSG='description'  # Create new migration
-make backlog               # Generate backlog.md from Tasks API (only when API is running)
 make seed                  # Seed database with API keys
 make nuke                  # Full reset (volumes, rebuild, migrate, seed)
 make lock-deps             # Regenerate all requirements.lock files

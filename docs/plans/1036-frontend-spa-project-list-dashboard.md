@@ -1,8 +1,5 @@
 # #1036 ЛК frontend SPA (project list + dashboard)
 
-> [!WARNING]
-> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
-
 ## Context
 
 Final task in the User Dashboard story. Backend is fully built:

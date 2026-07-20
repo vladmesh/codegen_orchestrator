@@ -8,7 +8,7 @@
 |----------|-------------|
 | [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) | **ОБЯЗАТЕЛЬНО К ПРОЧТЕНИЮ** — жизненный цикл фичи и дата-дривен процесс |
 | [docs/STATUS.md](docs/STATUS.md) | **Всегда первым** — текущая задача и контекст |
-| [docs/backlog.md](docs/backlog.md) | Очередь задач, идеи (Read-only, генерируется из БД командой `make backlog`) |
+| [docs/backlog.md](docs/backlog.md) | Отложенный пул задач и идей (поддерживается вручную) |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | Перед изменением DTO, очередей, API |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Для понимания системы в целом |
 | [docs/NODES.md](docs/NODES.md) | Описание агентов-узлов LangGraph |
@@ -50,7 +50,7 @@ Red → Green → Refactor. Без исключений.
 1. **Context**: прочитай `docs/STATUS.md` и `docs/CONTRACTS.md`
 2. **Red**: напиши тест в `services/<service>/tests/{unit,integration}/`, убедись что падает
 3. **Green**: минимальный код для прохождения теста
-4. **Gate**: `make test-unit` + `make lint`. Обнови STATUS, CHANGELOG (backlog генерируется автоматически командой `make backlog`).
+4. **Gate**: `make test-unit` + `make lint`. Обнови STATUS, CHANGELOG, backlog вручную по мере необходимости.
 
 **Review Trigger**: изменение `shared/contracts/` или схемы БД, не описанное в плане → **STOP**, спроси пользователя.
 

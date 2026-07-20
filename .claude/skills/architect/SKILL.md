@@ -21,12 +21,6 @@ Takes a Story and decomposes it into actionable Tasks via the API.
 
 ## Protocol
 
-### 0. Sync docs
-
-```bash
-make sync
-```
-
 ### 1. Load story
 
 **If story ID given:**
@@ -147,13 +141,9 @@ curl -sf -X POST "$API/api/stories/$STORY_ID/start" \
   -d '{"actor": "architect"}'
 ```
 
-### 6. Sync docs
+### 6. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
-```bash
-make sync
-```
-
-### 7. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
+Tasks live in the API; commit any docs you touched by hand.
 
 ```bash
 git add docs/backlog.md docs/ROADMAP.md docs/STATUS.md

@@ -2,9 +2,8 @@
 
 > This is NOT a work queue. Active work lives in sprint task files (`docs/sprints/`).
 > Backlog holds deferred items: tech debt, ideas, future work. Processed during tech sprints (every 5th sprint or when >30 items).
-> Purely local file since 2026-07: the internal Tasks pipeline is inactive, orchestrator tasks go
-> through the external pipeline. Do not run `make backlog` — it would regenerate this file from an
-> empty local DB and wipe it (see #1052).
+> Purely local, hand-maintained file: the internal Tasks pipeline is inactive, orchestrator tasks go
+> through the external pipeline.
 
 ## Queue
 
@@ -275,9 +274,3 @@
 - **Status**: backlog
 - **Brainstorm**: [worker-db-network-isolation.md](brainstorms/worker-db-network-isolation.md)
 - **Brief**: With per-host worker-manager replicas (stabilization Stage 10), an elastic host is just a cloud VM that boots, starts a worker-manager replica pointed at the shared Redis, drains the queue and dies. Hetzner Cloud API + cloud-init, optional pre-warm pool. Costed in the brainstorm at ~€1-3/day for 10 workers.
-
-### #1052 Remove internal dogfooding machinery: orchestrator is no longer managed through itself
-- **Priority**: HIGH (stale generators actively destroy hand-maintained docs: make backlog / make status against the empty local DB would wipe backlog.md / STATUS.md)
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Orchestrator tasks are created through the external pipeline; the internal Tasks-API-based self-management is abandoned entirely. Remove: Makefile targets backlog/roadmap/status/recent-artifacts/sync/task and scripts generate_backlog.py, generate_roadmap.py, generate_status.py, sync_recent_artifacts.py, enrich_tasks.py. Verify pull_worker_reports.py separately — it pulls e2e worker reports, may still serve pipeline testing. Update CLAUDE.md, DEV_PIPELINE.md and related workflow docs to describe the external-pipeline flow. Tasks/Stories API itself stays — it serves client projects.

@@ -42,7 +42,7 @@ Codegen Orchestrator — мультиагентная система для ав
 7. После завершения всех tasks — PR story/* → main, auto-merge → deploy → QA → story completed
 
 Скиллы (`/plan`, `/implement`, `/triage`, `/checkpoint`) взаимодействуют с API для работы с бэклогом, сбора статистики и сохранения истории итераций (`TaskEvent`).
-Файл `docs/backlog.md` является автогенерируемым (read-only) представлением базы данных (`make backlog`).
+Задачи по разработке самого оркестратора заводятся и ведутся во внешнем пайплайне, а не в локальной Tasks DB. Файлы `docs/backlog.md` и `docs/STATUS.md` поддерживаются вручную; генераторов под них нет.
 
 ### Capabilities
 Возможности Developer агента конфигурируются через `WorkerConfig.capabilities`:

@@ -1,8 +1,5 @@
 # #1035 Telegram bot: dashboard button with one-time token
 
-> [!WARNING]
-> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
-
 ## Context
 
 Second half of LK auth flow. #1034 (done) built the server side: `POST /api/lk/auth/token` accepts a one-time Redis token and returns a JWT. This task adds the client side in the Telegram bot: generate the token, store in Redis, send URL to user.
