@@ -41,8 +41,9 @@ Codegen Orchestrator — мультиагентная система для ав
 6. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
 7. После завершения всех tasks — PR story/* → main, auto-merge → deploy → QA → story completed
 
-Скиллы (`/plan`, `/implement`, `/triage`, `/checkpoint`) взаимодействуют с API для работы с бэклогом, сбора статистики и сохранения истории итераций (`TaskEvent`).
-Задачи по разработке самого оркестратора заводятся и ведутся во внешнем пайплайне, а не в локальной Tasks DB. Файлы `docs/backlog.md` и `docs/STATUS.md` поддерживаются вручную; генераторов под них нет.
+Сущности Story / Task / Run / `TaskEvent` в API описывают работу над **клиентскими** проектами — их создаёт и ведёт сам пайплайн (PO, Architect, Task Dispatcher, воркеры).
+
+Разработка самого оркестратора идёт по спринтам (`/go` → `/new-sprint` → `/plan-phase` → `/implement` → `/close-phase` → `/close-sprint`). Задачи по разработке оркестратора заводятся и ведутся во внешнем пайплайне, а не в локальной Tasks DB. Файлы `docs/backlog.md` и `docs/STATUS.md` поддерживаются вручную; генераторов под них нет.
 
 ### Capabilities
 Возможности Developer агента конфигурируются через `WorkerConfig.capabilities`:

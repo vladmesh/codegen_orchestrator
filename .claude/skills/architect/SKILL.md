@@ -79,7 +79,7 @@ Analyze the story and break it into concrete tasks. For each task, determine:
 
 - **Title**: `#<TAG> <descriptive title>` (get tag from `GET /api/tasks/next-tag`)
 - **Type**: `feature`, `bug`, `chore`, or `refactor`
-- **Description**: what needs to be done, specific enough for `/plan` to create steps
+- **Description**: what needs to be done, specific enough for an engineering worker to implement
 - **Acceptance criteria**: optional, for complex tasks
 - **Priority**: inherit from story, adjust per task (0=critical, 1=high, 2=medium, 3=low)
 - **Dependencies**: if task B depends on task A, set `blocked_by_task_id` on B after A is created
@@ -169,8 +169,8 @@ Print a summary:
 <visual representation if there are dependencies>
 
 ### Next Steps
-- Run `/plan #<first_task_tag>` to plan the first unblocked task
-- Or run `/implement` to auto-pick and start working
+- Tasks are now in the API. The Task Dispatcher (every 30s) picks up unblocked tasks, creates Runs, and dispatches them to engineering workers automatically — no manual handoff needed.
+- Monitor progress with the e2e-run / escort skills.
 ```
 
 ## Important
