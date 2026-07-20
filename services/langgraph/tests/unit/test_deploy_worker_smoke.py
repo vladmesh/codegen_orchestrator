@@ -220,6 +220,7 @@ async def test_build_subgraph_input_includes_smoke_result():
         git_url="https://github.com/org/repo",
         allocated_resources={"srv:8000": {"server_ip": "1.2.3.4", "port": 8000}},
         job_data={},
+        head_sha="a" * 40,
     )
     assert "smoke_result" in result, "smoke_result must be initialized in subgraph input"
     assert result["smoke_result"] is None

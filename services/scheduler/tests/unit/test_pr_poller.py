@@ -42,7 +42,7 @@ async def test_uses_pr_number_for_exact_lookup(mock_gh_cls):
     gh.get_pull_request.return_value = {
         "number": 42,
         "merged_at": "2026-03-20T03:15:00Z",
-        "head": {"sha": "fix-sha"},
+        "head": {"sha": "a" * 40},
     }
 
     await poll_merged_prs(api, redis)
@@ -52,7 +52,7 @@ async def test_uses_pr_number_for_exact_lookup(mock_gh_cls):
     gh.list_pull_requests.assert_not_called()
 
     deploy_msg = redis.publish_message.call_args[0][1]
-    assert deploy_msg.head_sha == "fix-sha"
+    assert deploy_msg.head_sha == "a" * 40
 
 
 @pytest.mark.asyncio
@@ -124,13 +124,13 @@ async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
     gh.get_pull_request.return_value = {
         "number": 5,
         "merged_at": "2026-03-20T03:30:00Z",
-        "head": {"sha": "fix-sha-correct"},
+        "head": {"sha": "b" * 40},
     }
 
     await poll_merged_prs(api, redis)
 
     deploy_msg = redis.publish_message.call_args[0][1]
-    assert deploy_msg.head_sha == "fix-sha-correct"
+    assert deploy_msg.head_sha == "b" * 40
     # Never calls list_pull_requests — no chance to pick up stale PR #3
     gh.list_pull_requests.assert_not_called()
 

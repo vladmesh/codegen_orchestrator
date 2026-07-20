@@ -87,6 +87,14 @@ class AllocationEntry(EnvContractEntryBase):
             raise ValueError("allocation requires a service or resource selector")
         return self
 
+    @property
+    def selector(self) -> str:
+        """Return the allocation name that `require_selector` guarantees exists."""
+        selector = self.service or self.resource
+        if selector is None:
+            raise ValueError("allocation requires a service or resource selector")
+        return selector
+
 
 class DerivedEntry(EnvContractEntryBase):
     """A non-secret value derived from trusted deployment context."""

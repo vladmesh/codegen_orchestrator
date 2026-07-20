@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 
 from shared.contracts.env_usage import (
     EnvUsageParseError,
@@ -17,6 +18,22 @@ from shared.contracts.env_usage import (
     extract_env_references,
     main,
 )
+
+REPO_ROOT = Path(__file__).parents[3]
+FIXTURES_DIR = Path(__file__).parents[1] / "fixtures"
+
+
+def pinned_template_ref() -> str:
+    """Return the service-template ref the orchestrator actually deploys with."""
+    configs = yaml.safe_load((REPO_ROOT / "scripts" / "system_configs.yaml").read_text())
+    refs = [c["value"] for c in configs if c["key"] == "scheduler.service_template_ref"]
+    assert len(refs) == 1, f"expected one pinned service_template_ref, found {refs}"
+    return str(refs[0])
+
+
+def template_fixture() -> Path:
+    """Return the rendered fixture for the pinned service-template ref."""
+    return FIXTURES_DIR / f"service-template-{pinned_template_ref()}"
 
 
 def write_fragment(root: Path, entries: dict[str, dict]) -> None:
@@ -298,9 +315,24 @@ class Settings(BaseSettings):
     }
 
 
-def test_service_template_0_3_3_fixture_extracts_without_crashing(tmp_path: Path):
-    fixture = Path(__file__).parents[1] / "fixtures" / "service-template-0.3.3"
-    shutil.copytree(fixture, tmp_path, dirs_exist_ok=True)
+def test_template_fixture_tracks_the_pinned_template_ref():
+    """A fixture rendered from an unpinned ref no longer describes what deploys read."""
+    fixture = template_fixture()
+
+    stale = sorted(
+        path.name
+        for path in FIXTURES_DIR.glob("service-template-*")
+        if path.is_dir() and path != fixture
+    )
+    assert fixture.is_dir(), (
+        f"no fixture for pinned service-template ref {pinned_template_ref()}; found {stale}"
+    )
+    assert not stale, f"fixtures left behind for unpinned service-template refs: {stale}"
+    assert f"tag `{pinned_template_ref()}`" in (fixture / "README.md").read_text()
+
+
+def test_template_fixture_extracts_without_crashing(tmp_path: Path):
+    shutil.copytree(template_fixture(), tmp_path, dirs_exist_ok=True)
 
     references = extract_env_references(tmp_path)
 
@@ -319,32 +351,19 @@ def test_service_template_0_3_3_fixture_extracts_without_crashing(tmp_path: Path
     }.issubset({(reference.key, reference.source) for reference in references})
 
 
-def test_service_template_0_3_3_fixture_has_known_contract_gaps(tmp_path: Path):
-    fixture = Path(__file__).parents[1] / "fixtures" / "service-template-0.3.3"
-    shutil.copytree(fixture, tmp_path, dirs_exist_ok=True)
+def test_template_fixture_has_known_contract_gaps(tmp_path: Path):
+    shutil.copytree(template_fixture(), tmp_path, dirs_exist_ok=True)
 
     result = check_env_contract_usage(tmp_path)
 
+    # The pinned template declares every environment key it uses, so there are
+    # no undeclared errors left. The only remaining gaps are required keys the
+    # static scan cannot observe because they come from deploy-time secrets.
     undeclared = {message.split()[3] for message in result.errors}
-    assert undeclared == {
-        "ASYNC_DATABASE_URL",
-        "BACKEND_INSTALL_DEV_DEPS",
-        "BACKEND_REPLICAS",
-        "COMPOSE_PROJECT_NAME",
-        "DATABASE_URL",
-        "ENABLED_MODULES",
-        "HOST_GID",
-        "HOST_UID",
-        "SQLALCHEMY_ASYNC_DRIVER",
-        "SQLALCHEMY_SYNC_DRIVER",
-    }
+    assert undeclared == set()
     assert result.warnings == (
         "required environment contract key BACKEND_API_URL was not observed",
-        "required environment contract key ENVIRONMENT was not observed",
         "required environment contract key TELEGRAM_BOT_TOKEN was not observed",
-        "undeclared environment key DATABASE_URL used at "
-        "services/backend/scripts/migrate.sh:11 (shell)",
-        "undeclared environment key PORT used at services/backend/scripts/start.sh:11 (shell)",
     )
 
 

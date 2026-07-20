@@ -1,5 +1,6 @@
 """SecretResolverNode — resolves secrets by generating, computing, and checking user-provided."""
 
+from dataclasses import dataclass, field
 from ipaddress import ip_address
 import json
 import os
@@ -8,7 +9,16 @@ from urllib.parse import urlparse
 
 import structlog
 
-from shared.contracts.env_contract import CanonicalEnvContract
+from shared.contracts.env_contract import (
+    AllocationEntry,
+    CanonicalEnvContract,
+    DerivedEntry,
+    EnvContractEntry,
+    GeneratedSecretEntry,
+    LiteralEntry,
+    UserSecretEntry,
+)
+from shared.contracts.queues.deploy import DeployOutcome
 from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
@@ -33,9 +43,37 @@ class UnknownDerivedKeyError(SecretResolutionError):
 class TypedSecretResolutionError(SecretResolutionError):
     """A resolver error with a deploy outcome that callers must preserve."""
 
-    def __init__(self, outcome: str, message: str):
+    def __init__(self, outcome: DeployOutcome, message: str):
         super().__init__(message)
         self.outcome = outcome
+
+
+@dataclass
+class _ResolvedValues:
+    """Accumulates one deploy's resolved contract values."""
+
+    secret_values: dict[str, str] = field(default_factory=dict)
+    non_secret_values: dict[str, str] = field(default_factory=dict)
+    generated: dict[str, str] = field(default_factory=dict)
+    missing_user: list[str] = field(default_factory=list)
+
+    def store(self, key: str, value: str, sensitive: bool) -> None:
+        """Route a resolved value to the secret or non-secret bucket."""
+        if sensitive:
+            self.secret_values[key] = value
+        else:
+            self.non_secret_values[key] = value
+
+
+@dataclass(frozen=True)
+class _ResolutionContext:
+    """Trusted deploy context every entry handler resolves against."""
+
+    project_id: str
+    project_spec: dict
+    state: DevOpsState
+    config_secrets: dict
+    provided_secrets: dict
 
 
 class SecretResolverNode(FunctionalNode):
@@ -51,70 +89,29 @@ class SecretResolverNode(FunctionalNode):
 
     async def _resolve_contract(self, state: DevOpsState) -> dict:
         """Resolve only production entries from a validated typed contract."""
-        project_spec = state.get("project_spec")
-        project_id = state.get("project_id")
-        self._validate_project_context(project_id, project_spec)
-        assert isinstance(project_id, str)
-        assert isinstance(project_spec, dict)
+        project_id, project_spec = self._validated_project_context(state)
         try:
             contract = CanonicalEnvContract.model_validate(state["environment_contract"])
         except ValueError as error:
             raise TypedSecretResolutionError(
-                "environment_contract_invalid", "environment contract is invalid"
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID, "environment contract is invalid"
             ) from error
 
         encrypted = project_spec.get("config", {}).get("secrets", {})
-        config_secrets = decrypt_dict(encrypted) if encrypted else {}
-        provided_secrets = state.get("provided_secrets", {})
-        secret_values: dict[str, str] = {}
-        non_secret_values: dict[str, str] = {}
-        generated: dict[str, str] = {}
-        missing_user: list[str] = []
+        context = _ResolutionContext(
+            project_id=project_id,
+            project_spec=project_spec,
+            state=state,
+            config_secrets=decrypt_dict(encrypted) if encrypted else {},
+            provided_secrets=state.get("provided_secrets", {}),
+        )
+        resolved = _ResolvedValues()
 
         for key, entry in contract.entries.items():
             if "production" not in entry.environments:
                 continue
             try:
-                if entry.source == "user_secret":
-                    value = provided_secrets.get(key, config_secrets.get(key))
-                    if value is None:
-                        if entry.required:
-                            missing_user.append(key)
-                        continue
-                    secret_values[key] = str(value)
-                elif entry.source == "generated_secret":
-                    value = config_secrets.get(key)
-                    if value is None:
-                        value = self._generate_infra_secret()
-                        generated[key] = value
-                    secret_values[key] = str(value)
-                elif entry.source == "allocation":
-                    selector = entry.service or entry.resource
-                    assert selector is not None
-                    allocation = self._find_allocation(state, selector)
-                    if allocation is None:
-                        raise TypedSecretResolutionError(
-                            "allocation_missing", f"Missing allocation for {selector}"
-                        )
-                    self._store_contract_value(
-                        key, str(allocation[1]), entry.sensitive, secret_values, non_secret_values
-                    )
-                elif entry.source == "derived":
-                    self._store_contract_value(
-                        key,
-                        self._compute_secret(key, project_spec, state),
-                        entry.sensitive,
-                        secret_values,
-                        non_secret_values,
-                    )
-                elif entry.source == "literal":
-                    self._store_contract_value(
-                        key,
-                        self._dotenv_value(entry.value),
-                        entry.sensitive,
-                        secret_values,
-                        non_secret_values,
-                    )
+                self._resolve_entry(key, entry, context, resolved)
             except TypedSecretResolutionError:
                 raise
             except SecretResolutionError as error:
@@ -122,41 +119,105 @@ class SecretResolverNode(FunctionalNode):
                     logger.info("optional_environment_contract_entry_skipped", key=key)
                     continue
                 raise TypedSecretResolutionError(
-                    "environment_resolution_failed", str(error)
+                    DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED, str(error)
                 ) from error
 
-        if generated:
+        if resolved.generated:
             try:
-                await self._save_secrets_to_project(project_id, generated)
+                await self._save_secrets_to_project(project_id, resolved.generated)
             except Exception as error:
                 raise TypedSecretResolutionError(
-                    "environment_resolution_failed", "Failed to persist generated secrets"
+                    DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+                    "Failed to persist generated secrets",
                 ) from error
         logger.info(
             "environment_contract_resolved",
-            secret_count=len(secret_values),
-            non_secret_count=len(non_secret_values),
-            missing_user_count=len(missing_user),
+            secret_count=len(resolved.secret_values),
+            non_secret_count=len(resolved.non_secret_values),
+            missing_user_count=len(resolved.missing_user),
         )
         return {
-            "secret_values": secret_values,
-            "non_secret_values": non_secret_values,
-            "missing_user_secrets": missing_user,
-            "resolution_outcome": "waiting_for_user_secret" if missing_user else None,
+            "secret_values": resolved.secret_values,
+            "non_secret_values": resolved.non_secret_values,
+            "missing_user_secrets": resolved.missing_user,
+            "resolution_outcome": (
+                DeployOutcome.WAITING_FOR_USER_SECRET if resolved.missing_user else None
+            ),
         }
 
-    @staticmethod
-    def _store_contract_value(
+    def _resolve_entry(
+        self,
         key: str,
-        value: str,
-        sensitive: bool,
-        secret_values: dict[str, str],
-        non_secret_values: dict[str, str],
+        entry: EnvContractEntry,
+        context: _ResolutionContext,
+        resolved: _ResolvedValues,
     ) -> None:
-        if sensitive:
-            secret_values[key] = value
-        else:
-            non_secret_values[key] = value
+        """Dispatch one contract entry to the handler for its declared type.
+
+        An entry type with no handler is a contract change the resolver has not
+        learned yet, so it fails loudly instead of dropping the variable from
+        the deployed environment.
+        """
+        match entry:
+            case UserSecretEntry():
+                self._resolve_user_secret(key, entry, context, resolved)
+            case GeneratedSecretEntry():
+                self._resolve_generated_secret(key, context, resolved)
+            case AllocationEntry():
+                self._resolve_allocation(key, entry, context, resolved)
+            case DerivedEntry():
+                resolved.store(
+                    key,
+                    self._compute_secret(key, context.project_spec, context.state),
+                    entry.sensitive,
+                )
+            case LiteralEntry():
+                resolved.store(key, self._dotenv_value(entry.value), entry.sensitive)
+            case _:
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    f"no resolver for environment contract entry type {type(entry).__name__}",
+                )
+
+    @staticmethod
+    def _resolve_user_secret(
+        key: str,
+        entry: UserSecretEntry,
+        context: _ResolutionContext,
+        resolved: _ResolvedValues,
+    ) -> None:
+        """Take a user-provided secret, or record it as still missing."""
+        value = context.provided_secrets.get(key, context.config_secrets.get(key))
+        if value is None:
+            if entry.required:
+                resolved.missing_user.append(key)
+            return
+        resolved.secret_values[key] = str(value)
+
+    def _resolve_generated_secret(
+        self, key: str, context: _ResolutionContext, resolved: _ResolvedValues
+    ) -> None:
+        """Reuse the persisted platform secret, or generate one to persist."""
+        value = context.config_secrets.get(key)
+        if value is None:
+            value = self._generate_infra_secret()
+            resolved.generated[key] = value
+        resolved.secret_values[key] = str(value)
+
+    def _resolve_allocation(
+        self,
+        key: str,
+        entry: AllocationEntry,
+        context: _ResolutionContext,
+        resolved: _ResolvedValues,
+    ) -> None:
+        """Resolve the port held by the entry's allocation selector."""
+        allocation = self._find_allocation(context.state, entry.selector)
+        if allocation is None:
+            raise TypedSecretResolutionError(
+                DeployOutcome.ALLOCATION_MISSING, f"Missing allocation for {entry.selector}"
+            )
+        resolved.store(key, str(allocation[1]), entry.sensitive)
 
     @staticmethod
     def _dotenv_value(value: object) -> str:
@@ -166,8 +227,10 @@ class SecretResolverNode(FunctionalNode):
         return str(value)
 
     @staticmethod
-    def _validate_project_context(project_id: str | None, project_spec: dict | None) -> None:
-        """Validate project data required to persist and compute deploy secrets."""
+    def _validated_project_context(state: DevOpsState) -> tuple[str, dict]:
+        """Return the project data required to persist and compute deploy secrets."""
+        project_id = state.get("project_id")
+        project_spec = state.get("project_spec")
         if not isinstance(project_id, str) or not project_id.strip() or project_id == "unknown":
             raise SecretResolutionError("project_id is required for secret resolution")
         if not isinstance(project_spec, dict):
@@ -175,6 +238,7 @@ class SecretResolverNode(FunctionalNode):
         project_slug = project_spec.get("slug")
         if not isinstance(project_slug, str) or not project_slug.strip():
             raise SecretResolutionError("project slug is required for secret resolution")
+        return project_id, project_spec
 
     def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
         """Look up allocated server IP and port for a service.

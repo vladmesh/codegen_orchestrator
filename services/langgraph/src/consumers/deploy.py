@@ -98,15 +98,32 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
         return str(e)
 
 
+def _resolution_outcome(result: dict) -> DeployOutcome | None:
+    """Read the outcome the DevOps subgraph set, refusing an untyped stand-in.
+
+    The subgraph nodes set `DeployOutcome` members. Accepting a bare string here
+    would re-open the reverse-parse path where an outcome the consumer does not
+    recognise collapses into a generic failure and loses its dispatcher routing.
+    """
+    outcome = result.get("resolution_outcome")
+    if outcome is None or isinstance(outcome, DeployOutcome):
+        return outcome
+    raise TypeError(
+        f"resolution_outcome must be a DeployOutcome, got {type(outcome).__name__}: {outcome!r}"
+    )
+
+
 def _build_subgraph_input(
     project_id: str,
     project: ProjectDTO,
     git_url: str,
     allocated_resources: dict,
     job_data: dict,
-    head_sha: str = "",
+    head_sha: str,
 ) -> dict:
     """Build DevOps subgraph input from deploy job data."""
+    if not head_sha:
+        raise ValueError("head_sha is required to build DevOps subgraph input")
     return {
         "project_id": project_id,
         "run_id": job_data.get("task_id"),
@@ -119,7 +136,7 @@ def _build_subgraph_input(
         },
         "allocated_resources": allocated_resources,
         "provided_secrets": job_data.get("provided_secrets", {}),
-        "head_sha": head_sha or None,
+        "head_sha": head_sha,
         "messages": [],
         "environment_contract": None,
         "resolution_outcome": None,
@@ -402,11 +419,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
         elif result.get("missing_user_secrets"):
             missing = result.get("missing_user_secrets")
             logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing)
-            outcome = (
-                DeployOutcome.WAITING_FOR_USER_SECRET
-                if result.get("resolution_outcome") == "waiting_for_user_secret"
-                else DeployOutcome.GIVE_UP
-            )
+            outcome = _resolution_outcome(result) or DeployOutcome.GIVE_UP
             return await _handle_deploy_failure(
                 task_id=task_id,
                 project_id=project_id,
@@ -419,12 +432,8 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
         else:
-            typed_outcome = result.get("resolution_outcome")
+            typed_outcome = _resolution_outcome(result)
             if typed_outcome:
-                try:
-                    deploy_outcome = DeployOutcome(typed_outcome)
-                except ValueError:
-                    deploy_outcome = DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED
                 errors = result.get("errors", ["Environment resolution failed"])
                 return await _handle_deploy_failure(
                     task_id=task_id,
@@ -434,7 +443,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
                     callback_stream=callback_stream,
                     user_id=user_id,
                     redis=redis,
-                    deploy_outcome=deploy_outcome,
+                    deploy_outcome=typed_outcome,
                     deploy_fix_attempt=msg.deploy_fix_attempt,
                 )
             errors = result.get("errors", ["Unknown deployment error"])

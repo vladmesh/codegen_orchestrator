@@ -42,6 +42,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
         git_url=f"https://github.com/org/{RUNTIME_SLUG}",
         allocated_resources={},
         job_data={"task_id": "deploy-1"},
+        head_sha="a" * 40,
     )
     project_spec = deploy_input["project_spec"]
 

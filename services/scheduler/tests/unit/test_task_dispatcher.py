@@ -811,7 +811,7 @@ class TestPollMergedPRs:
         mock_github.get_pull_request.return_value = {
             "number": 42,
             "merged_at": "2026-03-16T12:00:00Z",
-            "head": {"sha": "abc123"},
+            "head": {"sha": "a" * 40},
         }
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
@@ -855,7 +855,7 @@ class TestPollMergedPRs:
         mock_github.get_pull_request.return_value = {
             "number": 43,
             "merged_at": "2026-03-16T13:00:00Z",
-            "head": {"sha": "def456"},
+            "head": {"sha": "d" * 40},
         }
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
@@ -885,7 +885,7 @@ class TestPollMergedPRs:
         mock_github.get_pull_request.return_value = {
             "number": 42,
             "merged_at": None,
-            "head": {"sha": "abc123"},
+            "head": {"sha": "a" * 40},
         }
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
@@ -939,7 +939,7 @@ class TestPollMergedPRs:
         mock_github = AsyncMock()
         mock_github.get_pull_request.side_effect = [
             Exception("GitHub API error"),
-            {"number": 10, "merged_at": "2026-03-16T12:00:00Z", "head": {"sha": "def456"}},
+            {"number": 10, "merged_at": "2026-03-16T12:00:00Z", "head": {"sha": "d" * 40}},
         ]
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):

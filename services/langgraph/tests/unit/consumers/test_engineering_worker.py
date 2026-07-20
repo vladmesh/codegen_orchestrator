@@ -92,7 +92,7 @@ class TestHandleEngineeringSuccess:
 
         result_data = {
             "engineering_status": "done",
-            "commit_sha": "abc123",
+            "commit_sha": "abc1230000000000000000000000000000000000",
         }
 
         out = await _handle_engineering_success(
@@ -109,14 +109,17 @@ class TestHandleEngineeringSuccess:
         )
 
         assert out["status"] == "success"
-        assert out["commit_sha"] == "abc123"
+        assert out["commit_sha"] == "abc1230000000000000000000000000000000000"
 
     @pytest.mark.asyncio
     async def test_deploy_message_includes_user_id(self, mock_redis, mock_api):
         """DeployMessage queued must include user_id (BUG 17)."""
         from src.consumers.engineering import _handle_engineering_success
 
-        result_data = {"engineering_status": "done", "commit_sha": "abc123"}
+        result_data = {
+            "engineering_status": "done",
+            "commit_sha": "abc1230000000000000000000000000000000000",
+        }
 
         await _handle_engineering_success(
             EngineeringSuccessParams(
@@ -149,7 +152,10 @@ class TestHandleEngineeringSuccess:
         """DeployMessage queued must include action from engineering job (#21)."""
         from src.consumers.engineering import _handle_engineering_success
 
-        result_data = {"engineering_status": "done", "commit_sha": "abc123"}
+        result_data = {
+            "engineering_status": "done",
+            "commit_sha": "abc1230000000000000000000000000000000000",
+        }
 
         await _handle_engineering_success(
             EngineeringSuccessParams(
@@ -185,7 +191,7 @@ class TestNotificationDecoupling:
 
         result_data = {
             "engineering_status": "done",
-            "commit_sha": "abc123",
+            "commit_sha": "abc1230000000000000000000000000000000000",
         }
 
         await _handle_engineering_success(
@@ -220,7 +226,7 @@ class TestNotificationDecoupling:
 
         result_data = {
             "engineering_status": "done",
-            "commit_sha": "abc123",
+            "commit_sha": "abc1230000000000000000000000000000000000",
         }
 
         await _handle_engineering_success(
@@ -254,7 +260,7 @@ class TestNotificationDecoupling:
 
         result_data = {
             "engineering_status": "done",
-            "commit_sha": "abc123",
+            "commit_sha": "abc1230000000000000000000000000000000000",
         }
 
         await _handle_engineering_success(
@@ -332,7 +338,7 @@ class TestFeatureActionFlow:
         mock_subgraph.ainvoke = AsyncMock(
             return_value={
                 "engineering_status": "done",
-                "commit_sha": "feat123",
+                "commit_sha": "fea1230000000000000000000000000000000000",
                 "worker_id": "w1",
             }
         )
@@ -411,7 +417,7 @@ class TestFeatureActionFlow:
         mock_subgraph.ainvoke = AsyncMock(
             return_value={
                 "engineering_status": "done",
-                "commit_sha": "feat456",
+                "commit_sha": "fea4560000000000000000000000000000000000",
                 "worker_id": "w2",
             }
         )
@@ -481,7 +487,7 @@ class TestFeatureActionFlow:
         mock_subgraph.ainvoke = AsyncMock(
             return_value={
                 "engineering_status": "done",
-                "commit_sha": "abc123",
+                "commit_sha": "abc1230000000000000000000000000000000000",
                 "worker_id": "w1",
             }
         )
@@ -549,7 +555,7 @@ class TestFeatureActionFlow:
         mock_subgraph.ainvoke = AsyncMock(
             return_value={
                 "engineering_status": "done",
-                "commit_sha": "feat789",
+                "commit_sha": "fea7890000000000000000000000000000000000",
                 "worker_id": "w3",
             }
         )
@@ -629,7 +635,7 @@ class TestFeatureActionFlow:
         mock_subgraph.ainvoke = AsyncMock(
             return_value={
                 "engineering_status": "done",
-                "commit_sha": "abc",
+                "commit_sha": "abc0000000000000000000000000000000000000",
                 "worker_id": "w4",
             }
         )

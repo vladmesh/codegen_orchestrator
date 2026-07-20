@@ -4,12 +4,23 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import yaml
 
 from shared.contracts.env_contract import merge_env_contract_fragments
 from shared.contracts.env_usage import load_env_contract_fragments
 from src.subgraphs.devops.env_contract_loader import load_environment_contract
 from src.subgraphs.devops.graph import resolve_secrets
 from src.subgraphs.devops.secret_resolver import SecretResolverNode, TypedSecretResolutionError
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _template_fixture() -> Path:
+    """Return the rendered fixture for the ref the orchestrator deploys with."""
+    configs = yaml.safe_load((_REPO_ROOT / "scripts" / "system_configs.yaml").read_text())
+    refs = [c["value"] for c in configs if c["key"] == "scheduler.service_template_ref"]
+    assert len(refs) == 1, f"expected one pinned service_template_ref, found {refs}"
+    return _REPO_ROOT / "shared/tests/fixtures" / f"service-template-{refs[0]}"
 
 
 def _state(entries: dict, resources: dict | None = None, secrets: dict | None = None) -> dict:
@@ -247,8 +258,7 @@ async def test_optional_allocation_failure_remains_fail_fast():
 @patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={})
 async def test_template_contract_fixture_resolves_production_entries(_decrypt, api_client):
     api_client.merge_secrets = AsyncMock()
-    root = Path(__file__).resolve().parents[4] / "shared/tests/fixtures/service-template-0.3.3"
-    contract = merge_env_contract_fragments(load_env_contract_fragments(root))
+    contract = merge_env_contract_fragments(load_env_contract_fragments(_template_fixture()))
     state = _state(
         contract.model_dump(mode="json").get("entries", {}),
         {
