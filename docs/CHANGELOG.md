@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-20
+
+- Align local `make lint` with CI fast checks by running Ruff format verification before Ruff lint.
+  `make ci-contract` now also rejects future drift between the CI Ruff steps and the Makefile
+  `lint` recipe.
+
 ## 2026-07-19
 
 - Route runtime project identity through immutable `project.slug` in deploy,

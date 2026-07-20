@@ -181,6 +181,7 @@ check-worker-images:
 # === Quality ===
 
 lint:
+	@uv run ruff format --check $(if $(LINT_PATH),$(LINT_PATH),.)
 	@uv run ruff check $(if $(LINT_PATH),$(LINT_PATH),.)
 
 format:
