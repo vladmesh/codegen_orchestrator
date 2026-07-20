@@ -21,6 +21,7 @@ from shared.redis_client import RedisStreamClient
 from ..clients.api import api_client
 from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
+from ._live_work import live_work_settled
 from ._qa_runner import (
     QAResult,
     credential_refresh_loop,
@@ -97,7 +98,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
     acquired = await redis.redis.set(inflight_key, "1", nx=True, ex=QA_INFLIGHT_TTL)
     if not acquired:
         logger.info("qa_already_inflight", dedup_id=dedup_id)
-        return {"status": "skipped", "reason": "already_inflight"}
+        return live_work_settled({"status": "skipped", "reason": "already_inflight"})
 
     try:
         # The criteria travel on the message — the producer resolves them from the
@@ -122,7 +123,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     application_id=msg.application_id,
                 )
                 await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
-                return {"status": "error", "error": error}
+                return live_work_settled({"status": "error", "error": error})
 
             # Fail-fast: if project has tg_bot module, bot_username is required
             if not msg.bot_username:
@@ -134,7 +135,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     )
                     logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
                     await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
-                    return {"status": "error", "error": error}
+                    return live_work_settled({"status": "error", "error": error})
 
         # Mark run as running before starting the checks
         if run_id:
@@ -205,7 +206,7 @@ async def _handle_qa_pass(*, run_id: str, deployed_url: str, report: str = "") -
         report=report,
     )
     logger.info("qa_passed", run_id=run_id)
-    return {"status": "passed"}
+    return live_work_settled({"status": "passed"})
 
 
 async def _handle_qa_fail(
@@ -237,7 +238,7 @@ async def _handle_qa_fail(
             qa_attempt=qa_attempt,
             report=qa_result.report,
         )
-        return {"status": "qa_exhausted"}
+        return live_work_settled({"status": "qa_exhausted"})
 
     await _update_run(
         run_id,
@@ -254,7 +255,7 @@ async def _handle_qa_fail(
         run_id=run_id,
         attempt=qa_attempt,
     )
-    return {"status": "qa_failed"}
+    return live_work_settled({"status": "qa_failed"})
 
 
 async def _update_run(

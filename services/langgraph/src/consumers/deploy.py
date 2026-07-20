@@ -26,7 +26,7 @@ from ..subgraphs.devops import create_devops_subgraph
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
 from ._events import publish_callback_event
-from ._live_work import live_work_cancel_key
+from ._live_work import live_work_cancel_key, live_work_unsettled
 from .deploy_failure_handler import _handle_deploy_failure
 from .deploy_lifecycle import process_lifecycle_action
 from .deploy_precheck import (
@@ -220,7 +220,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
                     ),
                 },
             )
-            return {"status": "cancelled", "reason": "deploy_lock_held"}
+            return live_work_unsettled({"status": "cancelled", "reason": "deploy_lock_held"})
 
         # Update task status to running
         await api_client.patch(f"runs/{task_id}", json={"status": RunStatus.RUNNING.value})
@@ -271,7 +271,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
                     ),
                 },
             )
-            return {"status": "failed", "error": error_msg}
+            return live_work_unsettled({"status": "failed", "error": error_msg})
 
         # Get or create allocations for the project
         alloc_result = await _allocate_resources(project_id, project)
@@ -286,7 +286,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
                     ),
                 },
             )
-            return {"status": "failed", "error": alloc_result}
+            return live_work_unsettled({"status": "failed", "error": alloc_result})
         allocated_resources = alloc_result
 
         # Lifecycle actions (stop/undeploy) — skip DevOps subgraph entirely
@@ -367,7 +367,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
 
         if result.get("deployment_result", {}).get("status") == "cancelled":
             logger.info("deploy_job_cancelled_during_actions", task_id=task_id)
-            return {"status": "cancelled"}
+            return live_work_unsettled({"status": "cancelled"})
 
         if result.get("deployed_url"):
             smoke_result = result.get("smoke_result")

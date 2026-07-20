@@ -189,7 +189,7 @@ async def test_result_shaped_deploy_error_under_teardown_fences_cleanup_without_
     mock_redis.ack = AsyncMock()
 
     with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0):
-        with pytest.raises(RuntimeError, match="live work returned failed"):
+        with pytest.raises(RuntimeError, match="live work returned unsettled"):
             await execute_live_work(
                 mock_redis,
                 queue="jobs:deploy",

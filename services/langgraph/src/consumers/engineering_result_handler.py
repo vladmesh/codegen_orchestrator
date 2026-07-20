@@ -22,6 +22,7 @@ from ..clients.api import api_client
 from ..clients.story_worker_registry import set_story_worker
 from ..clients.worker_spawner import delete_worker
 from ._events import publish_callback_event, publish_story_event
+from ._live_work import live_work_settled, live_work_unsettled
 
 logger = structlog.get_logger(__name__)
 
@@ -109,7 +110,7 @@ async def fail_job(task_id: str, error_msg: str, planning_task_id: str | None = 
     )
     if planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
-    return {"status": "failed", "error": error_msg}
+    return live_work_unsettled({"status": "failed", "error": error_msg})
 
 
 async def handle_worker_gave_up(
@@ -209,11 +210,13 @@ async def handle_worker_gave_up(
         except Exception:
             logger.warning("po_notify_on_gave_up_failed", task_id=task_id, exc_info=True)
 
-    return {
-        "status": "gave_up",
-        "reason": reason,
-        "finished_at": datetime.now(UTC).isoformat(),
-    }
+    return live_work_settled(
+        {
+            "status": "gave_up",
+            "reason": reason,
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+    )
 
 
 async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
@@ -252,11 +255,13 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
             user_id=user_id,
             project_id=project_id,
         )
-        return {
-            "status": "failed",
-            "error": "No commit_sha",
-            "finished_at": datetime.now(UTC).isoformat(),
-        }
+        return live_work_unsettled(
+            {
+                "status": "failed",
+                "error": "No commit_sha",
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+        )
 
     logger.info("engineering_job_success", task_id=task_id, commit_sha=result.get("commit_sha"))
 
@@ -389,9 +394,11 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
             project_id=project_id,
         )
 
-    return {
-        "status": "success",
-        "commit_sha": result.get("commit_sha"),
-        "deploy_task_id": deploy_task_id,
-        "finished_at": datetime.now(UTC).isoformat(),
-    }
+    return live_work_settled(
+        {
+            "status": "success",
+            "commit_sha": result.get("commit_sha"),
+            "deploy_task_id": deploy_task_id,
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+    )

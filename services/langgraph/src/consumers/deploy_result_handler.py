@@ -18,6 +18,7 @@ from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ._events import publish_callback_event
+from ._live_work import live_work_settled, live_work_unsettled
 
 logger = structlog.get_logger(__name__)
 
@@ -79,12 +80,14 @@ async def _handle_smoke_failure(
         project_id=project_id,
     )
 
-    return {
-        "status": "failed",
-        "error": error_msg,
-        "deployed_url": result["deployed_url"],
-        "finished_at": datetime.now(UTC).isoformat(),
-    }
+    return live_work_unsettled(
+        {
+            "status": "failed",
+            "error": error_msg,
+            "deployed_url": result["deployed_url"],
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+    )
 
 
 async def _handle_deploy_success(
@@ -138,8 +141,10 @@ async def _handle_deploy_success(
             project_id=project_id,
         )
 
-    return {
-        "status": "success",
-        "deployed_url": result["deployed_url"],
-        "finished_at": datetime.now(UTC).isoformat(),
-    }
+    return live_work_settled(
+        {
+            "status": "success",
+            "deployed_url": result["deployed_url"],
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+    )
