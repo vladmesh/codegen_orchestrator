@@ -2,6 +2,9 @@
 
 ## 2026-07-20
 
+- Make deploy port selection role-based. Deploy allocation and the live harness now share the same
+  port service metadata, and deployed URLs are selected from HTTP-health-serving module ports
+  instead of whichever application allocation the API returns first.
 - Fix standalone live-test sweeping after the project slug migration. `clean_live_tests.py` now
   selects projects by `title`, carries `slug` into GitHub and remote cleanup, and fetches remote
   server SSH users and decrypted keys through the authenticated internal API instead of querying

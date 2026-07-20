@@ -9,6 +9,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.service_ports import is_http_health_port_service
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
@@ -192,15 +193,22 @@ class DeployerNode(FunctionalNode):
             return None
 
         parts = repo_url.rstrip("/").split("/")
-        first_resource = next(iter(allocated_resources.values()), {}) if allocated_resources else {}
+        deploy_resource = next(
+            (
+                resource
+                for resource in allocated_resources.values()
+                if is_http_health_port_service(resource.get("service_name"))
+            ),
+            {},
+        )
 
         return {
             "owner": parts[-2],
             "repo": parts[-1],
             "project_name": project_spec_runtime_slug(project_spec),
-            "server_ip": first_resource.get("server_ip"),
-            "port": first_resource.get("port"),
-            "server_handle": first_resource.get("server_handle"),
+            "server_ip": deploy_resource.get("server_ip"),
+            "port": deploy_resource.get("port"),
+            "server_handle": deploy_resource.get("server_handle"),
         }
 
     async def _run_cancelled(self, run_id: str | None) -> bool:
