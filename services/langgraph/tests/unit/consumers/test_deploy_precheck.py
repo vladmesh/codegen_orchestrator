@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.contracts.queues.deploy import DeployOutcome
 from tests.unit.factories import make_project, make_repository
 
 
@@ -208,6 +209,7 @@ class TestDeployPreCheckIntegration:
             "project_id": "proj-1",
             "user_id": "u1",
             "action": "create",
+            "head_sha": "a" * 40,
         }
 
         result = await process_deploy_job(job_data, mock_redis)
@@ -247,6 +249,7 @@ class TestDeployPreCheckIntegration:
             "project_id": "proj-1",
             "user_id": "u1",
             "action": "feature",
+            "head_sha": "a" * 40,
         }
 
         result = await process_deploy_job(job_data, mock_redis)
@@ -255,3 +258,35 @@ class TestDeployPreCheckIntegration:
         assert mock_precheck.await_args.kwargs["ssh_user"] == "dev"
         assert mock_precheck.await_args.kwargs["project_name"] == "test-project-0000"
         mock_devops.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.deploy.create_devops_subgraph")
+    @patch("src.consumers.deploy._allocate_resources", new_callable=AsyncMock)
+    @patch("src.consumers.deploy_precheck._pre_check_server", new_callable=AsyncMock)
+    async def test_missing_head_sha_fails_before_allocation_or_precheck(
+        self, mock_precheck, mock_alloc, mock_devops, mock_redis, mock_api
+    ):
+        """Missing commit SHA is typed before any deploy-path side effects."""
+        mock_precheck.return_value = "precheck would have failed first"
+
+        from src.consumers.deploy import process_deploy_job
+
+        result = await process_deploy_job(
+            {
+                "task_id": "deploy-1",
+                "project_id": "proj-1",
+                "user_id": "u1",
+                "action": "create",
+                "head_sha": "",
+            },
+            mock_redis,
+        )
+
+        assert result["status"] == "failed"
+        assert "head_sha" in result["error"]
+        mock_api.get_project.assert_not_awaited()
+        mock_alloc.assert_not_awaited()
+        mock_precheck.assert_not_awaited()
+        mock_devops.assert_not_called()
+        failed_patch = mock_api.patch.call_args_list[-1].kwargs["json"]
+        assert failed_patch["result"]["deploy_outcome"] == DeployOutcome.HEAD_SHA_MISSING.value

@@ -72,6 +72,7 @@ def _job(*, callback_stream=None, user_id="12345"):
         "user_id": user_id,
         "callback_stream": callback_stream or "",
         "triggered_by": DeployTrigger.WEBHOOK.value,
+        "head_sha": "a" * 40,
     }
 
 

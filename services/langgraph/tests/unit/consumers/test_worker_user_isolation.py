@@ -95,6 +95,7 @@ class TestDeployWorkerPassesTelegramId:
             "user_id": "67890",
             "callback_stream": "po:input",
             "triggered_by": "po",
+            "head_sha": "a" * 40,
         }
 
         await process_deploy_job(job_data, mock_redis)

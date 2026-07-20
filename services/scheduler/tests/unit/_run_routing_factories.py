@@ -7,6 +7,7 @@ Not a test module (no `test_` prefix) — imported by `test_supervisor.py` and
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -103,6 +104,7 @@ def _make_run(
     type: str = RunType.DEPLOY,
     status: str = RunStatus.COMPLETED,
     story_id: str | None = "story-1",
+    run_metadata: dict[str, Any] | None = None,
     result: dict | None = None,
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
@@ -113,6 +115,7 @@ def _make_run(
         type=type,
         status=status,
         story_id=story_id,
+        run_metadata=run_metadata or {},
         result=result,
         created_at=created_at or _NOW,
         updated_at=updated_at,

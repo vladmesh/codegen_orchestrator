@@ -97,6 +97,7 @@ def _job(*, action="create", story_id="story-1", user_id="12345"):
         "story_id": story_id,
         "triggered_by": DeployTrigger.ENGINEERING.value,
         "action": action,
+        "head_sha": "a" * 40,
     }
 
 

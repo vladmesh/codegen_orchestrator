@@ -34,6 +34,7 @@ class DeployOutcome(StrEnum):
     ALLOCATION_MISSING = "allocation_missing"
     ENVIRONMENT_CONTRACT_INVALID = "environment_contract_invalid"
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
+    HEAD_SHA_MISSING = "head_sha_missing"
 
 
 class DeployMessage(BaseMessage):
@@ -46,6 +47,8 @@ class DeployMessage(BaseMessage):
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: DeployAction = DeployAction.CREATE
     deploy_fix_attempt: int = 0
+    # Required for commit-deploy actions. Lifecycle actions keep this empty
+    # because they do not read or deploy repository state.
     head_sha: str = ""
 
 

@@ -181,7 +181,7 @@ async def _handle_lifecycle_action(
     return lifecycle_result
 
 
-async def process_deploy_job(  # noqa: PLR0915
+async def process_deploy_job(  # noqa: PLR0911, PLR0915
     job_data: dict, redis: RedisStreamClient
 ) -> dict:
     """Process a single deploy job by running DevOps Subgraph."""
@@ -235,6 +235,26 @@ async def process_deploy_job(  # noqa: PLR0915
             user_id=user_id,
             project_id=project_id or "",
         )
+
+        if msg.action not in (DeployAction.STOP, DeployAction.UNDEPLOY) and not msg.head_sha:
+            error_msg = "head_sha is required for deploy actions that read repository state"
+            logger.error(
+                "deploy_head_sha_missing",
+                task_id=task_id,
+                project_id=project_id,
+                action=msg.action.value,
+            )
+            return await _handle_deploy_failure(
+                task_id=task_id,
+                project_id=project_id,
+                story_id=story_id,
+                error_msg=error_msg,
+                callback_stream=callback_stream,
+                user_id=user_id,
+                redis=redis,
+                deploy_outcome=DeployOutcome.HEAD_SHA_MISSING,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
+            )
 
         # Fetch project details (with user isolation)
         tg_kwargs = {"telegram_id": int(user_id)} if user_id and user_id.isdigit() else {}

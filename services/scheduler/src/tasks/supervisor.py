@@ -332,6 +332,7 @@ async def supervise_deploying_stories(
             DeployOutcome.ALLOCATION_MISSING,
             DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
             DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+            DeployOutcome.HEAD_SHA_MISSING,
         ):
             await _handle_deploy_give_up(api_client, story_id, project_id, run, log)
             failed += 1
@@ -520,6 +521,16 @@ async def _handle_deploy_retry(
 
     Returns True if retried, False if max retries exceeded.
     """
+    run_metadata = getattr(run, "run_metadata", None) or {}
+    head_sha = run_metadata.get("head_sha")
+    if not head_sha:
+        log.error("deploy_retry_head_sha_missing", run_id=run.id)
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            run.id, project_id, "deploy retry could not find original head_sha"
+        )
+        return False
+
     retry_key = f"{DEPLOY_RETRY_KEY_PREFIX}{story_id}"
     attempts = await redis.incr(retry_key)
     await redis.expire(retry_key, _deploy_retry_ttl())
@@ -545,7 +556,11 @@ async def _handle_deploy_retry(
             "project_id": project_id,
             "story_id": story_id,
             "status": RunStatus.QUEUED.value,
-            "run_metadata": {"triggered_by": "supervisor_retry", "attempt": attempts},
+            "run_metadata": {
+                "triggered_by": "supervisor_retry",
+                "attempt": attempts,
+                "head_sha": head_sha,
+            },
         }
     )
 
@@ -556,6 +571,7 @@ async def _handle_deploy_retry(
         story_id=story_id,
         triggered_by=DeployTrigger.WEBHOOK,
         action="feature",
+        head_sha=head_sha,
     )
     await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
     log.info(
