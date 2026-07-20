@@ -1,6 +1,7 @@
 from enum import StrEnum
+from typing import Any
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.run_result import (
@@ -67,6 +68,7 @@ class RunDTO(TimestampedDTO):
     status: RunStatus
     story_id: str | None = None
     spec: str | None = None
+    run_metadata: dict[str, Any] = Field(default_factory=dict)
     result: RunResult | None = None
 
     @model_validator(mode="after")

@@ -264,6 +264,7 @@ class TestSuperviseDeployingStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
+            run_metadata={"triggered_by": "pr_poll", "head_sha": "abc123"},
             result={"deploy_outcome": DeployOutcome.RETRY.value},
         )
         api_client.create_run.return_value = {}
@@ -279,6 +280,39 @@ class TestSuperviseDeployingStories:
             c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
         ]
         assert len(deploy_calls) == 1
+        deploy_msg = deploy_calls[0][0][1]
+        assert deploy_msg.head_sha == "abc123"
+
+        run_data = api_client.create_run.call_args[0][0]
+        assert run_data["run_metadata"]["head_sha"] == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_retry_without_original_head_sha_fails_story(self, api_client, redis_client):
+        """RETRY without source run head_sha fails instead of publishing a doomed deploy."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={"deploy_outcome": DeployOutcome.RETRY.value},
+        )
+        api_client.fail_story.return_value = {}
+
+        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        api_client.create_run.assert_not_called()
+
+        from shared.queues import DEPLOY_QUEUE
+
+        deploy_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
+        ]
+        assert deploy_calls == []
 
     @pytest.mark.asyncio
     async def test_head_sha_missing_fails_story_without_retry(self, api_client, redis_client):
@@ -316,6 +350,7 @@ class TestSuperviseDeployingStories:
         ]
         api_client.get_latest_run_by_story.return_value = _make_run(
             status=RunStatus.FAILED,
+            run_metadata={"triggered_by": "pr_poll", "head_sha": "abc123"},
             result={"deploy_outcome": DeployOutcome.RETRY.value},
         )
         api_client.fail_story.return_value = {}

@@ -4,7 +4,8 @@
 
 - Require an exact `head_sha` before loading a deploy environment contract. Missing or empty commit
   SHA now returns the typed `head_sha_missing` deploy outcome instead of reading from `main`, while
-  engineering-triggered deploys pass the completed commit SHA into the deploy message.
+  engineering-triggered deploys pass the completed commit SHA into the deploy message. Deploy retry
+  runs now preserve the original merged SHA in run metadata and on the retried deploy message.
 - Align local `make lint` with CI fast checks by running Ruff format verification before Ruff lint.
   `make ci-contract` now also rejects future drift between the CI Ruff steps and the Makefile
   `lint` recipe.
