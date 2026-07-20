@@ -423,7 +423,13 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             ]
             missing_keys = [m.key for m in missing]
             logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing_keys)
-            outcome = _resolution_outcome(result) or DeployOutcome.GIVE_UP
+            typed_outcome = _resolution_outcome(result)
+            if typed_outcome is not None and typed_outcome != DeployOutcome.WAITING_FOR_USER_SECRET:
+                raise ValueError(
+                    "missing_user_secrets present but resolution_outcome is "
+                    f"{typed_outcome}, expected {DeployOutcome.WAITING_FOR_USER_SECRET}"
+                )
+            outcome = DeployOutcome.WAITING_FOR_USER_SECRET
             return await _handle_deploy_failure(
                 task_id=task_id,
                 project_id=project_id,

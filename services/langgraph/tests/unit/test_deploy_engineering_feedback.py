@@ -177,10 +177,15 @@ class TestDeployWorkflowFailureOutcome:
         assert any(r["deploy_outcome"] == DeployOutcome.RETRY.value for r in results)
 
     @pytest.mark.asyncio
-    async def test_missing_secrets_stores_give_up_outcome(
+    async def test_missing_secrets_stores_waiting_outcome(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Missing secrets should store GIVE_UP outcome (not a code bug)."""
+        """Missing secrets are non-terminal: store WAITING_FOR_USER_SECRET, not GIVE_UP.
+
+        The subgraph omits resolution_outcome here on purpose. Even without the
+        typed stand-in, the presence of missing_user_secrets must force the
+        waiting outcome and carry the structured key/description list.
+        """
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": None,
@@ -196,7 +201,14 @@ class TestDeployWorkflowFailureOutcome:
         await process_deploy_job(_job(), mock_redis)
 
         results = _find_failed_patches(mock_api)
-        assert any(r["deploy_outcome"] == DeployOutcome.GIVE_UP.value for r in results)
+        waiting = [
+            r for r in results if r["deploy_outcome"] == DeployOutcome.WAITING_FOR_USER_SECRET.value
+        ]
+        assert waiting, "expected a WAITING_FOR_USER_SECRET outcome"
+        assert not any(r["deploy_outcome"] == DeployOutcome.GIVE_UP.value for r in results)
+        assert waiting[0]["missing_user_secrets"] == [
+            {"key": "TELEGRAM_BOT_TOKEN", "description": "Telegram bot token"}
+        ]
 
 
 class TestDeployFixAttempt:
