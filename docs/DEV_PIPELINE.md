@@ -1,6 +1,8 @@
 # Dev Pipeline
 
-Sprint-based development workflow. All state is local (markdown files). Entry point: `/go`.
+Sprint-based workflow for developing the orchestrator itself. Entry point: `/go`.
+
+Orchestrator tasks are created and tracked in the external pipeline, not in a local Tasks DB. Sprint state lives in hand-maintained markdown files (`docs/STATUS.md`, `docs/backlog.md`, `docs/ROADMAP.md`) — there are no generators that produce them.
 
 ## Pipeline Flow
 
