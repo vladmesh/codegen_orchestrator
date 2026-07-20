@@ -271,7 +271,10 @@ async def test_deploy_worker_missing_secrets_fails(
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": None,
-            "missing_user_secrets": ["TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY"],
+            "missing_user_secrets": [
+                {"key": "TELEGRAM_BOT_TOKEN", "description": "Telegram bot token"},
+                {"key": "OPENAI_API_KEY", "description": "OpenAI API key"},
+            ],
             "errors": [],
         }
     )

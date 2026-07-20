@@ -108,7 +108,9 @@ async def test_contract_missing_user_secret_is_a_typed_waiting_outcome():
 
     result = await SecretResolverNode().run(state)
 
-    assert result["missing_user_secrets"] == ["MISSING"]
+    assert result["missing_user_secrets"] == [
+        {"key": "MISSING", "description": "Missing credential"}
+    ]
     assert result["resolution_outcome"] == "waiting_for_user_secret"
 
 

@@ -21,6 +21,7 @@ class StoryStatus(StrEnum):
     DEPLOYING = "deploying"
     TESTING = "testing"
     WAITING_HUMAN_REVIEW = "waiting_human_review"
+    WAITING_USER_SECRET = "waiting_user_secret"  # noqa: S105
     COMPLETED = "completed"
     FAILED = "failed"
     ARCHIVED = "archived"
@@ -50,6 +51,7 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
         StoryStatus.TESTING,
         StoryStatus.COMPLETED,
         StoryStatus.IN_PROGRESS,
+        StoryStatus.WAITING_USER_SECRET,
         StoryStatus.FAILED,
     },
     StoryStatus.TESTING: {
@@ -59,6 +61,10 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
     },
     StoryStatus.WAITING_HUMAN_REVIEW: {
         StoryStatus.IN_PROGRESS,
+        StoryStatus.FAILED,
+    },
+    StoryStatus.WAITING_USER_SECRET: {
+        StoryStatus.DEPLOYING,
         StoryStatus.FAILED,
     },
     StoryStatus.COMPLETED: {StoryStatus.REOPENED, StoryStatus.ARCHIVED},

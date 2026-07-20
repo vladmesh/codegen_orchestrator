@@ -194,6 +194,26 @@ async def human_review_story(
     return StoryRead.model_validate(story, from_attributes=True)
 
 
+@router.post("/{story_id}/wait-user-secret", response_model=StoryRead)
+async def wait_user_secret_story(
+    story_id: str,
+    body: StoryTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    """Park a deploying story that needs a user secret it does not have yet.
+
+    The scheduler re-dispatches the deploy (→ DEPLOYING) once the secret appears,
+    so this is a non-terminal wait, not a failure.
+    """
+    body = body or StoryTransition()
+    story = await _get_story(story_id, db)
+    _do_transition(story, StoryStatus.WAITING_USER_SECRET)
+    await db.commit()
+    await db.refresh(story)
+    logger.info("story_waiting_user_secret", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
 @router.post("/{story_id}/start", response_model=StoryRead)
 async def start_story(
     story_id: str,

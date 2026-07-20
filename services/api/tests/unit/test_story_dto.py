@@ -21,7 +21,7 @@ class TestStoryStatus:
 
     def test_membership(self):
         values = list(StoryStatus)
-        assert len(values) == 10  # noqa: PLR2004
+        assert len(values) == 11  # noqa: PLR2004
         assert "created" in values
         assert "in_progress" in values
         assert "reopened" in values
@@ -31,6 +31,7 @@ class TestStoryStatus:
         assert "archived" in values
         assert "failed" in values
         assert "waiting_human_review" in values
+        assert "waiting_user_secret" in values
 
 
 class TestStoryTransitions:
@@ -120,6 +121,18 @@ class TestStoryTransitions:
 
     def test_testing_can_fail(self):
         assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.TESTING]
+
+    def test_waiting_user_secret_status_value(self):
+        assert StoryStatus.WAITING_USER_SECRET == "waiting_user_secret"  # noqa: S105
+
+    def test_deploying_can_wait_for_user_secret(self):
+        assert StoryStatus.WAITING_USER_SECRET in VALID_TRANSITIONS[StoryStatus.DEPLOYING]
+
+    def test_waiting_user_secret_transitions(self):
+        allowed = VALID_TRANSITIONS[StoryStatus.WAITING_USER_SECRET]
+        assert StoryStatus.DEPLOYING in allowed  # secret arrived → redeploy
+        assert StoryStatus.FAILED in allowed  # given up manually
+        assert StoryStatus.COMPLETED not in allowed  # can't skip to completed
 
     @pytest.mark.parametrize("status", list(StoryStatus))
     def test_all_statuses_have_transitions(self, status):

@@ -6,6 +6,7 @@ Shared DTO factories live in `_run_routing_factories`.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 # Sibling test-helper module (not a test module); on sys.path via pytest prepend import mode.
@@ -20,8 +21,18 @@ import pytest
 
 from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
+from shared.queues import DEPLOY_QUEUE, PO_INPUT_QUEUE
+
+_WAITING_SECRET_RESULT = {
+    "deploy_outcome": DeployOutcome.WAITING_FOR_USER_SECRET.value,
+    "error_details": "Missing secrets: TELEGRAM_BOT_TOKEN",
+    "missing_user_secrets": [
+        {"key": "TELEGRAM_BOT_TOKEN", "description": "Telegram bot token from @BotFather"},
+    ],
+}
 
 
 @pytest.fixture
@@ -377,7 +388,13 @@ class TestSuperviseDeployingStories:
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
-        assert result == {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}
+        assert result == {
+            "tested": 0,
+            "retried": 0,
+            "redispatched": 0,
+            "waiting": 0,
+            "failed": 0,
+        }
         api_client.transition_story.assert_not_called()
 
     @pytest.mark.asyncio
@@ -392,7 +409,13 @@ class TestSuperviseDeployingStories:
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
-        assert result == {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}
+        assert result == {
+            "tested": 0,
+            "retried": 0,
+            "redispatched": 0,
+            "waiting": 0,
+            "failed": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_invalid_deploy_result_fails_story(self, api_client, redis_client):
@@ -448,7 +471,167 @@ class TestSuperviseDeployingStories:
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
-        assert result == {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}
+        assert result == {
+            "tested": 0,
+            "retried": 0,
+            "redispatched": 0,
+            "waiting": 0,
+            "failed": 0,
+        }
+        api_client.fail_story.assert_not_called()
+        api_client.transition_story.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_waiting_user_secret_parks_story_and_requests_once(
+        self, api_client, redis_client
+    ):
+        """WAITING_FOR_USER_SECRET → story parked (not FAILED), one PO request emitted."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result=_WAITING_SECRET_RESULT,
+        )
+        api_client.get_project.return_value = SimpleNamespace(owner_id=555)
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["waiting"] == 1
+        assert result["failed"] == 0
+        # Parked, not failed.
+        api_client.fail_story.assert_not_called()
+        api_client.wait_user_secret_story.assert_called_once_with("story-1")
+
+        # Exactly one PO request on po:input, carrying the key + description, not consumers.
+        po_calls = [
+            c for c in redis_client.publish_flat.call_args_list if c[0][0] == PO_INPUT_QUEUE
+        ]
+        assert len(po_calls) == 1
+        fields = po_calls[0][0][1]
+        assert fields["event"] == "story_waiting_user_secret"
+        assert fields["user_id"] == "555"
+        assert "TELEGRAM_BOT_TOKEN" in fields["text"]
+        assert "Telegram bot token" in fields["text"]
+
+
+class TestSuperviseWaitingUserSecretStories:
+    """Poll WAITING_USER_SECRET stories; re-deploy once the secret is saved."""
+
+    @pytest.mark.asyncio
+    async def test_redispatch_when_all_secrets_present(self, api_client, redis_client):
+        """All missing keys saved → new deploy run + DEPLOYING, no repeated user message."""
+        from src.tasks.supervisor import supervise_waiting_user_secret_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="waiting_user_secret")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
+            result=_WAITING_SECRET_RESULT,
+        )
+        api_client.list_project_secret_keys.return_value = ["TELEGRAM_BOT_TOKEN", "OTHER"]
+        api_client.create_run.return_value = {}
+
+        result = await supervise_waiting_user_secret_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 1
+        api_client.transition_story.assert_called_once_with("story-1", "deploy")
+
+        deploy_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
+        ]
+        assert len(deploy_calls) == 1
+        assert deploy_calls[0][0][1].head_sha == "a" * 40
+        run_data = api_client.create_run.call_args[0][0]
+        assert run_data["run_metadata"]["head_sha"] == "a" * 40
+
+        # No repeated request to the user — the request is one-shot on entry to the wait.
+        po_calls = [
+            c for c in redis_client.publish_flat.call_args_list if c[0][0] == PO_INPUT_QUEUE
+        ]
+        assert po_calls == []
+
+    @pytest.mark.asyncio
+    async def test_no_redispatch_when_secret_still_missing(self, api_client, redis_client):
+        """Incomplete secret set → story stays waiting, nothing published, no message."""
+        from src.tasks.supervisor import supervise_waiting_user_secret_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="waiting_user_secret")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={"triggered_by": "pr_poll", "head_sha": "a" * 40},
+            result=_WAITING_SECRET_RESULT,
+        )
+        api_client.list_project_secret_keys.return_value = ["OTHER"]
+
+        result = await supervise_waiting_user_secret_stories(api_client, redis_client)
+
+        assert result == {"redispatched": 0, "failed": 0}
+        api_client.transition_story.assert_not_called()
+        api_client.fail_story.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+        po_calls = [
+            c for c in redis_client.publish_flat.call_args_list if c[0][0] == PO_INPUT_QUEUE
+        ]
+        assert po_calls == []
+
+    @pytest.mark.asyncio
+    async def test_redispatch_without_head_sha_fails_story(self, api_client, redis_client):
+        """Secrets present but no source head_sha → typed failure, no doomed deploy."""
+        from src.tasks.supervisor import supervise_waiting_user_secret_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="waiting_user_secret")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result=_WAITING_SECRET_RESULT,
+        )
+        api_client.list_project_secret_keys.return_value = ["TELEGRAM_BOT_TOKEN"]
+
+        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
+            result = await supervise_waiting_user_secret_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_waiting_story_with_failed_run_is_not_swept_to_failed(
+        self, api_client, redis_client
+    ):
+        """No supervisor fails a WAITING_USER_SECRET story just because its run is FAILED."""
+        from src.tasks.supervisor import (
+            supervise_deploying_stories,
+            supervise_waiting_user_secret_stories,
+        )
+
+        def _by_status(status):
+            if status == StoryStatus.WAITING_USER_SECRET:
+                return [_make_story(id="story-1", status="waiting_user_secret")]
+            return []
+
+        api_client.get_stories_by_status.side_effect = _by_status
+        # Latest deploy run is terminal FAILED (the run that hit the missing secret).
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={"head_sha": "a" * 40},
+            result=_WAITING_SECRET_RESULT,
+        )
+        # Secret still not saved, so the story must simply keep waiting.
+        api_client.list_project_secret_keys.return_value = []
+
+        deploying = await supervise_deploying_stories(api_client, redis_client)
+        waiting = await supervise_waiting_user_secret_stories(api_client, redis_client)
+
+        assert deploying["failed"] == 0
+        assert waiting == {"redispatched": 0, "failed": 0}
         api_client.fail_story.assert_not_called()
         api_client.transition_story.assert_not_called()
 

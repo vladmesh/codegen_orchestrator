@@ -184,7 +184,9 @@ class TestDeployWorkflowFailureOutcome:
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": None,
-                "missing_user_secrets": ["TELEGRAM_BOT_TOKEN"],
+                "missing_user_secrets": [
+                    {"key": "TELEGRAM_BOT_TOKEN", "description": "Telegram bot token"}
+                ],
                 "errors": [],
             }
         )

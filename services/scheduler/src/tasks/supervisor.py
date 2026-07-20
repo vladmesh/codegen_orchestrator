@@ -16,9 +16,16 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.notifications import notify_admins_best_effort
-from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, QA_QUEUE
+from shared.queues import (
+    ARCHITECT_QUEUE,
+    DEPLOY_QUEUE,
+    ENGINEERING_QUEUE,
+    PO_INPUT_QUEUE,
+    QA_QUEUE,
+)
 from shared.redis_client import RedisStreamClient
 
 if TYPE_CHECKING:
@@ -262,11 +269,12 @@ async def supervise_deploying_stories(
     """
     stories = await api_client.get_stories_by_status(StoryStatus.DEPLOYING)
     if not stories:
-        return {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}
+        return {"tested": 0, "retried": 0, "redispatched": 0, "waiting": 0, "failed": 0}
 
     tested = 0
     retried = 0
     redispatched = 0
+    waiting = 0
     failed = 0
     redis = redis_client._redis
 
@@ -326,9 +334,14 @@ async def supervise_deploying_stories(
             else:
                 failed += 1
 
+        elif outcome == DeployOutcome.WAITING_FOR_USER_SECRET:
+            await _handle_deploy_waiting_user_secret(
+                api_client, redis_client, story_id, project_id, run, log
+            )
+            waiting += 1
+
         elif outcome in (
             DeployOutcome.GIVE_UP,
-            DeployOutcome.WAITING_FOR_USER_SECRET,
             DeployOutcome.ALLOCATION_MISSING,
             DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
             DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
@@ -341,6 +354,7 @@ async def supervise_deploying_stories(
         "tested": tested,
         "retried": retried,
         "redispatched": redispatched,
+        "waiting": waiting,
         "failed": failed,
     }
 
@@ -521,8 +535,7 @@ async def _handle_deploy_retry(
 
     Returns True if retried, False if max retries exceeded.
     """
-    run_metadata = getattr(run, "run_metadata", None) or {}
-    head_sha = run_metadata.get("head_sha")
+    head_sha = _deploy_run_head_sha(run)
     if not head_sha:
         log.error("deploy_retry_head_sha_missing", run_id=run.id)
         await api_client.fail_story(story_id)
@@ -597,6 +610,93 @@ async def _handle_deploy_give_up(
     await _notify_admin_failure(run.id, project_id, error_msg)
 
 
+def _deploy_run_head_sha(run) -> str | None:
+    """Read the exact commit a deploy run targeted, from its run_metadata."""
+    run_metadata = getattr(run, "run_metadata", None) or {}
+    return run_metadata.get("head_sha")
+
+
+async def _handle_deploy_waiting_user_secret(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Deploy is blocked on a required user secret — park the story, ask the user once.
+
+    The story moves DEPLOYING → WAITING_USER_SECRET (not FAILED). The request is
+    emitted here, on entry to the wait, exactly once: the transition happens first,
+    so the story leaves the DEPLOYING set this branch polls and cannot be asked
+    again on a later tick. supervise_waiting_user_secret_stories only checks for the
+    secret's arrival; it never re-sends the request.
+    """
+    missing = run.result.missing_user_secrets
+    log.info(
+        "deploy_waiting_user_secret",
+        run_id=run.id,
+        missing=[m.key for m in missing],
+    )
+
+    await api_client.wait_user_secret_story(story_id)
+
+    try:
+        await _request_user_secret_via_po(
+            api_client, redis_client, story_id, project_id, missing, log
+        )
+    except Exception:
+        # The story is already parked; a failed PO publish must not re-raise and
+        # cause a second request next tick. It is a one-shot best-effort nudge.
+        log.warning("waiting_user_secret_request_failed", story_id=story_id, exc_info=True)
+
+
+async def _request_user_secret_via_po(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    missing,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask the project owner for the missing secrets, through PO, by key + description.
+
+    Emits a POSystemEvent to po:input; PO composes the human message. The secret
+    `consumers` never leave the resolver — only the key and its description reach
+    the user.
+    """
+    project = await api_client.get_project(project_id)
+    if project is None:
+        log.warning("waiting_user_secret_no_project", project_id=project_id)
+        return
+    user_id = str(project.owner_id)
+    if not user_id:
+        log.warning("waiting_user_secret_no_owner", project_id=project_id)
+        return
+
+    secret_lines = "\n".join(f"- {m.key}: {m.description}" for m in missing)
+    text = (
+        "Deployment is paused because the project needs secret(s) only the user can "
+        "provide:\n"
+        f"{secret_lines}\n"
+        "Ask the user for each value and save it. Deployment resumes automatically "
+        "once every secret is saved."
+    )
+    event = POSystemEvent(
+        event="story_waiting_user_secret",
+        text=text,
+        task_id=story_id,
+        user_id=user_id,
+        project_id=project_id,
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info(
+        "waiting_user_secret_requested",
+        story_id=story_id,
+        keys=[m.key for m in missing],
+    )
+
+
 async def _fail_story_on_invalid_result(
     api_client: SchedulerAPIClient,
     story_id: str,
@@ -625,6 +725,130 @@ async def _notify_admin_failure(run_id: str, project_id: str, error: str) -> Non
         run_id=run_id,
         project_id=project_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# WAITING_USER_SECRET supervision — re-deploy once the secret appears
+# ---------------------------------------------------------------------------
+
+
+async def supervise_waiting_user_secret_stories(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+) -> dict[str, int]:
+    """Poll WAITING_USER_SECRET stories; re-deploy once every missing secret is saved.
+
+    Reads the missing keys from the story's latest deploy run, checks the project's
+    stored secret key names, and re-dispatches the deploy — the same way RETRY does
+    — when all are present, moving the story back to DEPLOYING. A story whose set is
+    still incomplete stays waiting: no state change, no repeated message to the user.
+
+    Returns dict with 'redispatched' and 'failed' counts.
+    """
+    stories = await api_client.get_stories_by_status(StoryStatus.WAITING_USER_SECRET)
+    if not stories:
+        return {"redispatched": 0, "failed": 0}
+
+    redispatched = 0
+    failed = 0
+
+    for story in stories:
+        story_id = story.id
+        project_id = str(story.project_id)
+        log = logger.bind(story_id=story_id, project_id=project_id)
+
+        try:
+            run = await api_client.get_latest_run_by_story(story_id, run_type="deploy")
+        except ValidationError as exc:
+            await _fail_story_on_invalid_result(
+                api_client, story_id, project_id, "deploy", exc, log
+            )
+            failed += 1
+            continue
+        # A run without a parseable result (QUEUED/RUNNING re-dispatch already in
+        # flight, or superseded) means there is nothing to act on yet — keep waiting.
+        if run is None or run.result is None:
+            continue
+
+        missing_keys = [m.key for m in run.result.missing_user_secrets]
+        if not missing_keys:
+            continue
+
+        present = set(await api_client.list_project_secret_keys(project_id))
+        if not set(missing_keys) <= present:
+            log.info(
+                "waiting_user_secret_incomplete",
+                missing=[k for k in missing_keys if k not in present],
+            )
+            continue
+
+        redeployed = await _redispatch_waiting_deploy(
+            api_client, redis_client, story_id, project_id, run, log
+        )
+        if redeployed:
+            redispatched += 1
+        else:
+            failed += 1
+
+    return {"redispatched": redispatched, "failed": failed}
+
+
+async def _redispatch_waiting_deploy(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Every missing secret is saved — re-run deploy the same path RETRY uses.
+
+    head_sha is resolved from the source run exactly as the RETRY path does; a
+    missing head_sha is a typed failure (fail the story, notify admin), never a
+    silent fallback to the default branch. The story is moved to DEPLOYING first so
+    it leaves the WAITING set; if the publish then fails, next tick re-derives the
+    wait from the old run rather than wedging on a queued run with no message.
+
+    Returns True once re-dispatched, False if the story was failed instead.
+    """
+    head_sha = _deploy_run_head_sha(run)
+    if not head_sha:
+        log.error("waiting_user_secret_head_sha_missing", run_id=run.id)
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            run.id, project_id, "waiting deploy could not find original head_sha"
+        )
+        return False
+
+    await api_client.transition_story(story_id, "deploy")
+
+    new_run_id = f"deploy-secret-{uuid.uuid4().hex[:8]}"
+    await api_client.create_run(
+        {
+            "id": new_run_id,
+            "type": RunType.DEPLOY.value,
+            "project_id": project_id,
+            "story_id": story_id,
+            "status": RunStatus.QUEUED.value,
+            "run_metadata": {
+                "triggered_by": "supervisor_user_secret",
+                "head_sha": head_sha,
+            },
+        }
+    )
+
+    deploy_msg = DeployMessage(
+        task_id=new_run_id,
+        project_id=project_id,
+        user_id="",
+        story_id=story_id,
+        triggered_by=DeployTrigger.WEBHOOK,
+        action="feature",
+        head_sha=head_sha,
+    )
+    await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
+    log.info("waiting_user_secret_redispatched", story_id=story_id, new_run_id=new_run_id)
+    return True
 
 
 # ---------------------------------------------------------------------------

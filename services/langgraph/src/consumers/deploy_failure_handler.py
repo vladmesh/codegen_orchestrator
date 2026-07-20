@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.redis_client import RedisStreamClient
 
@@ -33,16 +33,20 @@ async def _handle_deploy_failure(
     redis: RedisStreamClient,
     deploy_outcome: DeployOutcome = DeployOutcome.RETRY,
     deploy_fix_attempt: int = 0,
+    missing_user_secrets: list[MissingUserSecret] | None = None,
 ) -> dict:
     """Update run status/result on deploy failure.
 
     Stores deploy_outcome and error_details in run.result for
-    the dispatcher to read and route story lifecycle.
+    the dispatcher to read and route story lifecycle. On a
+    WAITING_FOR_USER_SECRET outcome, `missing_user_secrets` carries the
+    structured keys the scheduler asks the user for.
     """
     run_result = DeployRunResult(
         deploy_outcome=deploy_outcome,
         error_details=error_msg,
         deploy_fix_attempt=deploy_fix_attempt,
+        missing_user_secrets=missing_user_secrets or [],
     )
     await api_client.patch(
         f"runs/{task_id}",
