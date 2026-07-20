@@ -26,6 +26,7 @@ from ..subgraphs.devops import create_devops_subgraph
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
 from ._events import publish_callback_event
+from ._live_work import live_work_cancel_key
 from .deploy_failure_handler import _handle_deploy_failure
 from .deploy_lifecycle import process_lifecycle_action
 from .deploy_precheck import (
@@ -445,6 +446,19 @@ async def process_deploy_job(  # noqa: PLR0915
         )
         raise
     except Exception as e:
+        if project_id and await redis.redis.exists(live_work_cancel_key(project_id)):
+            # Live teardown is fencing this project, so no deploy-path failure is
+            # normal: the dispatched deploy.yml run may still be executing. Handling
+            # it as a deploy failure would ACK the queue entry and let cleanup delete
+            # external and DB resources. Propagate to the live-work fence instead.
+            logger.error(
+                "deploy_job_exception_under_live_teardown",
+                task_id=task_id,
+                project_id=project_id,
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            raise
         logger.error(
             "deploy_job_exception",
             task_id=task_id,

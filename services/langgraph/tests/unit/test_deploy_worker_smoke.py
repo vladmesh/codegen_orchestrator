@@ -20,6 +20,7 @@ def mock_redis():
     r.redis.delete = AsyncMock()
     r.redis.incr = AsyncMock(return_value=1)
     r.redis.expire = AsyncMock()
+    r.redis.exists = AsyncMock(return_value=False)  # no live teardown fence
     r.publish_flat = AsyncMock()
     return r
 
@@ -123,6 +124,48 @@ async def test_unproven_cancellation_propagates_not_masked_as_failure(
     assert not [c for c in mock_api.patch.call_args_list if "failed" in str(c)]
     # Deploy lock released via finally so the next attempt can proceed.
     mock_redis.redis.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_transient_deploy_error_under_teardown_fences_cleanup_without_ack(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """A transient failure while teardown fences the project must not settle as a deploy failure.
+
+    The dispatched deploy.yml run can still be executing, so the entry stays unacked
+    and cleanup sees `live:work:failed` before it deletes external or DB resources.
+    """
+    from src.consumers._live_work import execute_live_work, live_work_failure_key
+    from src.consumers.deploy import process_deploy_job
+
+    # The cancel check inside wait_for_workflow_completion lost the API once.
+    mock_devops_subgraph.ainvoke = AsyncMock(side_effect=ConnectionError("runs API unreachable"))
+    mock_redis.redis.exists = AsyncMock(return_value=True)  # live:work:cancelled is set
+    mock_redis.redis.eval = AsyncMock(return_value=1)  # lease granted
+    mock_redis.redis.zrem = AsyncMock()
+    mock_redis.ack = AsyncMock()
+
+    with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0):
+        with pytest.raises(ConnectionError):
+            await execute_live_work(
+                mock_redis,
+                queue="jobs:deploy",
+                group="capability-workers",
+                message_id="1-0",
+                project_id="proj-1",
+                process=lambda: process_deploy_job(_job(), mock_redis),
+            )
+
+    mock_redis.ack.assert_not_awaited()
+    failure_writes = [
+        c
+        for c in mock_redis.redis.set.await_args_list
+        if c.args[:1] == (live_work_failure_key("proj-1"),)
+    ]
+    assert failure_writes, "cleanup fence marker must be written"
+    assert "cancel_settlement_failed" in failure_writes[0].args
+    # The run was never patched into a terminal failed state.
+    assert not [c for c in mock_api.patch.call_args_list if "failed" in str(c)]
 
 
 @pytest.mark.asyncio

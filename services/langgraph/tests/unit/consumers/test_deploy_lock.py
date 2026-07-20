@@ -19,6 +19,7 @@ def mock_redis():
     r.redis.delete = AsyncMock()
     r.redis.incr = AsyncMock(return_value=1)
     r.redis.expire = AsyncMock()
+    r.redis.exists = AsyncMock(return_value=False)  # no live teardown fence
     r.publish_flat = AsyncMock()
     return r
 

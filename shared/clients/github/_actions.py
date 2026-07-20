@@ -268,12 +268,23 @@ class ActionsMixin:
                     await asyncio.sleep(poll_interval)
                     continue
 
-                if cancel_check and await cancel_check():
-                    # Never returns normally: raises WorkflowCancelledError once the
-                    # stop is proven, WorkflowCancellationUnprovenError otherwise.
-                    await self._cancel_and_confirm_workflow_run(
-                        owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
-                    )
+                if cancel_check:
+                    try:
+                        cancel_requested = await cancel_check()
+                    except Exception as exc:
+                        # A failed check cannot tell teardown from a healthy run, so
+                        # the dispatched run stays live and unproven. Fail closed on
+                        # the same signal as an unverified cancellation.
+                        raise WorkflowCancellationUnprovenError(
+                            f"Workflow {workflow_file} run {run['id']} cancellation "
+                            "check could not be evaluated"
+                        ) from exc
+                    if cancel_requested:
+                        # Never returns normally: raises WorkflowCancelledError once the
+                        # stop is proven, WorkflowCancellationUnprovenError otherwise.
+                        await self._cancel_and_confirm_workflow_run(
+                            owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
+                        )
 
                 if run["status"] == "completed":
                     if run["conclusion"] == "success":

@@ -700,6 +700,35 @@ async def test_graceful_cancel_fails_closed_when_run_not_cancelled(authed_client
 
 
 @pytest.mark.asyncio
+async def test_failing_cancel_check_fails_closed_on_live_run(authed_client):
+    """A cancel check that errors leaves the dispatched run live and unproven."""
+    active_run = {
+        "id": 42,
+        "status": "in_progress",
+        "conclusion": None,
+        "html_url": "https://example.test/runs/42",
+    }
+    authed_client.get_latest_workflow_run = AsyncMock(return_value=active_run)
+    authed_client.cancel_workflow_run = AsyncMock()
+    checks = iter([False])
+
+    async def cancel_check() -> bool:
+        if next(checks, None) is None:
+            raise httpx.ConnectError("runs API unreachable")
+        return False
+
+    with patch("shared.clients.github._actions.asyncio.sleep", new=AsyncMock()):
+        with pytest.raises(WorkflowCancellationUnprovenError, match="could not be evaluated"):
+            await authed_client.wait_for_workflow_completion(
+                "my-org", "my-repo", "deploy.yml", poll_interval=0, cancel_check=cancel_check
+            )
+
+    # Not masked as a deploy failure and not silently polled on: the caller has to
+    # treat run 42 as possibly still executing.
+    authed_client.cancel_workflow_run.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_interrupted_wait_cancels_known_actions_run_before_propagating(authed_client):
     active_run = {"id": 42, "status": "in_progress", "conclusion": None}
     authed_client.get_latest_workflow_run = AsyncMock(return_value=active_run)

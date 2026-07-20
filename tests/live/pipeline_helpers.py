@@ -968,61 +968,91 @@ def cleanup_owned_capability_work(ctx: dict) -> None:
     )
 
 
-async def cancel_owned_runs(api_internal: httpx.AsyncClient, ctx: dict) -> list[str]:
-    """Cancel every active run owned by this project before resource teardown."""
-    require_unscoped_run_observer(api_internal)
-    project_id = ctx.get("project_id")
-    if not project_id:
-        return []
+async def _cancel_active_project_runs(
+    api_internal: httpx.AsyncClient, ctx: dict, project_id: str
+) -> tuple[list[str], dict[str, str]]:
+    """Cancel every currently active run of this project, one snapshot at a time.
+
+    Returns the ids cancelled in this pass and the statuses the snapshot reported,
+    so a caller can tell "nothing left to cancel" from "still not terminal".
+    """
     response = await api_internal.get("/api/runs/", params={"project_id": project_id})
     response.raise_for_status()
-    run_ids = [
-        str(run["id"])
+    statuses = {
+        str(run["id"]): run.get("status")
         for run in response.json()
         if str(run.get("project_id")) == str(project_id)
-        and run.get("status") in _ACTIVE_RUN_STATUSES
-    ]
-    for run_id in run_ids:
+    }
+    cancelled = []
+    for run_id, status in statuses.items():
+        if status not in _ACTIVE_RUN_STATUSES:
+            continue
         response = await api_internal.patch(
             f"/api/runs/{run_id}",
             json={"status": "cancelled"},
         )
         response.raise_for_status()
         ctx["manifest"].own("run", run_id)
-    if run_ids:
+        cancelled.append(run_id)
+    if cancelled:
         ctx["manifest"].write(
             ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
         )
-    return run_ids
+    return cancelled, statuses
+
+
+async def cancel_owned_runs(api_internal: httpx.AsyncClient, ctx: dict) -> list[str]:
+    """Cancel every active run owned by this project before resource teardown."""
+    require_unscoped_run_observer(api_internal)
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return []
+    cancelled, _ = await _cancel_active_project_runs(api_internal, ctx, project_id)
+    return cancelled
 
 
 async def wait_for_owned_runs(
     api_internal: httpx.AsyncClient,
     ctx: dict,
     *,
-    timeout: float = RUN_CANCELLATION_TIMEOUT,
-    poll_interval: float = RUN_CANCELLATION_POLL_INTERVAL,
+    timeout: float | None = None,
+    poll_interval: float | None = None,
 ) -> None:
-    """Wait until the run records owned by teardown are terminal."""
+    """Wait until every run of this project is terminal, rescanning for new ones.
+
+    The first cancellation snapshot is stale by the time teardown reads it: a
+    supervisor can still create a deploy or QA run for this project afterwards.
+    Each poll rescans `/api/runs/`, cancels whatever became active, and takes the
+    project ownership. Quiescence means one snapshot where no run of the project
+    is active and every owned run is terminal.
+
+    The bounds are read from the module at call time so a caller of `cleanup_all`
+    cannot silently inherit a stale copy of them.
+    """
     require_unscoped_run_observer(api_internal)
-    run_ids = {
-        resource.identifier for resource in ctx["manifest"].resources if resource.kind == "run"
-    }
-    if not run_ids:
+    if timeout is None:
+        timeout = RUN_CANCELLATION_TIMEOUT
+    if poll_interval is None:
+        poll_interval = RUN_CANCELLATION_POLL_INTERVAL
+    project_id = ctx.get("project_id")
+    if not project_id:
         return
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        response = await api_internal.get("/api/runs/", params={"project_id": ctx["project_id"]})
-        response.raise_for_status()
-        statuses = {
-            str(run["id"]): run.get("status")
-            for run in response.json()
-            if str(run.get("project_id")) == str(ctx["project_id"])
+    while True:
+        _, statuses = await _cancel_active_project_runs(api_internal, ctx, project_id)
+        owned = {
+            resource.identifier for resource in ctx["manifest"].resources if resource.kind == "run"
         }
-        if all(statuses.get(run_id) in _TERMINAL_RUN_STATUSES for run_id in run_ids):
+        # Everything cancelled in this pass was active in the same snapshot, so it
+        # is already pending: one more clean scan has to confirm it went terminal.
+        pending = {run_id for run_id in owned if statuses.get(run_id) not in _TERMINAL_RUN_STATUSES}
+        if not pending:
             return
+        if time.monotonic() >= deadline:
+            raise CleanupError(
+                "owned runs did not reach terminal state: " + ", ".join(sorted(pending))
+            )
         await asyncio.sleep(poll_interval)
-    raise CleanupError(f"owned runs did not reach terminal state: {', '.join(sorted(run_ids))}")
 
 
 def build_github_cleanup_script(repo_name: str) -> str:
@@ -1475,6 +1505,10 @@ async def cleanup_all(
         await wait_for_owned_runs(api_internal, ctx)
         cancel_owned_active_work(ctx)
         cleanup_owned_capability_work(ctx)
+        # The consumer fence is what stops new runs from being produced, so prove
+        # run quiescence once more behind it: a run created while the first pass
+        # was still waiting would otherwise survive into external teardown.
+        await wait_for_owned_runs(api_internal, ctx)
     except Exception as exc:
         errors.append(f"active work cancellation fence: {exc}")
         raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors)) from exc
