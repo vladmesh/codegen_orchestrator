@@ -91,7 +91,7 @@ class OrchestratorState(TypedDict):
     # DEVOPS SUBGRAPH STATE
     # ============================================================
     provided_secrets: dict
-    missing_user_secrets: list[str]
+    missing_user_secrets: list[dict]
     deployment_result: dict | None
 
     # ============================================================

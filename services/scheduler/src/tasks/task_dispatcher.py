@@ -40,6 +40,7 @@ from .supervisor import (
     supervise_stuck_stories,
     supervise_stuck_tasks,
     supervise_testing_stories,
+    supervise_waiting_user_secret_stories,
 )
 
 if TYPE_CHECKING:
@@ -61,6 +62,7 @@ __all__ = [
     "supervise_stuck_stories",
     "supervise_stuck_tasks",
     "supervise_testing_stories",
+    "supervise_waiting_user_secret_stories",
     "task_dispatcher_loop",
 ]
 
@@ -228,6 +230,9 @@ async def task_dispatcher_loop() -> None:
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
                 failed_tasks = await supervise_failed_tasks(api_client, redis_client)
                 deploying = await supervise_deploying_stories(api_client, redis_client)
+                waiting_secret = await supervise_waiting_user_secret_stories(
+                    api_client, redis_client
+                )
                 testing = await supervise_testing_stories(api_client, redis_client)
 
                 # Always log the cycle summary for observability
@@ -247,7 +252,10 @@ async def task_dispatcher_loop() -> None:
                     + deploying.get("tested", 0)
                     + deploying.get("retried", 0)
                     + deploying.get("redispatched", 0)
+                    + deploying.get("waiting", 0)
                     + deploying.get("failed", 0)
+                    + waiting_secret.get("redispatched", 0)
+                    + waiting_secret.get("failed", 0)
                     + testing.get("completed", 0)
                     + testing.get("redispatched", 0)
                     + testing.get("failed", 0)
@@ -263,7 +271,10 @@ async def task_dispatcher_loop() -> None:
                         deploy_tested=deploying.get("tested", 0),
                         deploy_retried=deploying.get("retried", 0),
                         deploy_redispatched=deploying.get("redispatched", 0),
+                        deploy_waiting_user_secret=deploying.get("waiting", 0),
                         deploy_failed=deploying.get("failed", 0),
+                        user_secret_redispatched=waiting_secret.get("redispatched", 0),
+                        user_secret_failed=waiting_secret.get("failed", 0),
                         qa_completed=testing.get("completed", 0),
                         qa_redispatched=testing.get("redispatched", 0),
                         qa_failed=testing.get("failed", 0),

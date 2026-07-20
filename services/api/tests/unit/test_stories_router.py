@@ -302,6 +302,33 @@ async def test_complete_story_invalid_transition():
 
 
 @pytest.mark.asyncio
+async def test_wait_user_secret_story():
+    story = _make_story(id="story-abc", status="deploying")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/wait-user-secret")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "waiting_user_secret"
+
+
+@pytest.mark.asyncio
+async def test_wait_user_secret_story_invalid_transition():
+    story = _make_story(id="story-abc", status="testing")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/wait-user-secret")
+
+    assert resp.status_code == 422  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
 async def test_archive_story():
     story = _make_story(id="story-abc", status="completed")
     session = _mock_session(scalar_one_or_none=story)

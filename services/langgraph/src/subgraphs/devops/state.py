@@ -42,8 +42,9 @@ class DevOpsState(TypedDict):
     # Deploy target
     head_sha: str | None  # exact commit SHA to deploy (from merged PR)
 
-    # Output (returned to parent)
-    missing_user_secrets: list[str]
+    # Output (returned to parent). Each entry is a serialized MissingUserSecret
+    # ({"key", "description"}) so the scheduler can name secrets to the user.
+    missing_user_secrets: list[dict]
     deployment_result: dict | None
     deployed_url: str | None
     smoke_result: dict | None

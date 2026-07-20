@@ -15,7 +15,7 @@ from shared.config_store import ConfigStore
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOutcome
 from shared.contracts.service_ports import DEPLOY_INFRA_PORT_SERVICES
 from shared.queues import DEPLOY_QUEUE
@@ -417,19 +417,30 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
                 application_id=result.get("application_id"),
             )
         elif result.get("missing_user_secrets"):
-            missing = result.get("missing_user_secrets")
-            logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing)
-            outcome = _resolution_outcome(result) or DeployOutcome.GIVE_UP
+            missing = [
+                MissingUserSecret.model_validate(entry)
+                for entry in result.get("missing_user_secrets")
+            ]
+            missing_keys = [m.key for m in missing]
+            logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing_keys)
+            typed_outcome = _resolution_outcome(result)
+            if typed_outcome is not None and typed_outcome != DeployOutcome.WAITING_FOR_USER_SECRET:
+                raise ValueError(
+                    "missing_user_secrets present but resolution_outcome is "
+                    f"{typed_outcome}, expected {DeployOutcome.WAITING_FOR_USER_SECRET}"
+                )
+            outcome = DeployOutcome.WAITING_FOR_USER_SECRET
             return await _handle_deploy_failure(
                 task_id=task_id,
                 project_id=project_id,
                 story_id=story_id,
-                error_msg=f"Missing secrets: {', '.join(missing)}",
+                error_msg=f"Missing secrets: {', '.join(missing_keys)}",
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
                 deploy_outcome=outcome,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
+                missing_user_secrets=missing,
             )
         else:
             typed_outcome = _resolution_outcome(result)

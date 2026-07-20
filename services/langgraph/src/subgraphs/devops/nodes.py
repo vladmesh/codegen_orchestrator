@@ -38,14 +38,15 @@ class ReadinessCheckNode(FunctionalNode):
         missing = state.get("missing_user_secrets", [])
 
         if missing:
+            missing_keys = [entry["key"] for entry in missing]
             logger.info(
                 "readiness_check_missing_secrets",
-                missing=missing,
+                missing=missing_keys,
             )
             return {
                 "messages": [
                     AIMessage(
-                        content=f"Missing user secrets: {', '.join(missing)}. "
+                        content=f"Missing user secrets: {', '.join(missing_keys)}. "
                         "Please provide these secrets to continue deployment."
                     )
                 ],

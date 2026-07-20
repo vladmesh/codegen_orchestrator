@@ -82,6 +82,11 @@ class SchedulerAPIClient:
         )
         return ProjectDTO.model_validate(resp.json())
 
+    async def list_project_secret_keys(self, project_id: str) -> list[str]:
+        """Return the names of secrets stored on a project (never the values)."""
+        resp = await self._request("GET", f"projects/{project_id}/config/secrets/keys")
+        return resp.json()["keys"]
+
     # --- Repositories ---
 
     async def get_repository_by_provider_id(self, provider_repo_id: int) -> RepositoryDTO | None:
@@ -173,6 +178,13 @@ class SchedulerAPIClient:
     async def fail_story(self, story_id: str) -> StoryDTO:
         """Transition story to failed status."""
         resp = await self._request("POST", f"stories/{story_id}/fail", json={"actor": "supervisor"})
+        return StoryDTO.model_validate(resp.json())
+
+    async def wait_user_secret_story(self, story_id: str) -> StoryDTO:
+        """Park a deploying story in WAITING_USER_SECRET until the secret appears."""
+        resp = await self._request(
+            "POST", f"stories/{story_id}/wait-user-secret", json={"actor": "supervisor"}
+        )
         return StoryDTO.model_validate(resp.json())
 
     async def transition_story(self, story_id: str, action: str) -> StoryDTO:

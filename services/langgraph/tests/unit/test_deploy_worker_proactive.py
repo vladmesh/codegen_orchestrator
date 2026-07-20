@@ -119,7 +119,12 @@ async def test_deploy_worker_no_proactive_on_missing_secrets(
 ):
     """Deploy failures should NOT send proactive messages (spam filter)."""
     mock_devops_subgraph.ainvoke = AsyncMock(
-        return_value={"missing_user_secrets": ["STRIPE_KEY", "SENTRY_DSN"]}
+        return_value={
+            "missing_user_secrets": [
+                {"key": "STRIPE_KEY", "description": "Stripe secret key"},
+                {"key": "SENTRY_DSN", "description": "Sentry DSN"},
+            ]
+        }
     )
 
     from src.consumers.deploy import process_deploy_job

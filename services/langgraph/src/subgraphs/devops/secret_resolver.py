@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import structlog
 
+from shared.contracts.dto.run_result import MissingUserSecret
 from shared.contracts.env_contract import (
     AllocationEntry,
     CanonicalEnvContract,
@@ -55,7 +56,7 @@ class _ResolvedValues:
     secret_values: dict[str, str] = field(default_factory=dict)
     non_secret_values: dict[str, str] = field(default_factory=dict)
     generated: dict[str, str] = field(default_factory=dict)
-    missing_user: list[str] = field(default_factory=list)
+    missing_user: list[MissingUserSecret] = field(default_factory=list)
 
     def store(self, key: str, value: str, sensitive: bool) -> None:
         """Route a resolved value to the secret or non-secret bucket."""
@@ -139,7 +140,7 @@ class SecretResolverNode(FunctionalNode):
         return {
             "secret_values": resolved.secret_values,
             "non_secret_values": resolved.non_secret_values,
-            "missing_user_secrets": resolved.missing_user,
+            "missing_user_secrets": [m.model_dump() for m in resolved.missing_user],
             "resolution_outcome": (
                 DeployOutcome.WAITING_FOR_USER_SECRET if resolved.missing_user else None
             ),
@@ -190,7 +191,9 @@ class SecretResolverNode(FunctionalNode):
         value = context.provided_secrets.get(key, context.config_secrets.get(key))
         if value is None:
             if entry.required:
-                resolved.missing_user.append(key)
+                resolved.missing_user.append(
+                    MissingUserSecret(key=key, description=entry.description)
+                )
             return
         resolved.secret_values[key] = str(value)
 

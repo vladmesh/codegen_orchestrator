@@ -28,12 +28,28 @@ class EngineeringRunResult(BaseModel):
     test_results: dict | None = None
 
 
+class MissingUserSecret(BaseModel):
+    """A required user secret the resolver could not find at deploy time.
+
+    Carries the contract `key` and its human-facing `description` so the
+    scheduler can ask the user for it by name without ever reading the secret
+    value. `consumers` from the contract stays out of this on purpose — it is
+    internal wiring the user does not need.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    description: str
+
+
 class DeployRunResult(BaseModel):
     """Result of a deploy run.
 
     `deploy_outcome` is the routing field the scheduler reads. `deployment_result`
     and `smoke_result` are opaque diagnostic blobs from the DevOps subgraph; they
-    are stored for observability and never routed on.
+    are stored for observability and never routed on. `missing_user_secrets` is
+    the structured list the scheduler reads on a WAITING_FOR_USER_SECRET outcome.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -44,6 +60,7 @@ class DeployRunResult(BaseModel):
     bot_username: str | None = None
     deploy_fix_attempt: int = 0
     error_details: str | None = None
+    missing_user_secrets: list[MissingUserSecret] = Field(default_factory=list)
     action: DeployAction | None = None
     deployment_result: dict | None = None
     smoke_result: dict | None = None
