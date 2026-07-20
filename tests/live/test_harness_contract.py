@@ -1100,12 +1100,123 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
         "wait-runs",
         "active-work",
         "capability-streams",
+        # Second quiescence proof, behind the consumer fence.
+        "wait-runs",
         "server",
         "workers",
         "registry",
         "github",
         "database",
     ]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_cancels_run_created_after_the_first_runs_snapshot(monkeypatch):
+    """A supervisor-created run that appears after the first scan must not escape teardown."""
+    events = []
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+    statuses = {"deploy-1": "running"}
+    scans = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal scans
+        if request.method == "GET" and request.url.path == "/api/runs/":
+            scans += 1
+            if scans == 2:
+                # QA run created by the supervisor after the first snapshot.
+                statuses["qa-9"] = "queued"
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": run_id, "project_id": "project-1", "status": status}
+                    for run_id, status in statuses.items()
+                ],
+            )
+        if request.method == "PATCH" and request.url.path.startswith("/api/runs/"):
+            run_id = request.url.path.rsplit("/", 1)[-1]
+            statuses[run_id] = "cancelled"
+            events.append(f"cancel-{run_id}")
+            return httpx.Response(200)
+        if request.method == "GET" and request.url.path == "/api/projects/project-1":
+            return httpx.Response(404)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_scaffold", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_active_work", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_owned_capability_work", lambda ctx: None)
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_server_container", lambda ctx: events.append("server")
+    )
+    monkeypatch.setattr(pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: None)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_registry_resources", lambda ctx, errors: None)
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_github_repo", lambda repo: events.append("github")
+    )
+    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: events.append("db"))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        await pipeline_helpers.cleanup_all(
+            api,
+            None,
+            {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+        )
+
+    assert events.index("cancel-qa-9") < events.index("server")
+    assert statuses["qa-9"] == "cancelled"
+    assert "qa-9" in {
+        resource.identifier for resource in manifest.resources if resource.kind == "run"
+    }
+    assert events[-3:] == ["server", "github", "db"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_fails_closed_when_new_runs_never_go_terminal(monkeypatch):
+    """Unprovable quiescence stops teardown before any external or DB deletion."""
+    external = []
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/runs/":
+            # The supervisor keeps producing work; nothing ever settles.
+            return httpx.Response(
+                200,
+                json=[{"id": "deploy-1", "project_id": "project-1", "status": "running"}],
+            )
+        if request.method == "PATCH" and request.url.path == "/api/runs/deploy-1":
+            return httpx.Response(200)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_scaffold", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_active_work", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_owned_capability_work", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "RUN_CANCELLATION_TIMEOUT", 0.05)
+    monkeypatch.setattr(pipeline_helpers, "RUN_CANCELLATION_POLL_INTERVAL", 0)
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_server_container", lambda ctx: external.append("server")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_github_repo", lambda repo: external.append("github")
+    )
+    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: external.append("db"))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        with pytest.raises(CleanupError, match="did not reach terminal state"):
+            await pipeline_helpers.cleanup_all(
+                api,
+                None,
+                {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+            )
+
+    assert external == []
+    assert "deploy-1" in {
+        resource.identifier for resource in manifest.resources if resource.kind == "run"
+    }
 
 
 def _qa_run(**overrides) -> dict:
