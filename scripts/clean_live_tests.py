@@ -655,14 +655,14 @@ def main():
     print_step("Cleaning GitHub repositories")
     delete_github_repos(repo_names)
 
+    print_step("Cleaning Remote Servers")
+    clean_remote_servers(project_slugs)
+
     print_step("Cleaning database")
     clean_database()
 
     print_step("Cleaning Local Docker Test Containers")
     clean_local_docker()
-
-    print_step("Cleaning Remote Servers")
-    clean_remote_servers(project_slugs)
 
     print_step("Cleaning Local Workspaces")
     clean_local_workspaces()
