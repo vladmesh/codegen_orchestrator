@@ -118,26 +118,29 @@ def test_clean_remote_servers_ssh_targets_use_ssh_user(monkeypatch):
     module = _load_clean_live_tests()
 
     server_rows = [
-        {"handle": "vps-1", "ip": "203.0.113.7", "key": "KEY-A", "ssh_user": "dev"},
-        {"handle": "vps-2", "ip": "203.0.113.8", "key": "KEY-B", "ssh_user": "runner"},
+        {"handle": "vps-1", "public_ip": "203.0.113.7", "ssh_user": "dev"},
+        {"handle": "vps-2", "public_ip": "203.0.113.8", "ssh_user": "runner"},
     ]
+    keys = {"vps-1": "KEY-A", "vps-2": "KEY-B"}
 
-    def fake_run_cmd(cmd, **kwargs):
-        # Only the servers query goes through run_cmd here.
-        return SimpleNamespace(returncode=0, stdout=module.json.dumps(server_rows), stderr="")
-
-    monkeypatch.setattr(module, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(module, "_fetch_remote_servers", lambda: server_rows)
+    monkeypatch.setattr(module, "_fetch_remote_server_key", lambda handle: keys[handle])
 
     targets: list[str] = []
+    remote_commands: list[str] = []
 
     def fake_run(argv, **kwargs):
         # The SSH destination is the sole non-flag, non-command positional.
         targets.append(argv[argv.index("BatchMode=yes") + 1])
+        remote_commands.append(argv[-1])
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
-    module.clean_remote_servers()
+    module.clean_remote_servers(["live-te-11111111111111111111111111111111"])
 
     assert targets == ["dev@203.0.113.7", "runner@203.0.113.8"]
     assert not any(t.startswith("root@") for t in targets)
+    assert all("/opt/services/$project_name" in cmd for cmd in remote_commands)
+    assert all("live-te-11111111111111111111111111111111" in cmd for cmd in remote_commands)
+    assert all("live-test-*" not in cmd for cmd in remote_commands)

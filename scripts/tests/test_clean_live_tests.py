@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from scripts import clean_live_tests
@@ -44,7 +45,7 @@ def test_verify_no_residue_accepts_proven_absence(monkeypatch, tmp_path):
     clean_live_tests.verify_no_residue()
 
 
-def test_allocation_residue_query_qualifies_project_name(monkeypatch, tmp_path):
+def test_allocation_residue_query_qualifies_project_title(monkeypatch, tmp_path):
     commands = []
     results = iter([_result(), _result(), _result(stdout="")])
     monkeypatch.setattr(
@@ -58,8 +59,51 @@ def test_allocation_residue_query_qualifies_project_name(monkeypatch, tmp_path):
 
     allocation_sql = commands[1][-1]
     assert "JOIN projects p ON p.id = r.project_id" in allocation_sql
-    assert "p.name LIKE" in allocation_sql
-    assert " WHERE name LIKE" not in allocation_sql
+    assert "p.title LIKE" in allocation_sql
+    assert " WHERE title LIKE" not in allocation_sql
+    assert "name LIKE" not in allocation_sql
+
+
+def test_get_test_projects_reads_title_and_slug(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_run_cmd(cmd, **kwargs):
+        captured["sql"] = cmd[cmd.index("-c") + 1]
+        return _result("project-1|live-test-old|live-te-11111111111111111111111111111111\n")
+
+    monkeypatch.setattr(clean_live_tests, "run_cmd", fake_run_cmd)
+
+    projects = clean_live_tests.get_test_projects()
+
+    assert projects == [
+        {
+            "id": "project-1",
+            "title": "live-test-old",
+            "slug": "live-te-11111111111111111111111111111111",
+        }
+    ]
+    assert "SELECT id, title, slug FROM projects" in captured["sql"]
+    assert "name" not in captured["sql"]
+
+
+def test_remote_server_list_failure_is_not_empty_list(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("X-Internal-Key") == "test-internal-key"
+        return httpx.Response(500, text="db broke")
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", client_factory)
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="server list fetch failed: 500"):
+        clean_live_tests.clean_remote_servers(["live-te-11111111111111111111111111111111"])
 
 
 def test_recover_manifests_removes_proven_orphan(monkeypatch, tmp_path):
@@ -88,3 +132,71 @@ def test_recover_manifests_keeps_unproven_resources(monkeypatch, tmp_path):
     with pytest.raises(clean_live_tests.CleanupFailure, match="github_repository org/repo"):
         clean_live_tests.recover_ownership_manifests()
     assert manifest.exists()
+
+
+def test_main_remote_failure_leaves_db_slugs_available_for_retry(monkeypatch, tmp_path):
+    monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
+    projects = [
+        {
+            "id": "project-1",
+            "title": "live-test-old",
+            "slug": "live-te-11111111111111111111111111111111",
+        }
+    ]
+    calls: list[tuple[str, object]] = []
+    remote_attempts = 0
+
+    monkeypatch.setattr(clean_live_tests, "recover_ownership_manifests", lambda: None)
+    monkeypatch.setattr(clean_live_tests, "get_test_projects", lambda: projects)
+    monkeypatch.setattr(
+        clean_live_tests,
+        "clean_redis_queues",
+        lambda project_ids: calls.append(("redis", project_ids)),
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "delete_github_repos",
+        lambda repo_names: calls.append(("github", repo_names)),
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "clean_database",
+        lambda: calls.append(("database", None)),
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "clean_local_docker",
+        lambda: calls.append(("local_docker", None)),
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "clean_local_workspaces",
+        lambda: calls.append(("workspaces", None)),
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "verify_no_residue",
+        lambda project_ids: calls.append(("verify", project_ids)),
+    )
+
+    def fake_remote(project_slugs):
+        nonlocal remote_attempts
+        remote_attempts += 1
+        calls.append(("remote", list(project_slugs)))
+        if remote_attempts == 1:
+            raise clean_live_tests.CleanupFailure("ssh key fetch failed")
+
+    monkeypatch.setattr(clean_live_tests, "clean_remote_servers", fake_remote)
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="ssh key fetch failed"):
+        clean_live_tests.main()
+
+    assert ("database", None) not in calls
+    assert calls[-1] == ("remote", ["live-te-11111111111111111111111111111111"])
+
+    clean_live_tests.main()
+
+    assert calls.count(("remote", ["live-te-11111111111111111111111111111111"])) == 2
+    assert calls.index(("remote", ["live-te-11111111111111111111111111111111"])) < calls.index(
+        ("database", None)
+    )
