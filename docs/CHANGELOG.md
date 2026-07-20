@@ -2,6 +2,9 @@
 
 ## 2026-07-20
 
+- Resolve the default-branch head SHA before admin-triggered deploy creation. Admin redeploy and
+  create-from-repo now publish deploy messages with a concrete `head_sha`, and fail the API request
+  before Redis publication when GitHub cannot provide one.
 - Fence result-shaped live deploy failures during teardown. Active live work now checks the cancel
   marker after `process()` returns and treats failed, cancelled or error-shaped results as
   unproven settlement: the stream entry stays pending and `live:work:failed` blocks cleanup, while

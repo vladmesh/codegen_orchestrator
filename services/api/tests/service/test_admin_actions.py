@@ -16,6 +16,7 @@ from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 
 TASK_TEST_TELEGRAM_ID = 999000999
 TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
+ADMIN_DEPLOY_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 @pytest.fixture(scope="module")
@@ -98,6 +99,18 @@ async def _read_last_message(redis: Redis, stream: str) -> dict:
     assert msgs, f"No messages in {stream}"
     _msg_id, fields = msgs[0]
     return json.loads(fields["data"])
+
+
+@pytest.fixture
+def admin_deploy_head_sha(monkeypatch):
+    class FakeGitHubClient:
+        async def get_default_branch_head_sha(self, owner: str, repo: str) -> str:
+            assert owner
+            assert repo
+            return ADMIN_DEPLOY_HEAD_SHA
+
+    monkeypatch.setattr("src.routers.applications.GitHubAppClient", FakeGitHubClient)
+    return ADMIN_DEPLOY_HEAD_SHA
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +312,7 @@ class TestUndeployApplication:
 
 class TestRedeployApplication:
     @pytest.mark.asyncio
-    async def test_redeploy_app(self, client, redis, server_handle):
+    async def test_redeploy_app(self, client, redis, server_handle, admin_deploy_head_sha):
         app_id = await _create_running_app(client, server_handle)
 
         resp = await client.post(f"/api/applications/{app_id}/redeploy", json={"actor": "test"})
@@ -309,6 +322,27 @@ class TestRedeployApplication:
         msg = await _read_last_message(redis, "deploy:queue")
         assert msg["action"] == "create"
         assert msg["triggered_by"] == "admin"
+        assert msg["head_sha"] == admin_deploy_head_sha
+
+    @pytest.mark.asyncio
+    async def test_redeploy_head_sha_failure_does_not_publish(
+        self, client, redis, server_handle, monkeypatch
+    ):
+        class FailingGitHubClient:
+            async def get_default_branch_head_sha(self, owner: str, repo: str) -> str:
+                raise RuntimeError("github unavailable")
+
+        monkeypatch.setattr("src.routers.applications.GitHubAppClient", FailingGitHubClient)
+        before = await redis.xlen("deploy:queue")
+        app_id = await _create_running_app(client, server_handle)
+
+        resp = await client.post(f"/api/applications/{app_id}/redeploy", json={"actor": "test"})
+
+        assert resp.status_code == HTTPStatus.BAD_GATEWAY
+        assert "Could not resolve head SHA" in resp.text
+        assert await redis.xlen("deploy:queue") == before
+        app_resp = await client.get(f"/api/applications/{app_id}")
+        assert app_resp.json()["status"] == "running"
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +399,9 @@ class TestRunE2E:
 
 class TestFromRepo:
     @pytest.mark.asyncio
-    async def test_create_from_repo(self, client, redis, server_handle, _ensure_project):
+    async def test_create_from_repo(
+        self, client, redis, server_handle, _ensure_project, admin_deploy_head_sha
+    ):
         repo_url = f"https://github.com/test/from-repo-{uuid.uuid4().hex[:6]}.git"
         resp = await client.post(
             "/api/applications/from-repo",
@@ -384,6 +420,7 @@ class TestFromRepo:
         msg = await _read_last_message(redis, "deploy:queue")
         assert msg["action"] == "create"
         assert msg["triggered_by"] == "admin"
+        assert msg["head_sha"] == admin_deploy_head_sha
 
     @pytest.mark.asyncio
     async def test_from_repo_bad_server_404(self, client, _ensure_project):

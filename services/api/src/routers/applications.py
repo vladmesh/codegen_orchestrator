@@ -2,15 +2,18 @@
 
 from datetime import UTC
 import secrets
+from urllib.parse import urlparse
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
 
+from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAMessage
@@ -35,6 +38,7 @@ from ..schemas.run import RunRead
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/applications", tags=["applications"])
+_GITHUB_REPO_PATH_PARTS = 2
 
 
 @router.post("/", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
@@ -229,6 +233,55 @@ def _make_deploy_run_id() -> str:
     return f"deploy-{uuid.uuid4().hex[:12]}"
 
 
+def _parse_github_repo_url(git_url: str) -> tuple[str, str]:
+    if git_url.startswith("git@github.com:"):
+        path = git_url.removeprefix("git@github.com:")
+    else:
+        parsed = urlparse(git_url)
+        if parsed.netloc != "github.com":
+            raise ValueError(f"Repository URL is not a GitHub URL: {git_url}")
+        path = parsed.path.lstrip("/")
+
+    parts = path.rstrip("/").removesuffix(".git").split("/")
+    if len(parts) != _GITHUB_REPO_PATH_PARTS or not all(parts):
+        raise ValueError(f"Repository URL does not identify owner/repo: {git_url}")
+    return parts[0], parts[1]
+
+
+async def _resolve_admin_deploy_head_sha(repo: Repository) -> str:
+    try:
+        owner, repo_name = _parse_github_repo_url(repo.git_url)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+    try:
+        head_sha = await GitHubAppClient().get_default_branch_head_sha(owner, repo_name)
+    except httpx.HTTPStatusError as exc:
+        detail = (
+            f"Could not resolve head SHA for {owner}/{repo_name}: "
+            f"GitHub returned {exc.response.status_code}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=detail,
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not resolve head SHA for {owner}/{repo_name}: {exc}",
+        ) from exc
+
+    if not head_sha:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not resolve head SHA for {owner}/{repo_name}",
+        )
+    return head_sha
+
+
 # ---------------------------------------------------------------------------
 # Admin action endpoints
 # ---------------------------------------------------------------------------
@@ -322,6 +375,7 @@ async def redeploy_application(
     """Redeploy an application. Creates Deployment record, publishes DeployMessage."""
     body = body or AdminAction()
     app, repo = await _get_app_with_repo(application_id, db)
+    head_sha = await _resolve_admin_deploy_head_sha(repo)
 
     port = app.port_allocations[0].port if app.port_allocations else 0
 
@@ -346,6 +400,7 @@ async def redeploy_application(
         project_id=str(repo.project_id),
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.CREATE,
+        head_sha=head_sha,
     )
     await redis.publish_message(DEPLOY_QUEUE, msg)
 
@@ -487,6 +542,8 @@ async def create_from_repo(
         db.add(repo)
         await db.flush()
 
+    head_sha = await _resolve_admin_deploy_head_sha(repo)
+
     # Create application
     app = Application(
         repo_id=repo.id,
@@ -539,6 +596,7 @@ async def create_from_repo(
         project_id=str(body.project_id),
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.CREATE,
+        head_sha=head_sha,
     )
     await redis.publish_message(DEPLOY_QUEUE, msg)
 
