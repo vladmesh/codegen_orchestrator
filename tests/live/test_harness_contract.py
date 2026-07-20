@@ -26,7 +26,13 @@ from pipeline_helpers import (
 import pytest
 import structlog
 
+from shared.contracts.dto.project import ServiceModule
 from shared.contracts.queues.deploy import DeployOutcome
+from shared.contracts.service_ports import (
+    DEPLOY_INFRA_PORT_SERVICES,
+    SERVICE_MODULE_PORT_ROLES,
+    PortServiceRole,
+)
 
 
 def test_repo_root_is_derived_from_harness_location(monkeypatch, tmp_path):
@@ -421,6 +427,16 @@ def test_db_cleanup_follows_port_allocation_application_relation(monkeypatch):
     assert sql.index("DELETE FROM port_allocations") < sql.index("DELETE FROM applications")
 
 
+def test_port_roles_cover_every_project_service_module():
+    assert set(SERVICE_MODULE_PORT_ROLES) == set(ServiceModule)
+    assert DEPLOY_INFRA_PORT_SERVICES == ("postgres", "redis")
+    assert {
+        module.value
+        for module, role in SERVICE_MODULE_PORT_ROLES.items()
+        if role is PortServiceRole.HTTP_HEALTH
+    } == {"backend"}
+
+
 @pytest.mark.asyncio
 async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, tmp_path):
     manifest = OwnershipManifest("project-1")
@@ -430,8 +446,8 @@ async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, t
         "/api/applications/": [{"id": 21, "status": "running"}],
         "/api/servers/": [{"handle": "server-1", "public_ip": "192.0.2.1"}],
         "/api/servers/server-1/ports": [
-            {"id": 8, "port": 8010, "application_id": 21},
-            {"id": 9, "port": 8011, "application_id": 99},
+            {"id": 8, "port": 8010, "application_id": 21, "service_name": "backend"},
+            {"id": 9, "port": 8011, "application_id": 99, "service_name": "backend"},
         ],
     }
 
@@ -482,6 +498,33 @@ async def test_wait_deploy_skips_infra_ports_and_picks_web_module(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_wait_deploy_picks_backend_when_tg_bot_allocation_comes_first(monkeypatch, tmp_path):
+    manifest = OwnershipManifest("project-1")
+    ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
+    responses = {
+        "/api/repositories/": [{"id": "repo-1"}],
+        "/api/applications/": [{"id": 21, "status": "running"}],
+        "/api/servers/": [{"handle": "server-1", "public_ip": "192.0.2.1"}],
+        "/api/servers/server-1/ports": [
+            {"id": 11, "port": 8011, "application_id": 21, "service_name": "tg_bot"},
+            {"id": 10, "port": 8010, "application_id": 21, "service_name": "backend"},
+        ],
+    }
+
+    async def get(url, **kwargs):
+        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    api = SimpleNamespace(get=get)
+    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
+
+    assert ctx["allocation_id"] == 10
+    assert ctx["port"] == 8010
+    assert ctx["deployed_url"] == "http://192.0.2.1:8010"
+
+
+@pytest.mark.asyncio
 async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_path):
     """Regression: /api/servers/ and its ports are require_internal_or_admin.
 
@@ -500,7 +543,9 @@ async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_pa
         "/api/repositories/": [{"id": "repo-1"}],
         "/api/applications/": [{"id": 21, "status": "running"}],
         "/api/servers/": [{"handle": "server-1", "public_ip": "192.0.2.1"}],
-        "/api/servers/server-1/ports": [{"id": 8, "port": 8010, "application_id": 21}],
+        "/api/servers/server-1/ports": [
+            {"id": 8, "port": 8010, "application_id": 21, "service_name": "backend"}
+        ],
     }
     server_endpoint_headers = {}
 

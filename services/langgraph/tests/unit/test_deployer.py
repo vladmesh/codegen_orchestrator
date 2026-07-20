@@ -41,6 +41,7 @@ def base_state():
                 "server_handle": "srv-1",
                 "server_ip": "10.0.0.1",
                 "port": 8080,
+                "service_name": "backend",
             }
         },
         "non_secret_values": {"DB_HOST": "localhost", "DB_PORT": "5432"},
@@ -242,6 +243,37 @@ class TestDeployerNodeHappyPath:
         result = await deployer.run(base_state)
 
         assert result["deployed_url"] == "http://10.0.0.1:8080"
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_deployed_url_uses_backend_allocation_when_tg_bot_comes_first(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        _setup_happy_mocks(mock_api, mock_gh_cls)
+        state = {
+            **base_state,
+            "allocated_resources": {
+                "tg_bot": {
+                    "server_handle": "srv-1",
+                    "server_ip": "10.0.0.1",
+                    "port": 8099,
+                    "service_name": "tg_bot",
+                },
+                "backend": {
+                    "server_handle": "srv-1",
+                    "server_ip": "10.0.0.1",
+                    "port": 8080,
+                    "service_name": "backend",
+                },
+            },
+        }
+
+        result = await deployer.run(state)
+
+        assert result["deployed_url"] == "http://10.0.0.1:8080"
+        secrets_arg = mock_gh_cls.return_value.set_repository_secrets.call_args[0][2]
+        assert secrets_arg["DEPLOY_PORT"] == "8080"
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")

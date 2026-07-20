@@ -27,6 +27,7 @@ from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.qa import QAOutcome
+from shared.contracts.service_ports import is_http_health_port_service
 from shared.queues import SCAFFOLD_QUEUE
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -45,10 +46,6 @@ SCAFFOLD_TIMEOUT = 120
 ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
 LLM_ENGINEERING_TIMEOUT = 1800  # 30 min (worker spawn + LLM edits + CI-fix loop)
 DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
-# Deploy allocates a port per module: the web module plus these infra ports
-# (mirror of deploy._DEPLOY_INFRA_PORT_SERVICES). Only the web module serves
-# HTTP /health, so the deployed URL must not point at an infra port.
-INFRA_PORT_SERVICES = frozenset({"postgres", "redis"})
 SCAFFOLD_FENCE_TIMEOUT = 900
 # Merged PR → pr_poller cycle → deploy run carrying the merged head SHA.
 DEPLOY_RUN_TIMEOUT = 420
@@ -496,12 +493,9 @@ async def wait_deploy(
         resp = await api.get(f"/api/servers/{srv['handle']}/ports", headers=headers)
         resp.raise_for_status()
         for alloc in resp.json():
-            # Skip the app's postgres/redis infra ports: only the web module
-            # serves HTTP /health, so deployed_url must point at it, not at an
-            # infra port that never answers the health gate.
-            if alloc.get("service_name") in INFRA_PORT_SERVICES:
-                continue
             if alloc.get("application_id") == application["id"]:
+                if not is_http_health_port_service(alloc.get("service_name")):
+                    continue
                 ctx["server_ip"] = srv["public_ip"]
                 ctx["port"] = alloc["port"]
                 ctx["allocation_id"] = alloc["id"]
