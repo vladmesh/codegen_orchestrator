@@ -2,6 +2,10 @@
 
 ## 2026-07-20
 
+- Fence result-shaped live deploy failures during teardown. Active live work now checks the cancel
+  marker after `process()` returns and treats failed, cancelled or error-shaped results as
+  unproven settlement: the stream entry stays pending and `live:work:failed` blocks cleanup, while
+  explicit success results can still ACK.
 - Require an exact `head_sha` before loading a deploy environment contract. Missing or empty commit
   SHA now returns the typed `head_sha_missing` deploy outcome instead of reading from `main`, while
   engineering-triggered deploys pass the completed commit SHA into the deploy message. Deploy retry
