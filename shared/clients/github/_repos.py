@@ -1,4 +1,5 @@
 import base64
+from urllib.parse import quote
 
 import httpx
 
@@ -84,6 +85,26 @@ class ReposMixin:
             "GET", f"https://api.github.com/repos/{owner}/{repo}", headers=headers
         )
         return GitHubRepository.model_validate(resp.json())
+
+    async def get_default_branch_head_sha(self, owner: str, repo: str) -> str:
+        """Return the current commit SHA at the repository default branch head."""
+        repository = await self.get_repo(owner, repo)
+        branch = repository.default_branch
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/branches/{quote(branch, safe='')}",
+            headers=headers,
+        )
+        sha = resp.json().get("commit", {}).get("sha")
+        if not isinstance(sha, str) or not sha:
+            raise RuntimeError(f"GitHub branch {owner}/{repo}@{branch} has no head SHA")
+        return sha
 
     async def delete_repo(self, owner: str, repo: str) -> bool:
         """Delete a repository.
