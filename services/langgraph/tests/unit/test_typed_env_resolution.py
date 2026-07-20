@@ -169,6 +169,23 @@ async def test_contract_path_loads_typed_contract(fetch_contract):
     result = await load_environment_contract(state)
 
     assert result["environment_contract"] == fetch_contract.return_value
+    fetch_contract.assert_awaited_once_with("org", "repo", "a" * 40)
+
+
+@pytest.mark.asyncio
+@patch("src.subgraphs.devops.env_contract_loader._fetch_env_contract")
+async def test_missing_head_sha_is_a_distinct_outcome_without_branch_fallback(fetch_contract):
+    state = {
+        "project_id": "project-1",
+        "repo_info": {"html_url": "https://github.com/org/repo"},
+        "head_sha": "",
+    }
+
+    result = await load_environment_contract(state)
+
+    assert result["resolution_outcome"] == "head_sha_missing"
+    assert result["errors"] == ["head_sha is required to load the environment contract"]
+    fetch_contract.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -177,6 +194,7 @@ async def test_contract_fetch_failure_is_a_resolution_failure(_fetch_contract):
     state = {
         "project_id": "project-1",
         "repo_info": {"html_url": "https://github.com/org/repo"},
+        "head_sha": "a" * 40,
     }
 
     result = await load_environment_contract(state)

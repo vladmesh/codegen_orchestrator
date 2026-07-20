@@ -299,3 +299,4 @@ class TestEngineringMessagePassthrough:
             assert len(deploy_calls) == 1
             deploy_msg = deploy_calls[0][0][1]
             assert deploy_msg.deploy_fix_attempt == 2  # noqa: PLR2004
+            assert deploy_msg.head_sha == "abc123"

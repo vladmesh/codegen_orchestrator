@@ -281,6 +281,32 @@ class TestSuperviseDeployingStories:
         assert len(deploy_calls) == 1
 
     @pytest.mark.asyncio
+    async def test_head_sha_missing_fails_story_without_retry(self, api_client, redis_client):
+        """HEAD_SHA_MISSING outcome → story failed, no generic exception path."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={"deploy_outcome": DeployOutcome.HEAD_SHA_MISSING.value},
+        )
+        api_client.fail_story.return_value = {}
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+
+        from shared.queues import DEPLOY_QUEUE
+
+        deploy_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
+        ]
+        assert deploy_calls == []
+
+    @pytest.mark.asyncio
     async def test_retry_exhausted_fails_story(self, api_client, redis_client):
         """RETRY with max retries exceeded → story FAILED."""
         from src.tasks.supervisor import supervise_deploying_stories

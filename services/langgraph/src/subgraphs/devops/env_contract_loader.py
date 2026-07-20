@@ -44,6 +44,14 @@ async def _fetch_env_contract(owner: str, repo: str, ref: str) -> dict | None:
 async def load_environment_contract(state: DevOpsState) -> dict:
     """Load the repository contract or return a terminal contract outcome."""
     project_id = state.get("project_id")
+    head_sha = state.get("head_sha")
+    if not head_sha:
+        logger.error("deploy_head_sha_missing", project_id=project_id)
+        return {
+            "errors": ["head_sha is required to load the environment contract"],
+            "resolution_outcome": "head_sha_missing",
+        }
+
     repo_info = state.get("repo_info") or {}
     repo_url = repo_info.get("html_url", "")
     if not repo_url:
@@ -55,7 +63,7 @@ async def load_environment_contract(state: DevOpsState) -> dict:
     owner, repo = parsed
 
     try:
-        contract = await _fetch_env_contract(owner, repo, state.get("head_sha") or "main")
+        contract = await _fetch_env_contract(owner, repo, head_sha)
     except (EnvContractMergeError, ValueError, yaml.YAMLError) as error:
         logger.warning(
             "environment_contract_invalid",

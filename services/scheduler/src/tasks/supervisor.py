@@ -332,6 +332,7 @@ async def supervise_deploying_stories(
             DeployOutcome.ALLOCATION_MISSING,
             DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
             DeployOutcome.ENVIRONMENT_RESOLUTION_FAILED,
+            DeployOutcome.HEAD_SHA_MISSING,
         ):
             await _handle_deploy_give_up(api_client, story_id, project_id, run, log)
             failed += 1

@@ -358,6 +358,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                 triggered_by=DeployTrigger.ENGINEERING,
                 action=action,
                 deploy_fix_attempt=deploy_fix_attempt,
+                head_sha=result["commit_sha"],
             )
             await redis.publish_message(DEPLOY_QUEUE, deploy_msg)
             logger.info(
