@@ -19,7 +19,7 @@ import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.queues.engineering import EngineeringMessage
@@ -104,17 +104,53 @@ def _build_cumulative_context(sibling_events: list) -> str:
     return "## Context from completed tasks\n" + "\n".join(lines) + "\n\n"
 
 
-async def _find_live_engineering_run(api_client: SchedulerAPIClient, task_id: str) -> str | None:
-    """Return the id of a live engineering run of the task, if there is one."""
-    for run_status in _LIVE_RUN_STATUSES:
-        runs = await api_client.list_runs(
-            task_id=task_id,
-            run_type=RunType.ENGINEERING.value,
-            status=run_status.value,
-        )
-        for run in runs:
-            return run.id
+async def _find_dispatched_run(api_client: SchedulerAPIClient, task: TaskDTO) -> RunDTO | None:
+    """Return the engineering run this task's current iteration was dispatched with.
+
+    Terminal runs count too: a worker can finish before the next tick, and a task
+    left in todo by a failed transition must not be dispatched a second time. Runs
+    of earlier iterations are ignored — the supervisor bumps the iteration when it
+    legitimately sends a task back to todo, so those must stay dispatchable.
+    """
+    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
+    for run in runs:
+        if run.run_metadata.get("iteration") == task.current_iteration:
+            return run
     return None
+
+
+def _replay_statuses(run: RunDTO) -> tuple[TaskStatus, ...]:
+    """Task statuses that mirror a finished run's outcome, in transition order."""
+    if run.status == RunStatus.COMPLETED:
+        return (TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE)
+    if (
+        run.status == RunStatus.FAILED
+        and run.result.engineering_status == EngineeringStatus.GAVE_UP
+    ):
+        return (TaskStatus.WAITING_HUMAN_REVIEW,)
+    return (TaskStatus.FAILED,)
+
+
+async def _recover_dispatched_task(
+    api_client: SchedulerAPIClient,
+    task_id: str,
+    run: RunDTO,
+    log: structlog.BoundLogger,
+) -> None:
+    """Finish a dispatch whose transition to in_dev never landed.
+
+    in_dev is the only way out of todo, so the task goes there first. If the run
+    already finished, its outcome is replayed on top — the result handler could not
+    apply it while the task was still in todo, and without the replay the task would
+    sit in in_dev until the stuck-task timeout.
+    """
+    await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+    if run.status in _LIVE_RUN_STATUSES:
+        log.info("task_transition_recovered", run_id=run.id, run_status=run.status.value)
+        return
+    for status in _replay_statuses(run):
+        await api_client.transition_task(task_id, status, "dispatcher")
+    log.info("task_outcome_replayed", run_id=run.id, run_status=run.status.value)
 
 
 async def _create_and_publish_run(
@@ -135,17 +171,19 @@ async def _create_and_publish_run(
     project_id = str(task.project_id)
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
+    run_metadata = {
+        "triggered_by": "dispatcher",
+        "story_id": story_id,
+        "task_id": task_id,
+        "iteration": task.current_iteration,
+    }
     await api_client.create_run(
         {
             "id": run_id,
             "type": RunType.ENGINEERING.value,
             "project_id": project_id,
             "task_id": task_id,
-            "run_metadata": {
-                "triggered_by": "dispatcher",
-                "story_id": story_id,
-                "task_id": task_id,
-            },
+            "run_metadata": run_metadata,
         }
     )
 
@@ -165,6 +203,8 @@ async def _create_and_publish_run(
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
     except Exception:
         log.exception("task_dispatch_publish_failed", run_id=run_id)
+        # Drop the iteration stamp: this run never made it onto the queue, so the
+        # next tick must dispatch a fresh one instead of recovering this one.
         await api_client.update_run(
             run_id,
             {
@@ -173,6 +213,7 @@ async def _create_and_publish_run(
                 "result": EngineeringRunResult(
                     engineering_status=EngineeringStatus.FAILED
                 ).model_dump(mode="json"),
+                "run_metadata": {**run_metadata, "iteration": None, "publish_failed": True},
             },
         )
         return None
@@ -259,13 +300,12 @@ async def dispatch_todo_tasks(
                 log.info("task_skipped_story_has_gave_up_sibling")
                 continue
 
-        # A live engineering run means a previous tick published the message but
-        # died before the transition. Finish that transition instead of creating
-        # a second run and dispatching the same task twice.
-        live_run_id = await _find_live_engineering_run(api_client, task_id)
-        if live_run_id:
-            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
-            log.info("task_transition_recovered", run_id=live_run_id)
+        # An engineering run for this iteration means a previous tick published the
+        # message but died before the transition. Recover that task instead of
+        # creating a second run and dispatching the same task twice.
+        prior_run = await _find_dispatched_run(api_client, task)
+        if prior_run is not None:
+            await _recover_dispatched_task(api_client, task_id, prior_run, log)
             dispatched += 1
             continue
 
