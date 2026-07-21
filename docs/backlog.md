@@ -241,11 +241,12 @@
 - **Brief**: Currently ensure_project_allocations allocates a port for every module in the list (e.g. backend + tg_bot). But tg_bot does not listen on a host port — it connects outbound to Telegram API. Allocating a port for it wastes the resource and clutters the admin UI.  Fix: modules should declare whethe...
 
 ### #1047 [hotfix candidate] Repo creation: stop swallowing GitHub 422, ensure unique repo names
-- **Priority**: HIGH (silent cross-project data corruption; trigger: before any second user)
+- **Priority**: —
 - **Plan**: —
-- **Status**: backlog
+- **Status**: closed (obsoleted by codegen_orchestrator-646)
 - **Brainstorm**: [scaling-15-clients.md](brainstorms/scaling-15-clients.md)
 - **Brief**: scaffolder ignores 422 "repository already exists" on create_repo (services/scaffolder/src/consumer.py:87-91). Meant as idempotent retry, but a project-name collision between two projects silently reuses and pushes into the other project's repo. Fix: suffix repo names with a short project-id hash + after a 422 verify the repo belongs to this project, else fail fast.
+- **Closeout (2026-07-21)**: The collision premise is structurally impossible since 646. The repo name is `org/{project.slug}`, and `generate_project_slug` (`shared/project_slug.py`) appends the full `project_id.hex`, so two distinct projects can never share a repo name even with identical titles. That is the exact fix this item proposed (project-id suffix), delivered stronger (full UUID, not a short hash). The remaining 422 swallow now fires only on the same project's own scaffold retry (redelivery / crash-recovery), where reusing that project's own repo is correct. The proposed ownership check on 422 would only guard a manually pre-created `org/{base}-{that-exact-uuid}` repo, which is not a real threat. Closed without code change.
 
 ### #1048 Event-driven task dispatcher (replace 30s polling)
 - **Priority**: LOW (trigger: first signs of parallel load)
