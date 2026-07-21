@@ -125,6 +125,8 @@ def api_client():
     client.get_project.return_value = project_mock
     # Default: project has existing applications (feature deploy)
     client.get_applications_by_project.return_value = [{"id": 1, "status": "running"}]
+    # Default: no live engineering run left over from a previous tick
+    client.list_runs.return_value = []
     return client
 
 
@@ -172,6 +174,8 @@ class TestDispatchTodoTasks:
         run_data = api_client.create_run.call_args[0][0]
         assert run_data["type"] == "engineering"
         assert run_data["project_id"] == PROJ_ID
+        # task_id links the run to the task so the next tick's guard can find it
+        assert run_data["task_id"] == "task-1"
 
         # Should publish to engineering queue
         redis_client.publish_message.assert_called_once()
@@ -540,6 +544,224 @@ class TestBranchInDispatch:
         redis_client.publish_message.assert_called_once()
         eng_msg = redis_client.publish_message.call_args[0][1]
         assert eng_msg.branch is None
+
+
+class TestDispatchPartialFailure:
+    """Dispatch is three non-atomic steps; a failure must not leave debris."""
+
+    @staticmethod
+    def _todo_task(**overrides):
+        return _task(
+            id="task-1",
+            title="Add user model",
+            description="Create User SQLAlchemy model",
+            type="feature",
+            project_id=PROJ_ID,
+            story_id="story-1",
+            status="todo",
+            **overrides,
+        )
+
+    @pytest.mark.asyncio
+    async def test_publish_failure_fails_run_and_keeps_task_todo(self, api_client, redis_client):
+        """Publish blows up → the created run is closed, the task stays dispatchable."""
+        from shared.contracts.dto.run import RunStatus
+        from src.tasks.task_dispatcher import PUBLISH_FAILED_ERROR, dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        redis_client.publish_message.side_effect = RuntimeError("redis is down")
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 0
+        run_id = api_client.create_run.call_args[0][0]["id"]
+        api_client.update_run.assert_called_once()
+        patched_run_id, patch = api_client.update_run.call_args[0]
+        assert patched_run_id == run_id
+        assert patch["status"] == RunStatus.FAILED.value
+        assert patch["error_message"] == PUBLISH_FAILED_ERROR
+        assert patch["result"]["engineering_status"] == "failed"
+        # The run never reached the queue, so it must not look dispatched
+        assert patch["run_metadata"]["iteration"] is None
+        # Task must stay in todo — nothing is working on it
+        api_client.transition_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_next_tick_after_publish_failure_creates_one_run(self, api_client, redis_client):
+        """The failed run is terminal, so the next tick dispatches cleanly once."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        redis_client.publish_message.side_effect = RuntimeError("redis is down")
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        # The compensated run is stored as the dispatcher left it
+        run_id, patch = api_client.update_run.call_args[0]
+        api_client.list_runs.return_value = [
+            self._prior_run_from_patch(run_id, patch),
+        ]
+        api_client.create_run.reset_mock()
+        redis_client.publish_message.side_effect = None
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 1
+        api_client.create_run.assert_called_once()
+        api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
+
+    @pytest.mark.asyncio
+    async def test_transition_failure_is_retried_once(self, api_client, redis_client):
+        """A flaky transition is retried in the same tick, without republishing."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.transition_task.side_effect = [RuntimeError("api hiccup"), {}]
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 1
+        api_client.create_run.assert_called_once()
+        redis_client.publish_message.assert_called_once()
+        assert api_client.transition_task.call_count == 2
+
+    @staticmethod
+    def _prior_run_from_patch(run_id: str, patch: dict):
+        """Rebuild the run a compensating PATCH leaves in the API."""
+        from _run_routing_factories import _make_run
+
+        from shared.contracts.dto.run import RunType
+
+        return _make_run(
+            id=run_id,
+            type=RunType.ENGINEERING,
+            status=patch["status"],
+            result=patch["result"],
+            run_metadata=patch["run_metadata"],
+        )
+
+    @staticmethod
+    def _prior_run(status, *, iteration: int = 0, result=None):
+        from _run_routing_factories import _make_run
+
+        from shared.contracts.dto.run import RunType
+
+        return _make_run(
+            id="eng-abc",
+            type=RunType.ENGINEERING,
+            status=status,
+            result=result,
+            run_metadata={"triggered_by": "dispatcher", "iteration": iteration},
+        )
+
+    async def test_next_tick_after_transition_failure_only_transitions(
+        self, api_client, redis_client
+    ):
+        """A live run from the previous tick means: transition, don't dispatch again."""
+        from shared.contracts.dto.run import RunStatus, RunType
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.list_runs.return_value = [self._prior_run(RunStatus.QUEUED)]
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 1
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+        api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
+        # Guard asked about this task's engineering runs, whatever their status
+        assert api_client.list_runs.call_args_list[0][1] == {
+            "task_id": "task-1",
+            "run_type": RunType.ENGINEERING.value,
+        }
+
+    async def test_next_tick_replays_completed_run_onto_task(self, api_client, redis_client):
+        """Worker finished before the tick: replay its outcome, don't redispatch."""
+        from shared.contracts.dto.run import RunStatus
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.list_runs.return_value = [
+            self._prior_run(
+                RunStatus.COMPLETED,
+                result={"engineering_status": "done", "commit_sha": "abc123"},
+            )
+        ]
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 1
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+        assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
+            "in_dev",
+            "in_ci",
+            "testing",
+            "done",
+        ]
+
+    async def test_next_tick_replays_failed_run_onto_task(self, api_client, redis_client):
+        """A finished-and-failed run leaves the task failed, for the supervisor to retry."""
+        from shared.contracts.dto.run import RunStatus
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.list_runs.return_value = [
+            self._prior_run(RunStatus.FAILED, result={"engineering_status": "failed"})
+        ]
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+        assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
+            "in_dev",
+            "failed",
+        ]
+
+    async def test_next_tick_replays_gave_up_run_onto_task(self, api_client, redis_client):
+        """A worker that gave up sends the task to human review, not back to the queue."""
+        from shared.contracts.dto.run import RunStatus
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.list_runs.return_value = [
+            self._prior_run(RunStatus.FAILED, result={"engineering_status": "gave_up"})
+        ]
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        api_client.create_run.assert_not_called()
+        assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
+            "in_dev",
+            "waiting_human_review",
+        ]
+
+    async def test_supervisor_retry_dispatches_despite_old_run(self, api_client, redis_client):
+        """A retried task carries a bumped iteration, so its old run must not block it."""
+        from shared.contracts.dto.run import RunStatus
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task(current_iteration=1)]
+        api_client.get_task_events.return_value = []
+        api_client.list_runs.return_value = [
+            self._prior_run(RunStatus.FAILED, iteration=0, result={"engineering_status": "failed"})
+        ]
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 1
+        api_client.create_run.assert_called_once()
+        assert api_client.create_run.call_args[0][0]["run_metadata"]["iteration"] == 1
+        redis_client.publish_message.assert_called_once()
+        api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
 
 
 class TestParseOwnerRepo:

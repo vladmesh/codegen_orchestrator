@@ -35,6 +35,7 @@ class RunCreate(BaseModel):
     project_id: uuid.UUID | None = None
     user_id: int | None = None
     story_id: str | None = None
+    task_id: str | None = None
     run_metadata: dict[str, Any] = {}
     callback_stream: str | None = None
 

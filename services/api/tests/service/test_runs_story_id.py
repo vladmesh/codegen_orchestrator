@@ -124,6 +124,92 @@ async def test_list_runs_hides_unowned_runs_from_a_non_admin_caller(
 
 
 @pytest.mark.asyncio
+async def test_create_run_with_task_id_is_filterable(async_client: AsyncClient, _tasks_project):
+    """A run created with task_id is found by GET /runs/?task_id=...&status=...
+
+    The dispatcher's pre-dispatch guard asks exactly this question to decide
+    whether a task already has a live engineering run.
+    """
+    resp = await async_client.post(
+        "/api/tasks/",
+        json={
+            "project_id": TASK_TEST_PROJECT_ID,
+            "title": "Run task link test",
+            "type": "feature",
+        },
+    )
+    assert resp.status_code == HTTPStatus.CREATED
+    task_id = resp.json()["id"]
+
+    run_id = f"eng-{uuid.uuid4().hex[:12]}"
+    resp = await async_client.post(
+        "/api/runs/",
+        json={
+            "id": run_id,
+            "type": "engineering",
+            "project_id": TASK_TEST_PROJECT_ID,
+            "task_id": task_id,
+        },
+    )
+    assert resp.status_code == HTTPStatus.CREATED
+    assert resp.json()["task_id"] == task_id
+
+    resp = await async_client.get(
+        "/api/runs/",
+        params={"task_id": task_id, "run_type": "engineering", "status": "queued"},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert [r["id"] for r in resp.json()] == [run_id]
+
+    # Once terminal, the run no longer answers the "is there a live run" question
+    resp = await async_client.patch(f"/api/runs/{run_id}", json={"status": "failed"})
+    assert resp.status_code == HTTPStatus.OK
+    resp = await async_client.get(
+        "/api/runs/",
+        params={"task_id": task_id, "run_type": "engineering", "status": "queued"},
+    )
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_patch_run_metadata_is_persisted(async_client: AsyncClient, _tasks_project):
+    """PATCH merges run_metadata and the merged value survives the commit.
+
+    The dispatcher's publish-failure compensation clears `iteration` on the run it
+    just created, so the next tick dispatches a fresh one instead of recovering a
+    run that never reached the queue. run_metadata is a plain JSON column, so an
+    in-place mutation would not be written back.
+    """
+    run_id = f"eng-{uuid.uuid4().hex[:12]}"
+    resp = await async_client.post(
+        "/api/runs/",
+        json={
+            "id": run_id,
+            "type": "engineering",
+            "project_id": TASK_TEST_PROJECT_ID,
+            "run_metadata": {"triggered_by": "dispatcher", "iteration": 1},
+        },
+    )
+    assert resp.status_code == HTTPStatus.CREATED
+
+    resp = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={
+            "status": "failed",
+            "run_metadata": {"iteration": None, "publish_failed": True},
+        },
+    )
+    assert resp.status_code == HTTPStatus.OK
+
+    resp = await async_client.get(f"/api/runs/{run_id}")
+    assert resp.status_code == HTTPStatus.OK
+    metadata = resp.json()["run_metadata"]
+    assert metadata["iteration"] is None
+    assert metadata["publish_failed"] is True
+    assert metadata["triggered_by"] == "dispatcher"
+
+
+@pytest.mark.asyncio
 async def test_create_run_without_story_id(async_client: AsyncClient, _tasks_project):
     """Run without story_id has null story_id (standalone deploy)."""
     run_id = f"run-nostory-{uuid.uuid4().hex[:8]}"
