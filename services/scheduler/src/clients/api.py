@@ -143,6 +143,19 @@ class SchedulerAPIClient:
         resp = await self._request("GET", f"runs/{run_id}")
         return RunDTO.model_validate(resp.json())
 
+    async def list_runs(self, *, task_id: str, run_type: str, status: str) -> list[RunDTO]:
+        """List runs of a task filtered by type and status."""
+        resp = await self._request(
+            "GET",
+            "runs/",
+            params={"task_id": task_id, "run_type": run_type, "status": status},
+        )
+        return [RunDTO.model_validate(r) for r in resp.json()]
+
+    async def update_run(self, run_id: str, data: dict) -> None:
+        """Patch run fields (status, error_message, result)."""
+        await self._request("PATCH", f"runs/{run_id}", json=data)
+
     async def get_latest_run_by_story(
         self, story_id: str, run_type: str | None = None
     ) -> RunDTO | None:
