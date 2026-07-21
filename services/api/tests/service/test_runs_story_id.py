@@ -172,6 +172,44 @@ async def test_create_run_with_task_id_is_filterable(async_client: AsyncClient, 
 
 
 @pytest.mark.asyncio
+async def test_patch_run_metadata_is_persisted(async_client: AsyncClient, _tasks_project):
+    """PATCH merges run_metadata and the merged value survives the commit.
+
+    The dispatcher's publish-failure compensation clears `iteration` on the run it
+    just created, so the next tick dispatches a fresh one instead of recovering a
+    run that never reached the queue. run_metadata is a plain JSON column, so an
+    in-place mutation would not be written back.
+    """
+    run_id = f"eng-{uuid.uuid4().hex[:12]}"
+    resp = await async_client.post(
+        "/api/runs/",
+        json={
+            "id": run_id,
+            "type": "engineering",
+            "project_id": TASK_TEST_PROJECT_ID,
+            "run_metadata": {"triggered_by": "dispatcher", "iteration": 1},
+        },
+    )
+    assert resp.status_code == HTTPStatus.CREATED
+
+    resp = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={
+            "status": "failed",
+            "run_metadata": {"iteration": None, "publish_failed": True},
+        },
+    )
+    assert resp.status_code == HTTPStatus.OK
+
+    resp = await async_client.get(f"/api/runs/{run_id}")
+    assert resp.status_code == HTTPStatus.OK
+    metadata = resp.json()["run_metadata"]
+    assert metadata["iteration"] is None
+    assert metadata["publish_failed"] is True
+    assert metadata["triggered_by"] == "dispatcher"
+
+
+@pytest.mark.asyncio
 async def test_create_run_without_story_id(async_client: AsyncClient, _tasks_project):
     """Run without story_id has null story_id (standalone deploy)."""
     run_id = f"run-nostory-{uuid.uuid4().hex[:8]}"

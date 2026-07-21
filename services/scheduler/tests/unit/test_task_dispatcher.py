@@ -627,7 +627,6 @@ class TestDispatchPartialFailure:
         redis_client.publish_message.assert_called_once()
         assert api_client.transition_task.call_count == 2
 
-    @pytest.mark.asyncio
     @staticmethod
     def _prior_run_from_patch(run_id: str, patch: dict):
         """Rebuild the run a compensating PATCH leaves in the API."""

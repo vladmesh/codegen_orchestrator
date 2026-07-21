@@ -207,10 +207,10 @@ async def update_run(
     update_data = run_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         if field == "run_metadata" and value is not None:
-            # Merge metadata instead of replacing to preserve existing keys
-            current = run.run_metadata or {}
-            current.update(value)
-            run.run_metadata = current
+            # Merge metadata instead of replacing to preserve existing keys.
+            # A fresh dict is required: run_metadata is a plain JSON column,
+            # so in-place mutation does not mark the attribute dirty.
+            run.run_metadata = {**(run.run_metadata or {}), **value}
         else:
             setattr(run, field, value)
 
