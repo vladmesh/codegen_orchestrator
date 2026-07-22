@@ -9,8 +9,11 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Stage 7 live validation. Sprint 002 Phases 0–4 are complete; the current
-  focus is safe teardown and reproducible diagnostics around the proven live pipeline.
+- **Current Phase**: Stage 7 live validation is complete — Mega 2.0 (PR #99) plus the
+  2026-07-18..21 hardening wave (fail-closed teardown, commit-exact env contracts, title/slug
+  split, typed deploy outcomes, waiting_for_user_secret loop, failure-safe dispatch). Remaining
+  Stage 7 tail debt lives on the external board (600, 548, 676→527, 597, 673). Stage 8 (Telegram
+  end-to-end) is next on the [stabilization map](plans/codegen-stabilization-v1.md); not started.
 
 ## Current Facts
 
@@ -44,6 +47,14 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   deploy/QA runs are found, cancelled and confirmed terminal before external teardown. PR #103
   (`codegen_orchestrator-549`) makes parsed live-harness API reads fail on HTTP errors before body
   parsing.
+
+- The 2026-07-18..21 hardening wave closed Stage 7: `head_sha` is required and env contracts read
+  the deployed commit, not `main` (658, 661); deploy outcomes and env-contract dispatch are typed
+  (620); server teardown lives in `shared/live_harness_remote_cleanup.sh` with parameters as
+  arguments (666) and the standalone sweep works post-slug-migration (663); `wait_deploy` picks the
+  web port by role (665); missing secrets force `WAITING_FOR_USER_SECRET` and the request loop is
+  closed (670); task dispatch has no partial-state windows and recovers from finished runs (672,
+  PR #125); `make lint` matches CI formatting (657).
 
 - CI normalization is complete in PR #30: `Required CI Gate`, unconditional format/lint/unit checks
   and `make ci-contract` are in place.
@@ -94,7 +105,7 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 | 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | COMPLETE — rerun audit on `b0463fb3` closes scaffolder/auth diagnostics, worker compose, provisioner outage and notification caller-policy boundaries. |
 | 5 | Deterministic mock smoke | COMPLETE — `codegen_orchestrator-496` |
 | 6 | service-template compatibility matrix | COMPLETE — `codegen_orchestrator-499` |
-| 7 | Live mega and cleanup hardening | IN PROGRESS — Mega 2.0 is green; cleanup race `codegen_orchestrator-618` and fail-loud API reads `codegen_orchestrator-549` are complete |
+| 7 | Live mega and cleanup hardening | COMPLETE — Mega 2.0 green (PR #99); 2026-07-18..21 wave closed teardown fences (645/659/662), head_sha env contracts (658/661), slug migration (646/647/663), teardown module (666), typed deploy outcomes (620), web port by role (665), waiting_for_user_secret (670), failure-safe dispatch (672). Tail debt on the board: 600, 548, 676→527, 597, 673 |
 
 ## Recent Stabilization Work
 
@@ -103,7 +114,7 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 | CI normalization | COMPLETE | PR #30, [CHANGELOG 2026-07-11](CHANGELOG.md#2026-07-11) |
 | service-template contract audit | COMPLETE | PR #31, [contract audit](reports/codegen-service-template-contract.md) |
 | worker-mode proxy target drift (`codegen_orchestrator-398`) | COMPLETE | PR #32, [CHANGELOG 2026-07-12](CHANGELOG.md#2026-07-12) |
-| service-template production pin (`codegen_orchestrator-432`) | COMPLETE in current baseline | PR #33, `scheduler.service_template_ref=0.3.0` |
+| service-template production pin (`codegen_orchestrator-432`) | COMPLETE | PR #33 introduced the pin at `0.3.0`; current `scheduler.service_template_ref=0.3.5` |
 | Stabilization sequence (`codegen_orchestrator-434`) | COMPLETE | [stabilization plan v1](plans/codegen-stabilization-v1.md) |
 | B7 response-DTO enums (`codegen_orchestrator-435`) | COMPLETE | lifecycle fields on task/story/server/application/incident/service-deployment DTOs now use their `StrEnum`; slice of Phase 2 only |
 | Unified contract vocabularies (`codegen_orchestrator-436`) | COMPLETE | `shared/contracts/vocab.py` canonical `AgentType`/`ActionType`/`ResultStatus`/`LifecycleEvent`; inline `Literal` sets removed, `error` synonym dropped; `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct; tests in `shared/tests/unit/test_vocab.py` |

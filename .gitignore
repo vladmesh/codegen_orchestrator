@@ -53,3 +53,6 @@ secrets
 
 # Task-pipeline board runtime state (never committed)
 secretary-data/
+
+# Live harness runtime artifacts
+.live-runs/
