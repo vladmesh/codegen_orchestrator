@@ -19,10 +19,10 @@ if [ -d "$SVC_DIR/infra" ]; then
 fi
 for project in $PROJECTS; do
   for c in $(docker ps -aq --filter "label=com.docker.compose.project=$project"); do
-    docker rm -f "$c"
+    docker rm -f -v "$c"
   done
   for c in $(docker ps -aq --filter "name=^/${project}[-_]"); do
-    docker rm -f "$c"
+    docker rm -f -v "$c"
   done
   for resource in volume network; do
     for id in $(docker "$resource" ls -q --filter "label=com.docker.compose.project=$project"); do
