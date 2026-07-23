@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-07-24
+
+- Stop project git hooks from gating worker pushes. Generated projects ship
+  `.githooks/pre-push`, which falls back to `make lint` when Docker is absent and resolves it to
+  `.venv/bin/ruff`; neither exists in a worker container, so the hook exited 127 under
+  `set -euo pipefail` and every push carrying real file changes was rejected. The agent's commits
+  never left the container while it still reported success, leaving an empty story branch.
+  `setup_git_repo` now points `core.hooksPath` at an empty directory outside `/workspace`; PR CI
+  remains the gate. The noop path never saw this because an empty commit makes `pre-push`
+  short-circuit before any check.
+- Fail engineering when the reported commit is not on origin. `ReposMixin.branch_contains_commit`
+  resolves a SHA against the remote branch, and the developer node now verifies the worker's
+  self-reported SHA before reporting success instead of only checking that the string is non-empty.
+- Distinguish GitHub's 422 rejections when opening a story PR. `create_pull_request` parses the
+  validation body: "No commits between" now raises a message naming the empty branch, instead of
+  being treated as "PR already exists" and surfacing as `no existing PR found`.
+- Bound ClickHouse log growth. `docker/clickhouse/config.d/retention.xml` sets logger level
+  `information` with 200M x 3 rotation and a TTL on the six `system.*_log` tables, which had none
+  and grew without limit.
+
 ## 2026-07-20
 
 - Make deploy port selection role-based. Deploy allocation and the live harness now share the same

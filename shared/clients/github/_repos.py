@@ -106,6 +106,32 @@ class ReposMixin:
             raise RuntimeError(f"GitHub branch {owner}/{repo}@{branch} has no head SHA")
         return sha
 
+    async def branch_contains_commit(self, owner: str, repo: str, branch: str, sha: str) -> bool:
+        """Whether ``sha`` is reachable from ``branch`` on the remote.
+
+        A worker reports the SHA it committed locally, which says nothing about whether
+        the push landed. False here means the commit is not on origin.
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        try:
+            resp = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/compare/"
+                f"{quote(sha, safe='')}...{quote(branch, safe='')}",
+                headers=headers,
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                return False
+            raise
+        # "identical" or "ahead" mean branch head is at or beyond sha; "diverged"/"behind"
+        # mean sha is not an ancestor of the branch.
+        return resp.json().get("status") in ("identical", "ahead")
+
     async def delete_repo(self, owner: str, repo: str) -> bool:
         """Delete a repository.
 

@@ -1,0 +1,31 @@
+<clickhouse>
+    <!-- Cap ClickHouse's own file logs. Default is trace + 1000M x 10 (~10G).
+         Live-mega load wrote ~1G in under an hour and this was a factor in the
+         disk-full incident. -->
+    <logger>
+        <level>information</level>
+        <size>200M</size>
+        <count>3</count>
+    </logger>
+
+    <!-- Bound the internal system.*_log tables. They have no TTL by default and
+         grow without limit; trace_log alone reached >1G. -->
+    <trace_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </trace_log>
+    <text_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </text_log>
+    <metric_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </metric_log>
+    <asynchronous_metric_log>
+        <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+    </asynchronous_metric_log>
+    <part_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </part_log>
+    <query_log>
+        <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+    </query_log>
+</clickhouse>

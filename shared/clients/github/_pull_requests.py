@@ -5,6 +5,18 @@ from shared.log_config import get_logger
 logger = get_logger(__name__)
 
 
+def _validation_detail(response: httpx.Response) -> str:
+    """Join GitHub's validation error messages from a 422 body."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    messages = [
+        str(err.get("message", "")) for err in body.get("errors", []) if isinstance(err, dict)
+    ]
+    return "; ".join(m for m in messages if m) or str(body.get("message", ""))
+
+
 class PullRequestsMixin:
     """Pull request operations."""
 
@@ -40,8 +52,25 @@ class PullRequestsMixin:
         except httpx.HTTPStatusError as e:
             if e.response.status_code != httpx.codes.UNPROCESSABLE_ENTITY:
                 raise
+            # 422 covers several distinct rejections. "No commits between" means the
+            # branch carries nothing to merge — usually an agent whose push was
+            # rejected — and no amount of PR lookup will find a PR that never existed.
+            detail = _validation_detail(e.response)
+            if "no commits between" in detail.lower():
+                logger.error(
+                    "pr_branch_has_no_commits",
+                    owner=owner,
+                    repo=repo,
+                    head=head,
+                    base=base,
+                    detail=detail,
+                )
+                raise RuntimeError(
+                    f"Cannot open PR {head}->{base}: {detail}. The branch has no commits "
+                    f"of its own, so nothing was pushed to it."
+                ) from e
             # PR already exists — find and return it (check open first, then closed/merged)
-            logger.info("pr_already_exists", owner=owner, repo=repo, head=head)
+            logger.info("pr_already_exists", owner=owner, repo=repo, head=head, detail=detail)
             for state in ("open", "closed"):
                 list_resp = await self._make_request(
                     "GET",
