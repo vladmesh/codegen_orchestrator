@@ -377,6 +377,43 @@ fi
     assert calls.read_text().splitlines() == ["volume:v1", "network:n1"]
 
 
+def test_server_cleanup_removes_containers_with_anonymous_volumes(tmp_path):
+    """`docker rm` must carry `-v` so anonymous volumes (unlabelled, invisible to
+    the label-scoped volume sweep) die with their container."""
+    calls = tmp_path / "docker-calls"
+    state = tmp_path / "container-state"
+    state.write_text("up\n")
+    _write_fake_docker(
+        tmp_path,
+        """
+state=${FAKE_DOCKER_STATE:?}
+calls=${FAKE_DOCKER_CALLS:?}
+if [ "$1" = "ps" ]; then
+  [ -s "$state" ] || exit 0
+  echo c1
+elif [ "$1" = "rm" ]; then
+  shift
+  echo "rm $*" >> "$calls"
+  : > "$state"
+fi
+""",
+    )
+    env = {
+        **os.environ,
+        "FAKE_DOCKER_STATE": str(state),
+        "FAKE_DOCKER_CALLS": str(calls),
+        "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
+    }
+
+    result = _run_remote_cleanup("live-test-2c3e830f", tmp_path / "services", env)
+
+    assert result.returncode == 0, result.stderr
+    rm_calls = calls.read_text().splitlines()
+    assert rm_calls, "expected docker rm to run"
+    for call in rm_calls:
+        assert "-v" in call.split(), f"docker rm missing -v: {call}"
+
+
 def test_server_cleanup_verifies_labelled_volume_residue_without_infra_directory(tmp_path):
     _write_fake_docker(
         tmp_path,
