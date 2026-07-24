@@ -2,6 +2,18 @@
 
 ## 2026-07-25
 
+- Load the QA server's Telethon credentials into the run instead of asking the agent to. The
+  prompt told it to `set -a; . ~/.qa-telethon.env`, which run `qa-7729960c` simply skipped: it
+  reported the echo check `BLOCKED`, citing the old `/opt/qa-runner/telethon.session` path and
+  variable names that no longer exist, while the credentials sat on the server at 0600. The
+  runner now sources the file into the SSH command's environment next to the `PATH` export, so
+  `TELETHON_*` are set before `claude` starts, and the prompt says they are already exported.
+  A bot run first checks the file is readable and all three variables are non-empty; if not, the
+  run fails with the named cause and `claude` never starts, so there is no room for a guessed
+  verdict. Only variable names travel back in that error, never values. The prompt also drops
+  "blocked" as an allowed outcome for Telegram checks: pass or fail, decided by running the
+  snippet.
+
 - Wire Telethon credentials through to the QA runner, so QA can write to deployed bots as a real
   user. The prompt hardcoded `TelegramClient('/opt/qa-runner/telethon.session', api_id=0,
   api_hash='')` and the role copied that session file only `when: telethon_session_file is
