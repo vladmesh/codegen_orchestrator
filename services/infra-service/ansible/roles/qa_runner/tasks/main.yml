@@ -1,12 +1,16 @@
 ---
 # QA Runner provisioning — installs Claude Code CLI and QA dependencies
 # on prod servers for post-deploy testing.
+#
+# Everything Claude Code needs belongs to {{ qa_runner_user }}: QA connects over
+# SSH as that user and calls `claude` from its own $HOME/.local/bin. Installing
+# under root would leave that user without a binary.
 
 - name: Create QA runner directory
   file:
     path: "{{ qa_runner_dir }}"
     state: directory
-    owner: root
+    owner: "{{ qa_runner_user }}"
     mode: '0755'
 
 # --- Swap (Claude Code installer needs ~2GB to unpack) ---
@@ -32,18 +36,41 @@
 
 # --- Claude Code CLI (standalone binary, no Node.js needed) ---
 
-- name: Install Claude Code CLI via install script
-  shell: curl -fsSL https://claude.ai/install.sh | bash
-  args:
-    creates: /root/.local/bin/claude
-  environment:
-    HOME: /root
+- name: Create Claude config directory for the QA user
+  file:
+    path: "{{ qa_runner_home }}/.claude"
+    state: directory
+    owner: "{{ qa_runner_user }}"
+    mode: '0700'
 
-- name: Add Claude Code to PATH in bashrc
-  lineinfile:
-    path: /root/.bashrc
-    line: 'export PATH="$HOME/.local/bin:$PATH"'
-    state: present
+# pipefail is what makes a failed curl fail the task: without it bash exits 0 on
+# empty input and Ansible reports a successful install with no binary on disk.
+- name: Install Claude Code CLI via install script
+  shell: |
+    set -euo pipefail
+    curl -fsSL https://claude.ai/install.sh | bash
+  args:
+    executable: /bin/bash
+    creates: "{{ qa_runner_claude_bin }}"
+  become: true
+  become_user: "{{ qa_runner_user }}"
+  environment:
+    HOME: "{{ qa_runner_home }}"
+
+# Same invocation QA uses over SSH: bare `claude` found through $HOME/.local/bin.
+- name: Verify Claude Code CLI runs for the QA user
+  shell: |
+    set -euo pipefail
+    export PATH="$HOME/.local/bin:$PATH"
+    claude --version
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ qa_runner_user }}"
+  environment:
+    HOME: "{{ qa_runner_home }}"
+  changed_when: false
+  register: qa_runner_claude_version
 
 # --- Python QA dependencies (in venv, PEP 668) ---
 
@@ -67,25 +94,18 @@
 
 # --- Claude Code session (copied from host) ---
 
-- name: Create Claude config directory for root
-  file:
-    path: /root/.claude
-    state: directory
-    owner: root
-    mode: '0700'
-
 - name: Copy Claude Code credentials
   copy:
     src: "{{ claude_credentials_file }}"
-    dest: /root/.claude/.credentials.json
-    owner: root
+    dest: "{{ qa_runner_home }}/.claude/.credentials.json"
+    owner: "{{ qa_runner_user }}"
     mode: '0600'
   no_log: true
 
 - name: Configure Claude Code permissions (allowlist for QA)
   copy:
-    dest: /root/.claude/settings.json
-    owner: root
+    dest: "{{ qa_runner_home }}/.claude/settings.json"
+    owner: "{{ qa_runner_user }}"
     mode: '0600'
     content: |
       {
@@ -105,6 +125,6 @@
   copy:
     src: telethon.session
     dest: "{{ qa_runner_dir }}/telethon.session"
-    owner: root
+    owner: "{{ qa_runner_user }}"
     mode: '0600'
   when: telethon_session_file is defined

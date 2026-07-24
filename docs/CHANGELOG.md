@@ -2,6 +2,18 @@
 
 ## 2026-07-24
 
+- Install the QA runner's Claude Code for the user QA actually connects as. The `qa_runner` role
+  installed under root (`HOME=/root`, gate on `/root/.local/bin/claude`, PATH line in
+  `/root/.bashrc`), while QA SSHes in as the server's `ssh_user` and runs a bare `claude` off
+  `$HOME/.local/bin` — every run on `vps-273978` came back as `Claude Code exited with status 127`.
+  The install now runs as `{{ deploy_user }}` with that user's `HOME`, and the credentials and
+  settings land in the same home. The bashrc line is gone: a non-interactive SSH session never
+  reads it, QA sets its own PATH. Second defect in the same task: `curl … | bash` ran without
+  `pipefail` under `/bin/sh`, so a failed download left bash reading empty input and exiting 0 —
+  Ansible reported a successful install of a binary that was never there. The command now runs
+  under `/bin/bash` with `set -euo pipefail`, and a following task executes `claude --version` as
+  the QA user, so the role proves the binary works instead of trusting that a file exists.
+
 - Make deploy smoke verify the Telegram bot instead of skipping it. The tg_bot check ran through
   Telethon, whose API id, hash and session were never configured on the deploy worker, so every
   bot project logged `smoke_tg_bot_skip` and the deploy passed with only the backend verified,

@@ -1,11 +1,17 @@
 """Tests for the qa_runner Ansible role structure and YAML validity."""
 
+import os
 from pathlib import Path
+import subprocess
 
 import yaml
 
 ROLES_DIR = Path(__file__).parents[2] / "ansible" / "roles"
 QA_RUNNER_DIR = ROLES_DIR / "qa_runner"
+
+
+def _task_named(tasks: list[dict], name: str) -> dict:
+    return next(task for task in tasks if task["name"] == name)
 
 
 class TestQaRunnerRoleStructure:
@@ -104,6 +110,76 @@ class TestQaRunnerTasksYaml:
                 )
 
 
+class TestClaudeCodeInstallsForQaUser:
+    """QA SSHes in as the deploy user and runs `claude` from that user's home."""
+
+    def setup_method(self):
+        with open(QA_RUNNER_DIR / "tasks" / "main.yml") as f:
+            self.tasks = yaml.safe_load(f)
+
+    def test_install_runs_as_the_qa_user(self):
+        install = _task_named(self.tasks, "Install Claude Code CLI via install script")
+
+        assert install["become_user"] == "{{ qa_runner_user }}"
+        assert install["environment"]["HOME"] == "{{ qa_runner_home }}"
+        assert install["args"]["creates"] == "{{ qa_runner_claude_bin }}"
+
+    def test_verification_executes_the_binary_the_way_qa_does(self):
+        verify = _task_named(self.tasks, "Verify Claude Code CLI runs for the QA user")
+
+        assert verify["become_user"] == "{{ qa_runner_user }}"
+        assert verify["environment"]["HOME"] == "{{ qa_runner_home }}"
+        # Bare `claude` resolved through PATH, matching the QA consumer's command
+        assert 'export PATH="$HOME/.local/bin:$PATH"' in verify["shell"]
+        assert "claude --version" in verify["shell"]
+
+    def test_credentials_and_settings_land_in_the_qa_user_home(self):
+        creds = _task_named(self.tasks, "Copy Claude Code credentials")
+        settings = _task_named(self.tasks, "Configure Claude Code permissions (allowlist for QA)")
+
+        assert creds["copy"]["dest"] == "{{ qa_runner_home }}/.claude/.credentials.json"
+        assert creds["copy"]["owner"] == "{{ qa_runner_user }}"
+        assert settings["copy"]["dest"] == "{{ qa_runner_home }}/.claude/settings.json"
+        assert settings["copy"]["owner"] == "{{ qa_runner_user }}"
+
+    def test_nothing_is_provisioned_under_root_home(self):
+        """A /root path means the QA user gets nothing — that was the 127 failure."""
+        rendered = yaml.safe_dump(self.tasks)
+        assert "/root" not in rendered, rendered
+
+
+class TestFailedInstallIsNotReportedAsSuccess:
+    """curl failing must fail the task instead of feeding bash an empty script."""
+
+    def setup_method(self):
+        with open(QA_RUNNER_DIR / "tasks" / "main.yml") as f:
+            self.install = _task_named(
+                yaml.safe_load(f), "Install Claude Code CLI via install script"
+            )
+
+    def test_runs_under_bash(self):
+        # /bin/sh has no pipefail; the pipeline would keep swallowing curl's exit code
+        assert self.install["args"]["executable"] == "/bin/bash"
+
+    def test_install_command_exits_nonzero_when_download_fails(self, tmp_path):
+        stub_bin = tmp_path / "bin"
+        stub_bin.mkdir()
+        curl_stub = stub_bin / "curl"
+        curl_stub.write_text("#!/bin/sh\necho 'curl: could not resolve host' >&2\nexit 6\n")
+        curl_stub.chmod(0o755)
+
+        result = subprocess.run(
+            ["/bin/bash", "-c", self.install["shell"]],
+            env={"PATH": f"{stub_bin}:{os.environ['PATH']}", "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0, (
+            f"Failed download reported success: stdout={result.stdout} stderr={result.stderr}"
+        )
+
+
 class TestQaRunnerDefaults:
     """Verify defaults/main.yml has expected variables."""
 
@@ -121,6 +197,15 @@ class TestQaRunnerDefaults:
     def test_no_nodejs_dependency(self):
         """Claude Code installs standalone, no Node.js needed."""
         assert "nodejs_major_version" not in self.defaults
+
+    def test_qa_user_follows_the_deploy_user(self):
+        """The deploy user is the one QA connects as (server.ssh_user)."""
+        assert self.defaults["qa_runner_user"] == "{{ deploy_user }}"
+        assert self.defaults["qa_runner_home"] == "/home/{{ qa_runner_user }}"
+
+    def test_claude_bin_matches_the_path_qa_builds(self):
+        """QA exports $HOME/.local/bin and calls a bare `claude`."""
+        assert self.defaults["qa_runner_claude_bin"] == "{{ qa_runner_home }}/.local/bin/claude"
 
 
 class TestSiteYmlIncludesQaRunner:

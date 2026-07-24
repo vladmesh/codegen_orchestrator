@@ -1,3 +1,8 @@
 ---
 qa_runner_dir: /opt/qa-runner
 claude_credentials_file: ~/.claude/.credentials.json
+# QA SSHes in as the deploy user, so Claude Code has to be installed for that
+# user and nowhere else.
+qa_runner_user: "{{ deploy_user }}"
+qa_runner_home: "/home/{{ qa_runner_user }}"
+qa_runner_claude_bin: "{{ qa_runner_home }}/.local/bin/claude"

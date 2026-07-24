@@ -133,6 +133,11 @@ Prod servers are provisioned as QA testing nodes via the `qa_runner` Ansible rol
 - `.credentials.json` OAuth session (copied from Ansible controller's `~/.claude/.credentials.json`)
 - Optional: `telethon.session` file for Telegram bot testing
 
+Everything user-scoped is installed for `{{ deploy_user }}` (the server's `ssh_user`), because the
+QA consumer connects as that user and calls `claude` through its `$HOME/.local/bin`. The role
+verifies the binary by running it as that user, so a failed download fails the play instead of
+leaving a server that reports OK and answers QA with exit status 127.
+
 **Auto-provisioning**: The role is included in `site.yml` and `provision_software.yml` — new servers get QA capabilities automatically. The `claude_credentials_file` defaults to `~/.claude/.credentials.json` on the Ansible controller.
 
 **Manual re-provisioning** (e.g. after session expiry):
