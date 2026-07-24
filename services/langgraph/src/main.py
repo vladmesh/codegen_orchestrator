@@ -15,6 +15,7 @@ import asyncio
 import structlog
 
 from shared.log_config import setup_logging
+from shared.queues import PO_INPUT_QUEUE
 
 from .config.agent_llm_env import missing_llm_env
 from .config.settings import get_settings
@@ -41,7 +42,7 @@ async def run_worker() -> None:
         logger.error(
             "po_consumer_disabled",
             missing_env=po_missing,
-            impact="po:queue is not consumed, user messages stay unanswered",
+            impact=f"{PO_INPUT_QUEUE} is not consumed, user messages stay unanswered",
             fix="set these vars in .env (see .env.example) and restart langgraph",
         )
     else:

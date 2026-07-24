@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
+from shared.queues import PO_INPUT_QUEUE
 from src.config.agent_llm_env import AGENT_LLM_ENV, missing_llm_env
 from src.config.settings import Settings
 
@@ -58,6 +60,13 @@ class TestEnvExampleDocumentsGroups:
         comment_block = text.split(f"\n{first_var}=", 1)[0].rsplit("\n\n", 1)[-1]
         assert "required" in comment_block.lower()
 
+    def test_po_comment_names_the_stream_that_stalls(self):
+        """An operator following this comment must land on a stream that exists."""
+        text = ENV_EXAMPLE.read_text()
+        first_var = AGENT_LLM_ENV["po"][0]
+        comment_block = text.split(f"\n{first_var}=", 1)[0].rsplit("\n\n", 1)[-1]
+        assert PO_INPUT_QUEUE in comment_block
+
 
 class TestArchitectStartupGuard:
     def test_refuses_to_start_without_config(self):
@@ -93,6 +102,27 @@ class TestArchitectStartupGuard:
             architect.main()
 
         start_worker.assert_called_once()
+
+
+class TestPoStartupSignal:
+    async def test_disabled_log_names_the_real_input_stream(self):
+        """The operator greps for the stream named here, so it must be po:input."""
+        from src import main
+
+        async def _idle():
+            return None
+
+        with (
+            patch.object(main, "_po_missing_env", return_value=["PO_LLM_API_KEY"]),
+            patch.object(main, "listen_provisioner_triggers", _idle),
+            patch.object(main, "listen_worker_events", _idle),
+            capture_logs() as logs,
+        ):
+            await main.run_worker()
+
+        [disabled] = [entry for entry in logs if entry["event"] == "po_consumer_disabled"]
+        assert PO_INPUT_QUEUE in disabled["impact"]
+        assert disabled["missing_env"] == ["PO_LLM_API_KEY"]
 
 
 class TestMissingLlmEnv:
