@@ -11,6 +11,7 @@ from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
+from shared.contracts.dto.repository import RepositoryRole
 from shared.contracts.vocab import AgentType
 
 from .tools_shared import _get_api, _user_headers
@@ -166,6 +167,34 @@ async def set_project_secret(
     return f"Secret '{key}' set for project {project_id}."
 
 
+async def _store_bot_username(
+    api: httpx.AsyncClient, project_id: str, bot_username: str, headers: dict
+) -> None:
+    """Write bot_username onto the project's primary repository.
+
+    Overwrites whatever was there — revalidating a token is how a project moves to
+    a different bot.
+    """
+    repos_resp = await api.get(f"/api/repositories/?project_id={project_id}", headers=headers)
+    repos_resp.raise_for_status()
+    repos = repos_resp.json()
+    primary_repo = next(
+        (r for r in repos if r["role"] == RepositoryRole.PRIMARY.value),
+        None,
+    )
+    if primary_repo is None:
+        raise RuntimeError(
+            f"Project {project_id} has no primary repository — cannot store bot_username"
+        )
+
+    patch_resp = await api.patch(
+        f"/api/repositories/{primary_repo['id']}",
+        json={"bot_username": bot_username},
+        headers=headers,
+    )
+    patch_resp.raise_for_status()
+
+
 @tool
 async def validate_telegram_token(project_id: str, token: str, *, config: RunnableConfig) -> str:
     """Validate a Telegram bot token and store it as a project secret.
@@ -207,7 +236,7 @@ async def validate_telegram_token(project_id: str, token: str, *, config: Runnab
     api = _get_api()
     headers = _user_headers(config)
 
-    await api.post(
+    token_resp = await api.post(
         f"/api/projects/{project_id}/config/secrets",
         json={
             "secrets": {"TELEGRAM_BOT_TOKEN": token},
@@ -215,7 +244,8 @@ async def validate_telegram_token(project_id: str, token: str, *, config: Runnab
         },
         headers=headers,
     )
-    await api.post(
+    token_resp.raise_for_status()
+    username_resp = await api.post(
         f"/api/projects/{project_id}/config/secrets",
         json={
             "secrets": {"TELEGRAM_BOT_USERNAME": bot_username},
@@ -227,20 +257,12 @@ async def validate_telegram_token(project_id: str, token: str, *, config: Runnab
         },
         headers=headers,
     )
+    username_resp.raise_for_status()
 
-    # 3. Store bot_username on the primary repository (plain text, not a secret)
-    repos_resp = await api.get(f"/api/repositories/?project_id={project_id}", headers=headers)
-    repos = repos_resp.json() if repos_resp.status_code == HTTP_OK else []
-    primary_repo = next(
-        (r for r in repos if r.get("role") == "primary"),
-        repos[0] if repos else None,
-    )
-    if primary_repo:
-        await api.patch(
-            f"/api/repositories/{primary_repo['id']}",
-            json={"bot_username": bot_username},
-            headers=headers,
-        )
+    # 3. Persist bot_username on the primary repository (plain text, not a secret).
+    #    QA reads it from there, so a write that silently does nothing turns into a
+    #    QA failure on a working bot — crash here instead.
+    await _store_bot_username(api, project_id, bot_username, headers)
 
     logger.info(
         "telegram_token_validated",

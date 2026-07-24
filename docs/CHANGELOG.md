@@ -2,6 +2,16 @@
 
 ## 2026-07-24
 
+- Give QA the bot username from the project instead of the deploy smoke check. PO's
+  `validate_telegram_token` already knew the username from `getMe`, but its write to
+  `Repository.bot_username` skipped itself whenever the repository lookup returned anything
+  unexpected, and the supervisor read the username only off `DeployRunResult`, which the smoke
+  check leaves `null`. A tg_bot project then failed QA with `qa_bot_username_missing` on a working
+  bot, and the story's `failed` status sent PO off fixing a product that was fine. The PO tool now
+  raises when it cannot store the username, and the deploy→QA handoff reads it from the same
+  repository record it reads the acceptance criteria from, falling back to the smoke value only for
+  projects whose token predates the write.
+
 - Make missing agent LLM config visible. `ARCHITECT_LLM_*` was absent from `.env.example`, so a
   clean install had the architect consumer accept stories and fail each one at
   `architect_llm_not_configured` with nothing said at startup; PO logged its disabled state at
