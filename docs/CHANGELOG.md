@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-25
+
+- Wire Telethon credentials through to the QA runner, so QA can write to deployed bots as a real
+  user. The prompt hardcoded `TelegramClient('/opt/qa-runner/telethon.session', api_id=0,
+  api_hash='')` and the role copied that session file only `when: telethon_session_file is
+  defined` — a variable nobody set, so the copy skipped silently and every bot check ended in
+  `BLOCKED: /opt/qa-runner/telethon.session does not exist`. api_id/api_hash of 0/`''` would not
+  have connected either: Telethon needs the app credentials even with an authorized session. The
+  role now reads `TELETHON_API_ID`, `TELETHON_API_HASH` and `TELETHON_SESSION` from the
+  orchestrator environment (never through `--extra-vars`, which would put them in the process
+  list), asserts all three are non-empty, and writes them to `~/.qa-telethon.env` at mode 0600
+  owned by the QA user. The prompt sources that file and connects through `StringSession`.
+  Verified on vps-273978: a missing credential fails the play with a named message, and a QA run
+  against `@factory_e2e_test_bot` echoed back its message on every check.
+
 ## 2026-07-24
 
 - Install the QA runner's Claude Code for the user QA actually connects as. The `qa_runner` role

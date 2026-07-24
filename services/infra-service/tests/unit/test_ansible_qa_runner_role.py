@@ -76,6 +76,7 @@ class TestQaRunnerTasksYaml:
             "template",
             "lineinfile",
             "get_url",
+            "assert",
             "shell",
             "command",
             "ansible.builtin.shell",
@@ -146,6 +147,55 @@ class TestClaudeCodeInstallsForQaUser:
         """A /root path means the QA user gets nothing — that was the 127 failure."""
         rendered = yaml.safe_dump(self.tasks)
         assert "/root" not in rendered, rendered
+
+
+class TestTelethonCredentialsReachTheQaUser:
+    """QA needs api_id, api_hash and a StringSession — all three, or nothing works."""
+
+    def setup_method(self):
+        with open(QA_RUNNER_DIR / "tasks" / "main.yml") as f:
+            self.tasks = yaml.safe_load(f)
+        with open(QA_RUNNER_DIR / "defaults" / "main.yml") as f:
+            self.defaults = yaml.safe_load(f)
+
+    def test_credentials_come_from_the_orchestrator_environment(self):
+        assert self.defaults["telethon_api_id"] == "{{ lookup('env', 'TELETHON_API_ID') }}"
+        assert self.defaults["telethon_api_hash"] == "{{ lookup('env', 'TELETHON_API_HASH') }}"
+        assert self.defaults["telethon_session"] == "{{ lookup('env', 'TELETHON_SESSION') }}"
+
+    def test_missing_credential_fails_the_role(self):
+        check = _task_named(self.tasks, "Require Telethon credentials in the environment")
+
+        assert check["assert"]["that"] == [
+            "telethon_api_id | string | length > 0",
+            "telethon_api_hash | string | length > 0",
+            "telethon_session | string | length > 0",
+        ]
+        # A `when:` on an undefined variable is what made the old session copy
+        # skip silently; the check must always run.
+        assert "when" not in check
+
+    def test_env_file_is_written_private_to_the_qa_user(self):
+        write = _task_named(self.tasks, "Write Telethon credentials for the QA user")
+
+        assert write["copy"]["dest"] == "{{ qa_runner_telethon_env_file }}"
+        assert write["copy"]["owner"] == "{{ qa_runner_user }}"
+        assert write["copy"]["mode"] == "0600"
+        assert write["no_log"] is True
+        content = write["copy"]["content"]
+        assert "TELETHON_API_ID={{ telethon_api_id }}" in content
+        assert "TELETHON_API_HASH={{ telethon_api_hash }}" in content
+        assert "TELETHON_SESSION={{ telethon_session }}" in content
+
+    def test_env_file_lands_in_the_home_qa_ssh_lands_in(self):
+        assert self.defaults["qa_runner_telethon_env_file"] == (
+            "{{ qa_runner_home }}/.qa-telethon.env"
+        )
+
+    def test_session_file_copy_is_gone(self):
+        """The file-based session was never provisioned — no fallback left behind."""
+        rendered = yaml.safe_dump(self.tasks)
+        assert "telethon.session" not in rendered, rendered
 
 
 class TestFailedInstallIsNotReportedAsSuccess:

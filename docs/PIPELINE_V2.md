@@ -243,7 +243,8 @@ If the developer agent encounters an unsolvable problem:
 - `.credentials.json` OAuth session (copied from orchestrator host)
 - 2GB swap (Claude Code binary extraction needs ~2GB)
 - Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
-- Optional: `telethon.session` file for Telegram bot testing
+- `~/.qa-telethon.env` with api_id, api_hash and a StringSession of the QA Telegram account
+  (required — the role fails without them)
 
 **Outputs**: `QAOutcome` in run.result for supervisor
 

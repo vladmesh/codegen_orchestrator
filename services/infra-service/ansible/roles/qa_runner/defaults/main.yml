@@ -6,3 +6,11 @@ claude_credentials_file: ~/.claude/.credentials.json
 qa_runner_user: "{{ deploy_user }}"
 qa_runner_home: "/home/{{ qa_runner_user }}"
 qa_runner_claude_bin: "{{ qa_runner_home }}/.local/bin/claude"
+
+# Telethon credentials for behavioural bot testing. Taken from the
+# infra-service environment (orchestrator .env) so they never travel through
+# --extra-vars, where they would end up in the process list and Ansible logs.
+qa_runner_telethon_env_file: "{{ qa_runner_home }}/.qa-telethon.env"
+telethon_api_id: "{{ lookup('env', 'TELETHON_API_ID') }}"
+telethon_api_hash: "{{ lookup('env', 'TELETHON_API_HASH') }}"
+telethon_session: "{{ lookup('env', 'TELETHON_SESSION') }}"

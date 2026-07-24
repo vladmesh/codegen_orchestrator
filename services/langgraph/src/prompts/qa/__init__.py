@@ -6,6 +6,11 @@ holds the prompt that drives that run, kept here for consistency with the other
 agent prompts (``architect``, ``po``, ``developer_worker``).
 """
 
+# Written by the qa_runner Ansible role into the QA user's home
+# (services/infra-service/ansible/roles/qa_runner). Read over non-interactive
+# SSH, so it must be sourced explicitly — no login shell runs for QA.
+TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
+
 
 def build_qa_prompt(
     acceptance_criteria: str,
@@ -24,21 +29,34 @@ def build_qa_prompt(
         bot_section = f"""
 ### Telegram bot
 - Bot: @{bot_username}
-- Test via Telethon (pre-installed in /opt/qa-runner/venv):
-  ```bash
-  /opt/qa-runner/venv/bin/python3 -c "
-  from telethon.sync import TelegramClient
-  client = TelegramClient('/opt/qa-runner/telethon.session', api_id=0, api_hash='')
-  client.start()
-  client.send_message('@{bot_username}', '/start')
-  import time; time.sleep(3)
-  msgs = client.get_messages('@{bot_username}', limit=3)
-  for m in msgs:
-      print(m.text)
-  client.disconnect()
-  "
-  ```
-- api_id/api_hash can be 0/empty when session file already exists
+- You write to the bot as a real Telegram user. The account credentials are in
+  {TELETHON_ENV_FILE} (api_id, api_hash and an authorized StringSession).
+  Source that file, never print its contents or paste them into the report.
+- Test via Telethon (pre-installed in /opt/qa-runner/venv). Run this verbatim —
+  the python body must stay unindented or python3 -c raises IndentationError:
+
+```bash
+set -a; . {TELETHON_ENV_FILE}; set +a
+/opt/qa-runner/venv/bin/python3 -c "
+import os, time
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
+client = TelegramClient(
+    StringSession(os.environ['TELETHON_SESSION']),
+    int(os.environ['TELETHON_API_ID']),
+    os.environ['TELETHON_API_HASH'],
+)
+client.start()
+client.send_message('@{bot_username}', '/start')
+time.sleep(3)
+for m in client.get_messages('@{bot_username}', limit=3):
+    print(m.text)
+client.disconnect()
+"
+```
+- If the file is missing or any of the three variables is empty, the snippet
+  fails loudly: report the Telegram checks as failed with that error. Do not
+  substitute code reading, and do not fall back to a session file path.
 """
 
     return f"""\
