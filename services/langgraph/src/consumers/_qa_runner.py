@@ -21,7 +21,7 @@ import structlog
 
 from shared.contracts.acceptance import HealthCriterion
 
-from ..prompts.qa import build_qa_prompt
+from ..prompts.qa import TELETHON_ENV_FILE, build_qa_prompt
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +36,14 @@ OAUTH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 OAUTH_REFRESH_BUFFER_S = 300  # refresh if expires within 5 minutes
 CREDENTIAL_REFRESH_INTERVAL = 4 * 3600  # 4 hours
+TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
+# Sourced into the QA command itself, so the agent gets TELETHON_* whether or not
+# it follows the prompt. Same reason PATH is exported here.
+TELETHON_ENV_PREFIX = f"set -a && . {TELETHON_ENV_FILE} && set +a && "
+
+
+class TelethonCredentialsError(RuntimeError):
+    """The QA server has no usable Telethon credentials for a bot run."""
 
 
 @dataclass
@@ -276,6 +284,34 @@ async def _write_credentials(
     )
 
 
+async def _require_telethon_credentials(conn: asyncssh.SSHClientConnection) -> None:
+    """Fail the run when the server's Telethon credentials are missing or empty.
+
+    Without this the QA agent starts anyway and reports the Telegram checks as
+    blocked on a guessed cause. Only variable names are echoed back, never values.
+    """
+    check = (
+        f'test -r {TELETHON_ENV_FILE} || {{ echo "missing"; exit 1; }}; '
+        f"set -a && . {TELETHON_ENV_FILE} && set +a; "
+        "empty=; "
+        f"for v in {' '.join(TELETHON_ENV_VARS)}; do "
+        'eval "value=\\$$v"; [ -n "$value" ] || empty="$empty $v"; done; '
+        '[ -z "$empty" ] || { echo "empty:$empty"; exit 1; }'
+    )
+    result = await conn.run(check, check=False)
+    if result.exit_status == 0:
+        return
+
+    detail = (result.stdout or "").strip() or f"check failed with status {result.exit_status}"
+    if detail == "missing":
+        raise TelethonCredentialsError(f"no credentials file at {TELETHON_ENV_FILE} on the server")
+    if detail.startswith("empty:"):
+        raise TelethonCredentialsError(
+            f"{TELETHON_ENV_FILE} has empty {detail.removeprefix('empty:').strip()}"
+        )
+    raise TelethonCredentialsError(f"cannot read {TELETHON_ENV_FILE}: {detail}")
+
+
 async def run_qa_on_server(
     *,
     server_ip: str,
@@ -308,6 +344,7 @@ async def run_qa_on_server(
     # Permissions are configured via ~/.claude/settings.json (allowlist).
     cmd = (
         f'export PATH="$HOME/.local/bin:$PATH" && '
+        f"{TELETHON_ENV_PREFIX if bot_username else ''}"
         f"cd {shlex.quote(f'{SERVICE_BASE_DIR}/{project_name}')} && "
         f"timeout {timeout} claude -p {shlex.quote(prompt)} "
         f"--output-format json "
@@ -333,6 +370,9 @@ async def run_qa_on_server(
 
             # Ensure Claude Code credentials are fresh before running
             await _ensure_claude_credentials(conn)
+
+            if bot_username:
+                await _require_telethon_credentials(conn)
 
             result = await conn.run(cmd, check=False)
 
@@ -361,6 +401,14 @@ async def run_qa_on_server(
             qa_result = parse_qa_result(result.stdout or "")
             qa_result.report = report
             return qa_result
+
+    except TelethonCredentialsError as e:
+        logger.error("qa_telethon_credentials_unusable", server_ip=server_ip, error=str(e))
+        return QAResult(
+            passed=False,
+            summary=f"QA cannot test @{bot_username}: {e}",
+            raw="",
+        )
 
     except Exception as e:
         logger.error("qa_ssh_failed", server_ip=server_ip, error=str(e))

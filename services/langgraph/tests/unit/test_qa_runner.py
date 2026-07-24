@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -9,7 +12,13 @@ import pytest
 import respx
 
 from shared.contracts.acceptance import HealthCriterion
-from src.consumers._qa_runner import parse_qa_result, run_health_checks, run_qa_on_server
+from src.consumers._qa_runner import (
+    TelethonCredentialsError,
+    _require_telethon_credentials,
+    parse_qa_result,
+    run_health_checks,
+    run_qa_on_server,
+)
 from src.prompts.qa import build_qa_prompt
 
 
@@ -46,15 +55,26 @@ class TestBuildQAPrompt:
         assert "api_id=0" not in prompt
         assert "/opt/qa-runner/telethon.session" not in prompt
 
-    def test_bot_prompt_sources_the_credentials_file_provisioned_for_qa(self):
+    def test_bot_prompt_leaves_credential_loading_to_the_runner(self):
         prompt = build_qa_prompt(
             acceptance_criteria="- Telegram: /start responds with welcome",
             deployed_url="https://bot.example.com",
             bot_username="weather_bot",
         )
 
-        # Non-interactive SSH sources no profile, so the file is read explicitly
-        assert "set -a; . $HOME/.qa-telethon.env; set +a" in prompt
+        # The runner sources the file into the command's environment; asking the
+        # agent to do it is a step it can skip, and did (run qa-7729960c).
+        assert ". $HOME/.qa-telethon.env" not in prompt
+        assert "already exported" in prompt
+
+    def test_bot_prompt_forbids_reporting_telegram_checks_as_blocked(self):
+        prompt = build_qa_prompt(
+            acceptance_criteria="- Telegram: /start responds with welcome",
+            deployed_url="https://bot.example.com",
+            bot_username="weather_bot",
+        )
+
+        assert '"Blocked", "skipped" and "cannot test" are not allowed results' in prompt
 
     def test_prompt_without_bot_username(self):
         prompt = build_qa_prompt(
@@ -291,6 +311,13 @@ class TestRunQAOnServer:
         with patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock):
             yield
 
+    @pytest.fixture
+    def _skip_telethon_check(self):
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_successful_qa_pass(self):
         mock_result = MagicMock()
@@ -396,3 +423,160 @@ class TestRunQAOnServer:
         first_call = mock_conn.run.call_args_list[0]
         cmd = first_call[0][0]
         assert "600" in cmd
+
+    @pytest.mark.asyncio
+    async def test_bot_run_loads_telethon_env_before_claude(self, _skip_telethon_check):
+        mock_result = MagicMock()
+        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK"}'
+        mock_result.stderr = ""
+        mock_result.exit_status = 0
+
+        mock_conn = AsyncMock()
+        mock_conn.run = AsyncMock(return_value=mock_result)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh:
+            mock_asyncssh.import_private_key.return_value = "parsed_key"
+            mock_asyncssh.connect.return_value = mock_conn
+
+            await run_qa_on_server(
+                server_ip="1.2.3.4",
+                ssh_user="dev",
+                ssh_key="fake",
+                project_name="weather_bot",
+                acceptance_criteria="- Telegram: /start responds",
+                deployed_url="https://bot.example.com",
+                bot_username="weather_bot",
+            )
+
+        cmd = mock_conn.run.await_args_list[0].args[0]
+        # TELETHON_* must be in the environment claude inherits, not something
+        # the agent has to remember to source
+        assert cmd.index("set -a && . $HOME/.qa-telethon.env && set +a") < cmd.index("claude -p")
+
+    @pytest.mark.asyncio
+    async def test_run_without_bot_does_not_touch_telethon_env(self):
+        mock_result = MagicMock()
+        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK"}'
+        mock_result.stderr = ""
+        mock_result.exit_status = 0
+
+        mock_conn = AsyncMock()
+        mock_conn.run = AsyncMock(return_value=mock_result)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh:
+            mock_asyncssh.import_private_key.return_value = "parsed_key"
+            mock_asyncssh.connect.return_value = mock_conn
+
+            await run_qa_on_server(
+                server_ip="1.2.3.4",
+                ssh_user="dev",
+                ssh_key="fake",
+                project_name="api",
+                acceptance_criteria="- GET /health returns 200",
+                deployed_url="https://api.example.com",
+            )
+
+        assert all(".qa-telethon.env" not in call.args[0] for call in mock_conn.run.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_missing_credentials_fail_the_run_with_the_real_reason(self):
+        missing = TelethonCredentialsError("no credentials file at $HOME/.qa-telethon.env")
+
+        mock_conn = AsyncMock()
+        mock_conn.run = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
+            patch(
+                "src.consumers._qa_runner._require_telethon_credentials",
+                new_callable=AsyncMock,
+                side_effect=missing,
+            ),
+        ):
+            mock_asyncssh.import_private_key.return_value = "parsed_key"
+            mock_asyncssh.connect.return_value = mock_conn
+
+            result = await run_qa_on_server(
+                server_ip="1.2.3.4",
+                ssh_user="dev",
+                ssh_key="fake",
+                project_name="weather_bot",
+                acceptance_criteria="- Telegram: /start responds",
+                deployed_url="https://bot.example.com",
+                bot_username="weather_bot",
+            )
+
+        assert result.passed is False
+        assert "no credentials file at $HOME/.qa-telethon.env" in result.summary
+        # claude never ran — no room for a guessed "blocked" verdict
+        mock_conn.run.assert_not_awaited()
+
+
+class _LocalShellConn:
+    """Runs the checked command in a real bash with HOME pointed at a tmpdir."""
+
+    def __init__(self, home):
+        self.home = str(home)
+
+    async def run(self, command, check=False):
+        proc = subprocess.run(
+            ["bash", "-c", command],
+            capture_output=True,
+            text=True,
+            env={"HOME": self.home, "PATH": os.environ["PATH"]},
+        )
+        return SimpleNamespace(stdout=proc.stdout, stderr=proc.stderr, exit_status=proc.returncode)
+
+
+class TestRequireTelethonCredentials:
+    """The check runs as shell on the server, so run it as shell here too."""
+
+    def _write_env(self, home, body):
+        (home / ".qa-telethon.env").write_text(body)
+
+    @pytest.mark.asyncio
+    async def test_complete_credentials_pass(self, tmp_path):
+        self._write_env(
+            tmp_path,
+            "TELETHON_API_ID=123\nTELETHON_API_HASH=abc\nTELETHON_SESSION=1BVtsOK...\n",
+        )
+
+        await _require_telethon_credentials(_LocalShellConn(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(TelethonCredentialsError) as excinfo:
+            await _require_telethon_credentials(_LocalShellConn(tmp_path))
+
+        assert "no credentials file" in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_empty_variable_is_named_in_the_error(self, tmp_path):
+        self._write_env(
+            tmp_path,
+            "TELETHON_API_ID=123\nTELETHON_API_HASH=abc\nTELETHON_SESSION=\n",
+        )
+
+        with pytest.raises(TelethonCredentialsError) as excinfo:
+            await _require_telethon_credentials(_LocalShellConn(tmp_path))
+
+        assert "TELETHON_SESSION" in str(excinfo.value)
+        assert "TELETHON_API_ID" not in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_error_never_carries_credential_values(self, tmp_path):
+        self._write_env(
+            tmp_path,
+            "TELETHON_API_ID=123\nTELETHON_API_HASH=s3cr3thash\nTELETHON_SESSION=\n",
+        )
+
+        with pytest.raises(TelethonCredentialsError) as excinfo:
+            await _require_telethon_credentials(_LocalShellConn(tmp_path))
+
+        assert "s3cr3thash" not in str(excinfo.value)

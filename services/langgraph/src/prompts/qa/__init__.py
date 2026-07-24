@@ -7,8 +7,9 @@ agent prompts (``architect``, ``po``, ``developer_worker``).
 """
 
 # Written by the qa_runner Ansible role into the QA user's home
-# (services/infra-service/ansible/roles/qa_runner). Read over non-interactive
-# SSH, so it must be sourced explicitly — no login shell runs for QA.
+# (services/infra-service/ansible/roles/qa_runner). The runner sources it into
+# the QA command's environment (consumers/_qa_runner), so the agent gets
+# TELETHON_* without doing anything.
 TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
 
 
@@ -29,14 +30,14 @@ def build_qa_prompt(
         bot_section = f"""
 ### Telegram bot
 - Bot: @{bot_username}
-- You write to the bot as a real Telegram user. The account credentials are in
-  {TELETHON_ENV_FILE} (api_id, api_hash and an authorized StringSession).
-  Source that file, never print its contents or paste them into the report.
+- You write to the bot as a real Telegram user. TELETHON_API_ID,
+  TELETHON_API_HASH and TELETHON_SESSION (an authorized StringSession) are
+  already exported in your shell. Do not source anything, do not look for a
+  session file, and never print the values or paste them into the report.
 - Test via Telethon (pre-installed in /opt/qa-runner/venv). Run this verbatim —
   the python body must stay unindented or python3 -c raises IndentationError:
 
 ```bash
-set -a; . {TELETHON_ENV_FILE}; set +a
 /opt/qa-runner/venv/bin/python3 -c "
 import os, time
 from telethon.sync import TelegramClient
@@ -54,9 +55,12 @@ for m in client.get_messages('@{bot_username}', limit=3):
 client.disconnect()
 "
 ```
-- If the file is missing or any of the three variables is empty, the snippet
-  fails loudly: report the Telegram checks as failed with that error. Do not
-  substitute code reading, and do not fall back to a session file path.
+- Every Telegram check is either pass or fail, decided by running the snippet
+  above. "Blocked", "skipped" and "cannot test" are not allowed results: if you
+  have not run the snippet, you have no result to report. Do not substitute code
+  reading, and do not fall back to a session file path.
+- If the snippet errors, run it once more, then report the Telegram checks as
+  failed and paste the traceback's last line as the detail.
 """
 
     return f"""\
