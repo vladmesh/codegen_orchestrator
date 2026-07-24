@@ -2,21 +2,17 @@
 
 Runs deterministic health checks after deployment:
 - Backend modules: GET /health → HTTP 200
-- Telegram bot modules: Telethon /start → non-empty response
+- Telegram bot modules: Bot API getMe + the tg_bot container running on the server
 """
 
 import asyncio
-import os
 import shlex
 
 import asyncssh
 import httpx
 import structlog
 
-try:
-    from telethon import TelegramClient
-except ImportError:
-    TelegramClient = None  # type: ignore[assignment, misc]
+from shared.contracts.dto.project import ServiceModule
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode, RetryPolicy
@@ -31,6 +27,25 @@ HEALTH_CHECK_RETRY_DELAY = 5
 HTTP_OK = 200
 CONTAINER_LOG_TAIL = 50
 SERVICE_BASE_DIR = "/opt/services"
+BOT_API_BASE = "https://api.telegram.org"
+# Compose service names on the deployed project match the module names
+TG_BOT_SERVICE = ServiceModule.TG_BOT.value
+SMOKE_CHECKED_MODULES = (ServiceModule.BACKEND, ServiceModule.TG_BOT)
+
+
+class TgBotCheckFailed(Exception):
+    """A mandatory tg_bot probe could not confirm the deployed bot."""
+
+
+def compose_command(project_name: str, subcommand: str) -> str:
+    """Build a docker compose command for a deployed project."""
+    quoted_name = shlex.quote(project_name)
+    infra_dir = shlex.quote(f"{SERVICE_BASE_DIR}/{project_name}/infra")
+    return (
+        f"cd {infra_dir} && "
+        f"docker compose -p {quoted_name} --env-file ../.env "
+        f"-f compose.base.yml -f compose.prod.yml {subcommand}"
+    )
 
 
 class SmokeTesterNode(FunctionalNode):
@@ -56,26 +71,33 @@ class SmokeTesterNode(FunctionalNode):
             resource = self._find_resource(allocated_resources, module)
             if not resource:
                 logger.warning("smoke_no_resource", module=module)
-                checks.append(
-                    {
-                        "module": module,
-                        "result": "skip",
-                        "detail": "No allocated resource found",
-                    }
-                )
+                # A module we know how to check but cannot reach stays unverified,
+                # which is a failure, not a skip.
+                if module in SMOKE_CHECKED_MODULES:
+                    detail = "No allocated resource found, module cannot be verified"
+                    checks.append({"module": module, "result": "fail", "detail": detail})
+                    errors.append(f"Smoke failed: {module} check — {detail}")
+                else:
+                    checks.append(
+                        {
+                            "module": module,
+                            "result": "skip",
+                            "detail": "No allocated resource found",
+                        }
+                    )
                 continue
 
             server_ip = resource["server_ip"]
             port = resource["port"]
 
-            if module == "backend":
+            if module == ServiceModule.BACKEND:
                 check = await self._check_backend_health(server_ip, port)
                 checks.append(check)
                 if check["result"] == "fail":
                     errors.append(f"Smoke failed: backend health check — {check['detail']}")
 
-            elif module == "tg_bot":
-                check = await self._check_tg_bot(state, server_ip, port)
+            elif module == ServiceModule.TG_BOT:
+                check = await self._check_tg_bot(state, resource)
                 checks.append(check)
                 if check["result"] == "fail":
                     errors.append(f"Smoke failed: tg_bot check — {check['detail']}")
@@ -139,6 +161,23 @@ class SmokeTesterNode(FunctionalNode):
                 return alloc
         return None
 
+    async def _ssh_run(self, server_ip: str, server_handle: str, command: str) -> str:
+        """Run a command on the project server over SSH and return stdout."""
+        server = await api_client.get_server(server_handle)
+        ssh_key = await api_client.get_server_ssh_key(server_handle)
+        if not ssh_key:
+            raise RuntimeError(f"No SSH key for server {server_handle}")
+
+        key = asyncssh.import_private_key(ssh_key)
+        async with asyncssh.connect(
+            server_ip,
+            username=server.ssh_user,
+            known_hosts=None,
+            client_keys=[key],
+        ) as conn:
+            result = await conn.run(command, check=False)
+            return result.stdout.strip() if result.stdout else ""
+
     async def _fetch_container_logs(
         self,
         server_ip: str,
@@ -149,33 +188,9 @@ class SmokeTesterNode(FunctionalNode):
 
         Returns log output (truncated) or None if fetch fails.
         """
-        server = await api_client.get_server(server_handle)
-
+        cmd = compose_command(project_name, f"logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1")
         try:
-            ssh_key = await api_client.get_server_ssh_key(server_handle)
-            if not ssh_key:
-                logger.warning("smoke_logs_no_ssh_key", server_handle=server_handle)
-                return None
-            key = asyncssh.import_private_key(ssh_key)
-            service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
-            compose = (
-                f"docker compose -p {shlex.quote(project_name)}"
-                f" -f infra/compose.base.yml -f infra/compose.prod.yml"
-            )
-            cmd = (
-                f"cd {shlex.quote(service_dir)} && {compose} "
-                f"logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1"
-            )
-
-            async with asyncssh.connect(
-                server_ip,
-                username=server.ssh_user,
-                known_hosts=None,
-                client_keys=[key],
-            ) as conn:
-                result = await conn.run(cmd, check=False)
-                return result.stdout.strip() if result.stdout else None
-
+            return await self._ssh_run(server_ip, server_handle, cmd) or None
         except Exception:
             logger.warning("smoke_logs_fetch_failed", server_ip=server_ip, exc_info=True)
             return None
@@ -191,7 +206,7 @@ class SmokeTesterNode(FunctionalNode):
                     response = await client.get(url, timeout=HEALTH_CHECK_TIMEOUT)
                     if response.status_code == HTTP_OK:
                         return {
-                            "module": "backend",
+                            "module": ServiceModule.BACKEND.value,
                             "result": "pass",
                             "detail": f"HTTP {response.status_code}",
                         }
@@ -209,96 +224,94 @@ class SmokeTesterNode(FunctionalNode):
                     await asyncio.sleep(HEALTH_CHECK_RETRY_DELAY)
 
         return {
-            "module": "backend",
+            "module": ServiceModule.BACKEND.value,
             "result": "fail",
             "detail": last_error or "Unknown error",
         }
 
-    async def _check_tg_bot(self, state: DevOpsState, server_ip: str, port: int) -> dict:
-        """Send /start to the bot via Telethon, verify non-empty response."""
-        # Check env vars — graceful skip if not configured
-        api_id = os.getenv("TELETHON_API_ID")
-        api_hash = os.getenv("TELETHON_API_HASH")
-        session_path = os.getenv("TELETHON_SESSION_PATH")
+    async def _check_tg_bot(self, state: DevOpsState, resource: dict) -> dict:
+        """Verify the deployed bot: Bot API identity plus a running tg_bot container.
 
-        if not all([api_id, api_hash, session_path]):
-            logger.warning("smoke_tg_bot_skip", reason="Telethon env vars not configured")
-            return {
-                "module": "tg_bot",
-                "result": "skip",
-                "detail": "Telethon env vars not configured",
-            }
-
-        if TelegramClient is None:
-            logger.warning("smoke_tg_bot_skip", reason="telethon not installed")
-            return {
-                "module": "tg_bot",
-                "result": "skip",
-                "detail": "telethon package not installed",
-            }
-
-        # Get bot username via Bot API getMe
-        secret_values = state.get("secret_values", {})
-        bot_token = secret_values.get("TELEGRAM_BOT_TOKEN")
-        if not bot_token:
-            return {
-                "module": "tg_bot",
-                "result": "skip",
-                "detail": "No TELEGRAM_BOT_TOKEN in secret_values",
-            }
-
+        Both probes are mandatory. A missing token, server handle or SSH access is
+        a failed check, never a silent skip: an unverified bot has to be visible in
+        smoke_result.
+        """
         try:
-            async with httpx.AsyncClient() as http:
-                resp = await http.get(
-                    f"https://api.telegram.org/bot{bot_token}/getMe",
-                    timeout=HEALTH_CHECK_TIMEOUT,
-                )
-                data = resp.json()
-                bot_username = data.get("result", {}).get("username")
+            bot_username = await self._resolve_bot_identity(state)
+            container_detail = await self._check_bot_container(state, resource)
+        except TgBotCheckFailed as e:
+            logger.warning("smoke_tg_bot_fail", reason=str(e))
+            return {
+                "module": TG_BOT_SERVICE,
+                "result": "fail",
+                "detail": str(e),
+            }
 
-            if not bot_username:
-                return {
-                    "module": "tg_bot",
-                    "result": "fail",
-                    "detail": "Could not get bot username from getMe",
-                }
+        return {
+            "module": TG_BOT_SERVICE,
+            "result": "pass",
+            "detail": f"getMe → @{bot_username}, {container_detail}",
+            "bot_username": bot_username,
+        }
 
-            # Connect Telethon and send /start via conversation API
-            client = TelegramClient(session_path, int(api_id), api_hash)
+    async def _resolve_bot_identity(self, state: DevOpsState) -> str:
+        """Call Bot API getMe — proves the token is live, yields the username."""
+        bot_token = state.get("secret_values", {}).get("TELEGRAM_BOT_TOKEN")
+        if not bot_token:
+            raise TgBotCheckFailed("No TELEGRAM_BOT_TOKEN in secret_values")
+
+        url = f"{BOT_API_BASE}/bot{bot_token}/getMe"
+        last_error = None
+
+        async with httpx.AsyncClient() as client:
+            for attempt in range(HEALTH_CHECK_RETRIES):
+                try:
+                    response = await client.get(url, timeout=HEALTH_CHECK_TIMEOUT)
+                    payload = response.json()
+                    if response.status_code == HTTP_OK and payload.get("ok"):
+                        return payload["result"]["username"]
+                    last_error = (
+                        f"getMe returned HTTP {response.status_code}: {payload.get('description')}"
+                    )
+                # ValueError covers a body the Bot API never sends but a proxy might
+                except (httpx.HTTPError, ValueError) as e:
+                    last_error = f"getMe request failed: {e}"
+
+                if attempt < HEALTH_CHECK_RETRIES - 1:
+                    logger.info("smoke_tg_bot_getme_retry", attempt=attempt + 1, error=last_error)
+                    await asyncio.sleep(HEALTH_CHECK_RETRY_DELAY)
+
+        raise TgBotCheckFailed(last_error)
+
+    async def _check_bot_container(self, state: DevOpsState, resource: dict) -> str:
+        """Confirm the tg_bot container is running on the project server."""
+        server_handle = resource.get("server_handle")
+        if not server_handle:
+            raise TgBotCheckFailed("No server_handle in the allocated tg_bot resource")
+        server_ip = resource["server_ip"]
+        project_name = project_spec_runtime_slug(state.get("project_spec") or {})
+        cmd = compose_command(project_name, "ps --services --status running")
+
+        last_error = None
+        for attempt in range(HEALTH_CHECK_RETRIES):
             try:
-                await client.start()
-                async with client.conversation(f"@{bot_username}", timeout=15) as conv:
-                    await conv.send_message("/start")
-                    response = await conv.get_response()
+                running = (await self._ssh_run(server_ip, server_handle, cmd)).split()
+            except Exception as e:
+                last_error = f"container check over SSH failed: {e}"
+                logger.warning("smoke_tg_bot_ssh_failed", server_ip=server_ip, exc_info=True)
+            else:
+                if TG_BOT_SERVICE in running:
+                    return f"container {TG_BOT_SERVICE} is running"
+                last_error = (
+                    f"container {TG_BOT_SERVICE} is not running "
+                    f"(running services: {', '.join(running) or 'none'})"
+                )
 
-                    if response and response.text:
-                        return {
-                            "module": "tg_bot",
-                            "result": "pass",
-                            "detail": f"Bot responded: {response.text[:100]}",
-                            "bot_username": bot_username,
-                        }
-                    return {
-                        "module": "tg_bot",
-                        "result": "fail",
-                        "detail": "Bot sent empty response",
-                    }
-            finally:
-                await client.disconnect()
+            if attempt < HEALTH_CHECK_RETRIES - 1:
+                logger.info("smoke_tg_bot_container_retry", attempt=attempt + 1, error=last_error)
+                await asyncio.sleep(HEALTH_CHECK_RETRY_DELAY)
 
-        except TimeoutError:
-            return {
-                "module": "tg_bot",
-                "result": "fail",
-                "detail": "No response from bot within 15s",
-            }
-        except Exception as e:
-            logger.error("smoke_tg_bot_error", error=str(e), error_type=type(e).__name__)
-            return {
-                "module": "tg_bot",
-                "result": "fail",
-                "detail": f"Error: {e}",
-            }
+        raise TgBotCheckFailed(last_error)
 
 
 smoke_tester_node = SmokeTesterNode()

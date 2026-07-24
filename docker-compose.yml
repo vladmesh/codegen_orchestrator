@@ -94,16 +94,12 @@ services:
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
       REGISTRY_USER: ${REGISTRY_USER}
       REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
-      TELETHON_API_ID: ${TELETHON_API_ID:-}
-      TELETHON_API_HASH: ${TELETHON_API_HASH:-}
-      TELETHON_SESSION_PATH: ${TELETHON_SESSION_PATH:-}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: deploy-worker
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
-      - ${TELETHON_SESSION_DIR:-./secrets/telethon}:/app/telethon
     depends_on:
       - api
       - redis

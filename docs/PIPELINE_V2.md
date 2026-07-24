@@ -192,7 +192,7 @@ If the developer agent encounters an unsolvable problem:
 2. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
 3. Trigger GitHub Actions deploy workflow
 4. Wait for deploy to complete
-5. Smoke test: HTTP `/health` for backends, Telethon `/start` for tg_bot
+5. Smoke test: HTTP `/health` for backends, Bot API `getMe` + running `tg_bot` container for bots
 6. Resolve failures deterministically: typed environment failures keep their specific outcome;
    unclassified subgraph and smoke failures become RETRY
 7. Write `DeployOutcome` to `run.result`

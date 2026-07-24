@@ -1,6 +1,5 @@
 """Unit tests for SmokeTesterNode."""
 
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -161,149 +160,226 @@ class TestSmokeTesterNoModules:
         assert result["smoke_result"]["checks"] == []
 
 
-def _tg_bot_state(**kwargs):
+def _tg_bot_state(*, secret_values=None, server_handle="srv-abc", **kwargs):
     """Helper for tg_bot smoke tests."""
+    resource = {
+        "server_ip": "1.2.3.4",
+        "port": 8001,
+        "service_name": "tg_bot",
+    }
+    if server_handle:
+        resource["server_handle"] = server_handle
+    if secret_values is None:
+        secret_values = {"TELEGRAM_BOT_TOKEN": "123456:ABC-DEF"}
     return _make_state(
         modules=["tg_bot"],
-        allocated_resources={
-            "srv1:8001": {
-                "server_ip": "1.2.3.4",
-                "port": 8001,
-                "service_name": "tg_bot",
-            }
-        },
-        secret_values={"TELEGRAM_BOT_TOKEN": "123456:ABC-DEF"},
+        allocated_resources={"srv-abc:8001": resource},
+        secret_values=secret_values,
         **kwargs,
     )
 
 
-def _mock_telethon_client_with_conversation(*, response_text=None, side_effect=None):
-    """Build a mock TelegramClient with conversation context manager."""
-    mock_client = AsyncMock()
-    mock_client.start = AsyncMock()
-    mock_client.disconnect = AsyncMock()
+def _getme_response(*, status_code=200, payload=None):
+    """Bot API getMe response double."""
+    response = AsyncMock()
+    response.status_code = status_code
+    if payload is None:
+        payload = {"ok": True, "result": {"username": "test_bot"}}
+    response.json = MagicMock(return_value=payload)
+    return response
 
-    mock_conv = AsyncMock()
-    mock_conv.send_message = AsyncMock()
 
-    if side_effect:
-        mock_conv.get_response = AsyncMock(side_effect=side_effect)
-    else:
-        mock_response = MagicMock()
-        mock_response.text = response_text
-        mock_conv.get_response = AsyncMock(return_value=mock_response)
+class _TgBotEnv:
+    """Patches httpx + SSH so a tg_bot check runs against fakes."""
 
-    mock_conv.__aenter__ = AsyncMock(return_value=mock_conv)
-    mock_conv.__aexit__ = AsyncMock(return_value=False)
-    mock_client.conversation = MagicMock(return_value=mock_conv)
+    def __init__(self, *, getme, ps_stdout=None, ssh_error=None):
+        self.getme = getme
+        self.ps_stdout = ps_stdout
+        self.ssh_error = ssh_error
+        self.conn = AsyncMock()
+        self.commands = []
 
-    return mock_client
+    async def _run(self, command, check=False):
+        self.commands.append(command)
+        result = MagicMock()
+        result.stdout = self.ps_stdout if "ps " in command else "bot log line"
+        result.exit_status = 0
+        return result
+
+    def __enter__(self):
+        http = AsyncMock()
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=False)
+        if isinstance(self.getme, list):
+            http.get = AsyncMock(side_effect=self.getme)
+        else:
+            http.get = AsyncMock(return_value=self.getme)
+
+        self.conn.run = AsyncMock(side_effect=self._run)
+        self.conn.__aenter__ = AsyncMock(return_value=self.conn)
+        self.conn.__aexit__ = AsyncMock(return_value=False)
+
+        api = MagicMock()
+        api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
+        if self.ssh_error:
+            api.get_server_ssh_key = AsyncMock(side_effect=self.ssh_error)
+        else:
+            api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+        self.api = api
+
+        asyncssh_mock = MagicMock()
+        asyncssh_mock.import_private_key = MagicMock(return_value="parsed-key")
+        asyncssh_mock.connect = MagicMock(return_value=self.conn)
+
+        self._patches = [
+            patch("src.subgraphs.devops.smoke.httpx.AsyncClient", return_value=http),
+            patch("src.subgraphs.devops.smoke.asyncio.sleep", new_callable=AsyncMock),
+            patch("src.subgraphs.devops.smoke.api_client", api),
+            patch("src.subgraphs.devops.smoke.asyncssh", asyncssh_mock),
+        ]
+        for p in self._patches:
+            p.start()
+        return self
+
+    def __exit__(self, *exc):
+        for p in reversed(self._patches):
+            p.stop()
+        return False
 
 
 class TestSmokeTesterTgBotPass:
-    """Telethon /start gets a response."""
+    """getMe answers and the tg_bot container is running."""
 
-    async def test_pass_on_response(self, smoke_node):
+    async def test_pass_on_running_container(self, smoke_node):
         state = _tg_bot_state()
 
-        mock_getme_response = AsyncMock()
-        mock_getme_response.status_code = 200
-        mock_getme_response.json = MagicMock(
-            return_value={"ok": True, "result": {"username": "test_bot"}}
-        )
-
-        mock_telethon_client = _mock_telethon_client_with_conversation(response_text="Welcome!")
-
-        with (
-            patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_http_cls,
-            patch("src.subgraphs.devops.smoke.TelegramClient") as mock_tg_cls,
-            patch.dict(
-                os.environ,
-                {
-                    "TELETHON_API_ID": "12345",
-                    "TELETHON_API_HASH": "abcdef",
-                    "TELETHON_SESSION_PATH": "/var/lib/telethon/test.session",
-                },
-            ),
-        ):
-            mock_http = AsyncMock()
-            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-            mock_http.__aexit__ = AsyncMock(return_value=False)
-            mock_http.get = AsyncMock(return_value=mock_getme_response)
-            mock_http_cls.return_value = mock_http
-
-            mock_tg_cls.return_value = mock_telethon_client
-
+        with _TgBotEnv(getme=_getme_response(), ps_stdout="backend\ndb\nredis\ntg_bot\n") as env:
             result = await smoke_node.run(state)
 
         assert result["smoke_result"]["status"] == "pass"
         check = result["smoke_result"]["checks"][0]
         assert check["module"] == "tg_bot"
         assert check["result"] == "pass"
-        assert "Welcome!" in check["detail"]
+        assert "test_bot" in check["detail"]
+        assert "running" in check["detail"]
+        # bot_username reaches the state for the QA handoff
+        assert result["bot_username"] == "test_bot"
+        ps_cmd = next(c for c in env.commands if "ps " in c)
+        assert "docker compose -p test-project-0000" in ps_cmd
+        assert "--status running" in ps_cmd
 
 
-class TestSmokeTesterTgBotTimeout:
-    """Telethon /start gets no response within timeout."""
+class TestSmokeTesterTgBotGetMeRetry:
+    """A transient network error to the Bot API is retried, not reported as a dead bot."""
 
-    async def test_timeout(self, smoke_node):
+    async def test_retries_then_passes(self, smoke_node):
+        state = _tg_bot_state()
+        getme = [httpx.ConnectError("connection reset"), _getme_response()]
+
+        with _TgBotEnv(getme=getme, ps_stdout="tg_bot\n"):
+            result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "pass"
+        assert result["bot_username"] == "test_bot"
+
+
+class TestSmokeTesterTgBotContainerDown:
+    """The bot answers on the Bot API but its container is not running."""
+
+    async def test_fail_when_container_missing(self, smoke_node):
         state = _tg_bot_state()
 
-        mock_getme_response = AsyncMock()
-        mock_getme_response.status_code = 200
-        mock_getme_response.json = MagicMock(
-            return_value={"ok": True, "result": {"username": "test_bot"}}
-        )
-
-        mock_telethon_client = _mock_telethon_client_with_conversation(
-            side_effect=TimeoutError("no response")
-        )
-
-        with (
-            patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_http_cls,
-            patch("src.subgraphs.devops.smoke.TelegramClient") as mock_tg_cls,
-            patch.dict(
-                os.environ,
-                {
-                    "TELETHON_API_ID": "12345",
-                    "TELETHON_API_HASH": "abcdef",
-                    "TELETHON_SESSION_PATH": "/var/lib/telethon/test.session",
-                },
-            ),
-        ):
-            mock_http = AsyncMock()
-            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-            mock_http.__aexit__ = AsyncMock(return_value=False)
-            mock_http.get = AsyncMock(return_value=mock_getme_response)
-            mock_http_cls.return_value = mock_http
-
-            mock_tg_cls.return_value = mock_telethon_client
-
+        with _TgBotEnv(getme=_getme_response(), ps_stdout="backend\ndb\nredis\n"):
             result = await smoke_node.run(state)
 
         assert result["smoke_result"]["status"] == "fail"
         check = result["smoke_result"]["checks"][0]
         assert check["module"] == "tg_bot"
         assert check["result"] == "fail"
+        assert "not running" in check["detail"]
+        assert result["errors"]
+        assert "bot_username" not in result
 
 
-class TestSmokeTesterTgBotMissingEnv:
-    """Skip tg_bot check if Telethon env vars not configured."""
+class TestSmokeTesterTgBotBadToken:
+    """getMe rejects the token — the bot cannot be confirmed."""
 
-    async def test_skip_without_env(self, smoke_node):
+    async def test_fail_on_unauthorized(self, smoke_node):
         state = _tg_bot_state()
+        unauthorized = _getme_response(
+            status_code=401, payload={"ok": False, "description": "Unauthorized"}
+        )
 
-        with patch.dict(os.environ, {}, clear=True):
-            # Ensure TELETHON_* vars are not set
-            for key in ["TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION_PATH"]:
-                os.environ.pop(key, None)
-
+        with _TgBotEnv(getme=unauthorized, ps_stdout="tg_bot\n") as env:
             result = await smoke_node.run(state)
 
-        assert result["smoke_result"]["status"] == "pass"
+        assert result["smoke_result"]["status"] == "fail"
+        check = result["smoke_result"]["checks"][0]
+        assert check["result"] == "fail"
+        assert "Unauthorized" in check["detail"]
+        # No container probe once the identity probe failed
+        assert not [c for c in env.commands if "ps " in c]
+
+
+class TestSmokeTesterTgBotSshFailure:
+    """SSH is unavailable — report it, never pass the bot silently."""
+
+    async def test_fail_when_ssh_breaks(self, smoke_node):
+        state = _tg_bot_state()
+
+        with _TgBotEnv(getme=_getme_response(), ssh_error=Exception("API down")):
+            result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "fail"
+        check = result["smoke_result"]["checks"][0]
+        assert check["result"] == "fail"
+        assert "SSH" in check["detail"]
+
+
+class TestSmokeTesterTgBotMissingToken:
+    """No bot token in state — fail loudly instead of skipping the check."""
+
+    async def test_fail_without_token(self, smoke_node):
+        state = _tg_bot_state(secret_values={})
+
+        with _TgBotEnv(getme=_getme_response(), ps_stdout="tg_bot\n"):
+            result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "fail"
         check = result["smoke_result"]["checks"][0]
         assert check["module"] == "tg_bot"
-        assert check["result"] == "skip"
+        assert check["result"] == "fail"
+        assert "TELEGRAM_BOT_TOKEN" in check["detail"]
+
+
+class TestSmokeTesterTgBotNoResource:
+    """The bot module has no allocation — nothing was verified, so smoke fails."""
+
+    async def test_fail_without_allocation(self, smoke_node):
+        state = _make_state(modules=["tg_bot"], allocated_resources={})
+
+        result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "fail"
+        check = result["smoke_result"]["checks"][0]
+        assert check["module"] == "tg_bot"
+        assert check["result"] == "fail"
+        assert "cannot be verified" in check["detail"]
+
+
+class TestSmokeTesterTgBotMissingServerHandle:
+    """No server handle for the bot — fail loudly instead of skipping."""
+
+    async def test_fail_without_server_handle(self, smoke_node):
+        state = _tg_bot_state(server_handle=None)
+
+        with _TgBotEnv(getme=_getme_response(), ps_stdout="tg_bot\n"):
+            result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "fail"
+        check = result["smoke_result"]["checks"][0]
+        assert check["result"] == "fail"
+        assert "server_handle" in check["detail"]
 
 
 # ---------------------------------------------------------------------------

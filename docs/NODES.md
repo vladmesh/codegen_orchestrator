@@ -129,8 +129,10 @@ devops/
      * Устанавливает статус проекта = active
 
 5. **SmokeTester (Functional)**:
-   - Делает HTTP `/health` check для бекендов и Telethon `/start` check для tg_bot модулей.
-   - Реализует retry logic (3 попытки, 5s delay) и graceful skip.
+   - Делает HTTP `/health` check для бекендов; для tg_bot — Bot API `getMe` по токену проекта
+     плюс `docker compose ps` на сервере, что контейнер `tg_bot` running. Обе пробы обязательны:
+     нет токена, handle сервера или SSH — это `fail` с текстом причины, а не skip.
+   - Реализует retry logic (3 попытки, 5s delay).
    - On failure: SSHes into deploy server, captures `docker compose logs --tail=50`, appends to check `detail` field. Logs flow through deploy→engineering feedback loop so fix tasks get actual tracebacks.
    - Записывает `smoke_result` в `DevOpsState` для проброса статуса в deploy-worker.
 
