@@ -32,6 +32,30 @@ class TestBuildQAPrompt:
         assert "@weather_bot" in prompt
         assert "Telegram" in prompt or "telethon" in prompt.lower()
 
+    def test_bot_prompt_connects_with_a_string_session_and_real_app_creds(self):
+        prompt = build_qa_prompt(
+            acceptance_criteria="- Telegram: /start responds with welcome",
+            deployed_url="https://bot.example.com",
+            bot_username="weather_bot",
+        )
+
+        # Telethon needs real api_id/api_hash even with an authorized session
+        assert "StringSession(os.environ['TELETHON_SESSION'])" in prompt
+        assert "int(os.environ['TELETHON_API_ID'])" in prompt
+        assert "os.environ['TELETHON_API_HASH']" in prompt
+        assert "api_id=0" not in prompt
+        assert "/opt/qa-runner/telethon.session" not in prompt
+
+    def test_bot_prompt_sources_the_credentials_file_provisioned_for_qa(self):
+        prompt = build_qa_prompt(
+            acceptance_criteria="- Telegram: /start responds with welcome",
+            deployed_url="https://bot.example.com",
+            bot_username="weather_bot",
+        )
+
+        # Non-interactive SSH sources no profile, so the file is read explicitly
+        assert "set -a; . $HOME/.qa-telethon.env; set +a" in prompt
+
     def test_prompt_without_bot_username(self):
         prompt = build_qa_prompt(
             acceptance_criteria="- GET /api/items returns list",

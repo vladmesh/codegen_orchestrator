@@ -131,7 +131,10 @@ Prod servers are provisioned as QA testing nodes via the `qa_runner` Ansible rol
 - Claude Code CLI (standalone binary via `curl -fsSL https://claude.ai/install.sh | bash`)
 - Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
 - `.credentials.json` OAuth session (copied from Ansible controller's `~/.claude/.credentials.json`)
-- Optional: `telethon.session` file for Telegram bot testing
+- `~/.qa-telethon.env` (mode 0600) with `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION`
+  taken from the orchestrator `.env`. All three are required: Telethon needs api_id/api_hash even
+  with an authorized session, so the role fails the play when any of them is empty. The QA prompt
+  sources this file — non-interactive SSH reads no profile.
 
 Everything user-scoped is installed for `{{ deploy_user }}` (the server's `ssh_user`), because the
 QA consumer connects as that user and calls `claude` through its `$HOME/.local/bin`. The role
