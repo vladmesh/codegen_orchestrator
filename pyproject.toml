@@ -12,7 +12,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.0.0",
     "jsonschema>=4.0.0",
-    "ruff>=0.15.5",
+    "ruff>=0.15.5,<0.16",  # 0.16 formats Python inside Markdown; adopting it is a separate call
     "mypy>=1.13.0",
     "httpx",
     "respx>=0.21.1",

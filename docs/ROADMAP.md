@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Updated**: 2026-07-23 (hand-maintained)
+> **Updated**: 2026-07-24 (hand-maintained)
 >
 > Story-level arcs only. Active tasks live on the external Pipeline board, the deferred pool in
 > [backlog.md](backlog.md), sequencing for the current arc in
@@ -15,14 +15,18 @@
 обновлённого бота.
 
 Stages 1-7 of the stabilization plan are complete: CI gate, template contract audit and
-corrections, Sprint 002 hardening, deterministic mock smoke, template matrix, and live validation
-(Mega 2.0: live LLM worker through generated code, CI, merge, deploy and QA). Next:
+corrections, Sprint 002 hardening, deterministic mock smoke, template matrix, and live validation.
+Stage 7 is verified end to end as of 2026-07-24, when the full mega passed 12/12 (noop 7/7 plus
+LLM 5/5 through generated code, CI, merge, deploy, `/health` and QA). Until then the LLM path could
+not reach deploy: project pre-push hooks rejected every worker push, and nothing checked the
+worker's self-reported commit against origin. Next:
 
 - Stage 8: Telegram end-to-end on top of the stabilized layers.
 - Stage 9: worker isolation hardening — обязателен до онбординга внешних пользователей.
 - Stage 10: swarm seams — по триггеру (второй worker-хост или устойчивая параллельная нагрузка).
 
-Stage 7 tail debt is on the board (600, 548, 676→527, 597, 673) and does not gate Stage 8.
+Stage 7 tail debt is on the board (548, 676→527, 597, 673; 600 landed in PR #127) and does not
+gate Stage 8.
 
 ## Next arcs
 

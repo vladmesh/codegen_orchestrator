@@ -246,7 +246,55 @@ class DeveloperNode(FunctionalNode):
             project_name=project_name,
         )
 
+        unpushed = await self._unpushed_commit_error(
+            github_client=github_client,
+            owner=owner,
+            repo_name=repo_name,
+            branch=branch,
+            worker_result=worker_result,
+        )
+        if unpushed:
+            logger.error(
+                "developer_node_commit_not_on_origin",
+                project_name=project_name,
+                branch=branch,
+                commit_sha=worker_result.commit_sha,
+            )
+            return {
+                "messages": [AIMessage(content=unpushed)],
+                "engineering_status": EngineeringStatus.FAILED,
+                "errors": state.get("errors", []) + [unpushed],
+            }
+
         return self._build_result_state(worker_result, project_name, repo_full_name, state)
+
+    @staticmethod
+    async def _unpushed_commit_error(
+        *,
+        github_client: GitHubAppClient,
+        owner: str,
+        repo_name: str,
+        branch: str | None,
+        worker_result,
+    ) -> str | None:
+        """Message describing an unpushed commit, or None when the commit is on origin.
+
+        A worker reports the SHA it committed inside its container. If the push was
+        rejected the commit never reaches GitHub, and every later stage — PR creation,
+        merge, deploy — fails far from the cause. Confirm the SHA landed before calling
+        engineering successful.
+        """
+        if not (worker_result.success and worker_result.commit_sha and branch):
+            return None
+        on_origin = await github_client.branch_contains_commit(
+            owner, repo_name, branch, worker_result.commit_sha
+        )
+        if on_origin:
+            return None
+        return (
+            f"Worker reported commit {worker_result.commit_sha} but it is not on "
+            f"origin/{branch} — the push did not land."
+        )
 
     async def _get_worker_result(
         self,

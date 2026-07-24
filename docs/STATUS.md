@@ -9,13 +9,24 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Stage 7 live validation is complete — Mega 2.0 (PR #99) plus the
-  2026-07-18..21 hardening wave (fail-closed teardown, commit-exact env contracts, title/slug
-  split, typed deploy outcomes, waiting_for_user_secret loop, failure-safe dispatch). Remaining
-  Stage 7 tail debt lives on the external board (600, 548, 676→527, 597, 673). Stage 8 (Telegram
-  end-to-end) is next on the [stabilization map](plans/codegen-stabilization-v1.md); not started.
+- **Current Phase**: Stage 7 live validation is complete and now genuinely verified end to end:
+  the full mega passed 12/12 on 2026-07-24 (noop 7/7 plus LLM 5/5, including LLM deploy, `/health`
+  and non-LLM QA). This closes the gap described below — between Mega 2.0 and 2026-07-24 the LLM
+  path could not reach deploy at all. Remaining Stage 7 tail debt lives on the external board
+  (548, 676→527, 597, 673; 600 landed in PR #127). Stage 8 (Telegram end-to-end) is next on the
+  [stabilization map](plans/codegen-stabilization-v1.md); not started.
 
 ## Current Facts
+
+- The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
+  green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker
+  is missing and resolves it to `.venv/bin/ruff`; a worker container has neither, so the hook
+  exited 127 under `set -euo pipefail` and rejected every push carrying real file changes. The
+  agent's commits stayed in the container, it still self-reported success with a local SHA, nothing
+  verified that SHA against origin, and the story branch stayed identical to `main` until PR
+  creation failed with GitHub's `No commits between`. The noop suite could not catch this: an empty
+  commit makes `pre-push` short-circuit before any check, so noop never exercises that path. Live
+  coverage that changes real files is what closes this class of bug.
 
 - `codegen_orchestrator-646` splits project display text from runtime identity:
   projects store free-text `title` plus immutable server-generated unique `slug`.
