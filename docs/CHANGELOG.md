@@ -2,6 +2,14 @@
 
 ## 2026-07-24
 
+- Make missing agent LLM config visible. `ARCHITECT_LLM_*` was absent from `.env.example`, so a
+  clean install had the architect consumer accept stories and fail each one at
+  `architect_llm_not_configured` with nothing said at startup; PO logged its disabled state at
+  info. Both groups are now documented in `.env.example`, the architect service refuses to start
+  without them, PO logs `po_consumer_disabled` at error with the missing var names, and
+  `src/config/agent_llm_env.py` holds the groups so a unit test can check `.env.example` and
+  `Settings` against each other.
+
 - Stop project git hooks from gating worker pushes. Generated projects ship
   `.githooks/pre-push`, which falls back to `make lint` when Docker is absent and resolves it to
   `.venv/bin/ruff`; neither exists in a worker container, so the hook exited 127 under

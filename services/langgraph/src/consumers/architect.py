@@ -19,6 +19,7 @@ from shared.redis_client import RedisStreamClient
 from ..agents.architect.graph import create_architect_graph
 from ..agents.architect.tools import reset_task_chain
 from ..clients.api import api_client
+from ..config.agent_llm_env import missing_llm_env
 from ..config.settings import get_settings
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
@@ -121,15 +122,18 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
     settings = get_settings()
 
-    if not settings.architect_llm_api_key:
-        log.error("architect_llm_not_configured")
-        return live_work_unsettled({"status": "failed", "error": "ARCHITECT_LLM_API_KEY not set"})
+    missing_env = missing_llm_env("architect", settings)
+    if missing_env:
+        log.error("architect_llm_not_configured", missing_env=missing_env)
+        return live_work_unsettled(
+            {"status": "failed", "error": f"{', '.join(missing_env)} not set"}
+        )
 
     try:
         reset_task_chain()
         graph = create_architect_graph(
-            model=settings.architect_llm_model or "anthropic/claude-sonnet-4",
-            base_url=settings.architect_llm_base_url or "https://openrouter.ai/api/v1",
+            model=settings.architect_llm_model,
+            base_url=settings.architect_llm_base_url,
             api_key=settings.architect_llm_api_key,
         )
 
@@ -192,7 +196,19 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
 
 def main():
-    """Entry point for running as module."""
+    """Entry point for running as module.
+
+    Refuses to start without LLM config: a consumer that reads stories only to
+    fail them one by one is harder to spot than a container that never comes up.
+    """
+    missing_env = missing_llm_env("architect", get_settings())
+    if missing_env:
+        raise RuntimeError(
+            f"architect_llm_not_configured: {', '.join(missing_env)} not set. "
+            "The Architect agent cannot decompose stories without them. "
+            "Set them in .env (see .env.example)."
+        )
+
     start_worker(
         service_name="architect",
         queue=ARCHITECT_QUEUE,
