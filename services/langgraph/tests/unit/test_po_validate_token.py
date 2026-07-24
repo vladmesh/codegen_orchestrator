@@ -22,15 +22,24 @@ def _mock_httpx(response):
     return instance
 
 
+def _json_response(payload):
+    resp = MagicMock()
+    resp.json.return_value = payload
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
 @pytest.fixture
 def mock_api():
-    """Mock API client for set_project_secret calls."""
-    mock_response = MagicMock()
-    mock_response.json.return_value = {"keys": ["TELEGRAM_BOT_USERNAME"]}
-    mock_response.raise_for_status = MagicMock()
-
+    """Mock API client: secret writes plus the repository lookup/patch."""
     api = AsyncMock()
-    api.post = AsyncMock(return_value=mock_response)
+    api.post = AsyncMock(return_value=_json_response({"keys": ["TELEGRAM_BOT_USERNAME"]}))
+    api.get = AsyncMock(
+        return_value=_json_response(
+            [{"id": "repo-1", "role": "primary", "bot_username": None}],
+        )
+    )
+    api.patch = AsyncMock(return_value=_json_response({"id": "repo-1"}))
     return api
 
 
@@ -160,3 +169,104 @@ class TestValidateTelegramToken:
         for call in mock_api.post.call_args_list:
             payload = call[1]["json"]
             assert "env_hints" in payload
+
+
+class TestBotUsernamePersisted:
+    """The username lands on the primary repository — that's what QA reads."""
+
+    async def _validate(self, mock_api, username, token="123:ABC-def"):  # noqa: S107
+        resp = httpx.Response(
+            200, json=_getme_json(username), request=httpx.Request("GET", GETME_URL)
+        )
+        http_mock = _mock_httpx(resp)
+
+        with (
+            patch("src.agents.po.tools_projects._get_api", return_value=mock_api),
+            patch("src.agents.po.tools_projects.httpx.AsyncClient", return_value=http_mock),
+        ):
+            from src.agents.po.tools import validate_telegram_token
+
+            return await validate_telegram_token.ainvoke(
+                {"project_id": "proj-1", "token": token},
+                config=TOOL_CONFIG,
+            )
+
+    @pytest.mark.asyncio
+    async def test_username_patched_onto_primary_repository(self, mock_api):
+        """Valid token -> PATCH /api/repositories/<primary id> with bot_username."""
+        await self._validate(mock_api, "palindrome_bot")
+
+        mock_api.get.assert_awaited_once()
+        assert "project_id=proj-1" in mock_api.get.call_args[0][0]
+
+        mock_api.patch.assert_awaited_once()
+        assert mock_api.patch.call_args[0][0] == "/api/repositories/repo-1"
+        assert mock_api.patch.call_args[1]["json"] == {"bot_username": "palindrome_bot"}
+
+    @pytest.mark.asyncio
+    async def test_revalidation_overwrites_stored_username(self, mock_api):
+        """A second token for the same project moves it to the new bot."""
+        mock_api.get.return_value = _json_response(
+            [{"id": "repo-1", "role": "primary", "bot_username": "old_bot"}]
+        )
+
+        await self._validate(mock_api, "new_bot", token="999:XYZ-ghi")  # noqa: S106
+
+        assert mock_api.patch.call_args[1]["json"] == {"bot_username": "new_bot"}
+
+    @pytest.mark.asyncio
+    async def test_dependency_repos_are_not_written_to(self, mock_api):
+        """Only the primary repository carries the username."""
+        mock_api.get.return_value = _json_response(
+            [
+                {"id": "repo-dep", "role": "dependency", "bot_username": None},
+                {"id": "repo-primary", "role": "primary", "bot_username": None},
+            ]
+        )
+
+        await self._validate(mock_api, "palindrome_bot")
+
+        assert mock_api.patch.call_args[0][0] == "/api/repositories/repo-primary"
+
+    @pytest.mark.asyncio
+    async def test_missing_primary_repository_raises(self, mock_api):
+        """No repository to store on -> crash instead of a silent no-op."""
+        mock_api.get.return_value = _json_response([])
+
+        with pytest.raises(RuntimeError, match="no primary repository"):
+            await self._validate(mock_api, "palindrome_bot")
+
+    @pytest.mark.asyncio
+    async def test_failed_patch_raises(self, mock_api):
+        """A rejected PATCH must not be reported to the user as stored."""
+        patch_resp = MagicMock()
+        patch_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "500", request=httpx.Request("PATCH", "/api/repositories/repo-1"), response=None
+        )
+        mock_api.patch.return_value = patch_resp
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await self._validate(mock_api, "palindrome_bot")
+
+    @pytest.mark.asyncio
+    async def test_invalid_token_writes_nothing(self, mock_api):
+        """Rejected token -> no secrets, no repository write."""
+        resp = httpx.Response(
+            401,
+            json={"ok": False, "error_code": 401, "description": "Unauthorized"},
+            request=httpx.Request("GET", GETME_URL),
+        )
+        http_mock = _mock_httpx(resp)
+
+        with (
+            patch("src.agents.po.tools_projects._get_api", return_value=mock_api),
+            patch("src.agents.po.tools_projects.httpx.AsyncClient", return_value=http_mock),
+        ):
+            from src.agents.po.tools import validate_telegram_token
+
+            await validate_telegram_token.ainvoke(
+                {"project_id": "proj-1", "token": "invalid-token"},
+                config=TOOL_CONFIG,
+            )
+
+        mock_api.patch.assert_not_called()

@@ -9,6 +9,7 @@ import uuid
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import DeployRunResult, QARunResult
 from shared.contracts.dto.story import StoryStatus
@@ -374,7 +375,6 @@ async def _handle_deploy_success_story(
     """
     deployed_url = result.deployed_url
     application_id = result.application_id
-    bot_username = result.bot_username
 
     # A QA handoff needs both the deployed URL and the application id. `application_id`
     # is legitimately optional on a DeployRunResult (a standalone deploy, or one where
@@ -398,8 +398,8 @@ async def _handle_deploy_success_story(
     # here and carry them on the message. Same reason as the fields above: a
     # story whose criteria are missing must not reach TESTING with a QA run that
     # can only error out.
-    acceptance_criteria = await _resolve_acceptance_criteria(api_client, project_id, log)
-    if acceptance_criteria is None:
+    repo = await _resolve_qa_repository(api_client, project_id, log)
+    if repo is None:
         await api_client.fail_story(story_id)
         await _notify_admin_failure(
             story_id,
@@ -408,6 +408,14 @@ async def _handle_deploy_success_story(
             "cannot run QA",
         )
         return False
+
+    acceptance_criteria = repo.acceptance_criteria.strip()
+
+    # The bot username is persisted on the repository when the user's token is
+    # validated, so QA gets it even when the deploy smoke check could not resolve
+    # it via getMe. The smoke value is the older source and stays as a fallback
+    # for projects whose token was stored before it was persisted.
+    bot_username = repo.bot_username or result.bot_username
 
     await api_client.transition_story(story_id, "test")
 
@@ -436,26 +444,34 @@ async def _handle_deploy_success_story(
             run_id=qa_run_id,
         ),
     )
-    log.info("deploy_supervisor_qa_handoff", deployed_url=deployed_url, qa_run_id=qa_run_id)
+    log.info(
+        "deploy_supervisor_qa_handoff",
+        deployed_url=deployed_url,
+        qa_run_id=qa_run_id,
+        bot_username=bot_username,
+    )
     return True
 
 
-async def _resolve_acceptance_criteria(
+async def _resolve_qa_repository(
     api_client: SchedulerAPIClient,
     project_id: str,
     log: structlog.stdlib.BoundLogger,
-) -> str | None:
-    """Read the project's QA criteria, or None if there are none to run."""
+) -> RepositoryDTO | None:
+    """Read the repository QA runs against, or None if it can't drive a QA run.
+
+    Carries both the acceptance criteria and the bot username, so the QA handoff
+    reads one record instead of two.
+    """
     repo = await api_client.get_primary_repository(project_id)
     if repo is None:
         log.error("deploy_success_no_primary_repository")
         return None
 
-    criteria = (repo.acceptance_criteria or "").strip()
-    if not criteria:
+    if not (repo.acceptance_criteria or "").strip():
         log.error("deploy_success_no_acceptance_criteria", repo_id=repo.id)
         return None
-    return criteria
+    return repo
 
 
 async def _handle_deploy_code_fix(

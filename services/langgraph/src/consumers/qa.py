@@ -131,7 +131,8 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 if "tg_bot" in modules:
                     error = (
                         "Project has tg_bot module but bot_username is missing in QAMessage. "
-                        "Deploy smoke test should have resolved it via getMe."
+                        "It is stored on the primary repository when the user's Telegram "
+                        "token is validated — check that validation ran for this project."
                     )
                     logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
                     await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)

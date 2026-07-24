@@ -70,31 +70,24 @@ def _make_task(**overrides) -> TaskDTO:
     return TaskDTO(**defaults)
 
 
-def _make_repo(
-    *,
-    id: str = "repo-1",
-    project_id: str = "00000000-0000-0000-0000-000000000001",
-    name: str = "test-project",
-    git_url: str = "https://github.com/org/test-project",
-    role: str = "primary",
-    visibility: str = "private",
-    is_managed: bool = True,
-    acceptance_criteria: str | None = BASELINE_ACCEPTANCE_CRITERIA,
-    created_at: datetime | None = None,
-    updated_at: datetime | None = None,
-) -> RepositoryDTO:
-    return RepositoryDTO(
-        id=id,
-        project_id=UUID(project_id),
-        name=name,
-        git_url=git_url,
-        role=role,
-        visibility=visibility,
-        is_managed=is_managed,
-        acceptance_criteria=acceptance_criteria,
-        created_at=created_at or _NOW,
-        updated_at=updated_at,
-    )
+def _make_repo(**overrides) -> RepositoryDTO:
+    defaults = {
+        "id": "repo-1",
+        "project_id": UUID("00000000-0000-0000-0000-000000000001"),
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "acceptance_criteria": BASELINE_ACCEPTANCE_CRITERIA,
+        "bot_username": None,
+        "created_at": _NOW,
+        "updated_at": None,
+    }
+    if isinstance(overrides.get("project_id"), str):
+        overrides["project_id"] = UUID(overrides["project_id"])
+    defaults.update(overrides)
+    return RepositoryDTO(**defaults)
 
 
 def _make_run(

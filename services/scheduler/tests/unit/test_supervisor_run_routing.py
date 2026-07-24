@@ -131,6 +131,64 @@ class TestSuperviseDeployingStories:
         qa_calls = [c for c in redis_client.publish_message.call_args_list if c[0][0] == QA_QUEUE]
         assert qa_calls[0][0][1].acceptance_criteria == criteria
 
+    @pytest.mark.asyncio
+    async def test_bot_username_comes_from_the_repository(self, api_client, redis_client):
+        """QA gets the username stored at token validation, not the smoke result.
+
+        The deploy smoke check often reports nothing, and QA errors out on a
+        tg_bot project without a username — a false failure on a working bot.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SUCCESS.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+                "bot_username": None,
+            },
+        )
+        api_client.get_primary_repository.return_value = _make_repo(bot_username="palindrome_bot")
+        api_client.transition_story.return_value = {}
+        api_client.create_run.return_value = {"id": "qa-run-1"}
+
+        await supervise_deploying_stories(api_client, redis_client)
+
+        from shared.queues import QA_QUEUE
+
+        qa_calls = [c for c in redis_client.publish_message.call_args_list if c[0][0] == QA_QUEUE]
+        assert qa_calls[0][0][1].bot_username == "palindrome_bot"
+
+    @pytest.mark.asyncio
+    async def test_smoke_username_used_when_repository_has_none(self, api_client, redis_client):
+        """Projects deployed before the username was persisted still reach QA."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SUCCESS.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+                "bot_username": "smoke_resolved_bot",
+            },
+        )
+        api_client.get_primary_repository.return_value = _make_repo(bot_username=None)
+        api_client.transition_story.return_value = {}
+        api_client.create_run.return_value = {"id": "qa-run-1"}
+
+        await supervise_deploying_stories(api_client, redis_client)
+
+        from shared.queues import QA_QUEUE
+
+        qa_calls = [c for c in redis_client.publish_message.call_args_list if c[0][0] == QA_QUEUE]
+        assert qa_calls[0][0][1].bot_username == "smoke_resolved_bot"
+
     @pytest.mark.parametrize(
         ("repo", "case"),
         [
