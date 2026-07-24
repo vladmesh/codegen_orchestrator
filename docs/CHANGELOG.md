@@ -2,6 +2,16 @@
 
 ## 2026-07-24
 
+- Make deploy smoke verify the Telegram bot instead of skipping it. The tg_bot check ran through
+  Telethon, whose API id, hash and session were never configured on the deploy worker, so every
+  bot project logged `smoke_tg_bot_skip` and the deploy passed with only the backend verified,
+  leaving the bot itself to be checked by hand. The check now calls Bot API `getMe` with the
+  project's token and confirms over SSH that `docker compose ps` lists the `tg_bot` container as
+  running. Both probes are mandatory: a missing token, a missing server handle, an unreachable SSH
+  or an unallocated module is a `fail` naming the reason, not a silent skip, and the resulting
+  `bot_username` still reaches QA. Telethon is gone from the deploy worker (dependency, env vars
+  and session mount); the QA runner keeps its own installation for dialogue testing.
+
 - Give QA the bot username from the project instead of the deploy smoke check. PO's
   `validate_telegram_token` already knew the username from `getMe`, but its write to
   `Repository.bot_username` skipped itself whenever the repository lookup returned anything
