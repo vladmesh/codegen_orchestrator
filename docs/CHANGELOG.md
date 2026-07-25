@@ -2,6 +2,19 @@
 
 ## 2026-07-25
 
+- PO can now tear a user's project down, which is what makes "your own project holds that token" a
+  choice instead of a dead end. `teardown_project` calls `POST /api/projects/{id}/teardown`: the
+  endpoint checks the caller owns the project, publishes an undeploy for every application of its
+  repositories that is still up, and archives the project, which releases the bot binding in the
+  same transaction. So the token is reusable as soon as the call returns, while the containers
+  holding it are on their way down — `deploy_lifecycle` runs `compose down -v` and the bot stops
+  polling. `validate_telegram_token` now passes `conflict_project_id` through to the agent, and the
+  prompt tells it to offer the two real options, continue in the holding project or free the token
+  and rebind, and never to tear anything down unasked. The owner check lives on the new endpoint
+  because the per-application `stop`/`undeploy` endpoints have no authorization at all (backlog
+  #1022) and this route is driven by a user, not an admin: someone else's project comes back 403,
+  untouched and still holding its bot.
+
 - Teardown now hands the bot back. The uniqueness check added the same day would otherwise lock a
   token to a dead project forever: the binding lives on `Repository.bot_username`, and nothing ever
   cleared it, so a user could not reuse their own bot after tearing the project down. Two

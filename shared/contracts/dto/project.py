@@ -56,6 +56,20 @@ class ProjectUpdate(BaseModel):
     project_spec: dict | None = None
 
 
+class ProjectTeardownResult(BaseModel):
+    """What tearing a project down actually did.
+
+    The undeploy is asynchronous — the listed applications are on their way down,
+    not down yet. The binding, in contrast, is released synchronously with the
+    archive, so a freed bot username here can be rebound right away.
+    """
+
+    project_id: uuid.UUID
+    status: ProjectStatus
+    undeploying_application_ids: list[int] = []
+    released_bot_username: str | None = None
+
+
 class ProjectDTO(TimestampedDTO):
     """Project response."""
 

@@ -9,7 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus, ServiceModule
+from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult, ServiceModule
 from shared.contracts.dto.telegram import (
     TelegramTokenValidateRequest,
     TelegramTokenVerdict,
@@ -34,6 +34,8 @@ AVAILABLE_DEVELOPER_AGENTS = {
     AgentType.CODEX.value,
 }
 
+HTTP_FORBIDDEN = 403
+HTTP_NOT_FOUND = 404
 HTTP_UNPROCESSABLE = 422
 
 
@@ -175,6 +177,46 @@ async def set_project_secret(
 
 
 @tool
+async def teardown_project(project_id: str, *, config: RunnableConfig) -> str:
+    """Tear down one of the user's projects: take it offline and free its Telegram bot.
+
+    Use it when the user asks to remove, shut down or unlink a project, and when they
+    want to reuse a bot token their own older project is holding. The project stops
+    running and goes to archived; its bot becomes available for another project right
+    away. Only the owner can do this. Confirm with the user before calling — the
+    running project goes down.
+
+    Args:
+        project_id: Project ID to tear down.
+    """
+    api = _get_api()
+    headers = _user_headers(config)
+
+    resp = await api.post(f"/api/projects/{project_id}/teardown", headers=headers)
+    if resp.status_code in (HTTP_FORBIDDEN, HTTP_NOT_FOUND):
+        # Someone else's project, or none at all — the user gets told, not a stack trace.
+        return f"Error: {resp.json()['detail']}"
+    resp.raise_for_status()
+    result = ProjectTeardownResult.model_validate(resp.json())
+
+    logger.info(
+        "po_project_torn_down",
+        project_id=project_id,
+        undeploying=result.undeploying_application_ids,
+        released_bot=result.released_bot_username,
+    )
+
+    bot = (
+        f"Bot @{result.released_bot_username} is free — its token can be used for another project."
+        if result.released_bot_username
+        else "No bot was bound to it."
+    )
+    count = len(result.undeploying_application_ids)
+    running = f"{count} deployed application(s) are shutting down. " if count else ""
+    return f"Project {project_id} torn down and archived. {running}{bot}"
+
+
+@tool
 async def validate_telegram_token(project_id: str, token: str, *, config: RunnableConfig) -> str:
     """Validate a Telegram bot token and bind it to the project.
 
@@ -206,5 +248,15 @@ async def validate_telegram_token(project_id: str, token: str, *, config: Runnab
     )
 
     if verdict.status == TokenVerdictStatus.REJECTED:
-        return f"Token rejected ({verdict.reason_code.value}). {verdict.user_message}"
+        rejection = f"Token rejected ({verdict.reason_code.value}). {verdict.user_message}"
+        if verdict.conflict_project_id is None:
+            return rejection
+        # The holder is the user's own project, so the deadlock has a way out:
+        # keep working there, or tear it down and take the token back.
+        return (
+            f"{rejection} The bot is held by project {verdict.conflict_project_id}. "
+            "Ask the user which they want: continue work in that project, or free the "
+            f"token — teardown_project('{verdict.conflict_project_id}') takes it offline, "
+            "then call validate_telegram_token again with the same token."
+        )
     return f"{verdict.user_message} Token stored for project {project_id}."

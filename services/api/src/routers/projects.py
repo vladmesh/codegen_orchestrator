@@ -8,13 +8,14 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult
 from shared.contracts.dto.repository import RepositoryRole
 from shared.contracts.dto.telegram import (
     TelegramTokenValidateRequest,
     TelegramTokenVerdict,
     TokenVerdictStatus,
 )
+from shared.contracts.queues.deploy import DeployTrigger
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import (
     AnalyticsDaily,
@@ -39,13 +40,15 @@ from shared.models import (
 )
 from shared.project_slug import generate_project_slug
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
+from shared.redis.client import RedisStreamClient
 
 from ..config import get_settings
 from ..database import get_async_session
-from ..dependencies import is_internal_service
+from ..dependencies import get_redis_client, is_internal_service
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
+from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
 
 logger = structlog.get_logger()
 
@@ -580,6 +583,65 @@ async def delete_secret(
 
     logger.info("secret_deleted", project_id=project_id, key=key)
     return {"keys": sorted(existing_secrets.keys())}
+
+
+@router.post("/{project_id}/teardown", response_model=ProjectTeardownResult)
+async def teardown_project(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+    _is_internal: bool = Depends(is_internal_service),
+) -> ProjectTeardownResult:
+    """Tear the project down at its owner's request: undeploy it, archive it, free its bot.
+
+    Owner-checked, unlike the per-application stop/undeploy endpoints, because this is
+    the route the PO agent drives on behalf of a user. Archiving is what releases the
+    binding, so the token is reusable as soon as this returns; the applications are
+    still on their way down when it does.
+    """
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    project = (await db.execute(query)).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+
+    repos_result = await db.execute(select(Repository).where(Repository.project_id == project_id))
+    repos = list(repos_result.scalars())
+    apps_query = select(Application).where(
+        Application.repo_id.in_([repo.id for repo in repos]),
+        Application.status.in_([s.value for s in UNDEPLOYABLE_STATUSES]),
+    )
+    applications = list((await db.execute(apps_query)).scalars())
+
+    messages = []
+    undeploying = []
+    for application in applications:
+        _run, msg = stage_undeploy(application, project_id, db, triggered_by=DeployTrigger.PO)
+        messages.append(msg)
+        undeploying.append(application.id)
+
+    project.status = ProjectStatus.ARCHIVED.value
+    released = await release_bot_binding(db, project, repos, reason="project_teardown")
+
+    await db.commit()
+
+    for msg in messages:
+        await redis.publish_message(DEPLOY_QUEUE, msg)
+
+    logger.info(
+        "project_torn_down",
+        project_id=str(project_id),
+        undeploying=undeploying,
+        released_bot=released,
+    )
+    return ProjectTeardownResult(
+        project_id=project_id,
+        status=ProjectStatus.ARCHIVED,
+        undeploying_application_ids=undeploying,
+        released_bot_username=released,
+    )
 
 
 _QUEUES_TO_CLEAN = [ARCHITECT_QUEUE, SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]

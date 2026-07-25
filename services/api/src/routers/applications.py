@@ -257,6 +257,42 @@ def _make_deploy_run_id() -> str:
     return f"deploy-{uuid.uuid4().hex[:12]}"
 
 
+UNDEPLOYABLE_STATUSES = frozenset(
+    {
+        ApplicationStatus.RUNNING,
+        ApplicationStatus.STOPPED,
+        ApplicationStatus.DOWN,
+        ApplicationStatus.DEGRADED,
+    }
+)
+
+
+def stage_undeploy(
+    application: Application,
+    project_id: uuid.UUID,
+    db: AsyncSession,
+    *,
+    triggered_by: DeployTrigger,
+) -> tuple[Run, DeployMessage]:
+    """Move an application to undeploying and build the message that tears it down.
+
+    Mutates the session without committing and does not publish: the caller owns
+    the transaction, and the message must not reach the deploy consumer before the
+    Run it names is committed.
+    """
+    application.status = ApplicationStatus.UNDEPLOYING
+    run_id = _make_deploy_run_id()
+    run = Run(id=run_id, type="deploy", project_id=project_id)
+    db.add(run)
+    msg = DeployMessage(
+        task_id=run_id,
+        project_id=str(project_id),
+        triggered_by=triggered_by,
+        action=DeployAction.UNDEPLOY,
+    )
+    return run, msg
+
+
 def _parse_github_repo_url(git_url: str) -> tuple[str, str]:
     if git_url.startswith("git@github.com:"):
         path = git_url.removeprefix("git@github.com:")
@@ -358,31 +394,16 @@ async def undeploy_application(
     body = body or AdminAction()
     app, repo = await _get_app_with_repo(application_id, db)
 
-    active_statuses = {
-        ApplicationStatus.RUNNING,
-        ApplicationStatus.STOPPED,
-        ApplicationStatus.DOWN,
-        ApplicationStatus.DEGRADED,
-    }
-    if ApplicationStatus(app.status) not in active_statuses:
+    if ApplicationStatus(app.status) not in UNDEPLOYABLE_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot undeploy application in status '{app.status}'.",
         )
 
-    app.status = ApplicationStatus.UNDEPLOYING
-    run_id = _make_deploy_run_id()
-    run = Run(id=run_id, type="deploy", project_id=repo.project_id)
-    db.add(run)
+    _run, msg = stage_undeploy(app, repo.project_id, db, triggered_by=DeployTrigger.ADMIN)
     await db.commit()
     await db.refresh(app)
 
-    msg = DeployMessage(
-        task_id=run_id,
-        project_id=str(repo.project_id),
-        triggered_by=DeployTrigger.ADMIN,
-        action=DeployAction.UNDEPLOY,
-    )
     await redis.publish_message(DEPLOY_QUEUE, msg)
 
     logger.info("application_undeploy_requested", app_id=application_id, actor=body.actor)

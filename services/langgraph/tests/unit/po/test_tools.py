@@ -23,6 +23,7 @@ from src.agents.po.tools import (
     reopen_story,
     set_project_secret,
     set_reminder,
+    teardown_project,
     validate_telegram_token,
     web_search,
 )
@@ -366,6 +367,111 @@ class TestValidateTelegramToken:
         assert "rejected" in result.lower()
         assert "invalid_token" in result
         assert "Unauthorized" in result
+
+    @pytest.mark.asyncio
+    async def test_own_project_conflict_names_the_holder_and_the_way_out(self, mock_api_client):
+        """A dead end for the user unless the tool passes the holder id to the agent."""
+        mock_api_client.post.return_value = _make_response(
+            {
+                "status": "rejected",
+                "reason_code": "bound_to_own_project",
+                "user_message": 'This bot is already connected to your project "Palindrome".',
+                "bot_username": None,
+                "conflict_project_id": "11111111-1111-1111-1111-111111111111",
+                "checks": [],
+            }
+        )
+
+        result = await validate_telegram_token.ainvoke(
+            {"project_id": "abc", "token": BOT_TOKEN},
+            config=_make_config("user-42"),
+        )
+
+        assert "11111111-1111-1111-1111-111111111111" in result
+        assert "teardown_project" in result
+
+    @pytest.mark.asyncio
+    async def test_foreign_holder_is_not_offered_a_teardown(self, mock_api_client):
+        """Nothing to free: the holding project is not the user's to tear down."""
+        mock_api_client.post.return_value = _make_response(
+            {
+                "status": "rejected",
+                "reason_code": "bound_elsewhere",
+                "user_message": "This bot is already in use.",
+                "bot_username": None,
+                "conflict_project_id": None,
+                "checks": [],
+            }
+        )
+
+        result = await validate_telegram_token.ainvoke(
+            {"project_id": "abc", "token": BOT_TOKEN},
+            config=_make_config("user-42"),
+        )
+
+        assert "teardown_project" not in result
+
+
+class TestTeardownProject:
+    """Teardown runs on the API under the user's identity, and reports what it freed."""
+
+    @pytest.mark.asyncio
+    async def test_calls_the_teardown_endpoint_as_the_user(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            {
+                "project_id": "11111111-1111-1111-1111-111111111111",
+                "status": "archived",
+                "undeploying_application_ids": [7],
+                "released_bot_username": "palindrome_bot",
+            }
+        )
+
+        result = await teardown_project.ainvoke(
+            {"project_id": "11111111-1111-1111-1111-111111111111"},
+            config=_make_config("user-42"),
+        )
+
+        call_args = mock_api_client.post.call_args
+        assert call_args[0][0] == "/api/projects/11111111-1111-1111-1111-111111111111/teardown"
+        assert call_args[1]["headers"]["X-Telegram-ID"] == "user-42"
+        assert "palindrome_bot" in result
+        # The API owns the teardown: no direct undeploy or archive from the tool.
+        mock_api_client.patch.assert_not_called()
+        assert mock_api_client.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_someone_elses_project_comes_back_as_a_message(self, mock_api_client):
+        """A 403 is an answer for the user, not a crash to retry through."""
+        mock_api_client.post.return_value = _make_response(
+            {"detail": "Access denied: not project owner"}, status_code=403
+        )
+
+        result = await teardown_project.ainvoke(
+            {"project_id": "11111111-1111-1111-1111-111111111111"},
+            config=_make_config("user-42"),
+        )
+
+        assert result.startswith("Error:")
+        assert "not project owner" in result
+        mock_api_client.post.return_value.raise_for_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_no_bot_says_so(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            {
+                "project_id": "11111111-1111-1111-1111-111111111111",
+                "status": "archived",
+                "undeploying_application_ids": [],
+                "released_bot_username": None,
+            }
+        )
+
+        result = await teardown_project.ainvoke(
+            {"project_id": "11111111-1111-1111-1111-111111111111"},
+            config=_make_config("user-42"),
+        )
+
+        assert "No bot was bound" in result
 
 
 class TestCreateStory:
@@ -871,7 +977,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 13
+        expected_count = 14
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -883,6 +989,7 @@ class TestGetAllTools:
             "get_project",
             "set_project_secret",
             "validate_telegram_token",
+            "teardown_project",
             "create_story",
             "list_stories",
             "reopen_story",

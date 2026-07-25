@@ -78,6 +78,15 @@ class TestSystemPrompt:
         assert "story" in SYSTEM_PROMPT.lower()
         assert "create_story" in SYSTEM_PROMPT
 
+    def test_offers_both_ways_out_of_an_own_token_conflict(self):
+        """Without this, the agent asks for another token the user does not have."""
+        assert "teardown_project" in SYSTEM_PROMPT
+        assert "Continue there" in SYSTEM_PROMPT
+        assert "Free the token" in SYSTEM_PROMPT
+
+    def test_teardown_needs_the_users_consent(self):
+        assert "Never call `teardown_project` on your own initiative" in SYSTEM_PROMPT
+
     def test_no_trigger_engineering_references(self):
         """Prompt should not reference deprecated trigger_engineering."""
         assert "trigger_engineering" not in SYSTEM_PROMPT
