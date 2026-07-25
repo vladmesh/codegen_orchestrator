@@ -34,9 +34,18 @@ def _patched_telegram(handler):
     return patch("src.utils.telegram_token.httpx.AsyncClient", factory)
 
 
-def _getme_ok(username: str):
+def _telegram_ok(username: str, *, webhook_url: str = ""):
+    """A token Telegram accepts, with no webhook and no other poller on it."""
+
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"ok": True, "result": {"username": username}})
+        method = request.url.path.rsplit("/", 1)[-1]
+        if method == "getMe":
+            return httpx.Response(200, json={"ok": True, "result": {"username": username}})
+        if method == "getWebhookInfo":
+            return httpx.Response(200, json={"ok": True, "result": {"url": webhook_url}})
+        if method == "getUpdates":
+            return httpx.Response(200, json={"ok": True, "result": []})
+        raise AssertionError(f"Unexpected Telegram method: {method}")
 
     return handler
 
@@ -88,7 +97,7 @@ async def _stored_secrets(db_session: AsyncSession, project_id: str) -> dict:
 async def test_valid_token_is_stored_and_bot_username_lands_on_the_repository(
     async_client: AsyncClient, db_session: AsyncSession, bot_project: str
 ):
-    with _patched_telegram(_getme_ok("token_binding_bot")):
+    with _patched_telegram(_telegram_ok("token_binding_bot")):
         resp = await async_client.post(
             f"/api/projects/{bot_project}/telegram/token",
             json={"token": VALID_TOKEN},
@@ -131,6 +140,31 @@ async def test_rejected_token_is_not_stored(
 
     assert await _stored_secrets(db_session, bot_project) == {}
 
+    repo = await db_session.scalar(
+        select(Repository).where(Repository.project_id == uuid.UUID(bot_project))
+    )
+    assert repo.bot_username is None
+
+
+@pytest.mark.asyncio
+async def test_token_with_an_external_webhook_is_not_stored(
+    async_client: AsyncClient, db_session: AsyncSession, bot_project: str
+):
+    """Telegram accepts the token, but someone else's webhook is already on it."""
+    handler = _telegram_ok("token_binding_bot", webhook_url="https://elsewhere.example/hook")
+    with _patched_telegram(handler):
+        resp = await async_client.post(
+            f"/api/projects/{bot_project}/telegram/token",
+            json={"token": VALID_TOKEN},
+            headers={"X-Telegram-ID": TELEGRAM_ID},
+        )
+
+    assert resp.status_code == status.HTTP_200_OK, resp.text
+    verdict = resp.json()
+    assert verdict["status"] == TokenVerdictStatus.REJECTED.value
+    assert verdict["reason_code"] == TokenRejectionReason.WEBHOOK_ACTIVE.value
+
+    assert await _stored_secrets(db_session, bot_project) == {}
     repo = await db_session.scalar(
         select(Repository).where(Repository.project_id == uuid.UUID(bot_project))
     )
@@ -221,7 +255,7 @@ async def test_config_update_round_trips_stored_secrets(
     async_client: AsyncClient, db_session: AsyncSession, bot_project: str
 ):
     """A bound token survives the read-modify-write config updates scaffolder does."""
-    with _patched_telegram(_getme_ok("token_binding_bot")):
+    with _patched_telegram(_telegram_ok("token_binding_bot")):
         bound = await async_client.post(
             f"/api/projects/{bot_project}/telegram/token",
             json={"token": VALID_TOKEN},

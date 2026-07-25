@@ -1,9 +1,9 @@
 """Telegram bot token validation contracts.
 
-The verdict is the spine for token checks: today it carries the format check and
-Telegram's getMe, later layers (uniqueness across projects, external webhook/poller
-detection) append their own `TokenCheck` and can set `reason_code` without changing
-the shape the PO agent sees.
+The verdict is the spine for token checks: today it carries the format check,
+Telegram's getMe and the external-activity probes (webhook + poller). Later layers
+(uniqueness across projects) append their own `TokenCheck` and can set `reason_code`
+without changing the shape the PO agent sees.
 """
 
 from enum import StrEnum
@@ -23,6 +23,8 @@ class TokenCheckName(StrEnum):
 
     FORMAT = "format"
     TELEGRAM_GET_ME = "telegram_get_me"
+    TELEGRAM_WEBHOOK = "telegram_webhook"
+    TELEGRAM_POLLER = "telegram_poller"
 
 
 class TokenRejectionReason(StrEnum):
@@ -32,6 +34,8 @@ class TokenRejectionReason(StrEnum):
     INVALID_TOKEN = "invalid_token"  # noqa: S105 — a reason code, not a secret
     NO_USERNAME = "no_username"
     TELEGRAM_UNREACHABLE = "telegram_unreachable"
+    WEBHOOK_ACTIVE = "webhook_active"
+    POLLER_ACTIVE = "poller_active"
 
 
 class TokenCheck(BaseModel):
