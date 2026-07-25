@@ -2,6 +2,24 @@
 
 ## 2026-07-25
 
+- Telegram token validation became a server-side step behind one door. `POST
+  /api/projects/{id}/telegram/token` runs the check chain (format, then `getMe`) and returns a
+  typed `TelegramTokenVerdict` — `ok`/`rejected`, a `reason_code`, a per-layer `checks` list and a
+  message safe to show the user. Secrets and `Repository.bot_username` are written in one
+  transaction, and only on a passing verdict; a project without a primary repository gets 409
+  rather than a half-bound token. The generic secrets endpoint now refuses anything keyed
+  `TELEGRAM_BOT_TOKEN` or shaped like a bot token with 422, so the only path in is the validator —
+  the gate no longer rests on a sentence in the PO prompt telling the model which tool to prefer.
+  PO's `validate_telegram_token` is a thin caller that voices the verdict; the getMe call, the
+  username write and the retry wording left the agent. Later check layers (uniqueness, external
+  poller detection) append to `checks` without touching the prompt.
+
+  Whole-config writes are fenced the same way: `POST /api/projects/`, `PUT` and `PATCH` scan the
+  submitted config tree for `TELEGRAM_BOT_TOKEN` keys and token-shaped values, and `config.secrets`
+  is no longer writable through them — the stored blob is carried over and a caller sending a
+  different one gets 422. Scaffolder's read-modify-write of the whole config still works, since it
+  hands back the blob it read.
+
 - Load the QA server's Telethon credentials into the run instead of asking the agent to. The
   prompt told it to `set -a; . ~/.qa-telethon.env`, which run `qa-7729960c` simply skipped: it
   reported the echo check `BLOCKED`, citing the old `/opt/qa-runner/telethon.session` path and

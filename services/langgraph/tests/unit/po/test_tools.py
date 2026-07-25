@@ -23,8 +23,11 @@ from src.agents.po.tools import (
     reopen_story,
     set_project_secret,
     set_reminder,
+    validate_telegram_token,
     web_search,
 )
+
+BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
 
 
 @pytest.fixture(autouse=True)
@@ -227,10 +230,10 @@ class TestGetProject:
 class TestSetProjectSecret:
     @pytest.mark.asyncio
     async def test_sets_secret(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"keys": ["TELEGRAM_BOT_TOKEN"]})
+        mock_api_client.post.return_value = _make_response({"keys": ["OPENROUTER_API_KEY"]})
 
         result = await set_project_secret.ainvoke(
-            {"project_id": "abc", "key": "TELEGRAM_BOT_TOKEN", "value": "123:ABC"},
+            {"project_id": "abc", "key": "OPENROUTER_API_KEY", "value": "sk-or-123"},
             config=_make_config("user-42"),
         )
 
@@ -238,7 +241,23 @@ class TestSetProjectSecret:
         call_args = mock_api_client.post.call_args
         assert call_args[0][0] == "/api/projects/abc/config/secrets"
         payload = call_args[1]["json"]
-        assert payload["secrets"]["TELEGRAM_BOT_TOKEN"] == "123:ABC"  # noqa: S105
+        assert payload["secrets"]["OPENROUTER_API_KEY"] == "sk-or-123"
+
+    @pytest.mark.asyncio
+    async def test_server_refusal_comes_back_as_an_error_message(self, mock_api_client):
+        """A bot token is refused server-side — the PO must see why, not a traceback."""
+        mock_api_client.post.return_value = _make_response(
+            {"detail": "TELEGRAM_BOT_TOKEN cannot be set directly — use /telegram/token"},
+            status_code=422,
+        )
+
+        result = await set_project_secret.ainvoke(
+            {"project_id": "abc", "key": "TELEGRAM_BOT_TOKEN", "value": BOT_TOKEN},
+            config=_make_config("user-42"),
+        )
+
+        assert result.startswith("Error:")
+        assert "/telegram/token" in result
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
@@ -296,6 +315,57 @@ class TestSetProjectSecret:
 
         mock_api_client.get.assert_not_called()
         mock_api_client.patch.assert_not_called()
+
+
+class TestValidateTelegramToken:
+    """The tool is a thin mouth for the server verdict — no validation of its own."""
+
+    @pytest.mark.asyncio
+    async def test_posts_token_to_the_validator_endpoint(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            {
+                "status": "ok",
+                "reason_code": None,
+                "user_message": "Token is valid. Bot: @palindrome_bot",
+                "bot_username": "palindrome_bot",
+                "checks": [{"name": "format", "passed": True, "reason_code": None, "detail": ""}],
+            }
+        )
+
+        result = await validate_telegram_token.ainvoke(
+            {"project_id": "abc", "token": BOT_TOKEN},
+            config=_make_config("user-42"),
+        )
+
+        call_args = mock_api_client.post.call_args
+        assert call_args[0][0] == "/api/projects/abc/telegram/token"
+        assert call_args[1]["json"] == {"token": BOT_TOKEN}
+        assert call_args[1]["headers"]["X-Telegram-ID"] == "user-42"
+        assert "palindrome_bot" in result
+        # No side path: the tool never touches secrets or repositories itself.
+        mock_api_client.patch.assert_not_called()
+        assert mock_api_client.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_rejected_verdict_is_relayed_with_reason_code(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            {
+                "status": "rejected",
+                "reason_code": "invalid_token",
+                "user_message": "Telegram rejected this token: Unauthorized.",
+                "bot_username": None,
+                "checks": [],
+            }
+        )
+
+        result = await validate_telegram_token.ainvoke(
+            {"project_id": "abc", "token": "nope"},
+            config=_make_config("user-42"),
+        )
+
+        assert "rejected" in result.lower()
+        assert "invalid_token" in result
+        assert "Unauthorized" in result
 
 
 class TestCreateStory:

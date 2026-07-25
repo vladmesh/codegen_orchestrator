@@ -5,13 +5,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import uuid
 
-import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
-from shared.contracts.dto.repository import RepositoryRole
+from shared.contracts.dto.telegram import (
+    TelegramTokenValidateRequest,
+    TelegramTokenVerdict,
+    TokenVerdictStatus,
+)
 from shared.contracts.vocab import AgentType
 
 from .tools_shared import _get_api, _user_headers
@@ -31,8 +34,7 @@ AVAILABLE_DEVELOPER_AGENTS = {
     AgentType.CODEX.value,
 }
 
-HTTP_OK = 200
-TELEGRAM_API_TIMEOUT = 10
+HTTP_UNPROCESSABLE = 422
 
 
 @tool
@@ -143,13 +145,15 @@ async def get_project(project_id: str, *, config: RunnableConfig) -> str:
 async def set_project_secret(
     project_id: str, key: str, value: str, hint: str = "", *, config: RunnableConfig
 ) -> str:
-    """Set a secret for a project (e.g. TELEGRAM_BOT_TOKEN).
+    """Set a secret for a project (e.g. OPENROUTER_API_KEY, ADMIN_TELEGRAM_ID).
+
+    Telegram bot tokens are refused here — use validate_telegram_token for those.
 
     Args:
         project_id: Project ID.
-        key: Secret key (e.g. TELEGRAM_BOT_TOKEN).
+        key: Secret key (e.g. OPENROUTER_API_KEY).
         value: Secret value.
-        hint: Description of what the variable is for (e.g. "Telegram bot token for API access").
+        hint: Description of what the variable is for (e.g. "OpenRouter key for LLM calls").
             Hints are stored in plaintext and injected into the Developer Worker prompt
             so it knows which env vars to use in the code.
     """
@@ -163,110 +167,44 @@ async def set_project_secret(
     resp = await api.post(
         f"/api/projects/{project_id}/config/secrets", json=payload, headers=headers
     )
+    if resp.status_code == HTTP_UNPROCESSABLE:
+        # Bot tokens land here — the server refuses them outside the validator.
+        return f"Error: {resp.json()['detail']}"
     resp.raise_for_status()
     return f"Secret '{key}' set for project {project_id}."
 
 
-async def _store_bot_username(
-    api: httpx.AsyncClient, project_id: str, bot_username: str, headers: dict
-) -> None:
-    """Write bot_username onto the project's primary repository.
-
-    Overwrites whatever was there — revalidating a token is how a project moves to
-    a different bot.
-    """
-    repos_resp = await api.get(f"/api/repositories/?project_id={project_id}", headers=headers)
-    repos_resp.raise_for_status()
-    repos = repos_resp.json()
-    primary_repo = next(
-        (r for r in repos if r["role"] == RepositoryRole.PRIMARY.value),
-        None,
-    )
-    if primary_repo is None:
-        raise RuntimeError(
-            f"Project {project_id} has no primary repository — cannot store bot_username"
-        )
-
-    patch_resp = await api.patch(
-        f"/api/repositories/{primary_repo['id']}",
-        json={"bot_username": bot_username},
-        headers=headers,
-    )
-    patch_resp.raise_for_status()
-
-
 @tool
 async def validate_telegram_token(project_id: str, token: str, *, config: RunnableConfig) -> str:
-    """Validate a Telegram bot token and store it as a project secret.
+    """Validate a Telegram bot token and bind it to the project.
 
-    Call this INSTEAD of set_project_secret when the user provides a Telegram bot token.
-    Validates the token via Telegram's getMe API, extracts the bot username,
-    and stores both TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME as secrets.
+    The ONLY way to attach a Telegram bot token — set_project_secret rejects it.
+    The server validates the token, stores it and the bot username, and returns the
+    verdict. Relay the message back to the user; if the token was rejected, ask for
+    a new one.
 
     Args:
         project_id: Project ID.
         token: Telegram bot token from @BotFather (e.g. "123456:ABC-DEF1234...").
     """
-    # 1. Validate via getMe
-    try:
-        async with httpx.AsyncClient() as http:
-            resp = await http.get(
-                f"https://api.telegram.org/bot{token}/getMe",
-                timeout=TELEGRAM_API_TIMEOUT,
-            )
-    except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout) as e:
-        logger.warning("telegram_token_validation_failed", error=str(e))
-        return f"Error: could not reach Telegram API — {e}. Please try again."
-
-    data = resp.json()
-    if not data.get("ok") or resp.status_code != HTTP_OK:
-        description = data.get("description", "Unknown error")
-        logger.info("telegram_token_invalid", status=resp.status_code, description=description)
-        return (
-            f"Error: token is invalid — Telegram returned: {description}. "
-            f"Please check the token and try again."
-        )
-
-    bot_username = data.get("result", {}).get("username")
-    if not bot_username:
-        logger.warning("telegram_token_no_username", data=data)
-        return "Error: Telegram returned OK but no bot username. The token may be corrupted."
-
-    # 2. Store both secrets
     api = _get_api()
     headers = _user_headers(config)
 
-    token_resp = await api.post(
-        f"/api/projects/{project_id}/config/secrets",
-        json={
-            "secrets": {"TELEGRAM_BOT_TOKEN": token},
-            "env_hints": {"TELEGRAM_BOT_TOKEN": "Telegram bot token from @BotFather"},
-        },
+    resp = await api.post(
+        f"/api/projects/{project_id}/telegram/token",
+        json=TelegramTokenValidateRequest(token=token).model_dump(),
         headers=headers,
     )
-    token_resp.raise_for_status()
-    username_resp = await api.post(
-        f"/api/projects/{project_id}/config/secrets",
-        json={
-            "secrets": {"TELEGRAM_BOT_USERNAME": bot_username},
-            "env_hints": {
-                "TELEGRAM_BOT_USERNAME": (
-                    "Bot username (without @) for building t.me links and smoke tests"
-                )
-            },
-        },
-        headers=headers,
-    )
-    username_resp.raise_for_status()
-
-    # 3. Persist bot_username on the primary repository (plain text, not a secret).
-    #    QA reads it from there, so a write that silently does nothing turns into a
-    #    QA failure on a working bot — crash here instead.
-    await _store_bot_username(api, project_id, bot_username, headers)
+    resp.raise_for_status()
+    verdict = TelegramTokenVerdict.model_validate(resp.json())
 
     logger.info(
-        "telegram_token_validated",
+        "telegram_token_verdict",
         project_id=project_id,
-        bot_username=bot_username,
+        status=verdict.status.value,
+        reason_code=verdict.reason_code,
     )
-    return f"Token valid! Bot: @{bot_username} (https://t.me/{bot_username}). Secrets stored."
+
+    if verdict.status == TokenVerdictStatus.REJECTED:
+        return f"Token rejected ({verdict.reason_code.value}). {verdict.user_message}"
+    return f"{verdict.user_message} Token stored for project {project_id}."
