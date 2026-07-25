@@ -9,6 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.repository import RepositoryRole
+from shared.contracts.dto.telegram import (
+    TelegramTokenValidateRequest,
+    TelegramTokenVerdict,
+    TokenVerdictStatus,
+)
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import Application, PortAllocation, Project, Repository, Run, User
 from shared.project_slug import generate_project_slug
@@ -18,6 +24,7 @@ from ..config import get_settings
 from ..database import get_async_session
 from ..dependencies import is_internal_service
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
+from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
 
 logger = structlog.get_logger()
 
@@ -293,6 +300,42 @@ async def list_secret_keys(
     return {"keys": sorted(existing_secrets.keys())}
 
 
+TELEGRAM_TOKEN_KEY = "TELEGRAM_BOT_TOKEN"  # noqa: S105 — a key name, not a secret
+_TELEGRAM_TOKEN_DETAIL = (
+    f"{TELEGRAM_TOKEN_KEY} cannot be set directly — "
+    "POST the token to /api/projects/{project_id}/telegram/token so it is validated first"
+)
+
+
+def _reject_bot_token_writes(secrets: dict[str, str]) -> None:
+    """Keep bot tokens off the generic secret path — they go through the validator."""
+    for key, value in secrets.items():
+        if key == TELEGRAM_TOKEN_KEY or looks_like_bot_token(value):
+            raise HTTPException(status_code=422, detail=_TELEGRAM_TOKEN_DETAIL)
+
+
+def _merge_secrets_into_project(
+    project: Project,
+    secrets: dict[str, str],
+    env_hints: dict[str, str] | None,
+) -> list[str]:
+    """Merge secrets into the project's config in place. Returns all secret keys."""
+    config = dict(project.config or {})
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+
+    existing_secrets.update(secrets)
+    config["secrets"] = encrypt_dict(existing_secrets)
+
+    if env_hints:
+        merged_hints = config.get("env_hints") or {}
+        merged_hints.update(env_hints)
+        config["env_hints"] = merged_hints
+
+    project.config = config
+    return sorted(existing_secrets.keys())
+
+
 @router.post("/{project_id}/config/secrets")
 async def merge_secrets(
     project_id: uuid.UUID,
@@ -312,6 +355,8 @@ async def merge_secrets(
             detail="secrets must not be empty",
         )
 
+    _reject_bot_token_writes(body.secrets)
+
     # Lock the row to prevent concurrent read-modify-write
     query = select(Project).where(Project.id == project_id).with_for_update()
     result = await db.execute(query)
@@ -321,19 +366,7 @@ async def merge_secrets(
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
-    config = dict(project.config or {})
-    existing_secrets = config.get("secrets") or {}
-    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
-
-    existing_secrets.update(body.secrets)
-    config["secrets"] = encrypt_dict(existing_secrets)
-
-    if body.env_hints:
-        env_hints = config.get("env_hints") or {}
-        env_hints.update(body.env_hints)
-        config["env_hints"] = env_hints
-
-    project.config = config
+    keys = _merge_secrets_into_project(project, body.secrets, body.env_hints)
     await db.commit()
 
     logger.info(
@@ -342,7 +375,74 @@ async def merge_secrets(
         keys=sorted(body.secrets.keys()),
     )
 
-    return {"keys": sorted(existing_secrets.keys())}
+    return {"keys": keys}
+
+
+@router.post("/{project_id}/telegram/token", response_model=TelegramTokenVerdict)
+async def bind_telegram_token(
+    project_id: uuid.UUID,
+    body: TelegramTokenValidateRequest,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> TelegramTokenVerdict:
+    """Validate a Telegram bot token and, if it passes, bind it to the project.
+
+    The only way TELEGRAM_BOT_TOKEN gets into a project's secrets. A rejected token
+    is not stored; the verdict carries a user-facing message the PO agent voices.
+    """
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    result = await db.execute(query)
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+
+    verdict = await validate_telegram_token(body.token)
+    if verdict.status == TokenVerdictStatus.REJECTED:
+        logger.info(
+            "telegram_token_rejected",
+            project_id=str(project_id),
+            reason_code=verdict.reason_code,
+        )
+        return verdict
+
+    # bot_username lives on the primary repository — QA reads it from there, so a
+    # missing repository is a hard error, not a silently skipped write.
+    repo_query = select(Repository).where(
+        Repository.project_id == project_id,
+        Repository.role == RepositoryRole.PRIMARY.value,
+    )
+    repo = (await db.execute(repo_query)).scalars().first()
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Project {project_id} has no primary repository — cannot bind a bot token",
+        )
+
+    _merge_secrets_into_project(
+        project,
+        {
+            TELEGRAM_TOKEN_KEY: body.token.strip(),
+            "TELEGRAM_BOT_USERNAME": verdict.bot_username,
+        },
+        {
+            TELEGRAM_TOKEN_KEY: "Telegram bot token from @BotFather",
+            "TELEGRAM_BOT_USERNAME": (
+                "Bot username (without @) for building t.me links and smoke tests"
+            ),
+        },
+    )
+    repo.bot_username = verdict.bot_username
+    await db.commit()
+
+    logger.info(
+        "telegram_token_bound",
+        project_id=str(project_id),
+        bot_username=verdict.bot_username,
+    )
+    return verdict
 
 
 @router.delete("/{project_id}/config/secrets/{key}")

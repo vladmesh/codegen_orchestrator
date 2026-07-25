@@ -209,3 +209,39 @@ async def test_merge_secrets_overwrites_existing_key(mock_decrypt, mock_encrypt)
     assert resp.status_code == 200  # noqa: PLR2004
     merged = mock_encrypt.call_args[0][0]
     assert merged["KEY_A"] == "new-val"
+
+
+BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "secrets",
+    [
+        {"TELEGRAM_BOT_TOKEN": BOT_TOKEN},
+        {"TELEGRAM_BOT_TOKEN": "whatever"},
+        {"MY_OWN_BOT": BOT_TOKEN},
+    ],
+    ids=["known-key", "known-key-any-value", "token-shaped-value"],
+)
+async def test_merge_secrets_refuses_bot_tokens(secrets):
+    """Bot tokens only enter through the validator endpoint — never this one."""
+    project = _make_project(config={})
+    session = _mock_session(project=project, user=_make_user())
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            f"/api/projects/{PROJECT_UUID}/config/secrets",
+            json={"secrets": secrets},
+            headers={"X-Telegram-ID": "12345"},
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    assert "telegram/token" in resp.json()["detail"]
+    session.commit.assert_not_called()
+    assert project.config == {}

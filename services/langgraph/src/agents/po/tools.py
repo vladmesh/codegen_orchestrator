@@ -23,8 +23,7 @@ from shared.queues import PO_PROACTIVE_QUEUE, PO_REMINDERS_KEY
 # Re-export project tools
 from .tools_projects import (  # noqa: F401
     AVAILABLE_MODULES,
-    HTTP_OK,
-    TELEGRAM_API_TIMEOUT,
+    HTTP_UNPROCESSABLE,
     create_project,
     get_project,
     list_projects,
@@ -168,8 +167,7 @@ __all__ = [
     "_user_headers",
     # Project tools
     "AVAILABLE_MODULES",
-    "HTTP_OK",
-    "TELEGRAM_API_TIMEOUT",
+    "HTTP_UNPROCESSABLE",
     "create_project",
     "list_projects",
     "get_project",

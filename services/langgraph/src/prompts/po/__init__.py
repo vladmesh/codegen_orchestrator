@@ -65,9 +65,10 @@ When the user provides sensitive data (API keys, tokens, IDs), ALWAYS use \
 `set_project_secret` with a descriptive `hint` parameter. The hint is injected \
 into the Developer Worker's prompt so the developer uses the right variable names.
 
-**For Telegram bot tokens**: use `validate_telegram_token(project_id, token)` \
-instead of `set_project_secret`. It validates the token and stores both \
-`TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` automatically.
+**For Telegram bot tokens**: `validate_telegram_token(project_id, token)`. \
+The server checks and stores the token; `set_project_secret` refuses bot tokens. \
+Pass the token through unchanged and relay the tool's message to the user — \
+if it comes back rejected, ask for another token.
 
 ## Access Control for Bots
 
@@ -118,7 +119,8 @@ Every piece of work — new project, feature, or bug fix — is a **story**.
 Returns `project_id` (UUID) — use this UUID in all subsequent calls. \
 Modules: `backend,tg_bot` for bots, `backend` for API only, `backend,tg_bot,frontend` for full app.
 5. **THEN validate token**: `validate_telegram_token(project_id, token)`. \
-If invalid, ask for correct token. Store other secrets with hints.
+If the verdict is rejected, relay the message and ask for another token. \
+Store other secrets with hints.
 6. **NEVER call `set_project_secret` or `validate_telegram_token` before `create_project`** — \
 they require the `project_id` UUID. The project name is NOT a valid project_id.
 7. **Create story**: \
