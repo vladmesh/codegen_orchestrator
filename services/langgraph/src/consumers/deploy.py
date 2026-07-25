@@ -32,7 +32,7 @@ from ..subgraphs.devops import create_devops_subgraph
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
 from ._events import publish_callback_event
-from ._live_work import live_work_cancel_key, live_work_unsettled
+from ._live_work import live_work_cancel_key, live_work_settled, live_work_unsettled
 from .deploy_failure_handler import _handle_deploy_failure
 from .deploy_lifecycle import process_lifecycle_action
 from .deploy_precheck import (
@@ -153,6 +153,31 @@ def _build_subgraph_input(
         "smoke_result": None,
         "errors": [],
     }
+
+
+async def _already_deployed_application(allocated_resources: dict, head_sha: str) -> int | None:
+    """Return a running application whose latest successful deploy used ``head_sha``."""
+    application_ids = {
+        resource["application_id"]
+        for resource in allocated_resources.values()
+        if isinstance(resource, dict) and resource.get("application_id") is not None
+    }
+    for application_id in application_ids:
+        deployments = await api_client.get(
+            "service-deployments/",
+            params={"application_id": application_id, "result": "success"},
+        )
+        if not deployments:
+            continue
+
+        latest_deployment = deployments[0]
+        if latest_deployment.get("deployed_sha") != head_sha:
+            continue
+
+        application = await api_client.get_application(application_id)
+        if application.status == ApplicationStatus.RUNNING:
+            return application_id
+    return None
 
 
 async def _handle_lifecycle_action(
@@ -321,6 +346,39 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             )
             return live_work_unsettled({"status": "failed", "error": alloc_result})
         allocated_resources = alloc_result
+
+        application_id = await _already_deployed_application(allocated_resources, msg.head_sha)
+        if application_id is not None:
+            reason = "already_deployed_same_sha"
+            logger.info(
+                "deploy_redundant_skipped",
+                task_id=task_id,
+                project_id=project_id,
+                application_id=application_id,
+                head_sha=msg.head_sha,
+                reason=reason,
+            )
+            await api_client.patch(
+                f"runs/{task_id}",
+                json={
+                    "status": RunStatus.COMPLETED.value,
+                    "result": DeployRunResult(
+                        deploy_outcome=DeployOutcome.SUCCESS,
+                        application_id=application_id,
+                        action=msg.action,
+                    ).model_dump(mode="json"),
+                },
+            )
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "completed",
+                task_id,
+                "Deploy skipped: application already runs this commit",
+                user_id=user_id,
+                project_id=project_id,
+            )
+            return live_work_settled({"status": "success", "reason": reason})
 
         # Pre-check: validate server state via SSH before deploying
         action = msg.action
