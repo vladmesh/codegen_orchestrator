@@ -938,10 +938,7 @@ async def supervise_testing_stories(
                 failed += 1
 
         elif outcome == QAOutcome.BLOCKED:
-            await api_client.patch(
-                f"stories/{story_id}",
-                json={"status": StoryStatus.WAITING_HUMAN_REVIEW.value},
-            )
+            await api_client.transition_story(story_id, "human-review")
             log.warning(
                 "qa_supervisor_blocked",
                 run_id=run.id,

@@ -61,6 +61,16 @@ class QAResult:
     blocker: QABlocker | None = None
 
 
+def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
+    """Build a fail-closed blocker when QA has no trustworthy product judgement."""
+    return QABlocker(
+        category=QABlockerCategory.UNKNOWN,
+        attempted=attempted,
+        sent=sent,
+        received=received,
+    )
+
+
 def parse_qa_result(raw: str) -> QAResult:
     """Parse Claude Code's JSON output into a QAResult.
 
@@ -70,7 +80,16 @@ def parse_qa_result(raw: str) -> QAResult:
     - JSON wrapped in markdown code blocks
     """
     if not raw or not raw.strip():
-        return QAResult(passed=False, summary="QA produced no output", raw=raw)
+        return QAResult(
+            passed=False,
+            summary="QA produced no output",
+            raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="parse QA agent result",
+                sent="Claude Code stdout",
+                received="empty output",
+            ),
+        )
 
     json_str = raw.strip()
 
@@ -96,11 +115,37 @@ def parse_qa_result(raw: str) -> QAResult:
             passed=False,
             summary=f"Failed to parse QA output as JSON: {raw[:200]}",
             raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="parse QA agent result",
+                sent="Claude Code stdout",
+                received=raw[:2000],
+            ),
         )
 
-    passed = data.get("pass", False)
+    if not isinstance(data, dict):
+        return QAResult(
+            passed=False,
+            summary="QA output is not a result object",
+            raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="validate QA agent result",
+                sent="Claude Code stdout",
+                received=raw[:2000],
+            ),
+        )
+
+    passed = data.get("pass")
     if not isinstance(passed, bool):
-        passed = False
+        return QAResult(
+            passed=False,
+            summary="QA output has no boolean pass field",
+            raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="validate QA agent result",
+                sent="Claude Code stdout",
+                received=raw[:2000],
+            ),
+        )
 
     return QAResult(
         passed=passed,
@@ -495,6 +540,16 @@ async def run_qa_on_server(
                 if result.stdout:
                     qa_result = parse_qa_result(result.stdout)
                     qa_result.report = report
+                    if qa_result.blocker:
+                        qa_result.blocker = _unknown_result_blocker(
+                            attempted="run Claude Code QA command",
+                            sent=cmd,
+                            received=(
+                                f"exit_status={result.exit_status}; "
+                                f"stdout={result.stdout[:2000]}; "
+                                f"stderr={(result.stderr or '')[:2000]}"
+                            ),
+                        )
                     return qa_result
                 return QAResult(
                     passed=False,
@@ -502,6 +557,14 @@ async def run_qa_on_server(
                     f"{result.stderr[:300] if result.stderr else 'no output'}",
                     raw=result.stdout or "",
                     report=report,
+                    blocker=_unknown_result_blocker(
+                        attempted="run Claude Code QA command",
+                        sent=cmd,
+                        received=(
+                            f"exit_status={result.exit_status}; stdout=; "
+                            f"stderr={(result.stderr or '')[:2000]}"
+                        ),
+                    ),
                 )
 
             qa_result = parse_qa_result(result.stdout or "")

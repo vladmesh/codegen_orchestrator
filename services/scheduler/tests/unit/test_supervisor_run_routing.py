@@ -797,7 +797,7 @@ class TestSuperviseTestingStories:
         api_client.fail_story.assert_called_once_with("story-1")
 
     @pytest.mark.asyncio
-    async def test_blocked_qa_waits_for_human_without_creating_fix_task(
+    async def test_unknown_qa_blocker_waits_for_human_without_creating_fix_task(
         self, api_client, redis_client
     ):
         from src.tasks.supervisor import supervise_testing_stories
@@ -811,10 +811,10 @@ class TestSuperviseTestingStories:
             result={
                 "qa_outcome": QAOutcome.BLOCKED.value,
                 "blocker": {
-                    "category": "telegram_access_denied",
-                    "attempted": "send access probe",
-                    "sent": "/start",
-                    "received": "Forbidden",
+                    "category": "unknown",
+                    "attempted": "run Claude Code QA command",
+                    "sent": "timeout 1200 claude -p ...",
+                    "received": "exit_status=1; stdout=; stderr=timeout",
                 },
             },
         )
@@ -822,9 +822,7 @@ class TestSuperviseTestingStories:
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["failed"] == 1
-        api_client.patch.assert_awaited_once_with(
-            "stories/story-1", json={"status": "waiting_human_review"}
-        )
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()
 

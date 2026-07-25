@@ -12,6 +12,7 @@ import pytest
 import respx
 
 from shared.contracts.acceptance import HealthCriterion
+from shared.contracts.dto.run_result import QABlockerCategory
 from src.consumers._qa_runner import (
     TelethonCredentialsError,
     _preflight_agent_qa,
@@ -108,7 +109,8 @@ class TestParseQAResult:
     def test_malformed_json(self):
         result = parse_qa_result("not json at all")
         assert result.passed is False
-        assert "parse" in result.summary.lower() or "failed" in result.summary.lower()
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
     def test_json_embedded_in_text(self):
         """Claude sometimes wraps JSON in markdown code blocks."""
@@ -124,10 +126,14 @@ class TestParseQAResult:
         raw = '{"checks": [], "summary": "test"}'
         result = parse_qa_result(raw)
         assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
     def test_empty_output(self):
         result = parse_qa_result("")
         assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
     def test_output_format_json_wrapper(self):
         """Claude Code --output-format json wraps result in envelope."""
@@ -156,7 +162,8 @@ class TestParseQAResult:
         )
         result = parse_qa_result(wrapper)
         assert result.passed is False
-        assert "parse" in result.summary.lower() or "failed" in result.summary.lower()
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
 
 class TestRunHealthChecks:
@@ -399,6 +406,10 @@ class TestRunQAOnServer:
             )
 
         assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert "exit_status=1" in result.blocker.received
+        assert "timeout exceeded" in result.blocker.received
 
     @pytest.mark.asyncio
     async def test_custom_timeout(self):
