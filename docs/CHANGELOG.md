@@ -2,6 +2,19 @@
 
 ## 2026-07-25
 
+- Token validation now catches a bot already running on the token outside our system, the case
+  where a user started it at home and forgot. Two layers after `getMe`: `getWebhookInfo` (read-only,
+  a non-empty `url` means someone wired a webhook up) and a `getUpdates` probe with `offset=-1`,
+  `limit=1`, `timeout=0` and a 5s deadline, where a 409 means another poller holds the token. QA saw
+  exactly that on a reused token, `409 Conflict` every ~34s. The probe confirms nothing and
+  consumes nothing: the update queue only advances on `offset = update_id + 1`, and with no
+  server-side wait another bot's poll loop misses at most one cycle. Both rejections carry the same
+  generic message — something is running on this token, stop it or send another — because we know
+  a bot answers, not whose it is. Reason codes: `webhook_active`, `poller_active`. Webhook is
+  checked first, since a set webhook makes `getUpdates` answer 409 for that reason alone. The
+  poller probe only ever proves activity, never its absence: an idle bot passes, and any answer
+  other than 409 is logged, not treated as a refusal.
+
 - Telegram token validation became a server-side step behind one door. `POST
   /api/projects/{id}/telegram/token` runs the check chain (format, then `getMe`) and returns a
   typed `TelegramTokenVerdict` — `ok`/`rejected`, a `reason_code`, a per-layer `checks` list and a
