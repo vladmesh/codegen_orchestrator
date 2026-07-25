@@ -492,6 +492,21 @@ class TestRunQAOnServer:
 
 class TestQAPreflight:
     @pytest.mark.asyncio
+    async def test_claude_lookup_uses_the_agent_runtime_path(self):
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(return_value=claude_present)
+
+        blocker = await _preflight_agent_qa(conn, None)
+
+        assert blocker is None
+        conn.run.assert_awaited_once_with(
+            'export PATH="$HOME/.local/bin:$PATH" && command -v claude', check=False
+        )
+
+    @pytest.mark.asyncio
     async def test_missing_telethon_credentials_returns_blocker_before_agent(self):
         missing = TelethonCredentialsError("no credentials file at $HOME/.qa-telethon.env")
         claude_present = SimpleNamespace(exit_status=0, stdout="/usr/bin/claude\n", stderr="")
@@ -508,7 +523,80 @@ class TestQAPreflight:
         assert blocker is not None
         assert blocker.category.value == "missing_telethon_credentials"
         assert blocker.received == str(missing)
-        conn.run.assert_awaited_once_with("command -v claude", check=False)
+        conn.run.assert_awaited_once_with(
+            'export PATH="$HOME/.local/bin:$PATH" && command -v claude', check=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_bot_access_denial_reply_blocks_before_claude_runs(self):
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        access_denied = SimpleNamespace(
+            exit_status=2,
+            stdout="telegram_access_denied:\ud83d\udeab \u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\n",
+            stderr="",
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(side_effect=[claude_present, access_denied])
+
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock
+        ):
+            blocker = await _preflight_agent_qa(conn, "private_bot")
+
+        assert blocker is not None
+        assert blocker.category.value == "telegram_access_denied"
+        assert blocker.sent == "Telegram /start to @private_bot"
+        assert (
+            "\u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d"
+            in blocker.received
+        )
+        probe = conn.run.await_args_list[1].args[0]
+        assert "get_messages" in probe
+        assert "telegram_access_denied" in probe
+
+
+class TestRunQAOnServerPreflight:
+    @pytest.mark.asyncio
+    async def test_access_denial_reply_skips_claude(self):
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        access_denied = SimpleNamespace(
+            exit_status=2,
+            stdout="telegram_access_denied:\ud83d\udeab \u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\n",
+            stderr="",
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(side_effect=[claude_present, access_denied])
+        conn.__aenter__ = AsyncMock(return_value=conn)
+        conn.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
+            patch("src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock),
+            patch(
+                "src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock
+            ) as ensure_credentials,
+        ):
+            mock_asyncssh.import_private_key.return_value = "parsed_key"
+            mock_asyncssh.connect.return_value = conn
+
+            result = await run_qa_on_server(
+                server_ip="1.2.3.4",
+                ssh_user="dev",
+                ssh_key="fake",
+                project_name="private_bot",
+                acceptance_criteria="- Telegram: /start responds",
+                deployed_url="https://bot.example.com",
+                bot_username="private_bot",
+            )
+
+        assert result.blocker is not None
+        assert result.blocker.category.value == "telegram_access_denied"
+        ensure_credentials.assert_not_awaited()
+        assert all("claude -p" not in call.args[0] for call in conn.run.await_args_list)
 
 
 class _LocalShellConn:

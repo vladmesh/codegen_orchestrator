@@ -41,6 +41,8 @@ TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
 # Sourced into the QA command itself, so the agent gets TELETHON_* whether or not
 # it follows the prompt. Same reason PATH is exported here.
 TELETHON_ENV_PREFIX = f"set -a && . {TELETHON_ENV_FILE} && set +a && "
+CLAUDE_PATH_PREFIX = 'export PATH="$HOME/.local/bin:$PATH" && '
+TELEGRAM_ACCESS_PROBE_TIMEOUT = 10
 
 
 class TelethonCredentialsError(RuntimeError):
@@ -339,12 +341,12 @@ async def _preflight_agent_qa(
     conn: asyncssh.SSHClientConnection, bot_username: str | None
 ) -> QABlocker | None:
     """Check platform-owned prerequisites without invoking Claude Code."""
-    claude = await conn.run("command -v claude", check=False)
+    claude = await conn.run(f"{CLAUDE_PATH_PREFIX}command -v claude", check=False)
     if claude.exit_status != 0:
         return QABlocker(
             category=QABlockerCategory.CLAUDE_UNAVAILABLE,
             attempted="locate Claude Code on QA server",
-            sent="command -v claude",
+            sent=f"{CLAUDE_PATH_PREFIX}command -v claude",
             received=(claude.stderr or claude.stdout or "command not found").strip(),
         )
 
@@ -368,12 +370,32 @@ async def _preflight_agent_qa(
             "import os\n"
             "from telethon.sync import TelegramClient\n"
             "from telethon.sessions import StringSession\n"
+            "import sys\n"
+            "import time\n"
             "client = TelegramClient(StringSession(os.environ['TELETHON_SESSION']), "
             "int(os.environ['TELETHON_API_ID']), os.environ['TELETHON_API_HASH'])\n"
             "client.start()\n"
-            f"client.send_message('@{bot_username}', '/start')\n"
-            "print('probe_sent')\n"
-            "client.disconnect()"
+            "try:\n"
+            f"    bot = client.get_entity('@{bot_username}')\n"
+            "    sent = client.send_message(bot, '/start')\n"
+            f"    deadline = time.monotonic() + {TELEGRAM_ACCESS_PROBE_TIMEOUT}\n"
+            "    while time.monotonic() < deadline:\n"
+            "        replies = client.get_messages(bot, min_id=sent.id, limit=5)\n"
+            "        for reply in replies:\n"
+            "            if reply.out or reply.id <= sent.id:\n"
+            "                continue\n"
+            "            text = (reply.raw_text or reply.message or '').strip()\n"
+            "            normalized = text.casefold()\n"
+            "            denied = ('доступ запрещ' in normalized or 'access denied' in normalized "
+            "or 'not authorized' in normalized or 'unauthorized' in normalized "
+            "or 'forbidden' in normalized)\n"
+            "            if denied:\n"
+            "                print('telegram_access_denied:' + text[:500])\n"
+            "                sys.exit(2)\n"
+            "        time.sleep(1)\n"
+            "    print('telegram_access_probe_passed')\n"
+            "finally:\n"
+            "    client.disconnect()"
         )
     )
     result = await conn.run(probe, check=False)
@@ -381,14 +403,14 @@ async def _preflight_agent_qa(
         detail = (result.stderr or result.stdout or "Telegram probe failed").strip()
         category = (
             QABlockerCategory.TELEGRAM_ACCESS_DENIED
-            if "forbidden" in detail.lower() or "access" in detail.lower()
+            if detail.startswith("telegram_access_denied:")
             else QABlockerCategory.UNKNOWN
         )
         return QABlocker(
             category=category,
-            attempted="send Telegram /start access probe before QA agent",
+            attempted="send Telegram /start access probe and inspect the bot reply before QA agent",
             sent=f"Telegram /start to @{bot_username}",
-            received=detail[-500:],
+            received=detail.removeprefix("telegram_access_denied:")[-500:],
         )
     return None
 
@@ -423,8 +445,7 @@ async def run_qa_on_server(
     # Escape prompt for shell — use heredoc to avoid quoting issues
     # Prepend ~/.local/bin to PATH — non-interactive SSH doesn't source .bashrc
     # Permissions are configured via ~/.claude/settings.json (allowlist).
-    cmd = (
-        f'export PATH="$HOME/.local/bin:$PATH" && '
+    cmd = CLAUDE_PATH_PREFIX + (
         f"{TELETHON_ENV_PREFIX if bot_username else ''}"
         f"cd {shlex.quote(f'{SERVICE_BASE_DIR}/{project_name}')} && "
         f"timeout {timeout} claude -p {shlex.quote(prompt)} "
