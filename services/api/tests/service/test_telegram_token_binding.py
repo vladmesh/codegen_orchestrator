@@ -255,7 +255,9 @@ async def test_config_update_round_trips_stored_secrets(
     async_client: AsyncClient, db_session: AsyncSession, bot_project: str
 ):
     """A bound token survives the read-modify-write config updates scaffolder does."""
-    with _patched_telegram(_telegram_ok("token_binding_bot")):
+    # A bot of its own: the service database outlives a test, and one live project
+    # per bot is enforced now.
+    with _patched_telegram(_telegram_ok("token_roundtrip_bot")):
         bound = await async_client.post(
             f"/api/projects/{bot_project}/telegram/token",
             json={"token": VALID_TOKEN},

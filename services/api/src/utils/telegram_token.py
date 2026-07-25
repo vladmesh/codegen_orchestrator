@@ -1,14 +1,19 @@
 """Server-side Telegram bot token validation.
 
 One door for token checks: the chain runs here, the caller gets a typed verdict.
-Later layers (uniqueness) plug in as extra checks appended to `verdict.checks` —
-callers keep reading `status` / `reason_code`.
+Later layers plug in as extra checks appended to `verdict.checks`, callers keep
+reading `status` / `reason_code`.
 
-The last two layers detect a bot already running on the token outside our system
-(a user who started it at home and forgot). They are best-effort by nature: a set
-webhook is reported deterministically by `getWebhookInfo`, and a live long-poller
-shows up as a 409 from a `getUpdates` probe. A bot that exists but is idle right
-now looks exactly like a fresh token, and passes.
+The webhook and poller layers detect a bot already running on the token outside
+our system (a user who started it at home and forgot). They are best-effort by
+nature: a set webhook is reported deterministically by `getWebhookInfo`, and a
+live long-poller shows up as a 409 from a `getUpdates` probe. A bot that exists
+but is idle right now looks exactly like a fresh token, and passes.
+
+The last layer is inside our system: the same bot already bound to another live
+project. The lookup and the owner comparison happen here, server-side; what
+leaves the function is a verdict that names another project only when the user
+asking already owns it.
 """
 
 from __future__ import annotations
@@ -17,8 +22,11 @@ from http import HTTPStatus
 import re
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.telegram import (
     TelegramTokenVerdict,
     TokenCheck,
@@ -26,6 +34,7 @@ from shared.contracts.dto.telegram import (
     TokenRejectionReason,
     TokenVerdictStatus,
 )
+from shared.models import Project, Repository
 
 logger = structlog.get_logger()
 
@@ -174,8 +183,92 @@ async def _check_no_poller(
     return TokenCheck(name=TokenCheckName.TELEGRAM_POLLER, passed=True)
 
 
-async def validate_telegram_token(token: str) -> TelegramTokenVerdict:
-    """Run the validation chain over a raw token and return a typed verdict."""
+async def _check_not_bound_elsewhere(
+    db: AsyncSession,
+    project: Project,
+    bot_username: str,
+    preceding: list[TokenCheck],
+) -> TelegramTokenVerdict | TokenCheck:
+    """Refuse a bot that another live project already holds.
+
+    The binding lives on the repository row (`bot_username`), so that is what we
+    look up. An archived project has let go of its bot; anything else still owns
+    it. The project being bound is excluded from the search: re-sending the same
+    token to the same project is an iteration, not a conflict.
+    """
+    query = (
+        select(Project.id, Project.title, Project.owner_id)
+        .join(Repository, Repository.project_id == Project.id)
+        .where(
+            Repository.bot_username == bot_username,
+            Project.id != project.id,
+            Project.status != ProjectStatus.ARCHIVED.value,
+        )
+    )
+    holders = (await db.execute(query)).all()
+    if not holders:
+        return TokenCheck(name=TokenCheckName.PROJECT_UNIQUENESS, passed=True)
+
+    # A foreign holder wins over the user's own: if someone else is on this bot,
+    # "continue in your other project" would be the wrong advice, and the refusal
+    # has to stay generic either way.
+    foreign = [h for h in holders if h.owner_id != project.owner_id]
+    if foreign:
+        logger.info(
+            "telegram_token_bound_elsewhere",
+            project_id=str(project.id),
+            bot_username=bot_username,
+            holder_project_ids=[str(h.id) for h in foreign],
+        )
+        return _rejected(
+            TokenCheck(
+                name=TokenCheckName.PROJECT_UNIQUENESS,
+                passed=False,
+                reason_code=TokenRejectionReason.BOUND_ELSEWHERE,
+                detail="Bot is bound to a project of another owner",
+            ),
+            "This bot is already in use. Create a new bot in @BotFather and send its token.",
+            preceding=preceding,
+        )
+
+    own = holders[0]
+    logger.info(
+        "telegram_token_bound_to_own_project",
+        project_id=str(project.id),
+        bot_username=bot_username,
+        holder_project_id=str(own.id),
+    )
+    return TelegramTokenVerdict(
+        status=TokenVerdictStatus.REJECTED,
+        reason_code=TokenRejectionReason.BOUND_TO_OWN_PROJECT,
+        user_message=(
+            f'This bot is already connected to your project "{own.title}". '
+            "Continue there, or free the token from that project and send it again."
+        ),
+        conflict_project_id=own.id,
+        checks=[
+            *preceding,
+            TokenCheck(
+                name=TokenCheckName.PROJECT_UNIQUENESS,
+                passed=False,
+                reason_code=TokenRejectionReason.BOUND_TO_OWN_PROJECT,
+                detail=f"Bot is bound to project {own.id}",
+            ),
+        ],
+    )
+
+
+async def validate_telegram_token(
+    token: str,
+    *,
+    db: AsyncSession,
+    project: Project,
+) -> TelegramTokenVerdict:
+    """Run the validation chain over a raw token and return a typed verdict.
+
+    `project` is the project the token is being bound to: it scopes the uniqueness
+    layer, which needs both its id and its owner.
+    """
     token = token.strip()
 
     if not looks_like_bot_token(token):
@@ -246,6 +339,12 @@ async def validate_telegram_token(token: str) -> TelegramTokenVerdict:
             if isinstance(outcome, TelegramTokenVerdict):
                 return outcome
             checks.append(outcome)
+
+    # Last, and only now: getMe gave us the username the binding is keyed on.
+    outcome = await _check_not_bound_elsewhere(db, project, bot_username, checks)
+    if isinstance(outcome, TelegramTokenVerdict):
+        return outcome
+    checks.append(outcome)
 
     return TelegramTokenVerdict(
         status=TokenVerdictStatus.OK,
