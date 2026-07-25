@@ -120,14 +120,18 @@ async def _check_no_poller(
 ) -> TelegramTokenVerdict | TokenCheck:
     """Probe getUpdates: a live long-poller on the same token makes Telegram answer 409.
 
-    `offset=-1` asks for the single latest update, which confirms nothing — the queue
-    only advances when a caller passes `offset = update_id + 1`. `timeout=0` keeps it a
-    single short request, so another bot's poll loop is interrupted for one cycle at most.
+    No `offset` at all. Per the Bot API, an update is confirmed only when getUpdates is
+    called with an offset higher than its update_id, and a negative offset additionally
+    makes all earlier updates forgotten — so any offset we could pass would either ack or
+    drop someone else's backlog. Omitting it returns from the earliest unconfirmed update
+    and changes nothing server-side. `timeout=0` keeps it a single short request, so
+    another bot's poll loop is interrupted for one cycle at most, and `limit=1` keeps the
+    foreign payload we never read down to one update.
     """
     try:
         resp = await http.get(
             f"https://api.telegram.org/bot{token}/getUpdates",
-            params={"offset": -1, "limit": 1, "timeout": 0},
+            params={"limit": 1, "timeout": 0},
             timeout=EXTERNAL_PROBE_TIMEOUT,
         )
     except httpx.HTTPError as e:

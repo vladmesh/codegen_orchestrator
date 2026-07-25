@@ -189,9 +189,9 @@ async def test_poller_probe_neither_confirms_nor_consumes_updates():
         verdict = await validate_telegram_token(VALID_TOKEN)
 
     assert verdict.status == TokenVerdictStatus.OK
-    # offset=-1 reads the latest update without acking it; a positive offset would
-    # drop another bot's backlog. timeout=0 keeps us out of its long poll.
-    assert seen["offset"] == "-1"
+    # No offset: a higher one acks updates, a negative one makes earlier ones forgotten.
+    # timeout=0 keeps us out of another bot's long poll.
+    assert "offset" not in seen
     assert seen["timeout"] == "0"
 
 
