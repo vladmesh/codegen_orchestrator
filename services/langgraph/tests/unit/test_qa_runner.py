@@ -534,7 +534,11 @@ class TestQAPreflight:
         )
         access_denied = SimpleNamespace(
             exit_status=2,
-            stdout="telegram_access_denied:\ud83d\udeab \u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\n",
+            stdout=(
+                "telegram_access_denied:\ud83d\udeab "
+                "\u0414\u043e\u0441\u0442\u0443\u043f "
+                "\u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\n"
+            ),
             stderr="",
         )
         conn = AsyncMock()
@@ -556,6 +560,29 @@ class TestQAPreflight:
         assert "get_messages" in probe
         assert "telegram_access_denied" in probe
 
+    @pytest.mark.asyncio
+    async def test_access_denial_stdout_wins_over_probe_stderr(self):
+        """The bot reply remains the verdict when Telethon also writes diagnostics."""
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        access_denied = SimpleNamespace(
+            exit_status=2,
+            stdout="telegram_access_denied:🚫 Доступ запрещён\n",
+            stderr="Telethon reconnect diagnostic",
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(side_effect=[claude_present, access_denied])
+
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock
+        ):
+            blocker = await _preflight_agent_qa(conn, "private_bot")
+
+        assert blocker is not None
+        assert blocker.category.value == "telegram_access_denied"
+        assert blocker.received == "🚫 Доступ запрещён"
+
 
 class TestRunQAOnServerPreflight:
     @pytest.mark.asyncio
@@ -565,7 +592,11 @@ class TestRunQAOnServerPreflight:
         )
         access_denied = SimpleNamespace(
             exit_status=2,
-            stdout="telegram_access_denied:\ud83d\udeab \u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\n",
+            stdout=(
+                "telegram_access_denied:\ud83d\udeab "
+                "\u0414\u043e\u0441\u0442\u0443\u043f "
+                "\u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\n"
+            ),
             stderr="",
         )
         conn = AsyncMock()

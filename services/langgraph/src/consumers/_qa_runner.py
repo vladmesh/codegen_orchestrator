@@ -400,17 +400,20 @@ async def _preflight_agent_qa(
     )
     result = await conn.run(probe, check=False)
     if result.exit_status != 0:
-        detail = (result.stderr or result.stdout or "Telegram probe failed").strip()
-        category = (
-            QABlockerCategory.TELEGRAM_ACCESS_DENIED
-            if detail.startswith("telegram_access_denied:")
-            else QABlockerCategory.UNKNOWN
-        )
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        denial_marker = "telegram_access_denied:"
+        if denial_marker in stdout:
+            category = QABlockerCategory.TELEGRAM_ACCESS_DENIED
+            received = stdout.split(denial_marker, maxsplit=1)[1].strip()[-500:]
+        else:
+            category = QABlockerCategory.UNKNOWN
+            received = stderr or stdout or "Telegram probe failed"
         return QABlocker(
             category=category,
             attempted="send Telegram /start access probe and inspect the bot reply before QA agent",
             sent=f"Telegram /start to @{bot_username}",
-            received=detail.removeprefix("telegram_access_denied:")[-500:],
+            received=received,
         )
     return None
 
