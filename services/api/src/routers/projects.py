@@ -460,7 +460,7 @@ async def bind_telegram_token(
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
-    verdict = await validate_telegram_token(body.token)
+    verdict = await validate_telegram_token(body.token, db=db, project=project)
     if verdict.status == TokenVerdictStatus.REJECTED:
         logger.info(
             "telegram_token_rejected",

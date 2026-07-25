@@ -1,6 +1,12 @@
-"""The validation chain itself — what verdict each kind of token produces."""
+"""The validation chain itself — what verdict each kind of token produces.
+
+Scope here is the remote layers, so the uniqueness lookup runs against a database
+where nobody holds the bot. The uniqueness layer itself is covered against a real
+database in tests/service/test_telegram_token_uniqueness.py.
+"""
 
 from unittest.mock import patch
+import uuid
 
 import httpx
 import pytest
@@ -10,9 +16,26 @@ from shared.contracts.dto.telegram import (
     TokenRejectionReason,
     TokenVerdictStatus,
 )
+from shared.models import Project
 from src.utils.telegram_token import looks_like_bot_token, validate_telegram_token
 
 VALID_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
+
+
+class _FreeDatabase:
+    """A database in which no project holds the bot."""
+
+    async def execute(self, query):
+        return _EmptyResult()
+
+
+class _EmptyResult:
+    def all(self):
+        return []
+
+
+def _project() -> Project:
+    return Project(id=uuid.uuid4(), title="Palindrome", owner_id=1)
 
 
 # Captured before patching: the factory below must not call the patched name.
@@ -57,7 +80,7 @@ async def test_valid_token_yields_ok_verdict_with_username():
         return httpx.Response(200, json={"ok": True, "result": {"username": "palindrome_bot"}})
 
     with _patched_telegram(_fake_telegram(getme=getme)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.OK
     assert verdict.reason_code is None
@@ -68,6 +91,7 @@ async def test_valid_token_yields_ok_verdict_with_username():
         TokenCheckName.TELEGRAM_GET_ME,
         TokenCheckName.TELEGRAM_WEBHOOK,
         TokenCheckName.TELEGRAM_POLLER,
+        TokenCheckName.PROJECT_UNIQUENESS,
     ]
     assert all(c.passed for c in verdict.checks)
 
@@ -78,7 +102,7 @@ async def test_token_telegram_rejects_is_rejected_with_reason():
         return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
 
     with _patched_telegram(_fake_telegram(getme=getme)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.INVALID_TOKEN
@@ -93,7 +117,9 @@ async def test_malformed_token_is_rejected_without_calling_telegram():
         raise AssertionError("Telegram must not be called for a malformed token")
 
     with _patched_telegram(handler):
-        verdict = await validate_telegram_token("not-a-token")
+        verdict = await validate_telegram_token(
+            "not-a-token", db=_FreeDatabase(), project=_project()
+        )
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.MALFORMED
@@ -106,7 +132,7 @@ async def test_getme_without_username_is_rejected():
         return httpx.Response(200, json={"ok": True, "result": {"id": 42}})
 
     with _patched_telegram(_fake_telegram(getme=getme)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.NO_USERNAME
@@ -118,7 +144,7 @@ async def test_unreachable_telegram_is_its_own_reason_code():
         raise httpx.ConnectError("connection refused")
 
     with _patched_telegram(_fake_telegram(getme=getme)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.TELEGRAM_UNREACHABLE
@@ -133,7 +159,7 @@ async def test_token_with_a_webhook_is_rejected_without_probing_getupdates():
         webhook_url="https://someones-bot.example/hook", get_updates=get_updates
     )
     with _patched_telegram(handler):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.WEBHOOK_ACTIVE
@@ -163,7 +189,7 @@ async def test_getupdates_conflict_means_an_active_poller():
         )
 
     with _patched_telegram(_fake_telegram(get_updates=get_updates)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.POLLER_ACTIVE
@@ -188,7 +214,7 @@ async def test_poller_probe_neither_confirms_nor_consumes_updates():
         )
 
     with _patched_telegram(_fake_telegram(get_updates=get_updates)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.OK
     # No offset: a higher one acks updates, a negative one makes earlier ones forgotten.
@@ -203,7 +229,7 @@ async def test_odd_getupdates_answer_does_not_refuse_the_token():
         return httpx.Response(429, json={"ok": False, "description": "Too Many Requests"})
 
     with _patched_telegram(_fake_telegram(get_updates=get_updates)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.OK
 
@@ -216,7 +242,7 @@ async def test_unreachable_webhook_probe_does_not_pass_the_token():
         raise httpx.ConnectError("connection refused")
 
     with _patched_telegram(handler):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.TELEGRAM_UNREACHABLE
@@ -231,7 +257,7 @@ async def test_rate_limited_webhook_probe_is_unreachable_not_a_crash():
         raise AssertionError("the chain must stop once the webhook probe fails")
 
     with _patched_telegram(_fake_telegram(webhook=webhook, get_updates=get_updates)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.TELEGRAM_UNREACHABLE
@@ -244,7 +270,7 @@ async def test_unparseable_webhook_answer_is_unreachable_not_a_crash():
         return httpx.Response(502, text="<html>bad gateway</html>")
 
     with _patched_telegram(_fake_telegram(webhook=webhook)):
-        verdict = await validate_telegram_token(VALID_TOKEN)
+        verdict = await validate_telegram_token(VALID_TOKEN, db=_FreeDatabase(), project=_project())
 
     assert verdict.status == TokenVerdictStatus.REJECTED
     assert verdict.reason_code == TokenRejectionReason.TELEGRAM_UNREACHABLE

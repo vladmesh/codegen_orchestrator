@@ -2,6 +2,19 @@
 
 ## 2026-07-25
 
+- Token validation now refuses a bot that another live project already holds. Until now there was
+  no uniqueness check at all: the palindrome bot `196ba936` and the echo bot `b380adb4` both took
+  `@factory_e2e_test_bot`, and the clash only surfaced later as a 409 from Telegram. The last layer
+  in the chain looks the bot up by `Repository.bot_username` across projects that are not archived,
+  and answers by owner. The same project re-sending its own token is an iteration and passes.
+  Another project of the same user is named in the message, with `conflict_project_id` on the
+  verdict so PO can offer to continue there (`bound_to_own_project`). Someone else's project gets a
+  refusal that describes nothing — not the project, not its id, not its owner (`bound_elsewhere`).
+  A user who somehow holds the bot in their own project while a stranger holds it too gets the
+  generic refusal: sending them to their own project would walk them into the same clash. The
+  lookup and the owner comparison happen server-side; `validate_telegram_token` now takes the
+  session and the target project.
+
 - Token validation now catches a bot already running on the token outside our system, the case
   where a user started it at home and forgot. Two layers after `getMe`: `getWebhookInfo` (read-only,
   a non-empty `url` means someone wired a webhook up) and a `getUpdates` probe with no `offset`,
