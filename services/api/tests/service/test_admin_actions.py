@@ -281,6 +281,8 @@ class TestStopApplication:
         msg = await _read_last_message(redis, "deploy:queue")
         assert msg["action"] == "stop"
         assert msg["triggered_by"] == "admin"
+        # The consumer stops the application it is told about, not one it picks.
+        assert msg["application_id"] == app_id
 
     @pytest.mark.asyncio
     async def test_stop_not_running_fails(self, client, server_handle):
@@ -301,6 +303,7 @@ class TestUndeployApplication:
 
         msg = await _read_last_message(redis, "deploy:queue")
         assert msg["action"] == "undeploy"
+        assert msg["application_id"] == app_id
 
     @pytest.mark.asyncio
     async def test_undeploy_not_deployed_fails(self, client, server_handle):

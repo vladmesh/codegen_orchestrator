@@ -28,6 +28,7 @@ from .tools_projects import (  # noqa: F401
     get_project,
     list_projects,
     set_project_secret,
+    teardown_project,
     validate_telegram_token,
 )
 
@@ -147,6 +148,7 @@ def get_all_tools() -> list:
         list_projects,
         get_project,
         set_project_secret,
+        teardown_project,
         validate_telegram_token,
         create_story,
         list_stories,
@@ -172,6 +174,7 @@ __all__ = [
     "list_projects",
     "get_project",
     "set_project_secret",
+    "teardown_project",
     "validate_telegram_token",
     # Story/run tools
     "create_story",

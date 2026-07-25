@@ -56,6 +56,37 @@ class ProjectUpdate(BaseModel):
     project_spec: dict | None = None
 
 
+class TeardownStatus(StrEnum):
+    """How far a project teardown has got.
+
+    The undeploy runs over SSH on another service, so requesting a teardown and
+    finishing one are two different moments. Only `completed` means the containers
+    are down: until then the bot is still polling on its token and rebinding it
+    elsewhere would lose the race with Telegram.
+    """
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ProjectTeardownResult(BaseModel):
+    """Where a project teardown stands.
+
+    `pending_application_ids` are the applications not yet confirmed down. While
+    that list is non-empty the project keeps its bot on purpose — the binding is
+    released only once the undeploy reports back, so `completed` is the one status
+    that says the token is reusable.
+    """
+
+    project_id: uuid.UUID
+    status: TeardownStatus
+    project_status: ProjectStatus
+    pending_application_ids: list[int] = []
+    released_bot_username: str | None = None
+    error: str | None = None
+
+
 class ProjectDTO(TimestampedDTO):
     """Project response."""
 

@@ -108,12 +108,37 @@ async def _release_bot_if_undeployed(application: Application, db: AsyncSession)
     Keyed on the resulting status rather than on the undeploy request: the token is
     freed once the teardown reports back, not while the bot may still be running on
     the server. A repeated patch finds the binding already gone and does nothing.
+
+    The project has to be empty, not just this application: a project deployed on
+    several servers has one of them running the bot, and the row says nothing about
+    which. Releasing on the first application to report down would hand out a token
+    that is still being polled.
     """
     if application.status != ApplicationStatus.NOT_DEPLOYED.value:
         return
     repo = await db.get(Repository, application.repo_id)
     project = await db.get(Project, repo.project_id)
-    await release_bot_binding(db, project, [repo], reason="application_undeployed")
+
+    still_up = (
+        await db.execute(
+            select(Application.id)
+            .join(Repository, Application.repo_id == Repository.id)
+            .where(
+                Repository.project_id == repo.project_id,
+                Application.status != ApplicationStatus.NOT_DEPLOYED.value,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if still_up is not None:
+        return
+
+    repos = list(
+        (
+            await db.execute(select(Repository).where(Repository.project_id == repo.project_id))
+        ).scalars()
+    )
+    await release_bot_binding(db, project, repos, reason="application_undeployed")
 
 
 @router.patch("/{application_id}", response_model=ApplicationRead)
@@ -257,6 +282,51 @@ def _make_deploy_run_id() -> str:
     return f"deploy-{uuid.uuid4().hex[:12]}"
 
 
+UNDEPLOYABLE_STATUSES = frozenset(
+    {
+        ApplicationStatus.RUNNING,
+        ApplicationStatus.STOPPED,
+        ApplicationStatus.DOWN,
+        ApplicationStatus.DEGRADED,
+    }
+)
+
+
+def stage_undeploy(
+    application: Application,
+    project_id: uuid.UUID,
+    db: AsyncSession,
+    *,
+    triggered_by: DeployTrigger,
+) -> tuple[Run, DeployMessage]:
+    """Move an application to undeploying and build the message that tears it down.
+
+    Mutates the session without committing and does not publish: the caller owns
+    the transaction, and the message must not reach the deploy consumer before the
+    Run it names is committed.
+    """
+    application.status = ApplicationStatus.UNDEPLOYING
+    run_id = _make_deploy_run_id()
+    # The application id on the run is how a caller waiting for this teardown finds
+    # out it failed: a failed run is the only signal an application stuck in
+    # undeploying ever gets.
+    run = Run(
+        id=run_id,
+        type="deploy",
+        project_id=project_id,
+        run_metadata={"application_id": application.id},
+    )
+    db.add(run)
+    msg = DeployMessage(
+        task_id=run_id,
+        project_id=str(project_id),
+        triggered_by=triggered_by,
+        action=DeployAction.UNDEPLOY,
+        application_id=application.id,
+    )
+    return run, msg
+
+
 def _parse_github_repo_url(git_url: str) -> tuple[str, str]:
     if git_url.startswith("git@github.com:"):
         path = git_url.removeprefix("git@github.com:")
@@ -330,7 +400,12 @@ async def stop_application(
 
     app.status = ApplicationStatus.STOPPING
     run_id = _make_deploy_run_id()
-    run = Run(id=run_id, type="deploy", project_id=repo.project_id)
+    run = Run(
+        id=run_id,
+        type="deploy",
+        project_id=repo.project_id,
+        run_metadata={"application_id": app.id},
+    )
     db.add(run)
     await db.commit()
     await db.refresh(app)
@@ -340,6 +415,7 @@ async def stop_application(
         project_id=str(repo.project_id),
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.STOP,
+        application_id=app.id,
     )
     await redis.publish_message(DEPLOY_QUEUE, msg)
 
@@ -358,31 +434,16 @@ async def undeploy_application(
     body = body or AdminAction()
     app, repo = await _get_app_with_repo(application_id, db)
 
-    active_statuses = {
-        ApplicationStatus.RUNNING,
-        ApplicationStatus.STOPPED,
-        ApplicationStatus.DOWN,
-        ApplicationStatus.DEGRADED,
-    }
-    if ApplicationStatus(app.status) not in active_statuses:
+    if ApplicationStatus(app.status) not in UNDEPLOYABLE_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot undeploy application in status '{app.status}'.",
         )
 
-    app.status = ApplicationStatus.UNDEPLOYING
-    run_id = _make_deploy_run_id()
-    run = Run(id=run_id, type="deploy", project_id=repo.project_id)
-    db.add(run)
+    _run, msg = stage_undeploy(app, repo.project_id, db, triggered_by=DeployTrigger.ADMIN)
     await db.commit()
     await db.refresh(app)
 
-    msg = DeployMessage(
-        task_id=run_id,
-        project_id=str(repo.project_id),
-        triggered_by=DeployTrigger.ADMIN,
-        action=DeployAction.UNDEPLOY,
-    )
     await redis.publish_message(DEPLOY_QUEUE, msg)
 
     logger.info("application_undeploy_requested", app_id=application_id, actor=body.actor)

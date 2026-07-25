@@ -2,6 +2,35 @@
 
 ## 2026-07-25
 
+- A stop or undeploy now names the application it acts on. `DeployMessage` carries
+  `application_id` and rejects a lifecycle action without one; the consumer reads the target's
+  server from it and skips allocation entirely. Before, it asked the allocator, which answers with
+  one application on the project's primary repository whatever the message said — so a project
+  deployed on two servers got the same container brought down twice, the other one stayed up with
+  its bot still polling, and its application sat in `undeploying` forever while the teardown kept
+  reporting `pending`. For the same reason the undeploy path no longer releases the bot on the
+  first application to report `not_deployed`: the release waits until the project has nothing left
+  running, because the row does not say which server the bot is on. A run cancelled on the project's
+  deploy lock now counts as a stalled teardown, so asking again sends that application down instead
+  of leaving it stranded.
+
+- PO can now tear a user's project down, which is what makes "your own project holds that token" a
+  choice instead of a dead end. `teardown_project` calls `POST /api/projects/{id}/teardown`: the
+  endpoint checks the caller owns the project and publishes an undeploy for every application of its
+  repositories that is still up. It does not free the bot there and then. A running bot long-polls
+  its token, and Telegram answers 409 to whoever binds that token second, so a teardown that
+  promised a free token before `deploy_lifecycle` had run `compose down -v` would hand the user a
+  rebind that fails. Instead the POST comes back `pending`, and `GET` on the same path reports where
+  the teardown stands — archiving the project and releasing the binding only once every application
+  reads `not_deployed`, and reporting `failed` if the undeploy run failed rather than waiting
+  forever. The tool polls that until it settles, so the agent learns the bot is free at the moment
+  it is. `validate_telegram_token` now passes `conflict_project_id` through to the agent, and the
+  prompt tells it to offer the two real options, continue in the holding project or free the token
+  and rebind after the teardown confirms, and never to tear anything down unasked. The owner check
+  lives on the new endpoints because the per-application `stop`/`undeploy` endpoints have no
+  authorization at all (backlog #1022) and this route is driven by a user, not an admin: someone
+  else's project comes back 403, untouched and still holding its bot.
+
 - Teardown now hands the bot back. The uniqueness check added the same day would otherwise lock a
   token to a dead project forever: the binding lives on `Repository.bot_username`, and nothing ever
   cleared it, so a user could not reuse their own bot after tearing the project down. Two

@@ -16,7 +16,12 @@ from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
-from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOutcome
+from shared.contracts.queues.deploy import (
+    LIFECYCLE_ACTIONS,
+    DeployAction,
+    DeployMessage,
+    DeployOutcome,
+)
 from shared.contracts.service_ports import DEPLOY_INFRA_PORT_SERVICES
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -155,16 +160,22 @@ async def _handle_lifecycle_action(
     task_id: str,
     project_id: str,
     project: ProjectDTO,
-    allocated_resources: dict,
 ) -> dict:
-    """Handle stop/undeploy lifecycle actions — SSH only, no DevOps subgraph."""
+    """Handle stop/undeploy lifecycle actions — SSH only, no DevOps subgraph.
+
+    The target comes from the message. Asking the allocator instead would answer
+    with whichever application it picks for the project's primary repository, so a
+    project deployed on two servers would get the same container stopped twice
+    while the other one keeps running.
+    """
+    application = await api_client.get_application(msg.application_id)
     project_name = project_runtime_slug(project)
     lifecycle_result = await process_lifecycle_action(
         action=msg.action,
         task_id=task_id,
         project_id=project_id,
         project_name=project_name,
-        allocated_resources=allocated_resources,
+        server_handle=application.server_handle,
     )
     run_status = (
         RunStatus.COMPLETED if lifecycle_result["status"] == "success" else RunStatus.FAILED
@@ -183,7 +194,7 @@ async def _handle_lifecycle_action(
 
     # Update application status on success
     if lifecycle_result["status"] == "success":
-        app_id = next(iter(allocated_resources.values()))["application_id"]
+        app_id = msg.application_id
         target_status = (
             ApplicationStatus.NOT_DEPLOYED
             if msg.action == DeployAction.UNDEPLOY
@@ -252,7 +263,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             project_id=project_id or "",
         )
 
-        if msg.action not in (DeployAction.STOP, DeployAction.UNDEPLOY) and not msg.head_sha:
+        if msg.action not in LIFECYCLE_ACTIONS and not msg.head_sha:
             error_msg = "head_sha is required for deploy actions that read repository state"
             logger.error(
                 "deploy_head_sha_missing",
@@ -289,6 +300,12 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             )
             return live_work_unsettled({"status": "failed", "error": error_msg})
 
+        # Lifecycle actions (stop/undeploy) — skip both allocation and the DevOps
+        # subgraph. They bring down an application that already exists; allocating
+        # would create one instead of finding the one the message names.
+        if msg.action in LIFECYCLE_ACTIONS:
+            return await _handle_lifecycle_action(msg, task_id, project_id, project)
+
         # Get or create allocations for the project
         alloc_result = await _allocate_resources(project_id, project)
         if isinstance(alloc_result, str):
@@ -304,12 +321,6 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             )
             return live_work_unsettled({"status": "failed", "error": alloc_result})
         allocated_resources = alloc_result
-
-        # Lifecycle actions (stop/undeploy) — skip DevOps subgraph entirely
-        if msg.action in (DeployAction.STOP, DeployAction.UNDEPLOY):
-            return await _handle_lifecycle_action(
-                msg, task_id, project_id, project, allocated_resources
-            )
 
         # Pre-check: validate server state via SSH before deploying
         action = msg.action
