@@ -78,8 +78,10 @@ Do NOT ask for a different token — give the user the two real choices:
 
 1. **Continue there** — work on the existing project instead of the new one.
 2. **Free the token** — `teardown_project(<holding project id>)` takes that project \
-offline and releases the bot, then call `validate_telegram_token` again with the \
-same token for the new project.
+offline and waits until it is actually down. Call `validate_telegram_token` again \
+with the same token ONLY after that tool reports the bot free. If it reports the \
+project is still shutting down, say so to the user and call `teardown_project` again \
+in a few minutes — a token bound while the old bot is still polling does not work.
 
 Never call `teardown_project` on your own initiative: the project goes down and its \
 users lose the bot. Ask first, act on an explicit yes. It works only on the user's \

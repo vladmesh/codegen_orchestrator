@@ -412,32 +412,108 @@ class TestValidateTelegramToken:
         assert "teardown_project" not in result
 
 
+PROJECT_ID = "11111111-1111-1111-1111-111111111111"
+
+
+def _teardown_state(status: str, **overrides) -> dict:
+    state = {
+        "project_id": PROJECT_ID,
+        "status": status,
+        "project_status": "archived" if status == "completed" else "active",
+        "pending_application_ids": [],
+        "released_bot_username": None,
+        "error": None,
+    }
+    state.update(overrides)
+    return state
+
+
 class TestTeardownProject:
     """Teardown runs on the API under the user's identity, and reports what it freed."""
+
+    @pytest.fixture(autouse=True)
+    def _no_waiting(self):
+        """The wait is real in production and pointless in a test."""
+        with patch("src.agents.po.tools_projects.TEARDOWN_POLL_INTERVAL_SECONDS", 0):
+            yield
 
     @pytest.mark.asyncio
     async def test_calls_the_teardown_endpoint_as_the_user(self, mock_api_client):
         mock_api_client.post.return_value = _make_response(
-            {
-                "project_id": "11111111-1111-1111-1111-111111111111",
-                "status": "archived",
-                "undeploying_application_ids": [7],
-                "released_bot_username": "palindrome_bot",
-            }
+            _teardown_state("completed", released_bot_username="palindrome_bot")
         )
 
         result = await teardown_project.ainvoke(
-            {"project_id": "11111111-1111-1111-1111-111111111111"},
+            {"project_id": PROJECT_ID},
             config=_make_config("user-42"),
         )
 
         call_args = mock_api_client.post.call_args
-        assert call_args[0][0] == "/api/projects/11111111-1111-1111-1111-111111111111/teardown"
+        assert call_args[0][0] == f"/api/projects/{PROJECT_ID}/teardown"
         assert call_args[1]["headers"]["X-Telegram-ID"] == "user-42"
         assert "palindrome_bot" in result
         # The API owns the teardown: no direct undeploy or archive from the tool.
         mock_api_client.patch.assert_not_called()
         assert mock_api_client.post.call_count == 1
+        # Nothing was pending, so there was nothing to wait for.
+        mock_api_client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_waits_for_the_application_to_be_down_before_calling_the_bot_free(
+        self, mock_api_client
+    ):
+        """The bot polls its token until the containers stop — rebinding before that fails."""
+        mock_api_client.post.return_value = _make_response(
+            _teardown_state("pending", pending_application_ids=[7])
+        )
+        mock_api_client.get.side_effect = [
+            _make_response(_teardown_state("pending", pending_application_ids=[7])),
+            _make_response(_teardown_state("completed", released_bot_username="palindrome_bot")),
+        ]
+
+        result = await teardown_project.ainvoke(
+            {"project_id": PROJECT_ID},
+            config=_make_config("user-42"),
+        )
+
+        assert mock_api_client.get.call_count == 2
+        assert mock_api_client.get.call_args[0][0] == f"/api/projects/{PROJECT_ID}/teardown"
+        assert "down and archived" in result
+        assert "palindrome_bot" in result
+
+    @pytest.mark.asyncio
+    async def test_a_teardown_that_never_finishes_does_not_free_the_token(self, mock_api_client):
+        """Timing out is not permission to rebind: the agent is told to come back later."""
+        mock_api_client.post.return_value = _make_response(
+            _teardown_state("pending", pending_application_ids=[7])
+        )
+        mock_api_client.get.return_value = _make_response(
+            _teardown_state("pending", pending_application_ids=[7])
+        )
+
+        with patch("src.agents.po.tools_projects.TEARDOWN_TIMEOUT_SECONDS", 0):
+            result = await teardown_project.ainvoke(
+                {"project_id": PROJECT_ID},
+                config=_make_config("user-42"),
+            )
+
+        assert "still shutting down" in result
+        assert "cannot be used elsewhere yet" in result
+
+    @pytest.mark.asyncio
+    async def test_a_failed_undeploy_is_reported_as_a_failure(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            _teardown_state("failed", pending_application_ids=[7], error="SSH command failed")
+        )
+
+        result = await teardown_project.ainvoke(
+            {"project_id": PROJECT_ID},
+            config=_make_config("user-42"),
+        )
+
+        assert "failed" in result
+        assert "SSH command failed" in result
+        assert "do not reuse the token" in result
 
     @pytest.mark.asyncio
     async def test_someone_elses_project_comes_back_as_a_message(self, mock_api_client):
@@ -457,21 +533,14 @@ class TestTeardownProject:
 
     @pytest.mark.asyncio
     async def test_a_project_with_no_bot_says_so(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response(
-            {
-                "project_id": "11111111-1111-1111-1111-111111111111",
-                "status": "archived",
-                "undeploying_application_ids": [],
-                "released_bot_username": None,
-            }
-        )
+        mock_api_client.post.return_value = _make_response(_teardown_state("completed"))
 
         result = await teardown_project.ainvoke(
-            {"project_id": "11111111-1111-1111-1111-111111111111"},
+            {"project_id": PROJECT_ID},
             config=_make_config("user-42"),
         )
 
-        assert "No bot was bound" in result
+        assert "holds no bot any more" in result
 
 
 class TestCreateStory:

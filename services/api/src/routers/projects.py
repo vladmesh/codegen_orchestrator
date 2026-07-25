@@ -8,8 +8,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult
+from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult, TeardownStatus
 from shared.contracts.dto.repository import RepositoryRole
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.telegram import (
     TelegramTokenValidateRequest,
     TelegramTokenVerdict,
@@ -585,6 +587,117 @@ async def delete_secret(
     return {"keys": sorted(existing_secrets.keys())}
 
 
+async def _load_for_teardown(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None,
+    db: AsyncSession,
+    *,
+    is_internal: bool,
+) -> tuple[Project, list[Repository], list[Application]]:
+    """Load the project, its repositories and its applications, owner-checked."""
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    project = (await db.execute(query)).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db, is_internal=is_internal)
+
+    repos_result = await db.execute(select(Repository).where(Repository.project_id == project_id))
+    repos = list(repos_result.scalars())
+    apps = list(
+        (
+            await db.execute(
+                select(Application).where(Application.repo_id.in_([repo.id for repo in repos]))
+            )
+        ).scalars()
+    )
+    return project, repos, apps
+
+
+async def _failed_undeploy_error(
+    db: AsyncSession, project_id: uuid.UUID, application_id: int
+) -> str | None:
+    """The error of the latest undeploy run for this application, if it failed.
+
+    Only the latest run counts: an application that failed to come down once and is
+    being torn down again is pending, not failed.
+    """
+    runs = (
+        await db.execute(
+            select(Run)
+            .where(Run.project_id == project_id, Run.type == "deploy")
+            .order_by(Run.created_at.desc())
+        )
+    ).scalars()
+    for run in runs:
+        if (run.run_metadata or {}).get("application_id") != application_id:
+            continue
+        if run.status != RunStatus.FAILED.value:
+            return None
+        return run.error_message or "undeploy failed"
+    return None
+
+
+async def _teardown_state(
+    db: AsyncSession,
+    project: Project,
+    repos: list[Repository],
+    applications: list[Application],
+    *,
+    just_staged: frozenset[int] = frozenset(),
+) -> ProjectTeardownResult:
+    """Report where the teardown stands, and finish it once nothing is left up.
+
+    Archiving and releasing the bot happen here rather than at request time: while a
+    container is still up the bot is still polling its token, and handing that token
+    to another project would make Telegram answer 409 to whoever asks second.
+
+    `just_staged` names the applications whose undeploy this very request published.
+    Their earlier failure, if any, is history: the run that decides their fate has
+    not been picked up yet.
+    """
+    pending = [app.id for app in applications if app.status != ApplicationStatus.NOT_DEPLOYED.value]
+
+    for application_id in pending:
+        if application_id in just_staged:
+            continue
+        error = await _failed_undeploy_error(db, project.id, application_id)
+        if error:
+            return ProjectTeardownResult(
+                project_id=project.id,
+                status=TeardownStatus.FAILED,
+                project_status=ProjectStatus(project.status),
+                pending_application_ids=pending,
+                error=error,
+            )
+
+    if pending:
+        return ProjectTeardownResult(
+            project_id=project.id,
+            status=TeardownStatus.PENDING,
+            project_status=ProjectStatus(project.status),
+            pending_application_ids=pending,
+        )
+
+    # Nothing is up any more. The undeploy path may already have released the bot
+    # when the application reported not_deployed; then there is no name left to
+    # report, only the fact that the project holds nothing.
+    project.status = ProjectStatus.ARCHIVED.value
+    released = await release_bot_binding(db, project, repos, reason="project_teardown")
+
+    logger.info(
+        "project_teardown_completed",
+        project_id=str(project.id),
+        released_bot=released,
+    )
+    return ProjectTeardownResult(
+        project_id=project.id,
+        status=TeardownStatus.COMPLETED,
+        project_status=ProjectStatus.ARCHIVED,
+        released_bot_username=released,
+    )
+
+
 @router.post("/{project_id}/teardown", response_model=ProjectTeardownResult)
 async def teardown_project(
     project_id: uuid.UUID,
@@ -593,55 +706,67 @@ async def teardown_project(
     redis: RedisStreamClient = Depends(get_redis_client),
     _is_internal: bool = Depends(is_internal_service),
 ) -> ProjectTeardownResult:
-    """Tear the project down at its owner's request: undeploy it, archive it, free its bot.
+    """Start tearing the project down at its owner's request: undeploy it, then free its bot.
 
     Owner-checked, unlike the per-application stop/undeploy endpoints, because this is
-    the route the PO agent drives on behalf of a user. Archiving is what releases the
-    binding, so the token is reusable as soon as this returns; the applications are
-    still on their way down when it does.
+    the route the PO agent drives on behalf of a user. A project with nothing deployed
+    is done when this returns; anything still up comes back `pending` and keeps its bot
+    until the undeploy reports the containers down. Poll GET on the same path.
     """
-    query = select(Project).where(Project.id == project_id).with_for_update()
-    project = (await db.execute(query)).scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
-
-    repos_result = await db.execute(select(Repository).where(Repository.project_id == project_id))
-    repos = list(repos_result.scalars())
-    apps_query = select(Application).where(
-        Application.repo_id.in_([repo.id for repo in repos]),
-        Application.status.in_([s.value for s in UNDEPLOYABLE_STATUSES]),
+    project, repos, applications = await _load_for_teardown(
+        project_id, x_telegram_id, db, is_internal=_is_internal
     )
-    applications = list((await db.execute(apps_query)).scalars())
 
     messages = []
-    undeploying = []
+    staged = set()
     for application in applications:
+        status_now = ApplicationStatus(application.status)
+        if status_now not in UNDEPLOYABLE_STATUSES:
+            # An application stuck in undeploying after a failed run is the one case
+            # worth sending down again: the user asking a second time is a retry.
+            failed = status_now == ApplicationStatus.UNDEPLOYING and await _failed_undeploy_error(
+                db, project_id, application.id
+            )
+            if not failed:
+                continue
         _run, msg = stage_undeploy(application, project_id, db, triggered_by=DeployTrigger.PO)
         messages.append(msg)
-        undeploying.append(application.id)
+        staged.add(application.id)
 
-    project.status = ProjectStatus.ARCHIVED.value
-    released = await release_bot_binding(db, project, repos, reason="project_teardown")
-
+    state = await _teardown_state(db, project, repos, applications, just_staged=frozenset(staged))
     await db.commit()
 
     for msg in messages:
         await redis.publish_message(DEPLOY_QUEUE, msg)
 
     logger.info(
-        "project_torn_down",
+        "project_teardown_requested",
         project_id=str(project_id),
-        undeploying=undeploying,
-        released_bot=released,
+        status=state.status.value,
+        pending=state.pending_application_ids,
     )
-    return ProjectTeardownResult(
-        project_id=project_id,
-        status=ProjectStatus.ARCHIVED,
-        undeploying_application_ids=undeploying,
-        released_bot_username=released,
+    return state
+
+
+@router.get("/{project_id}/teardown", response_model=ProjectTeardownResult)
+async def get_teardown_status(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> ProjectTeardownResult:
+    """Where the teardown stands, and the call that finishes it.
+
+    Owner-checked like the POST. Once every application reports not_deployed this
+    archives the project and releases its bot, so `completed` is the point at which
+    the token can be bound somewhere else.
+    """
+    project, repos, applications = await _load_for_teardown(
+        project_id, x_telegram_id, db, is_internal=_is_internal
     )
+    state = await _teardown_state(db, project, repos, applications)
+    await db.commit()
+    return state
 
 
 _QUEUES_TO_CLEAN = [ARCHITECT_QUEUE, SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]

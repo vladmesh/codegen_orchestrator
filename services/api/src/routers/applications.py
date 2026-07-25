@@ -282,7 +282,15 @@ def stage_undeploy(
     """
     application.status = ApplicationStatus.UNDEPLOYING
     run_id = _make_deploy_run_id()
-    run = Run(id=run_id, type="deploy", project_id=project_id)
+    # The application id on the run is how a caller waiting for this teardown finds
+    # out it failed: a failed run is the only signal an application stuck in
+    # undeploying ever gets.
+    run = Run(
+        id=run_id,
+        type="deploy",
+        project_id=project_id,
+        run_metadata={"application_id": application.id},
+    )
     db.add(run)
     msg = DeployMessage(
         task_id=run_id,

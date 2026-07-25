@@ -87,6 +87,11 @@ class TestSystemPrompt:
     def test_teardown_needs_the_users_consent(self):
         assert "Never call `teardown_project` on your own initiative" in SYSTEM_PROMPT
 
+    def test_the_token_is_rebound_only_after_the_teardown_confirms(self):
+        """Rebinding while the old bot still polls loses the race with Telegram."""
+        assert "ONLY after that tool reports the bot free" in SYSTEM_PROMPT
+        assert "still shutting down" in SYSTEM_PROMPT
+
     def test_no_trigger_engineering_references(self):
         """Prompt should not reference deprecated trigger_engineering."""
         assert "trigger_engineering" not in SYSTEM_PROMPT

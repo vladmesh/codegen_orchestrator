@@ -20,12 +20,16 @@ project: archiving it, or its application landing in `not_deployed` after an und
 `Repository.bot_username` and drops the two secrets, so the bot is free to bind elsewhere
 (`services/api/src/utils/telegram_binding.py`). Deleting the project removes the repository rows
 outright, with the same effect.
-- `teardown_project`: `POST /api/projects/{id}/teardown` — owner-checked teardown of the user's own
-project: every application of its repositories that is still up gets an undeploy (`DeployTrigger.PO`),
-the project is archived, and the archive releases the bot binding in the same transaction, so the
-token can be rebound immediately while the containers are still going down. Someone else's project
-is refused with 403 and stays untouched. This is the way out of a `bound_to_own_project` verdict —
-PO offers the user the choice between continuing in the holding project and freeing the token.
+- `teardown_project`: `POST /api/projects/{id}/teardown` then `GET` on the same path — owner-checked
+teardown of the user's own project. The POST sends an undeploy (`DeployTrigger.PO`) to every
+application still up and comes back `pending`; the GET reports where that stands and, once every
+application reads `not_deployed`, archives the project and releases the bot. Only `completed` means
+the token is reusable: until `compose down -v` has run, the old bot is still long-polling and
+Telegram answers 409 to whoever binds the token second, so the tool waits for that status before
+telling the agent the bot is free. A failed undeploy run surfaces as `failed` rather than an endless
+wait. Someone else's project is refused with 403 and stays untouched. This is the way out of a
+`bound_to_own_project` verdict — PO offers the user the choice between continuing in the holding
+project and freeing the token.
 - `create_story`: создание user story + автоматический запуск engineering work
 - `reopen_story`: переоткрытие завершённой story с user_report (контекст проблемы)
 - `list_stories`, `get_story`: просмотр stories, привязанных tasks и их runs (с id, status, type, error, timing)
