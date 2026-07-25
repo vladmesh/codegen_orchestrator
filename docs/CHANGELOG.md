@@ -2,6 +2,18 @@
 
 ## 2026-07-25
 
+- A stop or undeploy now names the application it acts on. `DeployMessage` carries
+  `application_id` and rejects a lifecycle action without one; the consumer reads the target's
+  server from it and skips allocation entirely. Before, it asked the allocator, which answers with
+  one application on the project's primary repository whatever the message said — so a project
+  deployed on two servers got the same container brought down twice, the other one stayed up with
+  its bot still polling, and its application sat in `undeploying` forever while the teardown kept
+  reporting `pending`. For the same reason the undeploy path no longer releases the bot on the
+  first application to report `not_deployed`: the release waits until the project has nothing left
+  running, because the row does not say which server the bot is on. A run cancelled on the project's
+  deploy lock now counts as a stalled teardown, so asking again sends that application down instead
+  of leaving it stranded.
+
 - PO can now tear a user's project down, which is what makes "your own project holds that token" a
   choice instead of a dead end. `teardown_project` calls `POST /api/projects/{id}/teardown`: the
   endpoint checks the caller owns the project and publishes an undeploy for every application of its

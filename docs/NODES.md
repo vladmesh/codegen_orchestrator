@@ -16,7 +16,7 @@
 - `validate_telegram_token`: posts the token to `POST /api/projects/{id}/telegram/token`. The API runs the check chain (format, `getMe`, then the external-activity probes: `getWebhookInfo` and a `getUpdates` probe that answers 409 when another poller holds the token, then uniqueness across
 projects: a bot held by another live project is refused, naming that project only when the same
 user owns it), stores `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_USERNAME` and `Repository.bot_username` only on a passing verdict, and returns a typed `TelegramTokenVerdict` (`shared/contracts/dto/telegram.py`) with a user-facing message. PO only relays it. The hold ends with the
-project: archiving it, or its application landing in `not_deployed` after an undeploy, clears
+project: archiving it, or its last application landing in `not_deployed` after an undeploy, clears
 `Repository.bot_username` and drops the two secrets, so the bot is free to bind elsewhere
 (`services/api/src/utils/telegram_binding.py`). Deleting the project removes the repository rows
 outright, with the same effect.

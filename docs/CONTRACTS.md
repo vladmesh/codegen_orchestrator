@@ -990,6 +990,11 @@ class DeployMessage(BaseMessage):
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: DeployAction = DeployAction.CREATE
     deploy_fix_attempt: int = 0
+    head_sha: OptionalCommitSha = ""
+    # Required for STOP/UNDEPLOY, rejected as missing by the model otherwise.
+    # A project can run on several servers, so the consumer must bring down the
+    # application it was told about instead of picking one itself.
+    application_id: int | None = None
 
 
 class DeployResult(BaseResult):

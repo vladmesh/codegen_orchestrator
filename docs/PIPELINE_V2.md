@@ -207,7 +207,7 @@ If the developer agent encounters an unsolvable problem:
 
 **Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.
 
-**Lifecycle operations**: `stop` and `undeploy` actions (from Admin API) are handled by `deploy_lifecycle` module — SSHes to server and runs `docker compose stop/down` directly, skipping the full DevOps subgraph.
+**Lifecycle operations**: `stop` and `undeploy` actions (from Admin API, or from a PO teardown) are handled by `deploy_lifecycle` module — SSHes to server and runs `docker compose stop/down` directly, skipping the full DevOps subgraph. The message names its target application (`DeployMessage.application_id`) and the consumer acts on that one: a project can have applications on several servers, and allocation would answer with one of its own choosing.
 
 **Outputs**: Running service on server with domain + SSL, or `DeployOutcome` in run.result for supervisor
 

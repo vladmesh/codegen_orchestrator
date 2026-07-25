@@ -1,5 +1,7 @@
 from enum import StrEnum
 
+from pydantic import model_validator
+
 from shared.contracts.base import BaseMessage, BaseResult
 from shared.contracts.git_ref import OptionalCommitSha
 
@@ -21,6 +23,10 @@ class DeployAction(StrEnum):
     FIX = "fix"
     STOP = "stop"
     UNDEPLOY = "undeploy"
+
+
+# Actions that act on one already-deployed application instead of on repository state.
+LIFECYCLE_ACTIONS = frozenset({DeployAction.STOP, DeployAction.UNDEPLOY})
 
 
 class DeployOutcome(StrEnum):
@@ -53,6 +59,16 @@ class DeployMessage(BaseMessage):
     # accepted here, so a caller that failed to resolve a SHA cannot silently
     # fall back to deploying the default branch.
     head_sha: OptionalCommitSha = ""
+    # Which application a lifecycle action brings down. A project can run on
+    # several servers, so the consumer must not pick one itself: it would stop a
+    # container nobody asked about and leave the named one up.
+    application_id: int | None = None
+
+    @model_validator(mode="after")
+    def _lifecycle_names_its_target(self) -> "DeployMessage":
+        if self.action in LIFECYCLE_ACTIONS and self.application_id is None:
+            raise ValueError(f"application_id is required for action '{self.action.value}'")
+        return self
 
 
 class DeployResult(BaseResult):

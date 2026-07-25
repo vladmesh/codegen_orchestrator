@@ -614,13 +614,18 @@ async def _load_for_teardown(
     return project, repos, apps
 
 
-async def _failed_undeploy_error(
+async def _stalled_undeploy_error(
     db: AsyncSession, project_id: uuid.UUID, application_id: int
 ) -> str | None:
-    """The error of the latest undeploy run for this application, if it failed.
+    """The error of the latest undeploy run for this application, if it did not run.
 
     Only the latest run counts: an application that failed to come down once and is
     being torn down again is pending, not failed.
+
+    A cancelled run counts as a failure. The deploy consumer cancels a run whose
+    project lock is held by another deploy, and an application whose only undeploy
+    was cancelled would otherwise sit in `undeploying` forever, with nothing to say
+    so and no way for a retry to send it down again.
     """
     runs = (
         await db.execute(
@@ -632,7 +637,7 @@ async def _failed_undeploy_error(
     for run in runs:
         if (run.run_metadata or {}).get("application_id") != application_id:
             continue
-        if run.status != RunStatus.FAILED.value:
+        if run.status not in (RunStatus.FAILED.value, RunStatus.CANCELLED.value):
             return None
         return run.error_message or "undeploy failed"
     return None
@@ -661,7 +666,7 @@ async def _teardown_state(
     for application_id in pending:
         if application_id in just_staged:
             continue
-        error = await _failed_undeploy_error(db, project.id, application_id)
+        error = await _stalled_undeploy_error(db, project.id, application_id)
         if error:
             return ProjectTeardownResult(
                 project_id=project.id,
@@ -724,7 +729,7 @@ async def teardown_project(
         if status_now not in UNDEPLOYABLE_STATUSES:
             # An application stuck in undeploying after a failed run is the one case
             # worth sending down again: the user asking a second time is a retry.
-            failed = status_now == ApplicationStatus.UNDEPLOYING and await _failed_undeploy_error(
+            failed = status_now == ApplicationStatus.UNDEPLOYING and await _stalled_undeploy_error(
                 db, project_id, application.id
             )
             if not failed:
