@@ -157,3 +157,102 @@ async def test_token_cannot_be_written_through_the_secrets_endpoint(
     assert disguised.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, disguised.text
 
     assert await _stored_secrets(db_session, bot_project) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"secrets": {"TELEGRAM_BOT_TOKEN": VALID_TOKEN}},
+        {"secrets": {"SOMETHING": VALID_TOKEN}},
+        {"modules": ["backend"], "env": {"TELEGRAM_BOT_TOKEN": VALID_TOKEN}},
+        {"modules": ["backend"], "notes": [VALID_TOKEN]},
+    ],
+    ids=["secrets-known-key", "secrets-disguised", "nested-key", "nested-value"],
+)
+async def test_project_creation_cannot_carry_a_bot_token(
+    async_client: AsyncClient, db_session: AsyncSession, config: dict
+):
+    await async_client.post(
+        "/api/users/",
+        json={"telegram_id": int(TELEGRAM_ID), "username": "token-binding-tester"},
+    )
+    project_id = str(uuid.uuid4())
+    resp = await async_client.post(
+        "/api/projects/",
+        json={"id": project_id, "title": "Sneaky Bot", "config": config},
+        headers={"X-Telegram-ID": TELEGRAM_ID},
+    )
+
+    assert resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, resp.text
+    assert await db_session.get(Project, uuid.UUID(project_id)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["put", "patch"])
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"secrets": {"TELEGRAM_BOT_TOKEN": VALID_TOKEN}},
+        {"secrets": {"SOMETHING": VALID_TOKEN}},
+        {"modules": ["backend"], "env": {"TELEGRAM_BOT_TOKEN": VALID_TOKEN}},
+    ],
+    ids=["secrets-known-key", "secrets-disguised", "nested-key"],
+)
+async def test_config_update_cannot_carry_a_bot_token(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    bot_project: str,
+    method: str,
+    config: dict,
+):
+    resp = await getattr(async_client, method)(
+        f"/api/projects/{bot_project}",
+        json={"config": config},
+        headers={"X-Telegram-ID": TELEGRAM_ID},
+    )
+
+    assert resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, resp.text
+    assert await _stored_secrets(db_session, bot_project) == {}
+
+
+@pytest.mark.asyncio
+async def test_config_update_round_trips_stored_secrets(
+    async_client: AsyncClient, db_session: AsyncSession, bot_project: str
+):
+    """A bound token survives the read-modify-write config updates scaffolder does."""
+    with _patched_telegram(_getme_ok("token_binding_bot")):
+        bound = await async_client.post(
+            f"/api/projects/{bot_project}/telegram/token",
+            json={"token": VALID_TOKEN},
+            headers={"X-Telegram-ID": TELEGRAM_ID},
+        )
+    assert bound.status_code == status.HTTP_200_OK, bound.text
+
+    read_back = await async_client.get(
+        f"/api/projects/{bot_project}", headers={"X-Telegram-ID": TELEGRAM_ID}
+    )
+    config = dict(read_back.json()["config"])
+    config["workspace_ready"] = True
+
+    resp = await async_client.patch(
+        f"/api/projects/{bot_project}",
+        json={"config": config},
+        headers={"X-Telegram-ID": TELEGRAM_ID},
+    )
+    assert resp.status_code == status.HTTP_200_OK, resp.text
+    assert resp.json()["config"]["workspace_ready"] is True
+
+    db_session.expire_all()
+    assert (await _stored_secrets(db_session, bot_project))["TELEGRAM_BOT_TOKEN"] == VALID_TOKEN
+
+    # An update that omits secrets keeps them too — only the secret endpoints touch them.
+    trimmed = await async_client.patch(
+        f"/api/projects/{bot_project}",
+        json={"config": {"modules": ["backend"]}},
+        headers={"X-Telegram-ID": TELEGRAM_ID},
+    )
+    assert trimmed.status_code == status.HTTP_200_OK, trimmed.text
+
+    db_session.expire_all()
+    assert (await _stored_secrets(db_session, bot_project))["TELEGRAM_BOT_TOKEN"] == VALID_TOKEN

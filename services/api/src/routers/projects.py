@@ -124,7 +124,7 @@ async def create_project(
             title=project_in.title,
             slug=generate_project_slug(project_in.title, project_id),
             status=project_in.status or ProjectStatus.DRAFT.value,
-            config=project_in.config,
+            config=_vet_config_write(project_in.config, None),
             owner_id=owner_id,
         )
         db.add(project)
@@ -239,7 +239,7 @@ async def update_project(
     if project_in.status is not None:
         project.status = project_in.status
     if project_in.config is not None:
-        project.config = project_in.config
+        project.config = _vet_config_write(project_in.config, project)
 
     await db.commit()
     await db.refresh(project)
@@ -269,7 +269,7 @@ async def patch_project(
     if project_in.status is not None:
         project.status = project_in.status
     if project_in.config is not None:
-        project.config = project_in.config
+        project.config = _vet_config_write(project_in.config, project)
 
     await db.commit()
     await db.refresh(project)
@@ -307,11 +307,72 @@ _TELEGRAM_TOKEN_DETAIL = (
 )
 
 
+_SECRETS_WRITE_DETAIL = (
+    "config.secrets is not writable through this endpoint — "
+    "use /config/secrets to set and /config/secrets/{key} to delete"
+)
+
+
 def _reject_bot_token_writes(secrets: dict[str, str]) -> None:
     """Keep bot tokens off the generic secret path — they go through the validator."""
     for key, value in secrets.items():
         if key == TELEGRAM_TOKEN_KEY or looks_like_bot_token(value):
             raise HTTPException(status_code=422, detail=_TELEGRAM_TOKEN_DETAIL)
+
+
+def _find_bot_token_material(node: object, path: str = "config") -> str | None:
+    """Locate a Telegram token key or token-shaped value anywhere in a config tree."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == TELEGRAM_TOKEN_KEY:
+                return f"{path}.{key}"
+            found = _find_bot_token_material(value, f"{path}.{key}")
+            if found:
+                return found
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            found = _find_bot_token_material(item, f"{path}[{index}]")
+            if found:
+                return found
+    elif isinstance(node, str) and looks_like_bot_token(node):
+        return path
+    return None
+
+
+def _stored_secrets_blob(project: Project | None) -> dict:
+    if project is None:
+        return {}
+    return (project.config or {}).get("secrets") or {}
+
+
+def _vet_config_write(config: dict, project: Project | None) -> dict:
+    """Validate a whole-config write and return the config to store.
+
+    Secrets are owned by the dedicated endpoints: the stored (encrypted) blob is
+    carried over untouched, and a caller that sends a different one is refused
+    rather than silently overwritten. Everything else in the tree is scanned so a
+    raw bot token can't ride in under another key.
+    """
+    stored = _stored_secrets_blob(project)
+    incoming = config.get("secrets")
+    if incoming is not None and incoming != stored:
+        raise HTTPException(status_code=422, detail=_SECRETS_WRITE_DETAIL)
+
+    # env_hints keys are env var names, so TELEGRAM_BOT_TOKEN is expected there;
+    # only its values (plaintext descriptions) are scanned for token material.
+    hints = config.get("env_hints")
+    found = _find_bot_token_material(
+        {key: value for key, value in config.items() if key not in ("secrets", "env_hints")}
+    )
+    if found is None and isinstance(hints, dict):
+        found = _find_bot_token_material(list(hints.values()), "config.env_hints")
+    if found is not None:
+        raise HTTPException(status_code=422, detail=f"{_TELEGRAM_TOKEN_DETAIL} (found at {found})")
+
+    vetted = {key: value for key, value in config.items() if key != "secrets"}
+    if stored:
+        vetted["secrets"] = stored
+    return vetted
 
 
 def _merge_secrets_into_project(

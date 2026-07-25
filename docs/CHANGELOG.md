@@ -14,6 +14,12 @@
   username write and the retry wording left the agent. Later check layers (uniqueness, external
   poller detection) append to `checks` without touching the prompt.
 
+  Whole-config writes are fenced the same way: `POST /api/projects/`, `PUT` and `PATCH` scan the
+  submitted config tree for `TELEGRAM_BOT_TOKEN` keys and token-shaped values, and `config.secrets`
+  is no longer writable through them — the stored blob is carried over and a caller sending a
+  different one gets 422. Scaffolder's read-modify-write of the whole config still works, since it
+  hands back the blob it read.
+
 - Load the QA server's Telethon credentials into the run instead of asking the agent to. The
   prompt told it to `set -a; . ~/.qa-telethon.env`, which run `qa-7729960c` simply skipped: it
   reported the echo check `BLOCKED`, citing the old `/opt/qa-runner/telethon.session` path and
