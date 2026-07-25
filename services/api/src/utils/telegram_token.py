@@ -96,7 +96,22 @@ async def _check_no_webhook(
         logger.warning("telegram_webhook_probe_unreachable", error=str(e))
         return _unreachable(TokenCheckName.TELEGRAM_WEBHOOK, str(e), preceding)
 
-    url = resp.json()["result"]["url"]
+    # A 429 or a 5xx here says nothing about the token, so it reads as "Telegram is
+    # having a moment", not as a verdict on the bot.
+    try:
+        data = resp.json()
+    except ValueError as e:
+        logger.warning("telegram_webhook_probe_unparseable", status=resp.status_code)
+        return _unreachable(TokenCheckName.TELEGRAM_WEBHOOK, str(e), preceding)
+
+    if resp.status_code != HTTPStatus.OK or not data.get("ok"):
+        description = data.get("description", "Unknown error")
+        logger.warning(
+            "telegram_webhook_probe_failed", status=resp.status_code, description=description
+        )
+        return _unreachable(TokenCheckName.TELEGRAM_WEBHOOK, description, preceding)
+
+    url = data["result"]["url"]
     if url:
         logger.info("telegram_token_external_webhook")
         return _rejected(

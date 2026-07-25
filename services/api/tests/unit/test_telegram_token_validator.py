@@ -28,7 +28,7 @@ def _patched_telegram(handler):
     return patch("src.utils.telegram_token.httpx.AsyncClient", factory)
 
 
-def _fake_telegram(*, getme=None, webhook_url="", get_updates=None):
+def _fake_telegram(*, getme=None, webhook_url="", webhook=None, get_updates=None):
     """A Telegram that answers a healthy getMe and a quiet token, unless overridden."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -38,6 +38,8 @@ def _fake_telegram(*, getme=None, webhook_url="", get_updates=None):
                 return getme(request)
             return httpx.Response(200, json={"ok": True, "result": {"username": "palindrome_bot"}})
         if method == "getWebhookInfo":
+            if webhook is not None:
+                return webhook(request)
             return httpx.Response(200, json={"ok": True, "result": {"url": webhook_url}})
         if method == "getUpdates":
             if get_updates is not None:
@@ -214,6 +216,34 @@ async def test_unreachable_webhook_probe_does_not_pass_the_token():
         raise httpx.ConnectError("connection refused")
 
     with _patched_telegram(handler):
+        verdict = await validate_telegram_token(VALID_TOKEN)
+
+    assert verdict.status == TokenVerdictStatus.REJECTED
+    assert verdict.reason_code == TokenRejectionReason.TELEGRAM_UNREACHABLE
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_webhook_probe_is_unreachable_not_a_crash():
+    def webhook(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"ok": False, "description": "Too Many Requests"})
+
+    def get_updates(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("the chain must stop once the webhook probe fails")
+
+    with _patched_telegram(_fake_telegram(webhook=webhook, get_updates=get_updates)):
+        verdict = await validate_telegram_token(VALID_TOKEN)
+
+    assert verdict.status == TokenVerdictStatus.REJECTED
+    assert verdict.reason_code == TokenRejectionReason.TELEGRAM_UNREACHABLE
+    assert verdict.checks[-1].name == TokenCheckName.TELEGRAM_WEBHOOK
+
+
+@pytest.mark.asyncio
+async def test_unparseable_webhook_answer_is_unreachable_not_a_crash():
+    def webhook(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="<html>bad gateway</html>")
+
+    with _patched_telegram(_fake_telegram(webhook=webhook)):
         verdict = await validate_telegram_token(VALID_TOKEN)
 
     assert verdict.status == TokenVerdictStatus.REJECTED
