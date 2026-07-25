@@ -15,7 +15,11 @@
 - `set_project_secret`: сохранение секретов. Bot tokens are refused server-side (422) — the API only takes them through the validator.
 - `validate_telegram_token`: posts the token to `POST /api/projects/{id}/telegram/token`. The API runs the check chain (format, `getMe`, then the external-activity probes: `getWebhookInfo` and a `getUpdates` probe that answers 409 when another poller holds the token, then uniqueness across
 projects: a bot held by another live project is refused, naming that project only when the same
-user owns it), stores `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_USERNAME` and `Repository.bot_username` only on a passing verdict, and returns a typed `TelegramTokenVerdict` (`shared/contracts/dto/telegram.py`) with a user-facing message. PO only relays it.
+user owns it), stores `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_USERNAME` and `Repository.bot_username` only on a passing verdict, and returns a typed `TelegramTokenVerdict` (`shared/contracts/dto/telegram.py`) with a user-facing message. PO only relays it. The hold ends with the
+project: archiving it, or its application landing in `not_deployed` after an undeploy, clears
+`Repository.bot_username` and drops the two secrets, so the bot is free to bind elsewhere
+(`services/api/src/utils/telegram_binding.py`). Deleting the project removes the repository rows
+outright, with the same effect.
 - `create_story`: создание user story + автоматический запуск engineering work
 - `reopen_story`: переоткрытие завершённой story с user_report (контекст проблемы)
 - `list_stories`, `get_story`: просмотр stories, привязанных tasks и их runs (с id, status, type, error, timing)

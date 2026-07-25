@@ -16,7 +16,27 @@ from shared.contracts.dto.telegram import (
     TokenVerdictStatus,
 )
 from shared.crypto import decrypt_dict, encrypt_dict
-from shared.models import Application, PortAllocation, Project, Repository, Run, User
+from shared.models import (
+    AnalyticsDaily,
+    AnalyticsHourly,
+    AnalyticsKnownUsers,
+    Application,
+    ApplicationHealthHistory,
+    Brainstorm,
+    Deployment,
+    PortAllocation,
+    Project,
+    RAGChunk,
+    RAGConversationSummary,
+    RAGDocument,
+    RAGMessage,
+    Repository,
+    Run,
+    Story,
+    Task,
+    TaskEvent,
+    User,
+)
 from shared.project_slug import generate_project_slug
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
 
@@ -24,6 +44,7 @@ from ..config import get_settings
 from ..database import get_async_session
 from ..dependencies import is_internal_service
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
+from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
 
 logger = structlog.get_logger()
@@ -219,6 +240,18 @@ async def list_projects(
     return list(result.scalars().all())
 
 
+async def _release_bot_if_archived(db: AsyncSession, project: Project) -> None:
+    """Archiving is teardown, so the project stops holding its bot.
+
+    Keyed on the resulting status, not on the transition: archiving an already
+    archived project releases nothing the first call left behind.
+    """
+    if project.status != ProjectStatus.ARCHIVED.value:
+        return
+    repos = await db.execute(select(Repository).where(Repository.project_id == project.id))
+    await release_bot_binding(db, project, repos.scalars().all(), reason="project_archived")
+
+
 @router.put("/{project_id}", response_model=ProjectRead)
 async def update_project(
     project_id: uuid.UUID,
@@ -240,6 +273,8 @@ async def update_project(
         project.status = project_in.status
     if project_in.config is not None:
         project.config = _vet_config_write(project_in.config, project)
+
+    await _release_bot_if_archived(db, project)
 
     await db.commit()
     await db.refresh(project)
@@ -271,6 +306,8 @@ async def patch_project(
     if project_in.config is not None:
         project.config = _vet_config_write(project_in.config, project)
 
+    await _release_bot_if_archived(db, project)
+
     await db.commit()
     await db.refresh(project)
 
@@ -300,7 +337,6 @@ async def list_secret_keys(
     return {"keys": sorted(existing_secrets.keys())}
 
 
-TELEGRAM_TOKEN_KEY = "TELEGRAM_BOT_TOKEN"  # noqa: S105 — a key name, not a secret
 _TELEGRAM_TOKEN_DETAIL = (
     f"{TELEGRAM_TOKEN_KEY} cannot be set directly — "
     "POST the token to /api/projects/{project_id}/telegram/token so it is validated first"
@@ -486,11 +522,11 @@ async def bind_telegram_token(
         project,
         {
             TELEGRAM_TOKEN_KEY: body.token.strip(),
-            "TELEGRAM_BOT_USERNAME": verdict.bot_username,
+            TELEGRAM_USERNAME_KEY: verdict.bot_username,
         },
         {
             TELEGRAM_TOKEN_KEY: "Telegram bot token from @BotFather",
-            "TELEGRAM_BOT_USERNAME": (
+            TELEGRAM_USERNAME_KEY: (
                 "Bot username (without @) for building t.me links and smoke tests"
             ),
         },
@@ -578,6 +614,41 @@ async def _cleanup_project_queue_messages(project_id: str) -> int:
     return deleted
 
 
+async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> None:
+    """Clear everything pointing at the project, children before parents.
+
+    None of these foreign keys cascade in the database, so a row left behind fails
+    the final delete. Repositories matter most for the bot binding: while the row
+    survives, its bot_username still reads as taken by a project that is gone.
+    """
+    repo_ids_q = select(Repository.id).where(Repository.project_id == project_id)
+    app_ids_q = select(Application.id).where(Application.repo_id.in_(repo_ids_q))
+    task_ids_q = select(Task.id).where(Task.project_id == project_id)
+
+    # Runs reference stories and tasks as well as the project, so they go first.
+    await db.execute(delete(Run).where(Run.project_id == project_id))
+
+    await db.execute(delete(TaskEvent).where(TaskEvent.task_id.in_(task_ids_q)))
+    await db.execute(delete(Task).where(Task.project_id == project_id))
+    await db.execute(delete(Story).where(Story.project_id == project_id))
+    await db.execute(delete(Brainstorm).where(Brainstorm.project_id == project_id))
+
+    for model in (AnalyticsHourly, AnalyticsDaily, AnalyticsKnownUsers):
+        await db.execute(delete(model).where(model.project_id == project_id))
+    for model in (RAGChunk, RAGDocument, RAGMessage, RAGConversationSummary):
+        await db.execute(delete(model).where(model.project_id == project_id))
+
+    await db.execute(
+        delete(ApplicationHealthHistory).where(
+            ApplicationHealthHistory.application_id.in_(app_ids_q)
+        )
+    )
+    await db.execute(delete(Deployment).where(Deployment.application_id.in_(app_ids_q)))
+    await db.execute(delete(PortAllocation).where(PortAllocation.application_id.in_(app_ids_q)))
+    await db.execute(delete(Application).where(Application.repo_id.in_(repo_ids_q)))
+    await db.execute(delete(Repository).where(Repository.project_id == project_id))
+
+
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(
     project_id: uuid.UUID,
@@ -585,21 +656,14 @@ async def delete_project(
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
 ):
-    """Delete a project and its related records (tasks, port allocations)."""
+    """Delete a project and everything that references it."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
-    # Delete FK-constrained related records
-    await db.execute(delete(Run).where(Run.project_id == project_id))
-
-    # Delete port allocations and applications via project's repositories
-    repo_ids_q = select(Repository.id).where(Repository.project_id == project_id)
-    app_ids_q = select(Application.id).where(Application.repo_id.in_(repo_ids_q))
-    await db.execute(delete(PortAllocation).where(PortAllocation.application_id.in_(app_ids_q)))
-    await db.execute(delete(Application).where(Application.repo_id.in_(repo_ids_q)))
+    await _delete_project_records(db, project_id)
 
     await db.delete(project)
     await db.commit()

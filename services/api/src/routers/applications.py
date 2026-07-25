@@ -17,7 +17,15 @@ from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAMessage
-from shared.models import Application, Deployment, PortAllocation, Repository, Run, Server
+from shared.models import (
+    Application,
+    Deployment,
+    PortAllocation,
+    Project,
+    Repository,
+    Run,
+    Server,
+)
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis.client import RedisStreamClient
 
@@ -34,6 +42,7 @@ from ..schemas import (
 from ..schemas.actions import AdminAction
 from ..schemas.repository import RepositoryRead
 from ..schemas.run import RunRead
+from ..utils.telegram_binding import release_bot_binding
 
 logger = structlog.get_logger()
 
@@ -93,6 +102,20 @@ async def get_application(
     return application
 
 
+async def _release_bot_if_undeployed(application: Application, db: AsyncSession) -> None:
+    """not_deployed is where an undeploy lands, so the repo stops holding its bot.
+
+    Keyed on the resulting status rather than on the undeploy request: the token is
+    freed once the teardown reports back, not while the bot may still be running on
+    the server. A repeated patch finds the binding already gone and does nothing.
+    """
+    if application.status != ApplicationStatus.NOT_DEPLOYED.value:
+        return
+    repo = await db.get(Repository, application.repo_id)
+    project = await db.get(Project, repo.project_id)
+    await release_bot_binding(db, project, [repo], reason="application_undeployed")
+
+
 @router.patch("/{application_id}", response_model=ApplicationRead)
 async def update_application(
     application_id: int,
@@ -106,6 +129,7 @@ async def update_application(
 
     if app_update.status is not None:
         application.status = app_update.status
+        await _release_bot_if_undeployed(application, db)
     if app_update.last_health_check is not None:
         application.last_health_check = app_update.last_health_check
     if app_update.response_time_ms is not None:
