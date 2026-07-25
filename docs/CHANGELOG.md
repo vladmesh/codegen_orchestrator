@@ -2,6 +2,18 @@
 
 ## 2026-07-25
 
+- Teardown now hands the bot back. The uniqueness check added the same day would otherwise lock a
+  token to a dead project forever: the binding lives on `Repository.bot_username`, and nothing ever
+  cleared it, so a user could not reuse their own bot after tearing the project down. Two
+  transitions release it, both keyed on the resulting state rather than on the request: a project
+  going `archived`, and an application landing in `not_deployed`, which is where the undeploy
+  consumer reports back to. Release clears `bot_username` on the repositories concerned and drops
+  `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_USERNAME` from the project's secrets, in the caller's
+  transaction. It is idempotent: a second archive or a redelivered patch finds nothing and changes
+  nothing. Stop keeps the binding, since a stopped application is one redeploy from running again,
+  and freeing the token while the bot may still be polling would only recreate the 409 the
+  uniqueness check exists to prevent. Deleting a project needs nothing: the rows go with it.
+
 - Token validation now refuses a bot that another live project already holds. Until now there was
   no uniqueness check at all: the palindrome bot `196ba936` and the echo bot `b380adb4` both took
   `@factory_e2e_test_bot`, and the clash only surfaced later as a 409 from Telegram. The last layer

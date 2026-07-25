@@ -24,6 +24,7 @@ from ..config import get_settings
 from ..database import get_async_session
 from ..dependencies import is_internal_service
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
+from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
 
 logger = structlog.get_logger()
@@ -219,6 +220,18 @@ async def list_projects(
     return list(result.scalars().all())
 
 
+async def _release_bot_if_archived(db: AsyncSession, project: Project) -> None:
+    """Archiving is teardown, so the project stops holding its bot.
+
+    Keyed on the resulting status, not on the transition: archiving an already
+    archived project releases nothing the first call left behind.
+    """
+    if project.status != ProjectStatus.ARCHIVED.value:
+        return
+    repos = await db.execute(select(Repository).where(Repository.project_id == project.id))
+    await release_bot_binding(db, project, repos.scalars().all(), reason="project_archived")
+
+
 @router.put("/{project_id}", response_model=ProjectRead)
 async def update_project(
     project_id: uuid.UUID,
@@ -240,6 +253,8 @@ async def update_project(
         project.status = project_in.status
     if project_in.config is not None:
         project.config = _vet_config_write(project_in.config, project)
+
+    await _release_bot_if_archived(db, project)
 
     await db.commit()
     await db.refresh(project)
@@ -271,6 +286,8 @@ async def patch_project(
     if project_in.config is not None:
         project.config = _vet_config_write(project_in.config, project)
 
+    await _release_bot_if_archived(db, project)
+
     await db.commit()
     await db.refresh(project)
 
@@ -300,7 +317,6 @@ async def list_secret_keys(
     return {"keys": sorted(existing_secrets.keys())}
 
 
-TELEGRAM_TOKEN_KEY = "TELEGRAM_BOT_TOKEN"  # noqa: S105 — a key name, not a secret
 _TELEGRAM_TOKEN_DETAIL = (
     f"{TELEGRAM_TOKEN_KEY} cannot be set directly — "
     "POST the token to /api/projects/{project_id}/telegram/token so it is validated first"
@@ -486,11 +502,11 @@ async def bind_telegram_token(
         project,
         {
             TELEGRAM_TOKEN_KEY: body.token.strip(),
-            "TELEGRAM_BOT_USERNAME": verdict.bot_username,
+            TELEGRAM_USERNAME_KEY: verdict.bot_username,
         },
         {
             TELEGRAM_TOKEN_KEY: "Telegram bot token from @BotFather",
-            "TELEGRAM_BOT_USERNAME": (
+            TELEGRAM_USERNAME_KEY: (
                 "Bot username (without @) for building t.me links and smoke tests"
             ),
         },
