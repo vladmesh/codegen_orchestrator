@@ -117,6 +117,8 @@ class TestDeployLifecycleStop:
             mock_subgraph.assert_not_called()
             # Allocation would create an application on a server of its own choosing.
             mock_alloc.assert_not_called()
+            # Lifecycle actions never inspect deployment SHA deduplication state.
+            mock_api.get.assert_not_called()
 
 
 class TestDeployLifecycleUndeploy:
@@ -142,6 +144,7 @@ class TestDeployLifecycleUndeploy:
         assert "compose.prod.yml" in ssh_cmd
         assert "down -v" in ssh_cmd
         assert "rm -rf /opt/services/weather-bot-0000" in ssh_cmd
+        mock_api.get.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_each_undeploy_hits_the_application_it_names(self, mock_redis):
