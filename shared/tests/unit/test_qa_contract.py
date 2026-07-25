@@ -128,6 +128,7 @@ class TestQAOutcome:
         assert QAOutcome.FAILED == "failed"
         assert QAOutcome.EXHAUSTED == "exhausted"
         assert QAOutcome.ERROR == "error"
+        assert QAOutcome.BLOCKED == "blocked"
 
     def test_is_str_enum(self):
         assert isinstance(QAOutcome.PASSED, str)

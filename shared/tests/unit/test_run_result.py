@@ -15,6 +15,8 @@ from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
     DeployRunResult,
     EngineeringRunResult,
+    QABlocker,
+    QABlockerCategory,
     QAFailedCheck,
     QARunResult,
 )
@@ -37,6 +39,20 @@ def _run(run_type: RunType, result, *, status: RunStatus = RunStatus.COMPLETED) 
 
 class TestValidPayloads:
     """A well-formed payload for each type parses into its typed model."""
+
+    def test_qa_blocker_has_closed_category_and_evidence(self):
+        blocker = QABlocker(
+            category=QABlockerCategory.TELEGRAM_ACCESS_DENIED,
+            attempted="send access probe",
+            sent="/start",
+            received="Forbidden: bot was blocked by the user",
+        )
+        run = _run(
+            RunType.QA,
+            {"qa_outcome": "blocked", "blocker": blocker.model_dump(mode="json")},
+        )
+        assert isinstance(run.result, QARunResult)
+        assert run.result.blocker == blocker
 
     def test_engineering(self):
         run = _run(

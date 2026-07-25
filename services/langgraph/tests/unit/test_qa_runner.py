@@ -14,6 +14,7 @@ import respx
 from shared.contracts.acceptance import HealthCriterion
 from src.consumers._qa_runner import (
     TelethonCredentialsError,
+    _preflight_agent_qa,
     _require_telethon_credentials,
     parse_qa_result,
     run_health_checks,
@@ -308,7 +309,13 @@ class TestRunHealthChecks:
 class TestRunQAOnServer:
     @pytest.fixture(autouse=True)
     def _skip_credential_refresh(self):
-        with patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock):
+        with (
+            patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
+            patch(
+                "src.consumers._qa_runner._preflight_agent_qa", new_callable=AsyncMock
+            ) as preflight,
+        ):
+            preflight.return_value = None
             yield
 
     @pytest.fixture
@@ -482,40 +489,26 @@ class TestRunQAOnServer:
 
         assert all(".qa-telethon.env" not in call.args[0] for call in mock_conn.run.await_args_list)
 
+
+class TestQAPreflight:
     @pytest.mark.asyncio
-    async def test_missing_credentials_fail_the_run_with_the_real_reason(self):
+    async def test_missing_telethon_credentials_returns_blocker_before_agent(self):
         missing = TelethonCredentialsError("no credentials file at $HOME/.qa-telethon.env")
+        claude_present = SimpleNamespace(exit_status=0, stdout="/usr/bin/claude\n", stderr="")
+        conn = AsyncMock()
+        conn.run = AsyncMock(return_value=claude_present)
 
-        mock_conn = AsyncMock()
-        mock_conn.run = AsyncMock()
-        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
-            patch(
-                "src.consumers._qa_runner._require_telethon_credentials",
-                new_callable=AsyncMock,
-                side_effect=missing,
-            ),
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials",
+            new_callable=AsyncMock,
+            side_effect=missing,
         ):
-            mock_asyncssh.import_private_key.return_value = "parsed_key"
-            mock_asyncssh.connect.return_value = mock_conn
+            blocker = await _preflight_agent_qa(conn, "private_bot")
 
-            result = await run_qa_on_server(
-                server_ip="1.2.3.4",
-                ssh_user="dev",
-                ssh_key="fake",
-                project_name="weather_bot",
-                acceptance_criteria="- Telegram: /start responds",
-                deployed_url="https://bot.example.com",
-                bot_username="weather_bot",
-            )
-
-        assert result.passed is False
-        assert "no credentials file at $HOME/.qa-telethon.env" in result.summary
-        # claude never ran — no room for a guessed "blocked" verdict
-        mock_conn.run.assert_not_awaited()
+        assert blocker is not None
+        assert blocker.category.value == "missing_telethon_credentials"
+        assert blocker.received == str(missing)
+        conn.run.assert_awaited_once_with("command -v claude", check=False)
 
 
 class _LocalShellConn:

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-26
+
+- QA now distinguishes a product failure from an inability to test. A typed
+  `blocked` outcome carries a closed-category blocker with the attempted action
+  and request/response evidence. Platform-owned preflight checks cover the
+  deployed URL, QA server, Claude Code, Telegram identity and Telethon
+  credentials. Telegram runs send `/start` as the QA identity before Claude is
+  invoked; an access denial, or an unknown preflight classification, parks the
+  story in `waiting_human_review` and never creates a fix task. This prevents a
+  private bot from being changed because the QA account lacked access.
+
 ## 2026-07-25
 
 - A stop or undeploy now names the application it acts on. `DeployMessage` carries

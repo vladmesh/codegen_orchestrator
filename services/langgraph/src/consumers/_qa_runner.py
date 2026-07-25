@@ -20,6 +20,7 @@ import httpx
 import structlog
 
 from shared.contracts.acceptance import HealthCriterion
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 
 from ..prompts.qa import TELETHON_ENV_FILE, build_qa_prompt
 
@@ -55,6 +56,7 @@ class QAResult:
     summary: str = ""
     raw: str = ""
     report: str = ""
+    blocker: QABlocker | None = None
 
 
 def parse_qa_result(raw: str) -> QAResult:
@@ -138,6 +140,27 @@ async def run_health_checks(
         summary=summary,
         report="\n".join(f"- {c['name']}: {c['detail']}" for c in results),
     )
+
+
+async def check_deployed_url_reachable(deployed_url: str) -> QABlocker | None:
+    """Check that the deployment can be contacted before starting an agent.
+
+    A response, including a non-2xx response, proves the URL is reachable. The
+    acceptance criteria decide whether that response is a product failure.
+    """
+    try:
+        async with httpx.AsyncClient(
+            timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=False
+        ) as client:
+            await client.get(deployed_url)
+    except httpx.HTTPError as exc:
+        return QABlocker(
+            category=QABlockerCategory.DEPLOYED_URL_UNREACHABLE,
+            attempted="GET deployed URL before starting QA agent",
+            sent=f"GET {deployed_url}",
+            received=f"transport error: {exc}",
+        )
+    return None
 
 
 async def _run_health_check(
@@ -312,6 +335,64 @@ async def _require_telethon_credentials(conn: asyncssh.SSHClientConnection) -> N
     raise TelethonCredentialsError(f"cannot read {TELETHON_ENV_FILE}: {detail}")
 
 
+async def _preflight_agent_qa(
+    conn: asyncssh.SSHClientConnection, bot_username: str | None
+) -> QABlocker | None:
+    """Check platform-owned prerequisites without invoking Claude Code."""
+    claude = await conn.run("command -v claude", check=False)
+    if claude.exit_status != 0:
+        return QABlocker(
+            category=QABlockerCategory.CLAUDE_UNAVAILABLE,
+            attempted="locate Claude Code on QA server",
+            sent="command -v claude",
+            received=(claude.stderr or claude.stdout or "command not found").strip(),
+        )
+
+    if not bot_username:
+        return None
+
+    try:
+        await _require_telethon_credentials(conn)
+    except TelethonCredentialsError as exc:
+        return QABlocker(
+            category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
+            attempted="validate QA Telethon credentials",
+            sent=f"read {TELETHON_ENV_FILE} and validate required variable names",
+            received=str(exc),
+        )
+
+    probe = (
+        f"set -a && . {TELETHON_ENV_FILE} && set +a; "
+        "/opt/qa-runner/venv/bin/python3 -c "
+        + shlex.quote(
+            "import os\n"
+            "from telethon.sync import TelegramClient\n"
+            "from telethon.sessions import StringSession\n"
+            "client = TelegramClient(StringSession(os.environ['TELETHON_SESSION']), "
+            "int(os.environ['TELETHON_API_ID']), os.environ['TELETHON_API_HASH'])\n"
+            "client.start()\n"
+            f"client.send_message('@{bot_username}', '/start')\n"
+            "print('probe_sent')\n"
+            "client.disconnect()"
+        )
+    )
+    result = await conn.run(probe, check=False)
+    if result.exit_status != 0:
+        detail = (result.stderr or result.stdout or "Telegram probe failed").strip()
+        category = (
+            QABlockerCategory.TELEGRAM_ACCESS_DENIED
+            if "forbidden" in detail.lower() or "access" in detail.lower()
+            else QABlockerCategory.UNKNOWN
+        )
+        return QABlocker(
+            category=category,
+            attempted="send Telegram /start access probe before QA agent",
+            sent=f"Telegram /start to @{bot_username}",
+            received=detail[-500:],
+        )
+    return None
+
+
 async def run_qa_on_server(
     *,
     server_ip: str,
@@ -369,10 +450,11 @@ async def run_qa_on_server(
             )
 
             # Ensure Claude Code credentials are fresh before running
-            await _ensure_claude_credentials(conn)
+            blocker = await _preflight_agent_qa(conn, bot_username)
+            if blocker:
+                return QAResult(passed=False, summary="QA preflight blocked", blocker=blocker)
 
-            if bot_username:
-                await _require_telethon_credentials(conn)
+            await _ensure_claude_credentials(conn)
 
             result = await conn.run(cmd, check=False)
 
@@ -408,6 +490,12 @@ async def run_qa_on_server(
             passed=False,
             summary=f"QA cannot test @{bot_username}: {e}",
             raw="",
+            blocker=QABlocker(
+                category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
+                attempted="validate QA Telethon credentials",
+                sent=f"read {TELETHON_ENV_FILE}",
+                received=str(e),
+            ),
         )
 
     except Exception as e:
@@ -416,6 +504,12 @@ async def run_qa_on_server(
             passed=False,
             summary=f"SSH connection failed to {server_ip}: {e}",
             raw="",
+            blocker=QABlocker(
+                category=QABlockerCategory.SERVER_UNAVAILABLE,
+                attempted="connect to QA server",
+                sent=f"SSH connection to {server_ip}",
+                received=str(e),
+            ),
         )
 
 

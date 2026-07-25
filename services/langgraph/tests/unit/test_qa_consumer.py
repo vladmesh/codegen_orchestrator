@@ -116,6 +116,14 @@ def mock_redis():
     return redis
 
 
+@pytest.fixture(autouse=True)
+def _skip_deployed_url_preflight():
+    """Network reachability has dedicated tests; consumer tests mock the runner."""
+    with patch("src.consumers.qa.check_deployed_url_reachable", new_callable=AsyncMock) as check:
+        check.return_value = None
+        yield
+
+
 @pytest.fixture
 def qa_message_data():
     return {
@@ -162,10 +170,10 @@ class TestResolveServerInfo:
 
 class TestProcessQAJobServerResolveFailure:
     @pytest.mark.asyncio
-    async def test_server_resolve_failure_writes_terminal_error_result(
+    async def test_server_resolve_failure_writes_terminal_blocker_result(
         self, mock_api_client, mock_redis, qa_message_data
     ):
-        """If the server can't be resolved, the run is failed with a typed ERROR result.
+        """If the server can't be resolved, QA is blocked rather than failed.
 
         Otherwise the run would stay QUEUED and the story would sit in TESTING forever.
         """
@@ -173,12 +181,12 @@ class TestProcessQAJobServerResolveFailure:
             mock_resolve.return_value = None
             result = await process_qa_job(qa_message_data, mock_redis)
 
-        assert result["status"] == "error"
-        # The run must be patched to FAILED with a typed QA ERROR result.
+        assert result["status"] == "qa_blocked"
+        # The run must be completed with a typed QA blocker result.
         patch_call = mock_api_client.patch.call_args
         run_data = patch_call[1]["json"]
-        assert run_data["status"] == RunStatus.FAILED.value
-        assert run_data["result"]["qa_outcome"] == QAOutcome.ERROR.value
+        assert run_data["status"] == RunStatus.COMPLETED.value
+        assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
 
 
 class TestProcessQAJobPass:
@@ -266,6 +274,32 @@ class TestProcessQAJobFail:
             mock_run.return_value = QAResult(passed=False, checks=[], summary="Broken", raw="")
             await process_qa_job(qa_message_data, mock_redis)
 
+        mock_api_client.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_private_bot_access_denied_is_blocked_without_running_agent(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """A QA identity lacking bot access is not evidence of a product bug."""
+        from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data["bot_username"] = "private_bot"
+        blocker = QABlocker(
+            category=QABlockerCategory.TELEGRAM_ACCESS_DENIED,
+            attempted="send Telegram /start access probe",
+            sent="Telegram /start to @private_bot",
+            received="Forbidden: bot was blocked by the user",
+        )
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=False, summary="blocked", blocker=blocker)
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        mock_run.assert_awaited_once()
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
+        assert run_data["result"]["blocker"]["category"] == "telegram_access_denied"
         mock_api_client.create_task.assert_not_called()
 
     @pytest.mark.asyncio
@@ -437,15 +471,15 @@ class TestProcessQAJobEdgeCases:
         mock_api_client.get_application.side_effect = Exception("Not found")
 
         result = await process_qa_job(qa_message_data, mock_redis)
-        assert result["status"] == "error"
-        assert "application" in result.get("error", "").lower()
+        assert result["status"] == "qa_blocked"
+        assert result["blocker"] == "server_unavailable"
 
     @pytest.mark.asyncio
     async def test_no_ssh_key_errors(self, mock_api_client, mock_redis, qa_message_data):
         mock_api_client.get_server_ssh_key.return_value = None
 
         result = await process_qa_job(qa_message_data, mock_redis)
-        assert result["status"] == "error"
+        assert result["status"] == "qa_blocked"
 
     @pytest.mark.asyncio
     async def test_inflight_dedup_skips(self, mock_api_client, mock_redis, qa_message_data):
@@ -513,7 +547,7 @@ class TestProcessQAJobEdgeCases:
         mock_api_client.get_story.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_bot_username_missing_for_tg_bot_stores_error(
+    async def test_bot_username_missing_for_tg_bot_stores_blocker(
         self, mock_api_client, mock_redis, qa_message_data
     ):
         mock_api_client.get_project.return_value = ProjectDTO(
@@ -529,7 +563,7 @@ class TestProcessQAJobEdgeCases:
         qa_message_data["bot_username"] = None
 
         result = await process_qa_job(qa_message_data, mock_redis)
-        assert result["status"] == "error"
+        assert result["status"] == "qa_blocked"
         call_kwargs = mock_api_client.patch.call_args
         run_data = call_kwargs[1]["json"]
-        assert run_data["result"]["qa_outcome"] == QAOutcome.ERROR.value
+        assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value

@@ -797,6 +797,38 @@ class TestSuperviseTestingStories:
         api_client.fail_story.assert_called_once_with("story-1")
 
     @pytest.mark.asyncio
+    async def test_blocked_qa_waits_for_human_without_creating_fix_task(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.BLOCKED.value,
+                "blocker": {
+                    "category": "telegram_access_denied",
+                    "attempted": "send access probe",
+                    "sent": "/start",
+                    "received": "Forbidden",
+                },
+            },
+        )
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.patch.assert_awaited_once_with(
+            "stories/story-1", json={"status": "waiting_human_review"}
+        )
+        api_client.create_task.assert_not_called()
+        api_client.fail_story.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_skips_running_qa(self, api_client, redis_client):
         """QA run still RUNNING → skip, no action."""
         from src.tasks.supervisor import supervise_testing_stories
