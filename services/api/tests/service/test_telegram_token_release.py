@@ -1,10 +1,10 @@
 """Teardown hands the bot back, so the user can reuse their own token.
 
 The uniqueness check (one live project per bot) is only fair if the hold ends when
-the project does. Here a bound project is torn down two ways, archived and with its
-application undeployed, and each time the binding, the stored token, and the
-verdict for a fresh project are checked against a real database. Release runs
-again on an already released project to prove it stays a no-op.
+the project does. Here a bound project is torn down three ways, archived, with its
+application undeployed, and deleted outright, and each time the binding, the stored
+token, and the verdict for a fresh project are checked against a real database.
+Release runs again on an already released project to prove it stays a no-op.
 """
 
 from http import HTTPStatus
@@ -120,6 +120,20 @@ async def _archive(client: AsyncClient, project_id: str) -> None:
     assert resp.status_code == HTTPStatus.OK, resp.text
 
 
+async def _add_application(client: AsyncClient, repo_id: str, status_value: str) -> int:
+    resp = await client.post(
+        "/api/applications/",
+        json={
+            "repo_id": repo_id,
+            "server_handle": await _server_handle(client),
+            "service_name": f"svc-{uuid.uuid4().hex[:6]}",
+            "status": status_value,
+        },
+    )
+    assert resp.status_code == HTTPStatus.CREATED, resp.text
+    return resp.json()["id"]
+
+
 async def _server_handle(client: AsyncClient) -> str:
     handle = "test-release-server"
     resp = await client.get(f"/api/servers/{handle}")
@@ -186,18 +200,7 @@ async def test_undeploying_the_application_releases_the_binding(
 ):
     """The undeploy consumer reports back by patching the application to not_deployed."""
     project_id, repo_id = await _bound_project(async_client, "Palindrome", bot)
-    handle = await _server_handle(async_client)
-    app_resp = await async_client.post(
-        "/api/applications/",
-        json={
-            "repo_id": repo_id,
-            "server_handle": handle,
-            "service_name": f"svc-{uuid.uuid4().hex[:6]}",
-            "status": ApplicationStatus.RUNNING.value,
-        },
-    )
-    assert app_resp.status_code == HTTPStatus.CREATED, app_resp.text
-    app_id = app_resp.json()["id"]
+    app_id = await _add_application(async_client, repo_id, ApplicationStatus.RUNNING.value)
 
     patched = await async_client.patch(
         f"/api/applications/{app_id}",
@@ -216,23 +219,35 @@ async def test_undeploying_the_application_releases_the_binding(
 async def test_stopping_the_application_keeps_the_binding(async_client: AsyncClient, bot: str):
     """Stop is reversible, so the bot stays with the project a redeploy would revive."""
     project_id, repo_id = await _bound_project(async_client, "Palindrome", bot)
-    handle = await _server_handle(async_client)
-    app_resp = await async_client.post(
-        "/api/applications/",
-        json={
-            "repo_id": repo_id,
-            "server_handle": handle,
-            "service_name": f"svc-{uuid.uuid4().hex[:6]}",
-            "status": ApplicationStatus.RUNNING.value,
-        },
-    )
-    assert app_resp.status_code == HTTPStatus.CREATED, app_resp.text
+    app_id = await _add_application(async_client, repo_id, ApplicationStatus.RUNNING.value)
 
     patched = await async_client.patch(
-        f"/api/applications/{app_resp.json()['id']}",
+        f"/api/applications/{app_id}",
         json={"status": ApplicationStatus.STOPPED.value},
     )
     assert patched.status_code == HTTPStatus.OK, patched.text
 
     assert await _bot_username(async_client, repo_id) == bot
     assert "TELEGRAM_BOT_TOKEN" in await _secret_keys(async_client, project_id)
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_project_frees_the_token(async_client: AsyncClient, bot: str):
+    """Delete is teardown too: the repository row holding the bot goes with it."""
+    project_id, repo_id = await _bound_project(async_client, "Palindrome", bot)
+    await _add_application(async_client, repo_id, ApplicationStatus.RUNNING.value)
+
+    deleted = await async_client.delete(
+        f"/api/projects/{project_id}",
+        headers={"X-Telegram-ID": OWNER_ID},
+    )
+    assert deleted.status_code == HTTPStatus.NO_CONTENT, deleted.text
+    gone = await async_client.get(f"/api/repositories/{repo_id}")
+    assert gone.status_code == HTTPStatus.NOT_FOUND, gone.text
+
+    new_id, new_repo_id = await _make_project(async_client, "Echo")
+    verdict = await _bind(async_client, new_id, bot)
+
+    assert verdict["status"] == TokenVerdictStatus.OK.value
+    assert verdict["reason_code"] is None
+    assert await _bot_username(async_client, new_repo_id) == bot

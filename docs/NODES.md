@@ -18,7 +18,8 @@ projects: a bot held by another live project is refused, naming that project onl
 user owns it), stores `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_USERNAME` and `Repository.bot_username` only on a passing verdict, and returns a typed `TelegramTokenVerdict` (`shared/contracts/dto/telegram.py`) with a user-facing message. PO only relays it. The hold ends with the
 project: archiving it, or its application landing in `not_deployed` after an undeploy, clears
 `Repository.bot_username` and drops the two secrets, so the bot is free to bind elsewhere
-(`services/api/src/utils/telegram_binding.py`).
+(`services/api/src/utils/telegram_binding.py`). Deleting the project removes the repository rows
+outright, with the same effect.
 - `create_story`: создание user story + автоматический запуск engineering work
 - `reopen_story`: переоткрытие завершённой story с user_report (контекст проблемы)
 - `list_stories`, `get_story`: просмотр stories, привязанных tasks и их runs (с id, status, type, error, timing)

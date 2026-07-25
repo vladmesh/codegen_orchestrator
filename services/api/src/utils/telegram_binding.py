@@ -6,7 +6,8 @@ token hostage to a dead project and the user cannot reuse their own bot.
 
 Release runs server-side on the transitions that mean teardown (the project going
 archived, the application going not_deployed after an undeploy), so no caller has to
-remember it. Deleting a project needs nothing here: the rows go with it.
+remember it. Deleting a project takes a different route: the delete endpoint drops the
+repository rows, which removes the binding along with them.
 """
 
 from __future__ import annotations

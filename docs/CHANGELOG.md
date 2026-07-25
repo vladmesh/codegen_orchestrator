@@ -12,7 +12,12 @@
   transaction. It is idempotent: a second archive or a redelivered patch finds nothing and changes
   nothing. Stop keeps the binding, since a stopped application is one redeploy from running again,
   and freeing the token while the bot may still be polling would only recreate the 409 the
-  uniqueness check exists to prevent. Deleting a project needs nothing: the rows go with it.
+  uniqueness check exists to prevent. Deleting a project takes the third route: `DELETE
+  /api/projects/{id}` now clears the rows that reference it, repositories among them, so the
+  binding disappears with the project. It could not before — none of those foreign keys cascade in
+  the database, and the endpoint left repositories, tasks, stories, analytics and RAG rows behind,
+  so deleting any real project failed on its final commit and the bot stayed held by a project the
+  user had asked to be rid of.
 
 - Token validation now refuses a bot that another live project already holds. Until now there was
   no uniqueness check at all: the palindrome bot `196ba936` and the echo bot `b380adb4` both took
