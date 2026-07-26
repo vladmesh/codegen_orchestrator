@@ -494,7 +494,6 @@ services:
       start_period: 5s
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
     networks:
       - internal
     restart: unless-stopped

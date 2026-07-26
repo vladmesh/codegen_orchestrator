@@ -17,7 +17,7 @@ The trace data tables were empty apart from 72 schema-migration rows. These are 
 ## Post-removal validation
 
 - The Compose configuration was rendered successfully without Langfuse, ClickHouse, or MinIO services and without their volumes.
-- The affected LangGraph consumers (PO, architect, engineering, and deploy) start and invoke their graphs without Langfuse callbacks or exporter configuration. Their logs contain no span-export errors because this application had no independent OpenTelemetry instrumentation; the OpenTelemetry packages were transitive Langfuse SDK dependencies and were removed with that SDK. This records the mismatch with the original task wording.
+- A live service start was not performed in this work. Unit coverage verifies the affected LangGraph consumers (PO, architect, engineering, and deploy) no longer configure Langfuse callbacks or exporters. The application had no independent OpenTelemetry instrumentation; the OpenTelemetry packages were transitive Langfuse SDK dependencies and were removed with that SDK. This records the mismatch with the original task wording.
 - The hourly scheduler analytics path remains unchanged and continues to query Loki to write `analytics_hourly`, `analytics_daily`, and `analytics_known_users`; the LK endpoints continue to read those tables. This was checked after the removal by the existing unit suite and Compose configuration validation.
 
 Loki remains in place. Its retention is configured in `infra/loki.yml` for 168 hours, with the compactor retention deletion enabled.
