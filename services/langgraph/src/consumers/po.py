@@ -32,7 +32,6 @@ from shared.redis_client import RedisStreamClient
 from ..agents.po.graph import create_po_graph
 from ..agents.po.tools import init_po_clients
 from ..config.settings import get_settings
-from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._validation import _safe_validation_errors
 
 logger = structlog.get_logger(__name__)
@@ -330,8 +329,6 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
             "retry_story_id": data.get("story_id", ""),
         },
         "recursion_limit": 50,
-        "callbacks": get_langfuse_callbacks(),
-        "metadata": build_langfuse_metadata(agent_type="po", user_id=user_id),
     }
 
     # Pre-invoke: repair any orphan tool_calls from previous crashed invocations

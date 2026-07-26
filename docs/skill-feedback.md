@@ -12,7 +12,7 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 ## [implement] — 2026-03-21
 - **Type**: missing-info
 - **Quote**: "docker-compose.yml entry: user-dashboard service, port 3002"
-- **Problem**: Port 3002 is already used by Langfuse. The plan specified port 3002 but didn't check for conflicts. Had to change to 3003 at runtime.
+- **Problem**: The plan specified a port without checking for conflicts. Had to change it at runtime.
 - **Suggested fix**: Plans for new docker-compose services should check existing port allocations in docker-compose.yml before specifying a port.
 
 ## [test-maintenance] — 2026-03-19

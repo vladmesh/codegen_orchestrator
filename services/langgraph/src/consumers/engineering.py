@@ -24,7 +24,6 @@ from shared.redis_client import RedisStreamClient
 from ..clients.api import api_client
 from ..clients.story_worker_registry import get_story_worker
 from ..nodes.resource_allocator import resource_allocator_node
-from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker
 from ._events import publish_callback_event
 from ._live_work import live_work_unsettled
@@ -244,19 +243,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         engineering_subgraph = create_engineering_subgraph()
         developer_started_at = datetime.now(UTC)
-        result = await engineering_subgraph.ainvoke(
-            subgraph_input,
-            config={
-                "callbacks": get_langfuse_callbacks(),
-                "metadata": build_langfuse_metadata(
-                    agent_type="engineering",
-                    user_id=user_id,
-                    project_id=project_id,
-                    task_id=task_id,
-                    story_id=story_id,
-                ),
-            },
-        )
+        result = await engineering_subgraph.ainvoke(subgraph_input)
 
         worker_report = result.get("worker_report")
         if worker_report and planning_task_id:

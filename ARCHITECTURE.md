@@ -14,13 +14,12 @@ Codegen Orchestrator — мультиагентная система для ав
 | **Developer Agents** | Claude Code, Factory.ai Droid via worker-manager (Docker + Redis) |
 | **Backend Orchestration** | LangGraph (subgraphs) |
 | **LLM** | Anthropic Claude (via CLI or API) |
-| **LLM Tracing** | Langfuse v3 (self-hosted, CallbackHandler integration) |
 | **Интерфейс** | Telegram Bot |
 | **Admin UI** | React SPA (admin-frontend, nginx proxy) |
 | **Кодогенерация** | service-template (Copier) |
 | **Инфраструктура** | `services/infra-service` (Ansible) |
 | **Хранение** | PostgreSQL + Redis |
-| **Observability** | Loki + Promtail + Grafana (logs), Langfuse (LLM traces) |
+| **Observability** | Loki + Promtail + Grafana (logs) |
 
 ## Ключевые концепции
 
@@ -62,11 +61,7 @@ Codegen Orchestrator — мультиагентная система для ав
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, and `qa-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `scheduler` | Background workers: architect consumer (story→tasks LLM decomposition), task dispatcher (scaffold trigger, dispatch unblocked tasks, complete stories), github_sync, server_sync, health_checker |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
-| `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues, users, LLM tracing pages. Nginx proxies `/api/*` → api:8000, `/wm-api/*` → worker-manager. Basic auth via htpasswd. Grafana embedded at `/grafana/`, Langfuse linked externally |
-| `langfuse-web` | Langfuse v3 UI (port 3002). LLM trace viewer |
-| `langfuse-worker` | Langfuse background processor |
-| `clickhouse` | ClickHouse — trace analytics for Langfuse |
-| `minio` | MinIO — S3-compatible event/media storage for Langfuse |
+| `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000, `/wm-api/*` → worker-manager. Basic auth via htpasswd. Grafana is embedded at `/grafana/` |
 | `loki` | Log aggregation (7-day retention) |
 | `promtail` | Docker log scraper → Loki |
 | `grafana` | Dashboards + log viewer. Proxied via admin-frontend at `/grafana/` |
@@ -203,11 +198,9 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 
 ```
 Services (structlog JSON) → stdout → Docker → Promtail → Loki → Grafana
-All consumers → Langfuse CallbackHandler → langfuse-web (traces)
 ```
 
 - **Grafana**: Pre-provisioned "Service Logs" dashboard. Filter by service, level, `correlation_id`. Proxied via admin-frontend at `/grafana/`.
-- **Langfuse**: Self-hosted LLM tracing. All 4 consumers (PO, architect, engineering, deploy) auto-attach `CallbackHandler` when `LANGFUSE_PUBLIC_KEY` + `SECRET_KEY` env vars are set. Traces enriched with user, project, and agent metadata.
 - **LangSmith** (optional): `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY`.
 
 ### Логирование

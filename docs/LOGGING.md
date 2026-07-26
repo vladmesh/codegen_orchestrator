@@ -34,20 +34,6 @@ infra/
     └── dashboards/service-logs.json  # Pre-built "Service Logs" dashboard
 ```
 
-## LLM Tracing (Langfuse)
-
-Self-hosted Langfuse v3 provides LLM call tracing for all agents.
-
-**Setup**: Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` env vars (empty = disabled). All 4 LangGraph consumers (PO, architect, engineering, deploy) auto-attach a `CallbackHandler` via `src/tracing.py`. Zero changes to agent/graph code.
-
-**Trace enrichment**: Each trace includes `user_id`, `project_id`, `agent_type` metadata for filtering.
-
-**Infrastructure**: `langfuse-web` (UI, port 3002), `langfuse-worker` (background processor), `clickhouse` (analytics), `minio` (S3-compatible media storage). Separate `langfuse` PostgreSQL database.
-
-**Access**: Via admin-frontend links or directly at `http://localhost:3002`.
-
----
-
 ## Quick Start
 
 ```python
@@ -366,7 +352,6 @@ logger.info("error")  # BAD
 1. Avoid logging large objects (truncate if needed)
 2. Use `DEBUG` level for high-frequency logs
 3. Set `LOG_LEVEL=INFO` in production
-
 
 
 
