@@ -34,9 +34,15 @@ class TestAnsibleRunnerConfiguration:
         ansible_playbook.chmod(0o755)
         monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
-        role_tasks_dir = tmp_path / "roles" / "role_resolution_probe" / "tasks"
+        ansible_dir = tmp_path / "ansible"
+        playbooks_dir = ansible_dir / "playbooks"
+        role_tasks_dir = ansible_dir / "roles" / "role_resolution_probe" / "tasks"
+        playbooks_dir.mkdir(parents=True)
         role_tasks_dir.mkdir(parents=True)
-        probe_playbook = ANSIBLE_DIR / "playbooks" / "role_resolution_probe.yml"
+        (ansible_dir / "ansible.cfg").write_text(
+            "[defaults]\nroles_path = roles\nhost_key_checking = False\n"
+        )
+        probe_playbook = playbooks_dir / "role_resolution_probe.yml"
         probe_playbook.write_text(
             """---
 - hosts: target
@@ -53,20 +59,18 @@ class TestAnsibleRunnerConfiguration:
       - true
 """
         )
-        monkeypatch.setenv("ANSIBLE_ROLES_PATH", str(tmp_path / "roles"))
+        monkeypatch.delenv("ANSIBLE_CONFIG", raising=False)
+        monkeypatch.delenv("ANSIBLE_ROLES_PATH", raising=False)
         monkeypatch.setattr(
             "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
-            str(ANSIBLE_DIR / "playbooks"),
+            str(playbooks_dir),
         )
 
-        try:
-            success, output = AnsibleRunner().run_playbook(
-                server_ip="localhost ansible_connection=local",
-                server_handle="vps-test",
-                playbook_name=probe_playbook.name,
-            )
-        finally:
-            probe_playbook.unlink(missing_ok=True)
+        success, output = AnsibleRunner().run_playbook(
+            server_ip="localhost ansible_connection=local",
+            server_handle="vps-test",
+            playbook_name=probe_playbook.name,
+        )
 
         assert success is True, output
 
