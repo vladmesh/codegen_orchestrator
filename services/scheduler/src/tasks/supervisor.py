@@ -428,6 +428,7 @@ async def _handle_deploy_success_story(
             "project_id": project_id,
             "story_id": story_id,
             "status": RunStatus.QUEUED.value,
+            "run_metadata": {"application_id": application_id},
         }
     )
 
@@ -883,8 +884,7 @@ async def supervise_testing_stories(
     Reads run.result.qa_outcome set by the QA consumer:
     - PASSED → story COMPLETED
     - FAILED → create fix task, story IN_PROGRESS, redispatch to engineering
-    - EXHAUSTED → story FAILED
-    - ERROR → story FAILED
+    - BLOCKED / EXHAUSTED / ERROR → stop the application and wait for human review
 
     Returns dict with counts of actions taken.
     """
@@ -937,23 +937,85 @@ async def supervise_testing_stories(
             else:
                 failed += 1
 
-        elif outcome == QAOutcome.BLOCKED:
-            await api_client.transition_story(story_id, "human-review")
+        elif outcome in (QAOutcome.BLOCKED, QAOutcome.EXHAUSTED, QAOutcome.ERROR):
+            await _quarantine_unverified_application(
+                api_client, redis_client, story_id, project_id, run, log
+            )
             log.warning(
-                "qa_supervisor_blocked",
+                "qa_supervisor_quarantined",
                 run_id=run.id,
-                blocker_category=(
-                    run.result.blocker.category.value if run.result.blocker else "unknown"
-                ),
+                outcome=outcome.value,
+                application_id=run.run_metadata.get("application_id"),
             )
             failed += 1
 
-        elif outcome in (QAOutcome.EXHAUSTED, QAOutcome.ERROR):
-            await api_client.fail_story(story_id)
-            log.warning("qa_supervisor_failed", outcome=outcome.value, run_id=run.id)
-            failed += 1
-
     return {"completed": completed, "redispatched": redispatched, "failed": failed}
+
+
+def _qa_quarantine_reason(result: QARunResult) -> dict:
+    """Keep the terminal QA evidence with the story without reclassifying it."""
+    reason = {"qa_outcome": result.qa_outcome.value}
+    if result.blocker is not None:
+        reason["blocker"] = result.blocker.model_dump(mode="json")
+    if result.summary:
+        reason["summary"] = result.summary
+    if result.error:
+        reason["error"] = result.error
+    return reason
+
+
+async def _quarantine_unverified_application(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Stop an unverified bot, retain its binding, and request a human decision."""
+    application_id = run.run_metadata.get("application_id")
+    if not isinstance(application_id, int):
+        raise RuntimeError(f"QA run {run.id} has no application_id for quarantine")
+
+    await api_client.stop_application(application_id)
+    reason = _qa_quarantine_reason(run.result)
+    await api_client.update_story(story_id, {"quarantine_reason": reason})
+    await api_client.transition_story(story_id, "human-review")
+    await _notify_quarantine_owner(api_client, redis_client, story_id, project_id, reason, log)
+
+
+async def _notify_quarantine_owner(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    reason: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask the project owner to decide what to do with a stopped bot."""
+    project = await api_client.get_project(project_id)
+    if project is None:
+        log.warning("qa_quarantine_no_project", project_id=project_id)
+        return
+
+    outcome = reason["qa_outcome"]
+    blocker = reason.get("blocker")
+    if blocker:
+        detail = f"{blocker['category']}: {blocker['received']}"
+    else:
+        detail = reason.get("summary") or reason.get("error") or outcome
+    event = POSystemEvent(
+        event="story_quarantined",
+        text=(
+            "QA could not confirm that the bot works. The bot has been stopped, "
+            f"but its Telegram token remains assigned to this project. Reason: {detail}. "
+            "Please decide whether to fix and redeploy it."
+        ),
+        task_id=story_id,
+        user_id=str(project.owner_id),
+        project_id=project_id,
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
 
 
 async def _handle_qa_failed(

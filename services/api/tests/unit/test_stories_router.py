@@ -27,6 +27,7 @@ def _make_story(**overrides):
         "blocked_by_story_id": None,
         "created_by": "system",
         "user_report": None,
+        "quarantine_reason": None,
         "created_at": now,
         "updated_at": now,
     }

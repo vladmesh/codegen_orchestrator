@@ -71,7 +71,7 @@ class TestHandleMessage:
         mock_graph.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("event_type", ["story_completed", "story_failed"])
+    @pytest.mark.parametrize("event_type", ["story_completed", "story_failed", "story_quarantined"])
     async def test_story_event_passes_through(self, mock_graph, mock_client, event_type):
         """Story-level events (story_completed, story_failed) should invoke PO."""
         data = {

@@ -1,6 +1,6 @@
 """Story API schemas."""
 
-from typing import Literal
+from typing import Any, Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict
@@ -38,6 +38,7 @@ class StoryRead(TimestampedDTO):
     blocked_by_story_id: str | None
     created_by: str
     user_report: str | None
+    quarantine_reason: dict[str, Any] | None = None
     pr_number: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -53,6 +54,7 @@ class StoryUpdate(BaseModel):
     type: Literal[StoryType.PRODUCT, StoryType.TECHNICAL] | None = None
     priority: int | None = None
     blocked_by_story_id: str | None = None
+    quarantine_reason: dict[str, Any] | None = None
     pr_number: int | None = None
 
 

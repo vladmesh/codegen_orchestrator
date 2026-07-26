@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.story import StoryStatus, StoryType
@@ -33,4 +33,6 @@ class Story(Base):
     )
     created_by: Mapped[str] = mapped_column(String(50), default="system")
     user_report: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # QA evidence kept with the story while a human decides whether to retry or fix it.
+    quarantine_reason: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
