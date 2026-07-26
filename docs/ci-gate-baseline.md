@@ -47,6 +47,12 @@ Skipped-command guard:
 - If a matrix item is applicable, the test step has a stable `id` and a following `always()` assertion verifies that the test step outcome is `success`.
 - A required suite cannot become green because the actual test command was skipped.
 
+Backend-suite decision, 2026-07-26:
+
+- The backend suite was made manual when the matrix was introduced because it exercises nested Docker worker containers and coding-agent worker boundaries. The original baseline description called it unsuitable for the deterministic PR merge gate.
+- The current compose configuration is deterministic: it mounts a fake Claude directory by default, supplies a deliberately invalid architect LLM endpoint, and its backend tests stop at external API boundaries. It does not require real LLM credentials.
+- The suite now runs on PRs that change API, LangGraph, worker-manager, shared code, packages, Docker test infrastructure, integration tests, CI, or dependency roots, as well as on manual full-matrix runs. Registry-failure simulation may make Buildx retry, but cannot silently skip this required suite.
+
 Manual coverage:
 
 - `workflow_dispatch` still runs the full service and Docker integration matrices.

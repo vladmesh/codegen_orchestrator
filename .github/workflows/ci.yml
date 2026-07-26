@@ -289,8 +289,16 @@ jobs:
           - suite: backend
             should_run: >-
               ${{
-                (github.event_name == 'workflow_dispatch' &&
-                inputs.simulate_first_attempt_registry_failure != true)
+                (needs.detect-changes.outputs.api == 'true' ||
+                needs.detect-changes.outputs.langgraph == 'true' ||
+                needs.detect-changes.outputs['worker-manager'] == 'true' ||
+                needs.detect-changes.outputs.shared == 'true' ||
+                needs.detect-changes.outputs.packages == 'true' ||
+                needs.detect-changes.outputs['docker-test'] == 'true' ||
+                needs.detect-changes.outputs['integration-tests'] == 'true' ||
+                needs.detect-changes.outputs.ci == 'true' ||
+                needs.detect-changes.outputs.deps == 'true' ||
+                github.event_name == 'workflow_dispatch')
                 && 'true' || 'false'
               }}
           - suite: template

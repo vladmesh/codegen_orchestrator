@@ -290,13 +290,21 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
             fail(f"workflow_dispatch does not enable integration suite {item.get('suite')}")
         if item.get("suite") == "backend":
             should_run = item.get("should_run", "")
-            if "needs.detect-changes.outputs" in should_run:
-                fail("backend integration suite must stay workflow_dispatch-only")
-            if "inputs.simulate_first_attempt_registry_failure != true" not in should_run:
-                fail(
-                    "registry retry validation must skip the backend suite that needs "
-                    "LLM credentials"
-                )
+            for output in [
+                "api",
+                "langgraph",
+                "worker-manager",
+                "shared",
+                "packages",
+                "docker-test",
+                "ci",
+                "deps",
+                "integration-tests",
+            ]:
+                if output_reference(output) not in should_run:
+                    fail(f"backend integration suite is missing trigger {output}")
+            if "inputs.simulate_first_attempt_registry_failure" in should_run:
+                fail("registry retry simulation must not skip the required backend suite")
 
 
 def assert_buildx_retry(job: dict[str, Any]) -> None:
