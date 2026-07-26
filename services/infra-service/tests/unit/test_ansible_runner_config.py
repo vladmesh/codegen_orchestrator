@@ -3,6 +3,7 @@
 import configparser
 import os
 from pathlib import Path
+import sys
 from unittest.mock import MagicMock, patch
 
 import yaml
@@ -10,6 +11,7 @@ import yaml
 # Set required env vars before importing modules that validate at import time.
 os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
 from src.provisioner.ansible_runner import AnsibleRunner  # noqa: E402
 
@@ -20,6 +22,18 @@ class TestAnsibleRunnerConfiguration:
     """The runner must load the configuration that makes playbook roles available."""
 
     def test_runner_executes_an_include_role_using_its_config(self, tmp_path, monkeypatch):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        ansible_playbook = bin_dir / "ansible-playbook"
+        ansible_playbook.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            "from ansible.cli.playbook import PlaybookCLI\n"
+            "PlaybookCLI(sys.argv).run()\n"
+        )
+        ansible_playbook.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
         ansible_dir = tmp_path / "ansible"
         playbooks_dir = ansible_dir / "playbooks"
         role_tasks_dir = ansible_dir / "roles" / "role_resolution_probe" / "tasks"

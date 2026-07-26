@@ -1,14 +1,28 @@
 """Tests for AnsibleRunner passing orchestrator_ip to playbooks."""
 
 import os
+from pathlib import Path
 import stat
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Set required env vars before importing modules that validate at import time
 os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
 from src.provisioner.ansible_runner import AnsibleRunner  # noqa: E402
+
+ANSIBLE_PLAYBOOKS = Path(__file__).parents[2] / "ansible" / "playbooks"
+
+
+@pytest.fixture(autouse=True)
+def use_repository_ansible_paths(monkeypatch):
+    """Use the bundled Ansible directory instead of the container path in unit tests."""
+    monkeypatch.setattr(
+        "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS", str(ANSIBLE_PLAYBOOKS)
+    )
 
 
 class TestAnsibleRunnerOrchestratorIp:
