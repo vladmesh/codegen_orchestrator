@@ -84,3 +84,11 @@
     project_src: /opt/monitoring
     state: present
   when: monitoring_enabled
+
+- name: Verify node exporter responds from the provisioning controller
+  ansible.builtin.uri:
+    url: "http://{{ ansible_host | default(inventory_hostname) }}:{{ node_exporter_port }}/metrics"
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  when: monitoring_enabled

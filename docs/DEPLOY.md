@@ -26,8 +26,28 @@ observe an absent project directory, while `feature` and `fix` require one. The
 generated workflow creates the directory only after the `create` precheck has
 passed.
 
-Before the next mega deploy, apply the provisioner to adopted target `5vei` so
+Before the next mega deploy, apply the provisioner to adopted target `vps-273978` so
 its `/opt/services` root receives this ownership contract.
+
+## Monitoring baseline for adopted servers
+
+To install monitoring without reinstalling or running the full provisioning path,
+run the supported operation from the infra-service container:
+
+```bash
+docker compose exec infra-service python -m src.provisioner.monitoring_baseline SERVER_HANDLE
+```
+
+It runs only the `monitoring` tag in `provision_software.yml`, then checks the
+node exporter from the Ansible controller. A failed HTTP check makes the command
+fail and does not record the baseline as applied. After a successful run,
+`GET /api/servers/SERVER_HANDLE/monitoring-status` shows the baseline timestamp,
+the last successful exporter observation and the newest metrics sample. Its
+`not_provisioned` state is distinct from a baseline that is waiting for metrics.
+
+`server_unreachable` incidents are sent to administrators by the health checker
+when the exporter cannot be fetched, and resolved notifications are sent when it
+returns. They also remain visible through `GET /api/servers/SERVER_HANDLE/incidents`.
 
 ## GitHub Secrets
 
