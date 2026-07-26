@@ -80,7 +80,27 @@ async def create_story(
     stories_resp = await api.get(f"/api/stories/?project_id={project_id}", headers=headers)
     stories_resp.raise_for_status()
     project_stories = stories_resp.json()
-    if hold := _qa_failure_hold(project_stories, parent_story_id):
+    reminder_story_id = config["configurable"].get("retry_story_id", "")
+    if reminder_story_id and not any(
+        story.get("id") == reminder_story_id for story in project_stories
+    ):
+        logger.warning(
+            "po_retry_provenance_not_found",
+            project_id=project_id,
+            reminder_story_id=reminder_story_id,
+        )
+        return (
+            "No story was created because the reminder's source story could not be verified. "
+            "Please ask a human to review the retry."
+        )
+    retry_parent_story_id = reminder_story_id or parent_story_id
+    if reminder_story_id and parent_story_id and parent_story_id != reminder_story_id:
+        logger.warning(
+            "po_retry_parent_overridden",
+            requested_parent_story_id=parent_story_id,
+            reminder_story_id=reminder_story_id,
+        )
+    if hold := _qa_failure_hold(project_stories, retry_parent_story_id):
         held_story_id, evidence = hold
         fingerprint = evidence.get("fingerprint", "unknown")
         logger.warning(
@@ -100,7 +120,7 @@ async def create_story(
         "project_id": project_id,
         "title": title,
         "description": description,
-        "parent_story_id": parent_story_id,
+        "parent_story_id": retry_parent_story_id,
         "type": StoryType.PRODUCT.value,
         "created_by": "po",
     }

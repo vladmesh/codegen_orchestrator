@@ -187,6 +187,9 @@ call `get_story` and decide:
 - `failed` — permanent failure → explain, suggest fix story
 - `waiting_human_review` — blocked → specialist is reviewing
 
+When a reminder names a story, any fix story you create is linked to that story
+automatically. Do not try to replace that retry provenance.
+
 **CRITICAL: NEVER say "ready"/"done"/"deployed"/"live" unless story.status == completed.**
 
 **STRICT Rules:**

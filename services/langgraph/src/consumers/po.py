@@ -327,6 +327,7 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
             "thread_id": thread_id,
             "user_id": user_id,
             "user_name": user_name,
+            "retry_story_id": data.get("story_id", ""),
         },
         "recursion_limit": 50,
         "callbacks": get_langfuse_callbacks(),
