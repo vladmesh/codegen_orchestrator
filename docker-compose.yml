@@ -39,6 +39,7 @@ services:
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
     ports:
       - "8000:8000"
+    restart: unless-stopped
 
   langgraph:
     build:
@@ -77,6 +78,7 @@ services:
         condition: service_healthy
     networks:
       - internal
+    restart: unless-stopped
 
   # Phase 4 Workers
   deploy-worker:
@@ -241,6 +243,7 @@ services:
       - redis
     networks:
       - internal
+    restart: unless-stopped
 
   worker-manager:
     build:
@@ -283,6 +286,7 @@ services:
     networks:
       - internal
       - worker
+    restart: unless-stopped
 
   scheduler:
     build:
@@ -311,6 +315,7 @@ services:
         condition: service_healthy
     networks:
       - internal
+    restart: unless-stopped
 
   scaffolder:
     build:
@@ -605,6 +610,7 @@ services:
       - ./infra/postgres:/docker-entrypoint-initdb.d:ro
     networks:
       - internal
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -619,6 +625,7 @@ services:
     networks:
       - internal
       - worker
+    restart: unless-stopped
 
 networks:
   internal:

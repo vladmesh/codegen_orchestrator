@@ -13,6 +13,7 @@ import os
 
 import structlog
 
+from shared.config_store import ConfigStoreUnavailableError
 from shared.log_config import setup_logging
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from shared.redis_client import RedisStreamClient
@@ -30,6 +31,7 @@ from .tasks.task_dispatcher import task_dispatcher_loop
 logger = structlog.get_logger()
 
 CONSUMER_NAME = f"scheduler-{os.getpid()}"
+CONFIG_VALIDATION_RETRY_SECONDS = 2
 
 
 def _validate_configs():
@@ -38,6 +40,21 @@ def _validate_configs():
 
     init_config()
     logger.info("system_configs_validated")
+
+
+async def initialize_configs() -> None:
+    """Wait for the system-config API before starting scheduler workers."""
+    while True:
+        try:
+            _validate_configs()
+            return
+        except ConfigStoreUnavailableError as exc:
+            logger.warning(
+                "scheduler_config_api_unavailable_retrying",
+                error=str(exc),
+                retry_in_seconds=CONFIG_VALIDATION_RETRY_SECONDS,
+            )
+            await asyncio.sleep(CONFIG_VALIDATION_RETRY_SECONDS)
 
 
 async def provisioner_results_worker():
@@ -85,8 +102,9 @@ async def main():
     setup_logging(service_name="scheduler")
     logger.info("scheduler_started")
 
-    # Validate all required system configs before starting workers
-    _validate_configs()
+    # Validate all required system configs before starting workers.
+    # The API can briefly be unavailable while a compose restart is in progress.
+    await initialize_configs()
 
     # Retry provisioning for any servers stuck in pending_setup (race condition fix)
     # Wait a bit for LangGraph to be ready and subscribed
