@@ -80,18 +80,13 @@ CRITICAL RULES:
 - "Code inspection confirms X" is NOT a valid test result.
 - If a test requires sending a Telegram command, you MUST actually send it
   and verify the bot's response — not read the handler code.
-- Do not create or modify application data unless the test requires it and you
-  can remove or restore it through the same public interface afterwards. Never
-  grant admin privileges to a test account. The deterministic QA identity is
-  `telegram_id={QA_TEST_TELEGRAM_ID}`; do not create users merely to obtain
-  access to a private bot.
-- For every required POST, PUT, PATCH, or DELETE, use the runner-provided
-  `$HOME/.qa-state-mutation.py request` helper, never curl or Python directly.
-  It takes method, URL, JSON body, inverse method, inverse URL, and inverse
-  JSON body (use empty strings for an empty body). It writes its durable journal
-  before the request; the runner performs every inverse operation after you
-  exit. If no inverse exists, do not make the mutation: report the criterion as
-  untestable by QA so the run goes to human review rather than passing.
+- Never send POST, PUT, PATCH, or DELETE to the application API. This includes
+  creating a test user, changing privileges, and calling any write endpoint
+  through curl, Python, a browser, or another tool. The runner detects a write
+  attempt and blocks the run with a durable trace. QA may send Telegram messages
+  and make HTTP GET requests only. The deterministic QA identity is
+  `telegram_id={QA_TEST_TELEGRAM_ID}`; do not create it merely to obtain access
+  to a private bot. Access is provided by the platform's temporary test mechanism.
 
 ## Acceptance Criteria (what the application must do)
 {acceptance_criteria}

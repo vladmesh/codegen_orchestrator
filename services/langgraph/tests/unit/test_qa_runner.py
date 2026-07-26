@@ -35,12 +35,12 @@ class TestBuildQAPrompt:
         assert "https://weather.example.com" in prompt
         assert "regression" in prompt.lower()
 
-    def test_prompt_requires_deterministic_identity_and_cleanup_trace(self):
+    def test_prompt_requires_deterministic_identity_and_read_only_api(self):
         prompt = build_qa_prompt("- test stateful flow", "https://weather.example.com")
 
         assert "telegram_id=8202532144" in prompt
-        assert "admin privileges" in prompt
-        assert "QA runner performs cleanup" in prompt
+        assert "POST, PUT, PATCH, or DELETE" in prompt
+        assert "never send" in prompt.lower()
 
     def test_prompt_with_bot_username(self):
         prompt = build_qa_prompt(
@@ -210,66 +210,6 @@ class TestParseQAResult:
         assert result.passed is False
         assert result.blocker is not None
         assert result.blocker.category == QABlockerCategory.UNKNOWN
-
-
-class TestStatefulQARegression:
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "agent_payload",
-        [
-            '{"pass": true, "checks": [], "summary": "passed"}',
-            "",
-        ],
-    )
-    async def test_runner_records_and_cleans_journaled_mutations_after_verdict_or_unknown_outcome(
-        self, agent_payload: str
-    ):
-        """Runner-owned cleanup executes after both a verdict and lost agent output."""
-        command_result = SimpleNamespace(stdout=agent_payload, stderr="", exit_status=0)
-        conn = AsyncMock()
-        conn.run = AsyncMock(return_value=command_result)
-        conn.__aenter__ = AsyncMock(return_value=conn)
-        conn.__aexit__ = AsyncMock(return_value=False)
-
-        with (
-            patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
-            patch(
-                "src.consumers._qa_runner._preflight_agent_qa",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
-            patch("src.consumers._qa_runner._collect_qa_report", new_callable=AsyncMock),
-            patch("src.consumers._qa_runner._install_qa_mutation_tool", new_callable=AsyncMock),
-            patch(
-                "src.consumers._qa_runner._cleanup_qa_mutations",
-                new_callable=AsyncMock,
-                return_value=[
-                    {
-                        "resource": "POST https://stateful.example.com/items",
-                        "operation": "created",
-                        "cleanup": {
-                            "attempted": True,
-                            "succeeded": True,
-                            "detail": "DELETE returned 204",
-                        },
-                    }
-                ],
-            ),
-        ):
-            mock_asyncssh.import_private_key.return_value = "parsed_key"
-            mock_asyncssh.connect.return_value = conn
-            result = await run_qa_on_server(
-                server_ip="1.2.3.4",
-                ssh_user="dev",
-                ssh_key="fake",
-                project_name="stateful",
-                acceptance_criteria="- exercise a stateful user flow",
-                deployed_url="https://stateful.example.com",
-            )
-
-        assert result.state_changes[0]["cleanup"]["succeeded"] is True
-        assert result.passed is bool(agent_payload)
 
 
 class TestRunHealthChecks:

@@ -123,14 +123,14 @@ class QAStateChangeCleanup(BaseModel):
 
 
 class QAStateChangeOperation(StrEnum):
-    """Kinds of application-state mutation QA is allowed to report."""
+    """Kinds of application-state write traces retained in a QA result."""
 
     CREATED = "created"
     MODIFIED = "modified"
 
 
 class QAStateChange(BaseModel):
-    """An application resource QA created or modified and then cleaned up."""
+    """An application-state trace retained with its cleanup evidence."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -154,21 +154,15 @@ class QARunResult(BaseModel):
     blocker: QABlocker | None = None
     state_changes: list[QAStateChange] = Field(default_factory=list)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _blocked_outcome_requires_blocker(cls, data: object) -> object:
-        if (
-            isinstance(data, dict)
-            and data.get("qa_outcome") == QAOutcome.BLOCKED
-            and data.get("blocker") is None
-        ):
+    @model_validator(mode="after")
+    def _outcome_matches_state_traces(self) -> QARunResult:
+        if self.qa_outcome == QAOutcome.BLOCKED and self.blocker is None:
             raise ValueError("blocked QA outcome requires a blocker")
-        if isinstance(data, dict) and data.get("qa_outcome") == QAOutcome.PASSED:
-            for change in data.get("state_changes", []):
-                cleanup = change.get("cleanup") if isinstance(change, dict) else None
-                if isinstance(cleanup, dict) and cleanup.get("succeeded") is False:
-                    raise ValueError("passed QA outcome cannot contain an uncleaned state change")
-        return data
+        if self.qa_outcome == QAOutcome.PASSED and any(
+            not change.cleanup.succeeded for change in self.state_changes
+        ):
+            raise ValueError("passed QA outcome cannot contain an uncleaned state change")
+        return self
 
 
 RunResult = EngineeringRunResult | DeployRunResult | QARunResult

@@ -227,31 +227,31 @@ class TestProcessQAJobPass:
         mock_run.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_cleanup_evidence_is_stored_on_a_blocked_run(
+    async def test_forbidden_write_trace_is_stored_on_a_blocked_run(
         self, mock_api_client, mock_redis, qa_message_data
     ):
         from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
         from src.consumers._qa_runner import QAResult
 
         cleanup_blocker = QABlocker(
-            category=QABlockerCategory.QA_CLEANUP_FAILED,
-            attempted="delete QA-created application data",
-            sent="DELETE /users/by-telegram/8202532144",
-            received="DELETE returned 405",
+            category=QABlockerCategory.UNKNOWN,
+            attempted="verify QA used only read-only application API requests",
+            sent="POST /users/by-telegram/8202532144",
+            received="application state may have changed",
         )
         with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(
                 passed=False,
-                summary="QA cleanup failed",
+                summary="QA attempted a forbidden application API write",
                 blocker=cleanup_blocker,
                 state_changes=[
                     {
-                        "resource": "user telegram_id=8202532144",
-                        "operation": "created",
+                        "resource": "POST /users/by-telegram/8202532144",
+                        "operation": "modified",
                         "cleanup": {
-                            "attempted": True,
+                            "attempted": False,
                             "succeeded": False,
-                            "detail": "DELETE returned 405",
+                            "detail": "forbidden direct application write detected",
                         },
                     }
                 ],
