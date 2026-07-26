@@ -49,6 +49,7 @@ EXPECTED_FILTERS = {
 HYPHENATED_OUTPUTS = {"worker-manager", "infra-service", "docker-test", "integration-tests"}
 TEMPLATE_COMPAT_TIMEOUT_MINUTES = 30
 BUILDX_RETRY_ATTEMPTS = 3
+SIMULATED_REGISTRY_FAILURE_INPUT = "simulate_first_attempt_registry_failure"
 OFFLINE_LIVE_IGNORES = {
     "tests/live/test_api_crud.py",
     "tests/live/test_capability_cleanup_redis.py",
@@ -297,10 +298,22 @@ def assert_buildx_retry(job: dict[str, Any]) -> None:
     step = step_by_name(job, "Set up Docker Buildx with retry")
     if step.get("uses") != "./.github/actions/setup-buildx-with-retry":
         fail("Docker Buildx setup must use the local retry action")
+    if step.get("with", {}).get(SIMULATED_REGISTRY_FAILURE_INPUT) != (
+        "${{ inputs.simulate_first_attempt_registry_failure }}"
+    ):
+        fail("Docker Buildx setup must receive the workflow-dispatch failure simulation input")
     if not BUILDX_RETRY_ACTION.is_file():
         fail("Docker Buildx retry action is missing")
     action = yaml.safe_load(BUILDX_RETRY_ACTION.read_text())
+    inputs = action.get("inputs", {}) if isinstance(action, dict) else {}
+    if SIMULATED_REGISTRY_FAILURE_INPUT not in inputs:
+        fail("Docker Buildx retry action must support first-attempt registry failure simulation")
     steps = action.get("runs", {}).get("steps", []) if isinstance(action, dict) else []
+    simulation = step_by_name({"steps": steps}, "Simulate unavailable registry on first attempt")
+    if simulation.get("if") != f"inputs.{SIMULATED_REGISTRY_FAILURE_INPUT} == 'true'":
+        fail("registry failure simulation must be opt-in")
+    if simulation.get("continue-on-error") is not True:
+        fail("registry failure simulation must allow the retry to continue")
     attempts = [
         step
         for step in steps
@@ -310,6 +323,11 @@ def assert_buildx_retry(job: dict[str, Any]) -> None:
         fail("Docker Buildx retry action must make three attempts")
     if not all(step.get("continue-on-error") is True for step in attempts):
         fail("Docker Buildx retry attempts must continue to the next attempt")
+    if attempts[0].get("if") != (
+        "inputs.simulate_first_attempt_registry_failure != 'true' || "
+        "steps.simulate-registry-failure.outcome == 'success'"
+    ):
+        fail("first Buildx attempt must be replaced by the simulated registry failure")
     verify = step_by_name({"steps": steps}, "Fail as CI infrastructure after retry exhaustion")
     if "Docker image registry" not in verify.get("run", ""):
         fail("Docker Buildx retry exhaustion must identify the registry infrastructure failure")
@@ -358,6 +376,9 @@ def main() -> None:
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict):
         fail("workflow has no jobs mapping")
+    dispatch_inputs = workflow.get(True, {}).get("workflow_dispatch", {}).get("inputs", {})
+    if SIMULATED_REGISTRY_FAILURE_INPUT not in dispatch_inputs:
+        fail("workflow_dispatch must expose the registry failure simulation input")
     assert_detect_changes(jobs)
     assert_fast_checks(jobs)
     assert_offline_live_make_target()

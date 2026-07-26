@@ -15,6 +15,11 @@ on:
         description: Optional service-template tag or commit to test before updating the production pin
         required: false
         type: string
+      simulate_first_attempt_registry_failure:
+        description: Simulate a Docker registry failure on Buildx attempt 1 to validate the retry path
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -241,6 +246,8 @@ jobs:
         id: buildx
         uses: ./.github/actions/setup-buildx-with-retry
         if: matrix.should_run == 'true'
+        with:
+          simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
 
       - name: Run service tests
         id: service-tests
@@ -347,6 +354,8 @@ jobs:
         id: buildx
         if: matrix.should_run == 'true'
         uses: ./.github/actions/setup-buildx-with-retry
+        with:
+          simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
 
       - name: Set up uv for template smoke
         if: matrix.should_run == 'true' && matrix.suite == 'template'

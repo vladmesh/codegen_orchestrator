@@ -1,10 +1,25 @@
 name: Set up Docker Buildx with retry
 description: Retry transient Docker registry failures while bootstrapping Buildx.
+inputs:
+  simulate_first_attempt_registry_failure:
+    description: Fail the first Buildx attempt before it reaches Docker Hub, for retry-path validation.
+    required: false
+    default: "false"
 runs:
   using: composite
   steps:
+    - name: Simulate unavailable registry on first attempt
+      id: simulate-registry-failure
+      if: inputs.simulate_first_attempt_registry_failure == 'true'
+      continue-on-error: true
+      shell: bash
+      run: |
+        echo "::error title=Simulated CI infrastructure failure::Docker image registry is unavailable for Buildx attempt 1."
+        exit 1
+
     - name: Set up Docker Buildx, attempt 1
       id: attempt-1
+      if: inputs.simulate_first_attempt_registry_failure != 'true' || steps.simulate-registry-failure.outcome == 'success'
       uses: docker/setup-buildx-action@v3
       continue-on-error: true
 
