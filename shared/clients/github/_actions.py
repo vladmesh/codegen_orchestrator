@@ -15,17 +15,22 @@ from ._base import (
 
 logger = get_logger(__name__)
 
-_FAILURE_LOG_LINE = re.compile(
+_DIAGNOSTIC_LOG_LINE = re.compile(
     r"::error::|##\[error\]|\b\w*(?:error|exception)\b|"
-    r"\b(?:traceback|failed|failure|fatal|panic)\b",
+    r"\b(?:traceback|fatal|panic)\b",
     re.IGNORECASE,
 )
+_PYTEST_SUMMARY_LINE = re.compile(r"\bFAILED\b|\b\d+ failed\b", re.IGNORECASE)
 
 
 def _failure_log_excerpt(log: str, line_limit: int) -> str:
-    """Return a bounded excerpt centered on the last failure-looking log line."""
+    """Return a bounded excerpt centered on a diagnostic, not a test summary."""
     lines = log.splitlines()
-    matches = [index for index, line in enumerate(lines) if _FAILURE_LOG_LINE.search(line)]
+    matches = [
+        index
+        for index, line in enumerate(lines)
+        if _DIAGNOSTIC_LOG_LINE.search(line) and not _PYTEST_SUMMARY_LINE.search(line)
+    ]
     if not matches:
         return "\n".join(lines[-line_limit:])
 

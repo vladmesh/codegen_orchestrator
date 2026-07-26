@@ -70,6 +70,42 @@ async def test_workflow_failure_details_center_excerpt_on_error_not_log_end():
 
 
 @pytest.mark.asyncio
+async def test_workflow_failure_details_keeps_traceback_cause_before_pytest_summary():
+    client = object.__new__(GitHubAppClient)
+    client.get_token = AsyncMock(return_value="secret")
+    jobs_response = MagicMock()
+    jobs_response.json.return_value = {
+        "jobs": [
+            {
+                "id": 98,
+                "name": "unit",
+                "conclusion": "failure",
+                "steps": [{"name": "Run pytest", "conclusion": "failure"}],
+            }
+        ]
+    }
+    log_response = MagicMock()
+    log_response.text = "\n".join(
+        [
+            "tests/test_config.py:17: in test_load_config",
+            "    assert load_config() == expected",
+            "E   AssertionError: expected default configuration",
+            *[f"verbose test output {index}" for index in range(20)],
+            "FAILED tests/test_config.py::test_load_config - AssertionError",
+            "============================== 1 failed in 0.12s ==============================",
+            "Post job cleanup.",
+        ]
+    )
+    client._make_request = AsyncMock(side_effect=[jobs_response, log_response])
+
+    details = await client.get_workflow_failure_details("org", "repo", 42, log_excerpt_lines=5)
+
+    excerpt = details["failed_jobs"][0]["log_excerpt"]
+    assert "AssertionError: expected default configuration" in excerpt
+    assert "1 failed in 0.12s" not in excerpt
+
+
+@pytest.mark.asyncio
 async def test_workflow_failure_details_marks_unavailable_job_logs():
     client = object.__new__(GitHubAppClient)
     client.get_token = AsyncMock(return_value="secret")
