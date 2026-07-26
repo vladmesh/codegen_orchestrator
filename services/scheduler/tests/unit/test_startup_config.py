@@ -61,6 +61,7 @@ def test_required_keys_cover_every_scheduler_task_config_value():
         "health.metrics_cleanup_interval_seconds",
         "health.http_timeout",
         "scheduler.ci_failure_max_fingerprint_attempts",
+        "scheduler.ci_failure_log_excerpt_lines",
     } <= set(startup.REQUIRED_KEYS)
 
 
