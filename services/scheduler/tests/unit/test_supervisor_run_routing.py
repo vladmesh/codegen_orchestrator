@@ -990,6 +990,17 @@ class TestSuperviseTestingStories:
                     "sent": "timeout 1200 claude -p ...",
                     "received": "exit_status=1; stdout=; stderr=timeout",
                 },
+                "state_changes": [
+                    {
+                        "resource": "user telegram_id=8202532144",
+                        "operation": "created",
+                        "cleanup": {
+                            "attempted": True,
+                            "succeeded": True,
+                            "detail": "DELETE /users/8202532144 returned 204",
+                        },
+                    }
+                ],
             },
         )
 
@@ -1006,6 +1017,17 @@ class TestSuperviseTestingStories:
             "sent": "timeout 1200 claude -p ...",
             "received": "exit_status=1; stdout=; stderr=timeout",
         }
+        assert reason["state_changes"] == [
+            {
+                "resource": "user telegram_id=8202532144",
+                "operation": "created",
+                "cleanup": {
+                    "attempted": True,
+                    "succeeded": True,
+                    "detail": "DELETE /users/8202532144 returned 204",
+                },
+            }
+        ]
         api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()

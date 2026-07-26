@@ -97,12 +97,12 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
     review as an unknown blocker instead of being treated as a pass or causing
     failure handling to crash while extracting failed checks.
     """
-    required_fields = {"pass", "checks", "summary"}
-    allowed_fields = required_fields | {"state_changes"}
+    required_fields = {"pass", "checks", "summary", "state_changes"}
+    allowed_fields = required_fields
     if not required_fields <= set(data) or not set(data) <= allowed_fields:
         return _invalid_qa_payload(
             raw,
-            "expected pass, checks, summary, and optional state_changes fields",
+            "expected exactly pass, checks, summary, and state_changes fields",
         )
 
     if not isinstance(data["pass"], bool):
@@ -126,7 +126,7 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
         if not isinstance(check["detail"], str) or not check["detail"].strip():
             return _invalid_qa_payload(raw, f"check {index} detail must be a non-empty string")
 
-    state_changes = data.get("state_changes", [])
+    state_changes = data["state_changes"]
     if not isinstance(state_changes, list):
         return _invalid_qa_payload(raw, "state_changes must be a list")
     try:
@@ -205,7 +205,7 @@ def parse_qa_result(raw: str) -> QAResult:
     if invalid_result:
         return invalid_result
 
-    state_changes = data.get("state_changes", [])
+    state_changes = data["state_changes"]
     failed_cleanup = next(
         (change for change in state_changes if not change["cleanup"]["succeeded"]),
         None,

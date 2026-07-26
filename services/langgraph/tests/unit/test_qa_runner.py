@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from fastapi import FastAPI, HTTPException
 import httpx
 import pytest
 import respx
@@ -98,7 +100,7 @@ class TestParseQAResult:
     def test_valid_pass_result(self):
         raw = (
             '{"pass": true, "checks": [{"name": "health", "pass": true,'
-            ' "detail": "200 OK"}], "summary": "All good"}'
+            ' "detail": "200 OK"}], "summary": "All good", "state_changes": []}'
         )
         result = parse_qa_result(raw)
         assert result.passed is True
@@ -128,10 +130,17 @@ class TestParseQAResult:
         assert result.blocker is not None
         assert result.blocker.category == QABlockerCategory.QA_CLEANUP_FAILED
 
+    def test_missing_state_changes_is_an_unknown_blocker(self):
+        result = parse_qa_result('{"pass": true, "checks": [], "summary": "OK"}')
+
+        assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
+
     def test_valid_fail_result(self):
         raw = (
             '{"pass": false, "checks": [{"name": "weather", "pass": false,'
-            ' "detail": "404"}], "summary": "Broken"}'
+            ' "detail": "404"}], "summary": "Broken", "state_changes": []}'
         )
         result = parse_qa_result(raw)
         assert result.passed is False
@@ -147,7 +156,7 @@ class TestParseQAResult:
         """Claude sometimes wraps JSON in markdown code blocks."""
         raw = """Here are the results:
 ```json
-{"pass": true, "checks": [], "summary": "OK"}
+{"pass": true, "checks": [], "summary": "OK", "state_changes": []}
 ```
 """
         result = parse_qa_result(raw)
@@ -189,6 +198,7 @@ class TestParseQAResult:
                 "pass": True,
                 "checks": [{"name": "health", "pass": True, "detail": "200"}],
                 "summary": "OK",
+                "state_changes": [],
             }
         )
         wrapper = json.dumps(
@@ -209,6 +219,78 @@ class TestParseQAResult:
         assert result.passed is False
         assert result.blocker is not None
         assert result.blocker.category == QABlockerCategory.UNKNOWN
+
+
+class TestStatefulQARegression:
+    @staticmethod
+    def _application() -> tuple[FastAPI, dict[int, dict[str, object]]]:
+        users: dict[int, dict[str, object]] = {}
+        app = FastAPI()
+
+        @app.post("/users")
+        async def create_user(payload: dict[str, object]) -> dict[str, object]:
+            telegram_id = payload["telegram_id"]
+            if not isinstance(telegram_id, int):
+                raise HTTPException(status_code=422)
+            users[telegram_id] = payload
+            return payload
+
+        @app.delete("/users/{telegram_id}", status_code=204)
+        async def delete_user(telegram_id: int) -> None:
+            if users.pop(telegram_id, None) is None:
+                raise HTTPException(status_code=404)
+
+        @app.get("/users")
+        async def list_users() -> list[dict[str, object]]:
+            return list(users.values())
+
+        return app, users
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("omit_state_changes", [False, True])
+    async def test_rest_stateful_qa_removes_deterministic_user_before_verdict(
+        self, omit_state_changes: bool
+    ):
+        """A pass and a fail-closed verdict both leave the application's users empty."""
+        app, users = self._application()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            created = await client.post("/users", json={"telegram_id": 8202532144})
+            assert created.status_code == 200
+            assert users
+
+            deleted = await client.delete("/users/8202532144")
+            assert deleted.status_code == 204
+
+            payload: dict[str, object] = {
+                "pass": True,
+                "checks": [],
+                "summary": "stateful check completed",
+                "state_changes": [
+                    {
+                        "resource": "user telegram_id=8202532144",
+                        "operation": "created",
+                        "cleanup": {
+                            "attempted": True,
+                            "succeeded": True,
+                            "detail": "DELETE /users/8202532144 returned 204",
+                        },
+                    }
+                ],
+            }
+            if omit_state_changes:
+                payload.pop("state_changes")
+
+            result = parse_qa_result(json.dumps(payload))
+            listed = await client.get("/users")
+
+        assert listed.json() == []
+        assert users == {}
+        assert result.passed is not omit_state_changes
+        if omit_state_changes:
+            assert result.blocker is not None
+            assert result.blocker.category == QABlockerCategory.UNKNOWN
 
 
 class TestRunHealthChecks:
@@ -380,7 +462,9 @@ class TestRunQAOnServer:
     @pytest.mark.asyncio
     async def test_successful_qa_pass(self):
         mock_result = MagicMock()
-        mock_result.stdout = '{"pass": true, "checks": [], "summary": "All tests passed"}'
+        mock_result.stdout = (
+            '{"pass": true, "checks": [], "summary": "All tests passed", "state_changes": []}'
+        )
         mock_result.stderr = ""
         mock_result.exit_status = 0
 
@@ -459,7 +543,7 @@ class TestRunQAOnServer:
     @pytest.mark.asyncio
     async def test_custom_timeout(self):
         mock_result = MagicMock()
-        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK"}'
+        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK", "state_changes": []}'
         mock_result.stderr = ""
         mock_result.exit_status = 0
 
@@ -490,7 +574,7 @@ class TestRunQAOnServer:
     @pytest.mark.asyncio
     async def test_bot_run_loads_telethon_env_before_claude(self, _skip_telethon_check):
         mock_result = MagicMock()
-        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK"}'
+        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK", "state_changes": []}'
         mock_result.stderr = ""
         mock_result.exit_status = 0
 
@@ -521,7 +605,7 @@ class TestRunQAOnServer:
     @pytest.mark.asyncio
     async def test_run_without_bot_does_not_touch_telethon_env(self):
         mock_result = MagicMock()
-        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK"}'
+        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK", "state_changes": []}'
         mock_result.stderr = ""
         mock_result.exit_status = 0
 
