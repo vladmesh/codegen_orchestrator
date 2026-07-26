@@ -112,6 +112,24 @@ async def api_client():
     """Async HTTP client for the API service."""
     import httpx
 
+    internal_api_key = os.environ["INTERNAL_API_KEY"]
+    async with httpx.AsyncClient(
+        base_url=API_BASE_URL,
+        timeout=10,
+        headers={"X-Internal-Key": internal_api_key},
+    ) as client:
+        yield client
+
+
+@pytest.fixture
+async def user_api_client():
+    """Async HTTP client for tests that must exercise user-scoped authorization.
+
+    These requests intentionally omit the internal key. A valid internal key
+    bypasses project access checks and would make the isolation assertions vacuous.
+    """
+    import httpx
+
     async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=10) as client:
         yield client
 

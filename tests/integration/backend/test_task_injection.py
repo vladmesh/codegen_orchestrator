@@ -58,7 +58,6 @@ class TestTaskInjection:
 
         assert result.success is True, f"Worker creation failed: {result.error}"
         worker_id = result.worker_id
-
         try:
             container = docker_client.containers.get(f"worker-{worker_id}")
 
@@ -68,7 +67,7 @@ class TestTaskInjection:
             assert task_content.encode() == output, f"Unexpected content: {output}"
 
         finally:
-            await cleanup_worker(redis_client, result.worker_id)
+            await cleanup_worker(redis_client, worker_id)
 
     async def test_env_hints_in_task_md(self, redis_client, docker_client, scaffolded_workspace):
         """Verify that env_hints content appears in TASK.md inside the worker."""
