@@ -12,12 +12,37 @@ import sys
 WRITE_METHODS = r"POST|PUT|PATCH|DELETE"
 
 
+def _curl_write(command: str, target: str) -> str | None:
+    """Detect a curl write even when its URL and method flag are reordered."""
+    escaped_target = re.escape(target.rstrip("/"))
+    url = re.search(rf"{escaped_target}[^\s'\"]*", command, flags=re.IGNORECASE)
+    if not url:
+        return None
+
+    method = re.search(
+        rf"(?:-X|--request)\s*({WRITE_METHODS})\b",
+        command,
+        flags=re.IGNORECASE,
+    )
+    if method:
+        return f"{method.group(1).upper()} {url.group(0)}"
+
+    # curl sends POST for a request body unless --get explicitly changes that
+    # behavior. This is still a direct application write attempt.
+    has_body = re.search(
+        r"(?:-d|--data(?:-raw|-binary|-ascii)?)(?:=|\s)", command, flags=re.IGNORECASE
+    )
+    is_get = re.search(r"(?:-G|--get)\b", command, flags=re.IGNORECASE)
+    if has_body and not is_get:
+        return f"POST {url.group(0)}"
+    return None
+
+
 def forbidden_write(command: str, target: str) -> str | None:
     escaped_target = re.escape(target.rstrip("/"))
     patterns = (
         rf"(?i)\b({WRITE_METHODS})\s+({escaped_target}[^\s'\"]*)",
         rf"(?i)(?:-X|--request)\s*({WRITE_METHODS})\b[^\n]*?({escaped_target}[^\s'\"]*)",
-        rf"(?i)\bcurl\b(?![^\n]*?\s(?:-G|--get)\b)[^\n]*?(?:-d|--data(?:-raw|-binary|-ascii)?)(?:=|\s)[^\n]*?({escaped_target}[^\s'\"]*)",
         rf"(?i)\b(?:requests|httpx)\.({_method_pattern()})\s*\(\s*['\"]({escaped_target}[^'\"]*)",
         rf"(?i)\b(?:requests|httpx)\.request\s*\(\s*['\"]({WRITE_METHODS})['\"]\s*,\s*['\"]({escaped_target}[^'\"]*)",
     )
@@ -27,7 +52,7 @@ def forbidden_write(command: str, target: str) -> str | None:
             if len(match.groups()) == 1:
                 return f"POST {match.group(1)}"
             return f"{match.group(1).upper()} {match.group(2)}"
-    return None
+    return _curl_write(command, target) if re.search(r"\bcurl\b", command) else None
 
 
 def _method_pattern() -> str:

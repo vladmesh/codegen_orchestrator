@@ -33,6 +33,10 @@ async def _clean_redis():
     [
         ("curl -XPOST http://app.example/users", "POST http://app.example/users"),
         (
+            "curl http://app.example/users -X PATCH -d '{}'",
+            "PATCH http://app.example/users",
+        ),
+        (
             "python -c \"requests.request('POST', 'http://app.example/users')\"",
             "POST http://app.example/users",
         ),
