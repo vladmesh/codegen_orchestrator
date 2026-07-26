@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+import re
 
 import httpx
 
@@ -13,6 +14,39 @@ from ._base import (
 )
 
 logger = get_logger(__name__)
+
+_DIAGNOSTIC_LOG_LINE = re.compile(
+    r"::error::|##\[error\]|\b(?:\w*(?:error|exception)|traceback|fatal|panic)\b",
+    re.IGNORECASE,
+)
+_RUNNER_WRAPPER_LOG_LINE = re.compile(
+    r"\b(?:error:\s*)?process completed with exit code \d+\.?\s*$",
+    re.IGNORECASE,
+)
+_PYTEST_SUMMARY_LINE = re.compile(r"\bFAILED\b|\b\d+ failed\b", re.IGNORECASE)
+
+
+def _failure_log_excerpt(log: str, line_limit: int) -> str:
+    """Return a bounded excerpt centered on a diagnostic, not a test summary."""
+    lines = log.splitlines()
+    matches = [
+        index
+        for index, line in enumerate(lines)
+        if (
+            _DIAGNOSTIC_LOG_LINE.search(line)
+            and not _PYTEST_SUMMARY_LINE.search(line)
+            and not _RUNNER_WRAPPER_LOG_LINE.search(line)
+        )
+    ]
+    if not matches:
+        return "\n".join(lines[-line_limit:])
+
+    error_index = matches[-1]
+    before = line_limit // 3
+    start = max(error_index - before, 0)
+    end = min(start + line_limit, len(lines))
+    start = max(end - line_limit, 0)
+    return "\n".join(lines[start:end])
 
 
 class ActionsMixin:
@@ -490,8 +524,12 @@ class ActionsMixin:
         owner: str,
         repo: str,
         run_id: int,
+        *,
+        log_excerpt_lines: int | None = None,
     ) -> dict:
-        """Return failed job and step names without downloading raw logs."""
+        """Return failed jobs, steps, and optionally bounded log excerpts."""
+        if log_excerpt_lines is not None and log_excerpt_lines < 1:
+            raise ValueError("log_excerpt_lines must be positive")
         token = await self.get_token(owner, repo)
         headers = {
             "Authorization": f"token {token}",
@@ -509,16 +547,40 @@ class ActionsMixin:
         for job in jobs:
             if job.get("conclusion") != "failure":
                 continue
-            failed_jobs.append(
-                {
-                    "name": str(job.get("name") or "unnamed job")[:200],
-                    "failed_steps": [
-                        str(step.get("name") or "unnamed step")[:200]
-                        for step in job.get("steps", [])
-                        if step.get("conclusion") == "failure"
-                    ],
-                }
-            )
+            log_excerpt: str | None = None
+            log_unavailable_reason: str | None = None
+            job_id = job.get("id")
+            if log_excerpt_lines is None:
+                pass
+            elif job_id is None:
+                log_unavailable_reason = "GitHub job ID unavailable"
+            else:
+                try:
+                    log_response = await self._make_request(
+                        "GET",
+                        f"https://api.github.com/repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
+                        headers=headers,
+                        follow_redirects=True,
+                    )
+                    excerpt = _failure_log_excerpt(log_response.text, log_excerpt_lines)
+                    if excerpt.strip():
+                        log_excerpt = excerpt
+                    else:
+                        log_unavailable_reason = "GitHub job log was empty"
+                except Exception as exc:
+                    log_unavailable_reason = type(exc).__name__
+            failed_job = {
+                "name": str(job.get("name") or "unnamed job")[:200],
+                "failed_steps": [
+                    str(step.get("name") or "unnamed step")[:200]
+                    for step in job.get("steps", [])
+                    if step.get("conclusion") == "failure"
+                ],
+            }
+            if log_excerpt_lines is not None:
+                failed_job["log_excerpt"] = log_excerpt
+                failed_job["log_unavailable_reason"] = log_unavailable_reason
+            failed_jobs.append(failed_job)
         return {"failed_jobs": failed_jobs, "unavailable_reason": None}
 
     async def rerun_failed_jobs(self, owner: str, repo: str, run_id: int) -> bool:

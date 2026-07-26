@@ -67,6 +67,11 @@
   category: scheduler
   description: "Max fix tasks for repeated CI failure fingerprint"
 
+- key: scheduler.ci_failure_log_excerpt_lines
+  value: 40
+  category: scheduler
+  description: "Maximum lines retained around a failed GitHub Actions log error"
+
 # --- supervisor ---
 - key: supervisor.story_stuck_threshold_minutes
   value: 5
