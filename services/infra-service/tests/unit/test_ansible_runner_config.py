@@ -29,7 +29,7 @@ class TestAnsibleRunnerConfiguration:
             f"#!{sys.executable}\n"
             "import sys\n"
             "from ansible.cli.playbook import PlaybookCLI\n"
-            "PlaybookCLI(sys.argv).run()\n"
+            "sys.exit(PlaybookCLI(sys.argv).run())\n"
         )
         ansible_playbook.chmod(0o755)
         monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
