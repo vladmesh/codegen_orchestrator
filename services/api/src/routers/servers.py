@@ -451,23 +451,19 @@ async def provision_server(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> dict:
-    """Manual provisioning trigger (admin only)."""
+    """Reject the legacy provisioning trigger until it has a real dispatcher."""
 
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    # Set status to provisioning
-    server.status = ServerStatus.PROVISIONING.value
-    await db.commit()
-
-    # TODO: Trigger LangGraph provisioner node via queue/webhook
-    # For now, just return success
-    return {
-        "message": f"Provisioning triggered for server {handle}",
-        "server_handle": handle,
-        "status": server.status,
-    }
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail=(
+            "Manual provisioning is not implemented. It does not dispatch work and therefore "
+            "cannot change server status. Use the infrastructure provisioner operation instead."
+        ),
+    )
 
 
 @router.get("/{handle}/applications", response_model=list[ApplicationRead])
@@ -520,6 +516,43 @@ async def get_metrics_history(
 
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@router.get("/{handle}/monitoring-status")
+async def get_monitoring_status(
+    handle: str,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> dict:
+    """Return the latest monitoring observations for an existing server."""
+    from shared.models import ServerMetricsHistory
+
+    server = await db.get(Server, handle)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    latest_metrics = await db.scalar(
+        select(ServerMetricsHistory.recorded_at)
+        .where(ServerMetricsHistory.server_handle == handle)
+        .order_by(ServerMetricsHistory.recorded_at.desc())
+        .limit(1)
+    )
+    baseline_applied_at = (server.labels or {}).get("monitoring_baseline_applied_at")
+
+    if baseline_applied_at is None and latest_metrics is None:
+        monitoring_state = "not_provisioned"
+    elif latest_metrics is None:
+        monitoring_state = "baseline_applied_waiting_for_metrics"
+    else:
+        monitoring_state = "metrics_observed"
+
+    return {
+        "server_handle": handle,
+        "monitoring_baseline_applied_at": baseline_applied_at,
+        "exporter_last_observed_reachable_at": server.last_health_check,
+        "metrics_last_collected_at": latest_metrics,
+        "state": monitoring_state,
+    }
 
 
 @router.delete("/metrics-history")

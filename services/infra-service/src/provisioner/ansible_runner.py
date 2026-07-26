@@ -31,6 +31,7 @@ class AnsibleRunner:
         deploy_user: str | None = None,
         orchestrator_ip: str | None = None,
         orchestrator_hostname: str | None = None,
+        tags: list[str] | None = None,
         timeout: int = 600,
     ) -> tuple[bool, str]:
         """Run an Ansible playbook.
@@ -44,6 +45,7 @@ class AnsibleRunner:
             deploy_user: SSH user that receives deploy-target access
             orchestrator_ip: Optional orchestrator public IP for UFW rules
             orchestrator_hostname: Optional orchestrator hostname for Loki push URL
+            tags: Optional Ansible tags, for applying one supported baseline component
             timeout: Execution timeout in seconds
 
         Returns:
@@ -98,6 +100,8 @@ class AnsibleRunner:
             extra_vars,
             "-v",
         ]
+        if tags:
+            cmd.extend(["--tags", ",".join(tags)])
 
         auth_mode = "password" if root_password else "key"
         logger.info(

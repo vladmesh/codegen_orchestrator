@@ -93,3 +93,18 @@ class TestAnsibleRunnerOrchestratorIp:
         extra_vars_idx = cmd.index("--extra-vars")
         extra_vars = cmd[extra_vars_idx + 1]
         assert "deploy_user=dev" in extra_vars
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_tags_are_passed_to_ansible(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+
+        self.runner.run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+            tags=["monitoring"],
+        )
+
+        cmd = mock_run.call_args[0][0]
+        tags_idx = cmd.index("--tags")
+        assert cmd[tags_idx + 1] == "monitoring"
