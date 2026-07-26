@@ -10,6 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+BACKEND_INTEGRATION_WORKFLOW = ROOT / ".github" / "workflows" / "backend-integration.yml"
 BUILDX_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-buildx-with-retry" / "action.yml"
 TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
 MAKEFILE = ROOT / "Makefile"
@@ -23,7 +24,7 @@ EXPECTED_SERVICE_MATRIX = {
     "worker-manager",
     "infra",
 }
-EXPECTED_INTEGRATION_MATRIX = {"backend", "template", "frontend", "infra", "po-tools"}
+EXPECTED_INTEGRATION_MATRIX = {"template", "frontend", "infra", "po-tools"}
 EXPECTED_GATE_NEEDS = {
     "detect-changes",
     "fast-checks",
@@ -288,23 +289,35 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
             fail("integration matrix contains a non-mapping item")
         if "github.event_name == 'workflow_dispatch'" not in item.get("should_run", ""):
             fail(f"workflow_dispatch does not enable integration suite {item.get('suite')}")
-        if item.get("suite") == "backend":
-            should_run = item.get("should_run", "")
-            for output in [
-                "api",
-                "langgraph",
-                "worker-manager",
-                "shared",
-                "packages",
-                "docker-test",
-                "ci",
-                "deps",
-                "integration-tests",
-            ]:
-                if output_reference(output) not in should_run:
-                    fail(f"backend integration suite is missing trigger {output}")
-            if "inputs.simulate_first_attempt_registry_failure" in should_run:
-                fail("registry retry simulation must not skip the required backend suite")
+
+
+def assert_manual_backend_integration() -> None:
+    if not BACKEND_INTEGRATION_WORKFLOW.is_file():
+        fail("manual backend integration workflow is missing")
+    with BACKEND_INTEGRATION_WORKFLOW.open() as f:
+        workflow = yaml.safe_load(f)
+    if not isinstance(workflow, dict):
+        fail("manual backend integration workflow root is not a mapping")
+    if set(workflow.get(True, {})) != {"workflow_dispatch"}:
+        fail("backend integration workflow must only run when manually dispatched")
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict):
+        fail("manual backend integration workflow has no jobs mapping")
+    job = require_job(jobs, "test-backend-integration")
+    if job.get("if"):
+        fail("manual backend integration job must not be conditional")
+    run_step = step_by_id(job, "integration-tests")
+    if run_step.get("run") != "make test-integration-backend":
+        fail("manual backend integration workflow must run the backend suite")
+    if run_step.get("if"):
+        fail("manual backend integration test step must not be conditional")
+    assert_step = step_by_name(job, "Assert backend integration test ran")
+    if "always()" not in assert_step.get("if", ""):
+        fail("manual backend integration assertion must run with always()")
+    if "steps.integration-tests.outcome" not in assert_step.get("run", ""):
+        fail("manual backend integration assertion must inspect the test outcome")
+    if SIMULATED_REGISTRY_FAILURE_INPUT in BACKEND_INTEGRATION_WORKFLOW.read_text():
+        fail("registry retry simulation must not skip the manual backend suite")
 
 
 def assert_buildx_retry(job: dict[str, Any]) -> None:
@@ -398,6 +411,7 @@ def main() -> None:
     assert_offline_live_unit_runner()
     assert_service_tests(jobs)
     assert_integration_tests(jobs)
+    assert_manual_backend_integration()
     assert_template_compatibility(jobs)
     assert_gate(jobs)
     print("CI gate contract ok")
