@@ -127,6 +127,26 @@ class TestValidPayloads:
                 {"qa_outcome": "passed", "state_changes": [change.model_dump(mode="json")]},
             )
 
+    def test_qa_result_directly_rejects_passed_residual_state_change(self):
+        """The invariant belongs to QARunResult, not only RunDTO routing."""
+        with pytest.raises(ValidationError, match="uncleaned state change"):
+            QARunResult.model_validate(
+                {
+                    "qa_outcome": QAOutcome.PASSED.value,
+                    "state_changes": [
+                        {
+                            "resource": "POST /api/items",
+                            "operation": "created",
+                            "cleanup": {
+                                "attempted": False,
+                                "succeeded": False,
+                                "detail": "direct write cannot be rolled back",
+                            },
+                        }
+                    ],
+                }
+            )
+
     @pytest.mark.parametrize("run_type", list(RunType))
     @pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLED])
     def test_result_none_allowed_before_terminal(self, run_type, status):

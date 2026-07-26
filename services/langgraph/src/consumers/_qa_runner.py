@@ -82,11 +82,14 @@ def _forbidden_application_write(trace: str, deployed_url: str) -> str | None:
     patterns = (
         rf"(?i)\b({_WRITE_METHODS})\s+({escaped_url}[^\s'\"]*)",
         rf"(?i)(?:-X|--request)\s+({_WRITE_METHODS})\b[^\n]*?({escaped_url}[^\s'\"]*)",
+        rf"(?i)\bcurl\b(?![^\n]*?\s(?:-G|--get)\b)[^\n]*?\s(?:-d|--data(?:-raw|-binary|-ascii)?)(?:=|\s)[^\n]*?({escaped_url}[^\s'\"]*)",
         rf"(?i)\b(?:requests|httpx)\.({_WRITE_METHODS.lower()})\s*\(\s*['\"]({escaped_url}[^'\"]*)",
     )
     for pattern in patterns:
         match = re.search(pattern, trace)
         if match:
+            if len(match.groups()) == 1:
+                return f"POST {match.group(1)}"
             return f"{match.group(1).upper()} {match.group(2)}"
     return None
 

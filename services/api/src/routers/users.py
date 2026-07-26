@@ -85,6 +85,18 @@ async def list_users(
     return result.scalars().all()
 
 
+@router.get("/{user_id}", response_model=UserRead)
+async def get_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_async_session),
+) -> User:
+    """Get user by ID."""
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
 @router.get("/by-telegram/{telegram_id}", response_model=UserRead)
 async def get_user_by_telegram_id(
     telegram_id: int,
@@ -94,18 +106,6 @@ async def get_user_by_telegram_id(
     query = select(User).where(User.telegram_id == telegram_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-
-
-@router.get("/{user_id}", response_model=UserRead)
-async def get_user(
-    user_id: int,
-    db: AsyncSession = Depends(get_async_session),
-) -> User:
-    """Get user by ID."""
-    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user

@@ -17,15 +17,22 @@ async def _clean_redis():
     yield
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl -X POST http://app.example/users",
+        "curl --data '{\"telegram_id\": 8202532144}' http://app.example/users",
+    ],
+)
 @pytest.mark.asyncio
-async def test_qa_run_write_attempt_is_blocked_and_persists_residual_trace():
+async def test_qa_run_write_attempt_is_blocked_and_persists_residual_trace(command: str):
     """Drive a QA run whose report exposes a direct write to an empty app."""
     command_result = SimpleNamespace(
         stdout='{"pass": true, "checks": [], "summary": "passed"}',
         stderr="",
         exit_status=0,
     )
-    report = "# QA Report\n- command: curl -X POST http://app.example/users\n"
+    report = f"# QA Report\n- command: {command}\n"
     conn = AsyncMock()
     conn.run = AsyncMock(return_value=command_result)
     conn.__aenter__ = AsyncMock(return_value=conn)
