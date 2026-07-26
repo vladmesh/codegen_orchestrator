@@ -78,7 +78,7 @@ def _job(*, task_id="deploy-lock-1", project_id="proj-1"):
 
 @pytest.mark.asyncio
 async def test_lock_acquired_before_processing(
-    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph, mock_deploy_config_store
 ):
     """Deploy acquires Redis lock before running subgraph."""
     mock_devops_subgraph.ainvoke = AsyncMock(
@@ -99,6 +99,7 @@ async def test_lock_acquired_before_processing(
     call_kwargs = mock_redis.redis.set.call_args
     assert call_kwargs[1].get("nx") is True
     assert "deploy:proj-1:lock" in call_kwargs[0]
+    mock_deploy_config_store.get_int.assert_called_once_with("deploy.deploy_lock_ttl", default=3600)
 
 
 @pytest.mark.asyncio
