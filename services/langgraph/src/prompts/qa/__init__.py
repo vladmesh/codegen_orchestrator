@@ -86,10 +86,9 @@ CRITICAL RULES:
 - If you need a test user, use only the deterministic identity
   `telegram_id={QA_TEST_TELEGRAM_ID}`. Do not create a user if the public API
   cannot delete that identity afterwards.
-- Before producing your verdict, undo every application-state change you made
-  and verify each cleanup request succeeded. This applies even when a product
-  check failed. Do not leave test users, permissions, records, or modified
-  settings behind.
+- Do not perform application-state changes except creating the deterministic
+  test identity when a check requires it. The QA runner removes and verifies
+  that identity after your command exits, including on a failed verdict.
 
 ## Acceptance Criteria (what the application must do)
 {acceptance_criteria}
@@ -144,21 +143,9 @@ After writing QA_REPORT.md, return ONLY this JSON:
 {{
   "pass": true/false,
   "checks": [{{"name": "check name", "pass": true/false, "detail": "one-line summary"}}],
-  "summary": "brief summary",
-  "state_changes": [
-    {{
-      "resource": "stable identifier of the changed application resource",
-      "operation": "created" or "modified",
-      "cleanup": {{
-        "attempted": true/false,
-        "succeeded": true/false,
-        "detail": "cleanup request and observed response"
-      }}
-    }}
-  ]
+  "summary": "brief summary"
 }}
 
-Always include `state_changes`, using `[]` when you made no application-state
-changes. A failed or unattempted cleanup must be reported with `succeeded:
-false`; never hide it by omitting the change.
+Do not claim cleanup results in this JSON. The QA runner performs cleanup and
+records its verified result itself.
 """

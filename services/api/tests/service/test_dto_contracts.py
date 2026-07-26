@@ -40,6 +40,21 @@ async def _test_user(async_client: AsyncClient):
     return resp.json()
 
 
+@pytest.mark.asyncio
+async def test_delete_user_by_telegram_id(async_client: AsyncClient):
+    telegram_id = 8202532144
+    await async_client.delete(f"/api/users/by-telegram/{telegram_id}")
+    created = await async_client.post(
+        "/api/users/",
+        json={"telegram_id": telegram_id, "username": "qa_cleanup", "first_name": "QA"},
+    )
+    assert created.status_code == 201
+
+    deleted = await async_client.delete(f"/api/users/by-telegram/{telegram_id}")
+    assert deleted.status_code == 204
+    assert (await async_client.get(f"/api/users/by-telegram/{telegram_id}")).status_code == 404
+
+
 @pytest.fixture
 async def project(async_client: AsyncClient, _test_user):
     resp = await async_client.post(

@@ -8,7 +8,6 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fastapi import FastAPI, HTTPException
 import httpx
 import pytest
 import respx
@@ -41,8 +40,7 @@ class TestBuildQAPrompt:
 
         assert "telegram_id=8202532144" in prompt
         assert "admin privileges" in prompt
-        assert '"state_changes"' in prompt
-        assert "undo every application-state change" in prompt
+        assert "QA runner performs cleanup" in prompt
 
     def test_prompt_with_bot_username(self):
         prompt = build_qa_prompt(
@@ -107,7 +105,7 @@ class TestParseQAResult:
         assert len(result.checks) == 1
         assert result.summary == "All good"
 
-    def test_state_changes_include_cleanup_evidence(self):
+    def test_agent_state_changes_are_not_trusted_as_cleanup_evidence(self):
         result = parse_qa_result(
             '{"pass": true, "checks": [], "summary": "OK", '
             '"state_changes": [{"resource": "user telegram_id=8202532144", '
@@ -115,10 +113,9 @@ class TestParseQAResult:
             '"succeeded": true, "detail": "DELETE returned 204"}}]}'
         )
 
-        assert result.state_changes[0]["resource"] == "user telegram_id=8202532144"
-        assert result.state_changes[0]["cleanup"]["succeeded"] is True
+        assert result.state_changes == []
 
-    def test_failed_cleanup_becomes_a_blocker(self):
+    def test_agent_claim_of_failed_cleanup_does_not_override_runner_verdict(self):
         result = parse_qa_result(
             '{"pass": true, "checks": [], "summary": "OK", '
             '"state_changes": [{"resource": "user telegram_id=8202532144", '
@@ -126,16 +123,14 @@ class TestParseQAResult:
             '"succeeded": false, "detail": "DELETE returned 405"}}]}'
         )
 
-        assert result.passed is False
-        assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.QA_CLEANUP_FAILED
+        assert result.passed is True
+        assert result.blocker is None
 
-    def test_missing_state_changes_is_an_unknown_blocker(self):
+    def test_state_changes_are_not_required_from_agent(self):
         result = parse_qa_result('{"pass": true, "checks": [], "summary": "OK"}')
 
-        assert result.passed is False
-        assert result.blocker is not None
-        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert result.passed is True
+        assert result.blocker is None
 
     def test_valid_fail_result(self):
         raw = (
@@ -191,8 +186,6 @@ class TestParseQAResult:
 
     def test_output_format_json_wrapper(self):
         """Claude Code --output-format json wraps result in envelope."""
-        import json
-
         inner = json.dumps(
             {
                 "pass": True,
@@ -210,8 +203,6 @@ class TestParseQAResult:
 
     def test_output_format_json_wrapper_non_json_result(self):
         """When Claude Code returns non-JSON text in result field."""
-        import json
-
         wrapper = json.dumps(
             {"type": "result", "subtype": "success", "result": "No output produced"}
         )
@@ -222,75 +213,54 @@ class TestParseQAResult:
 
 
 class TestStatefulQARegression:
-    @staticmethod
-    def _application() -> tuple[FastAPI, dict[int, dict[str, object]]]:
-        users: dict[int, dict[str, object]] = {}
-        app = FastAPI()
-
-        @app.post("/users")
-        async def create_user(payload: dict[str, object]) -> dict[str, object]:
-            telegram_id = payload["telegram_id"]
-            if not isinstance(telegram_id, int):
-                raise HTTPException(status_code=422)
-            users[telegram_id] = payload
-            return payload
-
-        @app.delete("/users/{telegram_id}", status_code=204)
-        async def delete_user(telegram_id: int) -> None:
-            if users.pop(telegram_id, None) is None:
-                raise HTTPException(status_code=404)
-
-        @app.get("/users")
-        async def list_users() -> list[dict[str, object]]:
-            return list(users.values())
-
-        return app, users
-
+    @respx.mock
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("omit_state_changes", [False, True])
-    async def test_rest_stateful_qa_removes_deterministic_user_before_verdict(
-        self, omit_state_changes: bool
+    @pytest.mark.parametrize(
+        "agent_payload",
+        [
+            '{"pass": true, "checks": [], "summary": "passed"}',
+            "",
+        ],
+    )
+    async def test_runner_removes_test_user_after_verdict_or_unknown_outcome(
+        self, agent_payload: str
     ):
-        """A pass and a fail-closed verdict both leave the application's users empty."""
-        app, users = self._application()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            created = await client.post("/users", json={"telegram_id": 8202532144})
-            assert created.status_code == 200
-            assert users
+        """Runner-owned cleanup executes after both a verdict and lost agent output."""
+        user_url = "https://stateful.example.com/api/users/by-telegram/8202532144"
+        deleted = respx.delete(user_url).mock(return_value=httpx.Response(204))
+        verified = respx.get(user_url).mock(return_value=httpx.Response(404))
+        command_result = SimpleNamespace(stdout=agent_payload, stderr="", exit_status=0)
+        conn = AsyncMock()
+        conn.run = AsyncMock(return_value=command_result)
+        conn.__aenter__ = AsyncMock(return_value=conn)
+        conn.__aexit__ = AsyncMock(return_value=False)
 
-            deleted = await client.delete("/users/8202532144")
-            assert deleted.status_code == 204
+        with (
+            patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
+            patch(
+                "src.consumers._qa_runner._preflight_agent_qa",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
+            patch("src.consumers._qa_runner._collect_qa_report", new_callable=AsyncMock),
+        ):
+            mock_asyncssh.import_private_key.return_value = "parsed_key"
+            mock_asyncssh.connect.return_value = conn
+            result = await run_qa_on_server(
+                server_ip="1.2.3.4",
+                ssh_user="dev",
+                ssh_key="fake",
+                project_name="stateful",
+                acceptance_criteria="- exercise a stateful user flow",
+                deployed_url="https://stateful.example.com",
+                cleanup_test_identity=True,
+            )
 
-            payload: dict[str, object] = {
-                "pass": True,
-                "checks": [],
-                "summary": "stateful check completed",
-                "state_changes": [
-                    {
-                        "resource": "user telegram_id=8202532144",
-                        "operation": "created",
-                        "cleanup": {
-                            "attempted": True,
-                            "succeeded": True,
-                            "detail": "DELETE /users/8202532144 returned 204",
-                        },
-                    }
-                ],
-            }
-            if omit_state_changes:
-                payload.pop("state_changes")
-
-            result = parse_qa_result(json.dumps(payload))
-            listed = await client.get("/users")
-
-        assert listed.json() == []
-        assert users == {}
-        assert result.passed is not omit_state_changes
-        if omit_state_changes:
-            assert result.blocker is not None
-            assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert deleted.called
+        assert verified.called
+        assert result.state_changes[0]["cleanup"]["succeeded"] is True
+        assert result.passed is bool(agent_payload)
 
 
 class TestRunHealthChecks:

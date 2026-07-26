@@ -24,9 +24,11 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
     QAStateChange,
+    QAStateChangeCleanup,
+    QAStateChangeOperation,
 )
 
-from ..prompts.qa import TELETHON_ENV_FILE, build_qa_prompt
+from ..prompts.qa import QA_TEST_TELEGRAM_ID, TELETHON_ENV_FILE, build_qa_prompt
 
 logger = structlog.get_logger(__name__)
 
@@ -47,6 +49,10 @@ TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
 TELETHON_ENV_PREFIX = f"set -a && . {TELETHON_ENV_FILE} && set +a && "
 CLAUDE_PATH_PREFIX = 'export PATH="$HOME/.local/bin:$PATH" && '
 TELEGRAM_ACCESS_PROBE_TIMEOUT = 10
+QA_TEST_USER_RESOURCE = f"user telegram_id={QA_TEST_TELEGRAM_ID}"
+HTTP_OK = 200
+HTTP_NO_CONTENT = 204
+HTTP_NOT_FOUND = 404
 
 
 class TelethonCredentialsError(RuntimeError):
@@ -76,6 +82,99 @@ def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABl
     )
 
 
+def _qa_test_user_url(deployed_url: str) -> str:
+    """Return the public endpoint used to reserve and remove QA's test user."""
+    return f"{deployed_url.rstrip('/')}/api/users/by-telegram/{QA_TEST_TELEGRAM_ID}"
+
+
+async def reserve_qa_test_identity(deployed_url: str) -> QABlocker | None:
+    """Ensure the deterministic QA identity is absent before an agent can use it.
+
+    The consumer persists the matching cleanup plan immediately after this
+    reservation. A pre-existing identity is never touched because it could
+    belong to the customer rather than the QA run.
+    """
+    url = _qa_test_user_url(deployed_url)
+    try:
+        async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
+            response = await client.get(url)
+    except httpx.HTTPError as exc:
+        return _unknown_result_blocker(
+            attempted="reserve deterministic QA test identity",
+            sent=f"GET {url}",
+            received=f"transport error: {exc}",
+        )
+
+    if response.status_code == HTTP_NOT_FOUND:
+        return None
+    return _unknown_result_blocker(
+        attempted="reserve deterministic QA test identity",
+        sent=f"GET {url}",
+        received=(
+            "test identity is already present"
+            if response.status_code == HTTP_OK
+            else f"unexpected HTTP {response.status_code}"
+        ),
+    )
+
+
+async def _cleanup_qa_test_identity(deployed_url: str) -> QAStateChange:
+    """Delete and verify the runner-owned QA identity through the public API."""
+    url = _qa_test_user_url(deployed_url)
+    try:
+        async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
+            response = await client.delete(url)
+            if response.status_code not in (HTTP_NO_CONTENT, HTTP_NOT_FOUND):
+                detail = f"DELETE {url} returned HTTP {response.status_code}"
+                return QAStateChange(
+                    resource=QA_TEST_USER_RESOURCE,
+                    operation=QAStateChangeOperation.CREATED,
+                    cleanup=QAStateChangeCleanup(attempted=True, succeeded=False, detail=detail),
+                )
+            verify = await client.get(url)
+    except httpx.HTTPError as exc:
+        return QAStateChange(
+            resource=QA_TEST_USER_RESOURCE,
+            operation=QAStateChangeOperation.CREATED,
+            cleanup=QAStateChangeCleanup(
+                attempted=True,
+                succeeded=False,
+                detail=f"DELETE {url} failed: {exc}",
+            ),
+        )
+
+    succeeded = verify.status_code == HTTP_NOT_FOUND
+    detail = (
+        f"DELETE {url} returned {response.status_code}; verification GET returned 404"
+        if succeeded
+        else (
+            f"DELETE {url} returned {response.status_code}; "
+            f"verification GET returned {verify.status_code}"
+        )
+    )
+    return QAStateChange(
+        resource=QA_TEST_USER_RESOURCE,
+        operation=QAStateChangeOperation.CREATED,
+        cleanup=QAStateChangeCleanup(attempted=True, succeeded=succeeded, detail=detail),
+    )
+
+
+async def _run_runner_owned_cleanup(qa_result: QAResult, deployed_url: str) -> QAResult:
+    """Attach the runner's cleanup evidence and fail closed if it did not work."""
+    change = await _cleanup_qa_test_identity(deployed_url)
+    qa_result.state_changes = [change.model_dump(mode="json")]
+    if not change.cleanup.succeeded:
+        qa_result.passed = False
+        qa_result.summary = "QA cleanup failed"
+        qa_result.blocker = QABlocker(
+            category=QABlockerCategory.QA_CLEANUP_FAILED,
+            attempted="delete and verify runner-owned QA test identity",
+            sent=f"DELETE {_qa_test_user_url(deployed_url)}",
+            received=change.cleanup.detail,
+        )
+    return qa_result
+
+
 def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
     """Fail closed when the agent's result cannot safely drive QA routing."""
     return QAResult(
@@ -97,12 +196,14 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
     review as an unknown blocker instead of being treated as a pass or causing
     failure handling to crash while extracting failed checks.
     """
-    required_fields = {"pass", "checks", "summary", "state_changes"}
-    allowed_fields = required_fields
+    required_fields = {"pass", "checks", "summary"}
+    # Older agents may still emit state_changes. It is deliberately ignored:
+    # cleanup evidence is produced by the runner, not trusted agent output.
+    allowed_fields = required_fields | {"state_changes"}
     if not required_fields <= set(data) or not set(data) <= allowed_fields:
         return _invalid_qa_payload(
             raw,
-            "expected exactly pass, checks, summary, and state_changes fields",
+            "expected exactly pass, checks, and summary fields",
         )
 
     if not isinstance(data["pass"], bool):
@@ -126,15 +227,6 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
         if not isinstance(check["detail"], str) or not check["detail"].strip():
             return _invalid_qa_payload(raw, f"check {index} detail must be a non-empty string")
 
-    state_changes = data["state_changes"]
-    if not isinstance(state_changes, list):
-        return _invalid_qa_payload(raw, "state_changes must be a list")
-    try:
-        data["state_changes"] = [
-            QAStateChange.model_validate(change).model_dump(mode="json") for change in state_changes
-        ]
-    except Exception as exc:
-        return _invalid_qa_payload(raw, f"invalid state change: {exc}")
     return None
 
 
@@ -205,33 +297,11 @@ def parse_qa_result(raw: str) -> QAResult:
     if invalid_result:
         return invalid_result
 
-    state_changes = data["state_changes"]
-    failed_cleanup = next(
-        (change for change in state_changes if not change["cleanup"]["succeeded"]),
-        None,
-    )
-    if failed_cleanup:
-        cleanup = failed_cleanup["cleanup"]
-        return QAResult(
-            passed=False,
-            checks=data["checks"],
-            summary="QA cleanup failed",
-            raw=raw,
-            state_changes=state_changes,
-            blocker=QABlocker(
-                category=QABlockerCategory.QA_CLEANUP_FAILED,
-                attempted="clean up QA-created or QA-modified application state",
-                sent=failed_cleanup["resource"],
-                received=cleanup["detail"],
-            ),
-        )
-
     return QAResult(
         passed=data["pass"],
         checks=data["checks"],
         summary=data["summary"],
         raw=raw,
-        state_changes=state_changes,
     )
 
 
@@ -570,6 +640,7 @@ async def run_qa_on_server(
     deployed_url: str,
     bot_username: str | None = None,
     timeout: int = QA_TIMEOUT,
+    cleanup_test_identity: bool = False,
 ) -> QAResult:
     """SSH to server, run Claude Code with QA prompt, return parsed result.
 
@@ -581,6 +652,7 @@ async def run_qa_on_server(
         deployed_url: URL where the project is deployed
         bot_username: Telegram bot username (if applicable)
         timeout: Timeout in seconds for the Claude Code run
+        cleanup_test_identity: Whether the consumer persisted the cleanup plan
 
     Returns:
         QAResult with pass/fail status and check details
@@ -600,6 +672,8 @@ async def run_qa_on_server(
         f"2>/dev/null"
     )
 
+    agent_started = False
+    qa_result: QAResult | None = None
     try:
         key = asyncssh.import_private_key(ssh_key)
         async with asyncssh.connect(
@@ -622,6 +696,10 @@ async def run_qa_on_server(
 
             await _ensure_claude_credentials(conn)
 
+            # The consumer persisted the pending cleanup plan before it let the
+            # agent run. From this point the runner, not Claude's final JSON,
+            # owns deleting and verifying the deterministic identity.
+            agent_started = True
             result = await conn.run(cmd, check=False)
 
             # Collect QA_REPORT.md regardless of exit status
@@ -648,7 +726,7 @@ async def run_qa_on_server(
                             ),
                         )
                     return qa_result
-                return QAResult(
+                qa_result = QAResult(
                     passed=False,
                     summary=f"Claude Code exited with status {result.exit_status}: "
                     f"{result.stderr[:300] if result.stderr else 'no output'}",
@@ -663,6 +741,7 @@ async def run_qa_on_server(
                         ),
                     ),
                 )
+                return qa_result
 
             qa_result = parse_qa_result(result.stdout or "")
             qa_result.report = report
@@ -670,7 +749,7 @@ async def run_qa_on_server(
 
     except TelethonCredentialsError as e:
         logger.error("qa_telethon_credentials_unusable", server_ip=server_ip, error=str(e))
-        return QAResult(
+        qa_result = QAResult(
             passed=False,
             summary=f"QA cannot test @{bot_username}: {e}",
             raw="",
@@ -681,10 +760,11 @@ async def run_qa_on_server(
                 received=str(e),
             ),
         )
+        return qa_result
 
     except Exception as e:
         logger.error("qa_ssh_failed", server_ip=server_ip, error=str(e))
-        return QAResult(
+        qa_result = QAResult(
             passed=False,
             summary=f"SSH connection failed to {server_ip}: {e}",
             raw="",
@@ -695,6 +775,10 @@ async def run_qa_on_server(
                 received=str(e),
             ),
         )
+        return qa_result
+    finally:
+        if cleanup_test_identity and agent_started and qa_result is not None:
+            await _run_runner_owned_cleanup(qa_result, deployed_url)
 
 
 async def _collect_qa_report(

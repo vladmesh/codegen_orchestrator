@@ -23,9 +23,11 @@ from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
 from ._live_work import live_work_settled
 from ._qa_runner import (
+    QA_TEST_USER_RESOURCE,
     QAResult,
     check_deployed_url_reachable,
     credential_refresh_loop,
+    reserve_qa_test_identity,
     run_health_checks,
     run_qa_on_server,
 )
@@ -157,12 +159,41 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                         ),
                     )
 
-        # Mark run as running before starting the checks
+        # Reserve and persist the runner-owned cleanup plan before an agent can
+        # issue a stateful request. A QA run without durable storage must not
+        # start an agent that could leave customer data behind.
+        if health_checks is None:
+            if not run_id:
+                return await _handle_qa_blocked(
+                    run_id=run_id,
+                    blocker=QABlocker(
+                        category=QABlockerCategory.UNKNOWN,
+                        attempted="persist QA cleanup plan",
+                        sent="QAMessage.run_id",
+                        received=(
+                            "agent QA requires a run_id before it can mutate application state"
+                        ),
+                    ),
+                )
+            blocker = await reserve_qa_test_identity(msg.deployed_url)
+            if blocker:
+                return await _handle_qa_blocked(run_id=run_id, blocker=blocker)
+
+        # Mark run as running before starting the checks.
         if run_id:
-            await api_client.patch(
-                f"runs/{run_id}",
-                json={"status": RunStatus.RUNNING.value},
-            )
+            run_update: dict[str, object] = {"status": RunStatus.RUNNING.value}
+            if health_checks is None:
+                run_update["run_metadata"] = {
+                    "qa_state_cleanup": {
+                        "resource": QA_TEST_USER_RESOURCE,
+                        "operation": "created",
+                        "cleanup_request": (
+                            "DELETE /api/users/by-telegram/8202532144, then GET to verify 404"
+                        ),
+                        "status": "pending",
+                    }
+                }
+            await api_client.patch(f"runs/{run_id}", json=run_update)
 
         if health_checks is not None:
             logger.info("qa_health_only_criteria", story_id=story_id, checks=len(health_checks))
@@ -179,6 +210,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 acceptance_criteria=acceptance_criteria,
                 deployed_url=msg.deployed_url,
                 bot_username=msg.bot_username,
+                cleanup_test_identity=True,
             )
 
         logger.info(
