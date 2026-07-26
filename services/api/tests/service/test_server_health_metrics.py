@@ -1,6 +1,7 @@
 """Integration tests for Server health metrics + metrics history endpoints."""
 
 from http import HTTPStatus
+from uuid import uuid4
 
 import pytest
 
@@ -8,7 +9,7 @@ import pytest
 @pytest.fixture
 async def test_server(async_client):
     """Create a test server, clean up after."""
-    handle = "test-health-srv"
+    handle = f"test-health-{uuid4().hex}"
     resp = await async_client.post(
         "/api/servers/",
         json={
@@ -19,11 +20,7 @@ async def test_server(async_client):
             "is_managed": True,
         },
     )
-    if resp.status_code == HTTPStatus.BAD_REQUEST:
-        # Already exists from previous run — just use it
-        pass
-    else:
-        assert resp.status_code == HTTPStatus.CREATED
+    assert resp.status_code == HTTPStatus.CREATED
     yield handle
 
 
