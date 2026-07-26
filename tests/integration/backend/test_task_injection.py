@@ -1,3 +1,4 @@
+import shutil
 from uuid import uuid4
 
 import pytest
@@ -13,6 +14,8 @@ from shared.contracts.queues.worker import (
 from .conftest import (
     REDIS_STREAM_COMMANDS,
     REDIS_STREAM_DEV_RESPONSES,
+    WORKSPACE_BASE_PATH,
+    _create_scaffolded_workspace,
     wait_for_create_response,
 )
 
@@ -28,38 +31,40 @@ async def cleanup_worker(redis_client, worker_id: str | None):
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestTaskInjection:
-    async def test_task_injection_location(self, redis_client, docker_client, scaffolded_workspace):
+    async def test_task_injection_location(self, redis_client, docker_client):
         """
         Verify that TASK.md is injected into /workspace/TASK.md.
         """
         req_id = f"test-req-{uuid4().hex[:6]}"
+        worker_name = f"test-task-{req_id}"
         task_content = "This is a test task content."
+        repo_id = _create_scaffolded_workspace()
+        worker_id: str | None = None
 
         command = CreateWorkerCommand(
             request_id=req_id,
             config=WorkerConfig(
-                name=f"test-task-{req_id}",
+                name=worker_name,
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
                 instructions="You are a test assistant.",
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
-                repo_id=scaffolded_workspace,
+                repo_id=repo_id,
             ),
         )
-        await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
-
-        # Use wait_for_create_response which filters by request_id
-        # (wait_for_stream_message picks up stale delete responses from cleanup)
-        result = await wait_for_create_response(
-            redis_client, REDIS_STREAM_DEV_RESPONSES, req_id, timeout=120
-        )
-
-        assert result.success is True, f"Worker creation failed: {result.error}"
-        worker_id = result.worker_id
-
         try:
+            await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
+
+            # Use wait_for_create_response which filters by request_id
+            # (wait_for_stream_message picks up stale delete responses from cleanup)
+            result = await wait_for_create_response(
+                redis_client, REDIS_STREAM_DEV_RESPONSES, req_id, timeout=120
+            )
+
+            assert result.success is True, f"Worker creation failed: {result.error}"
+            worker_id = result.worker_id
             container = docker_client.containers.get(f"worker-{worker_id}")
 
             # Check /workspace/TASK.md exists and has content
@@ -68,7 +73,8 @@ class TestTaskInjection:
             assert task_content.encode() == output, f"Unexpected content: {output}"
 
         finally:
-            await cleanup_worker(redis_client, result.worker_id)
+            await cleanup_worker(redis_client, worker_id)
+            shutil.rmtree(f"{WORKSPACE_BASE_PATH}/{repo_id}", ignore_errors=True)
 
     async def test_env_hints_in_task_md(self, redis_client, docker_client, scaffolded_workspace):
         """Verify that env_hints content appears in TASK.md inside the worker."""

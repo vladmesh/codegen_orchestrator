@@ -17,6 +17,13 @@ async def test_backend_integration_smoke():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_api_client_uses_internal_api_key(api_client):
+    """Internal API calls inherit the runner's authentication key."""
+    assert api_client.headers["X-Internal-Key"] == os.environ["INTERNAL_API_KEY"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_api_seed_and_read_project(api_client, seed_project):
     """Verify we can seed a project via API and read it back."""
     created = await seed_project(name="Smoke Test", config={"modules": ["backend"]})

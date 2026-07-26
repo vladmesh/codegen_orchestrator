@@ -112,7 +112,12 @@ async def api_client():
     """Async HTTP client for the API service."""
     import httpx
 
-    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=10) as client:
+    internal_api_key = os.environ["INTERNAL_API_KEY"]
+    async with httpx.AsyncClient(
+        base_url=API_BASE_URL,
+        timeout=10,
+        headers={"X-Internal-Key": internal_api_key},
+    ) as client:
         yield client
 
 
@@ -277,9 +282,9 @@ async def cleanup_redis_streams(redis_client):
 WORKSPACE_BASE_PATH = "/tmp/codegen/workspaces"  # noqa: S108
 
 
-def _create_scaffolded_workspace() -> str:
+def _create_scaffolded_workspace(repo_id: str | None = None) -> str:
     """Create a minimal git repo at /tmp/codegen/workspaces/{repo_id}/. Returns repo_id."""
-    repo_id = str(uuid4())
+    repo_id = repo_id or str(uuid4())
     ws_path = os.path.join(WORKSPACE_BASE_PATH, repo_id)
     os.makedirs(ws_path, exist_ok=True)
 
