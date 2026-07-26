@@ -190,6 +190,34 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
 
 
 @pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_ci_registry_setup_failure_tells_worker_not_to_change_code(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story()]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_tasks_by_story.return_value = []
+    gh.get_latest_workflow_run.return_value = _failed_run(760, "sha-760")
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": "Integration Tests (infra)",
+                "failed_steps": ["Set up Docker Buildx with retry"],
+            }
+        ],
+        "unavailable_reason": None,
+    }
+
+    assert await poll_ci_failures(api) == 1
+
+    description = api.create_task.call_args.args[0]["description"]
+    assert "CI infrastructure failure" in description
+    assert "Docker image registry" in description
+    assert "Do not change application code" in description
+
+
+@pytest.mark.asyncio
 @patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_three_same_fingerprints_create_two_fixes_then_escalate(mock_gh_cls, notify):

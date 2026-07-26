@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
+_CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
 
 
 def _ci_failure_limit() -> int:
@@ -61,6 +62,20 @@ def _build_failure_description(evidence: dict) -> str:
             lines.extend(f"Failed step: {step}" for step in job["failed_steps"])
     else:
         lines.append("Failure details unavailable: " + evidence["details_unavailable_reason"])
+    if any(
+        step in _CI_INFRASTRUCTURE_STEPS
+        for job in evidence["failed_jobs"]
+        for step in job["failed_steps"]
+    ):
+        lines.extend(
+            [
+                "",
+                "CI infrastructure failure: Docker image registry was unavailable while "
+                "preparing Buildx after retries.",
+                "Do not change application code. Re-run CI when the registry is available.",
+            ]
+        )
+        return "\n".join(lines)
     lines.extend(["", "Fix all reported failures, run local checks, then push once."])
     return "\n".join(lines)
 

@@ -1,0 +1,33 @@
+name: Set up Docker Buildx with retry
+description: Retry transient Docker registry failures while bootstrapping Buildx.
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx, attempt 1
+      id: attempt-1
+      uses: docker/setup-buildx-action@v3
+      continue-on-error: true
+
+    - name: Set up Docker Buildx, attempt 2
+      id: attempt-2
+      if: steps.attempt-1.outcome != 'success'
+      uses: docker/setup-buildx-action@v3
+      continue-on-error: true
+
+    - name: Set up Docker Buildx, attempt 3
+      id: attempt-3
+      if: steps.attempt-1.outcome != 'success' && steps.attempt-2.outcome != 'success'
+      uses: docker/setup-buildx-action@v3
+      continue-on-error: true
+
+    - name: Fail as CI infrastructure after retry exhaustion
+      if: always()
+      shell: bash
+      run: |
+        if [ "${{ steps.attempt-1.outcome }}" = "success" ] || \
+          [ "${{ steps.attempt-2.outcome }}" = "success" ] || \
+          [ "${{ steps.attempt-3.outcome }}" = "success" ]; then
+          exit 0
+        fi
+        echo "::error title=CI infrastructure failure::Docker image registry was unavailable while preparing Buildx after three attempts. Code changes are not required."
+        exit 1

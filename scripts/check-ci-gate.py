@@ -10,6 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+BUILDX_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-buildx-with-retry" / "action.yml"
 TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
 MAKEFILE = ROOT / "Makefile"
 LINT_PATH_EXPR = "$(if $(LINT_PATH),$(LINT_PATH),.)"
@@ -47,6 +48,7 @@ EXPECTED_FILTERS = {
 }
 HYPHENATED_OUTPUTS = {"worker-manager", "infra-service", "docker-test", "integration-tests"}
 TEMPLATE_COMPAT_TIMEOUT_MINUTES = 30
+BUILDX_RETRY_ATTEMPTS = 3
 OFFLINE_LIVE_IGNORES = {
     "tests/live/test_api_crud.py",
     "tests/live/test_capability_cleanup_redis.py",
@@ -244,6 +246,7 @@ def assert_service_tests(jobs: dict[str, Any]) -> None:
         fail("service tests must call make test-service")
     if run_step.get("if") != "matrix.should_run == 'true'":
         fail("service test command must be guarded by matrix.should_run")
+    assert_buildx_retry(job)
     assert_step = step_by_name(job, "Assert required service test ran")
     if "steps.service-tests.outcome" not in assert_step.get("run", ""):
         fail("service tests must assert the test step outcome")
@@ -270,6 +273,7 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
     run_step = step_by_id(job, "integration-tests")
     if run_step.get("run") != "make test-integration-${{ matrix.suite }}":
         fail("integration tests must call make test-integration-<suite>")
+    assert_buildx_retry(job)
     assert_step = step_by_name(job, "Assert required integration test ran")
     if "steps.integration-tests.outcome" not in assert_step.get("run", ""):
         fail("integration tests must assert the test step outcome")
@@ -287,6 +291,28 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
             should_run = item.get("should_run", "")
             if "needs.detect-changes.outputs" in should_run:
                 fail("backend integration suite must stay workflow_dispatch-only")
+
+
+def assert_buildx_retry(job: dict[str, Any]) -> None:
+    step = step_by_name(job, "Set up Docker Buildx with retry")
+    if step.get("uses") != "./.github/actions/setup-buildx-with-retry":
+        fail("Docker Buildx setup must use the local retry action")
+    if not BUILDX_RETRY_ACTION.is_file():
+        fail("Docker Buildx retry action is missing")
+    action = yaml.safe_load(BUILDX_RETRY_ACTION.read_text())
+    steps = action.get("runs", {}).get("steps", []) if isinstance(action, dict) else []
+    attempts = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("uses") == "docker/setup-buildx-action@v3"
+    ]
+    if len(attempts) != BUILDX_RETRY_ATTEMPTS:
+        fail("Docker Buildx retry action must make three attempts")
+    if not all(step.get("continue-on-error") is True for step in attempts):
+        fail("Docker Buildx retry attempts must continue to the next attempt")
+    verify = step_by_name({"steps": steps}, "Fail as CI infrastructure after retry exhaustion")
+    if "Docker image registry" not in verify.get("run", ""):
+        fail("Docker Buildx retry exhaustion must identify the registry infrastructure failure")
 
 
 def assert_gate(jobs: dict[str, Any]) -> None:
