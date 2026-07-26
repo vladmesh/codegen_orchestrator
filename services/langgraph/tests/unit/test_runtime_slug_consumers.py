@@ -121,8 +121,14 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
     qa_conn = AsyncMock()
     qa_conn.run = AsyncMock(
         side_effect=[
-            MagicMock(exit_status=0, stdout='{"pass": true, "checks": [], "summary": "ok"}'),
+            MagicMock(exit_status=0, stdout=""),
+            MagicMock(
+                exit_status=0,
+                stdout='{"pass": true, "checks": [], "summary": "ok", "state_changes": []}',
+            ),
             MagicMock(exit_status=1, stdout=""),
+            MagicMock(exit_status=1, stdout=""),
+            MagicMock(exit_status=0, stdout=""),
         ]
     )
     qa_preflight = AsyncMock(return_value=None)
@@ -140,7 +146,9 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             deployed_url="http://1.2.3.4:8000",
         )
     assert qa_result.passed is True
-    qa_cmd = qa_conn.run.await_args_list[0].args[0]
+    qa_cmd = next(
+        call.args[0] for call in qa_conn.run.await_args_list if "claude -p" in call.args[0]
+    )
     assert f"cd {SERVICE_DIR}" in qa_cmd
 
     unsafe_project = "unsafe project; echo nope"

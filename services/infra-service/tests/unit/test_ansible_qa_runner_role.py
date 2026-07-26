@@ -148,6 +148,19 @@ class TestClaudeCodeInstallsForQaUser:
         rendered = yaml.safe_dump(self.tasks)
         assert "/root" not in rendered, rendered
 
+    def test_write_guard_cannot_be_replaced_by_the_qa_user(self):
+        guard = _task_named(self.tasks, "Install runner-owned application write guard")
+        protect_dir = _task_named(self.tasks, "Prevent the QA user from replacing the write guard")
+
+        assert guard["copy"]["owner"] == "root"
+        assert guard["copy"]["group"] == "root"
+        assert protect_dir["file"] == {
+            "path": "{{ qa_runner_dir }}",
+            "owner": "root",
+            "group": "root",
+            "mode": "0755",
+        }
+
 
 class TestTelethonCredentialsReachTheQaUser:
     """QA needs api_id, api_hash and a StringSession — all three, or nothing works."""

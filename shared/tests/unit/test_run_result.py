@@ -19,6 +19,8 @@ from shared.contracts.dto.run_result import (
     QABlockerCategory,
     QAFailedCheck,
     QARunResult,
+    QAStateChange,
+    QAStateChangeCleanup,
 )
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
@@ -92,6 +94,58 @@ class TestValidPayloads:
         assert isinstance(run.result, QARunResult)
         assert run.result.qa_outcome is QAOutcome.FAILED
         assert run.result.failed_checks == [QAFailedCheck(name="weather", detail="404")]
+
+    def test_qa_state_change_carries_cleanup_evidence(self):
+        change = QAStateChange(
+            resource="user telegram_id=8202532144",
+            operation="created",
+            cleanup=QAStateChangeCleanup(
+                attempted=True,
+                succeeded=True,
+                detail="DELETE /users/by-telegram/8202532144 returned 204",
+            ),
+        )
+        run = _run(
+            RunType.QA,
+            {"qa_outcome": "passed", "state_changes": [change.model_dump(mode="json")]},
+        )
+
+        assert run.result.state_changes == [change]
+
+    def test_passed_qa_rejects_residual_state_change(self):
+        change = QAStateChange(
+            resource="POST /api/items",
+            operation="created",
+            cleanup=QAStateChangeCleanup(
+                attempted=True, succeeded=False, detail="no inverse operation"
+            ),
+        )
+
+        with pytest.raises(ValidationError, match="uncleaned state change"):
+            _run(
+                RunType.QA,
+                {"qa_outcome": "passed", "state_changes": [change.model_dump(mode="json")]},
+            )
+
+    def test_qa_result_directly_rejects_passed_residual_state_change(self):
+        """The invariant belongs to QARunResult, not only RunDTO routing."""
+        with pytest.raises(ValidationError, match="uncleaned state change"):
+            QARunResult.model_validate(
+                {
+                    "qa_outcome": QAOutcome.PASSED.value,
+                    "state_changes": [
+                        {
+                            "resource": "POST /api/items",
+                            "operation": "created",
+                            "cleanup": {
+                                "attempted": False,
+                                "succeeded": False,
+                                "detail": "direct write cannot be rolled back",
+                            },
+                        }
+                    ],
+                }
+            )
 
     @pytest.mark.parametrize("run_type", list(RunType))
     @pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLED])

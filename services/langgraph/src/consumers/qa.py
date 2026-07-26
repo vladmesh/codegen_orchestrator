@@ -157,12 +157,25 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                         ),
                     )
 
-        # Mark run as running before starting the checks
+        # A QA run without durable storage must not start an agent that could
+        # leave customer data behind. The remote runner installs its journal
+        # before it exposes the mutation helper to Claude.
+        if health_checks is None:
+            if not run_id:
+                return await _handle_qa_blocked(
+                    run_id=run_id,
+                    blocker=QABlocker(
+                        category=QABlockerCategory.UNKNOWN,
+                        attempted="persist QA cleanup plan",
+                        sent="QAMessage.run_id",
+                        received=(
+                            "agent QA requires a run_id before it can mutate application state"
+                        ),
+                    ),
+                )
+        # Mark run as running before starting the checks.
         if run_id:
-            await api_client.patch(
-                f"runs/{run_id}",
-                json={"status": RunStatus.RUNNING.value},
-            )
+            await api_client.patch(f"runs/{run_id}", json={"status": RunStatus.RUNNING.value})
 
         if health_checks is not None:
             logger.info("qa_health_only_criteria", story_id=story_id, checks=len(health_checks))
@@ -199,12 +212,17 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             )
 
         if qa_result.blocker:
-            return await _handle_qa_blocked(run_id=run_id, blocker=qa_result.blocker)
+            return await _handle_qa_blocked(
+                run_id=run_id,
+                blocker=qa_result.blocker,
+                state_changes=qa_result.state_changes,
+            )
         if qa_result.passed:
             return await _handle_qa_pass(
                 run_id=run_id,
                 deployed_url=msg.deployed_url,
                 report=qa_result.report,
+                state_changes=qa_result.state_changes,
             )
         else:
             return await _handle_qa_fail(
@@ -233,7 +251,13 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         await redis.redis.delete(inflight_key)
 
 
-async def _handle_qa_pass(*, run_id: str, deployed_url: str, report: str = "") -> dict:
+async def _handle_qa_pass(
+    *,
+    run_id: str,
+    deployed_url: str,
+    report: str = "",
+    state_changes: list[dict] | None = None,
+) -> dict:
     """Handle QA pass — store PASSED outcome in run."""
     await _update_run(
         run_id,
@@ -241,12 +265,18 @@ async def _handle_qa_pass(*, run_id: str, deployed_url: str, report: str = "") -
         QAOutcome.PASSED,
         deployed_url=deployed_url,
         report=report,
+        state_changes=state_changes or [],
     )
     logger.info("qa_passed", run_id=run_id)
     return live_work_settled({"status": "passed"})
 
 
-async def _handle_qa_blocked(*, run_id: str, blocker: QABlocker) -> dict:
+async def _handle_qa_blocked(
+    *,
+    run_id: str,
+    blocker: QABlocker,
+    state_changes: list[dict] | None = None,
+) -> dict:
     """Persist a non-product QA blocker for human review."""
     await _update_run(
         run_id,
@@ -254,6 +284,7 @@ async def _handle_qa_blocked(*, run_id: str, blocker: QABlocker) -> dict:
         QAOutcome.BLOCKED,
         summary="QA could not verify the product",
         blocker=blocker,
+        state_changes=state_changes or [],
     )
     logger.warning("qa_blocked", run_id=run_id, category=blocker.category.value)
     return live_work_settled({"status": "qa_blocked", "blocker": blocker.category.value})
@@ -287,6 +318,7 @@ async def _handle_qa_fail(
             failed_checks=failed_checks,
             qa_attempt=qa_attempt,
             report=qa_result.report,
+            state_changes=qa_result.state_changes,
         )
         return live_work_settled({"status": "qa_exhausted"})
 
@@ -298,6 +330,7 @@ async def _handle_qa_fail(
         failed_checks=failed_checks,
         qa_attempt=qa_attempt,
         report=qa_result.report,
+        state_changes=qa_result.state_changes,
     )
 
     logger.info(

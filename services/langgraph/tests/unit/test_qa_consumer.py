@@ -213,6 +213,56 @@ class TestProcessQAJobPass:
         assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
 
     @pytest.mark.asyncio
+    async def test_marks_run_running_before_starting_agent(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="All good")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        running = mock_api_client.patch.call_args_list[0][1]["json"]
+        assert running["status"] == RunStatus.RUNNING.value
+        mock_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_forbidden_write_trace_is_stored_on_a_blocked_run(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
+        from src.consumers._qa_runner import QAResult
+
+        cleanup_blocker = QABlocker(
+            category=QABlockerCategory.UNKNOWN,
+            attempted="verify QA used only read-only application API requests",
+            sent="POST /users/by-telegram/8202532144",
+            received="application state may have changed",
+        )
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=False,
+                summary="QA attempted a forbidden application API write",
+                blocker=cleanup_blocker,
+                state_changes=[
+                    {
+                        "resource": "POST /users/by-telegram/8202532144",
+                        "operation": "modified",
+                        "cleanup": {
+                            "attempted": False,
+                            "succeeded": False,
+                            "detail": "forbidden direct application write detected",
+                        },
+                    }
+                ],
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        run_data = mock_api_client.patch.call_args[1]["json"]["result"]
+        assert run_data["state_changes"][0]["cleanup"]["succeeded"] is False
+
+    @pytest.mark.asyncio
     async def test_qa_pass_does_not_transition_story(
         self, mock_api_client, mock_redis, qa_message_data
     ):

@@ -11,6 +11,7 @@ agent prompts (``architect``, ``po``, ``developer_worker``).
 # the QA command's environment (consumers/_qa_runner), so the agent gets
 # TELETHON_* without doing anything.
 TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
+QA_TEST_TELEGRAM_ID = 8202532144
 
 
 def build_qa_prompt(
@@ -79,6 +80,13 @@ CRITICAL RULES:
 - "Code inspection confirms X" is NOT a valid test result.
 - If a test requires sending a Telegram command, you MUST actually send it
   and verify the bot's response — not read the handler code.
+- Never send POST, PUT, PATCH, or DELETE to the application API. This includes
+  creating a test user, changing privileges, and calling any write endpoint
+  through curl, Python, a browser, or another tool. The runner detects a write
+  attempt and blocks the run with a durable trace. QA may send Telegram messages
+  and make HTTP GET requests only. The deterministic QA identity is
+  `telegram_id={QA_TEST_TELEGRAM_ID}`; do not create it merely to obtain access
+  to a private bot. Access is provided by the platform's temporary test mechanism.
 
 ## Acceptance Criteria (what the application must do)
 {acceptance_criteria}
@@ -134,4 +142,8 @@ After writing QA_REPORT.md, return ONLY this JSON:
   "pass": true/false,
   "checks": [{{"name": "check name", "pass": true/false, "detail": "one-line summary"}}],
   "summary": "brief summary"
-}}"""
+}}
+
+Do not claim cleanup results in this JSON. The QA runner records any detected
+residual state itself; it does not attempt a generic rollback.
+"""

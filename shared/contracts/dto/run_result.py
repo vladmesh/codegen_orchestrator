@@ -86,6 +86,7 @@ class QABlockerCategory(StrEnum):
     DEPLOYED_URL_UNREACHABLE = "deployed_url_unreachable"
     TELEGRAM_ACCESS_DENIED = "telegram_access_denied"
     SERVER_UNAVAILABLE = "server_unavailable"
+    QA_CLEANUP_FAILED = "qa_cleanup_failed"
     UNKNOWN = "unknown"
 
 
@@ -105,6 +106,39 @@ class QABlocker(BaseModel):
     received: str
 
 
+class QAStateChangeCleanup(BaseModel):
+    """The cleanup attempt for application state changed by QA."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempted: bool
+    succeeded: bool
+    detail: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _successful_cleanup_was_attempted(self) -> QAStateChangeCleanup:
+        if self.succeeded and not self.attempted:
+            raise ValueError("successful QA cleanup must have been attempted")
+        return self
+
+
+class QAStateChangeOperation(StrEnum):
+    """Kinds of application-state write traces retained in a QA result."""
+
+    CREATED = "created"
+    MODIFIED = "modified"
+
+
+class QAStateChange(BaseModel):
+    """An application-state trace retained with its cleanup evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    resource: str = Field(min_length=1)
+    operation: QAStateChangeOperation
+    cleanup: QAStateChangeCleanup
+
+
 class QARunResult(BaseModel):
     """Result of a QA run (written by the QA consumer)."""
 
@@ -118,17 +152,17 @@ class QARunResult(BaseModel):
     deployed_url: str | None = None
     error: str | None = None
     blocker: QABlocker | None = None
+    state_changes: list[QAStateChange] = Field(default_factory=list)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _blocked_outcome_requires_blocker(cls, data: object) -> object:
-        if (
-            isinstance(data, dict)
-            and data.get("qa_outcome") == QAOutcome.BLOCKED
-            and data.get("blocker") is None
-        ):
+    @model_validator(mode="after")
+    def _outcome_matches_state_traces(self) -> QARunResult:
+        if self.qa_outcome == QAOutcome.BLOCKED and self.blocker is None:
             raise ValueError("blocked QA outcome requires a blocker")
-        return data
+        if self.qa_outcome == QAOutcome.PASSED and any(
+            not change.cleanup.succeeded for change in self.state_changes
+        ):
+            raise ValueError("passed QA outcome cannot contain an uncleaned state change")
+        return self
 
 
 RunResult = EngineeringRunResult | DeployRunResult | QARunResult

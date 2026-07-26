@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from types import SimpleNamespace
@@ -33,6 +34,13 @@ class TestBuildQAPrompt:
         assert "GET /health returns 200" in prompt
         assert "https://weather.example.com" in prompt
         assert "regression" in prompt.lower()
+
+    def test_prompt_requires_deterministic_identity_and_read_only_api(self):
+        prompt = build_qa_prompt("- test stateful flow", "https://weather.example.com")
+
+        assert "telegram_id=8202532144" in prompt
+        assert "POST, PUT, PATCH, or DELETE" in prompt
+        assert "never send" in prompt.lower()
 
     def test_prompt_with_bot_username(self):
         prompt = build_qa_prompt(
@@ -90,17 +98,44 @@ class TestParseQAResult:
     def test_valid_pass_result(self):
         raw = (
             '{"pass": true, "checks": [{"name": "health", "pass": true,'
-            ' "detail": "200 OK"}], "summary": "All good"}'
+            ' "detail": "200 OK"}], "summary": "All good", "state_changes": []}'
         )
         result = parse_qa_result(raw)
         assert result.passed is True
         assert len(result.checks) == 1
         assert result.summary == "All good"
 
+    def test_agent_state_changes_are_not_trusted_as_cleanup_evidence(self):
+        result = parse_qa_result(
+            '{"pass": true, "checks": [], "summary": "OK", '
+            '"state_changes": [{"resource": "user telegram_id=8202532144", '
+            '"operation": "created", "cleanup": {"attempted": true, '
+            '"succeeded": true, "detail": "DELETE returned 204"}}]}'
+        )
+
+        assert result.state_changes == []
+
+    def test_agent_claim_of_failed_cleanup_does_not_override_runner_verdict(self):
+        result = parse_qa_result(
+            '{"pass": true, "checks": [], "summary": "OK", '
+            '"state_changes": [{"resource": "user telegram_id=8202532144", '
+            '"operation": "created", "cleanup": {"attempted": true, '
+            '"succeeded": false, "detail": "DELETE returned 405"}}]}'
+        )
+
+        assert result.passed is True
+        assert result.blocker is None
+
+    def test_state_changes_are_not_required_from_agent(self):
+        result = parse_qa_result('{"pass": true, "checks": [], "summary": "OK"}')
+
+        assert result.passed is True
+        assert result.blocker is None
+
     def test_valid_fail_result(self):
         raw = (
             '{"pass": false, "checks": [{"name": "weather", "pass": false,'
-            ' "detail": "404"}], "summary": "Broken"}'
+            ' "detail": "404"}], "summary": "Broken", "state_changes": []}'
         )
         result = parse_qa_result(raw)
         assert result.passed is False
@@ -116,7 +151,7 @@ class TestParseQAResult:
         """Claude sometimes wraps JSON in markdown code blocks."""
         raw = """Here are the results:
 ```json
-{"pass": true, "checks": [], "summary": "OK"}
+{"pass": true, "checks": [], "summary": "OK", "state_changes": []}
 ```
 """
         result = parse_qa_result(raw)
@@ -151,13 +186,12 @@ class TestParseQAResult:
 
     def test_output_format_json_wrapper(self):
         """Claude Code --output-format json wraps result in envelope."""
-        import json
-
         inner = json.dumps(
             {
                 "pass": True,
                 "checks": [{"name": "health", "pass": True, "detail": "200"}],
                 "summary": "OK",
+                "state_changes": [],
             }
         )
         wrapper = json.dumps(
@@ -169,8 +203,6 @@ class TestParseQAResult:
 
     def test_output_format_json_wrapper_non_json_result(self):
         """When Claude Code returns non-JSON text in result field."""
-        import json
-
         wrapper = json.dumps(
             {"type": "result", "subtype": "success", "result": "No output produced"}
         )
@@ -349,7 +381,9 @@ class TestRunQAOnServer:
     @pytest.mark.asyncio
     async def test_successful_qa_pass(self):
         mock_result = MagicMock()
-        mock_result.stdout = '{"pass": true, "checks": [], "summary": "All tests passed"}'
+        mock_result.stdout = (
+            '{"pass": true, "checks": [], "summary": "All tests passed", "state_changes": []}'
+        )
         mock_result.stderr = ""
         mock_result.exit_status = 0
 
@@ -373,7 +407,9 @@ class TestRunQAOnServer:
 
         assert result.passed is True
         assert mock_asyncssh.connect.call_args.kwargs["username"] == "dev"
-        qa_cmd = mock_conn.run.await_args_list[0].args[0]
+        qa_cmd = next(
+            call.args[0] for call in mock_conn.run.await_args_list if "claude -p" in call.args[0]
+        )
         assert "cd '/opt/services/weather bot'" in qa_cmd
 
     @pytest.mark.asyncio
@@ -428,7 +464,7 @@ class TestRunQAOnServer:
     @pytest.mark.asyncio
     async def test_custom_timeout(self):
         mock_result = MagicMock()
-        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK"}'
+        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK", "state_changes": []}'
         mock_result.stderr = ""
         mock_result.exit_status = 0
 
@@ -451,15 +487,15 @@ class TestRunQAOnServer:
                 timeout=600,
             )
 
-        # Verify timeout is passed to the claude command (first run call)
-        first_call = mock_conn.run.call_args_list[0]
-        cmd = first_call[0][0]
+        cmd = next(
+            call.args[0] for call in mock_conn.run.await_args_list if "claude -p" in call.args[0]
+        )
         assert "600" in cmd
 
     @pytest.mark.asyncio
     async def test_bot_run_loads_telethon_env_before_claude(self, _skip_telethon_check):
         mock_result = MagicMock()
-        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK"}'
+        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK", "state_changes": []}'
         mock_result.stderr = ""
         mock_result.exit_status = 0
 
@@ -482,7 +518,9 @@ class TestRunQAOnServer:
                 bot_username="weather_bot",
             )
 
-        cmd = mock_conn.run.await_args_list[0].args[0]
+        cmd = next(
+            call.args[0] for call in mock_conn.run.await_args_list if "claude -p" in call.args[0]
+        )
         # TELETHON_* must be in the environment claude inherits, not something
         # the agent has to remember to source
         assert cmd.index("set -a && . $HOME/.qa-telethon.env && set +a") < cmd.index("claude -p")
@@ -490,7 +528,7 @@ class TestRunQAOnServer:
     @pytest.mark.asyncio
     async def test_run_without_bot_does_not_touch_telethon_env(self):
         mock_result = MagicMock()
-        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK"}'
+        mock_result.stdout = '{"pass": true, "checks": [], "summary": "OK", "state_changes": []}'
         mock_result.stderr = ""
         mock_result.exit_status = 0
 
@@ -607,6 +645,31 @@ class TestQAPreflight:
         assert blocker is not None
         assert blocker.category.value == "telegram_access_denied"
         assert blocker.received == "🚫 Доступ запрещён"
+
+    @pytest.mark.asyncio
+    async def test_wrong_telethon_identity_blocks_before_claude_runs(self):
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        wrong_identity = SimpleNamespace(
+            exit_status=3,
+            stdout="telegram_identity_mismatch:expected=8202532144;actual=999\n",
+            stderr="",
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(side_effect=[claude_present, wrong_identity])
+
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock
+        ):
+            blocker = await _preflight_agent_qa(conn, "private_bot")
+
+        assert blocker is not None
+        assert blocker.category is QABlockerCategory.UNKNOWN
+        assert blocker.received == "expected=8202532144;actual=999"
+        probe = conn.run.await_args_list[1].args[0]
+        assert "client.get_me()" in probe
+        assert "8202532144" in probe
 
 
 class TestRunQAOnServerPreflight:
