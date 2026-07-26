@@ -573,6 +573,7 @@ class TestCreateStory:
                 "project_id": "abc",
                 "title": "Try the fix again",
                 "description": "Retry the same failing feature",
+                "parent_story_id": "story-held",
             },
             config=_make_config("user-42"),
         )
@@ -581,6 +582,41 @@ class TestCreateStory:
         assert "human review" in result.lower()
         mock_api_client.post.assert_not_called()
         mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_qa_failure_hold_allows_unrelated_story(
+        self, mock_api_client, mock_stream_client
+    ):
+        """A held retry chain must not freeze unrelated project work."""
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response(
+                [
+                    {
+                        "id": "story-held",
+                        "status": "waiting_human_review",
+                        "quarantine_reason": {
+                            "qa_outcome": "failed",
+                            "qa_failure": {"fingerprint": "a1b2c3d4"},
+                        },
+                    }
+                ]
+            ),
+        ]
+        mock_api_client.post.return_value = _make_response({"id": "story-export"})
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Add export",
+                "description": "Export project data as CSV",
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "Story created" in result
+        assert mock_api_client.post.call_args.kwargs["json"]["parent_story_id"] is None
+        mock_stream_client.publish_message.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_creates_story_and_publishes_to_architect(

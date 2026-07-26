@@ -753,6 +753,35 @@ class TestSuperviseTestingStories:
         assert "weather" in task_data["description"].lower()
 
     @pytest.mark.asyncio
+    async def test_existing_fix_task_recovers_story_transition_after_partial_failure(
+        self, api_client, redis_client
+    ):
+        """A saved fix task for this QA run still returns the story to engineering."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "Weather endpoint broken",
+                "failed_checks": [{"name": "weather", "detail": "404"}],
+            },
+        )
+        existing_task = AsyncMock()
+        existing_task.failure_metadata = {"qa_failure": {"qa_run_id": "qa-1"}}
+        api_client.get_tasks_by_story.return_value = [existing_task]
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        api_client.create_task.assert_not_awaited()
+        api_client.transition_story.assert_awaited_once_with("story-1", "start")
+
+    @pytest.mark.asyncio
     async def test_three_identical_failures_create_two_fixes_then_wait_for_human(
         self, api_client, redis_client
     ):

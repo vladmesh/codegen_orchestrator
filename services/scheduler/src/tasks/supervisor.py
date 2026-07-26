@@ -944,7 +944,7 @@ async def supervise_testing_stories(
             )
             if dispatched:
                 redispatched += 1
-            else:
+            elif dispatched is False:
                 failed += 1
 
         elif outcome in (QAOutcome.BLOCKED, QAOutcome.EXHAUSTED, QAOutcome.ERROR):
@@ -1036,10 +1036,11 @@ async def _handle_qa_failed(
     qa_run_id: str,
     result: QARunResult,
     log: structlog.stdlib.BoundLogger,
-) -> bool:
+) -> bool | None:
     """Create a bounded, fingerprinted fix task for a confirmed QA defect.
 
-    Returns True if redispatched, False if something went wrong.
+    Returns True if a fix task was created, False if escalation is required,
+    and None when an existing task was recovered or had already been handled.
     """
     summary = result.summary or "QA testing failed"
     failed_checks = result.failed_checks
@@ -1047,8 +1048,11 @@ async def _handle_qa_failed(
     tasks = await api_client.get_tasks_by_story(story_id)
     prior_evidence = [item for task in tasks if (item := _qa_failure_metadata(task))]
     if any(item.get("qa_run_id") == qa_run_id for item in prior_evidence):
-        log.info("qa_supervisor_failure_already_handled", qa_run_id=qa_run_id)
-        return False
+        # create_task commits before this transition. Retry the transition when
+        # a transient error left the already-created fix task behind.
+        await api_client.transition_story(story_id, "start")
+        log.info("qa_supervisor_failure_transition_recovered", qa_run_id=qa_run_id)
+        return None
 
     fingerprint = _qa_failure_fingerprint(summary, failed_checks)
     matching_failures = [item for item in prior_evidence if item.get("fingerprint") == fingerprint]

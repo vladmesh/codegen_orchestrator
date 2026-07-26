@@ -18,10 +18,15 @@ from .tools_shared import _get_api, _get_stream_client, _user_headers
 logger = structlog.get_logger(__name__)
 
 
-def _qa_failure_hold(stories: list[dict]) -> tuple[str, dict] | None:
-    """Return unresolved QA failure evidence that must not be retried by the PO."""
+def _qa_failure_hold(stories: list[dict], parent_story_id: str | None) -> tuple[str, dict] | None:
+    """Return an unresolved QA failure only when retrying that story chain."""
+    if parent_story_id is None:
+        return None
+
     for story in stories:
         if story.get("status") != "waiting_human_review":
+            continue
+        if story.get("id") != parent_story_id:
             continue
         reason = story.get("quarantine_reason") or {}
         evidence = reason.get("qa_failure")
@@ -36,6 +41,7 @@ async def create_story(
     title: str,
     description: str,
     story_type: str = "feature",
+    parent_story_id: str | None = None,
     *,
     config: RunnableConfig,
 ) -> str:
@@ -57,6 +63,7 @@ async def create_story(
             Include all requirements gathered from the conversation.
         story_type: "feature" (new functionality or project creation),
             "fix" (bug fix).
+        parent_story_id: Story this work retries or continues, if any.
     """
     api = _get_api()
     headers = _user_headers(config)
@@ -73,7 +80,7 @@ async def create_story(
     stories_resp = await api.get(f"/api/stories/?project_id={project_id}", headers=headers)
     stories_resp.raise_for_status()
     project_stories = stories_resp.json()
-    if hold := _qa_failure_hold(project_stories):
+    if hold := _qa_failure_hold(project_stories, parent_story_id):
         held_story_id, evidence = hold
         fingerprint = evidence.get("fingerprint", "unknown")
         logger.warning(
@@ -93,6 +100,7 @@ async def create_story(
         "project_id": project_id,
         "title": title,
         "description": description,
+        "parent_story_id": parent_story_id,
         "type": StoryType.PRODUCT.value,
         "created_by": "po",
     }
