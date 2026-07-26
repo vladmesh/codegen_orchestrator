@@ -1,0 +1,42 @@
+name: Backend Integration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-backend-integration:
+    name: Backend Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx with retry
+        id: buildx
+        uses: ./.github/actions/setup-buildx-with-retry
+
+      - name: Run integration tests
+        id: integration-tests
+        run: make test-integration-backend
+        env:
+          DOCKER_BUILDKIT: 1
+          COMPOSE_DOCKER_CLI_BUILD: 1
+          BUILDX_CACHE_TO: type=gha,mode=max,scope=integration-backend
+          BUILDX_CACHE_FROM: type=gha,scope=integration-backend
+
+      - name: Assert backend integration test ran
+        if: always()
+        run: |
+          if [ "${{ steps.buildx.outcome }}" != "success" ]; then
+            echo "CI infrastructure failure: Docker image registry was unavailable while preparing Buildx after retries."
+            exit 1
+          fi
+          if [ "${{ steps.integration-tests.outcome }}" != "success" ]; then
+            echo "Backend integration test did not complete successfully."
+            echo "Outcome: ${{ steps.integration-tests.outcome }}"
+            exit 1
+          fi
+
+      - name: Cleanup test containers
+        if: always()
+        run: docker compose -p codegen_orchestrator_test_backend -f docker/test/integration/backend.yml down -v --remove-orphans 2>/dev/null || true

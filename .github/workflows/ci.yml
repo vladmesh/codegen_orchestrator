@@ -286,13 +286,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: backend
-            should_run: >-
-              ${{
-                (github.event_name == 'workflow_dispatch' &&
-                inputs.simulate_first_attempt_registry_failure != true)
-                && 'true' || 'false'
-              }}
           - suite: template
             should_run: >-
               ${{

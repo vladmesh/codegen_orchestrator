@@ -2,6 +2,11 @@
 
 ## 2026-07-26
 
+### Changed
+- Move the currently failing Docker-in-Docker backend integration suite to its own manual workflow. It was made manual without an explained decision during CI normalization; a PR matrix job could otherwise report success after skipping every test step. The CI contract now rejects that shape and ensures the manual workflow always runs the suite when dispatched.
+
+## 2026-07-26
+
 - `make test-unit` now points `API_BASE_URL` at an unreachable loopback port. It can no longer
   read system configuration from a developer's running API while CI has no API, and the CI
   contract rejects a return to a host-service URL.
