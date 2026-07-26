@@ -37,7 +37,7 @@ Always required on PRs:
 Path-routed checks:
 
 - Service matrix covers `api`, `langgraph`, `scheduler`, `telegram_bot`, `worker-manager`, and `infra`.
-- The required integration matrix covers `template`, `frontend`, `infra`, and `po-tools`.
+- The required integration matrix covers `backend`, `template`, `frontend`, `infra`, and `po-tools`.
 - Shared code, packages, workflow edits, Makefile edits, dependency root changes, Docker test infrastructure, and integration test changes trigger the broad affected matrices instead of a single service subset.
 
 Skipped-command guard:
@@ -48,13 +48,12 @@ Skipped-command guard:
 
 Backend-suite decision, 2026-07-26:
 
-- The July 11 CI normalization deliberately kept backend outside the PR matrix. Its baseline rationale was the Docker-in-Docker worker and coding-agent boundary, rather than a secrets requirement. The history does not contain a more specific original justification.
-- The suite remains manual. Running it on the PR for `4cb04a1` exposed 14 failed tests and 2 errors, so it is not currently a reliable required PR gate.
-- `.github/workflows/backend-integration.yml` is the only backend-suite workflow and is dispatch-only. Its test and assertion steps are unconditional, so a dispatch cannot become green after silently skipping the suite. The CI contract verifies that the required CI matrix excludes backend and that this manual workflow runs and asserts `make test-integration-backend`.
-- The registry-failure simulation belongs only to the required CI workflow. It cannot exclude backend work because backend has no conditional path in its manual workflow.
+- The backend suite is split by Docker dependency. `backend` is required on relevant pull requests; `backend-dind` contains worker-container tests and remains dispatch-only.
+- `.github/workflows/backend-integration.yml` runs only `backend-dind`. Its test and assertion steps are unconditional, so a dispatch cannot become green after silently skipping the suite. The CI contract verifies that the required CI matrix includes backend and that this manual workflow runs and asserts `make test-integration-backend-dind`.
+- The registry-failure simulation belongs only to the required CI workflow. It cannot exclude Docker-in-Docker work because the manual workflow has no conditional test path.
 
 Manual coverage:
 
-- `workflow_dispatch` for `ci.yml` runs the full required service matrix and the four required integration suites. It does not run backend.
-- Dispatch `Backend Integration` separately to run the backend suite.
+- `workflow_dispatch` for `ci.yml` runs the full required service matrix and the five required integration suites. It does not run backend-dind.
+- Dispatch `Backend Docker-in-Docker Integration` separately to run the worker-container suite.
 - Live and e2e scenarios that require real LLMs, GitHub projects, VPS provisioning, Ansible deploys, or Telegram remain outside the required merge gate.

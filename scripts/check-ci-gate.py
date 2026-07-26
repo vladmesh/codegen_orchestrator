@@ -24,7 +24,7 @@ EXPECTED_SERVICE_MATRIX = {
     "worker-manager",
     "infra",
 }
-EXPECTED_INTEGRATION_MATRIX = {"template", "frontend", "infra", "po-tools"}
+EXPECTED_INTEGRATION_MATRIX = {"backend", "template", "frontend", "infra", "po-tools"}
 EXPECTED_GATE_NEEDS = {
     "detect-changes",
     "fast-checks",
@@ -289,6 +289,16 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
             fail("integration matrix contains a non-mapping item")
         if "github.event_name == 'workflow_dispatch'" not in item.get("should_run", ""):
             fail(f"workflow_dispatch does not enable integration suite {item.get('suite')}")
+    backend = next(
+        (item for item in include if isinstance(item, dict) and item.get("suite") == "backend"),
+        None,
+    )
+    if not isinstance(backend, dict):
+        fail("integration matrix is missing backend")
+    backend_triggers = backend.get("should_run", "")
+    for output in ["api", "langgraph", "shared", "packages", "docker-test", "integration-tests"]:
+        if output_reference(output) not in backend_triggers:
+            fail(f"backend integration matrix is missing trigger {output}")
 
 
 def assert_manual_backend_integration() -> None:
@@ -303,15 +313,15 @@ def assert_manual_backend_integration() -> None:
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict):
         fail("manual backend integration workflow has no jobs mapping")
-    job = require_job(jobs, "test-backend-integration")
+    job = require_job(jobs, "test-backend-dind-integration")
     if job.get("if"):
         fail("manual backend integration job must not be conditional")
     run_step = step_by_id(job, "integration-tests")
-    if run_step.get("run") != "make test-integration-backend":
-        fail("manual backend integration workflow must run the backend suite")
+    if run_step.get("run") != "make test-integration-backend-dind":
+        fail("manual backend integration workflow must run the Docker-in-Docker suite")
     if run_step.get("if"):
         fail("manual backend integration test step must not be conditional")
-    assert_step = step_by_name(job, "Assert backend integration test ran")
+    assert_step = step_by_name(job, "Assert backend Docker-in-Docker integration test ran")
     if "always()" not in assert_step.get("if", ""):
         fail("manual backend integration assertion must run with always()")
     if "steps.integration-tests.outcome" not in assert_step.get("run", ""):

@@ -8,7 +8,7 @@
 |-------|----------|-------------|-----|-------|
 | **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks) | Pre-push + CI | ~12s (parallel) |
 | **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
-| **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI (with `run-integration-tests` label) | ~10-30 min |
+| **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI when relevant paths change | ~10-30 min |
 | **Live** | `tests/live/` | Full stack (real services, no LLM) | Manual | ~30s–10 min |
 | **E2E** | `.claude/skills/e2e-*` (manual), `tests/e2e/` (scripts) | Full stack + real LLM | Manual only | 10-60 min |
 
@@ -25,9 +25,9 @@ uv run bash scripts/test-unit-local.sh --serial
 make test-service SERVICE=api
 
 # Integration (Docker Compose, full stack)
-# NOTE: In CI, these only run if the PR has the 'run-integration-tests' label.
 make test-integration          # All (auto-discovers docker/test/integration/*.yml)
-make test-integration-backend  # Specific suite
+make test-integration-backend  # Backend tests without nested Docker
+make test-integration-backend-dind  # Worker-container tests; manual workflow only
 
 # Live pipeline (real services, no LLM — structured 3-tier)
 make test-live-smoke           # Scaffold phase only (~30s)
@@ -94,7 +94,19 @@ Structured 3-tier test suite in `tests/live/` — tests real services without LL
 
 ## Integration Test Architecture
 
-The backend integration suite (`docker/test/integration/backend.yml`) spins up the full stack:
+The backend integration suite (`docker/test/integration/backend.yml`) runs the API, Redis and
+LangGraph paths that do not create worker containers. It runs on relevant pull requests.
+
+`docker/test/integration/backend-dind.yml` covers worker-container creation and execution with
+Docker-in-Docker. It remains manual because GitHub's nested daemon is not a reliable required gate.
+Until secretary-774 supplies host-side gates with a real Docker socket, worker-path coverage comes
+from `make test-live-engineering` (`tests/live/test_pipeline_engineering.py`). Use
+`make test-live-pipeline` for the broader scaffold, engineering and deploy path. The default
+`make test-live` intentionally excludes pipeline tests and does not cover worker creation.
+Until secretary-774 automates a host-side gate, the engineer releasing changes to worker-manager
+or worker startup runs `make test-live-engineering` manually before release.
+
+The Docker-in-Docker suite spins up the full stack:
 - **Services**: api, langgraph, engineering-worker, worker-manager
 - **Infra**: PostgreSQL (tmpfs), Redis, Docker-in-Docker
 - **Test runner**: pytest container on the same network
