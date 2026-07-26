@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-27
+
+- Provisioner playbooks now use the repository Ansible configuration without loading the removed
+  `yaml` callback. This restores role resolution for both `deploy_target` during new-server
+  provisioning and `monitoring` on existing servers.
+
 ## 2026-07-26
 
 ### Changed

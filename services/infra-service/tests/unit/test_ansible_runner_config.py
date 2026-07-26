@@ -21,7 +21,7 @@ ANSIBLE_DIR = Path(__file__).parents[2] / "ansible"
 class TestAnsibleRunnerConfiguration:
     """The runner must load the configuration that makes playbook roles available."""
 
-    def test_runner_executes_an_include_role_using_its_config(self, tmp_path, monkeypatch):
+    def test_runner_executes_an_include_role_using_repository_config(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         ansible_playbook = bin_dir / "ansible-playbook"
@@ -34,15 +34,10 @@ class TestAnsibleRunnerConfiguration:
         ansible_playbook.chmod(0o755)
         monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
 
-        ansible_dir = tmp_path / "ansible"
-        playbooks_dir = ansible_dir / "playbooks"
-        role_tasks_dir = ansible_dir / "roles" / "role_resolution_probe" / "tasks"
-        playbooks_dir.mkdir(parents=True)
+        role_tasks_dir = tmp_path / "roles" / "role_resolution_probe" / "tasks"
         role_tasks_dir.mkdir(parents=True)
-        (ansible_dir / "ansible.cfg").write_text(
-            "[defaults]\nroles_path = roles\nhost_key_checking = False\n"
-        )
-        (playbooks_dir / "role_resolution.yml").write_text(
+        probe_playbook = ANSIBLE_DIR / "playbooks" / "role_resolution_probe.yml"
+        probe_playbook.write_text(
             """---
 - hosts: target
   gather_facts: false
@@ -58,15 +53,20 @@ class TestAnsibleRunnerConfiguration:
       - true
 """
         )
+        monkeypatch.setenv("ANSIBLE_ROLES_PATH", str(tmp_path / "roles"))
         monkeypatch.setattr(
-            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS", str(playbooks_dir)
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
         )
 
-        success, output = AnsibleRunner().run_playbook(
-            server_ip="localhost ansible_connection=local",
-            server_handle="vps-test",
-            playbook_name="role_resolution.yml",
-        )
+        try:
+            success, output = AnsibleRunner().run_playbook(
+                server_ip="localhost ansible_connection=local",
+                server_handle="vps-test",
+                playbook_name=probe_playbook.name,
+            )
+        finally:
+            probe_playbook.unlink(missing_ok=True)
 
         assert success is True, output
 
