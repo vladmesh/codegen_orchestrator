@@ -100,7 +100,9 @@ LangGraph paths that do not create worker containers. It runs on relevant pull r
 `docker/test/integration/backend-dind.yml` covers worker-container creation and execution with
 Docker-in-Docker. It remains manual because GitHub's nested daemon is not a reliable required gate.
 Until secretary-774 supplies host-side gates with a real Docker socket, worker-path coverage comes
-from `make test-live` and `tests/live/`.
+from `make test-live-engineering` (`tests/live/test_pipeline_engineering.py`). Use
+`make test-live-pipeline` for the broader scaffold, engineering and deploy path. The default
+`make test-live` intentionally excludes pipeline tests and does not cover worker creation.
 
 The Docker-in-Docker suite spins up the full stack:
 - **Services**: api, langgraph, engineering-worker, worker-manager
