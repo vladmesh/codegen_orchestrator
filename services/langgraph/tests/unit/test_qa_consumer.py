@@ -213,6 +213,42 @@ class TestProcessQAJobPass:
         assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
 
     @pytest.mark.asyncio
+    async def test_cleanup_evidence_is_stored_on_a_blocked_run(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
+        from src.consumers._qa_runner import QAResult
+
+        cleanup_blocker = QABlocker(
+            category=QABlockerCategory.QA_CLEANUP_FAILED,
+            attempted="delete QA-created application data",
+            sent="DELETE /users/by-telegram/8202532144",
+            received="DELETE returned 405",
+        )
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=False,
+                summary="QA cleanup failed",
+                blocker=cleanup_blocker,
+                state_changes=[
+                    {
+                        "resource": "user telegram_id=8202532144",
+                        "operation": "created",
+                        "cleanup": {
+                            "attempted": True,
+                            "succeeded": False,
+                            "detail": "DELETE returned 405",
+                        },
+                    }
+                ],
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        run_data = mock_api_client.patch.call_args[1]["json"]["result"]
+        assert run_data["state_changes"][0]["cleanup"]["succeeded"] is False
+
+    @pytest.mark.asyncio
     async def test_qa_pass_does_not_transition_story(
         self, mock_api_client, mock_redis, qa_message_data
     ):

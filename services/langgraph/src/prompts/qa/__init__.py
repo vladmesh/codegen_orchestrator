@@ -11,6 +11,7 @@ agent prompts (``architect``, ``po``, ``developer_worker``).
 # the QA command's environment (consumers/_qa_runner), so the agent gets
 # TELETHON_* without doing anything.
 TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
+QA_TEST_TELEGRAM_ID = 8202532144
 
 
 def build_qa_prompt(
@@ -79,6 +80,16 @@ CRITICAL RULES:
 - "Code inspection confirms X" is NOT a valid test result.
 - If a test requires sending a Telegram command, you MUST actually send it
   and verify the bot's response — not read the handler code.
+- Do not create or modify application data unless the test requires it and you
+  can remove or restore it through the same public interface afterwards. Never
+  grant admin privileges to a test account.
+- If you need a test user, use only the deterministic identity
+  `telegram_id={QA_TEST_TELEGRAM_ID}`. Do not create a user if the public API
+  cannot delete that identity afterwards.
+- Before producing your verdict, undo every application-state change you made
+  and verify each cleanup request succeeded. This applies even when a product
+  check failed. Do not leave test users, permissions, records, or modified
+  settings behind.
 
 ## Acceptance Criteria (what the application must do)
 {acceptance_criteria}
@@ -133,5 +144,21 @@ After writing QA_REPORT.md, return ONLY this JSON:
 {{
   "pass": true/false,
   "checks": [{{"name": "check name", "pass": true/false, "detail": "one-line summary"}}],
-  "summary": "brief summary"
-}}"""
+  "summary": "brief summary",
+  "state_changes": [
+    {{
+      "resource": "stable identifier of the changed application resource",
+      "operation": "created" or "modified",
+      "cleanup": {{
+        "attempted": true/false,
+        "succeeded": true/false,
+        "detail": "cleanup request and observed response"
+      }}
+    }}
+  ]
+}}
+
+Always include `state_changes`, using `[]` when you made no application-state
+changes. A failed or unattempted cleanup must be reported with `succeeded:
+false`; never hide it by omitting the change.
+"""

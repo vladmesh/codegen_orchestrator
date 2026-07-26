@@ -971,6 +971,10 @@ def _qa_quarantine_reason(result: QARunResult) -> dict:
         reason["summary"] = result.summary
     if result.error:
         reason["error"] = result.error
+    if result.state_changes:
+        reason["state_changes"] = [
+            change.model_dump(mode="json") for change in result.state_changes
+        ]
     return reason
 
 

@@ -20,7 +20,11 @@ import httpx
 import structlog
 
 from shared.contracts.acceptance import HealthCriterion
-from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
+from shared.contracts.dto.run_result import (
+    QABlocker,
+    QABlockerCategory,
+    QAStateChange,
+)
 
 from ..prompts.qa import TELETHON_ENV_FILE, build_qa_prompt
 
@@ -59,6 +63,7 @@ class QAResult:
     raw: str = ""
     report: str = ""
     blocker: QABlocker | None = None
+    state_changes: list[dict] = field(default_factory=list)
 
 
 def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
@@ -92,11 +97,12 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
     review as an unknown blocker instead of being treated as a pass or causing
     failure handling to crash while extracting failed checks.
     """
-    expected_fields = {"pass", "checks", "summary"}
-    if set(data) != expected_fields:
+    required_fields = {"pass", "checks", "summary"}
+    allowed_fields = required_fields | {"state_changes"}
+    if not required_fields <= set(data) or not set(data) <= allowed_fields:
         return _invalid_qa_payload(
             raw,
-            "expected exactly pass, checks, and summary fields",
+            "expected pass, checks, summary, and optional state_changes fields",
         )
 
     if not isinstance(data["pass"], bool):
@@ -119,6 +125,16 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
             return _invalid_qa_payload(raw, f"check {index} pass must be a boolean")
         if not isinstance(check["detail"], str) or not check["detail"].strip():
             return _invalid_qa_payload(raw, f"check {index} detail must be a non-empty string")
+
+    state_changes = data.get("state_changes", [])
+    if not isinstance(state_changes, list):
+        return _invalid_qa_payload(raw, "state_changes must be a list")
+    try:
+        data["state_changes"] = [
+            QAStateChange.model_validate(change).model_dump(mode="json") for change in state_changes
+        ]
+    except Exception as exc:
+        return _invalid_qa_payload(raw, f"invalid state change: {exc}")
     return None
 
 
@@ -189,11 +205,33 @@ def parse_qa_result(raw: str) -> QAResult:
     if invalid_result:
         return invalid_result
 
+    state_changes = data.get("state_changes", [])
+    failed_cleanup = next(
+        (change for change in state_changes if not change["cleanup"]["succeeded"]),
+        None,
+    )
+    if failed_cleanup:
+        cleanup = failed_cleanup["cleanup"]
+        return QAResult(
+            passed=False,
+            checks=data["checks"],
+            summary="QA cleanup failed",
+            raw=raw,
+            state_changes=state_changes,
+            blocker=QABlocker(
+                category=QABlockerCategory.QA_CLEANUP_FAILED,
+                attempted="clean up QA-created or QA-modified application state",
+                sent=failed_cleanup["resource"],
+                received=cleanup["detail"],
+            ),
+        )
+
     return QAResult(
         passed=data["pass"],
         checks=data["checks"],
         summary=data["summary"],
         raw=raw,
+        state_changes=state_changes,
     )
 
 

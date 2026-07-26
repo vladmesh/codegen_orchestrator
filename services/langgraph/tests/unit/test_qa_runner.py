@@ -34,6 +34,14 @@ class TestBuildQAPrompt:
         assert "https://weather.example.com" in prompt
         assert "regression" in prompt.lower()
 
+    def test_prompt_requires_deterministic_identity_and_cleanup_trace(self):
+        prompt = build_qa_prompt("- test stateful flow", "https://weather.example.com")
+
+        assert "telegram_id=8202532144" in prompt
+        assert "admin privileges" in prompt
+        assert '"state_changes"' in prompt
+        assert "undo every application-state change" in prompt
+
     def test_prompt_with_bot_username(self):
         prompt = build_qa_prompt(
             acceptance_criteria="- Telegram: /start responds with welcome",
@@ -96,6 +104,29 @@ class TestParseQAResult:
         assert result.passed is True
         assert len(result.checks) == 1
         assert result.summary == "All good"
+
+    def test_state_changes_include_cleanup_evidence(self):
+        result = parse_qa_result(
+            '{"pass": true, "checks": [], "summary": "OK", '
+            '"state_changes": [{"resource": "user telegram_id=8202532144", '
+            '"operation": "created", "cleanup": {"attempted": true, '
+            '"succeeded": true, "detail": "DELETE returned 204"}}]}'
+        )
+
+        assert result.state_changes[0]["resource"] == "user telegram_id=8202532144"
+        assert result.state_changes[0]["cleanup"]["succeeded"] is True
+
+    def test_failed_cleanup_becomes_a_blocker(self):
+        result = parse_qa_result(
+            '{"pass": true, "checks": [], "summary": "OK", '
+            '"state_changes": [{"resource": "user telegram_id=8202532144", '
+            '"operation": "created", "cleanup": {"attempted": true, '
+            '"succeeded": false, "detail": "DELETE returned 405"}}]}'
+        )
+
+        assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.QA_CLEANUP_FAILED
 
     def test_valid_fail_result(self):
         raw = (
