@@ -2,18 +2,40 @@
 
 Date: 2026-07-26
 
-## Finding
+## Findings
 
-Commit `15b8b0c1` passed `make test-unit` on a developer machine because
-`scripts/test-unit-local.sh` set `API_BASE_URL=http://localhost:8000`. The developer's Compose
-stack had an API listening on that address, so unit tests that read system configuration through
-`ConfigStore` consumed real responses. `Fast Checks` in CI runs the same command without an API;
-the request fails and the affected router tests surface the unconfigured mock as
-`ValidationError: quarantine_reason / Input should be a valid dictionary`.
+There are two independent failures; the initial report incorrectly combined them.
 
-This is an environment dependency, not a difference in selected tests, import order, or locked
-dependencies. The analogous deploy-consumer failure on `5ec29706` was an explicit
-`ConfigStoreUnavailableError` after its connection to the absent API was refused.
+### `15b8b0c1`: API schema fixture defect
+
+`services/api` and `test_stories_router.py` do not import `ConfigStore`. The CI failure on
+`15b8b0c1` comes from the new `StoryRead.quarantine_reason: dict | None` field and fixtures that
+create an unrestricted `MagicMock` without setting that attribute. Attribute lookup therefore
+returns another `MagicMock`, which Pydantic rejects as a dictionary. Commit
+`c7d5e6dcaed2aa8e09f038a14b28dff49ecf5a10` fixes that exact defect by setting
+`quarantine_reason = None` in the router and schema fixtures.
+
+This failure is independent of `API_BASE_URL`: on the detached `15b8b0c1` source,
+`test_story_schemas.py::TestStoryRead::test_from_attributes` failed with the same validation error
+both at `http://localhost:8000` and at `http://127.0.0.1:9` using Python 3.12.3 and Pydantic
+2.13.4. Replacing the runner URL can expose the failure in a clean checkout, but it does not cause
+it.
+
+The reported green developer run on that SHA cannot be reproduced or attributed more precisely.
+The commit has no tracked `uv.lock` because the root `.gitignore` excludes it, and the original
+run did not record its virtualenv or resolved dependency versions. CI runs a fresh `uv sync`; the
+remaining material difference is therefore the unrecorded dependency environment. This task does
+not claim that a live API made the API-router tests green. For this historical SHA, `Fast Checks`
+is authoritative; a clean checkout followed by `uv sync` and `make test-unit` is the closest local
+reproduction.
+
+### ConfigStore consumers: host API leakage
+
+The runner formerly set `API_BASE_URL=http://localhost:8000`. A developer's Compose API can answer
+requests from tests that read system configuration through `ConfigStore`, while CI has no API.
+This is the proven mechanism behind the deploy-consumer class seen on `5ec29706`, where CI raised
+`ConfigStoreUnavailableError` after connection refusal. It is separate from the API schema defect
+above.
 
 ## Decision
 
@@ -24,15 +46,22 @@ configuration surface, and a second approximation of the API to every fast test 
 
 Tests that need configuration must mock or inject `ConfigStore`. A missed fake now fails locally
 with the same unavailable-service behavior as CI. `Fast Checks` remains the authoritative verdict,
-and `make test-unit` is its local reproduction command.
+and `make test-unit` is its local reproduction command for this ConfigStore-dependent class.
 
 `scripts/check-ci-gate.py` locks this rule to the exact unreachable endpoint. Changing the runner
 back to a host-service URL makes `make ci-contract` fail.
 
+## CI failure comment
+
+The mechanical gate does not include a raw-log tail. `GitHubAppClient.get_workflow_failure_details`
+requests only `GET /actions/runs/{run_id}/jobs` and records failed job and step names. The resulting
+comment can say that `Fast Checks` and `Run unit tests` failed, but cannot contain the Pydantic
+exception. Raw-log retrieval is out of scope for this runner-parity fix.
+
 ## Verification
 
 Before the runner change, the new CI-contract assertion failed because the runner used
-`http://localhost:8000`. After the change, it passes. In a detached worktree at `15b8b0c1`, changing
-only that runner value to `http://127.0.0.1:9` made the API suite fail 18 tests and report the same
-`StoryRead.quarantine_reason` `MagicMock` validation error as CI. The full current suite passes with
-the new runner setting, so the later test fixes supply the missing values without a live API.
+`http://localhost:8000`; it passes after the change. The detached-commit targeted reproduction
+above failed with the same `StoryRead.quarantine_reason` error under both URLs, proving the two
+cases are distinct. The current full suite passes with the unreachable endpoint because the later
+fixture fix supplies `quarantine_reason = None`.
