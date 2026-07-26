@@ -28,7 +28,9 @@ CLEAN_ENV=(
     PYTHONPATH=""
     # Dummy values for services that validate env at import
     REDIS_URL="redis://localhost:6379/0"
-    API_BASE_URL="http://localhost:8000"
+    # Keep unit tests isolated from a developer's compose stack. Tests that need
+    # system config must supply a ConfigStore fake instead of reading a live API.
+    API_BASE_URL="http://127.0.0.1:9"
     OPENAI_API_KEY="sk-test-not-real"
     LANGSMITH_API_KEY="ls-test-not-real"
     GITHUB_APP_ID="12345"

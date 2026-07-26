@@ -61,6 +61,7 @@ OFFLINE_LIVE_IGNORES = {
     "tests/live/test_streams.py",
     "tests/live/test_supervisor.py",
 }
+UNIT_TEST_API_BASE_URL = "http://127.0.0.1:9"
 
 
 def fail(message: str) -> None:
@@ -210,6 +211,8 @@ def assert_fast_checks(jobs: dict[str, Any]) -> None:
 
 def assert_offline_live_unit_runner() -> None:
     script = TEST_UNIT_LOCAL.read_text()
+    if f'API_BASE_URL="{UNIT_TEST_API_BASE_URL}"' not in script:
+        fail("test-unit-local must use the unreachable unit-test API endpoint, not a host service")
     if "live-offline|tests/live|" not in script:
         fail("test-unit-local ALL_SUITES must include offline tests/live")
     for ignored in OFFLINE_LIVE_IGNORES:
