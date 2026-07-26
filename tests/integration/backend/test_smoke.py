@@ -33,5 +33,5 @@ async def test_api_seed_and_read_project(api_client, seed_project):
     resp = await api_client.get(f"/api/projects/{pid}")
     assert resp.status_code == 200
     project = resp.json()
-    assert project["name"] == "Smoke Test"
+    assert project["title"] == "Smoke Test"
     assert project["config"]["modules"] == ["backend"]

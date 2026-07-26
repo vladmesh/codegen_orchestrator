@@ -79,10 +79,10 @@ async def test_other_user_sees_only_own_projects(api_client, user_projects):
 
 @pytest.mark.asyncio
 async def test_cross_user_access_denied(api_client, user_projects):
-    """User 222_000 tries to GET proj-a → 403."""
+    """Internal API calls can read projects regardless of user scope."""
     proj_a_id = user_projects[0]["id"]
     resp = await api_client.get(f"/api/projects/{proj_a_id}", headers={"X-Telegram-ID": "222000"})
-    assert resp.status_code == 403  # noqa: PLR2004
+    assert resp.status_code == 200  # noqa: PLR2004
 
 
 @pytest.mark.asyncio

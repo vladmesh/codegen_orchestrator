@@ -110,12 +110,12 @@ class TestWorkerExecution:
 
     @pytest.mark.asyncio
     async def test_different_agent_types_produce_different_images(
-        self, redis_client, docker_client, scaffolded_workspace
+        self, redis_client, docker_client, scaffolded_workspaces
     ):
         """
         Scenario B: Image caching respects agent_type.
         """
-        from .conftest import _create_scaffolded_workspace
+        claude_repo_id, factory_repo_id = scaffolded_workspaces
 
         # Create Claude worker
         req_id_1 = f"cache-1-{uuid4().hex[:6]}"
@@ -128,7 +128,7 @@ class TestWorkerExecution:
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
-                repo_id=scaffolded_workspace,
+                repo_id=claude_repo_id,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd1.model_dump_json()})
@@ -139,8 +139,7 @@ class TestWorkerExecution:
         worker1_id = result1.worker_id
         assert worker1_id == "cache-claude", f"Unexpected worker1_id: {worker1_id}"
 
-        # Create Factory worker with same capabilities (needs its own workspace)
-        factory_repo_id = _create_scaffolded_workspace()
+        # Create Factory worker with same capabilities in its pre-scaffolded workspace.
         req_id_2 = f"cache-2-{uuid4().hex[:6]}"
         cmd2 = CreateWorkerCommand(
             request_id=req_id_2,

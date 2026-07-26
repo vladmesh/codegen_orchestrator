@@ -282,9 +282,9 @@ async def cleanup_redis_streams(redis_client):
 WORKSPACE_BASE_PATH = "/tmp/codegen/workspaces"  # noqa: S108
 
 
-def _create_scaffolded_workspace(repo_id: str | None = None) -> str:
+def _create_scaffolded_workspace() -> str:
     """Create a minimal git repo at /tmp/codegen/workspaces/{repo_id}/. Returns repo_id."""
-    repo_id = repo_id or str(uuid4())
+    repo_id = str(uuid4())
     ws_path = os.path.join(WORKSPACE_BASE_PATH, repo_id)
     os.makedirs(ws_path, exist_ok=True)
 
@@ -326,6 +326,17 @@ def scaffolded_workspace():
     repo_id = _create_scaffolded_workspace()
     yield repo_id
     shutil.rmtree(os.path.join(WORKSPACE_BASE_PATH, repo_id), ignore_errors=True)
+
+
+@pytest.fixture
+def scaffolded_workspaces():
+    """Create two pre-scaffolded workspaces before a test starts."""
+    import shutil
+
+    repo_ids = [_create_scaffolded_workspace(), _create_scaffolded_workspace()]
+    yield repo_ids
+    for repo_id in repo_ids:
+        shutil.rmtree(os.path.join(WORKSPACE_BASE_PATH, repo_id), ignore_errors=True)
 
 
 _SKIP_DIRS = {
