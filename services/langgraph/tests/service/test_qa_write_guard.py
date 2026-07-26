@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import subprocess
+from threading import Thread
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -49,17 +51,61 @@ async def _clean_redis():
 def test_runner_write_hook_executes_and_records_direct_application_write(
     tmp_path, command: str, expected: str
 ):
-    """The Claude Bash hook observes the attempted command before it can run."""
+    """The Claude Bash hook prevents a real Bash write from reaching the app."""
     trace = tmp_path / "writes.jsonl"
+    received_requests: list[str] = []
+
+    class ApplicationHandler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            received_requests.append(self.command)
+            self.send_response(201)
+            self.end_headers()
+
+        def do_PUT(self):  # noqa: N802
+            received_requests.append(self.command)
+            self.send_response(200)
+            self.end_headers()
+
+        def do_PATCH(self):  # noqa: N802
+            received_requests.append(self.command)
+            self.send_response(200)
+            self.end_headers()
+
+        def do_DELETE(self):  # noqa: N802
+            received_requests.append(self.command)
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ApplicationHandler)
+    server_thread = Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    target = f"http://127.0.0.1:{server.server_port}"
+    command = command.replace("http://app.example", target)
+    expected = expected.replace("http://app.example", target)
+
     result = subprocess.run(
-        [str(GUARD), "--target", "http://app.example", "--trace", str(trace)],
+        [str(GUARD), "--target", target, "--trace", str(trace)],
         input=json.dumps({"tool_input": {"command": command}}),
         capture_output=True,
         text=True,
     )
 
-    assert result.returncode == 2
-    assert trace.read_text().strip() == expected
+    try:
+        # This models Claude's PreToolUse contract: a non-zero hook result
+        # rejects the Bash tool call, so the command below must not run.
+        if result.returncode == 0:
+            subprocess.run(["bash", "-c", command], check=True)
+
+        assert result.returncode == 2
+        assert trace.read_text().strip() == expected
+        assert received_requests == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join()
 
 
 @pytest.mark.asyncio
