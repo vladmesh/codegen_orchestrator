@@ -103,6 +103,8 @@ Until secretary-774 supplies host-side gates with a real Docker socket, worker-p
 from `make test-live-engineering` (`tests/live/test_pipeline_engineering.py`). Use
 `make test-live-pipeline` for the broader scaffold, engineering and deploy path. The default
 `make test-live` intentionally excludes pipeline tests and does not cover worker creation.
+Until secretary-774 automates a host-side gate, the engineer releasing changes to worker-manager
+or worker startup runs `make test-live-engineering` manually before release.
 
 The Docker-in-Docker suite spins up the full stack:
 - **Services**: api, langgraph, engineering-worker, worker-manager
