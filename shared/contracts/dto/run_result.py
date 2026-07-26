@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
@@ -118,6 +118,17 @@ class QARunResult(BaseModel):
     deployed_url: str | None = None
     error: str | None = None
     blocker: QABlocker | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blocked_outcome_requires_blocker(cls, data: object) -> object:
+        if (
+            isinstance(data, dict)
+            and data.get("qa_outcome") == QAOutcome.BLOCKED
+            and data.get("blocker") is None
+        ):
+            raise ValueError("blocked QA outcome requires a blocker")
+        return data
 
 
 RunResult = EngineeringRunResult | DeployRunResult | QARunResult

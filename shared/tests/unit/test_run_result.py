@@ -129,6 +129,10 @@ class TestRejection:
         with pytest.raises(ValidationError):
             _run(RunType.QA, {"summary": "no outcome"})
 
+    def test_blocked_qa_outcome_without_blocker_rejected(self):
+        with pytest.raises(ValidationError, match="blocker"):
+            _run(RunType.QA, {"qa_outcome": QAOutcome.BLOCKED.value})
+
     @pytest.mark.parametrize("run_type", list(RunType))
     @pytest.mark.parametrize("status", [RunStatus.COMPLETED, RunStatus.FAILED])
     def test_terminal_status_without_result_rejected(self, run_type, status):
