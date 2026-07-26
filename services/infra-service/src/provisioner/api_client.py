@@ -13,6 +13,11 @@ async def get_server_info(server_handle: str) -> ServerDTO:
     return await api_client.get_server(server_handle)
 
 
+async def get_server_ssh_key(server_handle: str) -> str | None:
+    """Fetch the decrypted SSH private key stored for a server."""
+    return await api_client.get_server_ssh_key(server_handle)
+
+
 async def update_server_status(server_handle: str, status: str) -> None:
     """Update server status or propagate the API error."""
     await api_client.update_server(server_handle, {"status": status})
