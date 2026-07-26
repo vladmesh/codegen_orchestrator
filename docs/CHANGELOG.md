@@ -2,6 +2,10 @@
 
 ## 2026-07-26
 
+- `make test-unit` now points `API_BASE_URL` at an unreachable loopback port. It can no longer
+  read system configuration from a developer's running API while CI has no API, and the CI
+  contract rejects a return to a host-service URL.
+
 - Repeated QA failures now leave their fingerprint and attempt evidence on the
   story held for human review. PO checks that hold before creating another
   story or publishing architect work, so a reminder cannot restart the same

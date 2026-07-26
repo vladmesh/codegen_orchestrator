@@ -16,7 +16,7 @@
 
 ```bash
 # Unit (fast, no deps — run before every push)
-make test-unit                 # All services (parallel, ~12s)
+make test-unit                 # All services (parallel, ~12s; no host services)
 
 # Serial mode (verbose output per service)
 uv run bash scripts/test-unit-local.sh --serial
@@ -115,5 +115,8 @@ The backend integration suite (`docker/test/integration/backend.yml`) spins up t
 ## Troubleshooting
 
 - **Import errors**: Check `PYTHONPATH` includes `src/` (unit test runner sets this via `scripts/test-unit-local.sh`)
+- **Config store calls from unit tests**: `make test-unit` deliberately points `API_BASE_URL` at
+  `127.0.0.1:9`, matching CI where no API is running. Mock or inject `ConfigStore` in the test;
+  do not rely on a locally running Compose stack. `Fast Checks` in CI is the authoritative verdict.
 - **DB connection errors**: `make up` first, check `docker compose ps` for healthchecks
 - **Stale test containers**: `make test-clean`
