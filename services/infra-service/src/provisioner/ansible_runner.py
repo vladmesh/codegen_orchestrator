@@ -1,6 +1,7 @@
 """Ansible playbook execution for provisioner."""
 
 import os
+from pathlib import Path
 import subprocess
 import tempfile
 import time
@@ -28,7 +29,7 @@ def _redact_private_key(value: str, private_key: str | None) -> str:
 class AnsibleRunner:
     """Executes Ansible playbooks."""
 
-    def run_playbook(  # noqa: PLR0913
+    def run_playbook(  # noqa: PLR0913, PLR0915
         self,
         server_ip: str,
         server_handle: str,
@@ -63,11 +64,16 @@ class AnsibleRunner:
             Tuple of (success: bool, output: str)
         """
         playbook_path = Paths.playbook(playbook_name)
+        ansible_config_path = Path(playbook_path).parent.parent / "ansible.cfg"
+        if not ansible_config_path.is_file():
+            message = f"Ansible configuration not found: {ansible_config_path}"
+            logger.error("ansible_config_missing", config_path=str(ansible_config_path))
+            return False, message
 
         # Inventory construction
-        ssh_args = (
-            "ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
-        )
+        # host_key_checking disables only StrictHostKeyChecking. Keep known_hosts
+        # unwritten so a reinstall at the same IP can still use password auth.
+        ssh_args = "ansible_ssh_common_args='-o UserKnownHostsFile=/dev/null'"
         private_key_path: str | None = None
         if root_password:
             # Password authentication
@@ -114,6 +120,8 @@ class AnsibleRunner:
         cmd = [
             "ansible-playbook",
             "-i",
+            # This per-run inventory deliberately overrides the production inventory
+            # from ansible.cfg with the server selected by the provisioner.
             inventory_path,
             playbook_path,
             "--extra-vars",
@@ -135,7 +143,15 @@ class AnsibleRunner:
         start = time.time()
 
         try:
-            process = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)  # noqa: S603
+            # Roles, host-key policy, and privilege escalation come from this
+            # repository config instead of the process working directory.
+            process = subprocess.run(  # noqa: S603
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env={**os.environ, "ANSIBLE_CONFIG": str(ansible_config_path)},
+            )
 
             # Log output (abbreviated)
             stdout = _redact_private_key(process.stdout, ssh_private_key)
