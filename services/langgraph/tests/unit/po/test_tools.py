@@ -545,6 +545,44 @@ class TestTeardownProject:
 
 class TestCreateStory:
     @pytest.mark.asyncio
+    async def test_repeated_qa_failure_waiting_for_human_blocks_new_story(
+        self, mock_api_client, mock_stream_client
+    ):
+        """A PO reminder cannot restart a QA failure loop on the same project."""
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response(
+                [
+                    {
+                        "id": "story-held",
+                        "status": "waiting_human_review",
+                        "quarantine_reason": {
+                            "qa_outcome": "failed",
+                            "qa_failure": {
+                                "fingerprint": "a1b2c3d4",
+                                "fingerprint_attempt": 3,
+                            },
+                        },
+                    }
+                ]
+            ),
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Try the fix again",
+                "description": "Retry the same failing feature",
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "No story was created" in result
+        assert "human review" in result.lower()
+        mock_api_client.post.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_creates_story_and_publishes_to_architect(
         self, mock_api_client, mock_stream_client
     ):
@@ -650,9 +688,10 @@ class TestCreateStory:
         self, mock_api_client, mock_stream_client
     ):
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "status": "draft", "config": {}}
-        )
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "draft", "config": {}}),
+            _make_response([]),
+        ]
         mock_api_client.patch.side_effect = httpx.HTTPStatusError(
             "spec persistence unavailable", request=MagicMock(), response=MagicMock()
         )

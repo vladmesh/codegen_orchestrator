@@ -1064,6 +1064,10 @@ async def _handle_qa_failed(
     }
 
     if attempt > _qa_failure_limit() or total_attempt > _qa_fix_limit():
+        await api_client.update_story(
+            story_id,
+            {"quarantine_reason": {"qa_outcome": QAOutcome.FAILED.value, "qa_failure": evidence}},
+        )
         await api_client.transition_story(story_id, "human-review")
         exhausted_limit = _qa_failure_limit() if attempt > _qa_failure_limit() else _qa_fix_limit()
         await notify_admins_best_effort(

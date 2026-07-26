@@ -2,6 +2,11 @@
 
 ## 2026-07-26
 
+- Repeated QA failures now leave their fingerprint and attempt evidence on the
+  story held for human review. PO checks that hold before creating another
+  story or publishing architect work, so a reminder cannot restart the same
+  project-level repair loop.
+
 - QA now distinguishes a product failure from an inability to test. A typed
   `blocked` outcome carries a closed-category blocker with the attempted action
   and request/response evidence. Platform-owned preflight checks cover the

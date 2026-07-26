@@ -7,7 +7,7 @@ Shared DTO factories live in `_run_routing_factories`.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 # Sibling test-helper module (not a test module); on sys.path via pytest prepend import mode.
 from _run_routing_factories import (
@@ -799,6 +799,22 @@ class TestSuperviseTestingStories:
 
         assert result == {"completed": 0, "redispatched": 0, "failed": 1}
         api_client.create_task.assert_not_awaited()
+        api_client.update_story.assert_awaited_with(
+            "story-1",
+            {
+                "quarantine_reason": {
+                    "qa_outcome": "failed",
+                    "qa_failure": {
+                        "qa_run_id": "qa-3",
+                        "fingerprint": ANY,
+                        "fingerprint_attempt": 3,
+                        "fix_attempt": 3,
+                        "summary": "Weather endpoint broken",
+                        "failed_checks": [{"name": "weather", "detail": "404"}],
+                    },
+                }
+            },
+        )
         api_client.transition_story.assert_awaited_with("story-1", "human-review")
 
     @pytest.mark.asyncio

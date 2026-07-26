@@ -18,6 +18,18 @@ from .tools_shared import _get_api, _get_stream_client, _user_headers
 logger = structlog.get_logger(__name__)
 
 
+def _qa_failure_hold(stories: list[dict]) -> tuple[str, dict] | None:
+    """Return unresolved QA failure evidence that must not be retried by the PO."""
+    for story in stories:
+        if story.get("status") != "waiting_human_review":
+            continue
+        reason = story.get("quarantine_reason") or {}
+        evidence = reason.get("qa_failure")
+        if isinstance(evidence, dict):
+            return story["id"], evidence
+    return None
+
+
 @tool
 async def create_story(
     project_id: str,
@@ -58,6 +70,24 @@ async def create_story(
         project_status = proj_resp.json().get("status", ProjectStatus.DRAFT)
         action = "create" if project_status == ProjectStatus.DRAFT else "feature"
 
+    stories_resp = await api.get(f"/api/stories/?project_id={project_id}", headers=headers)
+    stories_resp.raise_for_status()
+    project_stories = stories_resp.json()
+    if hold := _qa_failure_hold(project_stories):
+        held_story_id, evidence = hold
+        fingerprint = evidence.get("fingerprint", "unknown")
+        logger.warning(
+            "po_story_blocked_by_qa_failure",
+            project_id=project_id,
+            held_story_id=held_story_id,
+            failure_fingerprint=fingerprint,
+        )
+        return (
+            "No story was created. A repeated QA failure is waiting for human review "
+            f"on story {held_story_id} (fingerprint: {fingerprint}). "
+            "Please ask a human to decide whether and how to continue."
+        )
+
     # 1. Create story via API (API generates the ID)
     story_payload = {
         "project_id": project_id,
@@ -85,10 +115,7 @@ async def create_story(
 
     # 2. Check if project already has an active story (sequential processing)
     user_id = config["configurable"].get("user_id", "unknown")
-    active_stories_resp = await api.get(
-        f"/api/stories/?project_id={project_id}&status=in_progress", headers=headers
-    )
-    active_stories = active_stories_resp.json() if active_stories_resp.is_success else []
+    active_stories = [story for story in project_stories if story.get("status") == "in_progress"]
 
     if active_stories:
         # Queue the story — it will be triggered when current story completes
