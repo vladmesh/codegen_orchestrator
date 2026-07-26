@@ -328,17 +328,6 @@ def scaffolded_workspace():
     shutil.rmtree(os.path.join(WORKSPACE_BASE_PATH, repo_id), ignore_errors=True)
 
 
-@pytest.fixture
-def scaffolded_workspaces():
-    """Create two pre-scaffolded workspaces before a test starts."""
-    import shutil
-
-    repo_ids = [_create_scaffolded_workspace(), _create_scaffolded_workspace()]
-    yield repo_ids
-    for repo_id in repo_ids:
-        shutil.rmtree(os.path.join(WORKSPACE_BASE_PATH, repo_id), ignore_errors=True)
-
-
 _SKIP_DIRS = {
     "__pycache__",
     ".pytest_cache",
