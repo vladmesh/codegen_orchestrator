@@ -64,7 +64,7 @@ graph TD
 - **Infra Service**: Ansible runner для настройки серверов.
 - **Scheduler**: Architect consumer (story→tasks), task dispatcher (scaffold trigger, dispatch, supervisor), github_sync, server_sync, health_checker.
 - **Admin Frontend**: React SPA (port 3001) — dashboard, projects, tasks, workers, queues, users, LLM tracing. Nginx proxy with basic auth.
-- **Observability**: Loki + Promtail + Grafana (structured logs), Langfuse v3 (LLM tracing with ClickHouse + MinIO).
+- **Observability**: Loki + Promtail + Grafana for structured logs.
 
 ### Связанные проекты
 

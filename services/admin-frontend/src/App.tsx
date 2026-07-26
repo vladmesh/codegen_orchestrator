@@ -12,7 +12,6 @@ import { QueuesPage } from '@/pages/QueuesPage'
 import { QueueDetailPage } from '@/pages/QueueDetailPage'
 import { ServersPage } from '@/pages/ServersPage'
 import { LogsPage } from '@/pages/LogsPage'
-import { TracingPage } from '@/pages/TracingPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { UserDetailPage } from '@/pages/UserDetailPage'
 import { SettingsPage } from '@/pages/SettingsPage'
@@ -50,7 +49,6 @@ export default function App() {
             <Route path="applications/:id" element={<ApplicationDetailPage />} />
             <Route path="servers" element={<ServersPage />} />
             <Route path="logs" element={<LogsPage />} />
-            <Route path="tracing" element={<TracingPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
         </Routes>

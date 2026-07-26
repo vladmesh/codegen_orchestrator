@@ -320,25 +320,6 @@ export interface Run {
   completed_at: string | null
 }
 
-// Langfuse traces (proxied via /langfuse-api/)
-export interface LangfuseTrace {
-  id: string
-  name: string
-  timestamp: string
-  userId: string | null
-  sessionId: string | null
-  tags: string[]
-  latency: number | null
-  totalCost: number
-  metadata: Record<string, unknown>
-  htmlPath: string
-}
-
-export interface LangfuseTracesResponse {
-  data: LangfuseTrace[]
-  meta: { totalItems: number; page: number; totalPages: number }
-}
-
 // System configuration (key-value, grouped by category)
 export interface SystemConfig {
   key: string

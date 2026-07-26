@@ -29,7 +29,6 @@ from shared.redis_client import RedisStreamClient
 from ..clients.api import api_client
 from ..runtime_identity import project_runtime_slug
 from ..subgraphs.devops import create_devops_subgraph
-from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
 from ._events import publish_callback_event
 from ._live_work import live_work_cancel_key, live_work_settled, live_work_unsettled
@@ -428,16 +427,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
         )
         result = await devops_subgraph.ainvoke(
             subgraph_input,
-            config={
-                "callbacks": get_langfuse_callbacks(),
-                "metadata": build_langfuse_metadata(
-                    agent_type="deploy",
-                    user_id=user_id,
-                    project_id=project_id,
-                    task_id=task_id,
-                    story_id=story_id,
-                ),
-            },
+            config={},
         )
 
         logger.info(
