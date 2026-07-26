@@ -129,6 +129,20 @@ class TestParseQAResult:
         assert result.blocker is not None
         assert result.blocker.category == QABlockerCategory.UNKNOWN
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            '{"pass": false, "checks": [42], "summary": "bad"}',
+            '{"pass": true, "checks": "claimed all good", "summary": "bad"}',
+        ],
+    )
+    def test_structurally_invalid_result_is_unknown_blocker(self, raw):
+        result = parse_qa_result(raw)
+
+        assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
+
     def test_empty_output(self):
         result = parse_qa_result("")
         assert result.passed is False
