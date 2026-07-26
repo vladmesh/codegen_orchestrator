@@ -119,6 +119,21 @@
       }
   no_log: true
 
+- name: Install runner-owned application write guard
+  copy:
+    src: qa-write-guard.py
+    dest: "{{ qa_runner_dir }}/qa-write-guard.py"
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Prevent the QA user from replacing the write guard
+  file:
+    path: "{{ qa_runner_dir }}"
+    owner: root
+    group: root
+    mode: '0755'
+
 # --- Telethon credentials (required) ---
 #
 # QA writes to bots as a real Telegram user, which needs all three values:

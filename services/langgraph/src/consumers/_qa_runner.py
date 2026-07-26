@@ -14,6 +14,7 @@ import json
 import re
 import shlex
 import time
+import uuid
 
 import asyncssh
 import httpx
@@ -25,7 +26,7 @@ from shared.contracts.dto.run_result import (
     QABlockerCategory,
 )
 
-from ..prompts.qa import TELETHON_ENV_FILE, build_qa_prompt
+from ..prompts.qa import QA_TEST_TELEGRAM_ID, TELETHON_ENV_FILE, build_qa_prompt
 
 logger = structlog.get_logger(__name__)
 
@@ -118,6 +119,49 @@ def _block_forbidden_application_write(qa_result: QAResult, write: str) -> QARes
         }
     ]
     return qa_result
+
+
+def _qa_write_guard_settings(*, deployed_url: str, trace_path: str) -> str:
+    """Build the Claude hook configuration that guards application API writes."""
+    hook_command = (
+        "/opt/qa-runner/qa-write-guard.py "
+        f"--target {shlex.quote(deployed_url)} --trace {shlex.quote(trace_path)}"
+    )
+    return json.dumps(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": hook_command}],
+                    }
+                ]
+            }
+        }
+    )
+
+
+async def _write_qa_write_guard_settings(
+    conn: asyncssh.SSHClientConnection, *, deployed_url: str, trace_path: str
+) -> str:
+    """Install one-run Claude hook settings before exposing Bash to the agent."""
+    settings_path = f"/tmp/qa-write-guard-{uuid.uuid4().hex}.json"  # noqa: S108
+    payload = _qa_write_guard_settings(deployed_url=deployed_url, trace_path=trace_path)
+    await conn.run(
+        f"umask 077; printf %s {shlex.quote(payload)} > {shlex.quote(settings_path)}", check=True
+    )
+    return settings_path
+
+
+async def _collect_qa_write_guard_trace(conn: asyncssh.SSHClientConnection, trace_path: str) -> str:
+    """Return runner-owned write attempts recorded by the Claude Bash hook."""
+    result = await conn.run(f"cat {shlex.quote(trace_path)} 2>/dev/null", check=False)
+    if result.exit_status != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        if re.fullmatch(rf"(?:{_WRITE_METHODS})\s+\S+", line, flags=re.IGNORECASE):
+            return line
+    return ""
 
 
 def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
@@ -533,6 +577,11 @@ async def _preflight_agent_qa(
             "int(os.environ['TELETHON_API_ID']), os.environ['TELETHON_API_HASH'])\n"
             "client.start()\n"
             "try:\n"
+            "    me = client.get_me()\n"
+            f"    if me.id != {QA_TEST_TELEGRAM_ID}:\n"
+            "        print('telegram_identity_mismatch:expected="
+            f"{QA_TEST_TELEGRAM_ID};actual=' + str(me.id))\n"
+            "        sys.exit(3)\n"
             f"    bot = client.get_entity('@{bot_username}')\n"
             "    sent = client.send_message(bot, '/start')\n"
             f"    deadline = time.monotonic() + {TELEGRAM_ACCESS_PROBE_TIMEOUT}\n"
@@ -560,7 +609,11 @@ async def _preflight_agent_qa(
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         denial_marker = "telegram_access_denied:"
-        if denial_marker in stdout:
+        identity_marker = "telegram_identity_mismatch:"
+        if identity_marker in stdout:
+            category = QABlockerCategory.UNKNOWN
+            received = stdout.split(identity_marker, maxsplit=1)[1].strip()[-500:]
+        elif denial_marker in stdout:
             category = QABlockerCategory.TELEGRAM_ACCESS_DENIED
             received = stdout.split(denial_marker, maxsplit=1)[1].strip()[-500:]
         else:
@@ -568,7 +621,7 @@ async def _preflight_agent_qa(
             received = stderr or stdout or "Telegram probe failed"
         return QABlocker(
             category=category,
-            attempted="send Telegram /start access probe and inspect the bot reply before QA agent",
+            attempted="verify the deterministic Telegram QA identity and send /start access probe",
             sent=f"Telegram /start to @{bot_username}",
             received=received,
         )
@@ -600,6 +653,7 @@ async def run_qa_on_server(
         QAResult with pass/fail status and check details
     """
     prompt = build_qa_prompt(acceptance_criteria, deployed_url, bot_username)
+    guard_trace_path = f"/tmp/qa-write-guard-{uuid.uuid4().hex}.jsonl"  # noqa: S108
 
     # Escape prompt for shell — use heredoc to avoid quoting issues
     # Prepend ~/.local/bin to PATH — non-interactive SSH doesn't source .bashrc
@@ -636,11 +690,30 @@ async def run_qa_on_server(
                 return QAResult(passed=False, summary="QA preflight blocked", blocker=blocker)
 
             await _ensure_claude_credentials(conn)
+            guard_settings_path = await _write_qa_write_guard_settings(
+                conn, deployed_url=deployed_url, trace_path=guard_trace_path
+            )
 
-            result = await conn.run(cmd, check=False)
+            result = await conn.run(
+                f"{cmd} --settings {shlex.quote(guard_settings_path)}", check=False
+            )
 
             # Collect QA_REPORT.md regardless of exit status
             report = await _collect_qa_report(conn, project_name)
+            guarded_write = await _collect_qa_write_guard_trace(conn, guard_trace_path)
+            await conn.run(
+                f"rm -f {shlex.quote(guard_settings_path)} {shlex.quote(guard_trace_path)}",
+                check=False,
+            )
+
+            if guarded_write:
+                qa_result = QAResult(
+                    passed=False,
+                    report=report,
+                    raw=result.stdout or "",
+                    summary="QA attempted a forbidden application API write",
+                )
+                return _block_forbidden_application_write(qa_result, guarded_write)
 
             if result.exit_status != 0:
                 logger.warning(

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -16,6 +19,8 @@ from shared.contracts.queues.qa import QAServerInfo
 from src.consumers._qa_runner import run_qa_on_server
 from src.consumers.qa import process_qa_job
 
+GUARD = Path(__file__).parents[3] / "infra-service/ansible/roles/qa_runner/files/qa-write-guard.py"
+
 
 @pytest.fixture(autouse=True)
 async def _clean_redis():
@@ -24,21 +29,43 @@ async def _clean_redis():
 
 
 @pytest.mark.parametrize(
-    "command",
+    "command, expected",
     [
-        "curl -X POST http://app.example/users",
-        "curl --data '{\"telegram_id\": 8202532144}' http://app.example/users",
+        ("curl -XPOST http://app.example/users", "POST http://app.example/users"),
+        (
+            "python -c \"requests.request('POST', 'http://app.example/users')\"",
+            "POST http://app.example/users",
+        ),
+        (
+            "python -c \"httpx.request('DELETE', 'http://app.example/users')\"",
+            "DELETE http://app.example/users",
+        ),
     ],
 )
+def test_runner_write_hook_executes_and_records_direct_application_write(
+    tmp_path, command: str, expected: str
+):
+    """The Claude Bash hook observes the attempted command before it can run."""
+    trace = tmp_path / "writes.jsonl"
+    result = subprocess.run(
+        [str(GUARD), "--target", "http://app.example", "--trace", str(trace)],
+        input=json.dumps({"tool_input": {"command": command}}),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert trace.read_text().strip() == expected
+
+
 @pytest.mark.asyncio
-async def test_qa_run_write_attempt_is_blocked_and_persists_residual_trace(command: str):
-    """Drive a QA run whose report exposes a direct write to an empty app."""
+async def test_qa_run_write_hook_trace_is_blocked_and_persists_residual_trace():
+    """A hook trace wins over normal agent JSON and makes the run unverified."""
     command_result = SimpleNamespace(
         stdout='{"pass": true, "checks": [], "summary": "passed"}',
         stderr="",
         exit_status=0,
     )
-    report = f"# QA Report\n- command: {command}\n"
     conn = AsyncMock()
     conn.run = AsyncMock(return_value=command_result)
     conn.__aenter__ = AsyncMock(return_value=conn)
@@ -55,7 +82,12 @@ async def test_qa_run_write_attempt_is_blocked_and_persists_residual_trace(comma
         patch(
             "src.consumers._qa_runner._collect_qa_report",
             new_callable=AsyncMock,
-            return_value=report,
+            return_value="# QA Report\n- no direct writes\n",
+        ),
+        patch(
+            "src.consumers._qa_runner._collect_qa_write_guard_trace",
+            new_callable=AsyncMock,
+            return_value="POST http://app.example/users",
         ),
     ):
         mock_asyncssh.import_private_key.return_value = "parsed_key"
@@ -122,7 +154,12 @@ async def test_qa_consumer_persists_direct_write_trace_as_a_quarantine_ready_blo
         patch(
             "src.consumers._qa_runner._collect_qa_report",
             new_callable=AsyncMock,
-            return_value="# QA Report\n- command: curl -X POST http://app.example/users\n",
+            return_value="# QA Report\n- normal output\n",
+        ),
+        patch(
+            "src.consumers._qa_runner._collect_qa_write_guard_trace",
+            new_callable=AsyncMock,
+            return_value="POST http://app.example/users",
         ),
     ):
         mock_asyncssh.import_private_key.return_value = "parsed_key"

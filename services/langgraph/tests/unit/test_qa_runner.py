@@ -646,6 +646,31 @@ class TestQAPreflight:
         assert blocker.category.value == "telegram_access_denied"
         assert blocker.received == "🚫 Доступ запрещён"
 
+    @pytest.mark.asyncio
+    async def test_wrong_telethon_identity_blocks_before_claude_runs(self):
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        wrong_identity = SimpleNamespace(
+            exit_status=3,
+            stdout="telegram_identity_mismatch:expected=8202532144;actual=999\n",
+            stderr="",
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(side_effect=[claude_present, wrong_identity])
+
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock
+        ):
+            blocker = await _preflight_agent_qa(conn, "private_bot")
+
+        assert blocker is not None
+        assert blocker.category is QABlockerCategory.UNKNOWN
+        assert blocker.received == "expected=8202532144;actual=999"
+        probe = conn.run.await_args_list[1].args[0]
+        assert "client.get_me()" in probe
+        assert "8202532144" in probe
+
 
 class TestRunQAOnServerPreflight:
     @pytest.mark.asyncio

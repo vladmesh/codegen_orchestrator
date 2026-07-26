@@ -121,11 +121,14 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
     qa_conn = AsyncMock()
     qa_conn.run = AsyncMock(
         side_effect=[
+            MagicMock(exit_status=0, stdout=""),
             MagicMock(
                 exit_status=0,
                 stdout='{"pass": true, "checks": [], "summary": "ok", "state_changes": []}',
             ),
             MagicMock(exit_status=1, stdout=""),
+            MagicMock(exit_status=1, stdout=""),
+            MagicMock(exit_status=0, stdout=""),
         ]
     )
     qa_preflight = AsyncMock(return_value=None)
