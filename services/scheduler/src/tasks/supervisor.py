@@ -937,6 +937,17 @@ async def supervise_testing_stories(
             else:
                 failed += 1
 
+        elif outcome == QAOutcome.BLOCKED:
+            await api_client.transition_story(story_id, "human-review")
+            log.warning(
+                "qa_supervisor_blocked",
+                run_id=run.id,
+                blocker_category=(
+                    run.result.blocker.category.value if run.result.blocker else "unknown"
+                ),
+            )
+            failed += 1
+
         elif outcome in (QAOutcome.EXHAUSTED, QAOutcome.ERROR):
             await api_client.fail_story(story_id)
             log.warning("qa_supervisor_failed", outcome=outcome.value, run_id=run.id)

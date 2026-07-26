@@ -20,6 +20,7 @@ import httpx
 import structlog
 
 from shared.contracts.acceptance import HealthCriterion
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 
 from ..prompts.qa import TELETHON_ENV_FILE, build_qa_prompt
 
@@ -40,6 +41,8 @@ TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
 # Sourced into the QA command itself, so the agent gets TELETHON_* whether or not
 # it follows the prompt. Same reason PATH is exported here.
 TELETHON_ENV_PREFIX = f"set -a && . {TELETHON_ENV_FILE} && set +a && "
+CLAUDE_PATH_PREFIX = 'export PATH="$HOME/.local/bin:$PATH" && '
+TELEGRAM_ACCESS_PROBE_TIMEOUT = 10
 
 
 class TelethonCredentialsError(RuntimeError):
@@ -55,6 +58,17 @@ class QAResult:
     summary: str = ""
     raw: str = ""
     report: str = ""
+    blocker: QABlocker | None = None
+
+
+def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
+    """Build a fail-closed blocker when QA has no trustworthy product judgement."""
+    return QABlocker(
+        category=QABlockerCategory.UNKNOWN,
+        attempted=attempted,
+        sent=sent,
+        received=received,
+    )
 
 
 def parse_qa_result(raw: str) -> QAResult:
@@ -66,7 +80,16 @@ def parse_qa_result(raw: str) -> QAResult:
     - JSON wrapped in markdown code blocks
     """
     if not raw or not raw.strip():
-        return QAResult(passed=False, summary="QA produced no output", raw=raw)
+        return QAResult(
+            passed=False,
+            summary="QA produced no output",
+            raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="parse QA agent result",
+                sent="Claude Code stdout",
+                received="empty output",
+            ),
+        )
 
     json_str = raw.strip()
 
@@ -92,11 +115,37 @@ def parse_qa_result(raw: str) -> QAResult:
             passed=False,
             summary=f"Failed to parse QA output as JSON: {raw[:200]}",
             raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="parse QA agent result",
+                sent="Claude Code stdout",
+                received=raw[:2000],
+            ),
         )
 
-    passed = data.get("pass", False)
+    if not isinstance(data, dict):
+        return QAResult(
+            passed=False,
+            summary="QA output is not a result object",
+            raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="validate QA agent result",
+                sent="Claude Code stdout",
+                received=raw[:2000],
+            ),
+        )
+
+    passed = data.get("pass")
     if not isinstance(passed, bool):
-        passed = False
+        return QAResult(
+            passed=False,
+            summary="QA output has no boolean pass field",
+            raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="validate QA agent result",
+                sent="Claude Code stdout",
+                received=raw[:2000],
+            ),
+        )
 
     return QAResult(
         passed=passed,
@@ -138,6 +187,27 @@ async def run_health_checks(
         summary=summary,
         report="\n".join(f"- {c['name']}: {c['detail']}" for c in results),
     )
+
+
+async def check_deployed_url_reachable(deployed_url: str) -> QABlocker | None:
+    """Check that the deployment can be contacted before starting an agent.
+
+    A response, including a non-2xx response, proves the URL is reachable. The
+    acceptance criteria decide whether that response is a product failure.
+    """
+    try:
+        async with httpx.AsyncClient(
+            timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=False
+        ) as client:
+            await client.get(deployed_url)
+    except httpx.HTTPError as exc:
+        return QABlocker(
+            category=QABlockerCategory.DEPLOYED_URL_UNREACHABLE,
+            attempted="GET deployed URL before starting QA agent",
+            sent=f"GET {deployed_url}",
+            received=f"transport error: {exc}",
+        )
+    return None
 
 
 async def _run_health_check(
@@ -312,6 +382,87 @@ async def _require_telethon_credentials(conn: asyncssh.SSHClientConnection) -> N
     raise TelethonCredentialsError(f"cannot read {TELETHON_ENV_FILE}: {detail}")
 
 
+async def _preflight_agent_qa(
+    conn: asyncssh.SSHClientConnection, bot_username: str | None
+) -> QABlocker | None:
+    """Check platform-owned prerequisites without invoking Claude Code."""
+    claude = await conn.run(f"{CLAUDE_PATH_PREFIX}command -v claude", check=False)
+    if claude.exit_status != 0:
+        return QABlocker(
+            category=QABlockerCategory.CLAUDE_UNAVAILABLE,
+            attempted="locate Claude Code on QA server",
+            sent=f"{CLAUDE_PATH_PREFIX}command -v claude",
+            received=(claude.stderr or claude.stdout or "command not found").strip(),
+        )
+
+    if not bot_username:
+        return None
+
+    try:
+        await _require_telethon_credentials(conn)
+    except TelethonCredentialsError as exc:
+        return QABlocker(
+            category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
+            attempted="validate QA Telethon credentials",
+            sent=f"read {TELETHON_ENV_FILE} and validate required variable names",
+            received=str(exc),
+        )
+
+    probe = (
+        f"set -a && . {TELETHON_ENV_FILE} && set +a; "
+        "/opt/qa-runner/venv/bin/python3 -c "
+        + shlex.quote(
+            "import os\n"
+            "from telethon.sync import TelegramClient\n"
+            "from telethon.sessions import StringSession\n"
+            "import sys\n"
+            "import time\n"
+            "client = TelegramClient(StringSession(os.environ['TELETHON_SESSION']), "
+            "int(os.environ['TELETHON_API_ID']), os.environ['TELETHON_API_HASH'])\n"
+            "client.start()\n"
+            "try:\n"
+            f"    bot = client.get_entity('@{bot_username}')\n"
+            "    sent = client.send_message(bot, '/start')\n"
+            f"    deadline = time.monotonic() + {TELEGRAM_ACCESS_PROBE_TIMEOUT}\n"
+            "    while time.monotonic() < deadline:\n"
+            "        replies = client.get_messages(bot, min_id=sent.id, limit=5)\n"
+            "        for reply in replies:\n"
+            "            if reply.out or reply.id <= sent.id:\n"
+            "                continue\n"
+            "            text = (reply.raw_text or reply.message or '').strip()\n"
+            "            normalized = text.casefold()\n"
+            "            denied = ('доступ запрещ' in normalized or 'access denied' in normalized "
+            "or 'not authorized' in normalized or 'unauthorized' in normalized "
+            "or 'forbidden' in normalized)\n"
+            "            if denied:\n"
+            "                print('telegram_access_denied:' + text[:500])\n"
+            "                sys.exit(2)\n"
+            "        time.sleep(1)\n"
+            "    print('telegram_access_probe_passed')\n"
+            "finally:\n"
+            "    client.disconnect()"
+        )
+    )
+    result = await conn.run(probe, check=False)
+    if result.exit_status != 0:
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        denial_marker = "telegram_access_denied:"
+        if denial_marker in stdout:
+            category = QABlockerCategory.TELEGRAM_ACCESS_DENIED
+            received = stdout.split(denial_marker, maxsplit=1)[1].strip()[-500:]
+        else:
+            category = QABlockerCategory.UNKNOWN
+            received = stderr or stdout or "Telegram probe failed"
+        return QABlocker(
+            category=category,
+            attempted="send Telegram /start access probe and inspect the bot reply before QA agent",
+            sent=f"Telegram /start to @{bot_username}",
+            received=received,
+        )
+    return None
+
+
 async def run_qa_on_server(
     *,
     server_ip: str,
@@ -342,8 +493,7 @@ async def run_qa_on_server(
     # Escape prompt for shell — use heredoc to avoid quoting issues
     # Prepend ~/.local/bin to PATH — non-interactive SSH doesn't source .bashrc
     # Permissions are configured via ~/.claude/settings.json (allowlist).
-    cmd = (
-        f'export PATH="$HOME/.local/bin:$PATH" && '
+    cmd = CLAUDE_PATH_PREFIX + (
         f"{TELETHON_ENV_PREFIX if bot_username else ''}"
         f"cd {shlex.quote(f'{SERVICE_BASE_DIR}/{project_name}')} && "
         f"timeout {timeout} claude -p {shlex.quote(prompt)} "
@@ -369,10 +519,11 @@ async def run_qa_on_server(
             )
 
             # Ensure Claude Code credentials are fresh before running
-            await _ensure_claude_credentials(conn)
+            blocker = await _preflight_agent_qa(conn, bot_username)
+            if blocker:
+                return QAResult(passed=False, summary="QA preflight blocked", blocker=blocker)
 
-            if bot_username:
-                await _require_telethon_credentials(conn)
+            await _ensure_claude_credentials(conn)
 
             result = await conn.run(cmd, check=False)
 
@@ -389,6 +540,16 @@ async def run_qa_on_server(
                 if result.stdout:
                     qa_result = parse_qa_result(result.stdout)
                     qa_result.report = report
+                    if qa_result.blocker:
+                        qa_result.blocker = _unknown_result_blocker(
+                            attempted="run Claude Code QA command",
+                            sent=cmd,
+                            received=(
+                                f"exit_status={result.exit_status}; "
+                                f"stdout={result.stdout[:2000]}; "
+                                f"stderr={(result.stderr or '')[:2000]}"
+                            ),
+                        )
                     return qa_result
                 return QAResult(
                     passed=False,
@@ -396,6 +557,14 @@ async def run_qa_on_server(
                     f"{result.stderr[:300] if result.stderr else 'no output'}",
                     raw=result.stdout or "",
                     report=report,
+                    blocker=_unknown_result_blocker(
+                        attempted="run Claude Code QA command",
+                        sent=cmd,
+                        received=(
+                            f"exit_status={result.exit_status}; stdout=; "
+                            f"stderr={(result.stderr or '')[:2000]}"
+                        ),
+                    ),
                 )
 
             qa_result = parse_qa_result(result.stdout or "")
@@ -408,6 +577,12 @@ async def run_qa_on_server(
             passed=False,
             summary=f"QA cannot test @{bot_username}: {e}",
             raw="",
+            blocker=QABlocker(
+                category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
+                attempted="validate QA Telethon credentials",
+                sent=f"read {TELETHON_ENV_FILE}",
+                received=str(e),
+            ),
         )
 
     except Exception as e:
@@ -416,6 +591,12 @@ async def run_qa_on_server(
             passed=False,
             summary=f"SSH connection failed to {server_ip}: {e}",
             raw="",
+            blocker=QABlocker(
+                category=QABlockerCategory.SERVER_UNAVAILABLE,
+                attempted="connect to QA server",
+                sent=f"SSH connection to {server_ip}",
+                received=str(e),
+            ),
         )
 
 

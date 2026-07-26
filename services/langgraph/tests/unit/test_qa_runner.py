@@ -12,8 +12,10 @@ import pytest
 import respx
 
 from shared.contracts.acceptance import HealthCriterion
+from shared.contracts.dto.run_result import QABlockerCategory
 from src.consumers._qa_runner import (
     TelethonCredentialsError,
+    _preflight_agent_qa,
     _require_telethon_credentials,
     parse_qa_result,
     run_health_checks,
@@ -107,7 +109,8 @@ class TestParseQAResult:
     def test_malformed_json(self):
         result = parse_qa_result("not json at all")
         assert result.passed is False
-        assert "parse" in result.summary.lower() or "failed" in result.summary.lower()
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
     def test_json_embedded_in_text(self):
         """Claude sometimes wraps JSON in markdown code blocks."""
@@ -123,10 +126,14 @@ class TestParseQAResult:
         raw = '{"checks": [], "summary": "test"}'
         result = parse_qa_result(raw)
         assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
     def test_empty_output(self):
         result = parse_qa_result("")
         assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
     def test_output_format_json_wrapper(self):
         """Claude Code --output-format json wraps result in envelope."""
@@ -155,7 +162,8 @@ class TestParseQAResult:
         )
         result = parse_qa_result(wrapper)
         assert result.passed is False
-        assert "parse" in result.summary.lower() or "failed" in result.summary.lower()
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
 
 
 class TestRunHealthChecks:
@@ -308,7 +316,13 @@ class TestRunHealthChecks:
 class TestRunQAOnServer:
     @pytest.fixture(autouse=True)
     def _skip_credential_refresh(self):
-        with patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock):
+        with (
+            patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
+            patch(
+                "src.consumers._qa_runner._preflight_agent_qa", new_callable=AsyncMock
+            ) as preflight,
+        ):
+            preflight.return_value = None
             yield
 
     @pytest.fixture
@@ -392,6 +406,10 @@ class TestRunQAOnServer:
             )
 
         assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category == QABlockerCategory.UNKNOWN
+        assert "exit_status=1" in result.blocker.received
+        assert "timeout exceeded" in result.blocker.received
 
     @pytest.mark.asyncio
     async def test_custom_timeout(self):
@@ -482,40 +500,145 @@ class TestRunQAOnServer:
 
         assert all(".qa-telethon.env" not in call.args[0] for call in mock_conn.run.await_args_list)
 
-    @pytest.mark.asyncio
-    async def test_missing_credentials_fail_the_run_with_the_real_reason(self):
-        missing = TelethonCredentialsError("no credentials file at $HOME/.qa-telethon.env")
 
-        mock_conn = AsyncMock()
-        mock_conn.run = AsyncMock()
-        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn.__aexit__ = AsyncMock(return_value=False)
+class TestQAPreflight:
+    @pytest.mark.asyncio
+    async def test_claude_lookup_uses_the_agent_runtime_path(self):
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(return_value=claude_present)
+
+        blocker = await _preflight_agent_qa(conn, None)
+
+        assert blocker is None
+        conn.run.assert_awaited_once_with(
+            'export PATH="$HOME/.local/bin:$PATH" && command -v claude', check=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_telethon_credentials_returns_blocker_before_agent(self):
+        missing = TelethonCredentialsError("no credentials file at $HOME/.qa-telethon.env")
+        claude_present = SimpleNamespace(exit_status=0, stdout="/usr/bin/claude\n", stderr="")
+        conn = AsyncMock()
+        conn.run = AsyncMock(return_value=claude_present)
+
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials",
+            new_callable=AsyncMock,
+            side_effect=missing,
+        ):
+            blocker = await _preflight_agent_qa(conn, "private_bot")
+
+        assert blocker is not None
+        assert blocker.category.value == "missing_telethon_credentials"
+        assert blocker.received == str(missing)
+        conn.run.assert_awaited_once_with(
+            'export PATH="$HOME/.local/bin:$PATH" && command -v claude', check=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_bot_access_denial_reply_blocks_before_claude_runs(self):
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        access_denied = SimpleNamespace(
+            exit_status=2,
+            stdout=(
+                "telegram_access_denied:\ud83d\udeab "
+                "\u0414\u043e\u0441\u0442\u0443\u043f "
+                "\u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\n"
+            ),
+            stderr="",
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(side_effect=[claude_present, access_denied])
+
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock
+        ):
+            blocker = await _preflight_agent_qa(conn, "private_bot")
+
+        assert blocker is not None
+        assert blocker.category.value == "telegram_access_denied"
+        assert blocker.sent == "Telegram /start to @private_bot"
+        assert (
+            "\u0414\u043e\u0441\u0442\u0443\u043f \u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d"
+            in blocker.received
+        )
+        probe = conn.run.await_args_list[1].args[0]
+        assert "get_messages" in probe
+        assert "telegram_access_denied" in probe
+
+    @pytest.mark.asyncio
+    async def test_access_denial_stdout_wins_over_probe_stderr(self):
+        """The bot reply remains the verdict when Telethon also writes diagnostics."""
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        access_denied = SimpleNamespace(
+            exit_status=2,
+            stdout="telegram_access_denied:🚫 Доступ запрещён\n",
+            stderr="Telethon reconnect diagnostic",
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(side_effect=[claude_present, access_denied])
+
+        with patch(
+            "src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock
+        ):
+            blocker = await _preflight_agent_qa(conn, "private_bot")
+
+        assert blocker is not None
+        assert blocker.category.value == "telegram_access_denied"
+        assert blocker.received == "🚫 Доступ запрещён"
+
+
+class TestRunQAOnServerPreflight:
+    @pytest.mark.asyncio
+    async def test_access_denial_reply_skips_claude(self):
+        claude_present = SimpleNamespace(
+            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
+        )
+        access_denied = SimpleNamespace(
+            exit_status=2,
+            stdout=(
+                "telegram_access_denied:\ud83d\udeab "
+                "\u0414\u043e\u0441\u0442\u0443\u043f "
+                "\u0437\u0430\u043f\u0440\u0435\u0449\u0451\u043d\n"
+            ),
+            stderr="",
+        )
+        conn = AsyncMock()
+        conn.run = AsyncMock(side_effect=[claude_present, access_denied])
+        conn.__aenter__ = AsyncMock(return_value=conn)
+        conn.__aexit__ = AsyncMock(return_value=False)
 
         with (
             patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
+            patch("src.consumers._qa_runner._require_telethon_credentials", new_callable=AsyncMock),
             patch(
-                "src.consumers._qa_runner._require_telethon_credentials",
-                new_callable=AsyncMock,
-                side_effect=missing,
-            ),
+                "src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock
+            ) as ensure_credentials,
         ):
             mock_asyncssh.import_private_key.return_value = "parsed_key"
-            mock_asyncssh.connect.return_value = mock_conn
+            mock_asyncssh.connect.return_value = conn
 
             result = await run_qa_on_server(
                 server_ip="1.2.3.4",
                 ssh_user="dev",
                 ssh_key="fake",
-                project_name="weather_bot",
+                project_name="private_bot",
                 acceptance_criteria="- Telegram: /start responds",
                 deployed_url="https://bot.example.com",
-                bot_username="weather_bot",
+                bot_username="private_bot",
             )
 
-        assert result.passed is False
-        assert "no credentials file at $HOME/.qa-telethon.env" in result.summary
-        # claude never ran — no room for a guessed "blocked" verdict
-        mock_conn.run.assert_not_awaited()
+        assert result.blocker is not None
+        assert result.blocker.category.value == "telegram_access_denied"
+        ensure_credentials.assert_not_awaited()
+        assert all("claude -p" not in call.args[0] for call in conn.run.await_args_list)
 
 
 class _LocalShellConn:

@@ -14,6 +14,7 @@ class QAOutcome(StrEnum):
     FAILED = "failed"
     EXHAUSTED = "exhausted"
     ERROR = "error"
+    BLOCKED = "blocked"
 
 
 class QAMessage(BaseMessage):

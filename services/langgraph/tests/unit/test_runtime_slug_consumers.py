@@ -125,8 +125,10 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             MagicMock(exit_status=1, stdout=""),
         ]
     )
+    qa_preflight = AsyncMock(return_value=None)
     with (
         patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
+        patch("src.consumers._qa_runner._preflight_agent_qa", qa_preflight),
         patch("src.consumers._qa_runner.asyncssh", _ssh_module_for_connection(qa_conn)),
     ):
         qa_result = await run_qa_on_server(

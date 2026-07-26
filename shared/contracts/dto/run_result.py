@@ -10,7 +10,9 @@ pair — see `RunDTO._check_result_matches_type`.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
@@ -75,6 +77,34 @@ class QAFailedCheck(BaseModel):
     detail: str
 
 
+class QABlockerCategory(StrEnum):
+    """Closed set of reasons QA could not make a product judgement."""
+
+    MISSING_BOT_USERNAME = "missing_bot_username"
+    MISSING_TELETHON_CREDENTIALS = "missing_telethon_credentials"
+    CLAUDE_UNAVAILABLE = "claude_unavailable"
+    DEPLOYED_URL_UNREACHABLE = "deployed_url_unreachable"
+    TELEGRAM_ACCESS_DENIED = "telegram_access_denied"
+    SERVER_UNAVAILABLE = "server_unavailable"
+    UNKNOWN = "unknown"
+
+
+class QABlocker(BaseModel):
+    """Evidence that QA was blocked before it could judge the product.
+
+    Unknown classifications deliberately remain blockers. Creating an unnecessary
+    human-review item is cheaper than directing an engineering worker to alter a
+    correct customer project from an ambiguous QA failure.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: QABlockerCategory
+    attempted: str
+    sent: str
+    received: str
+
+
 class QARunResult(BaseModel):
     """Result of a QA run (written by the QA consumer)."""
 
@@ -87,6 +117,18 @@ class QARunResult(BaseModel):
     qa_attempt: int | None = None
     deployed_url: str | None = None
     error: str | None = None
+    blocker: QABlocker | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blocked_outcome_requires_blocker(cls, data: object) -> object:
+        if (
+            isinstance(data, dict)
+            and data.get("qa_outcome") == QAOutcome.BLOCKED
+            and data.get("blocker") is None
+        ):
+            raise ValueError("blocked QA outcome requires a blocker")
+        return data
 
 
 RunResult = EngineeringRunResult | DeployRunResult | QARunResult

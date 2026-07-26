@@ -13,7 +13,7 @@ import structlog
 
 from shared.contracts.acceptance import parse_health_only_criteria
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import QAFailedCheck, QARunResult
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -24,6 +24,7 @@ from ._base import run_queue_worker, validate_queued_message
 from ._live_work import live_work_settled
 from ._qa_runner import (
     QAResult,
+    check_deployed_url_reachable,
     credential_refresh_loop,
     run_health_checks,
     run_qa_on_server,
@@ -108,6 +109,10 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         acceptance_criteria = msg.acceptance_criteria
         health_checks = parse_health_only_criteria(acceptance_criteria)
 
+        blocker = await check_deployed_url_reachable(msg.deployed_url)
+        if blocker:
+            return await _handle_qa_blocked(run_id=run_id, blocker=blocker)
+
         # A server to SSH into and a bot to talk to are what the agent needs, not
         # what the criteria ask for. Resolve them inside the agent branch only —
         # an HTTP check must not fail over an SSH key it never reads.
@@ -122,8 +127,15 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     "qa_server_resolve_failed",
                     application_id=msg.application_id,
                 )
-                await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
-                return live_work_settled({"status": "error", "error": error})
+                return await _handle_qa_blocked(
+                    run_id=run_id,
+                    blocker=QABlocker(
+                        category=QABlockerCategory.SERVER_UNAVAILABLE,
+                        attempted="resolve QA server connection",
+                        sent=f"application_id={msg.application_id}",
+                        received=error,
+                    ),
+                )
 
             # Fail-fast: if project has tg_bot module, bot_username is required
             if not msg.bot_username:
@@ -135,8 +147,15 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                         "token is validated — check that validation ran for this project."
                     )
                     logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
-                    await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
-                    return live_work_settled({"status": "error", "error": error})
+                    return await _handle_qa_blocked(
+                        run_id=run_id,
+                        blocker=QABlocker(
+                            category=QABlockerCategory.MISSING_BOT_USERNAME,
+                            attempted="resolve Telegram bot identity from QA message",
+                            sent="QAMessage.bot_username",
+                            received=error,
+                        ),
+                    )
 
         # Mark run as running before starting the checks
         if run_id:
@@ -179,6 +198,8 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 report=qa_result.report[:2000],
             )
 
+        if qa_result.blocker:
+            return await _handle_qa_blocked(run_id=run_id, blocker=qa_result.blocker)
         if qa_result.passed:
             return await _handle_qa_pass(
                 run_id=run_id,
@@ -208,6 +229,19 @@ async def _handle_qa_pass(*, run_id: str, deployed_url: str, report: str = "") -
     )
     logger.info("qa_passed", run_id=run_id)
     return live_work_settled({"status": "passed"})
+
+
+async def _handle_qa_blocked(*, run_id: str, blocker: QABlocker) -> dict:
+    """Persist a non-product QA blocker for human review."""
+    await _update_run(
+        run_id,
+        RunStatus.COMPLETED,
+        QAOutcome.BLOCKED,
+        summary="QA could not verify the product",
+        blocker=blocker,
+    )
+    logger.warning("qa_blocked", run_id=run_id, category=blocker.category.value)
+    return live_work_settled({"status": "qa_blocked", "blocker": blocker.category.value})
 
 
 async def _handle_qa_fail(
