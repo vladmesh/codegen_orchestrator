@@ -160,6 +160,22 @@ class TestTransitionStory:
         assert result.status == "waiting_human_review"
 
 
+class TestStopApplication:
+    @pytest.mark.asyncio
+    async def test_stop_application_requests_token_preserving_stop(self, api_client):
+        mock = _mock_http(_app_data(status="stopping"))
+        api_client._client = mock
+
+        await api_client.stop_application(42)
+
+        mock.request.assert_called_once_with(
+            "POST",
+            "/api/applications/42/stop",
+            headers=_INTERNAL_HEADERS,
+            json={"actor": "supervisor"},
+        )
+
+
 class TestCreateIncident:
     @pytest.mark.asyncio
     async def test_create_incident_posts_correctly(self, api_client):

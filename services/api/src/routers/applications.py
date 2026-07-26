@@ -392,6 +392,10 @@ async def stop_application(
     body = body or AdminAction()
     app, repo = await _get_app_with_repo(application_id, db)
 
+    if app.status in (ApplicationStatus.STOPPING, ApplicationStatus.STOPPED):
+        logger.info("application_stop_already_requested", app_id=application_id, actor=body.actor)
+        return app
+
     if app.status != ApplicationStatus.RUNNING:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

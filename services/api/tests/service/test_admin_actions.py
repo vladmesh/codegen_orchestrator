@@ -286,10 +286,21 @@ class TestStopApplication:
 
     @pytest.mark.asyncio
     async def test_stop_not_running_fails(self, client, server_handle):
-        app_id = await _create_running_app(client, server_handle, app_status="stopped")
+        app_id = await _create_running_app(client, server_handle, app_status="not_deployed")
 
         resp = await client.post(f"/api/applications/{app_id}/stop")
         assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+    @pytest.mark.asyncio
+    async def test_stop_already_stopped_is_idempotent(self, client, redis, server_handle):
+        app_id = await _create_running_app(client, server_handle, app_status="stopped")
+
+        resp = await client.post(f"/api/applications/{app_id}/stop")
+
+        assert resp.status_code == HTTPStatus.OK
+        assert resp.json()["status"] == "stopped"
+        messages = await redis.xrevrange("deploy:queue", count=1)
+        assert messages == []
 
 
 class TestUndeployApplication:

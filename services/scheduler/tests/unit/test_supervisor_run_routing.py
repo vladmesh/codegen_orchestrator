@@ -103,6 +103,7 @@ class TestSuperviseDeployingStories:
         assert qa_msg.run_id  # run_id must be set
         # The criteria travel on the message — QA does not resolve them itself.
         assert qa_msg.acceptance_criteria == BASELINE_ACCEPTANCE_CRITERIA
+        assert api_client.create_run.call_args.args[0]["run_metadata"] == {"application_id": 42}
 
     @pytest.mark.asyncio
     async def test_criteria_are_resolved_before_the_story_moves(self, api_client, redis_client):
@@ -752,8 +753,10 @@ class TestSuperviseTestingStories:
         assert "weather" in task_data["description"].lower()
 
     @pytest.mark.asyncio
-    async def test_exhausted_fails_story(self, api_client, redis_client):
-        """EXHAUSTED outcome → story FAILED."""
+    async def test_exhausted_quarantines_application_and_notifies_owner(
+        self, api_client, redis_client
+    ):
+        """EXHAUSTED outcome stops the app without releasing its token."""
         from src.tasks.supervisor import supervise_testing_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -762,6 +765,7 @@ class TestSuperviseTestingStories:
         api_client.get_latest_run_by_story.return_value = _make_run(
             id="qa-1",
             type=RunType.QA,
+            run_metadata={"application_id": 42},
             result={
                 "qa_outcome": QAOutcome.EXHAUSTED.value,
                 "summary": "Still broken after 2 attempts",
@@ -769,14 +773,30 @@ class TestSuperviseTestingStories:
             },
         )
 
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["failed"] == 1
-        api_client.fail_story.assert_called_once_with("story-1")
+        api_client.stop_application.assert_awaited_once_with(42)
+        api_client.update_story.assert_awaited_once_with(
+            "story-1",
+            {
+                "quarantine_reason": {
+                    "qa_outcome": QAOutcome.EXHAUSTED.value,
+                    "summary": "Still broken after 2 attempts",
+                }
+            },
+        )
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.fail_story.assert_not_called()
+        event = redis_client.publish_flat.await_args.args[1]
+        assert event["event"] == "story_quarantined"
+        assert event["user_id"] == "100713"
 
     @pytest.mark.asyncio
-    async def test_error_fails_story(self, api_client, redis_client):
-        """ERROR outcome → story FAILED."""
+    async def test_error_quarantines_application(self, api_client, redis_client):
+        """ERROR outcome stops the app and preserves the QA error on the story."""
         from src.tasks.supervisor import supervise_testing_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -785,16 +805,30 @@ class TestSuperviseTestingStories:
         api_client.get_latest_run_by_story.return_value = _make_run(
             id="qa-1",
             type=RunType.QA,
+            run_metadata={"application_id": 42},
             result={
                 "qa_outcome": QAOutcome.ERROR.value,
                 "error": "bot_username missing",
             },
         )
 
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["failed"] == 1
-        api_client.fail_story.assert_called_once_with("story-1")
+        api_client.stop_application.assert_awaited_once_with(42)
+        api_client.update_story.assert_awaited_once_with(
+            "story-1",
+            {
+                "quarantine_reason": {
+                    "qa_outcome": QAOutcome.ERROR.value,
+                    "error": "bot_username missing",
+                }
+            },
+        )
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.fail_story.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_unknown_qa_blocker_waits_for_human_without_creating_fix_task(
@@ -808,6 +842,7 @@ class TestSuperviseTestingStories:
         api_client.get_latest_run_by_story.return_value = _make_run(
             id="qa-1",
             type=RunType.QA,
+            run_metadata={"application_id": 42},
             result={
                 "qa_outcome": QAOutcome.BLOCKED.value,
                 "blocker": {
@@ -819,9 +854,19 @@ class TestSuperviseTestingStories:
             },
         )
 
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["failed"] == 1
+        api_client.stop_application.assert_awaited_once_with(42)
+        reason = api_client.update_story.await_args.args[1]["quarantine_reason"]
+        assert reason["blocker"] == {
+            "category": "unknown",
+            "attempted": "run Claude Code QA command",
+            "sent": "timeout 1200 claude -p ...",
+            "received": "exit_status=1; stdout=; stderr=timeout",
+        }
         api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()
@@ -839,6 +884,7 @@ class TestSuperviseTestingStories:
         api_client.get_latest_run_by_story.return_value = _make_run(
             id="qa-1",
             type=RunType.QA,
+            run_metadata={"application_id": 42},
             result={
                 "qa_outcome": QAOutcome.BLOCKED.value,
                 "blocker": {
@@ -850,9 +896,12 @@ class TestSuperviseTestingStories:
             },
         )
 
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["failed"] == 1
+        api_client.stop_application.assert_awaited_once_with(42)
         api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
         api_client.create_task.assert_not_called()
         api_client.fail_story.assert_not_called()

@@ -1,6 +1,7 @@
 """Story DTOs and enums — single source of truth for story statuses and transitions."""
 
 from enum import StrEnum
+from typing import Any
 import uuid
 
 from pydantic import BaseModel
@@ -92,6 +93,7 @@ class StoryDTO(TimestampedDTO):
     blocked_by_story_id: str | None = None
     created_by: str
     user_report: str | None = None
+    quarantine_reason: dict[str, Any] | None = None
     pr_number: int | None = None
 
 
@@ -122,3 +124,4 @@ class StoryUpdate(BaseModel):
     type: StoryType | None = None
     priority: int | None = None
     blocked_by_story_id: str | None = None
+    quarantine_reason: dict[str, Any] | None = None
