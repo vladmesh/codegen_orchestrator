@@ -10,7 +10,7 @@ from shared.notifications import notify_admins_best_effort
 
 from ..config.constants import Provisioning, Timeouts
 from .ansible_runner import AnsibleRunner
-from .api_client import get_server_info, update_server_labels
+from .api_client import get_server_info, get_server_ssh_key, update_server_labels
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
@@ -36,11 +36,17 @@ async def provision_monitoring_baseline(
     if not server_ip:
         return False, "Server has no public IP address"
 
+    ssh_private_key = await get_server_ssh_key(server_handle)
+    if not ssh_private_key:
+        return False, "Server has no stored SSH key"
+
     success, output = ansible_runner.run_playbook(
         server_ip=server_ip,
         server_handle=server.handle,
         playbook_name="provision_software.yml",
         deploy_user=server.ssh_user,
+        ssh_user=server.ssh_user,
+        ssh_private_key=ssh_private_key,
         orchestrator_ip=orchestrator_ip,
         orchestrator_hostname=orchestrator_hostname,
         tags=["monitoring"],
