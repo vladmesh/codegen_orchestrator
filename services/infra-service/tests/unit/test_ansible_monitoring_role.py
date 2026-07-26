@@ -139,7 +139,14 @@ class TestMonitoringTasksYaml:
         assert len(verification_tasks) == 1
         task = verification_tasks[0]
         assert task["delegate_to"] == "localhost"
-        assert "node_exporter_port" in task["ansible.builtin.uri"]["url"]
+        assert task["ansible.builtin.uri"]["url"] == (
+            "http://{{ hostvars[inventory_hostname].ansible_host | "
+            "default(inventory_hostname) }}:{{ node_exporter_port }}/metrics"
+        )
+        assert task["register"] == "node_exporter_health"
+        assert task["until"] == "node_exporter_health.status == 200"
+        assert task["retries"] == 5
+        assert task["delay"] == 3
 
 
 class TestPromtailTemplate:

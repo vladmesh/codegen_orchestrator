@@ -39,7 +39,7 @@ docker compose exec infra-service python -m src.provisioner.monitoring_baseline 
 ```
 
 It runs only the `monitoring` tag in `provision_software.yml`, then checks the
-node exporter from the Ansible controller. A failed HTTP check makes the command
+target node exporter from the Ansible controller. A failed HTTP check makes the command
 fail and does not record the baseline as applied. After a successful run,
 `GET /api/servers/SERVER_HANDLE/monitoring-status` shows the baseline timestamp,
 the last successful exporter observation and the newest metrics sample. Its

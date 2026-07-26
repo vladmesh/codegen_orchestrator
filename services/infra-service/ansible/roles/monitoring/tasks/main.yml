@@ -87,8 +87,12 @@
 
 - name: Verify node exporter responds from the provisioning controller
   ansible.builtin.uri:
-    url: "http://{{ ansible_host | default(inventory_hostname) }}:{{ node_exporter_port }}/metrics"
+    url: "http://{{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname) }}:{{ node_exporter_port }}/metrics"
     status_code: 200
+  register: node_exporter_health
+  until: node_exporter_health.status == 200
+  retries: 5
+  delay: 3
   delegate_to: localhost
   become: false
   when: monitoring_enabled
