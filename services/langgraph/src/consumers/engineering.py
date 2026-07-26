@@ -243,10 +243,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         engineering_subgraph = create_engineering_subgraph()
         developer_started_at = datetime.now(UTC)
-        result = await engineering_subgraph.ainvoke(
-            subgraph_input,
-            config={},
-        )
+        result = await engineering_subgraph.ainvoke(subgraph_input)
 
         worker_report = result.get("worker_report")
         if worker_report and planning_task_id:

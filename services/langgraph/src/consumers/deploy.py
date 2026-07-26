@@ -425,10 +425,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             job_data,
             head_sha=msg.head_sha,
         )
-        result = await devops_subgraph.ainvoke(
-            subgraph_input,
-            config={},
-        )
+        result = await devops_subgraph.ainvoke(subgraph_input)
 
         logger.info(
             "devops_subgraph_result",

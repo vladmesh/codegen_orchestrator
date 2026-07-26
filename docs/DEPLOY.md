@@ -135,6 +135,7 @@ All secrets must be configured in the repository's **production** environment.
 
 | Secret | Description |
 |--------|-------------|
+| `LANGCHAIN_API_KEY` | LangSmith API key (optional, for tracing) |
 
 ## QA Node (Prod Server)
 

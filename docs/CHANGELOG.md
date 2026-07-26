@@ -6,7 +6,7 @@
   `yaml` callback. This restores role resolution for both `deploy_target` during new-server
   provisioning and `monitoring` on existing servers.
 
-- Removed the unused LLM trace receiver stack and its ClickHouse and MinIO dependencies. LangGraph keeps its existing OpenTelemetry instrumentation without an external exporter; Loki, Promtail, Grafana, and product analytics are unchanged. The 2026-07-26 production measurement recorded 995 MB RSS and 4.6 GB of images across the removed services; an operator can reclaim those resources after deployment by removing the obsolete containers, images, and volumes.
+- Removed the unused Langfuse receiver stack and its ClickHouse and MinIO dependencies. The Langfuse SDK had been the only source of OpenTelemetry packages; the application has no independent OpenTelemetry instrumentation, so those packages were removed with it. This corrects the task's premise that such instrumentation existed. Loki, Promtail, Grafana, and product analytics are unchanged. The 2026-07-26 production measurement recorded 995 MB RSS and 4.6 GB of images across the removed services; an operator can reclaim those resources after deployment by removing the obsolete containers, images, and volumes. The admin user's Messages view was removed with the unavailable trace data.
 
 ## 2026-07-26
 

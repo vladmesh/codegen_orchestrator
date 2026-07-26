@@ -637,8 +637,6 @@ curl -s -X POST http://localhost:8000/api/tasks/ -H "Content-Type: application/j
   "story_id": "...", "project_id": "...", "blocked_by_task_id": null, "created_by": "escort"
 }'
 
-# Langfuse tracing (architect/engineering LLM debugging)
-# Filter by project_id or story_id tags in admin UI Tracing page
 ```
 
 ## Common Gotchas
@@ -649,5 +647,4 @@ curl -s -X POST http://localhost:8000/api/tasks/ -H "Content-Type: application/j
 - **Don't restart services carelessly** — restarting `engineering-worker` disconnects active tasks
 - **Project model has no `created_at`** — filter by story `created_at` when finding recent activity
 - **Scaffold modes**: `full` (copier + setup + push) vs `ensure` (just verify workspace). Check scaffold logs.
-- **Langfuse for LLM debugging** — architect and engineering traces tagged with project_id
 - **QA timeout is 20 minutes** — if story stays in `testing` longer, check qa-worker logs
