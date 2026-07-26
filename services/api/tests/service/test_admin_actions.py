@@ -294,13 +294,13 @@ class TestStopApplication:
     @pytest.mark.asyncio
     async def test_stop_already_stopped_is_idempotent(self, client, redis, server_handle):
         app_id = await _create_running_app(client, server_handle, app_status="stopped")
+        message_count_before = await redis.xlen("deploy:queue")
 
         resp = await client.post(f"/api/applications/{app_id}/stop")
 
         assert resp.status_code == HTTPStatus.OK
         assert resp.json()["status"] == "stopped"
-        messages = await redis.xrevrange("deploy:queue", count=1)
-        assert messages == []
+        assert await redis.xlen("deploy:queue") == message_count_before
 
 
 class TestUndeployApplication:
