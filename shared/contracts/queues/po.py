@@ -44,6 +44,7 @@ class POReminderMessage(BaseModel):
     type: Literal["reminder"] = "reminder"
     text: str
     user_id: str
+    story_id: str = ""
     timestamp: str = ""
 
 

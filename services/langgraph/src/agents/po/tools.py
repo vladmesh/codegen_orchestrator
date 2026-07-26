@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import re
 import time
 
 import httpx  # noqa: F401 — re-exported so tests can patch "src.agents.po.tools.httpx.AsyncClient"
@@ -53,6 +54,8 @@ from .tools_stories import (  # noqa: F401
 
 logger = structlog.get_logger(__name__)
 
+_STORY_ID_RE = re.compile(r"\bstory-[A-Za-z0-9-]+\b")
+
 
 # ---------------------------------------------------------------------------
 # Tools that live in this module (utility / non-domain)
@@ -74,12 +77,14 @@ async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfi
     redis = _get_stream_client().redis
     user_id = config["configurable"].get("user_id", "unknown")
     fire_at = time.time() + delay_minutes * 60
+    story_match = _STORY_ID_RE.search(reason)
 
     reminder = json.dumps(
         {
             "type": "reminder",
             "user_id": user_id,
             "text": reason,
+            "story_id": story_match.group(0) if story_match else "",
             "timestamp": datetime.now(UTC).isoformat(),
         }
     )

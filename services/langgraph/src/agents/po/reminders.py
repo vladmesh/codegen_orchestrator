@@ -42,6 +42,7 @@ async def _poll_once(client: RedisStreamClient) -> int:
         reminder = POReminderMessage(
             text=data.get("text", ""),
             user_id=data.get("user_id", "unknown"),
+            story_id=data.get("story_id", ""),
             timestamp=data.get("timestamp", ""),
         )
         await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(reminder))

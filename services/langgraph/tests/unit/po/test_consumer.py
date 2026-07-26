@@ -103,6 +103,19 @@ class TestHandleMessage:
         assert "check task eng-123" in msg.content
 
     @pytest.mark.asyncio
+    async def test_reminder_passes_story_provenance_to_tools(self, mock_graph, mock_client):
+        data = {
+            "type": "reminder",
+            "text": "check story story-second",
+            "story_id": "story-second",
+        }
+
+        await _handle_message(mock_graph, mock_client, "user-1", data)
+
+        config = mock_graph.ainvoke.call_args.kwargs["config"]
+        assert config["configurable"]["retry_story_id"] == "story-second"
+
+    @pytest.mark.asyncio
     async def test_uses_thread_id_per_user(self, mock_graph, mock_client):
         data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
 

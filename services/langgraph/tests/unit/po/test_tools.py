@@ -63,9 +63,12 @@ def _make_response(data, status_code: int = 200) -> MagicMock:
     return resp
 
 
-def _make_config(user_id: str = "test-user") -> dict:
+def _make_config(user_id: str = "test-user", retry_story_id: str = "") -> dict:
     """Create a RunnableConfig with user_id."""
-    return {"configurable": {"thread_id": f"po-user-{user_id}", "user_id": user_id}}
+    configurable = {"thread_id": f"po-user-{user_id}", "user_id": user_id}
+    if retry_story_id:
+        configurable["retry_story_id"] = retry_story_id
+    return {"configurable": configurable}
 
 
 class TestCreateProject:
@@ -545,6 +548,83 @@ class TestTeardownProject:
 
 class TestCreateStory:
     @pytest.mark.asyncio
+    async def test_third_matching_qa_failure_reminder_blocks_new_story(
+        self, mock_api_client, mock_stream_client
+    ):
+        """Reminder provenance blocks the third story in the same QA failure chain."""
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response(
+                [
+                    {
+                        "id": "story-first",
+                        "status": "failed",
+                    },
+                    {
+                        "id": "story-held",
+                        "status": "waiting_human_review",
+                        "quarantine_reason": {
+                            "qa_outcome": "failed",
+                            "qa_failure": {
+                                "fingerprint": "a1b2c3d4",
+                                "fingerprint_attempt": 3,
+                            },
+                        },
+                    },
+                ]
+            ),
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Try the fix again",
+                "description": "Retry the same failing feature",
+            },
+            config=_make_config("user-42", retry_story_id="story-held"),
+        )
+
+        assert "No story was created" in result
+        assert "human review" in result.lower()
+        mock_api_client.post.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_qa_failure_hold_allows_unrelated_story(
+        self, mock_api_client, mock_stream_client
+    ):
+        """A held retry chain must not freeze unrelated project work."""
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response(
+                [
+                    {
+                        "id": "story-held",
+                        "status": "waiting_human_review",
+                        "quarantine_reason": {
+                            "qa_outcome": "failed",
+                            "qa_failure": {"fingerprint": "a1b2c3d4"},
+                        },
+                    }
+                ]
+            ),
+        ]
+        mock_api_client.post.return_value = _make_response({"id": "story-export"})
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Add export",
+                "description": "Export project data as CSV",
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "Story created" in result
+        assert mock_api_client.post.call_args.kwargs["json"]["parent_story_id"] is None
+        mock_stream_client.publish_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_creates_story_and_publishes_to_architect(
         self, mock_api_client, mock_stream_client
     ):
@@ -650,9 +730,10 @@ class TestCreateStory:
         self, mock_api_client, mock_stream_client
     ):
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "status": "draft", "config": {}}
-        )
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "draft", "config": {}}),
+            _make_response([]),
+        ]
         mock_api_client.patch.side_effect = httpx.HTTPStatusError(
             "spec persistence unavailable", request=MagicMock(), response=MagicMock()
         )
@@ -894,7 +975,7 @@ class TestSetReminder:
     async def test_uses_user_id_from_config(self, mock_stream_client):
         """user_id should come from RunnableConfig, not LLM arguments."""
         await set_reminder.ainvoke(
-            {"delay_minutes": 5, "reason": "test"},
+            {"delay_minutes": 5, "reason": "check story story-second"},
             config=_make_config("user-777"),
         )
 
@@ -903,6 +984,7 @@ class TestSetReminder:
 
         reminder = json.loads(reminder_json)
         assert reminder["user_id"] == "user-777"
+        assert reminder["story_id"] == "story-second"
 
 
 class TestNotifyUser:

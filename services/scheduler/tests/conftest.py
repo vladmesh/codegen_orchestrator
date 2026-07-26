@@ -49,6 +49,8 @@ def initialized_scheduler_config(monkeypatch):
         "supervisor.task_stuck_threshold_minutes": 30,
         "supervisor.story_max_architect_retries": 3,
         "supervisor.story_retry_ttl": 3600,
+        "supervisor.qa_failure_max_fingerprint_attempts": 2,
+        "supervisor.qa_max_fix_attempts": 2,
         "health.ram_threshold_pct": 90.0,
         "health.disk_threshold_pct": 90.0,
         "health.consecutive_failure_threshold": 3,

@@ -33,6 +33,8 @@ REQUIRED_KEYS = [
     "supervisor.task_stuck_threshold_minutes",
     "supervisor.story_max_architect_retries",
     "supervisor.story_retry_ttl",
+    "supervisor.qa_failure_max_fingerprint_attempts",
+    "supervisor.qa_max_fix_attempts",
     "health.ram_threshold_pct",
     "health.disk_threshold_pct",
     "health.consecutive_failure_threshold",

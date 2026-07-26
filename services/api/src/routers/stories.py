@@ -76,11 +76,41 @@ def _validate_transition(from_status: str, to_status: str) -> None:
 # --- CRUD ---
 
 
+async def _validate_retry_parent(body: StoryCreate, db: AsyncSession) -> None:
+    if body.parent_story_id is None:
+        return
+
+    query = (
+        select(Story)
+        .where(
+            Story.id == body.parent_story_id,
+            Story.project_id == body.project_id,
+        )
+        .with_for_update()
+    )
+    parent = (await db.execute(query)).scalar_one_or_none()
+    if parent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Parent story {body.parent_story_id} not found for project",
+        )
+
+    reason = parent.quarantine_reason or {}
+    if parent.status == StoryStatus.WAITING_HUMAN_REVIEW.value and isinstance(
+        reason.get("qa_failure"), dict
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Story {parent.id} requires human review before retrying",
+        )
+
+
 @router.post("/", response_model=StoryRead, status_code=status.HTTP_201_CREATED)
 async def create_story(
     body: StoryCreate,
     db: AsyncSession = Depends(get_async_session),
 ) -> StoryRead:
+    await _validate_retry_parent(body, db)
     now = datetime.now(UTC)
     story = Story(
         id=_generate_id(),
