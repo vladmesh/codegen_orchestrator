@@ -29,7 +29,7 @@ def _redact_private_key(value: str, private_key: str | None) -> str:
 class AnsibleRunner:
     """Executes Ansible playbooks."""
 
-    def run_playbook(  # noqa: PLR0913
+    def run_playbook(  # noqa: PLR0913, PLR0915
         self,
         server_ip: str,
         server_handle: str,
@@ -65,13 +65,20 @@ class AnsibleRunner:
         """
         playbook_path = Paths.playbook(playbook_name)
         ansible_config_path = Path(playbook_path).parent.parent / "ansible.cfg"
+        if not ansible_config_path.is_file():
+            message = f"Ansible configuration not found: {ansible_config_path}"
+            logger.error("ansible_config_missing", config_path=str(ansible_config_path))
+            return False, message
 
         # Inventory construction
+        # host_key_checking disables only StrictHostKeyChecking. Keep known_hosts
+        # unwritten so a reinstall at the same IP can still use password auth.
+        ssh_args = "ansible_ssh_common_args='-o UserKnownHostsFile=/dev/null'"
         private_key_path: str | None = None
         if root_password:
             # Password authentication
             inventory_content = f"""[target]
-{server_ip} ansible_user=root ansible_ssh_pass={root_password}
+{server_ip} ansible_user=root ansible_ssh_pass={root_password} {ssh_args}
 """
 
         else:
@@ -83,11 +90,11 @@ class AnsibleRunner:
                     private_key_path = key_file.name
                 os.chmod(private_key_path, 0o600)
                 inventory_content = f"""[target]
-{server_ip} ansible_user={ssh_user} ansible_ssh_private_key_file={private_key_path}
+{server_ip} ansible_user={ssh_user} ansible_ssh_private_key_file={private_key_path} {ssh_args}
 """
             else:
                 inventory_content = f"""[target]
-{server_ip} ansible_user=root
+{server_ip} ansible_user=root {ssh_args}
 """
 
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".ini") as inv_file:

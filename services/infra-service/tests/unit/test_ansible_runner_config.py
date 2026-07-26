@@ -57,6 +57,50 @@ class TestAnsibleRunnerConfiguration:
         assert success is True, output
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_runner_keeps_known_hosts_disabled_for_reinstalled_servers(self, mock_run, monkeypatch):
+        captured_inventory: dict[str, str] = {}
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
+            str(ANSIBLE_DIR / "playbooks"),
+        )
+
+        def capture_inventory(cmd, **_kwargs):
+            captured_inventory["content"] = Path(cmd[2]).read_text()
+            return MagicMock(returncode=0, stdout="ok", stderr="")
+
+        mock_run.side_effect = capture_inventory
+
+        success, _ = AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_access.yml",
+            root_password="password",  # noqa: S106
+        )
+
+        assert success is True
+        assert "UserKnownHostsFile=/dev/null" in captured_inventory["content"]
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_runner_fails_before_execution_when_config_is_missing(
+        self, mock_run, tmp_path, monkeypatch
+    ):
+        missing_playbooks_dir = tmp_path / "playbooks"
+        missing_playbooks_dir.mkdir()
+        monkeypatch.setattr(
+            "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS", str(missing_playbooks_dir)
+        )
+
+        success, output = AnsibleRunner().run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="missing_config.yml",
+        )
+
+        assert success is False
+        assert output == f"Ansible configuration not found: {tmp_path / 'ansible.cfg'}"
+        mock_run.assert_not_called()
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_runner_loads_config_that_resolves_provisioning_roles(self, mock_run, monkeypatch):
         monkeypatch.setattr(
             "src.provisioner.ansible_runner.Paths.ANSIBLE_PLAYBOOKS",
