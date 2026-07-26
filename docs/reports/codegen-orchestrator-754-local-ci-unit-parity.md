@@ -51,13 +51,6 @@ and `make test-unit` is its local reproduction command for this ConfigStore-depe
 `scripts/check-ci-gate.py` locks this rule to the exact unreachable endpoint. Changing the runner
 back to a host-service URL makes `make ci-contract` fail.
 
-## CI failure comment
-
-The mechanical gate does not include a raw-log tail. `GitHubAppClient.get_workflow_failure_details`
-requests only `GET /actions/runs/{run_id}/jobs` and records failed job and step names. The resulting
-comment can say that `Fast Checks` and `Run unit tests` failed, but cannot contain the Pydantic
-exception. Raw-log retrieval is out of scope for this runner-parity fix.
-
 ## Verification
 
 Before the runner change, the new CI-contract assertion failed because the runner used
