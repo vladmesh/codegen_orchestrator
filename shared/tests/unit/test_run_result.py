@@ -112,6 +112,21 @@ class TestValidPayloads:
 
         assert run.result.state_changes == [change]
 
+    def test_passed_qa_rejects_residual_state_change(self):
+        change = QAStateChange(
+            resource="POST /api/items",
+            operation="created",
+            cleanup=QAStateChangeCleanup(
+                attempted=True, succeeded=False, detail="no inverse operation"
+            ),
+        )
+
+        with pytest.raises(ValidationError, match="uncleaned state change"):
+            _run(
+                RunType.QA,
+                {"qa_outcome": "passed", "state_changes": [change.model_dump(mode="json")]},
+            )
+
     @pytest.mark.parametrize("run_type", list(RunType))
     @pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLED])
     def test_result_none_allowed_before_terminal(self, run_type, status):

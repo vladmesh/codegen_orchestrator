@@ -163,6 +163,11 @@ class QARunResult(BaseModel):
             and data.get("blocker") is None
         ):
             raise ValueError("blocked QA outcome requires a blocker")
+        if isinstance(data, dict) and data.get("qa_outcome") == QAOutcome.PASSED:
+            for change in data.get("state_changes", []):
+                cleanup = change.get("cleanup") if isinstance(change, dict) else None
+                if isinstance(cleanup, dict) and cleanup.get("succeeded") is False:
+                    raise ValueError("passed QA outcome cannot contain an uncleaned state change")
         return data
 
 

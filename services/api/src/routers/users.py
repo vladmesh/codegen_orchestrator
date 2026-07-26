@@ -99,22 +99,6 @@ async def get_user_by_telegram_id(
     return user
 
 
-@router.delete("/by-telegram/{telegram_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user_by_telegram_id(
-    telegram_id: int,
-    db: AsyncSession = Depends(get_async_session),
-) -> None:
-    """Delete a user addressed by their Telegram identity."""
-    query = select(User).where(User.telegram_id == telegram_id)
-    result = await db.execute(query)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    await db.delete(user)
-    await db.commit()
-
-
 @router.get("/{user_id}", response_model=UserRead)
 async def get_user(
     user_id: int,

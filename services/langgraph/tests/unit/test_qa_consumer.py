@@ -120,12 +120,8 @@ def mock_redis():
 @pytest.fixture(autouse=True)
 def _skip_deployed_url_preflight():
     """Network reachability has dedicated tests; consumer tests mock the runner."""
-    with (
-        patch("src.consumers.qa.check_deployed_url_reachable", new_callable=AsyncMock) as check,
-        patch("src.consumers.qa.reserve_qa_test_identity", new_callable=AsyncMock) as reserve,
-    ):
+    with patch("src.consumers.qa.check_deployed_url_reachable", new_callable=AsyncMock) as check:
         check.return_value = None
-        reserve.return_value = None
         yield
 
 
@@ -217,7 +213,7 @@ class TestProcessQAJobPass:
         assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
 
     @pytest.mark.asyncio
-    async def test_persists_cleanup_plan_before_starting_agent(
+    async def test_marks_run_running_before_starting_agent(
         self, mock_api_client, mock_redis, qa_message_data
     ):
         from src.consumers._qa_runner import QAResult
@@ -228,7 +224,6 @@ class TestProcessQAJobPass:
 
         running = mock_api_client.patch.call_args_list[0][1]["json"]
         assert running["status"] == RunStatus.RUNNING.value
-        assert running["run_metadata"]["qa_state_cleanup"]["status"] == "pending"
         mock_run.assert_awaited_once()
 
     @pytest.mark.asyncio

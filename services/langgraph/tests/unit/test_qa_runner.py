@@ -213,7 +213,6 @@ class TestParseQAResult:
 
 
 class TestStatefulQARegression:
-    @respx.mock
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "agent_payload",
@@ -222,13 +221,10 @@ class TestStatefulQARegression:
             "",
         ],
     )
-    async def test_runner_removes_test_user_after_verdict_or_unknown_outcome(
+    async def test_runner_records_and_cleans_journaled_mutations_after_verdict_or_unknown_outcome(
         self, agent_payload: str
     ):
         """Runner-owned cleanup executes after both a verdict and lost agent output."""
-        user_url = "https://stateful.example.com/api/users/by-telegram/8202532144"
-        deleted = respx.delete(user_url).mock(return_value=httpx.Response(204))
-        verified = respx.get(user_url).mock(return_value=httpx.Response(404))
         command_result = SimpleNamespace(stdout=agent_payload, stderr="", exit_status=0)
         conn = AsyncMock()
         conn.run = AsyncMock(return_value=command_result)
@@ -244,6 +240,22 @@ class TestStatefulQARegression:
             ),
             patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
             patch("src.consumers._qa_runner._collect_qa_report", new_callable=AsyncMock),
+            patch("src.consumers._qa_runner._install_qa_mutation_tool", new_callable=AsyncMock),
+            patch(
+                "src.consumers._qa_runner._cleanup_qa_mutations",
+                new_callable=AsyncMock,
+                return_value=[
+                    {
+                        "resource": "POST https://stateful.example.com/items",
+                        "operation": "created",
+                        "cleanup": {
+                            "attempted": True,
+                            "succeeded": True,
+                            "detail": "DELETE returned 204",
+                        },
+                    }
+                ],
+            ),
         ):
             mock_asyncssh.import_private_key.return_value = "parsed_key"
             mock_asyncssh.connect.return_value = conn
@@ -254,11 +266,8 @@ class TestStatefulQARegression:
                 project_name="stateful",
                 acceptance_criteria="- exercise a stateful user flow",
                 deployed_url="https://stateful.example.com",
-                cleanup_test_identity=True,
             )
 
-        assert deleted.called
-        assert verified.called
         assert result.state_changes[0]["cleanup"]["succeeded"] is True
         assert result.passed is bool(agent_payload)
 
@@ -458,7 +467,9 @@ class TestRunQAOnServer:
 
         assert result.passed is True
         assert mock_asyncssh.connect.call_args.kwargs["username"] == "dev"
-        qa_cmd = mock_conn.run.await_args_list[0].args[0]
+        qa_cmd = next(
+            call.args[0] for call in mock_conn.run.await_args_list if "claude -p" in call.args[0]
+        )
         assert "cd '/opt/services/weather bot'" in qa_cmd
 
     @pytest.mark.asyncio
@@ -536,9 +547,9 @@ class TestRunQAOnServer:
                 timeout=600,
             )
 
-        # Verify timeout is passed to the claude command (first run call)
-        first_call = mock_conn.run.call_args_list[0]
-        cmd = first_call[0][0]
+        cmd = next(
+            call.args[0] for call in mock_conn.run.await_args_list if "claude -p" in call.args[0]
+        )
         assert "600" in cmd
 
     @pytest.mark.asyncio
@@ -567,7 +578,9 @@ class TestRunQAOnServer:
                 bot_username="weather_bot",
             )
 
-        cmd = mock_conn.run.await_args_list[0].args[0]
+        cmd = next(
+            call.args[0] for call in mock_conn.run.await_args_list if "claude -p" in call.args[0]
+        )
         # TELETHON_* must be in the environment claude inherits, not something
         # the agent has to remember to source
         assert cmd.index("set -a && . $HOME/.qa-telethon.env && set +a") < cmd.index("claude -p")
