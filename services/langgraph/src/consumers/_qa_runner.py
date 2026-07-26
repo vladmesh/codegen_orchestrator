@@ -208,12 +208,16 @@ async def run_health_checks(
     never answers with its expected status fails the run.
     """
     results = []
+    transport_failures: list[tuple[str, httpx.TransportError]] = []
     # "returns 200" means the path itself answers 200. Following redirects would
     # report the destination's status instead, so a criterion naming a redirect
     # could never pass and one naming 200 would pass on a redirected path.
     async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT, follow_redirects=False) as client:
         for check in checks:
-            results.append(await _run_health_check(client, deployed_url, check))
+            result, transport_error = await _run_health_check(client, deployed_url, check)
+            results.append(result)
+            if transport_error:
+                transport_failures.append((check.path, transport_error))
 
     failed = [c for c in results if not c["pass"]]
     passed = not failed
@@ -223,11 +227,21 @@ async def run_health_checks(
         else f"{len(failed)}/{len(results)} GET check(s) failed against {deployed_url}"
     )
     logger.info("qa_health_checks_done", deployed_url=deployed_url, passed=passed)
+    blocker = None
+    if transport_failures:
+        path, error = transport_failures[0]
+        blocker = QABlocker(
+            category=QABlockerCategory.DEPLOYED_URL_UNREACHABLE,
+            attempted="run health check against deployed URL",
+            sent=f"GET {deployed_url.rstrip('/')}{path}",
+            received=f"transport error: {error}",
+        )
     return QAResult(
         passed=passed,
         checks=results,
         summary=summary,
         report="\n".join(f"- {c['name']}: {c['detail']}" for c in results),
+        blocker=blocker,
     )
 
 
@@ -256,23 +270,26 @@ async def _run_health_check(
     client: httpx.AsyncClient,
     deployed_url: str,
     check: HealthCriterion,
-) -> dict:
+) -> tuple[dict, httpx.TransportError | None]:
     """GET one path, retrying until it answers as expected or attempts run out."""
     name = f"GET {check.path} returns {check.expected_status}"
     detail = "no response"
+    transport_error = None
     for attempt in range(HEALTH_CHECK_ATTEMPTS):
         if attempt:
             await asyncio.sleep(HEALTH_CHECK_RETRY_DELAY)
         try:
             response = await client.get(f"{deployed_url.rstrip('/')}{check.path}")
-        except httpx.HTTPError as e:
+        except httpx.TransportError as e:
             detail = f"request failed: {e}"
+            transport_error = e
             continue
         if response.status_code == check.expected_status:
-            return {"name": name, "pass": True, "detail": f"got {response.status_code}"}
+            return {"name": name, "pass": True, "detail": f"got {response.status_code}"}, None
         detail = f"got {response.status_code}, expected {check.expected_status}"
+        transport_error = None
     logger.warning("qa_health_check_failed", path=check.path, detail=detail)
-    return {"name": name, "pass": False, "detail": detail}
+    return {"name": name, "pass": False, "detail": detail}, transport_error
 
 
 async def _ensure_claude_credentials(conn: asyncssh.SSHClientConnection) -> None:

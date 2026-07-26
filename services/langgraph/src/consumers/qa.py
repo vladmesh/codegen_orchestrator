@@ -213,6 +213,21 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 qa_result=qa_result,
             )
 
+    except Exception as exc:
+        logger.exception(
+            "qa_job_unexpected_error",
+            story_id=story_id,
+            run_id=run_id,
+        )
+        return await _handle_qa_blocked(
+            run_id=run_id,
+            blocker=QABlocker(
+                category=QABlockerCategory.UNKNOWN,
+                attempted="process QA job",
+                sent=f"QAMessage run_id={run_id}",
+                received=f"unexpected error: {exc}",
+            ),
+        )
     finally:
         # Always release inflight marker
         await redis.redis.delete(inflight_key)
