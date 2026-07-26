@@ -359,6 +359,34 @@ async def test_ci_failure_marks_unavailable_failed_job_log(mock_gh_cls):
     assert "Job log unavailable: HTTPStatusError" in description
 
 
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_ci_failure_marks_empty_failed_job_log(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story()]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_tasks_by_story.return_value = []
+    gh.get_latest_workflow_run.return_value = _failed_run(303, "sha-303")
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": "build",
+                "failed_steps": ["Build"],
+                "log_excerpt": None,
+                "log_unavailable_reason": "GitHub job log was empty",
+            }
+        ],
+        "unavailable_reason": None,
+    }
+
+    assert await poll_ci_failures(api) == 1
+
+    description = api.create_task.call_args.args[0]["description"]
+    assert "Job log unavailable: GitHub job log was empty" in description
+
+
 def test_ci_failure_fingerprint_ignores_log_excerpt():
     failed_job = {"name": "unit", "failed_steps": ["Run pytest"]}
     first = _failure_fingerprint(

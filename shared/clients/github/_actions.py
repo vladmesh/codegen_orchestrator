@@ -16,8 +16,11 @@ from ._base import (
 logger = get_logger(__name__)
 
 _DIAGNOSTIC_LOG_LINE = re.compile(
-    r"::error::|##\[error\]|\b\w*(?:error|exception)\b|"
-    r"\b(?:traceback|fatal|panic)\b",
+    r"::error::|##\[error\]|\b(?:\w*(?:error|exception)|traceback|fatal|panic)\b",
+    re.IGNORECASE,
+)
+_RUNNER_WRAPPER_LOG_LINE = re.compile(
+    r"\b(?:error:\s*)?process completed with exit code \d+\.?\s*$",
     re.IGNORECASE,
 )
 _PYTEST_SUMMARY_LINE = re.compile(r"\bFAILED\b|\b\d+ failed\b", re.IGNORECASE)
@@ -29,7 +32,11 @@ def _failure_log_excerpt(log: str, line_limit: int) -> str:
     matches = [
         index
         for index, line in enumerate(lines)
-        if _DIAGNOSTIC_LOG_LINE.search(line) and not _PYTEST_SUMMARY_LINE.search(line)
+        if (
+            _DIAGNOSTIC_LOG_LINE.search(line)
+            and not _PYTEST_SUMMARY_LINE.search(line)
+            and not _RUNNER_WRAPPER_LOG_LINE.search(line)
+        )
     ]
     if not matches:
         return "\n".join(lines[-line_limit:])
@@ -555,7 +562,11 @@ class ActionsMixin:
                         headers=headers,
                         follow_redirects=True,
                     )
-                    log_excerpt = _failure_log_excerpt(log_response.text, log_excerpt_lines)
+                    excerpt = _failure_log_excerpt(log_response.text, log_excerpt_lines)
+                    if excerpt.strip():
+                        log_excerpt = excerpt
+                    else:
+                        log_unavailable_reason = "GitHub job log was empty"
                 except Exception as exc:
                     log_unavailable_reason = type(exc).__name__
             failed_job = {

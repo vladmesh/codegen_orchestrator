@@ -106,6 +106,39 @@ async def test_workflow_failure_details_keeps_traceback_cause_before_pytest_summ
 
 
 @pytest.mark.asyncio
+async def test_workflow_failure_details_keeps_test_diagnostic_before_runner_wrapper():
+    client = object.__new__(GitHubAppClient)
+    client.get_token = AsyncMock(return_value="secret")
+    jobs_response = MagicMock()
+    jobs_response.json.return_value = {
+        "jobs": [
+            {
+                "id": 98,
+                "name": "unit",
+                "conclusion": "failure",
+                "steps": [{"name": "Run pytest", "conclusion": "failure"}],
+            }
+        ]
+    }
+    log_response = MagicMock()
+    log_response.text = "\n".join(
+        [
+            "E   AssertionError: expected default configuration",
+            *[f"verbose test output {index}" for index in range(50)],
+            "FAILED tests/test_config.py::test_load_config - AssertionError",
+            "Error: Process completed with exit code 1.",
+        ]
+    )
+    client._make_request = AsyncMock(side_effect=[jobs_response, log_response])
+
+    details = await client.get_workflow_failure_details("org", "repo", 42, log_excerpt_lines=40)
+
+    excerpt = details["failed_jobs"][0]["log_excerpt"]
+    assert "AssertionError: expected default configuration" in excerpt
+    assert "Process completed with exit code 1" not in excerpt
+
+
+@pytest.mark.asyncio
 async def test_workflow_failure_details_marks_unavailable_job_logs():
     client = object.__new__(GitHubAppClient)
     client.get_token = AsyncMock(return_value="secret")
@@ -127,3 +160,29 @@ async def test_workflow_failure_details_marks_unavailable_job_logs():
     failed_job = details["failed_jobs"][0]
     assert failed_job["log_excerpt"] is None
     assert failed_job["log_unavailable_reason"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_workflow_failure_details_marks_empty_job_log_unavailable():
+    client = object.__new__(GitHubAppClient)
+    client.get_token = AsyncMock(return_value="secret")
+    jobs_response = MagicMock()
+    jobs_response.json.return_value = {
+        "jobs": [
+            {
+                "id": 99,
+                "name": "build",
+                "conclusion": "failure",
+                "steps": [{"name": "Build", "conclusion": "failure"}],
+            }
+        ]
+    }
+    log_response = MagicMock()
+    log_response.text = " \n\t"
+    client._make_request = AsyncMock(side_effect=[jobs_response, log_response])
+
+    details = await client.get_workflow_failure_details("org", "repo", 42, log_excerpt_lines=20)
+
+    failed_job = details["failed_jobs"][0]
+    assert failed_job["log_excerpt"] is None
+    assert failed_job["log_unavailable_reason"] == "GitHub job log was empty"
