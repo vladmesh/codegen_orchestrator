@@ -753,6 +753,100 @@ class TestSuperviseTestingStories:
         assert "weather" in task_data["description"].lower()
 
     @pytest.mark.asyncio
+    async def test_three_identical_failures_create_two_fixes_then_wait_for_human(
+        self, api_client, redis_client
+    ):
+        """The third matching QA failure is retained for a human, not reworked again."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        prior = []
+        for run_id in ("qa-1", "qa-2"):
+            api_client.get_tasks_by_story.return_value = prior
+            api_client.get_latest_run_by_story.return_value = _make_run(
+                id=run_id,
+                type=RunType.QA,
+                result={
+                    "qa_outcome": QAOutcome.FAILED.value,
+                    "summary": "Weather endpoint broken",
+                    "failed_checks": [{"name": "weather", "detail": "404"}],
+                },
+            )
+
+            result = await supervise_testing_stories(api_client, redis_client)
+
+            assert result["redispatched"] == 1
+            created = api_client.create_task.call_args.args[0]
+            task = AsyncMock()
+            task.failure_metadata = created["failure_metadata"]
+            prior.append(task)
+
+        api_client.get_tasks_by_story.return_value = prior
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-3",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "Weather endpoint broken",
+                "failed_checks": [{"name": "weather", "detail": "404"}],
+            },
+        )
+        api_client.create_task.reset_mock()
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result == {"completed": 0, "redispatched": 0, "failed": 1}
+        api_client.create_task.assert_not_awaited()
+        api_client.transition_story.assert_awaited_with("story-1", "human-review")
+
+    @pytest.mark.asyncio
+    async def test_qa_fix_ceiling_escalates_even_for_a_new_failure_signature(
+        self, api_client, redis_client
+    ):
+        """A changing symptom cannot keep the QA to fix loop running forever."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        prior = []
+        for run_id, detail in (("qa-1", "404"), ("qa-2", "500")):
+            api_client.get_tasks_by_story.return_value = prior
+            api_client.get_latest_run_by_story.return_value = _make_run(
+                id=run_id,
+                type=RunType.QA,
+                result={
+                    "qa_outcome": QAOutcome.FAILED.value,
+                    "summary": "Weather endpoint broken",
+                    "failed_checks": [{"name": "weather", "detail": detail}],
+                },
+            )
+            await supervise_testing_stories(api_client, redis_client)
+            task = AsyncMock()
+            task.failure_metadata = api_client.create_task.call_args.args[0]["failure_metadata"]
+            prior.append(task)
+
+        api_client.get_tasks_by_story.return_value = prior
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-3",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "New weather endpoint failure",
+                "failed_checks": [{"name": "weather", "detail": "403"}],
+            },
+        )
+        api_client.create_task.reset_mock()
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.create_task.assert_not_awaited()
+        api_client.transition_story.assert_awaited_with("story-1", "human-review")
+
+    @pytest.mark.asyncio
     async def test_exhausted_quarantines_application_and_notifies_owner(
         self, api_client, redis_client
     ):

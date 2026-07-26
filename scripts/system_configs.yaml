@@ -88,6 +88,16 @@
   category: supervisor
   description: "Redis TTL for story retry counter in seconds (1 hour)"
 
+- key: supervisor.qa_failure_max_fingerprint_attempts
+  value: 2
+  category: supervisor
+  description: "Max fix attempts for one repeated QA failure fingerprint"
+
+- key: supervisor.qa_max_fix_attempts
+  value: 2
+  category: supervisor
+  description: "Max QA to fix cycles for one story"
+
 # --- deploy ---
 - key: deploy.max_deploy_fix_attempts
   value: 2

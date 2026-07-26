@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
+import json
 from typing import TYPE_CHECKING
 import uuid
 
@@ -66,6 +68,14 @@ def _max_architect_retries() -> int:
 
 def _story_retry_ttl() -> int:
     return startup.get_config().get_int("supervisor.story_retry_ttl")
+
+
+def _qa_failure_limit() -> int:
+    return startup.get_config().get_int("supervisor.qa_failure_max_fingerprint_attempts")
+
+
+def _qa_fix_limit() -> int:
+    return startup.get_config().get_int("supervisor.qa_max_fix_attempts")
 
 
 def _parse_datetime(value: str | datetime) -> datetime:
@@ -930,7 +940,7 @@ async def supervise_testing_stories(
 
         elif outcome == QAOutcome.FAILED:
             dispatched = await _handle_qa_failed(
-                api_client, redis_client, story_id, project_id, run.result, log
+                api_client, redis_client, story_id, project_id, run.id, run.result, log
             )
             if dispatched:
                 redispatched += 1
@@ -1023,15 +1033,54 @@ async def _handle_qa_failed(
     redis_client: RedisStreamClient,
     story_id: str,
     project_id: str,
+    qa_run_id: str,
     result: QARunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """QA failed — create fix task and redispatch to engineering.
+    """Create a bounded, fingerprinted fix task for a confirmed QA defect.
 
     Returns True if redispatched, False if something went wrong.
     """
     summary = result.summary or "QA testing failed"
     failed_checks = result.failed_checks
+
+    tasks = await api_client.get_tasks_by_story(story_id)
+    prior_evidence = [item for task in tasks if (item := _qa_failure_metadata(task))]
+    if any(item.get("qa_run_id") == qa_run_id for item in prior_evidence):
+        log.info("qa_supervisor_failure_already_handled", qa_run_id=qa_run_id)
+        return False
+
+    fingerprint = _qa_failure_fingerprint(summary, failed_checks)
+    matching_failures = [item for item in prior_evidence if item.get("fingerprint") == fingerprint]
+    attempt = len(matching_failures) + 1
+    total_attempt = len(prior_evidence) + 1
+    evidence = {
+        "qa_run_id": qa_run_id,
+        "fingerprint": fingerprint,
+        "fingerprint_attempt": attempt,
+        "fix_attempt": total_attempt,
+        "summary": summary,
+        "failed_checks": [check.model_dump(mode="json") for check in failed_checks],
+    }
+
+    if attempt > _qa_failure_limit() or total_attempt > _qa_fix_limit():
+        await api_client.transition_story(story_id, "human-review")
+        exhausted_limit = _qa_failure_limit() if attempt > _qa_failure_limit() else _qa_fix_limit()
+        await notify_admins_best_effort(
+            f"QA failure {fingerprint} exhausted {exhausted_limit} fix attempts "
+            f"for story {story_id}",
+            level="warning",
+            story_id=story_id,
+            failure_fingerprint=fingerprint,
+        )
+        log.warning(
+            "qa_supervisor_failure_escalated",
+            fingerprint=fingerprint,
+            fingerprint_attempt=attempt,
+            fix_attempt=total_attempt,
+            max_attempts=exhausted_limit,
+        )
+        return False
 
     issues_text = "\n".join(f"- {c.name}: {c.detail}" for c in failed_checks)
     if not issues_text:
@@ -1051,11 +1100,35 @@ async def _handle_qa_failed(
             "type": "fix",
             "status": TaskStatus.TODO.value,
             "description": fix_description,
+            "failure_metadata": {"qa_failure": evidence},
         }
     )
 
     # Transition story back to IN_PROGRESS for engineering
     await api_client.transition_story(story_id, "start")
 
-    log.info("qa_supervisor_fix_task_created", story_id=story_id)
+    log.info(
+        "qa_supervisor_fix_task_created",
+        story_id=story_id,
+        fingerprint=fingerprint,
+        fingerprint_attempt=attempt,
+        fix_attempt=total_attempt,
+    )
     return True
+
+
+def _qa_failure_metadata(task: object) -> dict | None:
+    """Return the QA failure evidence recorded on a prior fix task."""
+    metadata = getattr(task, "failure_metadata", None) or {}
+    value = metadata.get("qa_failure")
+    return value if isinstance(value, dict) else None
+
+
+def _qa_failure_fingerprint(summary: str, failed_checks: list) -> str:
+    """Build a stable signature for a QA failure's product evidence."""
+    payload = {
+        "failed_checks": [check.model_dump(mode="json") for check in failed_checks],
+        "summary": summary,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).lower()
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
