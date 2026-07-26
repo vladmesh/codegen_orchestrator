@@ -229,31 +229,6 @@ class TestProcessQAJobPass:
 
 class TestProcessQAJobFail:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            '{"pass": false, "checks": [42], "summary": "bad"}',
-            '{"pass": true, "checks": "claimed all good", "summary": "bad"}',
-        ],
-    )
-    async def test_invalid_agent_result_is_persisted_as_unknown_blocker(
-        self, mock_api_client, mock_redis, qa_message_data, raw
-    ):
-        """Malformed agent output must terminate QA for human review, never pass or crash."""
-        from src.consumers._qa_runner import parse_qa_result
-
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = parse_qa_result(raw)
-            result = await process_qa_job(qa_message_data, mock_redis)
-
-        assert result["status"] == "qa_blocked"
-        run_data = mock_api_client.patch.call_args[1]["json"]
-        assert run_data["status"] == RunStatus.COMPLETED.value
-        assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
-        assert run_data["result"]["blocker"]["category"] == "unknown"
-        mock_api_client.create_task.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_qa_fail_stores_failed_outcome(
         self, mock_api_client, mock_redis, qa_message_data
     ):

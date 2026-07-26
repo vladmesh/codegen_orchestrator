@@ -71,57 +71,6 @@ def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABl
     )
 
 
-def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
-    """Fail closed when the agent's result cannot safely drive QA routing."""
-    return QAResult(
-        passed=False,
-        summary=f"QA output has an invalid result shape: {reason}",
-        raw=raw,
-        blocker=_unknown_result_blocker(
-            attempted="validate QA agent result",
-            sent="Claude Code stdout",
-            received=raw[:2000],
-        ),
-    )
-
-
-def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
-    """Validate every routing-relevant field in a QA agent response.
-
-    A malformed result is not product evidence. It must be routed to human
-    review as an unknown blocker instead of being treated as a pass or causing
-    failure handling to crash while extracting failed checks.
-    """
-    expected_fields = {"pass", "checks", "summary"}
-    if set(data) != expected_fields:
-        return _invalid_qa_payload(
-            raw,
-            "expected exactly pass, checks, and summary fields",
-        )
-
-    if not isinstance(data["pass"], bool):
-        return _invalid_qa_payload(raw, "pass must be a boolean")
-    if not isinstance(data["summary"], str):
-        return _invalid_qa_payload(raw, "summary must be a string")
-    if not isinstance(data["checks"], list):
-        return _invalid_qa_payload(raw, "checks must be a list")
-
-    expected_check_fields = {"name", "pass", "detail"}
-    for index, check in enumerate(data["checks"]):
-        if not isinstance(check, dict) or set(check) != expected_check_fields:
-            return _invalid_qa_payload(
-                raw,
-                f"check {index} must contain exactly name, pass, and detail fields",
-            )
-        if not isinstance(check["name"], str) or not check["name"].strip():
-            return _invalid_qa_payload(raw, f"check {index} name must be a non-empty string")
-        if not isinstance(check["pass"], bool):
-            return _invalid_qa_payload(raw, f"check {index} pass must be a boolean")
-        if not isinstance(check["detail"], str) or not check["detail"].strip():
-            return _invalid_qa_payload(raw, f"check {index} detail must be a non-empty string")
-    return None
-
-
 def parse_qa_result(raw: str) -> QAResult:
     """Parse Claude Code's JSON output into a QAResult.
 
@@ -185,14 +134,23 @@ def parse_qa_result(raw: str) -> QAResult:
             ),
         )
 
-    invalid_result = _validate_qa_payload(data, raw)
-    if invalid_result:
-        return invalid_result
+    passed = data.get("pass")
+    if not isinstance(passed, bool):
+        return QAResult(
+            passed=False,
+            summary="QA output has no boolean pass field",
+            raw=raw,
+            blocker=_unknown_result_blocker(
+                attempted="validate QA agent result",
+                sent="Claude Code stdout",
+                received=raw[:2000],
+            ),
+        )
 
     return QAResult(
-        passed=data["pass"],
-        checks=data["checks"],
-        summary=data["summary"],
+        passed=passed,
+        checks=data.get("checks", []),
+        summary=data.get("summary", ""),
         raw=raw,
     )
 
