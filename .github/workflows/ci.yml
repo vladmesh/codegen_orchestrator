@@ -286,6 +286,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - suite: backend
+            should_run: >-
+              ${{
+                (needs.detect-changes.outputs.api == 'true' ||
+                needs.detect-changes.outputs.langgraph == 'true' ||
+                needs.detect-changes.outputs.shared == 'true' ||
+                needs.detect-changes.outputs.packages == 'true' ||
+                needs.detect-changes.outputs['docker-test'] == 'true' ||
+                needs.detect-changes.outputs['integration-tests'] == 'true' ||
+                needs.detect-changes.outputs.ci == 'true' ||
+                needs.detect-changes.outputs.deps == 'true' ||
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
+              }}
           - suite: template
             should_run: >-
               ${{

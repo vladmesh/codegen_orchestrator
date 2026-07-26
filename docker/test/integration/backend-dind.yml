@@ -1,0 +1,206 @@
+volumes:
+  workspaces:
+  dind-storage:
+
+networks:
+  backend-test:
+    name: backend-test-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+
+services:
+  # Services
+  langgraph:
+    build:
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_URL=http://api:8000
+      - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - backend-test
+
+  engineering-worker:
+    build:
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
+    command: ["python", "-m", "src.consumers.engineering"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      # GitHub/registry env vars intentionally absent — tests verify
+      # the flow fails at the external boundary
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - backend-test
+
+  architect:
+    build:
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
+    command: ["python", "-m", "src.consumers.architect"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      # The consumer is idle in this suite. These values let it start while
+      # ensuring an accidental LLM request cannot reach a real endpoint.
+      - ARCHITECT_LLM_MODEL=test-model
+      - ARCHITECT_LLM_BASE_URL=http://llm.invalid/v1
+      - ARCHITECT_LLM_API_KEY=test-api-key
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - backend-test
+
+  worker-manager:
+    build:
+      context: ../../..
+      dockerfile: services/worker-manager/Dockerfile
+    user: root  # Required for Docker daemon access and workspace chown (matches production)
+    environment:
+      - REDIS_URL=redis://172.31.0.10:6379/0
+      - DOCKER_HOST=tcp://docker:2375
+      - DOCKER_NETWORK=host
+      # Worker URLs use IP because workers inside DIND can't resolve DNS
+      - WORKER_REDIS_URL=redis://172.31.0.10:6379/0
+      - WORKER_API_URL=http://172.31.0.20:8000
+      - SCAFFOLDED_WORKSPACE_PATH=/tmp/codegen/workspaces
+    volumes:
+      - workspaces:/tmp/codegen/workspaces
+    depends_on:
+      redis:
+        condition: service_healthy
+      docker:
+        condition: service_healthy
+    networks:
+      - backend-test
+
+  # Infrastructure
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend-test
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      backend-test:
+        ipv4_address: 172.31.0.10
+
+  api:
+    build:
+      context: ../../..
+      dockerfile: services/api/Dockerfile
+    # Uses default entrypoint.sh which runs alembic migrations before uvicorn
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379/0
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - LK_JWT_SECRET=test-lk-jwt-secret
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+    depends_on: [db, redis]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    networks:
+      backend-test:
+        ipv4_address: 172.31.0.20
+
+  # Mock Docker (Dind)
+  docker:
+    image: docker:dind
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    # Mount host Claude session directory for E2E tests
+    # Workers inside DIND will mount /host-claude as their ~/.claude
+    volumes:
+      - dind-storage:/var/lib/docker
+      - ${HOST_CLAUDE_DIR:-/tmp/fake-claude}:/host-claude:rw
+      - workspaces:/tmp/codegen/workspaces
+    # Pass DNS to Docker daemon for containers spawned inside DIND
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--dns=8.8.8.8", "--dns=8.8.4.4"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:2375/_ping || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      backend-test:
+        ipv4_address: 172.31.0.30
+
+  # Test Runner
+  integration-test-runner:
+    build:
+      context: ../../..
+      dockerfile: docker/test/integration/Dockerfile
+    command:
+      [
+        "pytest",
+        "tests/integration/backend/test_claude_agent.py",
+        "tests/integration/backend/test_factory_agent.py",
+        "tests/integration/backend/test_dev_env.py",
+        "tests/integration/backend/test_task_injection.py",
+        "tests/integration/backend/test_worker_execution.py",
+        "-v",
+      ]
+    depends_on:
+      langgraph:
+        condition: service_started
+      engineering-worker:
+        condition: service_started
+      worker-manager:
+        condition: service_started
+    volumes:
+      - ../../../tests:/app/tests
+      - ../../../services:/app/services
+      - ../../../shared:/app/shared
+      - ../../../packages:/app/packages
+      - workspaces:/tmp/codegen/workspaces
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BUILD_WORKER_BASE_IMAGES=true
+      - REDIS_URL=redis://172.31.0.10:6379/0
+      - DOCKER_HOST=tcp://docker:2375
+      - FACTORY_API_KEY=${FACTORY_API_KEY}
+      - CLAUDE_SESSION_DIR=${HOST_CLAUDE_DIR}
+      - HOST_CLAUDE_DIR=${HOST_CLAUDE_DIR}
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+    networks:
+      - backend-test

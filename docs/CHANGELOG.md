@@ -3,7 +3,9 @@
 ## 2026-07-26
 
 ### Changed
-- Move the currently failing Docker-in-Docker backend integration suite to its own manual workflow. It was made manual without an explained decision during CI normalization; a PR matrix job could otherwise report success after skipping every test step. The CI contract now rejects that shape and ensures the manual workflow always runs the suite when dispatched.
+- Split backend integration coverage into the required Compose-only `backend` suite and the manual
+  `backend-dind` suite. Worker-container coverage remains in `tests/live/` until secretary-774
+  provides host-side gates with a real Docker socket.
 
 ## 2026-07-26
 
