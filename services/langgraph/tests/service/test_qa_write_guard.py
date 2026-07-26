@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 from threading import Thread
 from types import SimpleNamespace
@@ -22,6 +23,72 @@ from src.consumers._qa_runner import run_qa_on_server
 from src.consumers.qa import process_qa_job
 
 GUARD = Path(__file__).parents[3] / "infra-service/ansible/roles/qa_runner/files/qa-write-guard.py"
+
+
+class _GuardedClaudeConnection:
+    """Minimal remote host that makes the runner exercise its Claude hook settings."""
+
+    def __init__(self, tmp_path: Path, deployed_url: str) -> None:
+        self._tmp_path = tmp_path
+        self._deployed_url = deployed_url
+        self._remote_files: dict[str, Path] = {}
+        self.commands: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def run(self, command: str, *, check: bool = False):
+        self.commands.append(command)
+        if "printf %s" in command and "qa-write-guard-" in command:
+            tokens = shlex.split(command)
+            payload = tokens[tokens.index("%s") + 1]
+            remote_path = tokens[-1]
+            local_path = self._tmp_path / Path(remote_path).name
+            local_path.write_text(payload)
+            self._remote_files[remote_path] = local_path
+            return SimpleNamespace(stdout="", stderr="", exit_status=0)
+
+        if " claude " in command and " --settings " in command:
+            remote_path = shlex.split(command)[-1]
+            settings = json.loads(self._remote_files[remote_path].read_text())
+            hook_command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            hook_args = shlex.split(hook_command)
+            hook_args[0] = str(GUARD)
+            write_attempt = f"curl -X POST {self._deployed_url}/users -d '{{}}'"
+            hook = subprocess.run(
+                hook_args,
+                input=json.dumps({"tool_input": {"command": write_attempt}}),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert hook.returncode == 2
+            trace_path = hook_args[hook_args.index("--trace") + 1]
+            self._remote_files[trace_path] = Path(trace_path)
+            return SimpleNamespace(
+                stdout='{"pass": true, "checks": [], "summary": "passed"}',
+                stderr=hook.stderr,
+                exit_status=0,
+            )
+
+        if command.startswith("cat "):
+            remote_path = shlex.split(command)[1]
+            local_path = self._remote_files.get(remote_path)
+            if local_path and local_path.exists():
+                return SimpleNamespace(stdout=local_path.read_text(), stderr="", exit_status=0)
+            return SimpleNamespace(stdout="", stderr="", exit_status=1)
+
+        if command.startswith("rm -f "):
+            for remote_path in shlex.split(command)[2:]:
+                local_path = self._remote_files.get(remote_path)
+                if local_path and local_path.exists():
+                    local_path.unlink()
+            return SimpleNamespace(stdout="", stderr="", exit_status=0)
+
+        return SimpleNamespace(stdout="", stderr="", exit_status=0)
 
 
 @pytest.fixture(autouse=True)
@@ -109,17 +176,9 @@ def test_runner_write_hook_executes_and_records_direct_application_write(
 
 
 @pytest.mark.asyncio
-async def test_qa_run_write_hook_trace_is_blocked_and_persists_residual_trace():
-    """A hook trace wins over normal agent JSON and makes the run unverified."""
-    command_result = SimpleNamespace(
-        stdout='{"pass": true, "checks": [], "summary": "passed"}',
-        stderr="",
-        exit_status=0,
-    )
-    conn = AsyncMock()
-    conn.run = AsyncMock(return_value=command_result)
-    conn.__aenter__ = AsyncMock(return_value=conn)
-    conn.__aexit__ = AsyncMock(return_value=False)
+async def test_qa_run_claude_settings_hook_blocks_write_and_persists_residual_trace(tmp_path):
+    """A controlled Claude Bash write creates a hook trace that blocks the run."""
+    conn = _GuardedClaudeConnection(tmp_path, "http://app.example")
 
     with (
         patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
@@ -133,11 +192,6 @@ async def test_qa_run_write_hook_trace_is_blocked_and_persists_residual_trace():
             "src.consumers._qa_runner._collect_qa_report",
             new_callable=AsyncMock,
             return_value="# QA Report\n- no direct writes\n",
-        ),
-        patch(
-            "src.consumers._qa_runner._collect_qa_write_guard_trace",
-            new_callable=AsyncMock,
-            return_value="POST http://app.example/users",
         ),
     ):
         mock_asyncssh.import_private_key.return_value = "parsed_key"
@@ -156,20 +210,13 @@ async def test_qa_run_write_hook_trace_is_blocked_and_persists_residual_trace():
     assert result.blocker.category is QABlockerCategory.UNKNOWN
     assert result.state_changes[0]["resource"] == "POST http://app.example/users"
     assert result.state_changes[0]["cleanup"]["succeeded"] is False
+    assert any("claude" in command and "--settings" in command for command in conn.commands)
 
 
 @pytest.mark.asyncio
-async def test_qa_consumer_persists_direct_write_trace_as_a_quarantine_ready_blocker():
-    """A real runner violation cannot become a passed QA run downstream."""
-    command_result = SimpleNamespace(
-        stdout='{"pass": true, "checks": [], "summary": "passed"}',
-        stderr="",
-        exit_status=0,
-    )
-    conn = AsyncMock()
-    conn.run = AsyncMock(return_value=command_result)
-    conn.__aenter__ = AsyncMock(return_value=conn)
-    conn.__aexit__ = AsyncMock(return_value=False)
+async def test_qa_consumer_quarantines_claude_hook_write_trace(tmp_path):
+    """The consumer persists the runner-created trace as a quarantine blocker."""
+    conn = _GuardedClaudeConnection(tmp_path, "http://app.example")
     redis = AsyncMock()
     redis.redis.set = AsyncMock(return_value=True)
     redis.redis.delete = AsyncMock()
@@ -206,11 +253,6 @@ async def test_qa_consumer_persists_direct_write_trace_as_a_quarantine_ready_blo
             new_callable=AsyncMock,
             return_value="# QA Report\n- normal output\n",
         ),
-        patch(
-            "src.consumers._qa_runner._collect_qa_write_guard_trace",
-            new_callable=AsyncMock,
-            return_value="POST http://app.example/users",
-        ),
     ):
         mock_asyncssh.import_private_key.return_value = "parsed_key"
         mock_asyncssh.connect.return_value = conn
@@ -234,3 +276,4 @@ async def test_qa_consumer_persists_direct_write_trace_as_a_quarantine_ready_blo
     assert result.blocker is not None
     assert result.state_changes[0].resource == "POST http://app.example/users"
     assert result.state_changes[0].cleanup.succeeded is False
+    assert any("claude" in command and "--settings" in command for command in conn.commands)

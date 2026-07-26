@@ -144,6 +144,6 @@ After writing QA_REPORT.md, return ONLY this JSON:
   "summary": "brief summary"
 }}
 
-Do not claim cleanup results in this JSON. The QA runner performs cleanup and
-records its verified result itself.
+Do not claim cleanup results in this JSON. The QA runner records any detected
+residual state itself; it does not attempt a generic rollback.
 """
