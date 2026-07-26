@@ -37,8 +37,7 @@ Always required on PRs:
 Path-routed checks:
 
 - Service matrix covers `api`, `langgraph`, `scheduler`, `telegram_bot`, `worker-manager`, and `infra`.
-- Integration matrix covers `backend`, `template`, `frontend`, `infra`, and `po-tools`.
-- `backend` integration stays `workflow_dispatch` only because it exercises DIND worker containers and coding-agent worker boundaries. It is preserved for manual full-matrix runs, but it is not a deterministic PR merge-gate suite.
+- The required integration matrix covers `template`, `frontend`, `infra`, and `po-tools`.
 - Shared code, packages, workflow edits, Makefile edits, dependency root changes, Docker test infrastructure, and integration test changes trigger the broad affected matrices instead of a single service subset.
 
 Skipped-command guard:
@@ -49,11 +48,13 @@ Skipped-command guard:
 
 Backend-suite decision, 2026-07-26:
 
-- The backend suite was made manual when the matrix was introduced because it exercises nested Docker worker containers and coding-agent worker boundaries. The original baseline description called it unsuitable for the deterministic PR merge gate.
-- The current compose configuration is deterministic: it mounts a fake Claude directory by default, supplies a deliberately invalid architect LLM endpoint, and its backend tests stop at external API boundaries. It does not require real LLM credentials.
-- The suite now runs on PRs that change API, LangGraph, worker-manager, shared code, packages, Docker test infrastructure, integration tests, CI, or dependency roots, as well as on manual full-matrix runs. Registry-failure simulation may make Buildx retry, but cannot silently skip this required suite.
+- The July 11 CI normalization deliberately kept backend outside the PR matrix. Its baseline rationale was the Docker-in-Docker worker and coding-agent boundary, rather than a secrets requirement. The history does not contain a more specific original justification.
+- The suite remains manual. Running it on the PR for `4cb04a1` exposed 14 failed tests and 2 errors, so it is not currently a reliable required PR gate.
+- `.github/workflows/backend-integration.yml` is the only backend-suite workflow and is dispatch-only. Its test and assertion steps are unconditional, so a dispatch cannot become green after silently skipping the suite. The CI contract verifies that the required CI matrix excludes backend and that this manual workflow runs and asserts `make test-integration-backend`.
+- The registry-failure simulation belongs only to the required CI workflow. It cannot exclude backend work because backend has no conditional path in its manual workflow.
 
 Manual coverage:
 
-- `workflow_dispatch` still runs the full service and Docker integration matrices.
+- `workflow_dispatch` for `ci.yml` runs the full required service matrix and the four required integration suites. It does not run backend.
+- Dispatch `Backend Integration` separately to run the backend suite.
 - Live and e2e scenarios that require real LLMs, GitHub projects, VPS provisioning, Ansible deploys, or Telegram remain outside the required merge gate.
