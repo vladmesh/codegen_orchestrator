@@ -289,7 +289,8 @@ jobs:
           - suite: backend
             should_run: >-
               ${{
-                (github.event_name == 'workflow_dispatch')
+                (github.event_name == 'workflow_dispatch' &&
+                inputs.simulate_first_attempt_registry_failure != true)
                 && 'true' || 'false'
               }}
           - suite: template

@@ -292,6 +292,11 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
             should_run = item.get("should_run", "")
             if "needs.detect-changes.outputs" in should_run:
                 fail("backend integration suite must stay workflow_dispatch-only")
+            if "inputs.simulate_first_attempt_registry_failure != true" not in should_run:
+                fail(
+                    "registry retry validation must skip the backend suite that needs "
+                    "LLM credentials"
+                )
 
 
 def assert_buildx_retry(job: dict[str, Any]) -> None:
