@@ -827,6 +827,37 @@ class TestSuperviseTestingStories:
         api_client.fail_story.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_unreachable_health_only_qa_waits_for_human_without_fix_task(
+        self, api_client, redis_client
+    ):
+        """A health-check transport failure is a review blocker, not a product defect."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.BLOCKED.value,
+                "blocker": {
+                    "category": "deployed_url_unreachable",
+                    "attempted": "GET deployed URL before starting QA agent",
+                    "sent": "GET https://example.com",
+                    "received": "transport error: connection refused",
+                },
+            },
+        )
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        api_client.create_task.assert_not_called()
+        api_client.fail_story.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_skips_running_qa(self, api_client, redis_client):
         """QA run still RUNNING → skip, no action."""
         from src.tasks.supervisor import supervise_testing_stories

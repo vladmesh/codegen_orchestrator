@@ -109,15 +109,15 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         acceptance_criteria = msg.acceptance_criteria
         health_checks = parse_health_only_criteria(acceptance_criteria)
 
+        blocker = await check_deployed_url_reachable(msg.deployed_url)
+        if blocker:
+            return await _handle_qa_blocked(run_id=run_id, blocker=blocker)
+
         # A server to SSH into and a bot to talk to are what the agent needs, not
         # what the criteria ask for. Resolve them inside the agent branch only —
         # an HTTP check must not fail over an SSH key it never reads.
         server_info = None
         if health_checks is None:
-            blocker = await check_deployed_url_reachable(msg.deployed_url)
-            if blocker:
-                return await _handle_qa_blocked(run_id=run_id, blocker=blocker)
-
             project = await api_client.get_project(msg.project_id)
             project_name = project_runtime_slug(project)
             server_info = await _resolve_server_info(msg.application_id, project_name)

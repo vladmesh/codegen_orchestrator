@@ -378,6 +378,35 @@ class TestHealthOnlyCriteriaRouting:
         assert run_data["status"] == RunStatus.COMPLETED.value
         assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_unreachable_health_only_url_stores_blocked_outcome(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """A transport failure is a QA blocker even when criteria need only HTTP."""
+        from src.consumers._qa_runner import check_deployed_url_reachable
+
+        qa_message_data["acceptance_criteria"] = "- GET /health returns 200"
+        respx.get("https://weather.example.com").mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+
+        with (
+            patch(
+                "src.consumers.qa.check_deployed_url_reachable",
+                side_effect=check_deployed_url_reachable,
+            ) as mock_reachability,
+            patch("src.consumers.qa.run_health_checks", new_callable=AsyncMock) as mock_health,
+        ):
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        mock_reachability.assert_awaited_once_with("https://weather.example.com")
+        mock_health.assert_not_called()
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
+        assert run_data["result"]["blocker"]["category"] == "deployed_url_unreachable"
+
     @pytest.mark.asyncio
     async def test_failing_health_check_stores_failed_outcome(
         self, mock_api_client, mock_redis, qa_message_data
