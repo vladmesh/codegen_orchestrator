@@ -121,6 +121,15 @@ async def api_client():
         yield client
 
 
+@pytest.fixture
+async def user_api_client():
+    """Async HTTP client for user-scoped authorization tests."""
+    import httpx
+
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=10) as client:
+        yield client
+
+
 async def poll_task_status(
     api_client, task_id: str, target_statuses: set[str], timeout: int = 60
 ) -> dict:

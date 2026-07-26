@@ -13,11 +13,11 @@ import pytest
 
 
 @pytest.fixture
-async def seed_users(api_client):
+async def seed_users(user_api_client):
     """Create two test users via upsert."""
     users = []
     for tg_id in (111_000, 222_000):
-        resp = await api_client.post(
+        resp = await user_api_client.post(
             "/api/users/upsert",
             json={"telegram_id": tg_id, "username": f"testuser-{tg_id}"},
             headers={"X-Telegram-ID": str(tg_id)},
@@ -28,7 +28,7 @@ async def seed_users(api_client):
 
 
 @pytest.fixture
-async def user_projects(api_client, seed_users):
+async def user_projects(user_api_client, seed_users):
     """Create one project per user. Cleanup after test."""
     created = []
 
@@ -36,7 +36,7 @@ async def user_projects(api_client, seed_users):
         (111_000, "proj-a"),
         (222_000, "proj-b"),
     ]:
-        resp = await api_client.post(
+        resp = await user_api_client.post(
             "/api/projects/",
             json={
                 "title": name,
@@ -52,13 +52,13 @@ async def user_projects(api_client, seed_users):
 
     for proj in created:
         with contextlib.suppress(Exception):
-            await api_client.delete(f"/api/projects/{proj['id']}")
+            await user_api_client.delete(f"/api/projects/{proj['id']}")
 
 
 @pytest.mark.asyncio
-async def test_user_sees_only_own_projects(api_client, user_projects):
+async def test_user_sees_only_own_projects(user_api_client, user_projects):
     """User 111_000 lists projects → sees only proj-a."""
-    resp = await api_client.get("/api/projects/", headers={"X-Telegram-ID": "111000"})
+    resp = await user_api_client.get("/api/projects/", headers={"X-Telegram-ID": "111000"})
     assert resp.status_code == 200  # noqa: PLR2004
     projects = resp.json()
     names = {p["title"] for p in projects}
@@ -67,9 +67,9 @@ async def test_user_sees_only_own_projects(api_client, user_projects):
 
 
 @pytest.mark.asyncio
-async def test_other_user_sees_only_own_projects(api_client, user_projects):
+async def test_other_user_sees_only_own_projects(user_api_client, user_projects):
     """User 222_000 lists projects → sees only proj-b."""
-    resp = await api_client.get("/api/projects/", headers={"X-Telegram-ID": "222000"})
+    resp = await user_api_client.get("/api/projects/", headers={"X-Telegram-ID": "222000"})
     assert resp.status_code == 200  # noqa: PLR2004
     projects = resp.json()
     names = {p["title"] for p in projects}
@@ -78,11 +78,13 @@ async def test_other_user_sees_only_own_projects(api_client, user_projects):
 
 
 @pytest.mark.asyncio
-async def test_cross_user_access_denied(api_client, user_projects):
-    """Internal API calls can read projects regardless of user scope."""
+async def test_cross_user_access_denied(user_api_client, user_projects):
+    """User 222_000 tries to GET proj-a → 403."""
     proj_a_id = user_projects[0]["id"]
-    resp = await api_client.get(f"/api/projects/{proj_a_id}", headers={"X-Telegram-ID": "222000"})
-    assert resp.status_code == 200  # noqa: PLR2004
+    resp = await user_api_client.get(
+        f"/api/projects/{proj_a_id}", headers={"X-Telegram-ID": "222000"}
+    )
+    assert resp.status_code == 403  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
