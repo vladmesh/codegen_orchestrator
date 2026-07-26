@@ -57,6 +57,11 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      # The consumer is idle in this suite. These values let it start while
+      # ensuring an accidental LLM request cannot reach a real endpoint.
+      - ARCHITECT_LLM_MODEL=test-model
+      - ARCHITECT_LLM_BASE_URL=http://llm.invalid/v1
+      - ARCHITECT_LLM_API_KEY=test-api-key
     depends_on:
       redis:
         condition: service_healthy
