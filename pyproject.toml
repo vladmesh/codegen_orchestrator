@@ -19,8 +19,6 @@ dev = [
     "fakeredis>=2.34.1",
     "makefun",
     "copier>=9.4.0",
-    # shared/ is COPY'd in Docker (not pip-installed), but tests need it
-    "shared",
     # Workspace members (all services + packages)
     "api",
     "langgraph-orchestrator",
@@ -43,7 +41,8 @@ members = [
 ]
 
 [tool.uv.sources]
-shared = { path = "shared", editable = true }
+# `shared` is not a package. It reaches consumers as a bind-mount (compose) or a
+# `COPY shared` (images); tests import it from the repo tree via PYTHONPATH.
 codegen-orchestrator-shared-contracts = { path = "shared/contracts", editable = true }
 codegen-orchestrator-shared-redis = { path = "shared/redis", editable = true }
 codegen-orchestrator-shared-log-config = { path = "shared/log_config", editable = true }
@@ -60,6 +59,9 @@ worker-wrapper = { workspace = true }
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `shared` lives in the tree and is not installed, so the repo root has to be
+# importable for every pytest run rooted here.
+pythonpath = ["."]
 markers = [
     "e2e: marks tests as end-to-end tests",
     "e2e_real: marks tests as real e2e tests (deselect with '-m \"not e2e_real\"')",

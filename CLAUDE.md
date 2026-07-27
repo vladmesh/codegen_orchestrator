@@ -51,7 +51,8 @@ Full pipeline: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes: [docs/NO
 
 **Key non-obvious details:**
 - `engineering-worker` and `deploy-worker` share the `langgraph` Docker image (different entrypoints)
-- `shared/` is `COPY`'d into Docker images (not pip-installed). After adding/removing files in `shared/`, run `uv sync --reinstall-package shared` before running tests locally.
+- `shared/` is never installed as a package. Compose services bind-mount it (`./shared:/app/shared`), images `COPY` it, tests import it from the tree via `PYTHONPATH`. Editing `shared/` needs no sync and no rebuild for bind-mounted services — see [docs/REBUILD.md](docs/REBUILD.md).
+- `shared/pyproject.toml` declares shared's third-party deps but installs nothing; every consumer repeats them in its own `pyproject.toml`, enforced by `shared/tests/unit/test_shared_dependency_parity.py`.
 - External coding agents (Claude Code, Factory.ai Droid) run inside worker containers managed by `worker-manager`
 
 **Related Projects**: `/home/vlad/projects/service-template` — spec-first framework for generating microservices

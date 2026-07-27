@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -537,6 +538,8 @@ def test_cli_runs_against_generated_project_without_codegen_repository(tmp_path:
         check=False,
         capture_output=True,
         cwd=tmp_path,
+        # `shared` is never installed, so the child needs the repo tree on its path.
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
         text=True,
     )
 
@@ -579,9 +582,3 @@ def test_vendor_copy_runs_in_isolated_process_without_repository(tmp_path: Path)
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(artifact.read_text())["commit_sha"] == "c" * 40
-
-
-def test_contract_package_exposes_a_vendorable_cli_entrypoint():
-    package_config = Path(__file__).parents[2] / "pyproject.toml"
-
-    assert 'env-contract-check = "shared.contracts.env_usage:main"' in package_config.read_text()

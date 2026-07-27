@@ -26,6 +26,8 @@ idna==3.11
     # via
     #   anyio
     #   httpx
+pgvector==0.5.0
+    # via scaffolder (services/scaffolder/pyproject.toml)
 pycparser==3.0
     # via cffi
 pydantic==2.12.5

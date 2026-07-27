@@ -9,9 +9,13 @@ certifi==2025.11.12
     #   httpcore
     #   httpx
 cffi==2.0.0
-    # via cryptography
+    # via
+    #   cryptography
+    #   pynacl
 cryptography==46.0.5
-    # via telegram-bot (services/telegram_bot/pyproject.toml)
+    # via
+    #   telegram-bot (services/telegram_bot/pyproject.toml)
+    #   pyjwt
 h11==0.16.0
     # via httpcore
 hiredis==3.3.0
@@ -26,6 +30,8 @@ idna==3.11
     # via
     #   anyio
     #   httpx
+pgvector==0.5.0
+    # via telegram-bot (services/telegram_bot/pyproject.toml)
 pycparser==3.0
     # via cffi
 pydantic==2.12.5
@@ -35,6 +41,10 @@ pydantic==2.12.5
 pydantic-core==2.41.5
     # via pydantic
 pydantic-settings==2.12.0
+    # via telegram-bot (services/telegram_bot/pyproject.toml)
+pyjwt==2.13.0
+    # via telegram-bot (services/telegram_bot/pyproject.toml)
+pynacl==1.6.2
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 python-dotenv==1.2.1
     # via pydantic-settings
