@@ -12,10 +12,11 @@ import httpx
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.run_result import AllocationFailureReason, EngineeringRunResult
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
@@ -23,6 +24,7 @@ from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ..clients.story_worker_registry import get_story_worker
+from ..config.settings import get_settings
 from ..nodes.resource_allocator import resource_allocator_node
 from ._base import start_worker
 from ._events import publish_callback_event
@@ -113,13 +115,21 @@ async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDT
     if result.get("errors"):
         error_msg = "; ".join(result["errors"])
         logger.error("resource_allocation_failed", task_id=task_id, errors=result["errors"])
+        reason = result.get("allocation_failure_reason")
+        config = project.config or {}
         await api_client.patch(
             f"runs/{task_id}",
             json={
                 "status": RunStatus.FAILED.value,
                 "error_message": error_msg,
                 "result": EngineeringRunResult(
-                    engineering_status=EngineeringStatus.FAILED
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason(reason) if reason else None,
+                    allocation_required_ram_mb=config.get(
+                        "estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB
+                    )
+                    + get_settings().allocation_ram_reserve_mb,
+                    allocation_min_disk_mb=1024,
                 ).model_dump(mode="json"),
             },
         )

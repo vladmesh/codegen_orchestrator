@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationStatus
+from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.server import ServerDTO, ServerStatus
 
 from .clients.api import api_client
@@ -24,6 +25,10 @@ logger = structlog.get_logger(__name__)
 
 class AllocationError(Exception):
     """Raised when resource allocation fails."""
+
+    def __init__(self, reason: AllocationFailureReason, message: str | None = None) -> None:
+        self.reason = reason
+        super().__init__(message or f"No suitable server found: {reason.value}")
 
 
 async def ensure_project_allocations(
@@ -161,13 +166,13 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
     server. A rejection reports whether every candidate lacked capacity, fresh
     metrics, or observed free memory.
     """
-    servers = await api_client.list_servers(is_managed=True)
+    all_managed_servers = await api_client.list_servers(is_managed=True)
     settings = get_settings()
     required_ram_mb = min_ram_mb + settings.allocation_ram_reserve_mb
 
     # Filter to only active/ready/in_use servers
     active_statuses = (ServerStatus.ACTIVE, ServerStatus.READY, ServerStatus.IN_USE)
-    servers = [s for s in servers if s.status in active_statuses]
+    servers = [s for s in all_managed_servers if s.status in active_statuses]
 
     suitable: list[tuple[ServerDTO, int]] = []
     rejection_reasons: set[str] = set()
@@ -199,8 +204,14 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
         suitable.append((srv, srv.capacity_ram_mb - effective_used_ram_mb))
 
     if not suitable:
-        reason = _allocation_failure_reason(rejection_reasons)
-        raise AllocationError(f"No suitable server found: {reason}")
+        if _request_exceeds_every_server(all_managed_servers, required_ram_mb, min_disk_mb):
+            raise AllocationError(AllocationFailureReason.IMPOSSIBLE_CAPACITY)
+        # Unknown metrics cannot truthfully be described to a user as capacity.
+        if "no_fresh_metrics" in rejection_reasons:
+            raise AllocationError(AllocationFailureReason.NO_FRESH_METRICS)
+        if "insufficient_reserved_memory" in rejection_reasons:
+            raise AllocationError(AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY)
+        raise AllocationError(AllocationFailureReason.INSUFFICIENT_FREE_MEMORY)
 
     # Prefer the most remaining RAM after the conservative admission budget.
     return max(suitable, key=lambda candidate: candidate[1])[0]
@@ -229,6 +240,16 @@ def _allocation_failure_reason(rejection_reasons: set[str]) -> str:
         if reason in rejection_reasons
     ]
     return ", ".join(reasons) if reasons else "insufficient_capacity"
+
+
+def _request_exceeds_every_server(
+    servers: list[ServerDTO], required_ram_mb: int, min_disk_mb: int
+) -> bool:
+    """Return whether no managed active server could ever fit this request."""
+    return not any(
+        server.capacity_ram_mb >= required_ram_mb and server.capacity_disk_mb >= min_disk_mb
+        for server in servers
+    )
 
 
 def _holds_ram_reservation(application: dict) -> bool:

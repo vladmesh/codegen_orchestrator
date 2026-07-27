@@ -11,9 +11,16 @@ import uuid
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import DeployRunResult, QARunResult
+from shared.contracts.dto.run_result import (
+    AllocationFailureReason,
+    DeployRunResult,
+    EngineeringRunResult,
+    QARunResult,
+)
+from shared.contracts.dto.server import ServerStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -76,6 +83,14 @@ def _qa_failure_limit() -> int:
 
 def _qa_fix_limit() -> int:
     return startup.get_config().get_int("supervisor.qa_max_fix_attempts")
+
+
+def _resource_wait_timeout_minutes() -> int:
+    return startup.get_config().get_int("supervisor.resource_wait_timeout_minutes")
+
+
+def _resource_wait_metrics_freshness_seconds() -> int:
+    return startup.get_config().get_int("supervisor.resource_wait_metrics_freshness_seconds")
 
 
 def _parse_datetime(value: str | datetime) -> datetime:
@@ -195,6 +210,9 @@ async def supervise_failed_tasks(
         max_iter = task.max_iterations
         log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
 
+        if await _park_task_waiting_resources(api_client, redis_client, task, log):
+            continue
+
         if current_iter < max_iter:
             # Retry: failed → backlog → todo, bump iteration
             await api_client.transition_task(task_id, TaskStatus.BACKLOG, "supervisor")
@@ -232,6 +250,169 @@ async def supervise_failed_tasks(
             escalated += 1
 
     return {"retried": retried, "escalated": escalated}
+
+
+async def _park_task_waiting_resources(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Park only waitable capacity failures; metrics failures remain technical failures."""
+    run = await api_client.get_run(task.id)
+    result = run.result
+    if not result or not isinstance(result, EngineeringRunResult):
+        return False
+    reason = result.allocation_failure_reason
+    if reason == AllocationFailureReason.IMPOSSIBLE_CAPACITY:
+        await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
+        await _notify_admin_failure(
+            task.id,
+            str(task.project_id),
+            "allocation request exceeds every managed server's capacity",
+        )
+        log.warning("task_allocation_impossible")
+        return True
+    if reason not in {
+        AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+        AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY,
+    }:
+        return False
+
+    metadata = dict(task.failure_metadata or {})
+    metadata.update(
+        {
+            "resource_wait_started_at": datetime.now(UTC).isoformat(),
+            "allocation_required_ram_mb": result.allocation_required_ram_mb,
+            "allocation_min_disk_mb": result.allocation_min_disk_mb,
+            "allocation_failure_reason": reason.value,
+        }
+    )
+    await api_client.update_task(task.id, {"failure_metadata": metadata})
+    await api_client.transition_task(task.id, TaskStatus.WAITING_RESOURCES, "supervisor")
+    log.info("task_waiting_resources", reason=reason.value)
+    try:
+        await _request_resources_via_po(api_client, redis_client, task, log)
+    except Exception:
+        log.warning("waiting_resources_request_failed", exc_info=True)
+    return True
+
+
+async def _request_resources_via_po(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask PO to tell the owner that engineering is waiting for capacity."""
+    project = await api_client.get_project(str(task.project_id))
+    if project is None or not project.owner_id:
+        return
+    event = POSystemEvent(
+        event="task_waiting_resources",
+        text=(
+            "Engineering is waiting for server capacity. Tell the user that work will resume "
+            "automatically when capacity becomes available."
+        ),
+        task_id=task.id,
+        user_id=str(project.owner_id),
+        project_id=str(task.project_id),
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info("waiting_resources_requested")
+
+
+async def supervise_waiting_resource_tasks(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+) -> dict[str, int]:
+    """Resume capacity-parked tasks only after fresh metrics admit their request."""
+    tasks = await api_client.get_tasks_by_status(TaskStatus.WAITING_RESOURCES)
+    resumed = 0
+    expired = 0
+    for task in tasks:
+        metadata = task.failure_metadata or {}
+        started_at = _parse_datetime(
+            metadata.get("resource_wait_started_at") or task.updated_at or task.created_at
+        )
+        age_minutes = (datetime.now(UTC) - started_at).total_seconds() / 60
+        log = logger.bind(task_id=task.id, story_id=task.story_id)
+        if age_minutes >= _resource_wait_timeout_minutes():
+            await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
+            await api_client.create_task_event(
+                task.id,
+                {
+                    "event_type": "note",
+                    "details": {
+                        "reason": "resource_wait_timeout",
+                        "age_minutes": round(age_minutes, 1),
+                    },
+                    "actor": "supervisor",
+                },
+            )
+            expired += 1
+            continue
+        if not await _resources_available(api_client, metadata):
+            continue
+        await api_client.transition_task(task.id, TaskStatus.BACKLOG, "supervisor")
+        await api_client.transition_task(task.id, TaskStatus.TODO, "supervisor")
+        try:
+            await _notify_resources_resumed_via_po(api_client, redis_client, task)
+        except Exception:
+            log.warning("resources_resumed_request_failed", exc_info=True)
+        resumed += 1
+    return {"resumed": resumed, "expired": expired}
+
+
+async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -> bool:
+    """Apply the allocator's conservative admission rule to fresh server metrics."""
+    required_ram = metadata.get("allocation_required_ram_mb")
+    min_disk = metadata.get("allocation_min_disk_mb", 1024)
+    if not isinstance(required_ram, int) or not isinstance(min_disk, int):
+        return False
+    now = datetime.now(UTC)
+    for server in await api_client.get_servers():
+        if not server.is_managed or server.status not in {
+            ServerStatus.ACTIVE,
+            ServerStatus.READY,
+            ServerStatus.IN_USE,
+        }:
+            continue
+        if server.capacity_ram_mb < required_ram or server.capacity_disk_mb < min_disk:
+            continue
+        if not server.last_health_check:
+            continue
+        checked = server.last_health_check
+        if checked.tzinfo is None:
+            checked = checked.replace(tzinfo=UTC)
+        age = (now - checked).total_seconds()
+        if not 0 <= age <= _resource_wait_metrics_freshness_seconds():
+            continue
+        apps = await api_client.get_applications(server.handle)
+        reserved = sum(
+            app.reserved_ram_mb
+            for app in apps
+            if app.status not in {ApplicationStatus.NOT_DEPLOYED, ApplicationStatus.STOPPED}
+        )
+        if server.capacity_ram_mb >= max(reserved, server.used_ram_mb) + required_ram:
+            return True
+    return False
+
+
+async def _notify_resources_resumed_via_po(
+    api_client: SchedulerAPIClient, redis_client: RedisStreamClient, task
+) -> None:
+    project = await api_client.get_project(str(task.project_id))
+    if project is None or not project.owner_id:
+        return
+    event = POSystemEvent(
+        event="task_resources_resumed",
+        text="Server capacity is available again. Tell the user that engineering has resumed.",
+        task_id=task.id,
+        user_id=str(project.owner_id),
+        project_id=str(task.project_id),
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
 
 
 async def supervise_stuck_tasks(

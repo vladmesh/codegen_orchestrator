@@ -19,6 +19,15 @@ from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 
 
+class AllocationFailureReason(StrEnum):
+    """Stable admission failure classifications consumed by the scheduler."""
+
+    INSUFFICIENT_FREE_MEMORY = "insufficient_free_memory"
+    INSUFFICIENT_RESERVED_MEMORY = "insufficient_reserved_memory"
+    IMPOSSIBLE_CAPACITY = "impossible_capacity"
+    NO_FRESH_METRICS = "no_fresh_metrics"
+
+
 class EngineeringRunResult(BaseModel):
     """Result of an engineering run (written by the engineering result handler)."""
 
@@ -28,6 +37,9 @@ class EngineeringRunResult(BaseModel):
     commit_sha: str | None = None
     selected_modules: list[str] | None = None
     test_results: dict | None = None
+    allocation_failure_reason: AllocationFailureReason | None = None
+    allocation_required_ram_mb: int | None = None
+    allocation_min_disk_mb: int | None = None
 
 
 class MissingUserSecret(BaseModel):

@@ -52,6 +52,8 @@ def initialized_scheduler_config(monkeypatch):
         "supervisor.story_retry_ttl": 3600,
         "supervisor.qa_failure_max_fingerprint_attempts": 2,
         "supervisor.qa_max_fix_attempts": 2,
+        "supervisor.resource_wait_timeout_minutes": 60,
+        "supervisor.resource_wait_metrics_freshness_seconds": 300,
         "health.ram_threshold_pct": 90.0,
         "health.disk_threshold_pct": 90.0,
         "health.consecutive_failure_threshold": 3,

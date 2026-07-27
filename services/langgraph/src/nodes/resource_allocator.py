@@ -82,6 +82,7 @@ class ResourceAllocatorNode(FunctionalNode):
             )
             return {
                 "errors": state.get("errors", []) + [str(e)],
+                "allocation_failure_reason": e.reason.value,
             }
 
         except Exception as e:
