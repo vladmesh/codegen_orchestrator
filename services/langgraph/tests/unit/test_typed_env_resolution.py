@@ -158,7 +158,9 @@ async def test_private_bot_with_empty_audience_is_rejected():
 
 
 @pytest.mark.asyncio
-@patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"})
+@patch(
+    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
+)
 async def test_legacy_admin_secret_is_migrated_to_contract_audience(_decrypt):
     state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
 

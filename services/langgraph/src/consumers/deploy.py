@@ -274,7 +274,7 @@ async def _handle_lifecycle_action(
     return lifecycle_result
 
 
-async def process_deploy_job(  # noqa: PLR0911, PLR0915
+async def process_deploy_job(  # noqa: C901, PLR0911, PLR0915
     job_data: dict, redis: RedisStreamClient
 ) -> dict:
     """Process a single deploy job by running DevOps Subgraph."""

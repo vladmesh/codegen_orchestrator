@@ -159,7 +159,7 @@ async def get_project(project_id: str, *, config: RunnableConfig) -> str:
 async def set_project_secret(
     project_id: str, key: str, value: str, hint: str = "", *, config: RunnableConfig
 ) -> str:
-    """Set a secret for a project (e.g. OPENROUTER_API_KEY, ADMIN_TELEGRAM_ID).
+    """Set a secret for a project (e.g. OPENROUTER_API_KEY).
 
     Telegram bot tokens are refused here — use validate_telegram_token for those.
 

@@ -155,7 +155,9 @@ class SecretResolverNode(FunctionalNode):
         }
 
     @staticmethod
-    def _environment_overrides(project_spec: dict, config_secrets: dict, state: DevOpsState) -> dict:
+    def _environment_overrides(
+        project_spec: dict, config_secrets: dict, state: DevOpsState
+    ) -> dict:
         """Read persisted literals and retain old private bots during migration."""
         configured = (project_spec.get("config") or {}).get("env_overrides", {})
         message = state.get("env_overrides", {}) or {}

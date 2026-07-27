@@ -47,7 +47,13 @@ from shared.redis.client import RedisStreamClient
 from ..config import get_settings
 from ..database import get_async_session
 from ..dependencies import get_redis_client, is_internal_service
-from ..schemas import BotAccessRequest, MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
+from ..schemas import (
+    BotAccessRequest,
+    MergeSecretsRequest,
+    ProjectCreate,
+    ProjectRead,
+    ProjectUpdate,
+)
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
 from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy

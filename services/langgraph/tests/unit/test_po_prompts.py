@@ -1,6 +1,6 @@
 """Unit tests for PO system prompt and tool docstrings."""
 
-from src.agents.po.tools import create_story
+from src.agents.po.tools import create_story, set_project_secret
 from src.prompts.po import SYSTEM_PROMPT
 
 MAX_PROMPT_LENGTH = 14000
@@ -61,6 +61,9 @@ class TestSystemPrompt:
         assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in SYSTEM_PROMPT
         assert "set_bot_access" in SYSTEM_PROMPT
         assert "ADMIN_TELEGRAM_ID" not in SYSTEM_PROMPT
+
+    def test_secret_tool_does_not_offer_legacy_bot_access(self):
+        assert "ADMIN_TELEGRAM_ID" not in set_project_secret.description
 
     def test_access_control_options(self):
         """Prompt should list access control options."""
