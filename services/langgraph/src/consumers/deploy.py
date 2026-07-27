@@ -186,6 +186,14 @@ def _effective_env_overrides(project: ProjectDTO, message_overrides: dict | None
         selected_audience = bot_access.get("allowed_telegram_ids")
         if message_overrides[_BOT_AUDIENCE_KEY] != selected_audience:
             raise ValueError("deploy cannot override the configured bot audience")
+    secrets = (project.config or {}).get("secrets", {})
+    if (
+        isinstance(secrets, dict)
+        and _LEGACY_BOT_AUDIENCE_KEY in secrets
+        and not isinstance(bot_access, dict)
+        and _BOT_AUDIENCE_KEY in message_overrides
+    ):
+        raise ValueError("deploy cannot override the legacy private bot audience")
     return {**configured, **message_overrides}
 
 

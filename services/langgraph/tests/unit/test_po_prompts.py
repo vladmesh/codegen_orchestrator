@@ -68,15 +68,12 @@ class TestSystemPrompt:
     def test_access_control_options(self):
         """Prompt should list access control options."""
         prompt_lower = SYSTEM_PROMPT.lower()
-        # All four options should be mentioned
         assert "only me" in prompt_lower or "только мне" in prompt_lower
         assert "everyone" in prompt_lower or "всем" in prompt_lower
-        assert "admin" in prompt_lower
 
-    def test_admin_and_invitations_option_preserves_the_contract_baseline(self):
-        assert "Admin + invitations" in SYSTEM_PROMPT
-        assert "application invitation layer" in SYSTEM_PROMPT
-        assert "does not replace" in SYSTEM_PROMPT
+    def test_does_not_advertise_invitations_before_the_template_can_admit_them(self):
+        assert "Admin + invitations" not in SYSTEM_PROMPT
+        assert "invitation layer" not in SYSTEM_PROMPT
 
     def test_mentions_user_context(self):
         """Prompt should reference user context (user_id, user_name) from message prefix."""

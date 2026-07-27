@@ -609,8 +609,8 @@ class TestTaskMessageDescription:
         )
         assert "Provided Environment Variables" not in task_md
 
-    def test_invite_access_task_requires_an_additive_invitation_layer(self):
-        """Invite projects must implement additions without replacing the contract baseline."""
+    def test_invite_access_does_not_make_the_worker_promise_a_template_extension(self):
+        """The pinned template rejects invitees before application handlers run."""
         from src.nodes.developer import DeveloperNode
 
         task_md = DeveloperNode()._build_create_task(
@@ -624,10 +624,7 @@ class TestTaskMessageDescription:
             },
         )
 
-        assert "Invitation Access Layer" in task_md
-        assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in task_md
-        assert "additive" in task_md
-        assert "not replace" in task_md
+        assert "Invitation Access Layer" not in task_md
 
     def test_feature_task_includes_env_hints(self):
         """_build_feature_task should include env_hints section when hints exist."""

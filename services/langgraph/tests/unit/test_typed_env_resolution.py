@@ -221,6 +221,45 @@ async def test_malformed_legacy_admin_secret_is_rejected_before_it_can_make_a_bo
 
 
 @pytest.mark.asyncio
+@patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": ""})
+async def test_empty_legacy_admin_secret_is_rejected_before_it_can_make_a_bot_public(_decrypt):
+    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+
+    with pytest.raises(TypedSecretResolutionError, match="contains no Telegram IDs") as error:
+        await SecretResolverNode().run(state)
+
+    assert error.value.outcome == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
+@patch(
+    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
+)
+async def test_legacy_admin_secret_rejects_a_deploy_audience_override(_decrypt):
+    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+    state["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""}
+
+    with pytest.raises(TypedSecretResolutionError, match="cannot override") as error:
+        await SecretResolverNode().run(state)
+
+    assert error.value.outcome == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
+@patch(
+    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
+)
+async def test_legacy_admin_secret_rejects_a_conflicting_persisted_audience(_decrypt):
+    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+    state["project_spec"]["config"]["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""}
+
+    with pytest.raises(TypedSecretResolutionError, match="differs from legacy") as error:
+        await SecretResolverNode().run(state)
+
+    assert error.value.outcome == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
 @patch(
     "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
 )

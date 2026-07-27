@@ -128,3 +128,14 @@ def test_deploy_cannot_override_the_configured_bot_audience(
 
     with pytest.raises(ValueError, match="cannot override"):
         _effective_env_overrides(project, {"TG_BOT_ALLOWED_TELEGRAM_IDS": message_audience})
+
+
+def test_legacy_private_bot_rejects_a_deploy_audience_override() -> None:
+    project = SimpleNamespace(
+        config={
+            "secrets": {"ADMIN_TELEGRAM_ID": "encrypted"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="legacy private bot"):
+        _effective_env_overrides(project, {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""})

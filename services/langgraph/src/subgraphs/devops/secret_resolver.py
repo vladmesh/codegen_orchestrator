@@ -175,8 +175,9 @@ class SecretResolverNode(FunctionalNode):
                     "deploy cannot override the configured bot audience",
                 )
         overrides = {**configured, **message}
+        has_legacy_audience = _LEGACY_BOT_AUDIENCE_KEY in config_secrets
         legacy_audience = config_secrets.get(_LEGACY_BOT_AUDIENCE_KEY)
-        if legacy_audience:
+        if has_legacy_audience:
             if not isinstance(legacy_audience, str) or not parse_allowed_telegram_ids(
                 legacy_audience
             ):
@@ -184,11 +185,21 @@ class SecretResolverNode(FunctionalNode):
                     DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
                     "legacy private bot audience contains no Telegram IDs",
                 )
+            if _BOT_AUDIENCE_KEY in message and message[_BOT_AUDIENCE_KEY] != legacy_audience:
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "deploy cannot override the legacy private bot audience",
+                )
             if _BOT_AUDIENCE_KEY not in contract.entries:
                 raise TypedSecretResolutionError(
                     DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
                     "cannot preserve ADMIN_TELEGRAM_ID private access: the deployed "
                     "repository must declare TG_BOT_ALLOWED_TELEGRAM_IDS before redeploy",
+                )
+            if _BOT_AUDIENCE_KEY in overrides and overrides[_BOT_AUDIENCE_KEY] != legacy_audience:
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "effective bot audience differs from legacy private bot audience",
                 )
             if _BOT_AUDIENCE_KEY not in overrides:
                 overrides[_BOT_AUDIENCE_KEY] = str(legacy_audience)
