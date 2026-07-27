@@ -41,6 +41,31 @@ class TestGaveUpHandling:
         "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
     )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
+    async def test_gave_up_keeps_worker_observability(
+        self, mock_po_event, mock_notify, mock_redis, mock_api
+    ):
+        from src.consumers.engineering import _handle_worker_gave_up
+
+        await _handle_worker_gave_up(
+            task_id="eng-1",
+            project_id="proj-1",
+            planning_task_id=None,
+            story_id=None,
+            reason="blocked",
+            user_id="",
+            redis=mock_redis,
+            worker_observability={"cost_usd": 0.04, "transcript_truncated": True},
+        )
+
+        patch = mock_api.patch.call_args.kwargs["json"]
+        assert patch["cost_usd"] == 0.04
+        assert patch["transcript_truncated"] is True
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_gave_up_returns_gave_up_status(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):

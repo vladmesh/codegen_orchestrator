@@ -297,6 +297,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 reason=reason,
                 user_id=user_id,
                 redis=redis,
+                worker_observability=result.get("worker_observability"),
             )
         else:
             # FAILED (technical) or unexpected status — treat as technical failure
@@ -312,7 +313,12 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 user_id=user_id,
                 project_id=project_id or "",
             )
-            return await _fail_job(task_id, error_msg, planning_task_id)
+            return await _fail_job(
+                task_id,
+                error_msg,
+                planning_task_id,
+                result.get("worker_observability"),
+            )
 
     except Exception as e:
         logger.error(

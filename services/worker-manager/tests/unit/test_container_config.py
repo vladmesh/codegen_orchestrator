@@ -166,6 +166,20 @@ class TestWorkerContainerConfig:
         assert volumes["/tmp/codegen/workspaces/test-1/workspace"]["bind"] == "/workspace"
         assert volumes["/tmp/codegen/workspaces/test-1/workspace"]["mode"] == "rw"
 
+    def test_transcript_bind_mount_is_writable(self):
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=[],
+            transcript_host_path="/data/worker-transcripts",
+        )
+
+        assert config.to_volume_mounts()["/data/worker-transcripts"] == {
+            "bind": "/artifacts/worker-transcripts",
+            "mode": "rw",
+        }
+
     def test_no_workspace_when_path_not_set(self):
         """When workspace_host_path is None, no /workspace mount should be added."""
         config = WorkerContainerConfig(

@@ -46,6 +46,23 @@ class EngineeringSuccessParams:
     worker_observability: dict | None = None
 
 
+def _observability_patch(worker_observability: dict | None) -> dict:
+    """Return nullable run fields without weakening the strict result DTO."""
+    observability = worker_observability or {}
+    return {
+        field: observability.get(field)
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cost_usd",
+            "transcript_path",
+            "transcript_truncated",
+            "agent_profile",
+        )
+    }
+
+
 async def _update_task_status(
     api, planning_task_id: str, status: str, actor: str = "engineering-worker"
 ) -> None:
@@ -97,7 +114,12 @@ async def _write_task_event(api, planning_task_id: str, event_type: str, details
         )
 
 
-async def fail_job(task_id: str, error_msg: str, planning_task_id: str | None = None) -> dict:
+async def fail_job(
+    task_id: str,
+    error_msg: str,
+    planning_task_id: str | None = None,
+    worker_observability: dict | None = None,
+) -> dict:
     """Mark a run as failed and optionally update planning task."""
     await api_client.patch(
         f"runs/{task_id}",
@@ -107,6 +129,7 @@ async def fail_job(task_id: str, error_msg: str, planning_task_id: str | None = 
             "result": EngineeringRunResult(engineering_status=EngineeringStatus.FAILED).model_dump(
                 mode="json"
             ),
+            **_observability_patch(worker_observability),
         },
     )
     if planning_task_id:
@@ -122,6 +145,7 @@ async def handle_worker_gave_up(
     reason: str,
     user_id: str,
     redis: RedisStreamClient,
+    worker_observability: dict | None = None,
 ) -> dict:
     """Handle worker gave_up: task/story → WHR, admin notified, user informed.
 
@@ -144,6 +168,7 @@ async def handle_worker_gave_up(
             "result": EngineeringRunResult(engineering_status=EngineeringStatus.GAVE_UP).model_dump(
                 mode="json"
             ),
+            **_observability_patch(worker_observability),
         },
     )
 
@@ -233,7 +258,6 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
     planning_task_id = params.planning_task_id
     story_id = params.story_id
     deploy_fix_attempt = params.deploy_fix_attempt
-    worker_observability = params.worker_observability or {}
     project_id = str(project.id)
 
     if not result.get("commit_sha"):
@@ -246,6 +270,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                 "result": EngineeringRunResult(
                     engineering_status=EngineeringStatus.FAILED
                 ).model_dump(mode="json"),
+                **_observability_patch(params.worker_observability),
             },
         )
         await publish_callback_event(
@@ -297,14 +322,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
         json={
             "status": RunStatus.COMPLETED.value,
             "result": run_result.model_dump(mode="json"),
-            "input_tokens": worker_observability.get("input_tokens"),
-            "output_tokens": worker_observability.get("output_tokens"),
-            "total_tokens": worker_observability.get("total_tokens"),
-            "cost_usd": worker_observability.get("cost_usd"),
-            "transcript_path": worker_observability.get("transcript_path"),
-            "transcript_truncated": worker_observability.get("transcript_truncated"),
-            "agent_profile": worker_observability.get("agent_profile"),
-            "iteration": 1,
+            **_observability_patch(params.worker_observability),
         },
     )
 

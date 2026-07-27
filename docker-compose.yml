@@ -270,9 +270,16 @@ services:
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
       WORKER_MANAGER_URL: http://worker-manager:8000
+      # This is both the Docker-host source path and the manager-visible path.
+      # Keep them identical because worker containers are created through the
+      # host Docker socket.
+      WORKER_TRANSCRIPT_STORAGE_PATH: ${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}
+      WORKER_TRANSCRIPT_RETENTION_DAYS: ${WORKER_TRANSCRIPT_RETENTION_DAYS:-30}
+      WORKER_TRANSCRIPT_MAX_BYTES: ${WORKER_TRANSCRIPT_MAX_BYTES:-5242880}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
+      - ${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}:${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}
       - ${HOST_CLAUDE_DIR:-/home/user/.claude}:/host-claude:ro
       - ${HOST_CODEX_HOME:-./secrets/codex-unconfigured}:/host-codex:ro
     depends_on:

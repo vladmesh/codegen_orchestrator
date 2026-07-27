@@ -7,9 +7,12 @@ from pathlib import Path
 import re
 from typing import Any
 
+import structlog
+
 from shared.diagnostics import redact_diagnostic
 
 _SECRET_NAME = re.compile(r"(?:key|secret|token|password|credential|authorization)", re.I)
+logger = structlog.get_logger(__name__)
 
 
 def redact_transcript(text: str, environment: dict[str, str]) -> str:
@@ -29,7 +32,15 @@ def extract_effort_metrics(stdout: str, stderr: str, agent_type: str) -> dict[st
     if agent_type == "codex":
         return {}
     payloads: list[dict[str, Any]] = []
-    for line in stdout.splitlines() or [stdout]:
+    # Claude --output-format json emits an indented JSON document. Parse it as
+    # a whole first; line-by-line parsing is only for JSONL-style adapters.
+    try:
+        value = json.loads(stdout)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        payloads.append(value)
+    for line in stdout.splitlines():
         try:
             value = json.loads(line)
         except json.JSONDecodeError:
@@ -78,11 +89,16 @@ def save_transcript(
         truncated = len(encoded) > max_bytes
         if truncated:
             marker = b"\n\n[transcript truncated at configured limit]\n"
-            encoded = encoded[: max(0, max_bytes - len(marker))] + marker
+            prefix_limit = max(0, max_bytes - len(marker))
+            # Do not split a UTF-8 code point when retaining the prefix.
+            encoded = (
+                encoded[:prefix_limit].decode("utf-8", errors="ignore").encode("utf-8") + marker
+            )
         path = Path(directory) / worker_id
         path.mkdir(parents=True, exist_ok=True)
         artifact = path / f"{request_id}.log"
         artifact.write_bytes(encoded)
         return str(artifact), truncated
-    except OSError:
+    except OSError as exc:
+        logger.warning("transcript_save_failed", error_type=type(exc).__name__)
         return None, False

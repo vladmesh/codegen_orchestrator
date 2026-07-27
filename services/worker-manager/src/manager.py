@@ -474,7 +474,11 @@ class WorkerManager:
                 workspace_path=str(ws_path),
             )
 
-            await self.docker.exec_in_container(container_id, "chown -R worker:worker /workspace", user="root")
+            await self.docker.exec_in_container(
+                container_id,
+                "chown -R worker:worker /workspace /artifacts/worker-transcripts",
+                user="root",
+            )
 
             if repo_id:
                 await self.redis.hset(f"worker:meta:{worker_id}", "repo_id", repo_id)

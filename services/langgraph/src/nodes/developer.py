@@ -6,6 +6,8 @@ Worker-manager mounts it by repo_id. For feature/fix actions on existing
 projects, works directly with the existing repository.
 """
 
+import json
+
 from langchain_core.messages import AIMessage
 import structlog
 
@@ -351,6 +353,9 @@ class DeveloperNode(FunctionalNode):
                     "engineering_status": EngineeringStatus.FAILED,
                     "errors": state.get("errors", [])
                     + ["Worker reported success but no commit was made"],
+                    "worker_observability": DeveloperNode._worker_observability(
+                        worker_result, state.get("project_spec") or {}
+                    ),
                 }
 
             logger.info(
@@ -431,12 +436,33 @@ class DeveloperNode(FunctionalNode):
                 "agent_profile": {
                     "agent_type": agent_type,
                     "provider": config.get("llm_provider") or provider_by_agent.get(agent_type),
-                    "model": config.get("model_identifier") or config.get("model_name"),
+                    "model": DeveloperNode._reported_model(worker_result.logs_tail)
+                    or config.get("model_identifier")
+                    or config.get("model_name"),
                     "adapter": "worker-wrapper",
                 },
             }.items()
             if value is not None
         }
+
+    @staticmethod
+    def _reported_model(agent_stdout: str | None) -> str | None:
+        """Read the model identifier from a Claude JSON result when it is present."""
+        if not agent_stdout:
+            return None
+        try:
+            payload = json.loads(agent_stdout.split("\n--- stderr ---\n", maxsplit=1)[0])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        model = payload.get("model")
+        if isinstance(model, str):
+            return model
+        model_usage = payload.get("modelUsage")
+        if isinstance(model_usage, dict):
+            return next((name for name in model_usage if isinstance(name, str)), None)
+        return None
 
     # ------------------------------------------------------------------
     # Thin delegations (keeps tests calling node._method_name working)
