@@ -43,6 +43,7 @@ class EngineeringSuccessParams:
     planning_task_id: str | None = None
     story_id: str | None = None
     deploy_fix_attempt: int = 0
+    worker_observability: dict | None = None
 
 
 async def _update_task_status(
@@ -232,6 +233,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
     planning_task_id = params.planning_task_id
     story_id = params.story_id
     deploy_fix_attempt = params.deploy_fix_attempt
+    worker_observability = params.worker_observability or {}
     project_id = str(project.id)
 
     if not result.get("commit_sha"):
@@ -295,6 +297,14 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
         json={
             "status": RunStatus.COMPLETED.value,
             "result": run_result.model_dump(mode="json"),
+            "input_tokens": worker_observability.get("input_tokens"),
+            "output_tokens": worker_observability.get("output_tokens"),
+            "total_tokens": worker_observability.get("total_tokens"),
+            "cost_usd": worker_observability.get("cost_usd"),
+            "transcript_path": worker_observability.get("transcript_path"),
+            "transcript_truncated": worker_observability.get("transcript_truncated"),
+            "agent_profile": worker_observability.get("agent_profile"),
+            "iteration": 1,
         },
     )
 

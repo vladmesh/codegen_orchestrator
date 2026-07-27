@@ -371,6 +371,9 @@ class DeveloperNode(FunctionalNode):
                 "commit_sha": worker_result.commit_sha,
                 "worker_id": worker_result.worker_id,
                 "worker_report": worker_result.worker_report,
+                "worker_observability": DeveloperNode._worker_observability(
+                    worker_result, state.get("project_spec") or {}
+                ),
             }
 
         if worker_result.gave_up_reason:
@@ -385,6 +388,9 @@ class DeveloperNode(FunctionalNode):
                 "gave_up_reason": worker_result.gave_up_reason,
                 "worker_id": worker_result.worker_id,
                 "worker_report": worker_result.worker_report,
+                "worker_observability": DeveloperNode._worker_observability(
+                    worker_result, state.get("project_spec") or {}
+                ),
                 "errors": state.get("errors", [])
                 + [f"Worker gave up: {worker_result.gave_up_reason}"],
             }
@@ -402,6 +408,34 @@ class DeveloperNode(FunctionalNode):
             "messages": [AIMessage(content=f"Development failed:\n{error_msg}")],
             "engineering_status": EngineeringStatus.FAILED,
             "errors": state.get("errors", []) + [f"Development failed: {error_msg}"],
+            "worker_observability": DeveloperNode._worker_observability(
+                worker_result, state.get("project_spec") or {}
+            ),
+        }
+
+    @staticmethod
+    def _worker_observability(worker_result, project_spec: dict) -> dict:
+        """Keep provider metrics separate from the strict engineering result."""
+        config = project_spec.get("config") or {}
+        agent_type = str(config.get("agent_type", "claude"))
+        provider_by_agent = {"claude": "anthropic", "codex": "openai", "factory": "factory"}
+        return {
+            key: value
+            for key, value in {
+                "input_tokens": worker_result.input_tokens,
+                "output_tokens": worker_result.output_tokens,
+                "total_tokens": worker_result.total_tokens,
+                "cost_usd": worker_result.cost_usd,
+                "transcript_path": worker_result.transcript_path,
+                "transcript_truncated": worker_result.transcript_truncated,
+                "agent_profile": {
+                    "agent_type": agent_type,
+                    "provider": config.get("llm_provider") or provider_by_agent.get(agent_type),
+                    "model": config.get("model_identifier") or config.get("model_name"),
+                    "adapter": "worker-wrapper",
+                },
+            }.items()
+            if value is not None
         }
 
     # ------------------------------------------------------------------

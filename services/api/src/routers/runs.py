@@ -1,5 +1,6 @@
 """Runs router (execution layer)."""
 
+from datetime import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -130,6 +131,9 @@ async def list_runs(
     # alias keeps the public query param name; a parameter literally named
     # `status` would shadow the fastapi.status module used below
     run_status: str | None = Query(None, alias="status"),
+    user_id: int | None = None,
+    started_after: datetime | None = None,
+    started_before: datetime | None = None,
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
@@ -154,6 +158,12 @@ async def list_runs(
         query = query.where(Run.type == run_type)
     if run_status:
         query = query.where(Run.status == run_status)
+    if user_id is not None and _is_internal:
+        query = query.where(Run.user_id == user_id)
+    if started_after:
+        query = query.where(Run.started_at >= started_after)
+    if started_before:
+        query = query.where(Run.started_at <= started_before)
 
     # If user provided, filter by ownership
     if x_telegram_id:

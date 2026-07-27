@@ -44,6 +44,33 @@ def _project():
 
 class TestHandleEngineeringSuccess:
     @pytest.mark.asyncio
+    async def test_missing_effort_metrics_are_saved_as_absent(self, mock_redis, mock_api):
+        """A worker without provider usage must complete rather than invent zeroes."""
+        from src.consumers.engineering import _handle_engineering_success
+
+        await _handle_engineering_success(
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": "a" * 40},
+                task_id="eng-no-usage",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=True,
+                worker_observability={"agent_profile": {"adapter": "worker-wrapper"}},
+            )
+        )
+
+        run_patch = next(
+            call.kwargs["json"]
+            for call in mock_api.patch.call_args_list
+            if call.args[0] == "runs/eng-no-usage"
+        )
+        assert run_patch["input_tokens"] is None
+        assert run_patch["output_tokens"] is None
+        assert run_patch["total_tokens"] is None
+        assert run_patch["cost_usd"] is None
+
+    @pytest.mark.asyncio
     async def test_no_commit_sha_fails_fast(self, mock_redis, mock_api):
         """commit_sha=None must return failed, not proceed to CI/deploy."""
         from src.consumers.engineering import _handle_engineering_success

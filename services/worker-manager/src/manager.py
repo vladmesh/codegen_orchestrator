@@ -1,4 +1,5 @@
 import base64
+from pathlib import Path
 import json
 import os
 from datetime import datetime
@@ -409,7 +410,10 @@ class WorkerManager:
                 host_claude_dir=host_claude_dir,
                 host_codex_home=host_codex_home,
                 api_key=api_key,
+                transcript_host_path=settings.WORKER_TRANSCRIPT_STORAGE_PATH,
+                transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
             )
+            self._prune_transcripts()
 
             if not repo_id:
                 raise RuntimeError(
@@ -543,3 +547,15 @@ class WorkerManager:
                     f"worker:meta:{worker_id}",
                 )
             raise
+
+    def _prune_transcripts(self) -> None:
+        """Delete expired disk artifacts without affecting worker creation."""
+        try:
+            root = Path(settings.WORKER_TRANSCRIPT_STORAGE_PATH)
+            root.mkdir(parents=True, exist_ok=True)
+            cutoff = datetime.now().timestamp() - settings.WORKER_TRANSCRIPT_RETENTION_DAYS * 86400
+            for artifact in root.rglob("*.log"):
+                if artifact.stat().st_mtime < cutoff:
+                    artifact.unlink()
+        except OSError as exc:
+            logger.warning("transcript_retention_cleanup_failed", error=str(exc))

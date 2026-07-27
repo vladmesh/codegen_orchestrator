@@ -237,6 +237,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "human_approval_reason": None,
             "branch": branch,
             "worker_report": None,
+            "worker_observability": None,
             "gave_up_reason": None,
             "errors": [],
         }
@@ -282,6 +283,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     planning_task_id=planning_task_id,
                     story_id=story_id,
                     deploy_fix_attempt=deploy_fix_attempt,
+                    worker_observability=result.get("worker_observability"),
                 )
             )
 

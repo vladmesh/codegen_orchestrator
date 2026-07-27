@@ -20,5 +20,7 @@ class WorkerWrapperConfig(BaseSettings):
     # normally forwards its own value. Sized for live LLM agents, not noop.
     subprocess_timeout_seconds: int = 900
     http_server_port: int = 9090
+    transcript_dir: str = "/artifacts/worker-transcripts"
+    transcript_max_bytes: int = 5 * 1024 * 1024
 
     model_config = {"env_prefix": "WORKER_"}
