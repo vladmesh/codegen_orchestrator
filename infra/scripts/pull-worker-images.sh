@@ -38,9 +38,6 @@ for image in "${IMAGES[@]}"; do
     docker tag "${remote}" "${local}"
 done
 
-echo "Cleaning cached worker:* images..."
-docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
-
 echo "Worker images ready:"
 for image in "${IMAGES[@]}"; do
     docker images --format "  {{.Repository}}:{{.Tag}} ({{.Size}})" "${image}:latest"

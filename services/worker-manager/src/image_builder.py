@@ -106,7 +106,12 @@ class ImageBuilder:
     Usage:
         builder = ImageBuilder(base_image="worker-base:latest")
         dockerfile = builder.generate_dockerfile(capabilities=["GIT", "CURL"])
-        tag = builder.get_image_tag(capabilities=["GIT", "CURL"], prefix="worker")
+        tag = builder.get_image_tag(
+            capabilities=["GIT", "CURL"],
+            prefix="worker",
+            agent_type="claude",
+            source_hash="a1b2c3d4e5f6a1b2",
+        )
     """
 
     def __init__(self, base_image: str):

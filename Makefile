@@ -181,7 +181,7 @@ check-worker-images:
 
 # Check and rebuild on drift. This is what other targets call.
 ensure-worker-images:
-	@if $(MAKE) --no-print-directory check-worker-images; then \
+	@if $(MAKE) --no-print-directory check-worker-images 2>/dev/null; then \
 	  :; \
 	else \
 	  $(MAKE) rebuild-worker-images; \

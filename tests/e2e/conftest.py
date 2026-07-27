@@ -1,3 +1,4 @@
+import hashlib
 import os
 
 import pytest
@@ -29,7 +30,33 @@ async def redis_client():
     await client.close()
 
 
-def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, packages_path: str):
+_SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules", ".venv"}
+
+
+def _content_hash(*paths: str) -> str:
+    """SHA256 of the sources copied into the worker build context."""
+    h = hashlib.sha256()
+    for path in sorted(paths):
+        for root, dirs, files in os.walk(path):
+            dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
+            for name in sorted(files):
+                if name.endswith(".pyc"):
+                    continue
+                fp = os.path.join(root, name)
+                h.update(os.path.relpath(fp, path).encode())
+                with open(fp, "rb") as fh:
+                    h.update(fh.read())
+    return h.hexdigest()[:16]
+
+
+def _build_base_image(
+    client,
+    dockerfile_path: str,
+    tag: str,
+    shared_path: str,
+    packages_path: str,
+    source_hash: str,
+):
     """Build a worker base image with given Dockerfile."""
     import os
     import shutil
@@ -53,6 +80,7 @@ def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, 
                 rm=True,
                 nocache=True,  # Force rebuild to pick up wrapper.py changes
                 pull=False,  # Don't pull base images - use local ones (e.g. worker-base-common)
+                buildargs={"SOURCE_HASH": source_hash},
             )
             for chunk in build_logs:
                 if "stream" in chunk:
@@ -119,9 +147,13 @@ def setup_worker_base_images():
         ),
     ]
 
+    # One hash for all three images: worker-manager reads the label off the base image to
+    # build the runtime worker tag, so common and its derivatives must agree within a run.
+    source_hash = _content_hash(shared_path, packages_path)
+
     try:
         for dockerfile_path, tag in images_to_build:
-            _build_base_image(client, dockerfile_path, tag, shared_path, packages_path)
+            _build_base_image(client, dockerfile_path, tag, shared_path, packages_path, source_hash)
     finally:
         client.close()
 

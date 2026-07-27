@@ -132,20 +132,8 @@ If API is not healthy, STOP.
 **Worker image staleness check**:
 
 ```bash
-CURRENT_HASH=$(find shared packages/worker-wrapper \
-  services/worker-manager/images -type f \
-  -not -path '*/__pycache__/*' -not -name '*.pyc' \
-  | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
-
-STORED_HASH=$(docker inspect worker-base-common:latest \
-  --format '{{index .Config.Labels "org.codegen.worker_source_hash"}}' 2>/dev/null || echo "none")
-
-if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
-  echo "Worker images stale — rebuilding..."
-  make rebuild-worker-images
-else
-  echo "Worker images up to date"
-fi
+# Checks all four base images and rebuilds only on drift.
+make ensure-worker-images
 ```
 
 **Pre-flight cleanup** (run for every test):
