@@ -259,18 +259,27 @@ async def _park_task_waiting_resources(
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
     """Park only waitable capacity failures; metrics failures remain technical failures."""
-    run = await api_client.get_run(task.id)
+    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
+    if not runs:
+        return False
+    run = runs[0]
     result = run.result
     if not result or not isinstance(result, EngineeringRunResult):
         return False
     reason = result.allocation_failure_reason
     if reason == AllocationFailureReason.IMPOSSIBLE_CAPACITY:
         await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
+        if task.story_id:
+            await api_client.transition_story(task.story_id, StoryStatus.WAITING_HUMAN_REVIEW)
         await _notify_admin_failure(
             task.id,
             str(task.project_id),
             "allocation request exceeds every managed server's capacity",
         )
+        try:
+            await _request_impossible_capacity_via_po(api_client, redis_client, task, log)
+        except Exception:
+            log.warning("impossible_capacity_request_failed", exc_info=True)
         log.warning("task_allocation_impossible")
         return True
     if reason not in {
@@ -296,6 +305,30 @@ async def _park_task_waiting_resources(
     except Exception:
         log.warning("waiting_resources_request_failed", exc_info=True)
     return True
+
+
+async def _request_impossible_capacity_via_po(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask PO to explain that the requested deployment cannot fit managed capacity."""
+    project = await api_client.get_project(str(task.project_id))
+    if project is None or not project.owner_id:
+        return
+    event = POSystemEvent(
+        event="task_impossible_capacity",
+        text=(
+            "Engineering cannot place this project on any managed server. Tell the user that "
+            "the request needs operator review."
+        ),
+        task_id=task.id,
+        user_id=str(project.owner_id),
+        project_id=str(task.project_id),
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info("impossible_capacity_requested")
 
 
 async def _request_resources_via_po(
@@ -350,6 +383,11 @@ async def supervise_waiting_resource_tasks(
                     "actor": "supervisor",
                 },
             )
+            await _notify_admin_failure(
+                task.id,
+                str(task.project_id),
+                "resource wait timed out",
+            )
             expired += 1
             continue
         if not await _resources_available(api_client, metadata):
@@ -367,7 +405,7 @@ async def supervise_waiting_resource_tasks(
 async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -> bool:
     """Apply the allocator's conservative admission rule to fresh server metrics."""
     required_ram = metadata.get("allocation_required_ram_mb")
-    min_disk = metadata.get("allocation_min_disk_mb", 1024)
+    min_disk = metadata.get("allocation_min_disk_mb")
     if not isinstance(required_ram, int) or not isinstance(min_disk, int):
         return False
     now = datetime.now(UTC)

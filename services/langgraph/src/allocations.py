@@ -22,6 +22,8 @@ from .schemas.api_types import AllocationInfo
 
 logger = structlog.get_logger(__name__)
 
+DEFAULT_ALLOCATION_MIN_DISK_MB = 1024
+
 
 class AllocationError(Exception):
     """Raised when resource allocation fails."""
@@ -37,7 +39,7 @@ async def ensure_project_allocations(
     service_name: str,
     modules: list[str] | None = None,
     min_ram_mb: int = DEFAULT_APPLICATION_RESERVED_RAM_MB,
-    min_disk_mb: int = 1024,
+    min_disk_mb: int = DEFAULT_ALLOCATION_MIN_DISK_MB,
 ) -> dict[str, dict]:
     """Ensure a project has resource allocations, creating them if needed.
 
@@ -168,7 +170,7 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
     """
     all_managed_servers = await api_client.list_servers(is_managed=True)
     settings = get_settings()
-    required_ram_mb = min_ram_mb + settings.allocation_ram_reserve_mb
+    required_ram_mb = allocation_required_ram_mb(min_ram_mb)
 
     # Filter to only active/ready/in_use servers
     active_statuses = (ServerStatus.ACTIVE, ServerStatus.READY, ServerStatus.IN_USE)
@@ -227,19 +229,9 @@ def _has_fresh_metrics(last_health_check: datetime | None, freshness_seconds: in
     return 0 <= age_seconds <= freshness_seconds
 
 
-def _allocation_failure_reason(rejection_reasons: set[str]) -> str:
-    """Return all stable, actionable causes for an empty candidate set."""
-    reasons = [
-        reason
-        for reason in (
-            "no_fresh_metrics",
-            "insufficient_free_memory",
-            "insufficient_reserved_memory",
-            "insufficient_capacity",
-        )
-        if reason in rejection_reasons
-    ]
-    return ", ".join(reasons) if reasons else "insufficient_capacity"
+def allocation_required_ram_mb(min_ram_mb: int) -> int:
+    """Return the allocator's full RAM admission budget for a project request."""
+    return min_ram_mb + get_settings().allocation_ram_reserve_mb
 
 
 def _request_exceeds_every_server(

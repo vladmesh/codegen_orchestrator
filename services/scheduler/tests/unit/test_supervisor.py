@@ -346,14 +346,16 @@ class TestSuperviseFailedTasks:
 
         task = _make_task(id="task-1", story_id="story-1", status="failed")
         api_client.get_tasks_by_status.return_value = [task]
-        api_client.get_run.return_value = SimpleNamespace(
-            result=EngineeringRunResult(
-                engineering_status=EngineeringStatus.FAILED,
-                allocation_failure_reason=AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
-                allocation_required_ram_mb=768,
-                allocation_min_disk_mb=1024,
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+                    allocation_required_ram_mb=768,
+                    allocation_min_disk_mb=1024,
+                )
             )
-        )
+        ]
         api_client.get_project.return_value = SimpleNamespace(owner_id=42)
 
         result = await supervise_failed_tasks(api_client, redis_client)
@@ -364,6 +366,56 @@ class TestSuperviseFailedTasks:
         )
         api_client.update_task.assert_awaited_once()
         redis_client.publish_flat.assert_awaited_once()
+        api_client.list_runs.assert_awaited_once_with(task_id="task-1", run_type="engineering")
+        api_client.get_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_engineering_run_keeps_technical_retry_path(
+        self, api_client, redis_client
+    ):
+        """A failed task without a run must still be retried instead of aborting the tick."""
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _make_task(id="task-1", story_id="story-1", status="failed", current_iteration=1)
+        ]
+        api_client.list_runs.return_value = []
+
+        result = await supervise_failed_tasks(api_client, redis_client)
+
+        assert result == {"retried": 1, "escalated": 0}
+        assert [call.args[1] for call in api_client.transition_task.call_args_list] == [
+            "backlog",
+            "todo",
+        ]
+        api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 2})
+
+    @pytest.mark.asyncio
+    async def test_no_fresh_metrics_keeps_technical_retry_path(self, api_client, redis_client):
+        """Observability failures are never presented as user-visible capacity waits."""
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run_result import (
+            AllocationFailureReason,
+            EngineeringRunResult,
+        )
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _make_task(id="task-1", story_id="story-1", status="failed")
+        ]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason.NO_FRESH_METRICS,
+                )
+            )
+        ]
+
+        result = await supervise_failed_tasks(api_client, redis_client)
+
+        assert result == {"retried": 1, "escalated": 0}
+        redis_client.publish_flat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_impossible_capacity_escalates_without_retry(self, api_client, redis_client):
@@ -377,12 +429,15 @@ class TestSuperviseFailedTasks:
         api_client.get_tasks_by_status.return_value = [
             _make_task(id="task-1", story_id="story-1", status="failed")
         ]
-        api_client.get_run.return_value = SimpleNamespace(
-            result=EngineeringRunResult(
-                engineering_status=EngineeringStatus.FAILED,
-                allocation_failure_reason=AllocationFailureReason.IMPOSSIBLE_CAPACITY,
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason.IMPOSSIBLE_CAPACITY,
+                )
             )
-        )
+        ]
+        api_client.get_project.return_value = SimpleNamespace(owner_id=42)
 
         with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_failed_tasks(api_client, redis_client)
@@ -391,6 +446,8 @@ class TestSuperviseFailedTasks:
         api_client.transition_task.assert_awaited_once_with(
             "task-1", "waiting_human_review", "supervisor"
         )
+        api_client.transition_story.assert_awaited_once_with("story-1", "waiting_human_review")
+        redis_client.publish_flat.assert_awaited_once()
 
 
 class TestSuperviseWaitingResourceTasks:
@@ -439,13 +496,17 @@ class TestSuperviseWaitingResourceTasks:
         )
         api_client.get_tasks_by_status.return_value = [task]
 
-        result = await supervise_waiting_resource_tasks(api_client, redis_client)
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_waiting_resource_tasks(api_client, redis_client)
 
         assert result == {"resumed": 0, "expired": 1}
         api_client.transition_task.assert_awaited_once_with(
             "task-1", "waiting_human_review", "supervisor"
         )
         api_client.create_task_event.assert_awaited_once()
+        notify.assert_awaited_once()
 
 
 class TestSuperviseStuckTasks:

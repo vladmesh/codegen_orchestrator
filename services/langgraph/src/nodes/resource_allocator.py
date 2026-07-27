@@ -2,9 +2,12 @@
 
 import structlog
 
-from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB
-
-from ..allocations import AllocationError, ensure_project_allocations
+from ..allocations import (
+    DEFAULT_ALLOCATION_MIN_DISK_MB,
+    AllocationError,
+    allocation_required_ram_mb,
+    ensure_project_allocations,
+)
 from ..clients.api import api_client
 from ..runtime_identity import project_spec_runtime_slug
 from .base import FunctionalNode
@@ -45,7 +48,7 @@ class ResourceAllocatorNode(FunctionalNode):
         # Get config from project spec
         config = project_spec.get("config", {})
         modules = config.get("modules", ["backend"])
-        min_ram_mb = config.get("estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB)
+        min_ram_mb = config["estimated_ram_mb"]
         service_name = project_spec_runtime_slug(project_spec)
 
         # Get repo_id from primary repository
@@ -72,7 +75,11 @@ class ResourceAllocatorNode(FunctionalNode):
                 modules=modules,
                 min_ram_mb=min_ram_mb,
             )
-            return {"allocated_resources": allocated}
+            return {
+                "allocated_resources": allocated,
+                "allocation_required_ram_mb": allocation_required_ram_mb(min_ram_mb),
+                "allocation_min_disk_mb": DEFAULT_ALLOCATION_MIN_DISK_MB,
+            }
 
         except AllocationError as e:
             logger.error(
@@ -83,6 +90,8 @@ class ResourceAllocatorNode(FunctionalNode):
             return {
                 "errors": state.get("errors", []) + [str(e)],
                 "allocation_failure_reason": e.reason.value,
+                "allocation_required_ram_mb": allocation_required_ram_mb(min_ram_mb),
+                "allocation_min_disk_mb": DEFAULT_ALLOCATION_MIN_DISK_MB,
             }
 
         except Exception as e:
