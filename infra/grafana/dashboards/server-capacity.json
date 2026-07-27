@@ -1,0 +1,60 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "decmbytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [{ "format": "time_series", "rawSql": "SELECT recorded_at AS time, server_handle AS metric, ((metrics->>'ram_total_bytes')::numeric - (metrics->>'ram_used_bytes')::numeric) / 1024 / 1024 AS value FROM server_metrics_history WHERE $__timeFilter(recorded_at) AND ('$server' = 'All' OR server_handle IN (${server:sqlstring})) ORDER BY 1, 2", "refId": "A" }],
+      "title": "Free memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "decmbytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "targets": [{ "format": "time_series", "rawSql": "SELECT recorded_at AS time, server_handle AS metric, ((metrics->>'disk_total_bytes')::numeric - (metrics->>'disk_used_bytes')::numeric) / 1024 / 1024 AS value FROM server_metrics_history WHERE $__timeFilter(recorded_at) AND ('$server' = 'All' OR server_handle IN (${server:sqlstring})) ORDER BY 1, 2", "refId": "A" }],
+      "title": "Free disk",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "targets": [{ "format": "time_series", "rawSql": "SELECT recorded_at AS time, server_handle || ' cpu' AS metric, (metrics->>'cpu_usage_pct')::numeric AS value FROM server_metrics_history WHERE $__timeFilter(recorded_at) AND ('$server' = 'All' OR server_handle IN (${server:sqlstring})) UNION ALL SELECT recorded_at AS time, server_handle || ' load-1m' AS metric, (metrics->>'load_avg_1m')::numeric AS value FROM server_metrics_history WHERE $__timeFilter(recorded_at) AND ('$server' = 'All' OR server_handle IN (${server:sqlstring})) ORDER BY 1, 2", "refId": "A" }],
+      "title": "CPU and load",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "min": 0 }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "targets": [{ "format": "time_series", "rawSql": "SELECT recorded_at AS time, server_handle AS metric, json_array_length(COALESCE(metrics->'containers', '[]'::json)) AS value FROM server_metrics_history WHERE $__timeFilter(recorded_at) AND ('$server' = 'All' OR server_handle IN (${server:sqlstring})) ORDER BY 1, 2", "refId": "A" }],
+      "title": "Containers",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 180 }] } }, "overrides": [] },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 16 },
+      "id": 5,
+      "options": { "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "format": "table", "rawSql": "SELECT server_handle AS metric, EXTRACT(EPOCH FROM now() - max(recorded_at)) AS value FROM server_metrics_history WHERE ('$server' = 'All' OR server_handle IN (${server:sqlstring})) GROUP BY server_handle ORDER BY server_handle", "refId": "A" }],
+      "title": "Metrics freshness",
+      "type": "stat"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["observability", "servers"],
+  "templating": { "list": [{ "allValue": "All", "current": { "selected": true, "text": "All", "value": "All" }, "datasource": { "type": "postgres", "uid": "postgres" }, "includeAll": true, "multi": true, "name": "server", "query": "SELECT DISTINCT server_handle FROM server_metrics_history WHERE $__timeFilter(recorded_at) ORDER BY 1", "refresh": 2, "type": "query" }] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "",
+  "title": "Server capacity",
+  "uid": "server-capacity",
+  "version": 1
+}
