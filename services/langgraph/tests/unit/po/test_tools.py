@@ -277,10 +277,8 @@ class TestSetProjectSecret:
         assert headers.get("X-Telegram-ID") == "77777"
 
     @pytest.mark.asyncio
-    async def test_hint_included_in_payload(self, mock_api_client):
-        """When hint is provided, it should be sent in env_hints."""
-        mock_api_client.post.return_value = _make_response({"keys": ["ADMIN_TELEGRAM_ID"]})
-
+    async def test_legacy_bot_access_secret_is_refused(self, mock_api_client):
+        """The PO cannot create a bot audience through the legacy secret path."""
         result = await set_project_secret.ainvoke(
             {
                 "project_id": "abc",
@@ -291,9 +289,9 @@ class TestSetProjectSecret:
             config=_make_config("user-42"),
         )
 
-        assert "Secret" in result
-        payload = mock_api_client.post.call_args[1]["json"]
-        assert payload["env_hints"]["ADMIN_TELEGRAM_ID"] == "Telegram ID of the bot admin"
+        assert result.startswith("Error:")
+        assert "set_bot_access" in result
+        mock_api_client.post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_hint_no_env_hints(self, mock_api_client):

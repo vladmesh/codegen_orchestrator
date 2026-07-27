@@ -162,6 +162,8 @@ async def set_project_secret(
     """Set a secret for a project (e.g. OPENROUTER_API_KEY).
 
     Telegram bot tokens are refused here — use validate_telegram_token for those.
+    Telegram bot audiences are also refused here — use set_bot_access so the
+    template contract records the selected access mode.
 
     Args:
         project_id: Project ID.
@@ -173,6 +175,9 @@ async def set_project_secret(
     """
     api = _get_api()
     headers = _user_headers(config)
+
+    if key == "ADMIN_TELEGRAM_ID":
+        return "Error: bot access is managed through set_bot_access."
 
     payload: dict = {"secrets": {key: value}}
     if hint:

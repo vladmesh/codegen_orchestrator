@@ -57,14 +57,16 @@ async def test_patch_project_rejects_slug_update():
 
 @pytest.mark.asyncio
 async def test_patch_project_preserves_selected_private_bot_audience():
-    """Generic config PATCH cannot erase the deploy-time audience selection."""
+    """Generic config PATCH locks the row before preserving the audience selection."""
     project = _make_project()
     project.config = {
         "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
         "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
     }
     session = AsyncMock()
-    session.get = AsyncMock(return_value=project)
+    locked_project = MagicMock()
+    locked_project.scalar_one_or_none.return_value = project
+    session.execute = AsyncMock(return_value=locked_project)
 
     async def override():
         yield session
@@ -85,3 +87,5 @@ async def test_patch_project_preserves_selected_private_bot_audience():
         "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
         "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
     }
+    statement = str(session.execute.call_args.args[0])
+    assert "FOR UPDATE" in statement

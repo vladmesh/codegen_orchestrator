@@ -63,6 +63,7 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 _BOT_ALLOWED_IDS_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
+_LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
 _BOT_ACCESS_WRITE_DETAIL = "bot access is managed through /config/bot-access"
 
 
@@ -111,6 +112,15 @@ async def _check_project_access(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: not project owner",
         )
+
+
+async def _load_locked_project(db: AsyncSession, project_id: uuid.UUID) -> Project:
+    """Load one project under the lock used by every config writer."""
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    project = (await db.execute(query)).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
 
 
 @router.post("/", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -275,9 +285,7 @@ async def update_project(
     _is_internal: bool = Depends(is_internal_service),
 ) -> Project:
     """Update project."""
-    project = await db.get(Project, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await _load_locked_project(db, project_id)
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
@@ -307,9 +315,7 @@ async def patch_project(
     _is_internal: bool = Depends(is_internal_service),
 ) -> Project:
     """Partial update of project (PATCH method)."""
-    project = await db.get(Project, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await _load_locked_project(db, project_id)
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
@@ -368,6 +374,17 @@ def _reject_bot_token_writes(secrets: dict[str, str]) -> None:
     for key, value in secrets.items():
         if key == TELEGRAM_TOKEN_KEY or looks_like_bot_token(value):
             raise HTTPException(status_code=422, detail=_TELEGRAM_TOKEN_DETAIL)
+
+
+def _reject_legacy_bot_access_writes(secrets: dict[str, str]) -> None:
+    """Keep new audiences on the template contract path.
+
+    Existing encrypted legacy values remain readable by the deploy resolver while
+    projects migrate. This only rejects writes that would create or alter that
+    legacy state after the contract audience endpoint exists.
+    """
+    if _LEGACY_BOT_AUDIENCE_KEY in secrets:
+        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
 
 
 def _find_bot_token_material(node: object, path: str = "config") -> str | None:
@@ -496,6 +513,7 @@ async def merge_secrets(
         )
 
     _reject_bot_token_writes(body.secrets)
+    _reject_legacy_bot_access_writes(body.secrets)
 
     # Lock the row to prevent concurrent read-modify-write
     query = select(Project).where(Project.id == project_id).with_for_update()
@@ -527,10 +545,7 @@ async def set_bot_access(
     _is_internal: bool = Depends(is_internal_service),
 ) -> dict:
     """Store the selected bot audience as a deploy-time contract literal."""
-    query = select(Project).where(Project.id == project_id).with_for_update()
-    project = (await db.execute(query)).scalar_one_or_none()
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await _load_locked_project(db, project_id)
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
     config = dict(project.config or {})
