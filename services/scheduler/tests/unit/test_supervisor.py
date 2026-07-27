@@ -484,6 +484,116 @@ class TestSuperviseWaitingResourceTasks:
         redis_client.publish_flat.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_resume_clears_failed_run_iteration_before_dispatch(
+        self, api_client, redis_client
+    ):
+        """A resumed task must create a fresh run without spending an iteration."""
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run import RunStatus
+        from shared.contracts.dto.run_result import AllocationFailureReason, EngineeringRunResult
+        from src.tasks.supervisor import supervise_waiting_resource_tasks
+        from src.tasks.task_dispatcher import dispatch_todo_tasks, supervise_failed_tasks
+
+        task = _make_task(
+            status="failed",
+            story_id="story-1",
+            current_iteration=1,
+        )
+        old_run = SimpleNamespace(
+            id="eng-capacity-failed",
+            run_metadata={"iteration": 1, "task_id": task.id},
+            status=RunStatus.FAILED,
+            result=EngineeringRunResult(
+                engineering_status=EngineeringStatus.FAILED,
+                allocation_failure_reason=AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+                allocation_required_ram_mb=768,
+                allocation_min_disk_mb=1024,
+            ),
+        )
+        api_client.get_tasks_by_status.side_effect = lambda status: (
+            [task] if status in {"failed", "waiting_resources", "todo"} else []
+        )
+        api_client.list_runs.return_value = [old_run]
+        api_client.get_servers.return_value = [
+            SimpleNamespace(
+                handle="server-1",
+                is_managed=True,
+                status="ready",
+                capacity_ram_mb=2048,
+                capacity_disk_mb=4096,
+                used_ram_mb=0,
+                last_health_check=datetime.now(UTC),
+            )
+        ]
+        api_client.get_applications.return_value = []
+        api_client.get_project.return_value = SimpleNamespace(
+            owner_id=42,
+            status="active",
+            config={"workspace_ready": True},
+        )
+        api_client.get_tasks_by_story.return_value = [task]
+
+        async def update_run(run_id, data):
+            assert run_id == old_run.id
+            old_run.run_metadata = data["run_metadata"]
+
+        async def update_task(_task_id, data):
+            task.failure_metadata = data["failure_metadata"]
+
+        api_client.update_run.side_effect = update_run
+        api_client.update_task.side_effect = update_task
+
+        parked = await supervise_failed_tasks(api_client, redis_client)
+        resumed = await supervise_waiting_resource_tasks(api_client, redis_client)
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert parked == {"retried": 0, "escalated": 0}
+        assert resumed == {"resumed": 1, "expired": 0}
+        assert dispatched == 1
+        assert task.current_iteration == 1
+        assert task.failure_metadata["resource_wait_started_at"]
+        api_client.update_run.assert_awaited_once_with(
+            "eng-capacity-failed",
+            {"run_metadata": {"iteration": None, "task_id": "task-1"}},
+        )
+        api_client.create_run.assert_awaited_once()
+        assert api_client.create_run.call_args.args[0]["run_metadata"]["iteration"] == 1
+
+    @pytest.mark.asyncio
+    async def test_reparking_preserves_original_resource_wait_start(self, api_client, redis_client):
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run_result import (
+            AllocationFailureReason,
+            EngineeringRunResult,
+        )
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        started_at = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+        task = _make_task(
+            status="failed",
+            story_id="story-1",
+            failure_metadata={"resource_wait_started_at": started_at},
+        )
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+                    allocation_required_ram_mb=768,
+                    allocation_min_disk_mb=1024,
+                )
+            )
+        ]
+
+        await supervise_failed_tasks(api_client, redis_client)
+
+        assert (
+            api_client.update_task.call_args.args[1]["failure_metadata"]["resource_wait_started_at"]
+            == started_at
+        )
+
+    @pytest.mark.asyncio
     async def test_expired_wait_becomes_visible_human_review(self, api_client, redis_client):
         from src.tasks.supervisor import supervise_waiting_resource_tasks
 

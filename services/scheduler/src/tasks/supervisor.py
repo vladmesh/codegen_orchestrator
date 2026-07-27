@@ -289,9 +289,9 @@ async def _park_task_waiting_resources(
         return False
 
     metadata = dict(task.failure_metadata or {})
+    metadata.setdefault("resource_wait_started_at", datetime.now(UTC).isoformat())
     metadata.update(
         {
-            "resource_wait_started_at": datetime.now(UTC).isoformat(),
             "allocation_required_ram_mb": result.allocation_required_ram_mb,
             "allocation_min_disk_mb": result.allocation_min_disk_mb,
             "allocation_failure_reason": reason.value,
@@ -392,6 +392,7 @@ async def supervise_waiting_resource_tasks(
             continue
         if not await _resources_available(api_client, metadata):
             continue
+        await _clear_failed_run_iteration(api_client, task)
         await api_client.transition_task(task.id, TaskStatus.BACKLOG, "supervisor")
         await api_client.transition_task(task.id, TaskStatus.TODO, "supervisor")
         try:
@@ -400,6 +401,24 @@ async def supervise_waiting_resource_tasks(
             log.warning("resources_resumed_request_failed", exc_info=True)
         resumed += 1
     return {"resumed": resumed, "expired": expired}
+
+
+async def _clear_failed_run_iteration(api_client: SchedulerAPIClient, task) -> None:
+    """Make the allocation-failed run ineligible for todo dispatch recovery.
+
+    Capacity recovery is a fresh allocation attempt, but it does not consume a
+    code-generation iteration. The dispatcher therefore needs the prior run's
+    iteration stamp removed before the task returns to todo.
+    """
+    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
+    for run in runs:
+        if run.run_metadata.get("iteration") != task.current_iteration:
+            continue
+        await api_client.update_run(
+            run.id,
+            {"run_metadata": {**run.run_metadata, "iteration": None}},
+        )
+        return
 
 
 async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -> bool:
@@ -962,13 +981,13 @@ async def _fail_story_on_invalid_result(
     await _notify_admin_failure(story_id, project_id, f"invalid {run_type} run result: {exc}")
 
 
-async def _notify_admin_failure(run_id: str, project_id: str, error: str) -> None:
+async def _notify_admin_failure(entity_id: str, project_id: str, error: str) -> None:
     """Notify after a terminal failure has already been committed."""
     await notify_admins_best_effort(
-        f"Deploy GIVE_UP for run {run_id} (project {project_id}):\n{error[:500]}",
+        f"Supervisor failure for {entity_id} (project {project_id}):\n{error[:500]}",
         level="error",
         component="supervisor",
-        run_id=run_id,
+        run_id=entity_id,
         project_id=project_id,
     )
 
