@@ -1,14 +1,19 @@
 import os
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
+import yaml
 
 os.environ.setdefault("HEALTH_CHECK_INTERVAL", "300")
 os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
-from shared.config_store import ConfigStoreUnavailableError
+from shared.config_store import ConfigStore, ConfigStoreUnavailableError
 from src import main, startup
 from src.tasks import supervisor, task_dispatcher
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_task_modules_read_config_initialized_after_import(monkeypatch):
@@ -63,6 +68,44 @@ def test_required_keys_cover_every_scheduler_task_config_value():
         "scheduler.ci_failure_max_fingerprint_attempts",
         "scheduler.ci_failure_log_excerpt_lines",
     } <= set(startup.REQUIRED_KEYS)
+
+
+def test_every_required_key_is_declared_in_the_seed_file():
+    """A required key missing from the file never reaches the DB on deploy."""
+    declared = {
+        entry["key"]
+        for entry in yaml.safe_load((REPO_ROOT / "scripts" / "system_configs.yaml").read_text())
+    }
+
+    assert set(startup.REQUIRED_KEYS) <= declared
+
+
+def test_dispatch_interval_survives_the_config_api_going_away(monkeypatch):
+    """A working loop keeps its last known value while the source is unreachable."""
+    store = ConfigStore("http://api:8000", cache_ttl=0)
+    monkeypatch.setattr(startup, "config", store)
+
+    with patch("shared.config_store.httpx.get") as mock_get:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.return_value = {"key": "scheduler.dispatch_interval_seconds", "value": 30}
+        mock_get.return_value = resp
+        assert task_dispatcher._dispatch_interval() == 30
+
+        mock_get.side_effect = httpx.ConnectError("connection refused")
+        assert task_dispatcher._dispatch_interval() == 30
+
+
+def test_dispatch_interval_still_fails_loudly_when_the_key_is_gone(monkeypatch):
+    store = ConfigStore("http://api:8000")
+    monkeypatch.setattr(startup, "config", store)
+
+    with patch("shared.config_store.httpx.get") as mock_get:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 404
+        mock_get.return_value = resp
+        with pytest.raises(KeyError, match="not found"):
+            task_dispatcher._dispatch_interval()
 
 
 @pytest.mark.asyncio

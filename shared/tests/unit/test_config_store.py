@@ -79,6 +79,41 @@ class TestGet:
             with pytest.raises(ConfigStoreUnavailableError, match="invalid response"):
                 store.get("scheduler.interval")
 
+    def test_get_uses_last_known_value_on_server_error(self):
+        store = ConfigStore("http://test:8000", cache_ttl=0)
+        with patch("shared.config_store.httpx.get") as mock_get:
+            mock_get.return_value = _mock_response(200, {"value": 42, "key": "test"})
+            store.get("key1")
+            time.sleep(0.01)
+            mock_get.return_value = _mock_response(503)
+            assert store.get("key1") == 42
+
+    def test_get_uses_last_known_value_on_broken_response_body(self):
+        store = ConfigStore("http://test:8000", cache_ttl=0)
+        with patch("shared.config_store.httpx.get") as mock_get:
+            mock_get.return_value = _mock_response(200, {"value": 42, "key": "test"})
+            store.get("key1")
+            time.sleep(0.01)
+            mock_get.return_value = _mock_response(200, {})
+            assert store.get("key1") == 42
+
+    def test_get_raises_unavailable_on_server_error_without_last_known_value(self):
+        store = ConfigStore("http://test:8000")
+        with patch("shared.config_store.httpx.get") as mock_get:
+            mock_get.return_value = _mock_response(503)
+            with pytest.raises(ConfigStoreUnavailableError, match="503"):
+                store.get("key1")
+
+    def test_get_still_raises_keyerror_for_a_deleted_key_with_a_last_known_value(self):
+        store = ConfigStore("http://test:8000", cache_ttl=0)
+        with patch("shared.config_store.httpx.get") as mock_get:
+            mock_get.return_value = _mock_response(200, {"value": 42, "key": "test"})
+            store.get("key1")
+            time.sleep(0.01)
+            mock_get.return_value = _mock_response(404)
+            with pytest.raises(KeyError, match="not found"):
+                store.get("key1")
+
 
 class TestTypedGetters:
     def test_get_int(self):

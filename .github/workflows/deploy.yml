@@ -171,6 +171,21 @@ jobs:
             done
             echo "API is healthy"
 
+      # Runs after the health check because the seeder talks to the API, not the DB.
+      # Every key in scripts/system_configs.yaml is written with its file value.
+      - name: Apply system configs
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api \
+              python /app/scripts/seed_system_configs.py \
+              --api-base-url http://localhost:8000 \
+              --configs-path /app/scripts/system_configs.yaml
+
       - name: Cleanup
         uses: appleboy/ssh-action@v1
         with:

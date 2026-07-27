@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Seed script for system configurations.
 
-Populates the database with default operational constants from YAML.
-Uses upsert semantics — existing keys are NOT overwritten (preserves admin edits).
+Writes the operational constants declared in system_configs.yaml to the database.
+The file wins: every key it declares is written with its file value, overwriting
+whatever is in the DB. A key that the file does not declare is left untouched.
+Runs on every deploy, right after migrations, so a value edited in the file
+reaches the system without a manual step.
 
 Usage:
     python scripts/seed_system_configs.py [--api-base-url http://localhost:8000]
@@ -45,11 +48,21 @@ def load_configs(path: Path) -> list[dict]:
     return configs
 
 
-def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
-    """Seed system configurations to the database.
+def _current_value(client: httpx.Client, api_base_url: str, key: str) -> tuple[bool, object]:
+    """Return (exists, value) for a key already in the database."""
+    resp = client.get(_api_url(api_base_url, f"system-configs/{key}"))
+    if resp.status_code == httpx.codes.NOT_FOUND:
+        return False, None
+    if resp.status_code != httpx.codes.OK:
+        raise RuntimeError(f"HTTP {resp.status_code} reading '{key}': {resp.text}")
+    return True, resp.json()["value"]
 
-    Only creates new keys — does NOT overwrite existing values
-    (so admin edits via UI are preserved).
+
+def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
+    """Write every config declared in the YAML file to the database.
+
+    Existing values are overwritten. Keys that diverged from the file are
+    printed with both values, so a drift is never corrected silently.
 
     Returns:
         True if all configs were processed successfully
@@ -60,45 +73,49 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
 
     success = True
     created = 0
-    skipped = 0
+    updated = 0
+    unchanged = 0
 
     with httpx.Client(timeout=30.0) as client:
         for config in configs:
-            key = config.get("key")
-            if not key:
-                print("  Skipping config without key")
-                continue
+            key = config["key"]
+            value = config["value"]
 
             try:
-                # Check if key exists
-                resp = client.get(_api_url(api_base_url, f"system-configs/{key}"))
-                if resp.status_code == httpx.codes.OK:
-                    skipped += 1
+                exists, db_value = _current_value(client, api_base_url, key)
+                if exists and db_value == value:
+                    unchanged += 1
                     continue
 
-                # Create new config
                 payload = {
                     "key": key,
-                    "value": config["value"],
-                    "category": config.get("category", "uncategorized"),
-                    "description": config.get("description"),
+                    "value": value,
+                    "category": config["category"],
+                    "description": config["description"],
                     "updated_by": "seed",
                 }
                 resp = client.post(
                     _api_url(api_base_url, "system-configs/"),
                     json=payload,
                 )
-                if resp.status_code == httpx.codes.CREATED:
-                    created += 1
-                else:
-                    print(f"  Failed to create '{key}': {resp.status_code} - {resp.text}")
+                if resp.status_code != httpx.codes.CREATED:
+                    print(f"  Failed to write '{key}': {resp.status_code} - {resp.text}")
                     success = False
+                    continue
 
-            except httpx.RequestError as e:
+                if exists:
+                    print(f"  Overwrote '{key}': db={db_value!r} -> file={value!r}")
+                    updated += 1
+                else:
+                    created += 1
+
+            except (httpx.RequestError, RuntimeError) as e:
                 print(f"  Request error for '{key}': {e}")
                 success = False
 
-    print(f"  System configs: {created} created, {skipped} already exist")
+    print(
+        f"  System configs: {created} created, {updated} overwritten, {unchanged} already in sync"
+    )
     return success
 
 

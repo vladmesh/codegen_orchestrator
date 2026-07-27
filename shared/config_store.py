@@ -37,6 +37,29 @@ class ConfigStore:
     def _api_url(self, path: str) -> str:
         return f"{self._api_base_url}/api/{path.lstrip('/')}"
 
+    def _source_unavailable(self, key: str, reason: str, cause: Exception | None) -> Any:
+        """Return the last known value for `key`, or raise if there is none.
+
+        An unreachable or broken config source is not the same as a missing key:
+        callers already running on a value keep running on it, and only a caller
+        that never read the key at all gets an error.
+        """
+        with self._lock:
+            cached = self._cache.get(key)
+
+        if cached is not None:
+            logger.warning(
+                "config_store_source_unavailable_using_last_known",
+                key=key,
+                reason=reason,
+                value=cached[0],
+            )
+            return cached[0]
+
+        raise ConfigStoreUnavailableError(
+            f"System config API is unavailable while reading '{key}' ({reason})"
+        ) from cause
+
     def get(self, key: str, default: Any = _DEFAULT_SENTINEL) -> Any:
         """Get a config value by key. Raises KeyError if not found and no default."""
         with self._lock:
@@ -47,30 +70,18 @@ class ConfigStore:
         try:
             resp = httpx.get(self._api_url(f"system-configs/{key}"), timeout=10.0)
         except httpx.RequestError as exc:
-            # If API is down and we have a stale cache entry, use it
-            with self._lock:
-                cached = self._cache.get(key)
-                if cached:
-                    logger.warning("config_store_using_stale_cache", key=key)
-                    return cached[0]
-            raise ConfigStoreUnavailableError(
-                f"System config API is unavailable while reading '{key}'"
-            ) from exc
+            return self._source_unavailable(key, f"request failed: {exc}", exc)
 
         if resp.status_code == httpx.codes.OK:
             try:
                 value = resp.json()["value"]
             except (KeyError, TypeError, ValueError) as exc:
-                raise ConfigStoreUnavailableError(
-                    f"System config API returned an invalid response while reading '{key}'"
-                ) from exc
+                return self._source_unavailable(key, "invalid response body", exc)
             with self._lock:
                 self._cache[key] = (value, time.monotonic() + self._cache_ttl)
             return value
         if resp.status_code != httpx.codes.NOT_FOUND:
-            raise ConfigStoreUnavailableError(
-                f"System config API returned HTTP {resp.status_code} while reading '{key}'"
-            )
+            return self._source_unavailable(key, f"HTTP {resp.status_code}", None)
 
         if default is not _DEFAULT_SENTINEL:
             return default
@@ -114,6 +125,8 @@ class ConfigStore:
         """Validate that all required config keys exist in the DB.
 
         Raises RuntimeError listing all missing keys — call at service startup.
+        A key that is declared in scripts/system_configs.yaml is missing only if
+        the seeding step of the deploy did not run.
         """
         missing = []
         for key in keys:
