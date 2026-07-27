@@ -47,6 +47,7 @@ def base_state():
         "non_secret_values": {"DB_HOST": "localhost", "DB_PORT": "5432"},
         "messages": [],
         "errors": [],
+        "head_sha": "abc123",
     }
 
 
@@ -172,7 +173,9 @@ class TestDeployerNodeHappyPath:
 
         await deployer.run(base_state)
 
-        gh.trigger_workflow_dispatch.assert_called_once_with("my-org", "my-repo", "deploy.yml")
+        gh.trigger_workflow_dispatch.assert_called_once_with(
+            "my-org", "my-repo", "deploy.yml", ref=base_state["head_sha"]
+        )
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
@@ -184,6 +187,7 @@ class TestDeployerNodeHappyPath:
 
         call_kwargs = gh.wait_for_workflow_completion.call_args[1]
         assert call_kwargs["workflow_file"] == "deploy.yml"
+        assert call_kwargs["head_sha"] == base_state["head_sha"]
         assert "created_after" in call_kwargs
         assert isinstance(call_kwargs["created_after"], datetime)
 

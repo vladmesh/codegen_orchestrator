@@ -9,6 +9,8 @@ Run standalone: python -m src.consumers.qa
 
 from __future__ import annotations
 
+import asyncio
+
 import structlog
 
 from shared.contracts.acceptance import parse_health_only_criteria
@@ -18,6 +20,7 @@ from shared.contracts.dto.run_result import (
     QABlockerCategory,
     QAFailedCheck,
     QARunResult,
+    QATestAccessLifecycle,
 )
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.queues import QA_GROUP, QA_QUEUE
@@ -312,15 +315,17 @@ async def _process_private_bot_qa(
         )
 
     await api_client.patch(f"runs/{run_id}", json={"status": RunStatus.RUNNING.value})
-    lifecycle, terminal_blocker = await grant_temporary_qa_access(
-        parent_run_id=run_id,
-        project_id=msg.project_id,
-        application_id=msg.application_id,
-        head_sha=msg.head_sha,
-        redis=redis,
-    )
+    lifecycle = QATestAccessLifecycle(in_test_mode=False, grant_succeeded=False)
+    terminal_blocker: QABlocker | None = None
     qa_result: QAResult | None = None
     try:
+        lifecycle, terminal_blocker = await grant_temporary_qa_access(
+            parent_run_id=run_id,
+            project_id=msg.project_id,
+            application_id=msg.application_id,
+            head_sha=msg.head_sha,
+            redis=redis,
+        )
         if terminal_blocker is None:
             reachability_blocker = await check_deployed_url_reachable(msg.deployed_url)
             if reachability_blocker:
@@ -341,6 +346,11 @@ async def _process_private_bot_qa(
                 )
                 if qa_result.blocker:
                     terminal_blocker = qa_result.blocker
+    except asyncio.CancelledError as exc:
+        grant_run_id = getattr(exc, "run_id", None)
+        if grant_run_id:
+            lifecycle = lifecycle.model_copy(update={"grant_run_id": grant_run_id})
+        raise
     except Exception as exc:
         logger.exception("private_bot_qa_failed", run_id=run_id)
         terminal_blocker = QABlocker(

@@ -7,6 +7,7 @@ Story lifecycle is managed by the dispatcher's supervise_testing_stories().
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -371,6 +372,26 @@ class TestPrivateBotTestAccess:
             result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "qa_failed"
+        revoke.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_private_bot_cancellation_during_grant_still_revokes_access(
+        self, mock_api_client, mock_redis, qa_message_data, private_project
+    ):
+        qa_message_data.update({"bot_username": "private_bot", "head_sha": "a" * 40})
+        mock_api_client.get_project.return_value = private_project
+        revoked = QATestAccessLifecycle(in_test_mode=False, revoke_succeeded=True)
+        with (
+            patch("src.consumers.qa._resolve_server_info", new_callable=AsyncMock) as resolve,
+            patch("src.consumers.qa.grant_temporary_qa_access", new_callable=AsyncMock) as grant,
+            patch("src.consumers.qa.revoke_temporary_qa_access", new_callable=AsyncMock) as revoke,
+        ):
+            resolve.return_value = QAServerInfo("1.2.3.4", "dev", "key", "private-bot-0000")
+            grant.side_effect = asyncio.CancelledError()
+            revoke.return_value = revoked, None
+            with pytest.raises(asyncio.CancelledError):
+                await process_qa_job(qa_message_data, mock_redis)
+
         revoke.assert_awaited_once()
 
 

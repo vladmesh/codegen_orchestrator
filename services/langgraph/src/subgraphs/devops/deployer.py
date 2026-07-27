@@ -151,6 +151,7 @@ class DeployerNode(FunctionalNode):
         owner: str,
         repo: str,
         dispatch_time: datetime,
+        head_sha: str,
     ) -> dict | None:
         """Attempt to rerun failed deploy workflow jobs.
 
@@ -158,7 +159,12 @@ class DeployerNode(FunctionalNode):
         """
         try:
             failed_run = await github.get_latest_workflow_run(
-                owner, repo, "deploy.yml", "main", created_after=dispatch_time
+                owner,
+                repo,
+                "deploy.yml",
+                "main",
+                created_after=dispatch_time,
+                head_sha=head_sha,
             )
             if not failed_run:
                 logger.warning("deploy_rerun_no_run_found")
@@ -222,6 +228,7 @@ class DeployerNode(FunctionalNode):
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
         run_id = state.get("run_id")
+        head_sha = state.get("head_sha")
         project_spec = state.get("project_spec") or {}
         secret_values = state.get("secret_values", {})
         non_secret_values = state.get("non_secret_values", {})
@@ -231,6 +238,11 @@ class DeployerNode(FunctionalNode):
             return {
                 "deployment_result": {"status": "failed", "error": "No project_id"},
                 "errors": ["No project_id for deployment"],
+            }
+        if not head_sha:
+            return {
+                "deployment_result": {"status": "failed", "error": "No head_sha"},
+                "errors": ["head_sha is required for deployment"],
             }
 
         params = self._extract_deploy_params(state)
@@ -316,7 +328,7 @@ class DeployerNode(FunctionalNode):
             dispatch_time = datetime.now(UTC)
 
             # 4. Trigger deploy workflow
-            await github.trigger_workflow_dispatch(owner, repo, "deploy.yml")
+            await github.trigger_workflow_dispatch(owner, repo, "deploy.yml", ref=head_sha)
 
             # 5. Wait for workflow completion
             run_info = await github.wait_for_workflow_completion(
@@ -324,6 +336,7 @@ class DeployerNode(FunctionalNode):
                 repo=repo,
                 workflow_file="deploy.yml",
                 branch="main",
+                head_sha=head_sha,
                 timeout_seconds=600,
                 created_after=dispatch_time,
                 cancel_check=lambda: self._run_cancelled(run_id),
@@ -377,7 +390,7 @@ class DeployerNode(FunctionalNode):
             logger.warning("deploy_workflow_failed", error=str(e))
 
             # Attempt to rerun failed jobs (gets a new GH Actions runner)
-            run_info = await self._try_deploy_rerun(github, owner, repo, dispatch_time)
+            run_info = await self._try_deploy_rerun(github, owner, repo, dispatch_time, head_sha)
             if run_info:
                 logger.info(
                     "deploy_completed",

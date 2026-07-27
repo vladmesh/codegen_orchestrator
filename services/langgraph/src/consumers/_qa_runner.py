@@ -644,10 +644,11 @@ async def verify_telegram_access_revoked(
 ) -> QABlocker:
     """Actively prove that the temporary QA identity is denied after revocation."""
     try:
+        key = asyncssh.import_private_key(ssh_key)
         async with asyncssh.connect(
             server_ip,
             username=ssh_user,
-            client_keys=[ssh_key],
+            client_keys=[key],
             known_hosts=None,
         ) as conn:
             result = await _probe_telegram_bot_access(conn, bot_username)

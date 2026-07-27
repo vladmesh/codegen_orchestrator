@@ -20,9 +20,19 @@ from shared.redis_client import RedisStreamClient
 from ..clients.api import api_client
 from ..prompts.qa import QA_TEST_TELEGRAM_ID
 
-QA_TEST_ACCESS_DEPLOY_TIMEOUT = 900
+# The deployer may wait 600 seconds for the first run and another 600 after a
+# rerun. Access cleanup must never overtake a still-running grant.
+QA_TEST_ACCESS_DEPLOY_TIMEOUT = 1260
 QA_TEST_ACCESS_POLL_INTERVAL = 2
 _TEST_ID_KEY = "TG_BOT_TEST_TELEGRAM_ID"
+
+
+class QAAccessDeployCancelled(asyncio.CancelledError):
+    """Cancellation carrying the child deploy that must be revoked."""
+
+    def __init__(self, run_id: str):
+        super().__init__()
+        self.run_id = run_id
 
 
 def needs_temporary_qa_access(project: ProjectDTO) -> bool:
@@ -56,6 +66,17 @@ async def _wait_for_deploy(run_id: str) -> tuple[bool, str]:
         if asyncio.get_running_loop().time() >= deadline:
             return False, "timed out waiting for terminal deploy result"
         await asyncio.sleep(QA_TEST_ACCESS_POLL_INTERVAL)
+
+
+async def _wait_for_project_deploy_slot(redis: RedisStreamClient, project_id: str) -> bool:
+    """Do not enqueue revocation until the grant worker has released its lock."""
+    deadline = asyncio.get_running_loop().time() + QA_TEST_ACCESS_DEPLOY_TIMEOUT
+    lock_key = f"deploy:{project_id}:lock"
+    while await redis.redis.exists(lock_key):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(QA_TEST_ACCESS_POLL_INTERVAL)
+    return True
 
 
 async def _dispatch_deploy(
@@ -95,7 +116,10 @@ async def _dispatch_deploy(
             env_overrides=env_overrides,
         ),
     )
-    succeeded, detail = await _wait_for_deploy(run_id)
+    try:
+        succeeded, detail = await _wait_for_deploy(run_id)
+    except asyncio.CancelledError as exc:
+        raise QAAccessDeployCancelled(run_id) from exc
     return run_id, succeeded, detail
 
 
@@ -108,6 +132,7 @@ async def grant_temporary_qa_access(
     redis: RedisStreamClient,
 ) -> tuple[QATestAccessLifecycle, QABlocker | None]:
     """Deploy the QA identity and wait until that deployment has finished."""
+    lifecycle = QATestAccessLifecycle(in_test_mode=False, grant_succeeded=False)
     try:
         run_id, succeeded, detail = await _dispatch_deploy(
             parent_run_id=parent_run_id,
@@ -119,7 +144,6 @@ async def grant_temporary_qa_access(
             redis=redis,
         )
     except Exception as exc:
-        lifecycle = QATestAccessLifecycle(in_test_mode=False, grant_succeeded=False)
         return lifecycle, _blocker(attempted="grant temporary QA bot access", received=str(exc))
     lifecycle = QATestAccessLifecycle(
         in_test_mode=succeeded,
@@ -127,10 +151,16 @@ async def grant_temporary_qa_access(
         grant_succeeded=succeeded,
     )
     if succeeded:
-        await api_client.patch(
-            f"runs/{parent_run_id}",
-            json={"run_metadata": {"in_test_mode": True, "test_access_grant_run_id": run_id}},
-        )
+        try:
+            await api_client.patch(
+                f"runs/{parent_run_id}",
+                json={"run_metadata": {"in_test_mode": True, "test_access_grant_run_id": run_id}},
+            )
+        except Exception as exc:
+            return lifecycle, _blocker(
+                attempted="record temporary QA bot access grant",
+                received=str(exc),
+            )
         return lifecycle, None
     return lifecycle, _blocker(
         attempted="grant temporary QA bot access",
@@ -149,6 +179,20 @@ async def revoke_temporary_qa_access(
 ) -> tuple[QATestAccessLifecycle, QABlocker | None]:
     """Remove the override and wait for its deployment on every QA outcome."""
     try:
+        if lifecycle.grant_run_id:
+            grant_succeeded, grant_detail = await _wait_for_deploy(lifecycle.grant_run_id)
+            if not grant_succeeded and grant_detail.startswith("timed out"):
+                return lifecycle.model_copy(update={"revoke_succeeded": False}), _blocker(
+                    attempted="wait for grant before revoking temporary QA bot access",
+                    received=grant_detail,
+                )
+            if not await _wait_for_project_deploy_slot(redis, project_id):
+                return lifecycle.model_copy(update={"revoke_succeeded": False}), _blocker(
+                    attempted=(
+                        "wait for grant deployment lock before revoking temporary QA bot access"
+                    ),
+                    received="timed out waiting for grant deploy lock to release",
+                )
         run_id, succeeded, detail = await _dispatch_deploy(
             parent_run_id=parent_run_id,
             project_id=project_id,

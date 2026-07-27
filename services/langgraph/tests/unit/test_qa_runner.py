@@ -21,6 +21,7 @@ from src.consumers._qa_runner import (
     parse_qa_result,
     run_health_checks,
     run_qa_on_server,
+    verify_telegram_access_revoked,
 )
 from src.prompts.qa import build_qa_prompt
 
@@ -551,6 +552,34 @@ class TestRunQAOnServer:
             )
 
         assert all(".qa-telethon.env" not in call.args[0] for call in mock_conn.run.await_args_list)
+
+
+class TestVerifyTelegramAccessRevoked:
+    @pytest.mark.asyncio
+    async def test_parses_server_key_before_opening_revocation_probe(self):
+        conn = AsyncMock()
+        conn.__aenter__ = AsyncMock(return_value=conn)
+        conn.__aexit__ = AsyncMock(return_value=False)
+        denied = MagicMock(category=QABlockerCategory.TELEGRAM_ACCESS_DENIED)
+        with (
+            patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
+            patch(
+                "src.consumers._qa_runner._probe_telegram_bot_access", new_callable=AsyncMock
+            ) as probe,
+        ):
+            mock_asyncssh.import_private_key.return_value = "parsed-key"
+            mock_asyncssh.connect.return_value = conn
+            probe.return_value = denied
+            result = await verify_telegram_access_revoked(
+                server_ip="1.2.3.4",
+                ssh_user="dev",
+                ssh_key="-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
+                bot_username="private_bot",
+            )
+
+        assert result is denied
+        mock_asyncssh.import_private_key.assert_called_once()
+        assert mock_asyncssh.connect.call_args.kwargs["client_keys"] == ["parsed-key"]
 
 
 class TestQAPreflight:
