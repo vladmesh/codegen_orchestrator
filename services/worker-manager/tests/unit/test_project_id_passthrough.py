@@ -125,6 +125,7 @@ def _make_docker_mock():
     """Create a fully-mocked DockerClientWrapper."""
     docker = MagicMock()
     docker.image_exists = AsyncMock(return_value=True)
+    docker.get_image_label = AsyncMock(return_value="basehash0001")
     docker.build_image = AsyncMock()
     docker.remove_container = AsyncMock()
     docker.create_network = AsyncMock()

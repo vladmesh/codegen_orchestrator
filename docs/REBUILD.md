@@ -43,7 +43,7 @@ compose и по `COPY shared` в Dockerfile'ах.
 |---|---|---|---|---|
 | `make build` | пересобирает | только если протух хеш | не трогает | нет |
 | `make rebuild` | пересобирает | пересобирает всегда | **сохраняет** | через entrypoint `api` |
-| `make nuke` | пересобирает | проверяет хеш | **сносит** | явный upgrade + `seed` |
+| `make nuke` | пересобирает | проверяет хеш и чинит | **сносит** | явный upgrade + `seed` |
 | `make nuke-hard` | `--no-cache` + `builder prune` | то же | **сносит** | явный upgrade + `seed` |
 
 Обычная пересборка после мержа — `make rebuild`. `nuke` нужен, только когда действительно нужна
@@ -59,10 +59,9 @@ compose и по `COPY shared` в Dockerfile'ах.
 
 1. `docker compose down --remove-orphans`.
 2. Убивает осиротевшие контейнеры `worker-*`, не принадлежащие проекту.
-3. `docker rmi worker:*` — сбрасывает кеш производных образов воркеров.
-4. `docker compose build` — все сервисы.
-5. `make rebuild-worker-images` — четыре базовых образа воркеров.
-6. `docker compose up -d`.
+3. `docker compose build` — все сервисы.
+4. `make rebuild-worker-images` — четыре базовых образа воркеров.
+5. `docker compose up -d`.
 
 Тома не затрагиваются, поэтому база и реестр переживают пересборку.
 
@@ -84,30 +83,40 @@ compose и по `COPY shared` в Dockerfile'ах.
 
 **Хеш свежести.** `WORKER_SOURCE_HASH` в Makefile — это sha256 от:
 
-- `shared/__init__.py`, `shared/log_config`, `shared/redis`, `shared/redis_client.py`,
-  `shared/config.py`, `shared/queues.py`, `shared/contracts`, `shared/crypto.py`,
-  `shared/constants.py`
-- `packages/worker-wrapper`
-- `services/worker-manager/images`
+- всего `shared/`
+- всего `packages/worker-wrapper/`
+- всего `services/worker-manager/images/`
 
-Это **подмножество** `shared/`. `shared/models`, `shared/clients`, `shared/config_store.py` и
-прочее в хеш не входят, потому что код воркера их не импортирует. Если появится новый модуль под
-`shared/`, который worker-wrapper начнёт использовать, его нужно добавить в этот список: иначе
-`check-worker-images` будет молча считать образы свежими, а внутри окажется старый код.
+(без `__pycache__` и `*.pyc`)
+
+Это ровно то, что Dockerfile'ы воркеров кладут в образ: `COPY shared /app/shared` копирует весь
+`shared`, а не подмножество. Любая правка под `shared/` — включая `shared/models`,
+`shared/clients`, `shared/schemas` — делает базовые образы воркеров протухшими и ведёт к их
+пересборке. Цена принята сознательно: лишняя пересборка дешевле молча устаревшего образа.
 
 **Порядок сборки обязателен.** `worker-base-claude`, `-factory`, `-codex` объявлены как
-`FROM ${BASE_IMAGE}` с дефолтом `worker-base-common:latest` и наследуют от него label
-`org.codegen.worker_source_hash`. Только `worker-base-common` получает `--build-arg SOURCE_HASH`.
-Собрать производный образ, не пересобрав common, значит получить старый код с чужим хешем.
-`make rebuild-worker-images` соблюдает порядок; собирая руками, соблюдать его самому.
+`FROM ${BASE_IMAGE}` с дефолтом `worker-base-common:latest`. Все четыре образа получают
+`--build-arg SOURCE_HASH` и проставляют свой label `org.codegen.worker_source_hash` сами, а не
+наследуют его от базы. Собрать производный образ, не пересобрав common, значит получить старый код
+под текущим хешем. `make rebuild-worker-images` соблюдает порядок; собирая руками, соблюдать его
+самому.
 
-**Производные образы кешируются.** `worker:<tag>` строит worker-manager в рантайме
-(`services/worker-manager/src/image_builder.py`), и сами они не инвалидируются при смене базы.
-Поэтому и `make rebuild`, и `make rebuild-worker-images` делают `docker rmi worker:*`.
+**Производные образы инвалидируются автоматически.** `worker:<tag>` строит worker-manager в
+рантайме (`services/worker-manager/src/image_builder.py`). Тег считается от capabilities,
+agent_type и label `org.codegen.worker_source_hash` базового образа, прочитанного в момент сборки.
+Смена кода базы даёт другой тег, поэтому cache hit на образ со старым кодом невозможен и ручной
+`docker rmi worker:*` в make-целях не нужен. Если у базового образа label отсутствует,
+worker-manager падает с `RuntimeError` вместо того, чтобы закешировать неизвестный код.
 
-**Проверка без пересборки.** `make check-worker-images` сравнивает текущий `WORKER_SOURCE_HASH` с
-label каждого из четырёх образов и вызывает `rebuild-worker-images`, если хоть один отстал.
-`make build` вызывает эту проверку сам.
+**Проверка и починка разведены.**
+
+| Цель | Что делает |
+|---|---|
+| `make check-worker-images` | read-only: сравнивает `WORKER_SOURCE_HASH` с label каждого из четырёх образов, печатает расхождение и завершается ненулевым кодом. Ничего не собирает. |
+| `make ensure-worker-images` | та же проверка, но при расхождении вызывает `rebuild-worker-images`. |
+
+Из других целей (`make build`, `nuke`) вызывается `ensure-worker-images`. `check-worker-images`
+годится для CI и для ручной диагностики: на него можно опереться, он не мутирует систему.
 
 ## Чистая пересборка после мержа
 

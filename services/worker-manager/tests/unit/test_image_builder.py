@@ -12,61 +12,76 @@ import pytest
 # This import will fail initially (RED phase) - module doesn't exist yet
 from src.image_builder import ImageBuilder, compute_image_hash, get_base_image
 
+SOURCE_HASH = "basehash0001"
+
 
 class TestComputeImageHash:
     """Test hash calculation for image caching."""
 
     def test_same_capabilities_different_order_produce_same_hash(self):
         """Capabilities order should not affect hash."""
-        hash1 = compute_image_hash(["GIT", "GITHUB_CLI"])
-        hash2 = compute_image_hash(["GITHUB_CLI", "GIT"])
+        hash1 = compute_image_hash(["GIT", "GITHUB_CLI"], agent_type="claude", source_hash=SOURCE_HASH)
+        hash2 = compute_image_hash(["GITHUB_CLI", "GIT"], agent_type="claude", source_hash=SOURCE_HASH)
         assert hash1 == hash2
 
     def test_different_capabilities_produce_different_hash(self):
         """Different capability sets must have different hashes."""
-        hash1 = compute_image_hash(["GIT"])
-        hash2 = compute_image_hash(["GIT", "GITHUB_CLI"])
+        hash1 = compute_image_hash(["GIT"], agent_type="claude", source_hash=SOURCE_HASH)
+        hash2 = compute_image_hash(["GIT", "GITHUB_CLI"], agent_type="claude", source_hash=SOURCE_HASH)
         assert hash1 != hash2
 
     def test_compute_image_hash_determinism(self):
         """Hash should be deterministic for same capabilities."""
         caps1 = ["B", "A", "C"]
         caps2 = ["c", "b", "a"]  # Different order and case
-        assert compute_image_hash(caps1) == compute_image_hash(caps2)
+        assert compute_image_hash(caps1, agent_type="claude", source_hash=SOURCE_HASH) == compute_image_hash(
+            caps2, agent_type="claude", source_hash=SOURCE_HASH
+        )
 
     def test_compute_image_hash_truncation(self):
         """Hash should be exactly 12 characters."""
-        h = compute_image_hash(["A"])
+        h = compute_image_hash(["A"], agent_type="claude", source_hash=SOURCE_HASH)
         assert len(h) == 12
 
     def test_same_capabilities_different_agent_produce_different_hash(self):
         """Same capabilities but different agent = different image."""
-        hash_claude = compute_image_hash(["GIT"], agent_type="claude")
-        hash_factory = compute_image_hash(["GIT"], agent_type="factory")
+        hash_claude = compute_image_hash(["GIT"], agent_type="claude", source_hash=SOURCE_HASH)
+        hash_factory = compute_image_hash(["GIT"], agent_type="factory", source_hash=SOURCE_HASH)
         assert hash_claude != hash_factory
 
     def test_codex_has_distinct_hash(self):
-        hash_codex = compute_image_hash(["GIT"], agent_type="codex")
+        hash_codex = compute_image_hash(["GIT"], agent_type="codex", source_hash=SOURCE_HASH)
         assert hash_codex not in {
-            compute_image_hash(["GIT"], agent_type="claude"),
-            compute_image_hash(["GIT"], agent_type="factory"),
+            compute_image_hash(["GIT"], agent_type="claude", source_hash=SOURCE_HASH),
+            compute_image_hash(["GIT"], agent_type="factory", source_hash=SOURCE_HASH),
         }
+
+    def test_different_source_hash_produces_different_hash(self):
+        """Rebuilt base image (new source hash) must invalidate the cached worker image."""
+        h1 = compute_image_hash(["GIT"], agent_type="claude", source_hash="basehash0001")
+        h2 = compute_image_hash(["GIT"], agent_type="claude", source_hash="basehash0002")
+        assert h1 != h2
+
+    def test_empty_source_hash_is_rejected(self):
+        """An unlabelled base image must not silently produce a cacheable tag."""
+        with pytest.raises(ValueError, match="source_hash"):
+            compute_image_hash(["GIT"], agent_type="claude", source_hash="")
 
     def test_hash_deterministic_with_agent_type(self):
         """Agent type should be part of deterministic hash."""
-        h1 = compute_image_hash(["GIT", "CURL"], agent_type="claude")
-        h2 = compute_image_hash(["CURL", "GIT"], agent_type="claude")
+        h1 = compute_image_hash(["GIT", "CURL"], agent_type="claude", source_hash=SOURCE_HASH)
+        h2 = compute_image_hash(["CURL", "GIT"], agent_type="claude", source_hash=SOURCE_HASH)
         assert h1 == h2
 
     def test_empty_capabilities_has_consistent_hash(self):
         """Empty capabilities should produce consistent hash."""
-        hash1 = compute_image_hash([])
-        hash2 = compute_image_hash([])
+        hash1 = compute_image_hash([], agent_type="claude", source_hash=SOURCE_HASH)
+        hash2 = compute_image_hash([], agent_type="claude", source_hash=SOURCE_HASH)
         assert hash1 == hash2
 
     def test_hash_is_lowercase_hex(self):
         """Hash should be lowercase hexadecimal."""
-        h = compute_image_hash(["GIT", "CURL"])
+        h = compute_image_hash(["GIT", "CURL"], agent_type="claude", source_hash=SOURCE_HASH)
         assert h.isalnum()
         assert h == h.lower()
 
@@ -143,18 +158,30 @@ class TestImageBuilderImageTag:
 
     def test_get_image_tag_includes_prefix(self, builder):
         """Image tag should use configured prefix."""
-        tag = builder.get_image_tag(capabilities=["GIT"], prefix="worker")
+        tag = builder.get_image_tag(capabilities=["GIT"], prefix="worker", agent_type="claude", source_hash=SOURCE_HASH)
         assert tag.startswith("worker:")
 
     def test_get_image_tag_includes_hash(self, builder):
         """Image tag should include capability hash."""
-        tag = builder.get_image_tag(capabilities=["GIT"], prefix="worker")
-        expected_hash = compute_image_hash(["GIT"])
+        tag = builder.get_image_tag(capabilities=["GIT"], prefix="worker", agent_type="claude", source_hash=SOURCE_HASH)
+        expected_hash = compute_image_hash(["GIT"], agent_type="claude", source_hash=SOURCE_HASH)
         assert expected_hash in tag
+
+    def test_get_image_tag_differs_per_base_source_hash(self, builder):
+        """A rebuilt base image (new source hash) must produce a different worker tag."""
+        old = builder.get_image_tag(
+            capabilities=["GIT"], prefix="worker", agent_type="claude", source_hash="basehash0001"
+        )
+        new = builder.get_image_tag(
+            capabilities=["GIT"], prefix="worker", agent_type="claude", source_hash="basehash0002"
+        )
+        assert old != new
 
     def test_get_image_tag_format(self, builder):
         """Image tag should be prefix:hash format."""
-        tag = builder.get_image_tag(capabilities=["GIT", "CURL"], prefix="worker-test")
+        tag = builder.get_image_tag(
+            capabilities=["GIT", "CURL"], prefix="worker-test", agent_type="claude", source_hash=SOURCE_HASH
+        )
         parts = tag.split(":")
         assert len(parts) == 2
         assert parts[0] == "worker-test"

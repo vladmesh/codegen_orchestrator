@@ -36,6 +36,7 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
     mock_docker_client.unpause_container = AsyncMock()
     mock_docker_client.remove_container = AsyncMock()
     mock_docker_client.image_exists = AsyncMock(return_value=True)  # Default to exists for this test
+    mock_docker_client.get_image_label = AsyncMock(return_value="basehash0001")
     mock_docker_client.pull_image = AsyncMock()
     mock_docker_client.create_network = AsyncMock()
     mock_docker_client.remove_network = AsyncMock()

@@ -20,4 +20,8 @@ RUN mkdir -p /home/worker/.codex && chown worker:worker /home/worker/.codex
 
 ENV CODEX_HOME=/home/worker/.codex
 
+# Own label, not inherited from the base: derived images must carry the hash they were built with
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH
+
 USER worker

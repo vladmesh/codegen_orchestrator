@@ -12,6 +12,7 @@ from src.manager import WorkerManager
 def _make_docker_mock():
     wrapper = MagicMock()
     wrapper.image_exists = AsyncMock(return_value=True)
+    wrapper.get_image_label = AsyncMock(return_value="basehash0001")
     wrapper.remove_container = AsyncMock()
     container = MagicMock()
     container.id = "test-id"

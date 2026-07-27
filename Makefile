@@ -2,7 +2,7 @@
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
-	check-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
+	check-worker-images ensure-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
 
 # Load .env file
 -include .env
@@ -11,12 +11,11 @@ export
 DOCKER_COMPOSE ?= docker compose
 
 # Hash of source files baked into worker images.
-# Only includes shared submodules actually imported by worker-wrapper,
-# plus the package itself and worker Dockerfiles.
-# Changes to e.g. shared/models/ or shared/schemas/ won't trigger a worker rebuild.
+# Covers exactly what the worker Dockerfiles copy in: all of shared/ (COPY shared ./shared),
+# all of packages/worker-wrapper, and the image definitions themselves.
+# Any edit under shared/ therefore makes the worker bases stale and triggers a rebuild.
 WORKER_SOURCE_HASH = $(shell find \
-  shared/__init__.py shared/log_config shared/redis shared/redis_client.py \
-  shared/config.py shared/queues.py shared/contracts shared/crypto.py shared/constants.py \
+  shared \
   packages/worker-wrapper \
   services/worker-manager/images -type f \
   -not -path '*/__pycache__/*' -not -name '*.pyc' \
@@ -64,6 +63,8 @@ help:
 	@echo "Worker Images:"
 	@echo "  make rebuild-worker-images      - Rebuild worker base images (common → claude/factory/codex)"
 	@echo "  make rebuild-worker-images-hard - Rebuild with --no-cache (when cache is stale)"
+	@echo "  make check-worker-images        - Read-only staleness check (non-zero exit on drift)"
+	@echo "  make ensure-worker-images       - Check and rebuild if stale"
 
 # === Dependency Lock Files ===
 
@@ -95,7 +96,7 @@ logs:
 
 build:
 	$(DOCKER_COMPOSE) --profile build build
-	@$(MAKE) check-worker-images
+	@$(MAKE) ensure-worker-images
 
 # === Full Rebuild (with cache) ===
 # Stops stack, kills workers, rebuilds all service + worker images, restarts
@@ -105,8 +106,6 @@ rebuild:
 	$(DOCKER_COMPOSE) down --remove-orphans
 	@echo "🔪 Killing worker containers..."
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
-	@echo "🧹 Cleaning cached worker:* images..."
-	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
 	@echo "🔨 Building service images..."
 	$(DOCKER_COMPOSE) --profile build build
 	@echo "🔨 Building worker base images..."
@@ -131,16 +130,17 @@ rebuild-worker-images:
 		-t worker-base-common:latest \
 		-f services/worker-manager/images/worker-base-common/Dockerfile .
 	@echo "🔨 Building worker-base-claude..."
-	docker build -t worker-base-claude:latest \
+	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		-t worker-base-claude:latest \
 		-f services/worker-manager/images/worker-base-claude/Dockerfile .
 	@echo "🔨 Building worker-base-factory..."
-	docker build -t worker-base-factory:latest \
+	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		-t worker-base-factory:latest \
 		-f services/worker-manager/images/worker-base-factory/Dockerfile .
 	@echo "🔨 Building worker-base-codex..."
-	docker build -t worker-base-codex:latest \
+	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		-t worker-base-codex:latest \
 		-f services/worker-manager/images/worker-base-codex/Dockerfile .
-	@echo "🧹 Cleaning cached worker:* images..."
-	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
 	@echo "✅ Worker images rebuilt!"
 
 # Full rebuild with --no-cache (use when Docker cache is stale)
@@ -150,19 +150,20 @@ rebuild-worker-images-hard:
 		-t worker-base-common:latest \
 		-f services/worker-manager/images/worker-base-common/Dockerfile .
 	@echo "🔨 Building worker-base-claude (no-cache)..."
-	docker build --no-cache -t worker-base-claude:latest \
+	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		-t worker-base-claude:latest \
 		-f services/worker-manager/images/worker-base-claude/Dockerfile .
 	@echo "🔨 Building worker-base-factory (no-cache)..."
-	docker build --no-cache -t worker-base-factory:latest \
+	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		-t worker-base-factory:latest \
 		-f services/worker-manager/images/worker-base-factory/Dockerfile .
 	@echo "🔨 Building worker-base-codex (no-cache)..."
-	docker build --no-cache -t worker-base-codex:latest \
+	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		-t worker-base-codex:latest \
 		-f services/worker-manager/images/worker-base-codex/Dockerfile .
-	@echo "🧹 Cleaning cached worker:* images..."
-	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
 	@echo "✅ Worker images rebuilt (no-cache)!"
 
-# Check if worker images are stale and rebuild if needed
+# Read-only staleness check. Builds nothing, exits non-zero on drift.
 check-worker-images:
 	@CURRENT=$(WORKER_SOURCE_HASH); \
 	STALE=""; \
@@ -172,10 +173,18 @@ check-worker-images:
 	  if [ "$$CURRENT" != "$$STORED" ]; then STALE="$$STALE $$IMAGE($$STORED)"; fi; \
 	done; \
 	if [ -n "$$STALE" ]; then \
-	  echo "⚠️  Worker base images stale:$$STALE; rebuilding for hash $$CURRENT..."; \
-	  $(MAKE) rebuild-worker-images; \
+	  echo "⚠️  Worker base images stale (expected $$CURRENT):$$STALE"; \
+	  echo "   Fix with: make ensure-worker-images"; \
+	  exit 1; \
+	fi; \
+	echo "✅ Worker base images up to date (hash: $$CURRENT)"
+
+# Check and rebuild on drift. This is what other targets call.
+ensure-worker-images:
+	@if $(MAKE) --no-print-directory check-worker-images; then \
+	  :; \
 	else \
-	  echo "✅ Worker base images up to date (hash: $$CURRENT)"; \
+	  $(MAKE) rebuild-worker-images; \
 	fi
 
 # === Quality ===
@@ -389,7 +398,7 @@ nuke-hard: .nuke-hard-prune .nuke-common
 	done
 	$(DOCKER_COMPOSE) --profile build build $(BUILD_OPTS)
 	@echo "🔨 Checking worker base images..."
-	@$(MAKE) check-worker-images
+	@$(MAKE) ensure-worker-images
 	@echo "🗄️  Starting DB + API only (seed before scheduler to avoid reprovisioning)..."
 	$(DOCKER_COMPOSE) up -d db redis api
 	@echo "⏳ Waiting for API to be healthy..."

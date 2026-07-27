@@ -14,6 +14,8 @@ from src.docker_ops import DockerClientWrapper
 from src.manager import WorkerManager
 from src.image_builder import compute_image_hash
 
+BASE_SOURCE_HASH = "basehash0001"
+
 
 class TestDockerClientWrapperBuild:
     """Test Docker build functionality."""
@@ -80,6 +82,7 @@ class TestWorkerManagerBuildLogic:
         docker = MagicMock()
         docker.image_exists = AsyncMock(return_value=False)
         docker.build_image = AsyncMock()
+        docker.get_image_label = AsyncMock(return_value=BASE_SOURCE_HASH)
         return docker
 
     @pytest.mark.asyncio
@@ -99,7 +102,7 @@ class TestWorkerManagerBuildLogic:
         mock_docker.image_exists.assert_awaited_once()
         mock_docker.build_image.assert_awaited_once()
         # Should return the correct tag
-        expected_hash = compute_image_hash(["GIT"])
+        expected_hash = compute_image_hash(["GIT"], agent_type="claude", source_hash=BASE_SOURCE_HASH)
         assert image_tag == f"worker-test:{expected_hash}"
 
     @pytest.mark.asyncio
@@ -121,7 +124,7 @@ class TestWorkerManagerBuildLogic:
         # Should NOT have built (cache hit)
         mock_docker.build_image.assert_not_awaited()
         # Should still return correct tag
-        expected_hash = compute_image_hash(["GIT", "CURL"])
+        expected_hash = compute_image_hash(["GIT", "CURL"], agent_type="claude", source_hash=BASE_SOURCE_HASH)
         assert image_tag == f"worker-test:{expected_hash}"
 
     @pytest.mark.asyncio
@@ -169,6 +172,43 @@ class TestWorkerManagerBuildLogic:
         assert "claude" in dockerfile
 
     @pytest.mark.asyncio
+    async def test_ensure_or_build_image_tag_tracks_base_source_hash(self, mock_redis, mock_docker):
+        """A rebuilt base image must produce a different worker tag, not a stale cache hit."""
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        mock_docker.get_image_label.return_value = "basehash0001"
+        first = await manager.ensure_or_build_image(
+            capabilities=["GIT"],
+            base_image="worker-base:latest",
+            prefix="worker-test",
+        )
+
+        mock_docker.get_image_label.return_value = "basehash0002"
+        second = await manager.ensure_or_build_image(
+            capabilities=["GIT"],
+            base_image="worker-base:latest",
+            prefix="worker-test",
+        )
+
+        assert first != second
+
+    @pytest.mark.asyncio
+    async def test_ensure_or_build_image_fails_on_unlabelled_base(self, mock_redis, mock_docker):
+        """An unlabelled base image means the make targets never ran — crash instead of caching."""
+        mock_docker.get_image_label.return_value = None
+
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        with pytest.raises(RuntimeError, match="worker_source_hash"):
+            await manager.ensure_or_build_image(
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                prefix="worker-test",
+            )
+
+        mock_docker.build_image.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_ensure_or_build_image_empty_capabilities(self, mock_redis, mock_docker):
         """Empty capabilities should still work (use base image as-is)."""
         mock_docker.image_exists.return_value = False
@@ -184,7 +224,7 @@ class TestWorkerManagerBuildLogic:
 
         # Should still build (even if minimal)
         mock_docker.build_image.assert_awaited_once()
-        expected_hash = compute_image_hash([])
+        expected_hash = compute_image_hash([], agent_type="claude", source_hash=BASE_SOURCE_HASH)
         assert image_tag == f"worker-test:{expected_hash}"
 
 
@@ -205,6 +245,7 @@ class TestWorkerManagerCreateWithCapabilities:
         docker = MagicMock()
         docker.image_exists = AsyncMock(return_value=True)
         docker.build_image = AsyncMock()
+        docker.get_image_label = AsyncMock(return_value=BASE_SOURCE_HASH)
         docker.remove_container = AsyncMock()
         docker.create_network = AsyncMock()
         docker.connect_network = AsyncMock()
@@ -237,7 +278,7 @@ class TestWorkerManagerCreateWithCapabilities:
         mock_docker.image_exists.assert_awaited()
         mock_docker.run_container.assert_awaited_once()
         call_kwargs = mock_docker.run_container.call_args[1]
-        expected_hash = compute_image_hash(["GIT", "CURL"])
+        expected_hash = compute_image_hash(["GIT", "CURL"], agent_type="claude", source_hash=BASE_SOURCE_HASH)
         assert expected_hash in call_kwargs["image"]
 
     @pytest.mark.asyncio
