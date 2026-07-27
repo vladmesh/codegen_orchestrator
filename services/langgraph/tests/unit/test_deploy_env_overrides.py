@@ -7,13 +7,14 @@ the change, including a redeploy whose whole point is to remove a value.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from shared.contracts.env_overrides import EMPTY_OVERRIDES_DIGEST, env_overrides_digest
 from shared.contracts.queues.deploy import DeployAction, DeployMessage
-from src.consumers.deploy import _already_deployed_application
+from src.consumers.deploy import _already_deployed_application, _effective_env_overrides
 
 HEAD = "a" * 40
 ALLOCATED = {"backend": {"application_id": 7}}
@@ -109,3 +110,21 @@ def test_deploy_message_defaults_to_no_overrides() -> None:
     msg = DeployMessage(task_id="t", project_id="p", action=DeployAction.CREATE, head_sha=HEAD)
 
     assert msg.env_overrides == {}
+
+
+@pytest.mark.parametrize(("configured_audience", "message_audience"), [("", "42"), ("42", "84")])
+def test_deploy_cannot_override_the_configured_bot_audience(
+    configured_audience: str, message_audience: str
+) -> None:
+    project = SimpleNamespace(
+        config={
+            "bot_access": {
+                "mode": "public" if not configured_audience else "only_me",
+                "allowed_telegram_ids": configured_audience,
+            },
+            "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": configured_audience},
+        }
+    )
+
+    with pytest.raises(ValueError, match="cannot override"):
+        _effective_env_overrides(project, {"TG_BOT_ALLOWED_TELEGRAM_IDS": message_audience})

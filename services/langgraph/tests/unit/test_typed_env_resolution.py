@@ -151,7 +151,44 @@ async def test_private_bot_with_empty_audience_is_rejected():
         "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""},
     }
 
-    with pytest.raises(TypedSecretResolutionError, match="private bot audience is empty") as error:
+    with pytest.raises(
+        TypedSecretResolutionError, match="private bot audience contains no Telegram IDs"
+    ) as error:
+        await SecretResolverNode().run(state)
+
+    assert error.value.outcome == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
+async def test_private_bot_with_malformed_audience_is_rejected():
+    state = _state(_bot_contract())
+    state["project_spec"]["config"] = {
+        "bot_access": {"mode": "custom", "allowed_telegram_ids": "not-an-id"},
+        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "not-an-id"},
+    }
+
+    with pytest.raises(TypedSecretResolutionError, match="contains no Telegram IDs") as error:
+        await SecretResolverNode().run(state)
+
+    assert error.value.outcome == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "configured_audience", "message_audience"),
+    [("public", "", "42"), ("only_me", "42", "84")],
+)
+async def test_deploy_cannot_replace_configured_bot_audience(
+    mode, configured_audience, message_audience
+):
+    state = _state(_bot_contract())
+    state["project_spec"]["config"] = {
+        "bot_access": {"mode": mode, "allowed_telegram_ids": configured_audience},
+        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": configured_audience},
+    }
+    state["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": message_audience}
+
+    with pytest.raises(TypedSecretResolutionError, match="cannot override") as error:
         await SecretResolverNode().run(state)
 
     assert error.value.outcome == "environment_contract_invalid"
@@ -167,6 +204,27 @@ async def test_legacy_admin_secret_is_migrated_to_contract_audience(_decrypt):
     result = await SecretResolverNode().run(state)
 
     assert result["non_secret_values"]["TG_BOT_ALLOWED_TELEGRAM_IDS"] == "42"
+
+
+@pytest.mark.asyncio
+@patch(
+    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
+)
+async def test_legacy_admin_secret_is_ignored_when_the_contract_has_no_audience_literal(_decrypt):
+    entries = {
+        "DEBUG": {
+            "source": "literal",
+            "value": False,
+            "environments": ["production"],
+            "required": True,
+        }
+    }
+
+    result = await SecretResolverNode().run(
+        _state(entries, secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+    )
+
+    assert result["non_secret_values"] == {"DEBUG": "false"}
 
 
 @pytest.mark.asyncio

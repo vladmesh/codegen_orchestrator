@@ -65,6 +65,8 @@ __all__ = [
 
 logger = structlog.get_logger(__name__)
 
+_BOT_AUDIENCE_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
+
 _config: ConfigStore | None = None
 
 
@@ -178,6 +180,11 @@ def _effective_env_overrides(project: ProjectDTO, message_overrides: dict | None
         isinstance(key, str) and isinstance(value, str) for key, value in message_overrides.items()
     ):
         raise ValueError("deploy env_overrides must be a string mapping")
+    bot_access = (project.config or {}).get("bot_access")
+    if isinstance(bot_access, dict) and _BOT_AUDIENCE_KEY in message_overrides:
+        selected_audience = bot_access.get("allowed_telegram_ids")
+        if message_overrides[_BOT_AUDIENCE_KEY] != selected_audience:
+            raise ValueError("deploy cannot override the configured bot audience")
     return {**configured, **message_overrides}
 
 
