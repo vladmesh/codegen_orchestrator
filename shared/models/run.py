@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.run import RunStatus
@@ -42,7 +42,9 @@ class Run(Base):
     error_traceback: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Timing
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Redis stream for progress events
@@ -58,3 +60,12 @@ class Run(Base):
         String(255), ForeignKey("tasks.id"), nullable=True, index=True
     )
     iteration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Observability stays outside Run.result, whose type-specific shape is strict.
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agent_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    transcript_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    transcript_truncated: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

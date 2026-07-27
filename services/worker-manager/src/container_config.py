@@ -17,6 +17,8 @@ class WorkerContainerConfig:
     host_codex_home: Optional[str] = None
     api_key: Optional[str] = None
     workspace_host_path: Optional[str] = None
+    transcript_host_path: Optional[str] = None
+    transcript_max_bytes: int = 5 * 1024 * 1024
 
     def to_env_vars(
         self,
@@ -45,6 +47,8 @@ class WorkerContainerConfig:
             "WORKER_OUTPUT_STREAM": WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=self.worker_id),
             "WORKER_CONSUMER_GROUP": "worker_group",
             "WORKER_CONSUMER_NAME": self.worker_id,
+            "WORKER_TRANSCRIPT_DIR": "/artifacts/worker-transcripts",
+            "WORKER_TRANSCRIPT_MAX_BYTES": str(self.transcript_max_bytes),
         }
 
         if self.agent_type == AgentType.CODEX:
@@ -81,6 +85,12 @@ class WorkerContainerConfig:
         # Mount workspace directory if provided
         if self.workspace_host_path:
             volumes[self.workspace_host_path] = {"bind": "/workspace", "mode": "rw"}
+
+        if self.transcript_host_path:
+            volumes[self.transcript_host_path] = {
+                "bind": "/artifacts/worker-transcripts",
+                "mode": "rw",
+            }
 
         # Shared uv cache for fast package installs across workers
         volumes["uv-cache"] = {"bind": "/home/worker/.cache/uv", "mode": "rw"}
