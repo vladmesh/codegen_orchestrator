@@ -9,14 +9,26 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Stage 7 live validation is complete and now genuinely verified end to end:
-  the full mega passed 12/12 on 2026-07-24 (noop 7/7 plus LLM 5/5, including LLM deploy, `/health`
-  and non-LLM QA). This closes the gap described below — between Mega 2.0 and 2026-07-24 the LLM
-  path could not reach deploy at all. Remaining Stage 7 tail debt lives on the external board
-  (548, 676→527, 597, 673; 600 landed in PR #127). Stage 8 (Telegram end-to-end) is next on the
-  [stabilization map](plans/codegen-stabilization-v1.md); not started.
+- **Current Phase**: Stage 8 (Telegram end-to-end) is verified. On 2026-07-24 a Telegram message
+  produced a working generated bot with no manual step in between: PO dialogue, project and
+  repository, scaffold, architect decomposition, engineering, PR, CI, merge, deploy and `/health`.
+  Stage 7 is complete and verified the same day, when the full mega passed 12/12 (noop 7/7 plus
+  LLM 5/5, including LLM deploy, `/health` and non-LLM QA). Remaining Stage 7 tail debt lives on
+  the external board (548, 676→527, 597, 673; 600 landed in PR #127) and gates nothing. Next on
+  the [stabilization map](plans/codegen-stabilization-v1.md) is Stage 9, worker isolation
+  hardening, which must land before external users are onboarded.
 
 ## Current Facts
+
+- Bot access is a template contract, not generated code. service-template `0.3.6` declares
+  `TG_BOT_ALLOWED_TELEGRAM_IDS` (the audience; empty means public) and `TG_BOT_TEST_TELEGRAM_ID`
+  (one temporary identity for testing a private bot, revoked by removing the value).
+  `scheduler.service_template_ref` is pinned to that release. On the orchestrator side a deploy
+  can carry `env_overrides` for keys the contract declares as literals; the override digest is
+  recorded with the deployment, so the same commit with a different environment is a different
+  deploy and is not skipped. Filling the audience from the PO access menu is
+  `codegen_orchestrator-826`; issuing and revoking the temporary test identity around a QA run is
+  `codegen_orchestrator-744`.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker
@@ -125,7 +137,7 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 | CI normalization | COMPLETE | PR #30, [CHANGELOG 2026-07-11](CHANGELOG.md#2026-07-11) |
 | service-template contract audit | COMPLETE | PR #31, [contract audit](reports/codegen-service-template-contract.md) |
 | worker-mode proxy target drift (`codegen_orchestrator-398`) | COMPLETE | PR #32, [CHANGELOG 2026-07-12](CHANGELOG.md#2026-07-12) |
-| service-template production pin (`codegen_orchestrator-432`) | COMPLETE | PR #33 introduced the pin at `0.3.0`; current `scheduler.service_template_ref=0.3.5` |
+| service-template production pin (`codegen_orchestrator-432`) | COMPLETE | PR #33 introduced the pin at `0.3.0`; current `scheduler.service_template_ref=0.3.6` |
 | Stabilization sequence (`codegen_orchestrator-434`) | COMPLETE | [stabilization plan v1](plans/codegen-stabilization-v1.md) |
 | B7 response-DTO enums (`codegen_orchestrator-435`) | COMPLETE | lifecycle fields on task/story/server/application/incident/service-deployment DTOs now use their `StrEnum`; slice of Phase 2 only |
 | Unified contract vocabularies (`codegen_orchestrator-436`) | COMPLETE | `shared/contracts/vocab.py` canonical `AgentType`/`ActionType`/`ResultStatus`/`LifecycleEvent`; inline `Literal` sets removed, `error` synonym dropped; `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct; tests in `shared/tests/unit/test_vocab.py` |
