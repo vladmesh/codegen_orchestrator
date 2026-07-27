@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import structlog
 
+from shared.contracts.bot_access import parse_allowed_telegram_ids
 from shared.contracts.dto.run_result import MissingUserSecret
 from shared.contracts.env_contract import (
     AllocationEntry,
@@ -31,6 +32,8 @@ logger = structlog.get_logger()
 
 _MAX_TCP_PORT = 65535
 _REPOSITORY_PATH_PARTS = 2
+_BOT_AUDIENCE_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
+_LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
 
 
 class SecretResolutionError(RuntimeError):
@@ -100,15 +103,18 @@ class SecretResolverNode(FunctionalNode):
             ) from error
 
         encrypted = project_spec.get("config", {}).get("secrets", {})
+        config_secrets = decrypt_dict(encrypted) if encrypted else {}
+        env_overrides = self._environment_overrides(project_spec, config_secrets, state, contract)
         context = _ResolutionContext(
             project_id=project_id,
             project_spec=project_spec,
             state=state,
-            config_secrets=decrypt_dict(encrypted) if encrypted else {},
+            config_secrets=config_secrets,
             provided_secrets=state.get("provided_secrets", {}),
-            env_overrides=state.get("env_overrides", {}) or {},
+            env_overrides=env_overrides,
         )
         self._reject_undeclared_overrides(context.env_overrides, contract)
+        self._validate_bot_audience(project_spec, config_secrets, context.env_overrides, contract)
         resolved = _ResolvedValues()
 
         for key, entry in contract.entries.items():
@@ -148,6 +154,108 @@ class SecretResolverNode(FunctionalNode):
                 DeployOutcome.WAITING_FOR_USER_SECRET if resolved.missing_user else None
             ),
         }
+
+    @staticmethod
+    def _environment_overrides(
+        project_spec: dict, config_secrets: dict, state: DevOpsState, contract: CanonicalEnvContract
+    ) -> dict:
+        """Read persisted literals and retain old private bots during migration."""
+        configured = (project_spec.get("config") or {}).get("env_overrides", {})
+        message = state.get("env_overrides", {}) or {}
+        if not isinstance(configured, dict) or not isinstance(message, dict):
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                "project and deploy env_overrides must be mappings",
+            )
+        bot_access = (project_spec.get("config") or {}).get("bot_access")
+        if isinstance(bot_access, dict) and _BOT_AUDIENCE_KEY in message:
+            if message[_BOT_AUDIENCE_KEY] != bot_access.get("allowed_telegram_ids"):
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "deploy cannot override the configured bot audience",
+                )
+        overrides = {**configured, **message}
+        has_legacy_audience = _LEGACY_BOT_AUDIENCE_KEY in config_secrets
+        legacy_audience = config_secrets.get(_LEGACY_BOT_AUDIENCE_KEY)
+        if has_legacy_audience and _BOT_AUDIENCE_KEY in contract.entries:
+            if not isinstance(legacy_audience, str) or not parse_allowed_telegram_ids(
+                legacy_audience
+            ):
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "legacy private bot audience contains no Telegram IDs",
+                )
+            if _BOT_AUDIENCE_KEY in message and message[_BOT_AUDIENCE_KEY] != legacy_audience:
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "deploy cannot override the legacy private bot audience",
+                )
+            if _BOT_AUDIENCE_KEY in overrides and overrides[_BOT_AUDIENCE_KEY] != legacy_audience:
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "effective bot audience differs from legacy private bot audience",
+                )
+            if _BOT_AUDIENCE_KEY not in overrides:
+                overrides[_BOT_AUDIENCE_KEY] = str(legacy_audience)
+                logger.info("legacy_bot_access_migrated_for_deploy")
+        return overrides
+
+    @staticmethod
+    def _validate_bot_audience(
+        project_spec: dict,
+        config_secrets: dict,
+        overrides: dict,
+        contract: CanonicalEnvContract,
+    ) -> None:
+        """Do not let a private project become public through an empty literal."""
+        config = project_spec.get("config") or {}
+        bot_access = config.get("bot_access")
+        if bot_access is None:
+            modules = config.get("modules")
+            is_tg_bot_project = isinstance(modules, list) and "tg_bot" in modules
+            has_valid_legacy_audience = (
+                _LEGACY_BOT_AUDIENCE_KEY in config_secrets and _BOT_AUDIENCE_KEY in contract.entries
+            )
+            if is_tg_bot_project and not has_valid_legacy_audience:
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "tg_bot projects require explicit bot_access",
+                )
+            return
+        if not isinstance(bot_access, dict):
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID, "bot_access must be a mapping"
+            )
+        mode = bot_access.get("mode")
+        if mode not in {"only_me", "public", "custom"}:
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID, "bot_access mode is invalid"
+            )
+        if _BOT_AUDIENCE_KEY not in contract.entries:
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                f"bot access requires contract literal {_BOT_AUDIENCE_KEY}",
+            )
+        selected_audience = bot_access.get("allowed_telegram_ids")
+        if mode != "public" and (
+            not isinstance(selected_audience, str)
+            or not parse_allowed_telegram_ids(selected_audience)
+        ):
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                "private bot audience contains no Telegram IDs",
+            )
+        if mode == "public" and selected_audience != "":
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                "public bot audience must be empty",
+            )
+        audience = overrides.get(_BOT_AUDIENCE_KEY)
+        if audience != selected_audience:
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                "effective bot audience differs from configured bot audience",
+            )
 
     @staticmethod
     def _reject_undeclared_overrides(overrides: dict, contract: CanonicalEnvContract) -> None:

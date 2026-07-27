@@ -65,6 +65,9 @@ __all__ = [
 
 logger = structlog.get_logger(__name__)
 
+_BOT_AUDIENCE_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
+_LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
+
 _config: ConfigStore | None = None
 
 
@@ -147,7 +150,7 @@ def _build_subgraph_input(
         },
         "allocated_resources": allocated_resources,
         "provided_secrets": job_data.get("provided_secrets", {}),
-        "env_overrides": job_data.get("env_overrides", {}),
+        "env_overrides": _effective_env_overrides(project, job_data.get("env_overrides", {})),
         "head_sha": head_sha,
         "messages": [],
         "environment_contract": None,
@@ -160,6 +163,56 @@ def _build_subgraph_input(
         "smoke_result": None,
         "errors": [],
     }
+
+
+def _effective_env_overrides(project: ProjectDTO, message_overrides: dict | None) -> dict[str, str]:
+    """Combine persisted project literals with per-deploy literals.
+
+    Bot access is project configuration because it is product policy, while QA's
+    temporary identity remains a deploy-scoped override. Both are still accepted
+    only when the generated repository declares them as contract literals.
+    """
+    configured = (project.config or {}).get("env_overrides", {})
+    if not isinstance(configured, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in configured.items()
+    ):
+        raise ValueError("project env_overrides must be a string mapping")
+    if not isinstance(message_overrides, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in message_overrides.items()
+    ):
+        raise ValueError("deploy env_overrides must be a string mapping")
+    bot_access = (project.config or {}).get("bot_access")
+    if isinstance(bot_access, dict) and _BOT_AUDIENCE_KEY in message_overrides:
+        selected_audience = bot_access.get("allowed_telegram_ids")
+        if message_overrides[_BOT_AUDIENCE_KEY] != selected_audience:
+            raise ValueError("deploy cannot override the configured bot audience")
+    secrets = (project.config or {}).get("secrets", {})
+    if (
+        isinstance(secrets, dict)
+        and _LEGACY_BOT_AUDIENCE_KEY in secrets
+        and not isinstance(bot_access, dict)
+        and _BOT_AUDIENCE_KEY in message_overrides
+    ):
+        raise ValueError("deploy cannot override the legacy private bot audience")
+    return {**configured, **message_overrides}
+
+
+def _legacy_bot_audience_needs_contract_resolution(project: ProjectDTO) -> bool:
+    """Keep a legacy private bot out of the redundant-deploy shortcut.
+
+    The typed resolver can migrate the encrypted legacy value only after it has
+    loaded the generated repository's environment contract. At this point the
+    secret key is enough to know that the shortcut must not decide the deploy.
+    """
+    config = project.config or {}
+    secrets = config.get("secrets", {})
+    overrides = config.get("env_overrides", {})
+    return (
+        isinstance(secrets, dict)
+        and _LEGACY_BOT_AUDIENCE_KEY in secrets
+        and not isinstance(config.get("bot_access"), dict)
+        and (not isinstance(overrides, dict) or _BOT_AUDIENCE_KEY not in overrides)
+    )
 
 
 async def _already_deployed_application(
@@ -255,7 +308,7 @@ async def _handle_lifecycle_action(
     return lifecycle_result
 
 
-async def process_deploy_job(  # noqa: PLR0911, PLR0915
+async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
     job_data: dict, redis: RedisStreamClient
 ) -> dict:
     """Process a single deploy job by running DevOps Subgraph."""
@@ -369,9 +422,26 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             return live_work_unsettled({"status": "failed", "error": alloc_result})
         allocated_resources = alloc_result
 
-        application_id = await _already_deployed_application(
-            allocated_resources, msg.head_sha, msg.env_overrides
-        )
+        try:
+            env_overrides = _effective_env_overrides(project, msg.env_overrides)
+        except ValueError as error:
+            return await _handle_deploy_failure(
+                task_id=task_id,
+                project_id=project_id,
+                story_id=story_id,
+                error_msg=str(error),
+                callback_stream=callback_stream,
+                user_id=user_id,
+                redis=redis,
+                deploy_outcome=DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
+            )
+
+        application_id = None
+        if not _legacy_bot_audience_needs_contract_resolution(project):
+            application_id = await _already_deployed_application(
+                allocated_resources, msg.head_sha, env_overrides
+            )
         if application_id is not None:
             reason = "already_deployed_same_sha"
             logger.info(

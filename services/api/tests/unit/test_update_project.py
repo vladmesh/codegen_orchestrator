@@ -53,3 +53,39 @@ async def test_patch_project_rejects_slug_update():
 
     assert resp.status_code == 422  # noqa: PLR2004
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_patch_project_preserves_selected_private_bot_audience():
+    """Generic config PATCH locks the row before preserving the audience selection."""
+    project = _make_project()
+    project.config = {
+        "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
+        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
+    }
+    session = AsyncMock()
+    locked_project = MagicMock()
+    locked_project.scalar_one_or_none.return_value = project
+    session.execute = AsyncMock(return_value=locked_project)
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.patch(
+            f"/api/projects/{PROJECT_UUID}",
+            json={"config": {"tree": "src/"}},
+            headers={"X-Internal-Key": "test-internal-key"},
+        )
+
+    assert response.status_code == 200  # noqa: PLR2004
+    assert project.config == {
+        "tree": "src/",
+        "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
+        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
+    }
+    statement = str(session.execute.call_args.args[0])
+    assert "FOR UPDATE" in statement

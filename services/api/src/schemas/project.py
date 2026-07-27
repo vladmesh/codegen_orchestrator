@@ -3,8 +3,9 @@
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
+from shared.contracts.bot_access import parse_allowed_telegram_ids
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
 
@@ -54,3 +55,22 @@ class MergeSecretsRequest(BaseModel):
 
     secrets: dict[str, str]
     env_hints: dict[str, str] | None = None
+
+
+class BotAccessRequest(BaseModel):
+    """The product audience selected for a Telegram bot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str
+    allowed_telegram_ids: str = ""
+
+    @model_validator(mode="after")
+    def _private_audience_is_not_empty(self) -> "BotAccessRequest":
+        if self.mode not in {"only_me", "public", "custom"}:
+            raise ValueError("mode must be only_me, public, or custom")
+        if self.mode != "public" and not parse_allowed_telegram_ids(self.allowed_telegram_ids):
+            raise ValueError("a private bot audience must contain a Telegram ID")
+        if self.mode == "public" and self.allowed_telegram_ids != "":
+            raise ValueError("a public bot audience must be empty")
+        return self

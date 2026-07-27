@@ -6,6 +6,7 @@ from fastapi import HTTPException
 import pytest
 
 from src.routers.projects import _vet_config_write
+from src.schemas.project import BotAccessRequest
 
 BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
 HTTP_UNPROCESSABLE = 422
@@ -48,6 +49,38 @@ def test_stored_secrets_survive_a_config_write_that_omits_them():
     assert stored == {"tree": "src/", "secrets": {"KEY_A": "enc-a"}}
 
 
+def test_selected_private_bot_audience_survives_a_generic_config_write():
+    project = _project(
+        {
+            "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
+            "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
+        }
+    )
+
+    stored = _vet_config_write({"tree": "src/"}, project)
+
+    assert stored["bot_access"] == {"mode": "only_me", "allowed_telegram_ids": "42"}
+    assert stored["env_overrides"] == {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"}
+
+
+def test_generic_config_write_cannot_replace_selected_private_bot_audience():
+    project = _project(
+        {
+            "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
+            "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
+        }
+    )
+
+    with pytest.raises(HTTPException, match="bot access"):
+        _vet_config_write(
+            {
+                "bot_access": {"mode": "public", "allowed_telegram_ids": ""},
+                "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""},
+            },
+            project,
+        )
+
+
 def test_unchanged_secrets_blob_round_trips():
     project = _project({"secrets": {"KEY_A": "enc-a"}})
 
@@ -71,3 +104,20 @@ def test_plain_config_passes_through():
         "modules": ["backend"],
         "description": "bot",
     }
+
+
+@pytest.mark.parametrize("mode", ["only_me", "custom"])
+def test_private_bot_access_requires_an_audience(mode):
+    with pytest.raises(ValueError, match="private bot audience"):
+        BotAccessRequest(mode=mode)
+
+
+def test_public_bot_access_records_an_explicit_empty_audience():
+    request = BotAccessRequest(mode="public")
+    assert request.allowed_telegram_ids == ""
+
+
+@pytest.mark.parametrize("mode", ["only_me", "custom"])
+def test_private_bot_access_rejects_an_audience_the_template_treats_as_public(mode):
+    with pytest.raises(ValueError, match="Telegram ID"):
+        BotAccessRequest(mode=mode, allowed_telegram_ids="not-an-id")

@@ -159,9 +159,11 @@ async def get_project(project_id: str, *, config: RunnableConfig) -> str:
 async def set_project_secret(
     project_id: str, key: str, value: str, hint: str = "", *, config: RunnableConfig
 ) -> str:
-    """Set a secret for a project (e.g. OPENROUTER_API_KEY, ADMIN_TELEGRAM_ID).
+    """Set a secret for a project (e.g. OPENROUTER_API_KEY).
 
     Telegram bot tokens are refused here — use validate_telegram_token for those.
+    Telegram bot audiences are also refused here — use set_bot_access so the
+    template contract records the selected access mode.
 
     Args:
         project_id: Project ID.
@@ -173,6 +175,9 @@ async def set_project_secret(
     """
     api = _get_api()
     headers = _user_headers(config)
+
+    if key == "ADMIN_TELEGRAM_ID":
+        return "Error: bot access is managed through set_bot_access."
 
     payload: dict = {"secrets": {key: value}}
     if hint:
@@ -186,6 +191,34 @@ async def set_project_secret(
         return f"Error: {resp.json()['detail']}"
     resp.raise_for_status()
     return f"Secret '{key}' set for project {project_id}."
+
+
+@tool
+async def set_bot_access(
+    project_id: str, mode: str, allowed_telegram_ids: str = "", *, config: RunnableConfig
+) -> str:
+    """Set a Telegram bot's contract audience.
+
+    Use ``only_me`` without allowed_telegram_ids: the current user's Telegram ID is
+    used. Use ``public`` without IDs. For ``custom``, pass the
+    comma-separated base audience chosen by the user.
+    """
+    user_id = str(config["configurable"].get("user_id", "")).strip()
+    if mode == "only_me":
+        allowed_telegram_ids = user_id
+    if mode in {"only_me", "custom"} and not allowed_telegram_ids.strip():
+        return "Error: a private bot needs at least one Telegram ID in its audience."
+
+    api = _get_api()
+    resp = await api.post(
+        f"/api/projects/{project_id}/config/bot-access",
+        json={"mode": mode, "allowed_telegram_ids": allowed_telegram_ids},
+        headers=_user_headers(config),
+    )
+    if resp.status_code == HTTP_UNPROCESSABLE:
+        return f"Error: {resp.json()['detail']}"
+    resp.raise_for_status()
+    return f"Bot access set to '{mode}' for project {project_id}."
 
 
 @tool

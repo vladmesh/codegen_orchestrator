@@ -47,7 +47,13 @@ from shared.redis.client import RedisStreamClient
 from ..config import get_settings
 from ..database import get_async_session
 from ..dependencies import get_redis_client, is_internal_service
-from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
+from ..schemas import (
+    BotAccessRequest,
+    MergeSecretsRequest,
+    ProjectCreate,
+    ProjectRead,
+    ProjectUpdate,
+)
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
 from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
@@ -55,6 +61,10 @@ from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+_BOT_ALLOWED_IDS_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
+_LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
+_BOT_ACCESS_WRITE_DETAIL = "bot access is managed through /config/bot-access"
 
 
 async def _resolve_user(
@@ -102,6 +112,15 @@ async def _check_project_access(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: not project owner",
         )
+
+
+async def _load_locked_project(db: AsyncSession, project_id: uuid.UUID) -> Project:
+    """Load one project under the lock used by every config writer."""
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    project = (await db.execute(query)).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
 
 
 @router.post("/", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -266,9 +285,7 @@ async def update_project(
     _is_internal: bool = Depends(is_internal_service),
 ) -> Project:
     """Update project."""
-    project = await db.get(Project, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await _load_locked_project(db, project_id)
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
@@ -298,9 +315,7 @@ async def patch_project(
     _is_internal: bool = Depends(is_internal_service),
 ) -> Project:
     """Partial update of project (PATCH method)."""
-    project = await db.get(Project, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    project = await _load_locked_project(db, project_id)
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
@@ -361,6 +376,17 @@ def _reject_bot_token_writes(secrets: dict[str, str]) -> None:
             raise HTTPException(status_code=422, detail=_TELEGRAM_TOKEN_DETAIL)
 
 
+def _reject_legacy_bot_access_writes(secrets: dict[str, str]) -> None:
+    """Keep new audiences on the template contract path.
+
+    Existing encrypted legacy values remain readable by the deploy resolver while
+    projects migrate. This only rejects writes that would create or alter that
+    legacy state after the contract audience endpoint exists.
+    """
+    if _LEGACY_BOT_AUDIENCE_KEY in secrets:
+        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+
+
 def _find_bot_token_material(node: object, path: str = "config") -> str | None:
     """Locate a Telegram token key or token-shaped value anywhere in a config tree."""
     if isinstance(node, dict):
@@ -413,6 +439,35 @@ def _vet_config_write(config: dict, project: Project | None) -> dict:
     vetted = {key: value for key, value in config.items() if key != "secrets"}
     if stored:
         vetted["secrets"] = stored
+    stored_config = project.config if project is not None else {}
+    stored_access = stored_config.get("bot_access") if isinstance(stored_config, dict) else None
+    stored_overrides = (
+        stored_config.get("env_overrides", {}) if isinstance(stored_config, dict) else {}
+    )
+    stored_audience = (
+        stored_overrides.get(_BOT_ALLOWED_IDS_KEY) if isinstance(stored_overrides, dict) else None
+    )
+    incoming_access = config.get("bot_access")
+    incoming_overrides = config.get("env_overrides", {})
+
+    if stored_access is not None:
+        if incoming_access is not None and incoming_access != stored_access:
+            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+        vetted["bot_access"] = stored_access
+    elif incoming_access is not None:
+        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+
+    if stored_audience is not None:
+        if not isinstance(incoming_overrides, dict):
+            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+        incoming_audience = incoming_overrides.get(_BOT_ALLOWED_IDS_KEY)
+        if incoming_audience is not None and incoming_audience != stored_audience:
+            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+        overrides = dict(incoming_overrides)
+        overrides[_BOT_ALLOWED_IDS_KEY] = stored_audience
+        vetted["env_overrides"] = overrides
+    elif isinstance(incoming_overrides, dict) and _BOT_ALLOWED_IDS_KEY in incoming_overrides:
+        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
     return vetted
 
 
@@ -458,6 +513,7 @@ async def merge_secrets(
         )
 
     _reject_bot_token_writes(body.secrets)
+    _reject_legacy_bot_access_writes(body.secrets)
 
     # Lock the row to prevent concurrent read-modify-write
     query = select(Project).where(Project.id == project_id).with_for_update()
@@ -478,6 +534,39 @@ async def merge_secrets(
     )
 
     return {"keys": keys}
+
+
+@router.post("/{project_id}/config/bot-access")
+async def set_bot_access(
+    project_id: uuid.UUID,
+    body: BotAccessRequest,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Store the selected bot audience as a deploy-time contract literal."""
+    project = await _load_locked_project(db, project_id)
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+
+    config = dict(project.config or {})
+    overrides = dict(config.get("env_overrides") or {})
+    overrides[_BOT_ALLOWED_IDS_KEY] = body.allowed_telegram_ids
+    config["env_overrides"] = overrides
+    config["bot_access"] = {
+        "mode": body.mode,
+        "allowed_telegram_ids": body.allowed_telegram_ids,
+    }
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+    if _LEGACY_BOT_AUDIENCE_KEY in existing_secrets:
+        del existing_secrets[_LEGACY_BOT_AUDIENCE_KEY]
+        config["secrets"] = encrypt_dict(existing_secrets) if existing_secrets else {}
+        logger.info("legacy_bot_access_replaced", project_id=str(project_id), mode=body.mode)
+    project.config = config
+    await db.commit()
+
+    logger.info("project_bot_access_set", project_id=str(project_id), mode=body.mode)
+    return {"mode": body.mode, "allowed_telegram_ids": body.allowed_telegram_ids}
 
 
 @router.post("/{project_id}/telegram/token", response_model=TelegramTokenVerdict)
@@ -576,6 +665,9 @@ async def delete_secret(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Secret key '{key}' not found",
         )
+
+    if key == _LEGACY_BOT_AUDIENCE_KEY:
+        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
 
     del existing_secrets[key]
     config["secrets"] = encrypt_dict(existing_secrets) if existing_secrets else {}

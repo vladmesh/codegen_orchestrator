@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -103,6 +104,35 @@ async def test_deploy_worker_smoke_pass(
     assert len(run_complete_call) == 1
     run_result = run_complete_call[0][1]["json"]["result"]
     assert run_result["smoke_result"]["status"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_legacy_private_bot_same_sha_reaches_contract_resolution(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """A legacy audience must not be skipped before the resolver can migrate it."""
+    mock_api.get_project.return_value = make_project(
+        name="my-project",
+        config={"modules": ["backend"], "secrets": {"ADMIN_TELEGRAM_ID": "encrypted"}},
+    )
+    mock_api.get.return_value = [
+        {"deployed_sha": "a" * 40, "deployment_info": {"env_overrides_digest": ""}}
+    ]
+    mock_api.get_application.return_value = SimpleNamespace(status="running")
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={
+            "deployed_url": "http://1.2.3.4:8080",
+            "deployment_result": {},
+            "smoke_result": {"status": "pass", "checks": []},
+        }
+    )
+
+    from src.consumers.deploy import process_deploy_job
+
+    result = await process_deploy_job(_job(), mock_redis)
+
+    assert result["status"] == "success"
+    mock_devops_subgraph.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio

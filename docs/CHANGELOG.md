@@ -2,15 +2,24 @@
 
 ## 2026-07-27
 
+- Telegram bot audiences now come from service-template 0.3.6's environment contract. The PO
+  records an explicit `bot_access` selection and deploy-time
+  `TG_BOT_ALLOWED_TELEGRAM_IDS` literal for private, public and custom audiences;
+  private projects with an empty audience fail before deploy. Existing
+  `ADMIN_TELEGRAM_ID` secrets are mapped to the contract audience when the repository declares
+  it. Existing pre-0.3.6 repositories retain their legacy access behavior. The template enforces
+  the configured audience before application handlers, so the PO menu does not offer an
+  administrator-managed expansion until an access-contract extension exists.
+
 - Production scaffolding is pinned to service-template `0.3.6`, the release that makes bot access
-  a contract instead of code an engineering agent writes per project. The template declares
-  `TG_BOT_ALLOWED_TELEGRAM_IDS` for the audience and `TG_BOT_TEST_TELEGRAM_ID` for one temporary
-  identity that makes a private bot testable; removing the value revokes it and leaves no state
-  behind. The Stage 5 compatibility harness was run against the candidate release before the pin
-  moved, as the production template rule requires. Filling the audience from the PO access menu
-  and driving the temporary identity around a QA run are separate cards
-  (`codegen_orchestrator-826`, `codegen_orchestrator-744`); until the first lands, a project's
-  access check is still whatever the engineering agent wrote for it.
+   a contract instead of code an engineering agent writes per project. The template declares
+   `TG_BOT_ALLOWED_TELEGRAM_IDS` for the audience and `TG_BOT_TEST_TELEGRAM_ID` for one temporary
+   identity that makes a private bot testable; removing the value revokes it and leaves no state
+   behind. The Stage 5 compatibility harness was run against the candidate release before the pin
+   moved, as the production template rule requires. Filling the audience from the PO access menu
+   and driving the temporary identity around a QA run were tracked separately
+   (`codegen_orchestrator-826`, `codegen_orchestrator-744`). The audience menu is now implemented;
+   temporary-identity lifecycle remains in `codegen_orchestrator-744`.
 
 - Grafana now provisions a read-only PostgreSQL datasource and repository-owned server-capacity
   and run-operations dashboards. Server history panels were checked against 508 real snapshots;
