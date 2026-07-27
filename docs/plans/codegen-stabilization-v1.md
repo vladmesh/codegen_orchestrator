@@ -8,7 +8,7 @@ and evidence links.
 
 ## Current position
 
-Stages 1-7 are complete.
+Stages 1-8 are complete.
 
 - Stages 1-4: the 2026-07-14 Sprint 002 closeout-audit rerun is GREEN on fetched `origin/main`
   `b0463fb34473c2756a40b669d2b7c5559b02d486` — details in [STATUS](../STATUS.md) and the
@@ -24,8 +24,10 @@ Stages 1-7 are complete.
   `shared/live_harness_remote_cleanup.sh` (666), typed deploy outcomes (620), web port by role
   (665), the waiting_for_user_secret loop (670) and failure-safe task dispatch (672, PR #125).
 
-Stage 8 (Telegram end-to-end) is next; its entry gate is satisfied. Remaining Stage 7 tail debt
-is tracked on the external board and does not gate Stage 8: anonymous-volume cleanup (600),
+Stage 8 (Telegram end-to-end) is complete: on 2026-07-24 a Telegram message produced a working
+generated bot with no manual step between the dialogue and the deployed `/health` check. Stage 9
+(worker isolation hardening) is next. Remaining Stage 7 tail debt is tracked on the external board
+and gates nothing: anonymous-volume cleanup (600),
 lease-contract unification with the scaffolder (548), cleanup-layer extraction (676) followed by
 manifest-driven recovery (527), the env_usage workflow-references audit (597), and the outbox
 revision (673) which waits for live runs over the 672 dispatch fix.
@@ -34,7 +36,7 @@ revision (673) which waits for live runs over the 672 dispatch fix.
 
 Production scaffolding uses GitHub as the only `service-template` source:
 `gh:vladmesh/service-template`. The template version must be an explicit release tag, currently
-`0.3.5`, stored in system config as `scheduler.service_template_ref`. Do not use `HEAD`, `main` or
+`0.3.6`, stored in system config as `scheduler.service_template_ref`. Do not use `HEAD`, `main` or
 another floating ref for production scaffolds. Bump the tag only after a contract/integration run
 against the new template release.
 
@@ -74,6 +76,6 @@ Items that must not get lost:
 | 5. Deterministic mock smoke tests (COMPLETE) | Prove scaffold, worker-mode infra and generated app calls without live external services. | Sprint 002 phases 2-4 are complete or their touched contracts are stable enough for mock runs. | A repeatable mock smoke covers scaffold, setup, lint/tests, worker-start, smoke-probe, worker-call and cleanup with no resource leaks. | [contract audit §2](../reports/codegen-service-template-contract.md#2-deterministic-scaffold-smoke), `tests/integration/template/`, `tests/e2e/test_infrastructure_sanity.py` |
 | 6. codegen + service-template matrix (COMPLETE) | Catch cross-repo drift before either side ships a breaking release. | Mock smoke is deterministic and the template tag bump process is documented. | Matrix runs current codegen against the pinned template tag and candidate template release, then records the resolved template commit. | [contract audit §4](../reports/codegen-service-template-contract.md#4-minimal-target-contract-v1), `scripts/system_configs.yaml`, `scheduler.service_template_ref` |
 | 7. Live services (COMPLETE) | Validate provisioning, worker lifecycle, deploy and QA against real infrastructure after mock confidence. | Mock and matrix checks are green. | Live non-LLM services pass health, deploy and cleanup checks; failures produce typed outcomes rather than swallowed errors. | [DEV_PIPELINE](../DEV_PIPELINE.md), `make test-live`, `tests/live/` |
-| 8. Telegram end-to-end | Put the user-facing Telegram path on top of the stabilized backend and live-service layers. | Live services are stable and Sprint 002 fail-fast work is complete. | Telegram request to deployed bot is verified last, with PO, scaffold, engineering, deploy and QA already covered underneath. | [CONTRACTS engineering flow](../CONTRACTS.md#engineering-flow), [ROADMAP stabilize core pipeline](../ROADMAP.md#current-arc-stabilize-core-pipeline) |
+| 8. Telegram end-to-end (COMPLETE) | Put the user-facing Telegram path on top of the stabilized backend and live-service layers. | Live services are stable and Sprint 002 fail-fast work is complete. | Telegram request to deployed bot is verified last, with PO, scaffold, engineering, deploy and QA already covered underneath. | [CONTRACTS engineering flow](../CONTRACTS.md#engineering-flow), [ROADMAP stabilize core pipeline](../ROADMAP.md#current-arc-stabilize-core-pipeline) |
 | 9. Worker isolation hardening | Remove platform credentials from worker containers so an agent inside a worker cannot read other tenants' data or push to other repos. | Telegram end-to-end is stable. Must land before onboarding external users. | Worker env no longer contains `REDIS_URL` or `SECRETS_ENCRYPTION_KEY`; the GitHub token is scoped per repo instead of org-wide; all worker egress goes through worker-manager proxy endpoints. | [swarm revision](../brainstorms/worker-db-network-isolation.md#ревизия-2026-07-12-гриллинг-роя), `services/worker-manager/src/manager.py:422-438` |
 | 10. Swarm seams | Make worker capacity horizontal: adding a worker host becomes configuration, not a rewrite. | Worker isolation hardening is complete. Trigger: a second worker host or sustained parallel load. | Per-instance worker slot semaphore; hostname-based consumer name plus host field in worker status; ensure-workspace owned by worker-manager with `workspace_ready` meaning "scaffold pushed to git"; per-user concurrent slot cap; scaffolder no longer writes to the worker workspace path. | [swarm revision](../brainstorms/worker-db-network-isolation.md#ревизия-2026-07-12-гриллинг-роя), [scaling-15](../brainstorms/scaling-15-clients.md) |
