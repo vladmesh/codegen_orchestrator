@@ -11,4 +11,8 @@ RUN curl -fsSL https://app.factory.ai/cli | sh && \
     cp /root/.local/bin/droid /usr/local/bin/ && \
     chmod +x /usr/local/bin/droid
 
+# Own label, not inherited from the base: derived images must carry the hash they were built with
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH
+
 USER worker

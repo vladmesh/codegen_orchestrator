@@ -95,6 +95,14 @@ class DockerClientWrapper:
         except docker.errors.ImageNotFound:
             return False
 
+    async def get_image_label(self, image: str, label: str) -> str | None:
+        """Read a single label from a local image. Returns None if the label is absent."""
+        img = await self._run(self._client.images.get, image)
+        labels = img.attrs["Config"]["Labels"]
+        if not labels:
+            return None
+        return labels.get(label)
+
     async def pull_image(self, image: str) -> Any:
         """Pull an image."""
         try:

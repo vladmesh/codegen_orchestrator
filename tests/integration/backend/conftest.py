@@ -382,6 +382,7 @@ def _build_base_image(
     tag: str,
     shared_path: str,
     packages_path: str,
+    source_hash: str,
 ):
     """Build a worker base image, skipping if a cached version exists."""
     import shutil
@@ -412,6 +413,7 @@ def _build_base_image(
                 tag=tag,
                 rm=True,
                 nocache=False,  # Allow cache for faster rebuilds
+                buildargs={"SOURCE_HASH": source_hash},
             )
             for chunk in build_logs:
                 if "stream" in chunk:
@@ -468,8 +470,13 @@ def setup_worker_base_images():
     factory_tag = f"worker-base-factory:{factory_hash}"
 
     try:
-        # Build common first (claude and factory depend on it)
-        _build_base_image(client, common_dockerfile, common_tag, shared_path, packages_path)
+        # Build common first (claude and factory depend on it).
+        # All three carry the same SOURCE_HASH label: worker-manager reads it off the base
+        # image to build the runtime worker tag, and a mismatch between common and its
+        # derivatives would split that tag within one run.
+        _build_base_image(
+            client, common_dockerfile, common_tag, shared_path, packages_path, common_hash
+        )
         # Also tag as :latest so child Dockerfiles (FROM worker-base-common:latest) work
         client.images.get(common_tag).tag("worker-base-common", "latest")
 
@@ -482,6 +489,7 @@ def setup_worker_base_images():
                 claude_tag,
                 shared_path,
                 packages_path,
+                common_hash,
             )
             f_factory = executor.submit(
                 _build_base_image,
@@ -490,6 +498,7 @@ def setup_worker_base_images():
                 factory_tag,
                 shared_path,
                 packages_path,
+                common_hash,
             )
             f_claude.result()
             f_factory.result()

@@ -13,6 +13,11 @@ Agent CLIs are pre-installed in agent-specific base images for faster builds.
 
 import hashlib
 
+# Label carrying the hash of the source tree baked into a worker base image.
+# Set by the Makefile via --build-arg SOURCE_HASH; read back at runtime so the
+# per-capability worker tag changes whenever the base image code changes.
+WORKER_SOURCE_HASH_LABEL = "org.codegen.worker_source_hash"
+
 # Agent-specific base images with pre-installed CLIs
 # These images include Node.js + Claude CLI or Factory CLI respectively
 AGENT_BASE_IMAGES = {
@@ -60,13 +65,14 @@ APT_PACKAGES: dict[str, str] = {
 }
 
 
-def compute_image_hash(capabilities: list[str], agent_type: str = "claude") -> str:
+def compute_image_hash(capabilities: list[str], agent_type: str, source_hash: str) -> str:
     """
-    Compute deterministic hash for a set of capabilities and agent type.
+    Compute deterministic hash for a set of capabilities, agent type and base source hash.
 
     Args:
         capabilities: List of capability names (e.g., ["GIT", "GITHUB_CLI"])
-        agent_type: Type of agent ("claude" or "factory"). Defaults to "claude".
+        agent_type: Type of agent ("claude", "factory", "codex" or "noop")
+        source_hash: Value of the base image's WORKER_SOURCE_HASH_LABEL
 
     Returns:
         12-character lowercase hex hash
@@ -75,13 +81,18 @@ def compute_image_hash(capabilities: list[str], agent_type: str = "claude") -> s
         - Capabilities are sorted and deduplicated for determinism
         - Same capabilities in different order produce same hash
         - Different agent types with same capabilities produce DIFFERENT hash
+        - Different base source hashes produce DIFFERENT hash, so a code change in
+          shared/ or worker-wrapper invalidates the cached worker image
     """
+    if not source_hash:
+        raise ValueError("source_hash is required to compute a worker image hash")
+
     # Normalize: uppercase, deduplicate, sort
     normalized = sorted(set(cap.upper() for cap in capabilities))
 
     # Create canonical string representation
-    # Include agent_type in the canonical string to ensure uniqueness per agent
-    canonical = f"{agent_type.lower()}:" + ",".join(normalized)
+    # Include agent_type and source_hash to ensure uniqueness per agent and per base code
+    canonical = f"{source_hash}:{agent_type.lower()}:" + ",".join(normalized)
 
     # Compute SHA256 and truncate to 12 chars (per spec)
     hash_full = hashlib.sha256(canonical.encode()).hexdigest()
@@ -95,7 +106,12 @@ class ImageBuilder:
     Usage:
         builder = ImageBuilder(base_image="worker-base:latest")
         dockerfile = builder.generate_dockerfile(capabilities=["GIT", "CURL"])
-        tag = builder.get_image_tag(capabilities=["GIT", "CURL"], prefix="worker")
+        tag = builder.get_image_tag(
+            capabilities=["GIT", "CURL"],
+            prefix="worker",
+            agent_type="claude",
+            source_hash="a1b2c3d4e5f6a1b2",
+        )
     """
 
     def __init__(self, base_image: str):
@@ -174,7 +190,7 @@ class ImageBuilder:
 
         return "\n".join(lines)
 
-    def get_image_tag(self, capabilities: list[str], prefix: str, agent_type: str = "claude") -> str:
+    def get_image_tag(self, capabilities: list[str], prefix: str, agent_type: str, source_hash: str) -> str:
         """
         Generate Docker image tag for given capabilities.
 
@@ -182,9 +198,10 @@ class ImageBuilder:
             capabilities: List of capabilities
             prefix: Image name prefix (e.g., "worker" or "worker-test")
             agent_type: Type of agent ("claude", "factory", "codex", or "noop")
+            source_hash: Value of the base image's WORKER_SOURCE_HASH_LABEL
 
         Returns:
             Full image tag (e.g., "worker:a1b2c3d4e5f6")
         """
-        cap_hash = compute_image_hash(capabilities, agent_type=agent_type)
+        cap_hash = compute_image_hash(capabilities, agent_type=agent_type, source_hash=source_hash)
         return f"{prefix}:{cap_hash}"

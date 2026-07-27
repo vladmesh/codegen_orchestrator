@@ -14,7 +14,7 @@ from shared.redis import decode_redis_fields
 
 from .config import settings, worker_urls
 from .docker_ops import DockerClientWrapper
-from .image_builder import ImageBuilder
+from .image_builder import WORKER_SOURCE_HASH_LABEL, ImageBuilder, get_base_image
 from .container_config import WorkerContainerConfig
 from . import workspace as workspace_mod
 from .compose_runner import ComposeRunner
@@ -263,7 +263,23 @@ class WorkerManager:
             Full image tag (e.g., "worker:abc123def456")
         """
         builder = ImageBuilder(base_image=base_image)
-        image_tag = builder.get_image_tag(capabilities=capabilities, prefix=prefix, agent_type=agent_type)
+
+        # The generated Dockerfile builds FROM the agent-specific base, so the cache key must
+        # include that base's source hash — otherwise a rebuilt base is masked by a stale tag.
+        agent_base = get_base_image(agent_type)
+        source_hash = await self.docker.get_image_label(agent_base, WORKER_SOURCE_HASH_LABEL)
+        if not source_hash or source_hash == "unknown":
+            raise RuntimeError(
+                f"Base image {agent_base} carries no {WORKER_SOURCE_HASH_LABEL} label "
+                f"(got {source_hash!r}). Run 'make rebuild-worker-images'."
+            )
+
+        image_tag = builder.get_image_tag(
+            capabilities=capabilities,
+            prefix=prefix,
+            agent_type=agent_type,
+            source_hash=source_hash,
+        )
 
         exists = await self.docker.image_exists(image_tag)
 
@@ -273,6 +289,7 @@ class WorkerManager:
                 image_tag=image_tag,
                 capabilities=capabilities,
                 agent_type=agent_type,
+                source_hash=source_hash,
             )
             dockerfile = builder.generate_dockerfile(capabilities=capabilities, agent_type=agent_type)
             await self.docker.build_image(

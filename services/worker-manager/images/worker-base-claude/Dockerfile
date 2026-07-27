@@ -43,3 +43,7 @@ RUN mkdir -p /home/worker/.claude && \
 # Disable auto-updates and telemetry in containerized environment
 ENV DISABLE_AUTOUPDATER=1
 ENV DISABLE_TELEMETRY=1
+
+# Own label, not inherited from the base: derived images must carry the hash they were built with
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH

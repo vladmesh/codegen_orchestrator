@@ -88,6 +88,7 @@ def mock_docker():
     docker = AsyncMock()
     docker.exec_in_container = AsyncMock(return_value=(0, "OK"))
     docker.image_exists = AsyncMock(return_value=True)
+    docker.get_image_label = AsyncMock(return_value="basehash0001")
     docker.run_container = AsyncMock(return_value=MagicMock(id="container-123"))
     docker.connect_network = AsyncMock()
     docker.create_network = AsyncMock()
