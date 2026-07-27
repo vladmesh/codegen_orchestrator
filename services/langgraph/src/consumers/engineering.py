@@ -15,7 +15,7 @@ import structlog
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.run_result import AllocationFailureReason, EngineeringRunResult
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
@@ -113,13 +113,21 @@ async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDT
     if result.get("errors"):
         error_msg = "; ".join(result["errors"])
         logger.error("resource_allocation_failed", task_id=task_id, errors=result["errors"])
+        reason = result.get("allocation_failure_reason")
+        required_ram_mb = result.get("allocation_required_ram_mb")
+        min_disk_mb = result.get("allocation_min_disk_mb")
+        if reason and (not isinstance(required_ram_mb, int) or not isinstance(min_disk_mb, int)):
+            raise RuntimeError("allocation failure omitted admission requirements")
         await api_client.patch(
             f"runs/{task_id}",
             json={
                 "status": RunStatus.FAILED.value,
                 "error_message": error_msg,
                 "result": EngineeringRunResult(
-                    engineering_status=EngineeringStatus.FAILED
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason(reason) if reason else None,
+                    allocation_required_ram_mb=required_ram_mb,
+                    allocation_min_disk_mb=min_disk_mb,
                 ).model_dump(mode="json"),
             },
         )

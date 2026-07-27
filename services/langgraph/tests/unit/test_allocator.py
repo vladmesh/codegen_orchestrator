@@ -269,6 +269,22 @@ class TestSuitableServer:
                 await _find_suitable_server(512, 1024)
 
     @pytest.mark.asyncio
+    async def test_marks_request_larger_than_every_server_as_impossible(self):
+        server = _fresh_server(capacity_ram_mb=1024, used_ram_mb=0)
+        client = AsyncMock()
+        client.list_servers.return_value = [server]
+        client.list_applications.return_value = []
+
+        with (
+            patch("src.allocations.api_client", client),
+            patch("src.allocations.get_settings", return_value=_allocation_settings()),
+        ):
+            from src.allocations import AllocationError, _find_suitable_server
+
+            with pytest.raises(AllocationError, match="impossible_capacity"):
+                await _find_suitable_server(1024, 1024)
+
+    @pytest.mark.asyncio
     async def test_uses_worse_of_reserved_and_observed_memory(self):
         server = _fresh_server(capacity_ram_mb=4500, used_ram_mb=4000)
         client = AsyncMock()

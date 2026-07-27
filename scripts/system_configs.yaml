@@ -103,6 +103,16 @@
   category: supervisor
   description: "Max QA to fix cycles for one story"
 
+- key: supervisor.resource_wait_timeout_minutes
+  value: 1440
+  category: supervisor
+  description: "Minutes a task may wait for server capacity before human review"
+
+- key: supervisor.resource_wait_metrics_freshness_seconds
+  value: 300
+  category: supervisor
+  description: "Maximum age of server metrics used to resume capacity-waiting tasks"
+
 # --- deploy ---
 - key: deploy.max_deploy_fix_attempts
   value: 2

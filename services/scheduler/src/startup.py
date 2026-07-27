@@ -36,6 +36,8 @@ REQUIRED_KEYS = [
     "supervisor.story_retry_ttl",
     "supervisor.qa_failure_max_fingerprint_attempts",
     "supervisor.qa_max_fix_attempts",
+    "supervisor.resource_wait_timeout_minutes",
+    "supervisor.resource_wait_metrics_freshness_seconds",
     "health.ram_threshold_pct",
     "health.disk_threshold_pct",
     "health.consecutive_failure_threshold",

@@ -43,6 +43,7 @@ from .supervisor import (
     supervise_stuck_stories,
     supervise_stuck_tasks,
     supervise_testing_stories,
+    supervise_waiting_resource_tasks,
     supervise_waiting_user_secret_stories,
 )
 
@@ -65,6 +66,7 @@ __all__ = [
     "supervise_stuck_stories",
     "supervise_stuck_tasks",
     "supervise_testing_stories",
+    "supervise_waiting_resource_tasks",
     "supervise_waiting_user_secret_stories",
     "task_dispatcher_loop",
 ]
@@ -359,6 +361,7 @@ async def task_dispatcher_loop() -> None:
                 stuck_stories = await supervise_stuck_stories(api_client, redis_client)
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
                 failed_tasks = await supervise_failed_tasks(api_client, redis_client)
+                waiting_resources = await supervise_waiting_resource_tasks(api_client, redis_client)
                 deploying = await supervise_deploying_stories(api_client, redis_client)
                 waiting_secret = await supervise_waiting_user_secret_stories(
                     api_client, redis_client
@@ -379,6 +382,8 @@ async def task_dispatcher_loop() -> None:
                     + stuck_tasks.get("timed_out", 0)
                     + failed_tasks.get("retried", 0)
                     + failed_tasks.get("escalated", 0)
+                    + waiting_resources.get("resumed", 0)
+                    + waiting_resources.get("expired", 0)
                     + deploying.get("tested", 0)
                     + deploying.get("retried", 0)
                     + deploying.get("redispatched", 0)
