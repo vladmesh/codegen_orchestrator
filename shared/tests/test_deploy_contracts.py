@@ -1,8 +1,14 @@
 """Unit tests for deploy queue contracts."""
 
+from pydantic import ValidationError
 import pytest
 
-from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
+from shared.contracts.queues.deploy import (
+    LIFECYCLE_ACTIONS,
+    DeployAction,
+    DeployMessage,
+    DeployTrigger,
+)
 
 
 class TestDeployAction:
@@ -38,6 +44,7 @@ class TestDeployMessageAction:
                 task_id="deploy-123",
                 project_id="proj-abc",
                 action=action,
+                application_id=5 if action in LIFECYCLE_ACTIONS else None,
             )
             assert msg.action == action
 
@@ -48,6 +55,7 @@ class TestDeployMessageAction:
                 task_id="deploy-123",
                 project_id="proj-abc",
                 action=action_str,
+                application_id=5 if action_str in ("stop", "undeploy") else None,
             )
             assert isinstance(msg.action, DeployAction)
             assert msg.action.value == action_str
@@ -80,10 +88,22 @@ class TestDeployMessageAction:
                 task_id="deploy-123",
                 project_id="proj-abc",
                 action=action,
+                application_id=5,
             )
             data = msg.model_dump()
             restored = DeployMessage.model_validate(data)
             assert restored.action == action
+            assert restored.application_id == 5
+
+    def test_lifecycle_action_without_an_application_is_rejected(self):
+        """A stop/undeploy that names no target would bring down whatever the consumer picks."""
+        for action in LIFECYCLE_ACTIONS:
+            with pytest.raises(ValidationError, match="application_id is required"):
+                DeployMessage(
+                    task_id="deploy-123",
+                    project_id="proj-abc",
+                    action=action,
+                )
 
     def test_backward_compat_no_action_in_dict(self):
         """DeployMessage works when action is missing from input dict (old messages)."""

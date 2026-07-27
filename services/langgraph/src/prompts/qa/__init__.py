@@ -6,6 +6,13 @@ holds the prompt that drives that run, kept here for consistency with the other
 agent prompts (``architect``, ``po``, ``developer_worker``).
 """
 
+# Written by the qa_runner Ansible role into the QA user's home
+# (services/infra-service/ansible/roles/qa_runner). The runner sources it into
+# the QA command's environment (consumers/_qa_runner), so the agent gets
+# TELETHON_* without doing anything.
+TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
+QA_TEST_TELEGRAM_ID = 8202532144
+
 
 def build_qa_prompt(
     acceptance_criteria: str,
@@ -24,21 +31,37 @@ def build_qa_prompt(
         bot_section = f"""
 ### Telegram bot
 - Bot: @{bot_username}
-- Test via Telethon (pre-installed in /opt/qa-runner/venv):
-  ```bash
-  /opt/qa-runner/venv/bin/python3 -c "
-  from telethon.sync import TelegramClient
-  client = TelegramClient('/opt/qa-runner/telethon.session', api_id=0, api_hash='')
-  client.start()
-  client.send_message('@{bot_username}', '/start')
-  import time; time.sleep(3)
-  msgs = client.get_messages('@{bot_username}', limit=3)
-  for m in msgs:
-      print(m.text)
-  client.disconnect()
-  "
-  ```
-- api_id/api_hash can be 0/empty when session file already exists
+- You write to the bot as a real Telegram user. TELETHON_API_ID,
+  TELETHON_API_HASH and TELETHON_SESSION (an authorized StringSession) are
+  already exported in your shell. Do not source anything, do not look for a
+  session file, and never print the values or paste them into the report.
+- Test via Telethon (pre-installed in /opt/qa-runner/venv). Run this verbatim —
+  the python body must stay unindented or python3 -c raises IndentationError:
+
+```bash
+/opt/qa-runner/venv/bin/python3 -c "
+import os, time
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
+client = TelegramClient(
+    StringSession(os.environ['TELETHON_SESSION']),
+    int(os.environ['TELETHON_API_ID']),
+    os.environ['TELETHON_API_HASH'],
+)
+client.start()
+client.send_message('@{bot_username}', '/start')
+time.sleep(3)
+for m in client.get_messages('@{bot_username}', limit=3):
+    print(m.text)
+client.disconnect()
+"
+```
+- Every Telegram check is either pass or fail, decided by running the snippet
+  above. "Blocked", "skipped" and "cannot test" are not allowed results: if you
+  have not run the snippet, you have no result to report. Do not substitute code
+  reading, and do not fall back to a session file path.
+- If the snippet errors, run it once more, then report the Telegram checks as
+  failed and paste the traceback's last line as the detail.
 """
 
     return f"""\
@@ -57,6 +80,13 @@ CRITICAL RULES:
 - "Code inspection confirms X" is NOT a valid test result.
 - If a test requires sending a Telegram command, you MUST actually send it
   and verify the bot's response — not read the handler code.
+- Never send POST, PUT, PATCH, or DELETE to the application API. This includes
+  creating a test user, changing privileges, and calling any write endpoint
+  through curl, Python, a browser, or another tool. The runner detects a write
+  attempt and blocks the run with a durable trace. QA may send Telegram messages
+  and make HTTP GET requests only. The deterministic QA identity is
+  `telegram_id={QA_TEST_TELEGRAM_ID}`; do not create it merely to obtain access
+  to a private bot. Access is provided by the platform's temporary test mechanism.
 
 ## Acceptance Criteria (what the application must do)
 {acceptance_criteria}
@@ -112,4 +142,8 @@ After writing QA_REPORT.md, return ONLY this JSON:
   "pass": true/false,
   "checks": [{{"name": "check name", "pass": true/false, "detail": "one-line summary"}}],
   "summary": "brief summary"
-}}"""
+}}
+
+Do not claim cleanup results in this JSON. The QA runner records any detected
+residual state itself; it does not attempt a generic rollback.
+"""

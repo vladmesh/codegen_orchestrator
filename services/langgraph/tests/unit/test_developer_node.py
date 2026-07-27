@@ -807,3 +807,11 @@ class TestBranchPassing:
 
         call_kwargs = mock_send.call_args[1]
         assert call_kwargs["branch"] == "story/story-xyz"
+
+
+def test_reported_model_reads_claude_json_before_stderr() -> None:
+    from src.nodes.developer import DeveloperNode
+
+    output = '{"modelUsage": {"claude-sonnet-4-20250514": {}}}\n--- stderr ---\nwarning'
+
+    assert DeveloperNode._reported_model(output) == "claude-sonnet-4-20250514"

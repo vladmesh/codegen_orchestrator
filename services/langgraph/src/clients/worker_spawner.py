@@ -56,6 +56,12 @@ class SpawnResult:
     worker_id: str | None = None
     gave_up_reason: str | None = None
     worker_report: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    transcript_path: str | None = None
+    transcript_truncated: bool | None = None
 
 
 class WorkerOutputDecodeError(Exception):
@@ -127,6 +133,12 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             worker_id=worker_id,
             worker_report=result.worker_report,
             logs_tail=result.agent_stdout_tail,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            total_tokens=result.total_tokens,
+            cost_usd=result.cost_usd,
+            transcript_path=result.transcript_path,
+            transcript_truncated=result.transcript_truncated,
         )
     if isinstance(result, WorkerBlockedResult):
         return SpawnResult(
@@ -138,6 +150,12 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             gave_up_reason=result.block_reason,
             worker_report=result.worker_report,
             logs_tail=result.agent_stdout_tail,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            total_tokens=result.total_tokens,
+            cost_usd=result.cost_usd,
+            transcript_path=result.transcript_path,
+            transcript_truncated=result.transcript_truncated,
         )
     # WorkerFailedResult
     return SpawnResult(
@@ -149,6 +167,12 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         worker_id=worker_id,
         worker_report=result.worker_report,
         logs_tail=result.agent_stdout_tail,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        total_tokens=result.total_tokens,
+        cost_usd=result.cost_usd,
+        transcript_path=result.transcript_path,
+        transcript_truncated=result.transcript_truncated,
     )
 
 

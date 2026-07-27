@@ -6,6 +6,7 @@ Contains only methods needed for provisioning operations.
 from __future__ import annotations
 
 from datetime import datetime
+from http import HTTPStatus
 import os
 from typing import Any
 
@@ -94,6 +95,16 @@ class InfrastructureAPIClient:
         """Get server info by handle."""
         resp = await self._request("GET", f"servers/{server_handle}")
         return ServerDTO.model_validate(resp.json())
+
+    async def get_server_ssh_key(self, server_handle: str) -> str | None:
+        """Get a server's decrypted SSH private key, if one is stored."""
+        try:
+            resp = await self._request("GET", f"servers/{server_handle}/ssh-key")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == HTTPStatus.NOT_FOUND:
+                return None
+            raise
+        return resp.json().get("ssh_key")
 
     async def update_server(self, server_handle: str, payload: dict) -> dict:
         """Update server fields."""

@@ -2,9 +2,11 @@
 
 > **Дата**: 2026-03-13
 > **Контекст**: Нужна админка для мониторинга и управления оркестратором — проекты, таски, воркеры, очереди, логи, трейсинг агентов, инспекция worker-контейнеров
-> **Status**: done
+> **Status**: done (historical; tracing sections superseded by codegen_orchestrator-795)
 
 ---
+
+> The Langfuse and LLM-tracing parts below describe the March 2026 decision. They were removed by codegen_orchestrator-795 after the receiver never produced usable trace data. Loki, Promtail, Grafana, and product analytics remain.
 
 ## Current State
 
@@ -277,3 +279,4 @@ Worker-manager — единственный сервис с Docker socket и д�
 - → idea: "Pipeline flow visualization (React Flow) — real-time project pipeline"
 - → idea: "WebSocket/SSE live worker log streaming"
 - → idea: "Prometheus exporter — task counts, queue lengths, worker metrics"
+

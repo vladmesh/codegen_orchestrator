@@ -1,8 +1,13 @@
+import os
 from unittest.mock import MagicMock
 
 import pytest
 
-from src import startup
+os.environ.setdefault("HEALTH_CHECK_INTERVAL", "300")
+os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
+
+from shared.config_store import ConfigStoreUnavailableError
+from src import main, startup
 from src.tasks import supervisor, task_dispatcher
 
 
@@ -46,6 +51,8 @@ def test_required_keys_cover_every_scheduler_task_config_value():
         "supervisor.task_stuck_threshold_minutes",
         "supervisor.story_max_architect_retries",
         "supervisor.story_retry_ttl",
+        "supervisor.qa_failure_max_fingerprint_attempts",
+        "supervisor.qa_max_fix_attempts",
         "health.ram_threshold_pct",
         "health.disk_threshold_pct",
         "health.consecutive_failure_threshold",
@@ -54,4 +61,26 @@ def test_required_keys_cover_every_scheduler_task_config_value():
         "health.metrics_cleanup_interval_seconds",
         "health.http_timeout",
         "scheduler.ci_failure_max_fingerprint_attempts",
+        "scheduler.ci_failure_log_excerpt_lines",
     } <= set(startup.REQUIRED_KEYS)
+
+
+@pytest.mark.asyncio
+async def test_startup_retries_config_validation_until_api_is_available(monkeypatch):
+    attempts = 0
+
+    def validate_configs():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ConfigStoreUnavailableError("System config API is unavailable")
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(main, "_validate_configs", validate_configs)
+    monkeypatch.setattr(main.asyncio, "sleep", no_wait)
+
+    await main.initialize_configs()
+
+    assert attempts == 2

@@ -132,6 +132,22 @@ class TestMonitoringTasksYaml:
             content = task["copy"].get("content", "")
             assert "/var/run/docker.sock" in content, "Promtail must mount Docker socket"
 
+    def test_node_exporter_is_verified_from_controller(self):
+        verification_tasks = [
+            task for task in self.tasks if "Verify node exporter" in task.get("name", "")
+        ]
+        assert len(verification_tasks) == 1
+        task = verification_tasks[0]
+        assert task["delegate_to"] == "localhost"
+        assert task["ansible.builtin.uri"]["url"] == (
+            "http://{{ hostvars[inventory_hostname].ansible_host | "
+            "default(inventory_hostname) }}:{{ node_exporter_port }}/metrics"
+        )
+        assert task["register"] == "node_exporter_health"
+        assert task["until"] == "node_exporter_health.status == 200"
+        assert task["retries"] == 5
+        assert task["delay"] == 3
+
 
 class TestPromtailTemplate:
     """Verify promtail.yml.j2 template structure."""

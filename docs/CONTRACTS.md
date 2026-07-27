@@ -431,6 +431,7 @@ class TaskStatus(StrEnum):
     TESTING = "testing"
     DONE = "done"
     BLOCKED = "blocked"
+    WAITING_RESOURCES = "waiting_resources"
     WAITING_HUMAN_REVIEW = "waiting_human_review"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -990,6 +991,11 @@ class DeployMessage(BaseMessage):
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: DeployAction = DeployAction.CREATE
     deploy_fix_attempt: int = 0
+    head_sha: OptionalCommitSha = ""
+    # Required for STOP/UNDEPLOY, rejected as missing by the model otherwise.
+    # A project can run on several servers, so the consumer must bring down the
+    # application it was told about instead of picking one itself.
+    application_id: int | None = None
 
 
 class DeployResult(BaseResult):
@@ -1035,7 +1041,7 @@ class QAMessage(BaseMessage):
 
 Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the message. Both refuse to create a QA run without them — the supervisor fails the story visibly before it reaches TESTING, and `run-e2e` answers 422 — so QA never starts a run it can only error out of.
 
-**Bot username:** `Repository.bot_username` is the stored source. PO's `validate_telegram_token` writes it there from the `getMe` response when the user hands over a token, and both producers read it off the same record they read the criteria from. The deploy smoke check also reports a `bot_username` on `DeployRunResult`; the supervisor uses it only when the repository has none. A tg_bot project reaching QA without a username errors the run, so a write that silently does nothing turns a working bot into a failed story — the PO tool raises instead.
+**Bot username:** `Repository.bot_username` is the stored source. `POST /api/projects/{id}/telegram/token` writes it there from the `getMe` response in the same transaction that stores the token, and both producers read it off the same record they read the criteria from. A project without a primary repository gets 409 instead of a half-bound token. The deploy smoke check also reports a `bot_username` on `DeployRunResult`; the supervisor uses it only when the repository has none. A tg_bot project reaching QA without a username errors the run, so a write that silently does nothing turns a working bot into a failed story — the endpoint refuses instead.
 
 **Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to Claude Code on the server instead.
 
@@ -1272,7 +1278,7 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 
 > **Transport note:** PO streams use **flat Redis fields** (not JSON `data` wrapper). Use `to_flat_fields()` / `from_flat_fields()` helpers from `shared.contracts.queues.po` for serialization.
 
-**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`.
+**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`. User-facing resource lifecycle events are `task_waiting_resources`, `task_impossible_capacity`, and `task_resources_resumed`; the scheduler supplies context, PO writes the user text.
 
 ---
 

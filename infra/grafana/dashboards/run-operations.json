@@ -1,0 +1,71 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [{ "format": "time_series", "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), type || ' / ' || status AS metric, count(*)::numeric AS value FROM runs WHERE $__timeFilter(created_at) AND ('$run_type' = 'All' OR type IN (${run_type:sqlstring})) GROUP BY 1, 2 ORDER BY 1, 2", "refId": "A" }],
+      "title": "Runs by type and outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1 }, "overrides": [] },
+      "gridPos": { "h": 9, "w": 6, "x": 12, "y": 0 },
+      "id": 2,
+      "options": { "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "format": "table", "rawSql": "SELECT 100.0 * count(*) FILTER (WHERE status IN ('failed', 'cancelled')) / NULLIF(count(*) FILTER (WHERE status IN ('completed', 'failed', 'cancelled')), 0) AS value FROM runs WHERE $__timeFilter(created_at) AND ('$run_type' = 'All' OR type IN (${run_type:sqlstring}))", "refId": "A" }],
+      "title": "Failure rate",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 9, "w": 6, "x": 18, "y": 0 },
+      "id": 3,
+      "options": { "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{ "format": "table", "rawSql": "SELECT type AS metric, avg(EXTRACT(EPOCH FROM completed_at - started_at)) AS value FROM runs WHERE $__timeFilter(created_at) AND completed_at IS NOT NULL AND started_at IS NOT NULL AND ('$run_type' = 'All' OR type IN (${run_type:sqlstring})) GROUP BY type ORDER BY type", "refId": "A" }],
+      "title": "Run duration",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "min": 0 }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "id": 4,
+      "options": { "showHeader": true },
+      "targets": [{ "format": "table", "rawSql": "WITH event_iterations AS (SELECT task_id, max(COALESCE(iteration, 0)) AS latest_iteration FROM task_events WHERE $__timeFilter(created_at) GROUP BY task_id), story_runs AS (SELECT story_id, count(*) AS run_count FROM runs WHERE $__timeFilter(created_at) AND story_id IS NOT NULL GROUP BY story_id) SELECT story_runs.story_id, story_runs.run_count, COALESCE(sum(event_iterations.latest_iteration), 0) AS task_iterations FROM story_runs LEFT JOIN tasks ON tasks.story_id = story_runs.story_id LEFT JOIN event_iterations ON event_iterations.task_id = tasks.id GROUP BY story_runs.story_id, story_runs.run_count HAVING story_runs.run_count > 1 OR COALESCE(sum(event_iterations.latest_iteration), 0) > 0 ORDER BY story_runs.run_count DESC, story_runs.story_id", "refId": "A" }],
+      "title": "Story retries",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "id": 5,
+      "targets": [{ "format": "table", "rawSql": "SELECT COALESCE(agent_profile->>'name', agent_profile->>'agent_type', 'not recorded') AS metric, CASE WHEN count(total_tokens) = 0 THEN NULL ELSE sum(total_tokens) END AS value FROM runs WHERE $__timeFilter(created_at) AND ('$run_type' = 'All' OR type IN (${run_type:sqlstring})) GROUP BY 1 ORDER BY 1", "refId": "A" }],
+      "title": "Tokens by head profile",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4 }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "id": 6,
+      "targets": [{ "format": "table", "rawSql": "SELECT COALESCE(agent_profile->>'name', agent_profile->>'agent_type', 'not recorded') AS metric, CASE WHEN count(cost_usd) = 0 THEN NULL ELSE sum(cost_usd) END AS value FROM runs WHERE $__timeFilter(created_at) AND ('$run_type' = 'All' OR type IN (${run_type:sqlstring})) GROUP BY 1 ORDER BY 1", "refId": "A" }],
+      "title": "Cost by head profile",
+      "type": "bargauge"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["observability", "runs"],
+  "templating": { "list": [{ "allValue": "All", "current": { "selected": true, "text": "All", "value": "All" }, "datasource": { "type": "postgres", "uid": "postgres" }, "includeAll": true, "multi": true, "name": "run_type", "query": "SELECT DISTINCT type FROM runs ORDER BY 1", "refresh": 2, "type": "query" }] },
+  "time": { "from": "now-7d", "to": "now" },
+  "timezone": "",
+  "title": "Run operations",
+  "uid": "run-operations",
+  "version": 1
+}

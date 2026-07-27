@@ -71,9 +71,19 @@ class TestHandleMessage:
         mock_graph.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("event_type", ["story_completed", "story_failed"])
+    @pytest.mark.parametrize(
+        "event_type",
+        [
+            "story_completed",
+            "story_failed",
+            "story_quarantined",
+            "task_waiting_resources",
+            "task_impossible_capacity",
+            "task_resources_resumed",
+        ],
+    )
     async def test_story_event_passes_through(self, mock_graph, mock_client, event_type):
-        """Story-level events (story_completed, story_failed) should invoke PO."""
+        """User-facing lifecycle events should invoke PO."""
         data = {
             "type": "system_event",
             "event": event_type,
@@ -101,6 +111,19 @@ class TestHandleMessage:
         assert isinstance(msg, HumanMessage)
         assert msg.content.startswith("[system: reminder]")
         assert "check task eng-123" in msg.content
+
+    @pytest.mark.asyncio
+    async def test_reminder_passes_story_provenance_to_tools(self, mock_graph, mock_client):
+        data = {
+            "type": "reminder",
+            "text": "check story story-second",
+            "story_id": "story-second",
+        }
+
+        await _handle_message(mock_graph, mock_client, "user-1", data)
+
+        config = mock_graph.ainvoke.call_args.kwargs["config"]
+        assert config["configurable"]["retry_story_id"] == "story-second"
 
     @pytest.mark.asyncio
     async def test_uses_thread_id_per_user(self, mock_graph, mock_client):

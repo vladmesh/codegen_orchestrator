@@ -6,6 +6,8 @@ Optional: CHECKPOINT_DATABASE_URL (PostgreSQL for LangGraph checkpointer persist
 
 from functools import lru_cache
 
+from pydantic import Field
+
 from shared.config import (
     BaseSettings,
     api_base_url_field,
@@ -24,6 +26,11 @@ class Settings(BaseSettings):
 
     # Worker configuration
     default_agent_type: AgentType = default_agent_type_field()
+
+    # Resource allocation admission controls. Both values are intentionally
+    # environment-configurable because provider and workload characteristics vary.
+    allocation_ram_reserve_mb: int = Field(default=256, ge=0)
+    allocation_metrics_freshness_seconds: int = Field(default=300, gt=0)
 
     # Optional: Mount host Claude session for dev agents (avoids API key need)
     mount_claude_session: bool = True

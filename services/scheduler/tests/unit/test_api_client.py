@@ -142,6 +142,40 @@ class TestFailStory:
         assert result.status == "failed"
 
 
+class TestTransitionStory:
+    @pytest.mark.asyncio
+    async def test_human_review_uses_state_machine_endpoint(self, api_client):
+        """Blocked QA must use the API transition, not a mutable story patch."""
+        mock = _mock_http(_story_data(status="waiting_human_review"))
+        api_client._client = mock
+
+        result = await api_client.transition_story("story-1", "human-review")
+
+        mock.request.assert_called_once_with(
+            "POST",
+            "/api/stories/story-1/human-review",
+            headers=_INTERNAL_HEADERS,
+            json={"actor": "architect"},
+        )
+        assert result.status == "waiting_human_review"
+
+
+class TestStopApplication:
+    @pytest.mark.asyncio
+    async def test_stop_application_requests_token_preserving_stop(self, api_client):
+        mock = _mock_http(_app_data(status="stopping"))
+        api_client._client = mock
+
+        await api_client.stop_application(42)
+
+        mock.request.assert_called_once_with(
+            "POST",
+            "/api/applications/42/stop",
+            headers=_INTERNAL_HEADERS,
+            json={"actor": "supervisor"},
+        )
+
+
 class TestCreateIncident:
     @pytest.mark.asyncio
     async def test_create_incident_posts_correctly(self, api_client):

@@ -21,6 +21,10 @@ logger = structlog.get_logger()
 _DEFAULT_SENTINEL = object()
 
 
+class ConfigStoreUnavailableError(RuntimeError):
+    """Raised when the system-config API cannot answer a config request."""
+
+
 class ConfigStore:
     """Read system configs from API with in-memory TTL cache."""
 
@@ -42,18 +46,31 @@ class ConfigStore:
 
         try:
             resp = httpx.get(self._api_url(f"system-configs/{key}"), timeout=10.0)
-            if resp.status_code == httpx.codes.OK:
-                value = resp.json()["value"]
-                with self._lock:
-                    self._cache[key] = (value, time.monotonic() + self._cache_ttl)
-                return value
-        except httpx.RequestError:
+        except httpx.RequestError as exc:
             # If API is down and we have a stale cache entry, use it
             with self._lock:
                 cached = self._cache.get(key)
                 if cached:
                     logger.warning("config_store_using_stale_cache", key=key)
                     return cached[0]
+            raise ConfigStoreUnavailableError(
+                f"System config API is unavailable while reading '{key}'"
+            ) from exc
+
+        if resp.status_code == httpx.codes.OK:
+            try:
+                value = resp.json()["value"]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ConfigStoreUnavailableError(
+                    f"System config API returned an invalid response while reading '{key}'"
+                ) from exc
+            with self._lock:
+                self._cache[key] = (value, time.monotonic() + self._cache_ttl)
+            return value
+        if resp.status_code != httpx.codes.NOT_FOUND:
+            raise ConfigStoreUnavailableError(
+                f"System config API returned HTTP {resp.status_code} while reading '{key}'"
+            )
 
         if default is not _DEFAULT_SENTINEL:
             return default

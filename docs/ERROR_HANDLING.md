@@ -112,8 +112,11 @@ Atomic `SET NX` Redis lock per project prevents duplicate deploys. Replaces the 
 ### Stale Worker Cleanup
 `_check_project_lock()` in the engineering consumer verifies `worker:status` in Redis. Workers in terminal states (`DEAD`/`FAILED`/`STOPPED`) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual intervention.
 
+### Resource Allocation Capacity
+Typed allocation failures for insufficient free or reserved RAM park the task in `waiting_resources`, rather than consuming an engineering retry. The scheduler resumes it after fresh server metrics satisfy the same conservative RAM and disk admission checks, and moves it to human review after the configured wait timeout. A request that exceeds every managed server is escalated immediately. `no_fresh_metrics` is an observability failure and stays on the technical-failure path.
+
 ### Proactive Message Spam Filter
-Only two events reach the user via `po:proactive`: (1) deploy success, (2) permanent story failure. All intermediate failures (smoke, precheck, workflow) are handled internally without spamming the user.
+PO sends user-facing lifecycle messages through `po:proactive`: deploy success, permanent story failure, and resource-wait entry, escalation, and resumption. Intermediate smoke, precheck, and workflow failures stay internal.
 
 ---
 

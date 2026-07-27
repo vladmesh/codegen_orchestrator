@@ -168,9 +168,9 @@ class TestMergeSecretsPayload:
 
     def test_valid_secrets_only(self):
         """Payload with secrets only (no hint)."""
-        payload = {"secrets": {"TELEGRAM_BOT_TOKEN": "123:ABC"}}
+        payload = {"secrets": {"OPENROUTER_API_KEY": "sk-or-123"}}
         schema = MergeSecretsRequest.model_validate(payload)
-        assert schema.secrets == {"TELEGRAM_BOT_TOKEN": "123:ABC"}
+        assert schema.secrets == {"OPENROUTER_API_KEY": "sk-or-123"}
         assert schema.env_hints is None
 
     def test_secrets_with_hints(self):

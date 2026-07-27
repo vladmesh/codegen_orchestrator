@@ -119,12 +119,46 @@
       }
   no_log: true
 
-# --- Telethon session (optional) ---
-
-- name: Copy Telethon session file
+- name: Install runner-owned application write guard
   copy:
-    src: telethon.session
-    dest: "{{ qa_runner_dir }}/telethon.session"
+    src: qa-write-guard.py
+    dest: "{{ qa_runner_dir }}/qa-write-guard.py"
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Prevent the QA user from replacing the write guard
+  file:
+    path: "{{ qa_runner_dir }}"
+    owner: root
+    group: root
+    mode: '0755'
+
+# --- Telethon credentials (required) ---
+#
+# QA writes to bots as a real Telegram user, which needs all three values:
+# Telethon connects with api_id/api_hash even when the session is already
+# authorized. Missing any of them fails provisioning instead of leaving QA to
+# discover it mid-run.
+
+- name: Require Telethon credentials in the environment
+  assert:
+    that:
+      - telethon_api_id | string | length > 0
+      - telethon_api_hash | string | length > 0
+      - telethon_session | string | length > 0
+    fail_msg: >-
+      TELETHON_API_ID, TELETHON_API_HASH and TELETHON_SESSION must all be set in
+      the orchestrator .env. Without them QA cannot test Telegram bots.
+    quiet: true
+
+- name: Write Telethon credentials for the QA user
+  copy:
+    dest: "{{ qa_runner_telethon_env_file }}"
     owner: "{{ qa_runner_user }}"
     mode: '0600'
-  when: telethon_session_file is defined
+    content: |
+      TELETHON_API_ID={{ telethon_api_id }}
+      TELETHON_API_HASH={{ telethon_api_hash }}
+      TELETHON_SESSION={{ telethon_session }}
+  no_log: true

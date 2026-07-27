@@ -21,7 +21,6 @@ from ..agents.architect.tools import reset_task_chain
 from ..clients.api import api_client
 from ..config.agent_llm_env import missing_llm_env
 from ..config.settings import get_settings
-from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
 from ._live_work import live_work_settled, live_work_unsettled
 
@@ -161,13 +160,6 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
         config = {
             "configurable": {"thread_id": str(uuid.uuid4())},
-            "callbacks": get_langfuse_callbacks(),
-            "metadata": build_langfuse_metadata(
-                agent_type="architect",
-                user_id=msg.user_id,
-                project_id=msg.project_id,
-                story_id=msg.story_id,
-            ),
         }
         result = await graph.ainvoke(initial_state, config=config)
 

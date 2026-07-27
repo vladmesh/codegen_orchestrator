@@ -15,6 +15,11 @@ on:
         description: Optional service-template tag or commit to test before updating the production pin
         required: false
         type: string
+      simulate_first_attempt_registry_failure:
+        description: Simulate a Docker registry failure on Buildx attempt 1 to validate the retry path
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -237,9 +242,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx with retry
+        id: buildx
+        uses: ./.github/actions/setup-buildx-with-retry
         if: matrix.should_run == 'true'
+        with:
+          simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
 
       - name: Run service tests
         id: service-tests
@@ -254,6 +262,11 @@ jobs:
       - name: Assert required service test ran
         if: always() && matrix.should_run == 'true'
         run: |
+          if [ "${{ steps.buildx.outcome }}" != "success" ]; then
+            echo "CI infrastructure failure: Docker image registry was unavailable while preparing Buildx after retries."
+            echo "Do not change application code. Re-run CI when the registry is available."
+            exit 1
+          fi
           if [ "${{ steps.service-tests.outcome }}" != "success" ]; then
             echo "Required service test did not complete successfully: ${{ matrix.service }}"
             echo "Outcome: ${{ steps.service-tests.outcome }}"
@@ -276,7 +289,15 @@ jobs:
           - suite: backend
             should_run: >-
               ${{
-                (github.event_name == 'workflow_dispatch')
+                (needs.detect-changes.outputs.api == 'true' ||
+                needs.detect-changes.outputs.langgraph == 'true' ||
+                needs.detect-changes.outputs.shared == 'true' ||
+                needs.detect-changes.outputs.packages == 'true' ||
+                needs.detect-changes.outputs['docker-test'] == 'true' ||
+                needs.detect-changes.outputs['integration-tests'] == 'true' ||
+                needs.detect-changes.outputs.ci == 'true' ||
+                needs.detect-changes.outputs.deps == 'true' ||
+                github.event_name == 'workflow_dispatch')
                 && 'true' || 'false'
               }}
           - suite: template
@@ -337,9 +358,12 @@ jobs:
         uses: actions/checkout@v4
         if: matrix.should_run == 'true'
 
-      - name: Set up Docker Buildx
+      - name: Set up Docker Buildx with retry
+        id: buildx
         if: matrix.should_run == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: ./.github/actions/setup-buildx-with-retry
+        with:
+          simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
 
       - name: Set up uv for template smoke
         if: matrix.should_run == 'true' && matrix.suite == 'template'
@@ -358,6 +382,11 @@ jobs:
       - name: Assert required integration test ran
         if: always() && matrix.should_run == 'true'
         run: |
+          if [ "${{ steps.buildx.outcome }}" != "success" ]; then
+            echo "CI infrastructure failure: Docker image registry was unavailable while preparing Buildx after retries."
+            echo "Do not change application code. Re-run CI when the registry is available."
+            exit 1
+          fi
           if [ "${{ steps.integration-tests.outcome }}" != "success" ]; then
             echo "Required integration test did not complete successfully: ${{ matrix.suite }}"
             echo "Outcome: ${{ steps.integration-tests.outcome }}"

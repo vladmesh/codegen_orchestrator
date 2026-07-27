@@ -48,6 +48,12 @@ class WorkerManagerSettings(BaseSettings):
     # URL of this worker-manager service (injected into worker containers)
     WORKER_MANAGER_URL: str = "http://worker-manager:8000"
 
+    # Host-backed artifacts survive worker container deletion. Operators set
+    # retention explicitly; cleanup is best-effort and never blocks work.
+    WORKER_TRANSCRIPT_STORAGE_PATH: str = "/data/worker-transcripts"
+    WORKER_TRANSCRIPT_RETENTION_DAYS: int = 30
+    WORKER_TRANSCRIPT_MAX_BYTES: int = 5 * 1024 * 1024
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

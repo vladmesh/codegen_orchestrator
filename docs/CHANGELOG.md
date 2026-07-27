@@ -1,5 +1,163 @@
 # Changelog
 
+## 2026-07-27
+
+- Grafana now provisions a read-only PostgreSQL datasource and repository-owned server-capacity
+  and run-operations dashboards. Server history panels were checked against 508 real snapshots;
+  run panels use an isolated disposable database because the live `runs` and `task_events` tables
+  are empty. The verification report records the query timings and seed coverage.
+
+- Provisioner playbooks now use the repository Ansible configuration without loading the removed
+  `yaml` callback. This restores role resolution for both `deploy_target` during new-server
+  provisioning and `monitoring` on existing servers.
+
+- Removed the unused Langfuse receiver stack and its ClickHouse and MinIO dependencies. The Langfuse SDK had been the only source of OpenTelemetry packages; the application has no independent OpenTelemetry instrumentation, so those packages were removed with it. This corrects the task's premise that such instrumentation existed. Loki, Promtail, Grafana, and product analytics are unchanged. The 2026-07-26 production measurement recorded 995 MB RSS and 4.6 GB of images across the removed services; an operator can reclaim those resources after deployment by removing the obsolete containers, images, and volumes. The admin user's Messages view was removed with the unavailable trace data.
+
+## 2026-07-26
+
+### Changed
+- Split backend integration coverage into the required Compose-only `backend` suite and the manual
+  `backend-dind` suite. Worker-container coverage remains in `tests/live/` until secretary-774
+  provides host-side gates with a real Docker socket.
+
+## 2026-07-26
+
+- `make test-unit` now points `API_BASE_URL` at an unreachable loopback port. It can no longer
+  read system configuration from a developer's running API while CI has no API, and the CI
+  contract rejects a return to a host-service URL.
+
+- Repeated QA failures now leave their fingerprint and attempt evidence on the
+  story held for human review. PO checks that hold before creating another
+  story or publishing architect work, so a reminder cannot restart the same
+  project-level repair loop.
+
+- QA now distinguishes a product failure from an inability to test. A typed
+  `blocked` outcome carries a closed-category blocker with the attempted action
+  and request/response evidence. Platform-owned preflight checks cover the
+  deployed URL, QA server, Claude Code, Telegram identity and Telethon
+  credentials. Telegram runs send `/start` as the QA identity before Claude is
+  invoked; an access denial, or an unknown preflight classification, parks the
+  story in `waiting_human_review` and never creates a fix task. This prevents a
+  private bot from being changed because the QA account lacked access.
+
+## 2026-07-25
+
+- A stop or undeploy now names the application it acts on. `DeployMessage` carries
+  `application_id` and rejects a lifecycle action without one; the consumer reads the target's
+  server from it and skips allocation entirely. Before, it asked the allocator, which answers with
+  one application on the project's primary repository whatever the message said — so a project
+  deployed on two servers got the same container brought down twice, the other one stayed up with
+  its bot still polling, and its application sat in `undeploying` forever while the teardown kept
+  reporting `pending`. For the same reason the undeploy path no longer releases the bot on the
+  first application to report `not_deployed`: the release waits until the project has nothing left
+  running, because the row does not say which server the bot is on. A run cancelled on the project's
+  deploy lock now counts as a stalled teardown, so asking again sends that application down instead
+  of leaving it stranded.
+
+- PO can now tear a user's project down, which is what makes "your own project holds that token" a
+  choice instead of a dead end. `teardown_project` calls `POST /api/projects/{id}/teardown`: the
+  endpoint checks the caller owns the project and publishes an undeploy for every application of its
+  repositories that is still up. It does not free the bot there and then. A running bot long-polls
+  its token, and Telegram answers 409 to whoever binds that token second, so a teardown that
+  promised a free token before `deploy_lifecycle` had run `compose down -v` would hand the user a
+  rebind that fails. Instead the POST comes back `pending`, and `GET` on the same path reports where
+  the teardown stands — archiving the project and releasing the binding only once every application
+  reads `not_deployed`, and reporting `failed` if the undeploy run failed rather than waiting
+  forever. The tool polls that until it settles, so the agent learns the bot is free at the moment
+  it is. `validate_telegram_token` now passes `conflict_project_id` through to the agent, and the
+  prompt tells it to offer the two real options, continue in the holding project or free the token
+  and rebind after the teardown confirms, and never to tear anything down unasked. The owner check
+  lives on the new endpoints because the per-application `stop`/`undeploy` endpoints have no
+  authorization at all (backlog #1022) and this route is driven by a user, not an admin: someone
+  else's project comes back 403, untouched and still holding its bot.
+
+- Teardown now hands the bot back. The uniqueness check added the same day would otherwise lock a
+  token to a dead project forever: the binding lives on `Repository.bot_username`, and nothing ever
+  cleared it, so a user could not reuse their own bot after tearing the project down. Two
+  transitions release it, both keyed on the resulting state rather than on the request: a project
+  going `archived`, and an application landing in `not_deployed`, which is where the undeploy
+  consumer reports back to. Release clears `bot_username` on the repositories concerned and drops
+  `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_USERNAME` from the project's secrets, in the caller's
+  transaction. It is idempotent: a second archive or a redelivered patch finds nothing and changes
+  nothing. Stop keeps the binding, since a stopped application is one redeploy from running again,
+  and freeing the token while the bot may still be polling would only recreate the 409 the
+  uniqueness check exists to prevent. Deleting a project takes the third route: `DELETE
+  /api/projects/{id}` now clears the rows that reference it, repositories among them, so the
+  binding disappears with the project. It could not before — none of those foreign keys cascade in
+  the database, and the endpoint left repositories, tasks, stories, analytics and RAG rows behind,
+  so deleting any real project failed on its final commit and the bot stayed held by a project the
+  user had asked to be rid of.
+
+- Token validation now refuses a bot that another live project already holds. Until now there was
+  no uniqueness check at all: the palindrome bot `196ba936` and the echo bot `b380adb4` both took
+  `@factory_e2e_test_bot`, and the clash only surfaced later as a 409 from Telegram. The last layer
+  in the chain looks the bot up by `Repository.bot_username` across projects that are not archived,
+  and answers by owner. The same project re-sending its own token is an iteration and passes.
+  Another project of the same user is named in the message, with `conflict_project_id` on the
+  verdict so PO can offer to continue there (`bound_to_own_project`). Someone else's project gets a
+  refusal that describes nothing — not the project, not its id, not its owner (`bound_elsewhere`).
+  A user who somehow holds the bot in their own project while a stranger holds it too gets the
+  generic refusal: sending them to their own project would walk them into the same clash. The
+  lookup and the owner comparison happen server-side; `validate_telegram_token` now takes the
+  session and the target project.
+
+- Token validation now catches a bot already running on the token outside our system, the case
+  where a user started it at home and forgot. Two layers after `getMe`: `getWebhookInfo` (read-only,
+  a non-empty `url` means someone wired a webhook up) and a `getUpdates` probe with no `offset`,
+  `limit=1`, `timeout=0` and a 5s deadline, where a 409 means another poller holds the token. QA saw
+  exactly that on a reused token, `409 Conflict` every ~34s. The probe confirms nothing and
+  consumes nothing: an update is confirmed only when `getUpdates` is called with an offset above its
+  `update_id`, and a negative offset makes earlier updates forgotten, so the probe sends no offset
+  at all. With no server-side wait another bot's poll loop misses at most one cycle. Both rejections carry the same
+  generic message — something is running on this token, stop it or send another — because we know
+  a bot answers, not whose it is. Reason codes: `webhook_active`, `poller_active`. Webhook is
+  checked first, since a set webhook makes `getUpdates` answer 409 for that reason alone. The
+  poller probe only ever proves activity, never its absence: an idle bot passes, and any answer
+  other than 409 is logged, not treated as a refusal.
+
+- Telegram token validation became a server-side step behind one door. `POST
+  /api/projects/{id}/telegram/token` runs the check chain (format, then `getMe`) and returns a
+  typed `TelegramTokenVerdict` — `ok`/`rejected`, a `reason_code`, a per-layer `checks` list and a
+  message safe to show the user. Secrets and `Repository.bot_username` are written in one
+  transaction, and only on a passing verdict; a project without a primary repository gets 409
+  rather than a half-bound token. The generic secrets endpoint now refuses anything keyed
+  `TELEGRAM_BOT_TOKEN` or shaped like a bot token with 422, so the only path in is the validator —
+  the gate no longer rests on a sentence in the PO prompt telling the model which tool to prefer.
+  PO's `validate_telegram_token` is a thin caller that voices the verdict; the getMe call, the
+  username write and the retry wording left the agent. Later check layers (uniqueness, external
+  poller detection) append to `checks` without touching the prompt.
+
+  Whole-config writes are fenced the same way: `POST /api/projects/`, `PUT` and `PATCH` scan the
+  submitted config tree for `TELEGRAM_BOT_TOKEN` keys and token-shaped values, and `config.secrets`
+  is no longer writable through them — the stored blob is carried over and a caller sending a
+  different one gets 422. Scaffolder's read-modify-write of the whole config still works, since it
+  hands back the blob it read.
+
+- Load the QA server's Telethon credentials into the run instead of asking the agent to. The
+  prompt told it to `set -a; . ~/.qa-telethon.env`, which run `qa-7729960c` simply skipped: it
+  reported the echo check `BLOCKED`, citing the old `/opt/qa-runner/telethon.session` path and
+  variable names that no longer exist, while the credentials sat on the server at 0600. The
+  runner now sources the file into the SSH command's environment next to the `PATH` export, so
+  `TELETHON_*` are set before `claude` starts, and the prompt says they are already exported.
+  A bot run first checks the file is readable and all three variables are non-empty; if not, the
+  run fails with the named cause and `claude` never starts, so there is no room for a guessed
+  verdict. Only variable names travel back in that error, never values. The prompt also drops
+  "blocked" as an allowed outcome for Telegram checks: pass or fail, decided by running the
+  snippet.
+
+- Wire Telethon credentials through to the QA runner, so QA can write to deployed bots as a real
+  user. The prompt hardcoded `TelegramClient('/opt/qa-runner/telethon.session', api_id=0,
+  api_hash='')` and the role copied that session file only `when: telethon_session_file is
+  defined` — a variable nobody set, so the copy skipped silently and every bot check ended in
+  `BLOCKED: /opt/qa-runner/telethon.session does not exist`. api_id/api_hash of 0/`''` would not
+  have connected either: Telethon needs the app credentials even with an authorized session. The
+  role now reads `TELETHON_API_ID`, `TELETHON_API_HASH` and `TELETHON_SESSION` from the
+  orchestrator environment (never through `--extra-vars`, which would put them in the process
+  list), asserts all three are non-empty, and writes them to `~/.qa-telethon.env` at mode 0600
+  owned by the QA user. The prompt sources that file and connects through `StringSession`.
+  Verified on vps-273978: a missing credential fails the play with a named message, and a QA run
+  against `@factory_e2e_test_bot` echoed back its message on every check.
+
 ## 2026-07-24
 
 - Install the QA runner's Claude Code for the user QA actually connects as. The `qa_runner` role

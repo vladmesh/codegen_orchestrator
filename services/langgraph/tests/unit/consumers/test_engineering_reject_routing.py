@@ -102,4 +102,5 @@ class TestGaveUpRouting:
         assert call_kwargs["reason"] == "Port conflict is not a code issue"
         assert call_kwargs["planning_task_id"] == "task-plan-1"
         assert call_kwargs["story_id"] == "story-1"
+        assert call_kwargs["worker_observability"] is None
         assert result["status"] == "gave_up"

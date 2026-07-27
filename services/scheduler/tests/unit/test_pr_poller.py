@@ -158,7 +158,14 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     api.get_tasks_by_story.return_value = []
     gh.get_latest_workflow_run.return_value = _failed_run(101, "sha-101")
     gh.get_workflow_failure_details.return_value = {
-        "failed_jobs": [{"name": "unit", "failed_steps": ["Run pytest"]}],
+        "failed_jobs": [
+            {
+                "name": "unit",
+                "failed_steps": ["Run pytest"],
+                "log_excerpt": "FileNotFoundError: settings.yaml",
+                "log_unavailable_reason": None,
+            }
+        ],
         "unavailable_reason": None,
     }
     api.create_task.return_value.id = "fix-101"
@@ -171,15 +178,25 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
         "run_url": "https://github.com/org/my-repo/actions/runs/101",
         "head_sha": "sha-101",
         "branch": "story/story-1",
-        "failed_jobs": [{"name": "unit", "failed_steps": ["Run pytest"]}],
+        "failed_jobs": [
+            {
+                "name": "unit",
+                "failed_steps": ["Run pytest"],
+                "log_excerpt": "FileNotFoundError: settings.yaml",
+                "log_unavailable_reason": None,
+            }
+        ],
         "details_unavailable_reason": None,
         "fingerprint": evidence["fingerprint"],
         "fingerprint_attempt": 1,
     }
     assert "Job: unit" in task["description"]
     assert "Failed step: Run pytest" in task["description"]
+    assert "FileNotFoundError: settings.yaml" in task["description"]
     assert "sha-101" in task["description"]
     notify.assert_not_awaited()
+
+    gh.get_workflow_failure_details.assert_awaited_with("org", "my-repo", 101, log_excerpt_lines=40)
 
     prior = AsyncMock()
     prior.failure_metadata = task["failure_metadata"]
@@ -187,6 +204,34 @@ async def test_ci_failure_evidence_is_actionable_and_idempotent(mock_gh_cls, not
     api.create_task.reset_mock()
     assert await poll_ci_failures(api) == 0
     api.create_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_ci_registry_setup_failure_tells_worker_not_to_change_code(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story()]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_tasks_by_story.return_value = []
+    gh.get_latest_workflow_run.return_value = _failed_run(760, "sha-760")
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": "Integration Tests (infra)",
+                "failed_steps": ["Set up Docker Buildx with retry"],
+            }
+        ],
+        "unavailable_reason": None,
+    }
+
+    assert await poll_ci_failures(api) == 1
+
+    description = api.create_task.call_args.args[0]["description"]
+    assert "CI infrastructure failure" in description
+    assert "Docker image registry" in description
+    assert "Do not change application code" in description
 
 
 @pytest.mark.asyncio
@@ -283,3 +328,72 @@ async def test_ci_failure_records_details_unavailability(mock_gh_cls):
     task = api.create_task.call_args.args[0]
     assert task["failure_metadata"]["ci_failure"]["details_unavailable_reason"] == "RuntimeError"
     assert "token leaked" not in task["description"]
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_ci_failure_marks_unavailable_failed_job_log(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story()]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_tasks_by_story.return_value = []
+    gh.get_latest_workflow_run.return_value = _failed_run(302, "sha-302")
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": "build",
+                "failed_steps": ["Set up Docker Buildx"],
+                "log_excerpt": None,
+                "log_unavailable_reason": "HTTPStatusError",
+            }
+        ],
+        "unavailable_reason": None,
+    }
+
+    assert await poll_ci_failures(api) == 1
+
+    description = api.create_task.call_args.args[0]["description"]
+    assert "Failed step: Set up Docker Buildx" in description
+    assert "Job log unavailable: HTTPStatusError" in description
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_ci_failure_marks_empty_failed_job_log(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story()]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_tasks_by_story.return_value = []
+    gh.get_latest_workflow_run.return_value = _failed_run(303, "sha-303")
+    gh.get_workflow_failure_details.return_value = {
+        "failed_jobs": [
+            {
+                "name": "build",
+                "failed_steps": ["Build"],
+                "log_excerpt": None,
+                "log_unavailable_reason": "GitHub job log was empty",
+            }
+        ],
+        "unavailable_reason": None,
+    }
+
+    assert await poll_ci_failures(api) == 1
+
+    description = api.create_task.call_args.args[0]["description"]
+    assert "Job log unavailable: GitHub job log was empty" in description
+
+
+def test_ci_failure_fingerprint_ignores_log_excerpt():
+    failed_job = {"name": "unit", "failed_steps": ["Run pytest"]}
+    first = _failure_fingerprint(
+        [failed_job | {"log_excerpt": "2026-07-26T10:00:00Z failure"}], None
+    )
+    second = _failure_fingerprint(
+        [failed_job | {"log_excerpt": "2026-07-26T10:05:00Z failure"}], None
+    )
+
+    assert first == second

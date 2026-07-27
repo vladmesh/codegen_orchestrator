@@ -27,6 +27,7 @@ def _make_story(**overrides):
         "blocked_by_story_id": None,
         "created_by": "system",
         "user_report": None,
+        "quarantine_reason": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -137,6 +138,33 @@ async def test_create_story_with_blocked_by():
     assert resp.status_code == 201  # noqa: PLR2004
     story = session.add.call_args[0][0]
     assert story.blocked_by_story_id == "story-dep"
+
+
+@pytest.mark.asyncio
+async def test_create_story_rejects_retry_of_qa_failure_held_parent():
+    parent = _make_story(
+        id="story-qa-held",
+        status="waiting_human_review",
+        quarantine_reason={"qa_failure": {"fingerprint": "qa-failure-123"}},
+    )
+    session = _mock_session(scalar_one_or_none=parent)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/stories/",
+            json={
+                "title": "Retry login fix",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "parent_story_id": "story-qa-held",
+            },
+        )
+
+    assert resp.status_code == HTTPStatus.CONFLICT
+    assert resp.json()["detail"] == "Story story-qa-held requires human review before retrying"
+    session.add.assert_not_called()
+    session.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

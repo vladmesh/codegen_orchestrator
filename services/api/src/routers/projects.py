@@ -8,16 +8,49 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult, TeardownStatus
+from shared.contracts.dto.repository import RepositoryRole
+from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.telegram import (
+    TelegramTokenValidateRequest,
+    TelegramTokenVerdict,
+    TokenVerdictStatus,
+)
+from shared.contracts.queues.deploy import DeployTrigger
 from shared.crypto import decrypt_dict, encrypt_dict
-from shared.models import Application, PortAllocation, Project, Repository, Run, User
+from shared.models import (
+    AnalyticsDaily,
+    AnalyticsHourly,
+    AnalyticsKnownUsers,
+    Application,
+    ApplicationHealthHistory,
+    Brainstorm,
+    Deployment,
+    PortAllocation,
+    Project,
+    RAGChunk,
+    RAGConversationSummary,
+    RAGDocument,
+    RAGMessage,
+    Repository,
+    Run,
+    Story,
+    Task,
+    TaskEvent,
+    User,
+)
 from shared.project_slug import generate_project_slug
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
+from shared.redis.client import RedisStreamClient
 
 from ..config import get_settings
 from ..database import get_async_session
-from ..dependencies import is_internal_service
+from ..dependencies import get_redis_client, is_internal_service
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
+from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
+from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
+from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
 
 logger = structlog.get_logger()
 
@@ -117,7 +150,7 @@ async def create_project(
             title=project_in.title,
             slug=generate_project_slug(project_in.title, project_id),
             status=project_in.status or ProjectStatus.DRAFT.value,
-            config=project_in.config,
+            config=_vet_config_write(project_in.config, None),
             owner_id=owner_id,
         )
         db.add(project)
@@ -212,6 +245,18 @@ async def list_projects(
     return list(result.scalars().all())
 
 
+async def _release_bot_if_archived(db: AsyncSession, project: Project) -> None:
+    """Archiving is teardown, so the project stops holding its bot.
+
+    Keyed on the resulting status, not on the transition: archiving an already
+    archived project releases nothing the first call left behind.
+    """
+    if project.status != ProjectStatus.ARCHIVED.value:
+        return
+    repos = await db.execute(select(Repository).where(Repository.project_id == project.id))
+    await release_bot_binding(db, project, repos.scalars().all(), reason="project_archived")
+
+
 @router.put("/{project_id}", response_model=ProjectRead)
 async def update_project(
     project_id: uuid.UUID,
@@ -232,7 +277,9 @@ async def update_project(
     if project_in.status is not None:
         project.status = project_in.status
     if project_in.config is not None:
-        project.config = project_in.config
+        project.config = _vet_config_write(project_in.config, project)
+
+    await _release_bot_if_archived(db, project)
 
     await db.commit()
     await db.refresh(project)
@@ -262,7 +309,9 @@ async def patch_project(
     if project_in.status is not None:
         project.status = project_in.status
     if project_in.config is not None:
-        project.config = project_in.config
+        project.config = _vet_config_write(project_in.config, project)
+
+    await _release_bot_if_archived(db, project)
 
     await db.commit()
     await db.refresh(project)
@@ -293,6 +342,102 @@ async def list_secret_keys(
     return {"keys": sorted(existing_secrets.keys())}
 
 
+_TELEGRAM_TOKEN_DETAIL = (
+    f"{TELEGRAM_TOKEN_KEY} cannot be set directly — "
+    "POST the token to /api/projects/{project_id}/telegram/token so it is validated first"
+)
+
+
+_SECRETS_WRITE_DETAIL = (
+    "config.secrets is not writable through this endpoint — "
+    "use /config/secrets to set and /config/secrets/{key} to delete"
+)
+
+
+def _reject_bot_token_writes(secrets: dict[str, str]) -> None:
+    """Keep bot tokens off the generic secret path — they go through the validator."""
+    for key, value in secrets.items():
+        if key == TELEGRAM_TOKEN_KEY or looks_like_bot_token(value):
+            raise HTTPException(status_code=422, detail=_TELEGRAM_TOKEN_DETAIL)
+
+
+def _find_bot_token_material(node: object, path: str = "config") -> str | None:
+    """Locate a Telegram token key or token-shaped value anywhere in a config tree."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == TELEGRAM_TOKEN_KEY:
+                return f"{path}.{key}"
+            found = _find_bot_token_material(value, f"{path}.{key}")
+            if found:
+                return found
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            found = _find_bot_token_material(item, f"{path}[{index}]")
+            if found:
+                return found
+    elif isinstance(node, str) and looks_like_bot_token(node):
+        return path
+    return None
+
+
+def _stored_secrets_blob(project: Project | None) -> dict:
+    if project is None:
+        return {}
+    return (project.config or {}).get("secrets") or {}
+
+
+def _vet_config_write(config: dict, project: Project | None) -> dict:
+    """Validate a whole-config write and return the config to store.
+
+    Secrets are owned by the dedicated endpoints: the stored (encrypted) blob is
+    carried over untouched, and a caller that sends a different one is refused
+    rather than silently overwritten. Everything else in the tree is scanned so a
+    raw bot token can't ride in under another key.
+    """
+    stored = _stored_secrets_blob(project)
+    incoming = config.get("secrets")
+    if incoming is not None and incoming != stored:
+        raise HTTPException(status_code=422, detail=_SECRETS_WRITE_DETAIL)
+
+    # env_hints keys are env var names, so TELEGRAM_BOT_TOKEN is expected there;
+    # only its values (plaintext descriptions) are scanned for token material.
+    hints = config.get("env_hints")
+    found = _find_bot_token_material(
+        {key: value for key, value in config.items() if key not in ("secrets", "env_hints")}
+    )
+    if found is None and isinstance(hints, dict):
+        found = _find_bot_token_material(list(hints.values()), "config.env_hints")
+    if found is not None:
+        raise HTTPException(status_code=422, detail=f"{_TELEGRAM_TOKEN_DETAIL} (found at {found})")
+
+    vetted = {key: value for key, value in config.items() if key != "secrets"}
+    if stored:
+        vetted["secrets"] = stored
+    return vetted
+
+
+def _merge_secrets_into_project(
+    project: Project,
+    secrets: dict[str, str],
+    env_hints: dict[str, str] | None,
+) -> list[str]:
+    """Merge secrets into the project's config in place. Returns all secret keys."""
+    config = dict(project.config or {})
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+
+    existing_secrets.update(secrets)
+    config["secrets"] = encrypt_dict(existing_secrets)
+
+    if env_hints:
+        merged_hints = config.get("env_hints") or {}
+        merged_hints.update(env_hints)
+        config["env_hints"] = merged_hints
+
+    project.config = config
+    return sorted(existing_secrets.keys())
+
+
 @router.post("/{project_id}/config/secrets")
 async def merge_secrets(
     project_id: uuid.UUID,
@@ -312,6 +457,8 @@ async def merge_secrets(
             detail="secrets must not be empty",
         )
 
+    _reject_bot_token_writes(body.secrets)
+
     # Lock the row to prevent concurrent read-modify-write
     query = select(Project).where(Project.id == project_id).with_for_update()
     result = await db.execute(query)
@@ -321,19 +468,7 @@ async def merge_secrets(
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
-    config = dict(project.config or {})
-    existing_secrets = config.get("secrets") or {}
-    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
-
-    existing_secrets.update(body.secrets)
-    config["secrets"] = encrypt_dict(existing_secrets)
-
-    if body.env_hints:
-        env_hints = config.get("env_hints") or {}
-        env_hints.update(body.env_hints)
-        config["env_hints"] = env_hints
-
-    project.config = config
+    keys = _merge_secrets_into_project(project, body.secrets, body.env_hints)
     await db.commit()
 
     logger.info(
@@ -342,7 +477,74 @@ async def merge_secrets(
         keys=sorted(body.secrets.keys()),
     )
 
-    return {"keys": sorted(existing_secrets.keys())}
+    return {"keys": keys}
+
+
+@router.post("/{project_id}/telegram/token", response_model=TelegramTokenVerdict)
+async def bind_telegram_token(
+    project_id: uuid.UUID,
+    body: TelegramTokenValidateRequest,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> TelegramTokenVerdict:
+    """Validate a Telegram bot token and, if it passes, bind it to the project.
+
+    The only way TELEGRAM_BOT_TOKEN gets into a project's secrets. A rejected token
+    is not stored; the verdict carries a user-facing message the PO agent voices.
+    """
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    result = await db.execute(query)
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+
+    verdict = await validate_telegram_token(body.token, db=db, project=project)
+    if verdict.status == TokenVerdictStatus.REJECTED:
+        logger.info(
+            "telegram_token_rejected",
+            project_id=str(project_id),
+            reason_code=verdict.reason_code,
+        )
+        return verdict
+
+    # bot_username lives on the primary repository — QA reads it from there, so a
+    # missing repository is a hard error, not a silently skipped write.
+    repo_query = select(Repository).where(
+        Repository.project_id == project_id,
+        Repository.role == RepositoryRole.PRIMARY.value,
+    )
+    repo = (await db.execute(repo_query)).scalars().first()
+    if repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Project {project_id} has no primary repository — cannot bind a bot token",
+        )
+
+    _merge_secrets_into_project(
+        project,
+        {
+            TELEGRAM_TOKEN_KEY: body.token.strip(),
+            TELEGRAM_USERNAME_KEY: verdict.bot_username,
+        },
+        {
+            TELEGRAM_TOKEN_KEY: "Telegram bot token from @BotFather",
+            TELEGRAM_USERNAME_KEY: (
+                "Bot username (without @) for building t.me links and smoke tests"
+            ),
+        },
+    )
+    repo.bot_username = verdict.bot_username
+    await db.commit()
+
+    logger.info(
+        "telegram_token_bound",
+        project_id=str(project_id),
+        bot_username=verdict.bot_username,
+    )
+    return verdict
 
 
 @router.delete("/{project_id}/config/secrets/{key}")
@@ -385,6 +587,193 @@ async def delete_secret(
     return {"keys": sorted(existing_secrets.keys())}
 
 
+async def _load_for_teardown(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None,
+    db: AsyncSession,
+    *,
+    is_internal: bool,
+) -> tuple[Project, list[Repository], list[Application]]:
+    """Load the project, its repositories and its applications, owner-checked."""
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    project = (await db.execute(query)).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db, is_internal=is_internal)
+
+    repos_result = await db.execute(select(Repository).where(Repository.project_id == project_id))
+    repos = list(repos_result.scalars())
+    apps = list(
+        (
+            await db.execute(
+                select(Application).where(Application.repo_id.in_([repo.id for repo in repos]))
+            )
+        ).scalars()
+    )
+    return project, repos, apps
+
+
+async def _stalled_undeploy_error(
+    db: AsyncSession, project_id: uuid.UUID, application_id: int
+) -> str | None:
+    """The error of the latest undeploy run for this application, if it did not run.
+
+    Only the latest run counts: an application that failed to come down once and is
+    being torn down again is pending, not failed.
+
+    A cancelled run counts as a failure. The deploy consumer cancels a run whose
+    project lock is held by another deploy, and an application whose only undeploy
+    was cancelled would otherwise sit in `undeploying` forever, with nothing to say
+    so and no way for a retry to send it down again.
+    """
+    runs = (
+        await db.execute(
+            select(Run)
+            .where(Run.project_id == project_id, Run.type == "deploy")
+            .order_by(Run.created_at.desc())
+        )
+    ).scalars()
+    for run in runs:
+        if (run.run_metadata or {}).get("application_id") != application_id:
+            continue
+        if run.status not in (RunStatus.FAILED.value, RunStatus.CANCELLED.value):
+            return None
+        return run.error_message or "undeploy failed"
+    return None
+
+
+async def _teardown_state(
+    db: AsyncSession,
+    project: Project,
+    repos: list[Repository],
+    applications: list[Application],
+    *,
+    just_staged: frozenset[int] = frozenset(),
+) -> ProjectTeardownResult:
+    """Report where the teardown stands, and finish it once nothing is left up.
+
+    Archiving and releasing the bot happen here rather than at request time: while a
+    container is still up the bot is still polling its token, and handing that token
+    to another project would make Telegram answer 409 to whoever asks second.
+
+    `just_staged` names the applications whose undeploy this very request published.
+    Their earlier failure, if any, is history: the run that decides their fate has
+    not been picked up yet.
+    """
+    pending = [app.id for app in applications if app.status != ApplicationStatus.NOT_DEPLOYED.value]
+
+    for application_id in pending:
+        if application_id in just_staged:
+            continue
+        error = await _stalled_undeploy_error(db, project.id, application_id)
+        if error:
+            return ProjectTeardownResult(
+                project_id=project.id,
+                status=TeardownStatus.FAILED,
+                project_status=ProjectStatus(project.status),
+                pending_application_ids=pending,
+                error=error,
+            )
+
+    if pending:
+        return ProjectTeardownResult(
+            project_id=project.id,
+            status=TeardownStatus.PENDING,
+            project_status=ProjectStatus(project.status),
+            pending_application_ids=pending,
+        )
+
+    # Nothing is up any more. The undeploy path may already have released the bot
+    # when the application reported not_deployed; then there is no name left to
+    # report, only the fact that the project holds nothing.
+    project.status = ProjectStatus.ARCHIVED.value
+    released = await release_bot_binding(db, project, repos, reason="project_teardown")
+
+    logger.info(
+        "project_teardown_completed",
+        project_id=str(project.id),
+        released_bot=released,
+    )
+    return ProjectTeardownResult(
+        project_id=project.id,
+        status=TeardownStatus.COMPLETED,
+        project_status=ProjectStatus.ARCHIVED,
+        released_bot_username=released,
+    )
+
+
+@router.post("/{project_id}/teardown", response_model=ProjectTeardownResult)
+async def teardown_project(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+    _is_internal: bool = Depends(is_internal_service),
+) -> ProjectTeardownResult:
+    """Start tearing the project down at its owner's request: undeploy it, then free its bot.
+
+    Owner-checked, unlike the per-application stop/undeploy endpoints, because this is
+    the route the PO agent drives on behalf of a user. A project with nothing deployed
+    is done when this returns; anything still up comes back `pending` and keeps its bot
+    until the undeploy reports the containers down. Poll GET on the same path.
+    """
+    project, repos, applications = await _load_for_teardown(
+        project_id, x_telegram_id, db, is_internal=_is_internal
+    )
+
+    messages = []
+    staged = set()
+    for application in applications:
+        status_now = ApplicationStatus(application.status)
+        if status_now not in UNDEPLOYABLE_STATUSES:
+            # An application stuck in undeploying after a failed run is the one case
+            # worth sending down again: the user asking a second time is a retry.
+            failed = status_now == ApplicationStatus.UNDEPLOYING and await _stalled_undeploy_error(
+                db, project_id, application.id
+            )
+            if not failed:
+                continue
+        _run, msg = stage_undeploy(application, project_id, db, triggered_by=DeployTrigger.PO)
+        messages.append(msg)
+        staged.add(application.id)
+
+    state = await _teardown_state(db, project, repos, applications, just_staged=frozenset(staged))
+    await db.commit()
+
+    for msg in messages:
+        await redis.publish_message(DEPLOY_QUEUE, msg)
+
+    logger.info(
+        "project_teardown_requested",
+        project_id=str(project_id),
+        status=state.status.value,
+        pending=state.pending_application_ids,
+    )
+    return state
+
+
+@router.get("/{project_id}/teardown", response_model=ProjectTeardownResult)
+async def get_teardown_status(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> ProjectTeardownResult:
+    """Where the teardown stands, and the call that finishes it.
+
+    Owner-checked like the POST. Once every application reports not_deployed this
+    archives the project and releases its bot, so `completed` is the point at which
+    the token can be bound somewhere else.
+    """
+    project, repos, applications = await _load_for_teardown(
+        project_id, x_telegram_id, db, is_internal=_is_internal
+    )
+    state = await _teardown_state(db, project, repos, applications)
+    await db.commit()
+    return state
+
+
 _QUEUES_TO_CLEAN = [ARCHITECT_QUEUE, SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]
 
 
@@ -417,6 +806,41 @@ async def _cleanup_project_queue_messages(project_id: str) -> int:
     return deleted
 
 
+async def _delete_project_records(db: AsyncSession, project_id: uuid.UUID) -> None:
+    """Clear everything pointing at the project, children before parents.
+
+    None of these foreign keys cascade in the database, so a row left behind fails
+    the final delete. Repositories matter most for the bot binding: while the row
+    survives, its bot_username still reads as taken by a project that is gone.
+    """
+    repo_ids_q = select(Repository.id).where(Repository.project_id == project_id)
+    app_ids_q = select(Application.id).where(Application.repo_id.in_(repo_ids_q))
+    task_ids_q = select(Task.id).where(Task.project_id == project_id)
+
+    # Runs reference stories and tasks as well as the project, so they go first.
+    await db.execute(delete(Run).where(Run.project_id == project_id))
+
+    await db.execute(delete(TaskEvent).where(TaskEvent.task_id.in_(task_ids_q)))
+    await db.execute(delete(Task).where(Task.project_id == project_id))
+    await db.execute(delete(Story).where(Story.project_id == project_id))
+    await db.execute(delete(Brainstorm).where(Brainstorm.project_id == project_id))
+
+    for model in (AnalyticsHourly, AnalyticsDaily, AnalyticsKnownUsers):
+        await db.execute(delete(model).where(model.project_id == project_id))
+    for model in (RAGChunk, RAGDocument, RAGMessage, RAGConversationSummary):
+        await db.execute(delete(model).where(model.project_id == project_id))
+
+    await db.execute(
+        delete(ApplicationHealthHistory).where(
+            ApplicationHealthHistory.application_id.in_(app_ids_q)
+        )
+    )
+    await db.execute(delete(Deployment).where(Deployment.application_id.in_(app_ids_q)))
+    await db.execute(delete(PortAllocation).where(PortAllocation.application_id.in_(app_ids_q)))
+    await db.execute(delete(Application).where(Application.repo_id.in_(repo_ids_q)))
+    await db.execute(delete(Repository).where(Repository.project_id == project_id))
+
+
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(
     project_id: uuid.UUID,
@@ -424,21 +848,14 @@ async def delete_project(
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
 ):
-    """Delete a project and its related records (tasks, port allocations)."""
+    """Delete a project and everything that references it."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
-    # Delete FK-constrained related records
-    await db.execute(delete(Run).where(Run.project_id == project_id))
-
-    # Delete port allocations and applications via project's repositories
-    repo_ids_q = select(Repository.id).where(Repository.project_id == project_id)
-    app_ids_q = select(Application.id).where(Application.repo_id.in_(repo_ids_q))
-    await db.execute(delete(PortAllocation).where(PortAllocation.application_id.in_(app_ids_q)))
-    await db.execute(delete(Application).where(Application.repo_id.in_(repo_ids_q)))
+    await _delete_project_records(db, project_id)
 
     await db.delete(project)
     await db.commit()

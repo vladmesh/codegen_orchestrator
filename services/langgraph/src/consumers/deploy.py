@@ -12,11 +12,19 @@ import structlog
 
 from shared.clients.github import WorkflowCancellationUnprovenError
 from shared.config_store import ConfigStore
-from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.application import (
+    DEFAULT_APPLICATION_RESERVED_RAM_MB,
+    ApplicationStatus,
+)
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
-from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOutcome
+from shared.contracts.queues.deploy import (
+    LIFECYCLE_ACTIONS,
+    DeployAction,
+    DeployMessage,
+    DeployOutcome,
+)
 from shared.contracts.service_ports import DEPLOY_INFRA_PORT_SERVICES
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -24,10 +32,9 @@ from shared.redis_client import RedisStreamClient
 from ..clients.api import api_client
 from ..runtime_identity import project_runtime_slug
 from ..subgraphs.devops import create_devops_subgraph
-from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker, validate_queued_message
 from ._events import publish_callback_event
-from ._live_work import live_work_cancel_key, live_work_unsettled
+from ._live_work import live_work_cancel_key, live_work_settled, live_work_unsettled
 from .deploy_failure_handler import _handle_deploy_failure
 from .deploy_lifecycle import process_lifecycle_action
 from .deploy_precheck import (
@@ -78,7 +85,7 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
         modules = list(
             dict.fromkeys([*config.get("modules", ["backend"]), *DEPLOY_INFRA_PORT_SERVICES])
         )
-        min_ram_mb = config.get("estimated_ram_mb", 512)
+        min_ram_mb = config.get("estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB)
 
         # Get repo_id from primary repository
         primary_repo = await api_client.get_primary_repository(project_id)
@@ -150,21 +157,52 @@ def _build_subgraph_input(
     }
 
 
+async def _already_deployed_application(allocated_resources: dict, head_sha: str) -> int | None:
+    """Return a running application whose latest successful deploy used ``head_sha``."""
+    application_ids = {
+        resource["application_id"]
+        for resource in allocated_resources.values()
+        if isinstance(resource, dict) and resource.get("application_id") is not None
+    }
+    for application_id in application_ids:
+        deployments = await api_client.get(
+            "service-deployments/",
+            params={"application_id": application_id, "result": "success"},
+        )
+        if not deployments:
+            continue
+
+        latest_deployment = deployments[0]
+        if latest_deployment.get("deployed_sha") != head_sha:
+            continue
+
+        application = await api_client.get_application(application_id)
+        if application.status == ApplicationStatus.RUNNING:
+            return application_id
+    return None
+
+
 async def _handle_lifecycle_action(
     msg: DeployMessage,
     task_id: str,
     project_id: str,
     project: ProjectDTO,
-    allocated_resources: dict,
 ) -> dict:
-    """Handle stop/undeploy lifecycle actions — SSH only, no DevOps subgraph."""
+    """Handle stop/undeploy lifecycle actions — SSH only, no DevOps subgraph.
+
+    The target comes from the message. Asking the allocator instead would answer
+    with whichever application it picks for the project's primary repository, so a
+    project deployed on two servers would get the same container stopped twice
+    while the other one keeps running.
+    """
+    application = await api_client.get_application(msg.application_id)
     project_name = project_runtime_slug(project)
     lifecycle_result = await process_lifecycle_action(
         action=msg.action,
         task_id=task_id,
         project_id=project_id,
         project_name=project_name,
-        allocated_resources=allocated_resources,
+        server_handle=application.server_handle,
     )
     run_status = (
         RunStatus.COMPLETED if lifecycle_result["status"] == "success" else RunStatus.FAILED
@@ -183,7 +221,7 @@ async def _handle_lifecycle_action(
 
     # Update application status on success
     if lifecycle_result["status"] == "success":
-        app_id = next(iter(allocated_resources.values()))["application_id"]
+        app_id = msg.application_id
         target_status = (
             ApplicationStatus.NOT_DEPLOYED
             if msg.action == DeployAction.UNDEPLOY
@@ -252,7 +290,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             project_id=project_id or "",
         )
 
-        if msg.action not in (DeployAction.STOP, DeployAction.UNDEPLOY) and not msg.head_sha:
+        if msg.action not in LIFECYCLE_ACTIONS and not msg.head_sha:
             error_msg = "head_sha is required for deploy actions that read repository state"
             logger.error(
                 "deploy_head_sha_missing",
@@ -289,6 +327,12 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             )
             return live_work_unsettled({"status": "failed", "error": error_msg})
 
+        # Lifecycle actions (stop/undeploy) — skip both allocation and the DevOps
+        # subgraph. They bring down an application that already exists; allocating
+        # would create one instead of finding the one the message names.
+        if msg.action in LIFECYCLE_ACTIONS:
+            return await _handle_lifecycle_action(msg, task_id, project_id, project)
+
         # Get or create allocations for the project
         alloc_result = await _allocate_resources(project_id, project)
         if isinstance(alloc_result, str):
@@ -305,11 +349,38 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             return live_work_unsettled({"status": "failed", "error": alloc_result})
         allocated_resources = alloc_result
 
-        # Lifecycle actions (stop/undeploy) — skip DevOps subgraph entirely
-        if msg.action in (DeployAction.STOP, DeployAction.UNDEPLOY):
-            return await _handle_lifecycle_action(
-                msg, task_id, project_id, project, allocated_resources
+        application_id = await _already_deployed_application(allocated_resources, msg.head_sha)
+        if application_id is not None:
+            reason = "already_deployed_same_sha"
+            logger.info(
+                "deploy_redundant_skipped",
+                task_id=task_id,
+                project_id=project_id,
+                application_id=application_id,
+                head_sha=msg.head_sha,
+                reason=reason,
             )
+            await api_client.patch(
+                f"runs/{task_id}",
+                json={
+                    "status": RunStatus.COMPLETED.value,
+                    "result": DeployRunResult(
+                        deploy_outcome=DeployOutcome.SUCCESS,
+                        application_id=application_id,
+                        action=msg.action,
+                    ).model_dump(mode="json"),
+                },
+            )
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "completed",
+                task_id,
+                "Deploy skipped: application already runs this commit",
+                user_id=user_id,
+                project_id=project_id,
+            )
+            return live_work_settled({"status": "success", "reason": reason})
 
         # Pre-check: validate server state via SSH before deploying
         action = msg.action
@@ -357,19 +428,7 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             job_data,
             head_sha=msg.head_sha,
         )
-        result = await devops_subgraph.ainvoke(
-            subgraph_input,
-            config={
-                "callbacks": get_langfuse_callbacks(),
-                "metadata": build_langfuse_metadata(
-                    agent_type="deploy",
-                    user_id=user_id,
-                    project_id=project_id,
-                    task_id=task_id,
-                    story_id=story_id,
-                ),
-            },
-        )
+        result = await devops_subgraph.ainvoke(subgraph_input)
 
         logger.info(
             "devops_subgraph_result",

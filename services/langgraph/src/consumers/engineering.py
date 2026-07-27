@@ -15,7 +15,7 @@ import structlog
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.run_result import AllocationFailureReason, EngineeringRunResult
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
@@ -24,7 +24,6 @@ from shared.redis_client import RedisStreamClient
 from ..clients.api import api_client
 from ..clients.story_worker_registry import get_story_worker
 from ..nodes.resource_allocator import resource_allocator_node
-from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker
 from ._events import publish_callback_event
 from ._live_work import live_work_unsettled
@@ -114,13 +113,21 @@ async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDT
     if result.get("errors"):
         error_msg = "; ".join(result["errors"])
         logger.error("resource_allocation_failed", task_id=task_id, errors=result["errors"])
+        reason = result.get("allocation_failure_reason")
+        required_ram_mb = result.get("allocation_required_ram_mb")
+        min_disk_mb = result.get("allocation_min_disk_mb")
+        if reason and (not isinstance(required_ram_mb, int) or not isinstance(min_disk_mb, int)):
+            raise RuntimeError("allocation failure omitted admission requirements")
         await api_client.patch(
             f"runs/{task_id}",
             json={
                 "status": RunStatus.FAILED.value,
                 "error_message": error_msg,
                 "result": EngineeringRunResult(
-                    engineering_status=EngineeringStatus.FAILED
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason(reason) if reason else None,
+                    allocation_required_ram_mb=required_ram_mb,
+                    allocation_min_disk_mb=min_disk_mb,
                 ).model_dump(mode="json"),
             },
         )
@@ -238,25 +245,14 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "human_approval_reason": None,
             "branch": branch,
             "worker_report": None,
+            "worker_observability": None,
             "gave_up_reason": None,
             "errors": [],
         }
 
         engineering_subgraph = create_engineering_subgraph()
         developer_started_at = datetime.now(UTC)
-        result = await engineering_subgraph.ainvoke(
-            subgraph_input,
-            config={
-                "callbacks": get_langfuse_callbacks(),
-                "metadata": build_langfuse_metadata(
-                    agent_type="engineering",
-                    user_id=user_id,
-                    project_id=project_id,
-                    task_id=task_id,
-                    story_id=story_id,
-                ),
-            },
-        )
+        result = await engineering_subgraph.ainvoke(subgraph_input)
 
         worker_report = result.get("worker_report")
         if worker_report and planning_task_id:
@@ -295,6 +291,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     planning_task_id=planning_task_id,
                     story_id=story_id,
                     deploy_fix_attempt=deploy_fix_attempt,
+                    worker_observability=result.get("worker_observability"),
                 )
             )
 
@@ -308,6 +305,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 reason=reason,
                 user_id=user_id,
                 redis=redis,
+                worker_observability=result.get("worker_observability"),
             )
         else:
             # FAILED (technical) or unexpected status — treat as technical failure
@@ -323,7 +321,12 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 user_id=user_id,
                 project_id=project_id or "",
             )
-            return await _fail_job(task_id, error_msg, planning_task_id)
+            return await _fail_job(
+                task_id,
+                error_msg,
+                planning_task_id,
+                result.get("worker_observability"),
+            )
 
     except Exception as e:
         logger.error(

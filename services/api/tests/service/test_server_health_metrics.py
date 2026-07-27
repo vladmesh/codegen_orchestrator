@@ -1,6 +1,7 @@
 """Integration tests for Server health metrics + metrics history endpoints."""
 
 from http import HTTPStatus
+from uuid import uuid4
 
 import pytest
 
@@ -8,7 +9,7 @@ import pytest
 @pytest.fixture
 async def test_server(async_client):
     """Create a test server, clean up after."""
-    handle = "test-health-srv"
+    handle = f"test-health-{uuid4().hex}"
     resp = await async_client.post(
         "/api/servers/",
         json={
@@ -19,11 +20,7 @@ async def test_server(async_client):
             "is_managed": True,
         },
     )
-    if resp.status_code == HTTPStatus.BAD_REQUEST:
-        # Already exists from previous run — just use it
-        pass
-    else:
-        assert resp.status_code == HTTPStatus.CREATED
+    assert resp.status_code == HTTPStatus.CREATED
     yield handle
 
 
@@ -92,3 +89,30 @@ async def test_metrics_history_not_found(async_client):
     """GET metrics history for non-existent server returns 404."""
     resp = await async_client.get("/api/servers/nonexistent-srv/metrics-history")
     assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_monitoring_status_distinguishes_unprovisioned_server(async_client, test_server):
+    """A managed server with no baseline must not look like stale telemetry."""
+    resp = await async_client.get(f"/api/servers/{test_server}/monitoring-status")
+
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {
+        "server_handle": test_server,
+        "monitoring_baseline_applied_at": None,
+        "exporter_last_observed_reachable_at": None,
+        "metrics_last_collected_at": None,
+        "state": "not_provisioned",
+    }
+
+
+@pytest.mark.asyncio
+async def test_manual_provision_is_explicitly_unimplemented(async_client, test_server):
+    """The legacy trigger must not leave a server stuck in provisioning."""
+    before = await async_client.get(f"/api/servers/{test_server}")
+
+    response = await async_client.post(f"/api/servers/{test_server}/provision")
+
+    assert response.status_code == HTTPStatus.NOT_IMPLEMENTED
+    after = await async_client.get(f"/api/servers/{test_server}")
+    assert after.json()["status"] == before.json()["status"]

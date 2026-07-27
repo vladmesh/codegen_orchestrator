@@ -115,8 +115,6 @@ class TestWorkerExecution:
         """
         Scenario B: Image caching respects agent_type.
         """
-        from .conftest import _create_scaffolded_workspace
-
         # Create Claude worker
         req_id_1 = f"cache-1-{uuid4().hex[:6]}"
         cmd1 = CreateWorkerCommand(
@@ -139,8 +137,7 @@ class TestWorkerExecution:
         worker1_id = result1.worker_id
         assert worker1_id == "cache-claude", f"Unexpected worker1_id: {worker1_id}"
 
-        # Create Factory worker with same capabilities (needs its own workspace)
-        factory_repo_id = _create_scaffolded_workspace()
+        # Create Factory worker with the same pre-scaffolded workspace.
         req_id_2 = f"cache-2-{uuid4().hex[:6]}"
         cmd2 = CreateWorkerCommand(
             request_id=req_id_2,
@@ -151,7 +148,7 @@ class TestWorkerExecution:
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
-                repo_id=factory_repo_id,
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd2.model_dump_json()})

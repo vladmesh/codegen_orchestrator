@@ -5,7 +5,10 @@ from datetime import datetime
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.application import (
+    DEFAULT_APPLICATION_RESERVED_RAM_MB,
+    ApplicationStatus,
+)
 
 from .base import Base
 
@@ -33,6 +36,10 @@ class Application(Base):
 
     # Human-readable name (e.g. "fortune-teller-bot")
     service_name: Mapped[str] = mapped_column(String(255))
+    # Admission reservation saved when the project is first allocated to this server.
+    reserved_ram_mb: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=DEFAULT_APPLICATION_RESERVED_RAM_MB
+    )
 
     # Runtime state — updated by deploy consumer and health checker
     status: Mapped[str] = mapped_column(

@@ -23,8 +23,12 @@ from src.agents.po.tools import (
     reopen_story,
     set_project_secret,
     set_reminder,
+    teardown_project,
+    validate_telegram_token,
     web_search,
 )
+
+BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
 
 
 @pytest.fixture(autouse=True)
@@ -59,9 +63,12 @@ def _make_response(data, status_code: int = 200) -> MagicMock:
     return resp
 
 
-def _make_config(user_id: str = "test-user") -> dict:
+def _make_config(user_id: str = "test-user", retry_story_id: str = "") -> dict:
     """Create a RunnableConfig with user_id."""
-    return {"configurable": {"thread_id": f"po-user-{user_id}", "user_id": user_id}}
+    configurable = {"thread_id": f"po-user-{user_id}", "user_id": user_id}
+    if retry_story_id:
+        configurable["retry_story_id"] = retry_story_id
+    return {"configurable": configurable}
 
 
 class TestCreateProject:
@@ -227,10 +234,10 @@ class TestGetProject:
 class TestSetProjectSecret:
     @pytest.mark.asyncio
     async def test_sets_secret(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"keys": ["TELEGRAM_BOT_TOKEN"]})
+        mock_api_client.post.return_value = _make_response({"keys": ["OPENROUTER_API_KEY"]})
 
         result = await set_project_secret.ainvoke(
-            {"project_id": "abc", "key": "TELEGRAM_BOT_TOKEN", "value": "123:ABC"},
+            {"project_id": "abc", "key": "OPENROUTER_API_KEY", "value": "sk-or-123"},
             config=_make_config("user-42"),
         )
 
@@ -238,7 +245,23 @@ class TestSetProjectSecret:
         call_args = mock_api_client.post.call_args
         assert call_args[0][0] == "/api/projects/abc/config/secrets"
         payload = call_args[1]["json"]
-        assert payload["secrets"]["TELEGRAM_BOT_TOKEN"] == "123:ABC"  # noqa: S105
+        assert payload["secrets"]["OPENROUTER_API_KEY"] == "sk-or-123"
+
+    @pytest.mark.asyncio
+    async def test_server_refusal_comes_back_as_an_error_message(self, mock_api_client):
+        """A bot token is refused server-side — the PO must see why, not a traceback."""
+        mock_api_client.post.return_value = _make_response(
+            {"detail": "TELEGRAM_BOT_TOKEN cannot be set directly — use /telegram/token"},
+            status_code=422,
+        )
+
+        result = await set_project_secret.ainvoke(
+            {"project_id": "abc", "key": "TELEGRAM_BOT_TOKEN", "value": BOT_TOKEN},
+            config=_make_config("user-42"),
+        )
+
+        assert result.startswith("Error:")
+        assert "/telegram/token" in result
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
@@ -298,7 +321,309 @@ class TestSetProjectSecret:
         mock_api_client.patch.assert_not_called()
 
 
+class TestValidateTelegramToken:
+    """The tool is a thin mouth for the server verdict — no validation of its own."""
+
+    @pytest.mark.asyncio
+    async def test_posts_token_to_the_validator_endpoint(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            {
+                "status": "ok",
+                "reason_code": None,
+                "user_message": "Token is valid. Bot: @palindrome_bot",
+                "bot_username": "palindrome_bot",
+                "checks": [{"name": "format", "passed": True, "reason_code": None, "detail": ""}],
+            }
+        )
+
+        result = await validate_telegram_token.ainvoke(
+            {"project_id": "abc", "token": BOT_TOKEN},
+            config=_make_config("user-42"),
+        )
+
+        call_args = mock_api_client.post.call_args
+        assert call_args[0][0] == "/api/projects/abc/telegram/token"
+        assert call_args[1]["json"] == {"token": BOT_TOKEN}
+        assert call_args[1]["headers"]["X-Telegram-ID"] == "user-42"
+        assert "palindrome_bot" in result
+        # No side path: the tool never touches secrets or repositories itself.
+        mock_api_client.patch.assert_not_called()
+        assert mock_api_client.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_rejected_verdict_is_relayed_with_reason_code(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            {
+                "status": "rejected",
+                "reason_code": "invalid_token",
+                "user_message": "Telegram rejected this token: Unauthorized.",
+                "bot_username": None,
+                "checks": [],
+            }
+        )
+
+        result = await validate_telegram_token.ainvoke(
+            {"project_id": "abc", "token": "nope"},
+            config=_make_config("user-42"),
+        )
+
+        assert "rejected" in result.lower()
+        assert "invalid_token" in result
+        assert "Unauthorized" in result
+
+    @pytest.mark.asyncio
+    async def test_own_project_conflict_names_the_holder_and_the_way_out(self, mock_api_client):
+        """A dead end for the user unless the tool passes the holder id to the agent."""
+        mock_api_client.post.return_value = _make_response(
+            {
+                "status": "rejected",
+                "reason_code": "bound_to_own_project",
+                "user_message": 'This bot is already connected to your project "Palindrome".',
+                "bot_username": None,
+                "conflict_project_id": "11111111-1111-1111-1111-111111111111",
+                "checks": [],
+            }
+        )
+
+        result = await validate_telegram_token.ainvoke(
+            {"project_id": "abc", "token": BOT_TOKEN},
+            config=_make_config("user-42"),
+        )
+
+        assert "11111111-1111-1111-1111-111111111111" in result
+        assert "teardown_project" in result
+
+    @pytest.mark.asyncio
+    async def test_foreign_holder_is_not_offered_a_teardown(self, mock_api_client):
+        """Nothing to free: the holding project is not the user's to tear down."""
+        mock_api_client.post.return_value = _make_response(
+            {
+                "status": "rejected",
+                "reason_code": "bound_elsewhere",
+                "user_message": "This bot is already in use.",
+                "bot_username": None,
+                "conflict_project_id": None,
+                "checks": [],
+            }
+        )
+
+        result = await validate_telegram_token.ainvoke(
+            {"project_id": "abc", "token": BOT_TOKEN},
+            config=_make_config("user-42"),
+        )
+
+        assert "teardown_project" not in result
+
+
+PROJECT_ID = "11111111-1111-1111-1111-111111111111"
+
+
+def _teardown_state(status: str, **overrides) -> dict:
+    state = {
+        "project_id": PROJECT_ID,
+        "status": status,
+        "project_status": "archived" if status == "completed" else "active",
+        "pending_application_ids": [],
+        "released_bot_username": None,
+        "error": None,
+    }
+    state.update(overrides)
+    return state
+
+
+class TestTeardownProject:
+    """Teardown runs on the API under the user's identity, and reports what it freed."""
+
+    @pytest.fixture(autouse=True)
+    def _no_waiting(self):
+        """The wait is real in production and pointless in a test."""
+        with patch("src.agents.po.tools_projects.TEARDOWN_POLL_INTERVAL_SECONDS", 0):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_calls_the_teardown_endpoint_as_the_user(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            _teardown_state("completed", released_bot_username="palindrome_bot")
+        )
+
+        result = await teardown_project.ainvoke(
+            {"project_id": PROJECT_ID},
+            config=_make_config("user-42"),
+        )
+
+        call_args = mock_api_client.post.call_args
+        assert call_args[0][0] == f"/api/projects/{PROJECT_ID}/teardown"
+        assert call_args[1]["headers"]["X-Telegram-ID"] == "user-42"
+        assert "palindrome_bot" in result
+        # The API owns the teardown: no direct undeploy or archive from the tool.
+        mock_api_client.patch.assert_not_called()
+        assert mock_api_client.post.call_count == 1
+        # Nothing was pending, so there was nothing to wait for.
+        mock_api_client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_waits_for_the_application_to_be_down_before_calling_the_bot_free(
+        self, mock_api_client
+    ):
+        """The bot polls its token until the containers stop — rebinding before that fails."""
+        mock_api_client.post.return_value = _make_response(
+            _teardown_state("pending", pending_application_ids=[7])
+        )
+        mock_api_client.get.side_effect = [
+            _make_response(_teardown_state("pending", pending_application_ids=[7])),
+            _make_response(_teardown_state("completed", released_bot_username="palindrome_bot")),
+        ]
+
+        result = await teardown_project.ainvoke(
+            {"project_id": PROJECT_ID},
+            config=_make_config("user-42"),
+        )
+
+        assert mock_api_client.get.call_count == 2
+        assert mock_api_client.get.call_args[0][0] == f"/api/projects/{PROJECT_ID}/teardown"
+        assert "down and archived" in result
+        assert "palindrome_bot" in result
+
+    @pytest.mark.asyncio
+    async def test_a_teardown_that_never_finishes_does_not_free_the_token(self, mock_api_client):
+        """Timing out is not permission to rebind: the agent is told to come back later."""
+        mock_api_client.post.return_value = _make_response(
+            _teardown_state("pending", pending_application_ids=[7])
+        )
+        mock_api_client.get.return_value = _make_response(
+            _teardown_state("pending", pending_application_ids=[7])
+        )
+
+        with patch("src.agents.po.tools_projects.TEARDOWN_TIMEOUT_SECONDS", 0):
+            result = await teardown_project.ainvoke(
+                {"project_id": PROJECT_ID},
+                config=_make_config("user-42"),
+            )
+
+        assert "still shutting down" in result
+        assert "cannot be used elsewhere yet" in result
+
+    @pytest.mark.asyncio
+    async def test_a_failed_undeploy_is_reported_as_a_failure(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(
+            _teardown_state("failed", pending_application_ids=[7], error="SSH command failed")
+        )
+
+        result = await teardown_project.ainvoke(
+            {"project_id": PROJECT_ID},
+            config=_make_config("user-42"),
+        )
+
+        assert "failed" in result
+        assert "SSH command failed" in result
+        assert "do not reuse the token" in result
+
+    @pytest.mark.asyncio
+    async def test_someone_elses_project_comes_back_as_a_message(self, mock_api_client):
+        """A 403 is an answer for the user, not a crash to retry through."""
+        mock_api_client.post.return_value = _make_response(
+            {"detail": "Access denied: not project owner"}, status_code=403
+        )
+
+        result = await teardown_project.ainvoke(
+            {"project_id": "11111111-1111-1111-1111-111111111111"},
+            config=_make_config("user-42"),
+        )
+
+        assert result.startswith("Error:")
+        assert "not project owner" in result
+        mock_api_client.post.return_value.raise_for_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_no_bot_says_so(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response(_teardown_state("completed"))
+
+        result = await teardown_project.ainvoke(
+            {"project_id": PROJECT_ID},
+            config=_make_config("user-42"),
+        )
+
+        assert "holds no bot any more" in result
+
+
 class TestCreateStory:
+    @pytest.mark.asyncio
+    async def test_third_matching_qa_failure_reminder_blocks_new_story(
+        self, mock_api_client, mock_stream_client
+    ):
+        """Reminder provenance blocks the third story in the same QA failure chain."""
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response(
+                [
+                    {
+                        "id": "story-first",
+                        "status": "failed",
+                    },
+                    {
+                        "id": "story-held",
+                        "status": "waiting_human_review",
+                        "quarantine_reason": {
+                            "qa_outcome": "failed",
+                            "qa_failure": {
+                                "fingerprint": "a1b2c3d4",
+                                "fingerprint_attempt": 3,
+                            },
+                        },
+                    },
+                ]
+            ),
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Try the fix again",
+                "description": "Retry the same failing feature",
+            },
+            config=_make_config("user-42", retry_story_id="story-held"),
+        )
+
+        assert "No story was created" in result
+        assert "human review" in result.lower()
+        mock_api_client.post.assert_not_called()
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_qa_failure_hold_allows_unrelated_story(
+        self, mock_api_client, mock_stream_client
+    ):
+        """A held retry chain must not freeze unrelated project work."""
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response(
+                [
+                    {
+                        "id": "story-held",
+                        "status": "waiting_human_review",
+                        "quarantine_reason": {
+                            "qa_outcome": "failed",
+                            "qa_failure": {"fingerprint": "a1b2c3d4"},
+                        },
+                    }
+                ]
+            ),
+        ]
+        mock_api_client.post.return_value = _make_response({"id": "story-export"})
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Add export",
+                "description": "Export project data as CSV",
+            },
+            config=_make_config("user-42"),
+        )
+
+        assert "Story created" in result
+        assert mock_api_client.post.call_args.kwargs["json"]["parent_story_id"] is None
+        mock_stream_client.publish_message.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_creates_story_and_publishes_to_architect(
         self, mock_api_client, mock_stream_client
@@ -405,9 +730,10 @@ class TestCreateStory:
         self, mock_api_client, mock_stream_client
     ):
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "status": "draft", "config": {}}
-        )
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "draft", "config": {}}),
+            _make_response([]),
+        ]
         mock_api_client.patch.side_effect = httpx.HTTPStatusError(
             "spec persistence unavailable", request=MagicMock(), response=MagicMock()
         )
@@ -649,7 +975,7 @@ class TestSetReminder:
     async def test_uses_user_id_from_config(self, mock_stream_client):
         """user_id should come from RunnableConfig, not LLM arguments."""
         await set_reminder.ainvoke(
-            {"delay_minutes": 5, "reason": "test"},
+            {"delay_minutes": 5, "reason": "check story story-second"},
             config=_make_config("user-777"),
         )
 
@@ -658,6 +984,7 @@ class TestSetReminder:
 
         reminder = json.loads(reminder_json)
         assert reminder["user_id"] == "user-777"
+        assert reminder["story_id"] == "story-second"
 
 
 class TestNotifyUser:
@@ -801,7 +1128,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 13
+        expected_count = 14
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -813,6 +1140,7 @@ class TestGetAllTools:
             "get_project",
             "set_project_secret",
             "validate_telegram_token",
+            "teardown_project",
             "create_story",
             "list_stories",
             "reopen_story",

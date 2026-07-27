@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from tests.unit.factories import make_project, make_repository
@@ -201,3 +202,99 @@ async def test_deploy_worker_skips_when_lock_held(mock_redis, mock_api):
     # Should have cancelled the new task via API
     cancel_calls = [c for c in mock_api.patch.call_args_list if "cancelled" in str(c)]
     assert len(cancel_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_deploy_worker_skips_same_sha_for_running_application(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """A webhook retry does not recreate containers already on this commit."""
+    head_sha = "a" * 40
+    mock_allocations.return_value = {"vps-1:8080": {"application_id": 17, "port": 8080}}
+    mock_api.get = AsyncMock(
+        return_value=[
+            {
+                "application_id": 17,
+                "deployed_sha": head_sha,
+                "result": "success",
+            }
+        ]
+    )
+    mock_api.get_application = AsyncMock(
+        return_value=type("Application", (), {"status": ApplicationStatus.RUNNING})()
+    )
+
+    from src.consumers.deploy import process_deploy_job
+
+    result = await process_deploy_job(_job(), mock_redis)
+
+    assert result["status"] == "success"
+    assert result["reason"] == "already_deployed_same_sha"
+    mock_devops_subgraph.ainvoke.assert_not_called()
+    assert any(
+        call.kwargs["json"]["status"] == "completed"
+        and call.kwargs["json"]["result"]["deploy_outcome"] == "success"
+        for call in mock_api.patch.call_args_list
+        if call.args[0] == "runs/deploy-wh-abc"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deploy_worker_redeploys_same_sha_after_undeploy(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """A deployment record alone is insufficient after containers were removed."""
+    head_sha = "a" * 40
+    mock_allocations.return_value = {"vps-1:8080": {"application_id": 17, "port": 8080}}
+    mock_api.get = AsyncMock(
+        return_value=[
+            {
+                "application_id": 17,
+                "deployed_sha": head_sha,
+                "result": "success",
+            }
+        ]
+    )
+    mock_api.get_application = AsyncMock(
+        return_value=type("Application", (), {"status": ApplicationStatus.NOT_DEPLOYED})()
+    )
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={"deployed_url": "http://1.2.3.4:8080", "deployment_result": {}}
+    )
+
+    from src.consumers.deploy import process_deploy_job
+
+    result = await process_deploy_job(_job(), mock_redis)
+
+    assert result["status"] == "success"
+    mock_devops_subgraph.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deploy_worker_deploys_new_sha_for_running_application(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """A running application must still receive a genuinely newer commit."""
+    mock_allocations.return_value = {"vps-1:8080": {"application_id": 17, "port": 8080}}
+    mock_api.get = AsyncMock(
+        return_value=[
+            {
+                "application_id": 17,
+                "deployed_sha": "b" * 40,
+                "result": "success",
+            }
+        ]
+    )
+    mock_api.get_application = AsyncMock(
+        return_value=type("Application", (), {"status": ApplicationStatus.RUNNING})()
+    )
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={"deployed_url": "http://1.2.3.4:8080", "deployment_result": {}}
+    )
+
+    from src.consumers.deploy import process_deploy_job
+
+    result = await process_deploy_job(_job(), mock_redis)
+
+    assert result["status"] == "success"
+    mock_devops_subgraph.ainvoke.assert_awaited_once()

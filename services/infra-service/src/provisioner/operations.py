@@ -1,6 +1,7 @@
 """Provisioner operations - password reset and OS reinstall logic."""
 
 import asyncio
+from datetime import UTC, datetime
 
 import structlog
 
@@ -9,7 +10,7 @@ from shared.notifications import notify_admins_best_effort
 
 from ..config.constants import Provisioning, Timeouts
 from .ansible_runner import AnsibleRunner
-from .api_client import update_server_labels
+from .api_client import get_server_info, get_server_ssh_key, update_server_labels
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
@@ -17,6 +18,50 @@ logger = structlog.get_logger()
 # Configuration from centralized constants
 PASSWORD_RESET_TIMEOUT = Timeouts.PASSWORD_RESET
 PASSWORD_RESET_POLL_INTERVAL = Provisioning.PASSWORD_RESET_POLL_INTERVAL
+
+
+async def provision_monitoring_baseline(
+    server_handle: str,
+    ansible_runner: AnsibleRunner,
+    *,
+    orchestrator_ip: str | None = None,
+    orchestrator_hostname: str | None = None,
+) -> tuple[bool, str]:
+    """Apply and verify the monitoring role on an already managed server."""
+    server = await get_server_info(server_handle)
+    if not server.is_managed:
+        return False, "Server is not managed"
+
+    server_ip = server.public_ip or server.host
+    if not server_ip:
+        return False, "Server has no public IP address"
+
+    ssh_private_key = await get_server_ssh_key(server_handle)
+    if not ssh_private_key:
+        return False, "Server has no stored SSH key"
+
+    success, output = ansible_runner.run_playbook(
+        server_ip=server_ip,
+        server_handle=server.handle,
+        playbook_name="provision_software.yml",
+        deploy_user=server.ssh_user,
+        ssh_user=server.ssh_user,
+        ssh_private_key=ssh_private_key,
+        orchestrator_ip=orchestrator_ip,
+        orchestrator_hostname=orchestrator_hostname,
+        tags=["monitoring"],
+        timeout=Timeouts.PROVISIONING,
+    )
+    if not success:
+        logger.error("monitoring_baseline_failed", server_handle=server_handle)
+        return False, f"Monitoring baseline failed: {output[:500]}"
+
+    await update_server_labels(
+        server_handle,
+        {"monitoring_baseline_applied_at": datetime.now(UTC).isoformat()},
+    )
+    logger.info("monitoring_baseline_complete", server_handle=server_handle)
+    return True, "Monitoring baseline applied successfully"
 
 
 async def reset_server_password(

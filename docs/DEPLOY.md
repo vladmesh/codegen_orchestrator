@@ -26,8 +26,28 @@ observe an absent project directory, while `feature` and `fix` require one. The
 generated workflow creates the directory only after the `create` precheck has
 passed.
 
-Before the next mega deploy, apply the provisioner to adopted target `5vei` so
+Before the next mega deploy, apply the provisioner to adopted target `vps-273978` so
 its `/opt/services` root receives this ownership contract.
+
+## Monitoring baseline for adopted servers
+
+To install monitoring without reinstalling or running the full provisioning path,
+run the supported operation from the infra-service container:
+
+```bash
+docker compose exec infra-service python -m src.provisioner.monitoring_baseline SERVER_HANDLE
+```
+
+It runs only the `monitoring` tag in `provision_software.yml`, then checks the
+target node exporter from the Ansible controller. A failed HTTP check makes the command
+fail and does not record the baseline as applied. After a successful run,
+`GET /api/servers/SERVER_HANDLE/monitoring-status` shows the baseline timestamp,
+the last successful exporter observation and the newest metrics sample. Its
+`not_provisioned` state is distinct from a baseline that is waiting for metrics.
+
+`server_unreachable` incidents are sent to administrators by the health checker
+when the exporter cannot be fetched, and resolved notifications are sent when it
+returns. They also remain visible through `GET /api/servers/SERVER_HANDLE/incidents`.
 
 ## GitHub Secrets
 
@@ -116,11 +136,6 @@ All secrets must be configured in the repository's **production** environment.
 | Secret | Description |
 |--------|-------------|
 | `LANGCHAIN_API_KEY` | LangSmith API key (optional, for tracing) |
-| `LANGFUSE_PUBLIC_KEY` | Langfuse public key (empty = disabled) |
-| `LANGFUSE_SECRET_KEY` | Langfuse secret key |
-| `CLICKHOUSE_PASSWORD` | ClickHouse password (for Langfuse analytics) |
-| `MINIO_ROOT_USER` | MinIO root user (for Langfuse media storage) |
-| `MINIO_ROOT_PASSWORD` | MinIO root password |
 
 ## QA Node (Prod Server)
 
@@ -131,7 +146,10 @@ Prod servers are provisioned as QA testing nodes via the `qa_runner` Ansible rol
 - Claude Code CLI (standalone binary via `curl -fsSL https://claude.ai/install.sh | bash`)
 - Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
 - `.credentials.json` OAuth session (copied from Ansible controller's `~/.claude/.credentials.json`)
-- Optional: `telethon.session` file for Telegram bot testing
+- `~/.qa-telethon.env` (mode 0600) with `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION`
+  taken from the orchestrator `.env`. All three are required: Telethon needs api_id/api_hash even
+  with an authorized session, so the role fails the play when any of them is empty. The QA prompt
+  sources this file — non-interactive SSH reads no profile.
 
 Everything user-scoped is installed for `{{ deploy_user }}` (the server's `ssh_user`), because the
 QA consumer connects as that user and calls `claude` through its `$HOME/.local/bin`. The role

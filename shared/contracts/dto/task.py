@@ -18,6 +18,7 @@ class TaskStatus(StrEnum):
     DONE = "done"
     BLOCKED = "blocked"
     WAITING_HUMAN_REVIEW = "waiting_human_review"
+    WAITING_RESOURCES = "waiting_resources"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -46,6 +47,7 @@ VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.IN_CI,
         TaskStatus.BLOCKED,
         TaskStatus.WAITING_HUMAN_REVIEW,
+        TaskStatus.WAITING_RESOURCES,
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
     },
@@ -68,8 +70,18 @@ VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
     },
+    TaskStatus.WAITING_RESOURCES: {
+        TaskStatus.BACKLOG,
+        TaskStatus.WAITING_HUMAN_REVIEW,
+        TaskStatus.CANCELLED,
+    },
     TaskStatus.DONE: {TaskStatus.BACKLOG},
-    TaskStatus.FAILED: {TaskStatus.BACKLOG, TaskStatus.CANCELLED},
+    TaskStatus.FAILED: {
+        TaskStatus.BACKLOG,
+        TaskStatus.WAITING_RESOURCES,
+        TaskStatus.WAITING_HUMAN_REVIEW,
+        TaskStatus.CANCELLED,
+    },
     TaskStatus.CANCELLED: set(),
 }
 

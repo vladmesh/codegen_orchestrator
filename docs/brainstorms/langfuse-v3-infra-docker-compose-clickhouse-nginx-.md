@@ -7,10 +7,11 @@
 
 > **Дата**: 2026-03-13
 > **Контекст**: Нужна админка для мониторинга и управления оркестратором — проекты, таски, воркеры, очереди, логи, трейсинг агентов, инспекция worker-контейнеров
-> **Status**: done
-
+> **Status**: obsolete — superseded by codegen_orchestrator-795 (Langfuse stack removed)
 ---
 
+
+> This is a historical record. The Langfuse receiver stack described below was removed by codegen_orchestrator-795 because it did not produce usable trace data.
 ## Current State
 
 ### Что уже есть

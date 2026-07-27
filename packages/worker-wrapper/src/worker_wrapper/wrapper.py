@@ -12,6 +12,7 @@ from shared.redis.client import RedisStreamClient
 
 from .config import WorkerWrapperConfig
 from .http_server import ResultHttpServer
+from .observability import extract_effort_metrics, save_transcript
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +41,9 @@ class WorkerWrapper:
         self._http_server: ResultHttpServer | None = None
         self._result_event: asyncio.Event | None = None
         self._agent_stdout_tail: str | None = None
+        self._effort_metrics: dict[str, Any] = {}
+        self._transcript_path: str | None = None
+        self._transcript_truncated: bool | None = None
 
     async def run(self):
         """Main loop: connect, consume, execute, publish."""
@@ -176,15 +180,18 @@ class WorkerWrapper:
         Returns (status, error) — potentially updated if watchdog triggers.
         """
         stdout_tail = self._agent_stdout_tail
+        observability = self._observability_metadata()
 
         if self._result_event.is_set() and self._buffered_result is not None:
             logger.info("result_received_via_http", worker_id=self.config.consumer_name)
-            result = self._attach_metadata(self._buffered_result, report, stdout_tail)
+            result = self._attach_metadata(
+                self._buffered_result, report, stdout_tail, observability
+            )
             await self.redis.publish_message(self.config.output_stream, result)
             return status, error
 
         if error:
-            result = WorkerFailedResult(error=error, agent_stdout_tail=stdout_tail)
+            result = WorkerFailedResult(error=error, agent_stdout_tail=stdout_tail, **observability)
             await self.redis.publish_message(self.config.output_stream, result)
             return status, error
 
@@ -195,7 +202,9 @@ class WorkerWrapper:
             if resumed and self._result_event.is_set() and self._buffered_result is not None:
                 logger.info("result_received_after_resume", worker_id=self.config.consumer_name)
                 stdout_tail = self._agent_stdout_tail
-                result = self._attach_metadata(self._buffered_result, report, stdout_tail)
+                result = self._attach_metadata(
+                    self._buffered_result, report, stdout_tail, self._observability_metadata()
+                )
                 await self.redis.publish_message(self.config.output_stream, result)
                 return status, error
 
@@ -203,21 +212,34 @@ class WorkerWrapper:
         error = "Agent exited without reporting result"
         status = "failed"
         stdout_tail = self._agent_stdout_tail
-        result = WorkerFailedResult(error=error, agent_stdout_tail=stdout_tail)
+        result = WorkerFailedResult(
+            error=error, agent_stdout_tail=stdout_tail, **self._observability_metadata()
+        )
         await self.redis.publish_message(self.config.output_stream, result)
         return status, error
 
     @staticmethod
     def _attach_metadata(
-        result: WorkerResult, report: str | None, stdout_tail: str | None
+        result: WorkerResult,
+        report: str | None,
+        stdout_tail: str | None,
+        observability: dict[str, Any],
     ) -> WorkerResult:
         """Attach worker report and stdout tail to a result without mutating it."""
-        updates: dict[str, str] = {}
+        updates: dict[str, Any] = {}
         if report:
             updates["worker_report"] = report
         if stdout_tail:
             updates["agent_stdout_tail"] = stdout_tail
+        updates.update(observability)
         return result.model_copy(update=updates) if updates else result
+
+    def _observability_metadata(self) -> dict[str, Any]:
+        metadata = dict(self._effort_metrics)
+        if self._transcript_path:
+            metadata["transcript_path"] = self._transcript_path
+            metadata["transcript_truncated"] = self._transcript_truncated
+        return metadata
 
     async def _prepare_workspace(self, data: dict) -> None:
         """Pre-turn setup: pull, update TASK.md/STORY.md, clear session."""
@@ -656,6 +678,15 @@ class WorkerWrapper:
             ) from None
         stdout = stdout_bytes.decode().strip()
         stderr = stderr_bytes.decode().strip()
+        self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
+        self._transcript_path, self._transcript_truncated = save_transcript(
+            self.config.transcript_dir,
+            self.config.consumer_name,
+            str(data.get("request_id", "unknown")),
+            f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n",
+            self.config.transcript_max_bytes,
+            agent_env,
+        )
 
         # Codex stdout/stderr are transport diagnostics, never business output.
         # Do not persist or log them because CLI diagnostics can include data

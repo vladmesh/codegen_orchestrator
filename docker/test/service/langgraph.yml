@@ -49,3 +49,4 @@ services:
       - ../../../services/langgraph/src:/app/src
       - ../../../services/langgraph/tests:/app/tests
       - ../../../shared:/app/shared
+      - ../../../services/infra-service/ansible/roles/qa_runner/files:/infra-service/ansible/roles/qa_runner/files:ro

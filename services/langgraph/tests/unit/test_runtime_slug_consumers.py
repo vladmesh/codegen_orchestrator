@@ -93,7 +93,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             task_id="deploy-1",
             project_id=str(project.id),
             project_name=RUNTIME_SLUG,
-            allocated_resources={"srv-1:8000": {"server_ip": "1.2.3.4", "server_handle": "srv-1"}},
+            server_handle="srv-1",
         )
     assert result["status"] == "success"
     lifecycle_cmd = lifecycle_conn.run.await_args.args[0]
@@ -121,12 +121,20 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
     qa_conn = AsyncMock()
     qa_conn.run = AsyncMock(
         side_effect=[
-            MagicMock(exit_status=0, stdout='{"pass": true, "checks": [], "summary": "ok"}'),
+            MagicMock(exit_status=0, stdout=""),
+            MagicMock(
+                exit_status=0,
+                stdout='{"pass": true, "checks": [], "summary": "ok", "state_changes": []}',
+            ),
             MagicMock(exit_status=1, stdout=""),
+            MagicMock(exit_status=1, stdout=""),
+            MagicMock(exit_status=0, stdout=""),
         ]
     )
+    qa_preflight = AsyncMock(return_value=None)
     with (
         patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
+        patch("src.consumers._qa_runner._preflight_agent_qa", qa_preflight),
         patch("src.consumers._qa_runner.asyncssh", _ssh_module_for_connection(qa_conn)),
     ):
         qa_result = await run_qa_on_server(
@@ -138,7 +146,9 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             deployed_url="http://1.2.3.4:8000",
         )
     assert qa_result.passed is True
-    qa_cmd = qa_conn.run.await_args_list[0].args[0]
+    qa_cmd = next(
+        call.args[0] for call in qa_conn.run.await_args_list if "claude -p" in call.args[0]
+    )
     assert f"cd {SERVICE_DIR}" in qa_cmd
 
     unsafe_project = "unsafe project; echo nope"
@@ -158,7 +168,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             task_id="deploy-1",
             project_id=str(project.id),
             project_name=unsafe_project,
-            allocated_resources={"srv-1:8000": {"server_ip": "1.2.3.4", "server_handle": "srv-1"}},
+            server_handle="srv-1",
         )
     unsafe_cmd = unsafe_conn.run.await_args.args[0]
     assert "cd '/opt/services/unsafe project; echo nope/infra'" in unsafe_cmd

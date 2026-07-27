@@ -112,6 +112,24 @@ async def api_client():
     """Async HTTP client for the API service."""
     import httpx
 
+    internal_api_key = os.environ["INTERNAL_API_KEY"]
+    async with httpx.AsyncClient(
+        base_url=API_BASE_URL,
+        timeout=10,
+        headers={"X-Internal-Key": internal_api_key},
+    ) as client:
+        yield client
+
+
+@pytest.fixture
+async def user_api_client():
+    """Async HTTP client for tests that must exercise user-scoped authorization.
+
+    These requests intentionally omit the internal key. A valid internal key
+    bypasses project access checks and would make the isolation assertions vacuous.
+    """
+    import httpx
+
     async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=10) as client:
         yield client
 
@@ -226,12 +244,17 @@ async def seed_server(api_client):
 
 
 @pytest.fixture(autouse=True)
-def cleanup_worker_containers(docker_client):
+def cleanup_worker_containers():
     """Remove any leftover worker containers before and after each test."""
+    if os.getenv("BUILD_WORKER_BASE_IMAGES") != "true":
+        yield
+        return
+
+    client = docker.DockerClient(base_url=DOCKER_HOST)
 
     def remove_workers():
         with contextlib.suppress(Exception):
-            containers = docker_client.containers.list(all=True)
+            containers = client.containers.list(all=True)
             for container in containers:
                 if container.name.startswith("worker-"):
                     with contextlib.suppress(Exception):
@@ -244,6 +267,7 @@ def cleanup_worker_containers(docker_client):
 
     # Cleanup after test
     remove_workers()
+    client.close()
 
 
 @pytest.fixture(autouse=True)
@@ -419,6 +443,9 @@ def setup_worker_base_images():
 
     Build order: common (sequential) -> claude + factory (parallel).
     """
+    if os.getenv("BUILD_WORKER_BASE_IMAGES") != "true":
+        return
+
     client = docker.DockerClient(base_url=DOCKER_HOST)
 
     # Source paths mapped in integration-test-runner container

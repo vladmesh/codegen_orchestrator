@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.server import ServerDTO
@@ -171,7 +171,11 @@ class LanggraphAPIClient:
         return await self._patch_json(f"applications/{application_id}", json=payload)
 
     async def get_or_create_application(
-        self, repo_id: str, server_handle: str, service_name: str
+        self,
+        repo_id: str,
+        server_handle: str,
+        service_name: str,
+        reserved_ram_mb: int = DEFAULT_APPLICATION_RESERVED_RAM_MB,
     ) -> dict:
         """Find existing application or create a new one."""
         apps = await self.list_applications({"repo_id": repo_id, "server_handle": server_handle})
@@ -182,6 +186,7 @@ class LanggraphAPIClient:
                 "repo_id": repo_id,
                 "server_handle": server_handle,
                 "service_name": service_name,
+                "reserved_ram_mb": reserved_ram_mb,
                 "status": "not_deployed",
             }
         )

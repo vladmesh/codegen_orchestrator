@@ -281,13 +281,26 @@ class TestStopApplication:
         msg = await _read_last_message(redis, "deploy:queue")
         assert msg["action"] == "stop"
         assert msg["triggered_by"] == "admin"
+        # The consumer stops the application it is told about, not one it picks.
+        assert msg["application_id"] == app_id
 
     @pytest.mark.asyncio
     async def test_stop_not_running_fails(self, client, server_handle):
-        app_id = await _create_running_app(client, server_handle, app_status="stopped")
+        app_id = await _create_running_app(client, server_handle, app_status="not_deployed")
 
         resp = await client.post(f"/api/applications/{app_id}/stop")
         assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+    @pytest.mark.asyncio
+    async def test_stop_already_stopped_is_idempotent(self, client, redis, server_handle):
+        app_id = await _create_running_app(client, server_handle, app_status="stopped")
+        message_count_before = await redis.xlen("deploy:queue")
+
+        resp = await client.post(f"/api/applications/{app_id}/stop")
+
+        assert resp.status_code == HTTPStatus.OK
+        assert resp.json()["status"] == "stopped"
+        assert await redis.xlen("deploy:queue") == message_count_before
 
 
 class TestUndeployApplication:
@@ -301,6 +314,7 @@ class TestUndeployApplication:
 
         msg = await _read_last_message(redis, "deploy:queue")
         assert msg["action"] == "undeploy"
+        assert msg["application_id"] == app_id
 
     @pytest.mark.asyncio
     async def test_undeploy_not_deployed_fails(self, client, server_handle):

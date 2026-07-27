@@ -29,7 +29,6 @@ const navItems: NavItem[] = [
   { label: 'Queues', path: '/queues', icon: Layers },
   { label: 'Servers', path: '/servers', icon: Server },
   { label: 'Logs', path: '/logs', icon: ScrollText },
-  { label: 'LLM Tracing', path: '/tracing', icon: BrainCircuit },
   { label: 'Settings', path: '/settings', icon: Settings },
 ]
 

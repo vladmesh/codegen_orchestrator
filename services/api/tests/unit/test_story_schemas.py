@@ -72,6 +72,7 @@ class TestStoryRead:
         mock.created_by = "po"
         mock.type = "technical"
         mock.user_report = None
+        mock.quarantine_reason = None
         mock.created_at = now
         mock.updated_at = now
 
@@ -82,6 +83,7 @@ class TestStoryRead:
         assert r.priority == 5
         assert r.blocked_by_story_id == "story-blocker"
         assert r.user_report is None
+        assert r.quarantine_reason is None
 
     def test_from_attributes_with_user_report(self):
         from unittest.mock import MagicMock
@@ -100,6 +102,7 @@ class TestStoryRead:
         mock.created_by = "po"
         mock.type = "product"
         mock.user_report = "Images still broken on mobile"
+        mock.quarantine_reason = None
         mock.created_at = now
         mock.updated_at = now
 

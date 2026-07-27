@@ -102,8 +102,9 @@ async def test_delete_project_success():
 
     assert resp.status_code == 204  # noqa: PLR2004
 
-    # 3 execute calls: delete runs, delete port_allocations (via app_ids), delete applications
-    assert session.execute.call_count == 3  # noqa: PLR2004
+    # Repositories carry the Telegram bot binding, so they must go with the project.
+    deleted_tables = {call.args[0].table.name for call in session.execute.call_args_list}
+    assert {"repositories", "applications", "tasks", "runs"} <= deleted_tables
     session.delete.assert_called_once_with(project)
     session.commit.assert_called_once()
 

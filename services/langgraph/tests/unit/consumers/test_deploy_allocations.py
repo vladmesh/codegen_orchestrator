@@ -29,3 +29,24 @@ async def test_deploy_requests_template_infrastructure_port_allocations():
 
     assert allocate.await_args.kwargs["modules"] == ["backend", "postgres", "redis"]
     assert allocate.await_args.kwargs["service_name"] == "fancy-project-with-spaces-0000"
+
+
+@pytest.mark.asyncio
+async def test_deploy_uses_canonical_default_ram_reservation(monkeypatch):
+    """Deploy forwards the shared reservation default when the spec omits RAM."""
+    from src.consumers import deploy
+
+    monkeypatch.setattr(deploy, "DEFAULT_APPLICATION_RESERVED_RAM_MB", 768)
+    project = make_project(config={"modules": ["backend"]})
+    repository = make_repository()
+    with (
+        patch.object(
+            deploy.api_client,
+            "get_primary_repository",
+            AsyncMock(return_value=repository),
+        ),
+        patch("src.allocations.ensure_project_allocations", AsyncMock(return_value={})) as allocate,
+    ):
+        await deploy._allocate_resources(str(project.id), project)
+
+    assert allocate.await_args.kwargs["min_ram_mb"] == 768

@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
+import json
 from typing import TYPE_CHECKING
 import uuid
 
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.run_result import DeployRunResult, QARunResult
+from shared.contracts.dto.run_result import (
+    AllocationFailureReason,
+    DeployRunResult,
+    EngineeringRunResult,
+    QARunResult,
+)
+from shared.contracts.dto.server import ServerStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -66,6 +75,22 @@ def _max_architect_retries() -> int:
 
 def _story_retry_ttl() -> int:
     return startup.get_config().get_int("supervisor.story_retry_ttl")
+
+
+def _qa_failure_limit() -> int:
+    return startup.get_config().get_int("supervisor.qa_failure_max_fingerprint_attempts")
+
+
+def _qa_fix_limit() -> int:
+    return startup.get_config().get_int("supervisor.qa_max_fix_attempts")
+
+
+def _resource_wait_timeout_minutes() -> int:
+    return startup.get_config().get_int("supervisor.resource_wait_timeout_minutes")
+
+
+def _resource_wait_metrics_freshness_seconds() -> int:
+    return startup.get_config().get_int("supervisor.resource_wait_metrics_freshness_seconds")
 
 
 def _parse_datetime(value: str | datetime) -> datetime:
@@ -185,6 +210,9 @@ async def supervise_failed_tasks(
         max_iter = task.max_iterations
         log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
 
+        if await _park_task_waiting_resources(api_client, redis_client, task, log):
+            continue
+
         if current_iter < max_iter:
             # Retry: failed → backlog → todo, bump iteration
             await api_client.transition_task(task_id, TaskStatus.BACKLOG, "supervisor")
@@ -222,6 +250,228 @@ async def supervise_failed_tasks(
             escalated += 1
 
     return {"retried": retried, "escalated": escalated}
+
+
+async def _park_task_waiting_resources(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Park only waitable capacity failures; metrics failures remain technical failures."""
+    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
+    if not runs:
+        return False
+    run = runs[0]
+    result = run.result
+    if not result or not isinstance(result, EngineeringRunResult):
+        return False
+    reason = result.allocation_failure_reason
+    if reason == AllocationFailureReason.IMPOSSIBLE_CAPACITY:
+        await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
+        if task.story_id:
+            await api_client.transition_story(task.story_id, StoryStatus.WAITING_HUMAN_REVIEW)
+        await _notify_admin_failure(
+            task.id,
+            str(task.project_id),
+            "allocation request exceeds every managed server's capacity",
+        )
+        try:
+            await _request_impossible_capacity_via_po(api_client, redis_client, task, log)
+        except Exception:
+            log.warning("impossible_capacity_request_failed", exc_info=True)
+        log.warning("task_allocation_impossible")
+        return True
+    if reason not in {
+        AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+        AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY,
+    }:
+        return False
+
+    metadata = dict(task.failure_metadata or {})
+    is_new_wait = "resource_wait_started_at" not in metadata
+    metadata.setdefault("resource_wait_started_at", datetime.now(UTC).isoformat())
+    metadata.update(
+        {
+            "allocation_required_ram_mb": result.allocation_required_ram_mb,
+            "allocation_min_disk_mb": result.allocation_min_disk_mb,
+            "allocation_failure_reason": reason.value,
+        }
+    )
+    await api_client.update_task(task.id, {"failure_metadata": metadata})
+    await api_client.transition_task(task.id, TaskStatus.WAITING_RESOURCES, "supervisor")
+    log.info("task_waiting_resources", reason=reason.value)
+    if is_new_wait:
+        try:
+            await _request_resources_via_po(api_client, redis_client, task, log)
+        except Exception:
+            log.warning("waiting_resources_request_failed", exc_info=True)
+    return True
+
+
+async def _request_impossible_capacity_via_po(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask PO to explain that the requested deployment cannot fit managed capacity."""
+    project = await api_client.get_project(str(task.project_id))
+    if project is None or not project.owner_id:
+        return
+    event = POSystemEvent(
+        event="task_impossible_capacity",
+        text=(
+            "Engineering cannot place this project on any managed server. Tell the user that "
+            "the request needs operator review."
+        ),
+        task_id=task.id,
+        user_id=str(project.owner_id),
+        project_id=str(task.project_id),
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info("impossible_capacity_requested")
+
+
+async def _request_resources_via_po(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask PO to tell the owner that engineering is waiting for capacity."""
+    project = await api_client.get_project(str(task.project_id))
+    if project is None or not project.owner_id:
+        return
+    event = POSystemEvent(
+        event="task_waiting_resources",
+        text=(
+            "Engineering is waiting for server capacity. Tell the user that work will resume "
+            "automatically when capacity becomes available."
+        ),
+        task_id=task.id,
+        user_id=str(project.owner_id),
+        project_id=str(task.project_id),
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info("waiting_resources_requested")
+
+
+async def supervise_waiting_resource_tasks(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+) -> dict[str, int]:
+    """Resume capacity-parked tasks only after fresh metrics admit their request."""
+    tasks = await api_client.get_tasks_by_status(TaskStatus.WAITING_RESOURCES)
+    resumed = 0
+    expired = 0
+    for task in tasks:
+        metadata = task.failure_metadata or {}
+        started_at = _parse_datetime(
+            metadata.get("resource_wait_started_at") or task.updated_at or task.created_at
+        )
+        age_minutes = (datetime.now(UTC) - started_at).total_seconds() / 60
+        log = logger.bind(task_id=task.id, story_id=task.story_id)
+        if age_minutes >= _resource_wait_timeout_minutes():
+            await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
+            await api_client.create_task_event(
+                task.id,
+                {
+                    "event_type": "note",
+                    "details": {
+                        "reason": "resource_wait_timeout",
+                        "age_minutes": round(age_minutes, 1),
+                    },
+                    "actor": "supervisor",
+                },
+            )
+            await _notify_admin_failure(
+                task.id,
+                str(task.project_id),
+                "resource wait timed out",
+            )
+            expired += 1
+            continue
+        if not await _resources_available(api_client, metadata):
+            continue
+        await _clear_failed_run_iteration(api_client, task)
+        await api_client.transition_task(task.id, TaskStatus.BACKLOG, "supervisor")
+        await api_client.transition_task(task.id, TaskStatus.TODO, "supervisor")
+        try:
+            await _notify_resources_resumed_via_po(api_client, redis_client, task)
+        except Exception:
+            log.warning("resources_resumed_request_failed", exc_info=True)
+        resumed += 1
+    return {"resumed": resumed, "expired": expired}
+
+
+async def _clear_failed_run_iteration(api_client: SchedulerAPIClient, task) -> None:
+    """Make the allocation-failed run ineligible for todo dispatch recovery.
+
+    Capacity recovery is a fresh allocation attempt, but it does not consume a
+    code-generation iteration. The dispatcher therefore needs the prior run's
+    iteration stamp removed before the task returns to todo.
+    """
+    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
+    for run in runs:
+        if run.run_metadata.get("iteration") != task.current_iteration:
+            continue
+        await api_client.update_run(
+            run.id,
+            {"run_metadata": {**run.run_metadata, "iteration": None}},
+        )
+        return
+
+
+async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -> bool:
+    """Apply the allocator's conservative admission rule to fresh server metrics."""
+    required_ram = metadata.get("allocation_required_ram_mb")
+    min_disk = metadata.get("allocation_min_disk_mb")
+    if not isinstance(required_ram, int) or not isinstance(min_disk, int):
+        return False
+    now = datetime.now(UTC)
+    for server in await api_client.get_servers():
+        if not server.is_managed or server.status not in {
+            ServerStatus.ACTIVE,
+            ServerStatus.READY,
+            ServerStatus.IN_USE,
+        }:
+            continue
+        if server.capacity_ram_mb < required_ram or server.capacity_disk_mb < min_disk:
+            continue
+        if not server.last_health_check:
+            continue
+        checked = server.last_health_check
+        if checked.tzinfo is None:
+            checked = checked.replace(tzinfo=UTC)
+        age = (now - checked).total_seconds()
+        if not 0 <= age <= _resource_wait_metrics_freshness_seconds():
+            continue
+        apps = await api_client.get_applications(server.handle)
+        reserved = sum(
+            app.reserved_ram_mb
+            for app in apps
+            if app.status not in {ApplicationStatus.NOT_DEPLOYED, ApplicationStatus.STOPPED}
+        )
+        if server.capacity_ram_mb >= max(reserved, server.used_ram_mb) + required_ram:
+            return True
+    return False
+
+
+async def _notify_resources_resumed_via_po(
+    api_client: SchedulerAPIClient, redis_client: RedisStreamClient, task
+) -> None:
+    project = await api_client.get_project(str(task.project_id))
+    if project is None or not project.owner_id:
+        return
+    event = POSystemEvent(
+        event="task_resources_resumed",
+        text="Server capacity is available again. Tell the user that engineering has resumed.",
+        task_id=task.id,
+        user_id=str(project.owner_id),
+        project_id=str(task.project_id),
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
 
 
 async def supervise_stuck_tasks(
@@ -428,6 +678,7 @@ async def _handle_deploy_success_story(
             "project_id": project_id,
             "story_id": story_id,
             "status": RunStatus.QUEUED.value,
+            "run_metadata": {"application_id": application_id},
         }
     )
 
@@ -732,13 +983,13 @@ async def _fail_story_on_invalid_result(
     await _notify_admin_failure(story_id, project_id, f"invalid {run_type} run result: {exc}")
 
 
-async def _notify_admin_failure(run_id: str, project_id: str, error: str) -> None:
+async def _notify_admin_failure(entity_id: str, project_id: str, error: str) -> None:
     """Notify after a terminal failure has already been committed."""
     await notify_admins_best_effort(
-        f"Deploy GIVE_UP for run {run_id} (project {project_id}):\n{error[:500]}",
+        f"Supervisor failure for {entity_id} (project {project_id}):\n{error[:500]}",
         level="error",
         component="supervisor",
-        run_id=run_id,
+        run_id=entity_id,
         project_id=project_id,
     )
 
@@ -883,8 +1134,7 @@ async def supervise_testing_stories(
     Reads run.result.qa_outcome set by the QA consumer:
     - PASSED → story COMPLETED
     - FAILED → create fix task, story IN_PROGRESS, redispatch to engineering
-    - EXHAUSTED → story FAILED
-    - ERROR → story FAILED
+    - BLOCKED / EXHAUSTED / ERROR → stop the application and wait for human review
 
     Returns dict with counts of actions taken.
     """
@@ -930,19 +1180,96 @@ async def supervise_testing_stories(
 
         elif outcome == QAOutcome.FAILED:
             dispatched = await _handle_qa_failed(
-                api_client, redis_client, story_id, project_id, run.result, log
+                api_client, redis_client, story_id, project_id, run.id, run.result, log
             )
             if dispatched:
                 redispatched += 1
-            else:
+            elif dispatched is False:
                 failed += 1
 
-        elif outcome in (QAOutcome.EXHAUSTED, QAOutcome.ERROR):
-            await api_client.fail_story(story_id)
-            log.warning("qa_supervisor_failed", outcome=outcome.value, run_id=run.id)
+        elif outcome in (QAOutcome.BLOCKED, QAOutcome.EXHAUSTED, QAOutcome.ERROR):
+            await _quarantine_unverified_application(
+                api_client, redis_client, story_id, project_id, run, log
+            )
+            log.warning(
+                "qa_supervisor_quarantined",
+                run_id=run.id,
+                outcome=outcome.value,
+                application_id=run.run_metadata.get("application_id"),
+            )
             failed += 1
 
     return {"completed": completed, "redispatched": redispatched, "failed": failed}
+
+
+def _qa_quarantine_reason(result: QARunResult) -> dict:
+    """Keep the terminal QA evidence with the story without reclassifying it."""
+    reason = {"qa_outcome": result.qa_outcome.value}
+    if result.blocker is not None:
+        reason["blocker"] = result.blocker.model_dump(mode="json")
+    if result.summary:
+        reason["summary"] = result.summary
+    if result.error:
+        reason["error"] = result.error
+    if result.state_changes:
+        reason["state_changes"] = [
+            change.model_dump(mode="json") for change in result.state_changes
+        ]
+    return reason
+
+
+async def _quarantine_unverified_application(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Stop an unverified bot, retain its binding, and request a human decision."""
+    application_id = run.run_metadata.get("application_id")
+    if not isinstance(application_id, int):
+        raise RuntimeError(f"QA run {run.id} has no application_id for quarantine")
+
+    await api_client.stop_application(application_id)
+    reason = _qa_quarantine_reason(run.result)
+    await api_client.update_story(story_id, {"quarantine_reason": reason})
+    await api_client.transition_story(story_id, "human-review")
+    await _notify_quarantine_owner(api_client, redis_client, story_id, project_id, reason, log)
+
+
+async def _notify_quarantine_owner(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    reason: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask the project owner to decide what to do with a stopped bot."""
+    project = await api_client.get_project(project_id)
+    if project is None:
+        log.warning("qa_quarantine_no_project", project_id=project_id)
+        return
+
+    outcome = reason["qa_outcome"]
+    blocker = reason.get("blocker")
+    if blocker:
+        detail = f"{blocker['category']}: {blocker['received']}"
+    else:
+        detail = reason.get("summary") or reason.get("error") or outcome
+    event = POSystemEvent(
+        event="story_quarantined",
+        text=(
+            "QA could not confirm that the bot works. The bot has been stopped, "
+            f"but its Telegram token remains assigned to this project. Reason: {detail}. "
+            "Please decide whether to fix and redeploy it."
+        ),
+        task_id=story_id,
+        user_id=str(project.owner_id),
+        project_id=project_id,
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
 
 
 async def _handle_qa_failed(
@@ -950,15 +1277,62 @@ async def _handle_qa_failed(
     redis_client: RedisStreamClient,
     story_id: str,
     project_id: str,
+    qa_run_id: str,
     result: QARunResult,
     log: structlog.stdlib.BoundLogger,
-) -> bool:
-    """QA failed — create fix task and redispatch to engineering.
+) -> bool | None:
+    """Create a bounded, fingerprinted fix task for a confirmed QA defect.
 
-    Returns True if redispatched, False if something went wrong.
+    Returns True if a fix task was created, False if escalation is required,
+    and None when an existing task was recovered or had already been handled.
     """
     summary = result.summary or "QA testing failed"
     failed_checks = result.failed_checks
+
+    tasks = await api_client.get_tasks_by_story(story_id)
+    prior_evidence = [item for task in tasks if (item := _qa_failure_metadata(task))]
+    if any(item.get("qa_run_id") == qa_run_id for item in prior_evidence):
+        # create_task commits before this transition. Retry the transition when
+        # a transient error left the already-created fix task behind.
+        await api_client.transition_story(story_id, "start")
+        log.info("qa_supervisor_failure_transition_recovered", qa_run_id=qa_run_id)
+        return None
+
+    fingerprint = _qa_failure_fingerprint(summary, failed_checks)
+    matching_failures = [item for item in prior_evidence if item.get("fingerprint") == fingerprint]
+    attempt = len(matching_failures) + 1
+    total_attempt = len(prior_evidence) + 1
+    evidence = {
+        "qa_run_id": qa_run_id,
+        "fingerprint": fingerprint,
+        "fingerprint_attempt": attempt,
+        "fix_attempt": total_attempt,
+        "summary": summary,
+        "failed_checks": [check.model_dump(mode="json") for check in failed_checks],
+    }
+
+    if attempt > _qa_failure_limit() or total_attempt > _qa_fix_limit():
+        await api_client.update_story(
+            story_id,
+            {"quarantine_reason": {"qa_outcome": QAOutcome.FAILED.value, "qa_failure": evidence}},
+        )
+        await api_client.transition_story(story_id, "human-review")
+        exhausted_limit = _qa_failure_limit() if attempt > _qa_failure_limit() else _qa_fix_limit()
+        await notify_admins_best_effort(
+            f"QA failure {fingerprint} exhausted {exhausted_limit} fix attempts "
+            f"for story {story_id}",
+            level="warning",
+            story_id=story_id,
+            failure_fingerprint=fingerprint,
+        )
+        log.warning(
+            "qa_supervisor_failure_escalated",
+            fingerprint=fingerprint,
+            fingerprint_attempt=attempt,
+            fix_attempt=total_attempt,
+            max_attempts=exhausted_limit,
+        )
+        return False
 
     issues_text = "\n".join(f"- {c.name}: {c.detail}" for c in failed_checks)
     if not issues_text:
@@ -978,11 +1352,35 @@ async def _handle_qa_failed(
             "type": "fix",
             "status": TaskStatus.TODO.value,
             "description": fix_description,
+            "failure_metadata": {"qa_failure": evidence},
         }
     )
 
     # Transition story back to IN_PROGRESS for engineering
     await api_client.transition_story(story_id, "start")
 
-    log.info("qa_supervisor_fix_task_created", story_id=story_id)
+    log.info(
+        "qa_supervisor_fix_task_created",
+        story_id=story_id,
+        fingerprint=fingerprint,
+        fingerprint_attempt=attempt,
+        fix_attempt=total_attempt,
+    )
     return True
+
+
+def _qa_failure_metadata(task: object) -> dict | None:
+    """Return the QA failure evidence recorded on a prior fix task."""
+    metadata = getattr(task, "failure_metadata", None) or {}
+    value = metadata.get("qa_failure")
+    return value if isinstance(value, dict) else None
+
+
+def _qa_failure_fingerprint(summary: str, failed_checks: list) -> str:
+    """Build a stable signature for a QA failure's product evidence."""
+    payload = {
+        "failed_checks": [check.model_dump(mode="json") for check in failed_checks],
+        "summary": summary,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).lower()
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]

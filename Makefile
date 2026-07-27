@@ -1,5 +1,5 @@
 .PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean \
-	build up down stop logs help nuke nuke-hard seed migrate makemigrations init-langfuse-db \
+	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
 	check-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
@@ -357,10 +357,6 @@ test-clean:
 
 migrate:
 	$(DOCKER_COMPOSE) exec api alembic upgrade head
-
-# Create langfuse database on existing postgres (init script only runs on fresh volumes)
-init-langfuse-db:
-	$(DOCKER_COMPOSE) exec db psql -U $${POSTGRES_USER:-postgres} -c "SELECT 'CREATE DATABASE langfuse' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langfuse')\gexec"
 
 # Run migrations with correct user to avoid permission issues on generated files
 makemigrations:

@@ -26,27 +26,19 @@ async def process_lifecycle_action(
     task_id: str,
     project_id: str,
     project_name: str,
-    allocated_resources: dict,
+    server_handle: str,
 ) -> dict:
-    """Execute a stop or undeploy action via SSH.
+    """Execute a stop or undeploy action via SSH on the application's own server.
+
+    The server comes from the application the caller is bringing down, not from the
+    project: a project with applications on several servers must reach the one it
+    was asked about.
 
     Returns:
         Result dict with status and details.
     """
-    first_resource = next(iter(allocated_resources.values()), {})
-    server_ip = first_resource.get("server_ip")
-    server_handle = first_resource.get("server_handle")
-
-    if not server_ip or not server_handle:
-        return live_work_unsettled(
-            {
-                "status": "failed",
-                "error": f"No server info in allocated resources for project {project_id}",
-                "deploy_outcome": DeployOutcome.GIVE_UP.value,
-            }
-        )
-
     server = await api_client.get_server(server_handle)
+    server_ip = server.public_ip
     ssh_key = await api_client.get_server_ssh_key(server_handle)
     if not ssh_key:
         return live_work_unsettled(
@@ -89,6 +81,8 @@ async def process_lifecycle_action(
                 logger.error(
                     "deploy_lifecycle_ssh_failed",
                     task_id=task_id,
+                    project_id=project_id,
+                    server_handle=server_handle,
                     action=action.value,
                     error=error,
                 )
@@ -103,6 +97,8 @@ async def process_lifecycle_action(
             logger.info(
                 "deploy_lifecycle_success",
                 task_id=task_id,
+                project_id=project_id,
+                server_handle=server_handle,
                 action=action.value,
                 project_name=project_name,
                 server_ip=server_ip,
@@ -121,6 +117,8 @@ async def process_lifecycle_action(
         logger.error(
             "deploy_lifecycle_exception",
             task_id=task_id,
+            project_id=project_id,
+            server_handle=server_handle,
             action=action.value,
             error=str(e),
             exc_info=True,

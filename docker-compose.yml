@@ -39,6 +39,7 @@ services:
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
     ports:
       - "8000:8000"
+    restart: unless-stopped
 
   langgraph:
     build:
@@ -77,6 +78,7 @@ services:
         condition: service_healthy
     networks:
       - internal
+    restart: unless-stopped
 
   # Phase 4 Workers
   deploy-worker:
@@ -241,6 +243,7 @@ services:
       - redis
     networks:
       - internal
+    restart: unless-stopped
 
   worker-manager:
     build:
@@ -267,9 +270,16 @@ services:
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
       WORKER_MANAGER_URL: http://worker-manager:8000
+      # This is both the Docker-host source path and the manager-visible path.
+      # Keep them identical because worker containers are created through the
+      # host Docker socket.
+      WORKER_TRANSCRIPT_STORAGE_PATH: ${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}
+      WORKER_TRANSCRIPT_RETENTION_DAYS: ${WORKER_TRANSCRIPT_RETENTION_DAYS:-30}
+      WORKER_TRANSCRIPT_MAX_BYTES: ${WORKER_TRANSCRIPT_MAX_BYTES:-5242880}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
+      - ${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}:${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}
       - ${HOST_CLAUDE_DIR:-/home/user/.claude}:/host-claude:ro
       - ${HOST_CODEX_HOME:-./secrets/codex-unconfigured}:/host-codex:ro
     depends_on:
@@ -283,6 +293,7 @@ services:
     networks:
       - internal
       - worker
+    restart: unless-stopped
 
   scheduler:
     build:
@@ -311,6 +322,7 @@ services:
         condition: service_healthy
     networks:
       - internal
+    restart: unless-stopped
 
   scaffolder:
     build:
@@ -422,8 +434,6 @@ services:
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     depends_on:
       api:
         condition: service_healthy
@@ -449,6 +459,9 @@ services:
   grafana:
     image: grafana/grafana:11.6.0
     environment:
+      GRAFANA_DB_USER: ${GRAFANA_DB_USER}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_AUTH_ANONYMOUS_ENABLED: "true"
@@ -469,120 +482,11 @@ services:
     depends_on:
       loki:
         condition: service_healthy
-    networks:
-      - internal
-    restart: unless-stopped
-
-  # === Langfuse (LLM Tracing) ===
-
-  langfuse-web:
-    image: langfuse/langfuse:3
-    restart: unless-stopped
-    env_file:
-      - .env
-    depends_on:
       db:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    ports:
-      - "3002:3000"
-    environment: &langfuse-env
-      # Computed / name-remapped (can't go in .env)
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/langfuse
-      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
-      SALT: ${LANGFUSE_SALT}
-      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
-      # Docker-internal wiring
-      CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
-      CLICKHOUSE_CLUSTER_ENABLED: "false"
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
-      NEXTAUTH_URL: http://localhost:3002
-      TELEMETRY_ENABLED: "false"
-      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
-      # S3 (MinIO) — name remapping from MINIO_ROOT_* → LANGFUSE_S3_*
-      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
-      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
-      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
-      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "events/"
-      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
-      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
-      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "media/"
     networks:
       - internal
-
-  langfuse-worker:
-    image: langfuse/langfuse-worker:3
     restart: unless-stopped
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    environment:
-      <<: *langfuse-env
-    networks:
-      - internal
-
-  minio:
-    image: minio/minio
-    restart: unless-stopped
-    entrypoint: sh
-    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniosecret}
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-    networks:
-      - internal
-
-  clickhouse:
-    image: clickhouse/clickhouse-server
-    restart: unless-stopped
-    user: "101:101"
-    environment:
-      CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
-      TZ: UTC
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
-      - clickhouse_logs:/var/log/clickhouse-server
-      - ./docker/clickhouse/config.d/retention.xml:/etc/clickhouse-server/config.d/retention.xml:ro
-    healthcheck:
-      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1" ]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 5s
-    networks:
-      - internal
 
   # === Infrastructure ===
 
@@ -594,6 +498,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-orchestrator}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      GRAFANA_DB_USER: ${GRAFANA_DB_USER}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD}
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
       interval: 2s
@@ -602,9 +508,10 @@ services:
       start_period: 5s
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/init-grafana-reader.sh:/docker-entrypoint-initdb.d/20-grafana-reader.sh:ro
     networks:
       - internal
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -619,6 +526,7 @@ services:
     networks:
       - internal
       - worker
+    restart: unless-stopped
 
 networks:
   internal:
@@ -635,6 +543,3 @@ volumes:
   uv-cache:
   loki-data:
   grafana-data:
-  clickhouse_data:
-  clickhouse_logs:
-  minio_data:

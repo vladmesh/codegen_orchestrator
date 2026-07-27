@@ -26,14 +26,22 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
+_CI_INFRASTRUCTURE_STEPS = {"Set up Docker Buildx with retry"}
 
 
 def _ci_failure_limit() -> int:
     return startup.get_config().get_int("scheduler.ci_failure_max_fingerprint_attempts")
 
 
+def _ci_failure_log_excerpt_lines() -> int:
+    return startup.get_config().get_int("scheduler.ci_failure_log_excerpt_lines")
+
+
 def _failure_fingerprint(failed_jobs: list[dict], unavailable_reason: str | None) -> str:
-    payload = failed_jobs or [{"details_unavailable_reason": unavailable_reason}]
+    payload = [
+        {"name": job.get("name"), "failed_steps": job.get("failed_steps", [])}
+        for job in failed_jobs
+    ] or [{"details_unavailable_reason": unavailable_reason}]
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).lower()
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
@@ -59,8 +67,26 @@ def _build_failure_description(evidence: dict) -> str:
         for job in evidence["failed_jobs"]:
             lines.append(f"Job: {job['name']}")
             lines.extend(f"Failed step: {step}" for step in job["failed_steps"])
+            if job.get("log_excerpt"):
+                lines.extend(["Log excerpt:", "```text", job["log_excerpt"], "```"])
+            elif job.get("log_unavailable_reason"):
+                lines.append("Job log unavailable: " + job["log_unavailable_reason"])
     else:
         lines.append("Failure details unavailable: " + evidence["details_unavailable_reason"])
+    if any(
+        step in _CI_INFRASTRUCTURE_STEPS
+        for job in evidence["failed_jobs"]
+        for step in job["failed_steps"]
+    ):
+        lines.extend(
+            [
+                "",
+                "CI infrastructure failure: Docker image registry was unavailable while "
+                "preparing Buildx after retries.",
+                "Do not change application code. Re-run CI when the registry is available.",
+            ]
+        )
+        return "\n".join(lines)
     lines.extend(["", "Fix all reported failures, run local checks, then push once."])
     return "\n".join(lines)
 
@@ -86,7 +112,12 @@ async def _handle_failed_run(
         return False
 
     try:
-        details = await github.get_workflow_failure_details(owner, repo_name, int(run_id))
+        details = await github.get_workflow_failure_details(
+            owner,
+            repo_name,
+            int(run_id),
+            log_excerpt_lines=_ci_failure_log_excerpt_lines(),
+        )
     except Exception as exc:
         details = {"failed_jobs": [], "unavailable_reason": type(exc).__name__}
     failed_jobs = details["failed_jobs"]

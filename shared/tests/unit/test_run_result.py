@@ -15,8 +15,12 @@ from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
     DeployRunResult,
     EngineeringRunResult,
+    QABlocker,
+    QABlockerCategory,
     QAFailedCheck,
     QARunResult,
+    QAStateChange,
+    QAStateChangeCleanup,
 )
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
@@ -37,6 +41,20 @@ def _run(run_type: RunType, result, *, status: RunStatus = RunStatus.COMPLETED) 
 
 class TestValidPayloads:
     """A well-formed payload for each type parses into its typed model."""
+
+    def test_qa_blocker_has_closed_category_and_evidence(self):
+        blocker = QABlocker(
+            category=QABlockerCategory.TELEGRAM_ACCESS_DENIED,
+            attempted="send access probe",
+            sent="/start",
+            received="Forbidden: bot was blocked by the user",
+        )
+        run = _run(
+            RunType.QA,
+            {"qa_outcome": "blocked", "blocker": blocker.model_dump(mode="json")},
+        )
+        assert isinstance(run.result, QARunResult)
+        assert run.result.blocker == blocker
 
     def test_engineering(self):
         run = _run(
@@ -77,6 +95,58 @@ class TestValidPayloads:
         assert run.result.qa_outcome is QAOutcome.FAILED
         assert run.result.failed_checks == [QAFailedCheck(name="weather", detail="404")]
 
+    def test_qa_state_change_carries_cleanup_evidence(self):
+        change = QAStateChange(
+            resource="user telegram_id=8202532144",
+            operation="created",
+            cleanup=QAStateChangeCleanup(
+                attempted=True,
+                succeeded=True,
+                detail="DELETE /users/by-telegram/8202532144 returned 204",
+            ),
+        )
+        run = _run(
+            RunType.QA,
+            {"qa_outcome": "passed", "state_changes": [change.model_dump(mode="json")]},
+        )
+
+        assert run.result.state_changes == [change]
+
+    def test_passed_qa_rejects_residual_state_change(self):
+        change = QAStateChange(
+            resource="POST /api/items",
+            operation="created",
+            cleanup=QAStateChangeCleanup(
+                attempted=True, succeeded=False, detail="no inverse operation"
+            ),
+        )
+
+        with pytest.raises(ValidationError, match="uncleaned state change"):
+            _run(
+                RunType.QA,
+                {"qa_outcome": "passed", "state_changes": [change.model_dump(mode="json")]},
+            )
+
+    def test_qa_result_directly_rejects_passed_residual_state_change(self):
+        """The invariant belongs to QARunResult, not only RunDTO routing."""
+        with pytest.raises(ValidationError, match="uncleaned state change"):
+            QARunResult.model_validate(
+                {
+                    "qa_outcome": QAOutcome.PASSED.value,
+                    "state_changes": [
+                        {
+                            "resource": "POST /api/items",
+                            "operation": "created",
+                            "cleanup": {
+                                "attempted": False,
+                                "succeeded": False,
+                                "detail": "direct write cannot be rolled back",
+                            },
+                        }
+                    ],
+                }
+            )
+
     @pytest.mark.parametrize("run_type", list(RunType))
     @pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLED])
     def test_result_none_allowed_before_terminal(self, run_type, status):
@@ -112,6 +182,10 @@ class TestRejection:
     def test_qa_missing_outcome_rejected(self):
         with pytest.raises(ValidationError):
             _run(RunType.QA, {"summary": "no outcome"})
+
+    def test_blocked_qa_outcome_without_blocker_rejected(self):
+        with pytest.raises(ValidationError, match="blocker"):
+            _run(RunType.QA, {"qa_outcome": QAOutcome.BLOCKED.value})
 
     @pytest.mark.parametrize("run_type", list(RunType))
     @pytest.mark.parametrize("status", [RunStatus.COMPLETED, RunStatus.FAILED])

@@ -207,7 +207,7 @@ If the developer agent encounters an unsolvable problem:
 
 **Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.
 
-**Lifecycle operations**: `stop` and `undeploy` actions (from Admin API) are handled by `deploy_lifecycle` module — SSHes to server and runs `docker compose stop/down` directly, skipping the full DevOps subgraph.
+**Lifecycle operations**: `stop` and `undeploy` actions (from Admin API, or from a PO teardown) are handled by `deploy_lifecycle` module — SSHes to server and runs `docker compose stop/down` directly, skipping the full DevOps subgraph. The message names its target application (`DeployMessage.application_id`) and the consumer acts on that one: a project can have applications on several servers, and allocation would answer with one of its own choosing.
 
 **Outputs**: Running service on server with domain + SSL, or `DeployOutcome` in run.result for supervisor
 
@@ -243,7 +243,8 @@ If the developer agent encounters an unsolvable problem:
 - `.credentials.json` OAuth session (copied from orchestrator host)
 - 2GB swap (Claude Code binary extraction needs ~2GB)
 - Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
-- Optional: `telethon.session` file for Telegram bot testing
+- `~/.qa-telethon.env` with api_id, api_hash and a StringSession of the QA Telegram account
+  (required — the role fails without them)
 
 **Outputs**: `QAOutcome` in run.result for supervisor
 

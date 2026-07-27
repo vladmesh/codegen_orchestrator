@@ -52,6 +52,12 @@ class _WorkerResultBase(BaseModel):
 
     worker_report: str | None = None  # REPORT.md contents, if the worker wrote one
     agent_stdout_tail: str | None = None  # last ~10KB of agent stdout/stderr
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    transcript_path: str | None = None
+    transcript_truncated: bool | None = None
 
 
 class WorkerCompletedResult(_WorkerResultBase):

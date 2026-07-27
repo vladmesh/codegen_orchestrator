@@ -10,11 +10,22 @@ pair — see `RunDTO._check_result_matches_type`.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
+
+
+class AllocationFailureReason(StrEnum):
+    """Stable admission failure classifications consumed by the scheduler."""
+
+    INSUFFICIENT_FREE_MEMORY = "insufficient_free_memory"
+    INSUFFICIENT_RESERVED_MEMORY = "insufficient_reserved_memory"
+    IMPOSSIBLE_CAPACITY = "impossible_capacity"
+    NO_FRESH_METRICS = "no_fresh_metrics"
 
 
 class EngineeringRunResult(BaseModel):
@@ -26,6 +37,9 @@ class EngineeringRunResult(BaseModel):
     commit_sha: str | None = None
     selected_modules: list[str] | None = None
     test_results: dict | None = None
+    allocation_failure_reason: AllocationFailureReason | None = None
+    allocation_required_ram_mb: int | None = None
+    allocation_min_disk_mb: int | None = None
 
 
 class MissingUserSecret(BaseModel):
@@ -75,6 +89,68 @@ class QAFailedCheck(BaseModel):
     detail: str
 
 
+class QABlockerCategory(StrEnum):
+    """Closed set of reasons QA could not make a product judgement."""
+
+    MISSING_BOT_USERNAME = "missing_bot_username"
+    MISSING_TELETHON_CREDENTIALS = "missing_telethon_credentials"
+    CLAUDE_UNAVAILABLE = "claude_unavailable"
+    DEPLOYED_URL_UNREACHABLE = "deployed_url_unreachable"
+    TELEGRAM_ACCESS_DENIED = "telegram_access_denied"
+    SERVER_UNAVAILABLE = "server_unavailable"
+    QA_CLEANUP_FAILED = "qa_cleanup_failed"
+    UNKNOWN = "unknown"
+
+
+class QABlocker(BaseModel):
+    """Evidence that QA was blocked before it could judge the product.
+
+    Unknown classifications deliberately remain blockers. Creating an unnecessary
+    human-review item is cheaper than directing an engineering worker to alter a
+    correct customer project from an ambiguous QA failure.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: QABlockerCategory
+    attempted: str
+    sent: str
+    received: str
+
+
+class QAStateChangeCleanup(BaseModel):
+    """The cleanup attempt for application state changed by QA."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempted: bool
+    succeeded: bool
+    detail: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _successful_cleanup_was_attempted(self) -> QAStateChangeCleanup:
+        if self.succeeded and not self.attempted:
+            raise ValueError("successful QA cleanup must have been attempted")
+        return self
+
+
+class QAStateChangeOperation(StrEnum):
+    """Kinds of application-state write traces retained in a QA result."""
+
+    CREATED = "created"
+    MODIFIED = "modified"
+
+
+class QAStateChange(BaseModel):
+    """An application-state trace retained with its cleanup evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    resource: str = Field(min_length=1)
+    operation: QAStateChangeOperation
+    cleanup: QAStateChangeCleanup
+
+
 class QARunResult(BaseModel):
     """Result of a QA run (written by the QA consumer)."""
 
@@ -87,6 +163,18 @@ class QARunResult(BaseModel):
     qa_attempt: int | None = None
     deployed_url: str | None = None
     error: str | None = None
+    blocker: QABlocker | None = None
+    state_changes: list[QAStateChange] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _outcome_matches_state_traces(self) -> QARunResult:
+        if self.qa_outcome == QAOutcome.BLOCKED and self.blocker is None:
+            raise ValueError("blocked QA outcome requires a blocker")
+        if self.qa_outcome == QAOutcome.PASSED and any(
+            not change.cleanup.succeeded for change in self.state_changes
+        ):
+            raise ValueError("passed QA outcome cannot contain an uncleaned state change")
+        return self
 
 
 RunResult = EngineeringRunResult | DeployRunResult | QARunResult

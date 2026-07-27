@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from shared.config_store import ConfigStore
+from shared.config_store import ConfigStore, ConfigStoreUnavailableError
 
 
 def _mock_response(status_code: int, json_data: dict | list | None = None):
@@ -64,6 +64,20 @@ class TestGet:
             time.sleep(0.01)
             mock_get.side_effect = httpx.ConnectError("connection refused")
             assert store.get("key1") == 42
+
+    def test_get_distinguishes_unavailable_api_from_missing_config(self):
+        store = ConfigStore("http://test:8000")
+        with patch("shared.config_store.httpx.get") as mock_get:
+            mock_get.side_effect = httpx.ConnectError("connection refused")
+            with pytest.raises(ConfigStoreUnavailableError, match="unavailable"):
+                store.get("scheduler.interval")
+
+    def test_get_treats_an_empty_success_response_as_api_unavailability(self):
+        store = ConfigStore("http://test:8000")
+        with patch("shared.config_store.httpx.get") as mock_get:
+            mock_get.return_value = _mock_response(200, {})
+            with pytest.raises(ConfigStoreUnavailableError, match="invalid response"):
+                store.get("scheduler.interval")
 
 
 class TestTypedGetters:
@@ -158,4 +172,11 @@ class TestValidateRequired:
         with patch("shared.config_store.httpx.get") as mock_get:
             mock_get.return_value = _mock_response(404)
             with pytest.raises(RuntimeError, match="key1.*key2"):
+                store.validate_required(["key1", "key2"])
+
+    def test_validate_propagates_api_unavailability(self):
+        store = ConfigStore("http://test:8000")
+        with patch("shared.config_store.httpx.get") as mock_get:
+            mock_get.side_effect = httpx.ConnectError("connection refused")
+            with pytest.raises(ConfigStoreUnavailableError, match="unavailable"):
                 store.validate_required(["key1", "key2"])

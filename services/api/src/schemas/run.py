@@ -25,6 +25,14 @@ class RunBase(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     callback_stream: str | None = None
+    iteration: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    agent_profile: dict[str, Any] | None = None
+    transcript_path: str | None = None
+    transcript_truncated: bool | None = None
 
 
 class RunCreate(BaseModel):
@@ -54,3 +62,11 @@ class RunUpdate(BaseModel):
     error_traceback: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    iteration: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cost_usd: float | None = None
+    agent_profile: dict[str, Any] | None = None
+    transcript_path: str | None = None
+    transcript_truncated: bool | None = None

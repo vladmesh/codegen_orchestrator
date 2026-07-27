@@ -37,8 +37,7 @@ Always required on PRs:
 Path-routed checks:
 
 - Service matrix covers `api`, `langgraph`, `scheduler`, `telegram_bot`, `worker-manager`, and `infra`.
-- Integration matrix covers `backend`, `template`, `frontend`, `infra`, and `po-tools`.
-- `backend` integration stays `workflow_dispatch` only because it exercises DIND worker containers and coding-agent worker boundaries. It is preserved for manual full-matrix runs, but it is not a deterministic PR merge-gate suite.
+- The required integration matrix covers `backend`, `template`, `frontend`, `infra`, and `po-tools`.
 - Shared code, packages, workflow edits, Makefile edits, dependency root changes, Docker test infrastructure, and integration test changes trigger the broad affected matrices instead of a single service subset.
 
 Skipped-command guard:
@@ -47,7 +46,14 @@ Skipped-command guard:
 - If a matrix item is applicable, the test step has a stable `id` and a following `always()` assertion verifies that the test step outcome is `success`.
 - A required suite cannot become green because the actual test command was skipped.
 
+Backend-suite decision, 2026-07-26:
+
+- The backend suite is split by Docker dependency. `backend` is required on relevant pull requests; `backend-dind` contains worker-container tests and remains dispatch-only.
+- `.github/workflows/backend-integration.yml` runs only `backend-dind`. Its test and assertion steps are unconditional, so a dispatch cannot become green after silently skipping the suite. The CI contract verifies that the required CI matrix includes backend and that this manual workflow runs and asserts `make test-integration-backend-dind`.
+- The registry-failure simulation belongs only to the required CI workflow. It cannot exclude Docker-in-Docker work because the manual workflow has no conditional test path.
+
 Manual coverage:
 
-- `workflow_dispatch` still runs the full service and Docker integration matrices.
+- `workflow_dispatch` for `ci.yml` runs the full required service matrix and the five required integration suites. It does not run backend-dind.
+- Dispatch `Backend Docker-in-Docker Integration` separately to run the worker-container suite.
 - Live and e2e scenarios that require real LLMs, GitHub projects, VPS provisioning, Ansible deploys, or Telegram remain outside the required merge gate.

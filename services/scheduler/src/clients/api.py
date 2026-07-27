@@ -213,6 +213,16 @@ class SchedulerAPIClient:
         resp = await self._request("PATCH", f"stories/{story_id}", json=data)
         return StoryDTO.model_validate(resp.json())
 
+    # --- Applications ---
+
+    async def stop_application(self, application_id: int) -> None:
+        """Request a token-preserving lifecycle stop for an application."""
+        await self._request(
+            "POST",
+            f"applications/{application_id}/stop",
+            json={"actor": "supervisor"},
+        )
+
     # --- Tasks ---
 
     async def get_tasks_by_status(self, status: str) -> list[TaskDTO]:
