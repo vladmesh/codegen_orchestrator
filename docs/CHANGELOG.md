@@ -4,12 +4,11 @@
 
 - Telegram bot audiences now come from service-template 0.3.6's environment contract. The PO
   records an explicit `bot_access` selection and deploy-time
-  `TG_BOT_ALLOWED_TELEGRAM_IDS` literal for private, public and custom audiences;
+  `TG_BOT_ALLOWED_TELEGRAM_IDS` literal for private, public, invitation-base and custom audiences;
   private projects with an empty audience fail before deploy. Existing
   `ADMIN_TELEGRAM_ID` secrets are mapped to the contract audience when the repository declares
-  it. Existing pre-0.3.6 repositories retain their legacy access behavior. The template enforces
-  the configured audience before application handlers, so the PO menu does not offer an
-  administrator-managed expansion until an access-contract extension exists.
+  it. Existing pre-0.3.6 repositories retain their legacy access behavior. Invitation and custom
+  application policy is implemented above the configured template audience.
 
 - Production scaffolding is pinned to service-template `0.3.6`, the release that makes bot access
    a contract instead of code an engineering agent writes per project. The template declares

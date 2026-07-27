@@ -213,7 +213,7 @@ class SecretResolverNode(FunctionalNode):
                 DeployOutcome.ENVIRONMENT_CONTRACT_INVALID, "bot_access must be a mapping"
             )
         mode = bot_access.get("mode")
-        if mode not in {"only_me", "public", "custom"}:
+        if mode not in {"only_me", "public", "invite", "custom"}:
             raise TypedSecretResolutionError(
                 DeployOutcome.ENVIRONMENT_CONTRACT_INVALID, "bot_access mode is invalid"
             )

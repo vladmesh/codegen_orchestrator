@@ -18,6 +18,7 @@ from shared.models import Project
     [
         ("only_me", "42"),
         ("public", ""),
+        ("invite", "42"),
         ("custom", "42,84"),
     ],
 )
@@ -99,7 +100,7 @@ async def test_bot_access_and_generic_config_update_do_not_lose_the_audience(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "audience"),
-    [("only_me", "42"), ("public", ""), ("custom", "42,84")],
+    [("only_me", "42"), ("public", ""), ("invite", "42"), ("custom", "42,84")],
 )
 async def test_bot_access_selection_replaces_legacy_admin_secret(
     async_client: AsyncClient, db_session, mode: str, audience: str

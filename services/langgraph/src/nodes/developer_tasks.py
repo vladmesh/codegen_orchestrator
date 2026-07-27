@@ -95,9 +95,16 @@ def format_bot_access_requirements(project_spec: dict) -> str:
         f"`TG_BOT_ALLOWED_TELEGRAM_IDS` to `{audience}`. Keep that contract audience "
         "as the outer access boundary; do not replace it with application configuration."
     )
+    if mode == "invite":
+        return (
+            "\n## Invitation Access Layer\n\n"
+            f"{baseline}\n\n"
+            "Implement the product's invitation and revocation flow above that baseline, "
+            "including persistent state and owner-only management actions required by the story.\n"
+        )
     if mode == "custom":
         return (
-            "\n## Custom Bot Access\n\n"
+            "\n## Custom Access Rules\n\n"
             f"{baseline}\n\n"
             "Implement the product-specific access rules from the story above the contract "
             "baseline, with any management state and owner controls those rules need.\n"

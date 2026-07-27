@@ -350,6 +350,20 @@ class TestBotAccess:
         }
 
     @pytest.mark.asyncio
+    async def test_invite_stores_the_callers_base_contract_audience(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response({"mode": "invite"})
+
+        result = await set_bot_access.ainvoke(
+            {"project_id": "abc", "mode": "invite"}, config=_make_config("77777")
+        )
+
+        assert "invite" in result
+        assert mock_api_client.post.call_args.kwargs["json"] == {
+            "mode": "invite",
+            "allowed_telegram_ids": "77777",
+        }
+
+    @pytest.mark.asyncio
     async def test_custom_stores_the_selected_contract_audience(self, mock_api_client):
         mock_api_client.post.return_value = _make_response({"mode": "custom"})
 
