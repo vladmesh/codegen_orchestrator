@@ -114,7 +114,9 @@ class SecretResolverNode(FunctionalNode):
             env_overrides=env_overrides,
         )
         self._reject_undeclared_overrides(context.env_overrides, contract)
-        self._validate_bot_audience(project_spec, context.env_overrides, contract)
+        self._validate_bot_audience(
+            project_spec, config_secrets, context.env_overrides, contract
+        )
         resolved = _ResolvedValues()
 
         for key, entry in contract.entries.items():
@@ -202,11 +204,26 @@ class SecretResolverNode(FunctionalNode):
 
     @staticmethod
     def _validate_bot_audience(
-        project_spec: dict, overrides: dict, contract: CanonicalEnvContract
+        project_spec: dict,
+        config_secrets: dict,
+        overrides: dict,
+        contract: CanonicalEnvContract,
     ) -> None:
         """Do not let a private project become public through an empty literal."""
-        bot_access = (project_spec.get("config") or {}).get("bot_access")
+        config = project_spec.get("config") or {}
+        bot_access = config.get("bot_access")
         if bot_access is None:
+            modules = config.get("modules")
+            is_tg_bot_project = isinstance(modules, list) and "tg_bot" in modules
+            has_valid_legacy_audience = (
+                _LEGACY_BOT_AUDIENCE_KEY in config_secrets
+                and _BOT_AUDIENCE_KEY in contract.entries
+            )
+            if is_tg_bot_project and not has_valid_legacy_audience:
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "tg_bot projects require explicit bot_access",
+                )
             return
         if not isinstance(bot_access, dict):
             raise TypedSecretResolutionError(

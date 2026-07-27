@@ -144,6 +144,17 @@ async def test_bot_access_modes_resolve_the_contract_audience(mode, audience):
 
 
 @pytest.mark.asyncio
+async def test_tg_bot_without_explicit_bot_access_is_rejected_before_public_deploy():
+    state = _state(_bot_contract())
+    state["project_spec"]["config"]["modules"] = ["backend", "tg_bot"]
+
+    with pytest.raises(TypedSecretResolutionError, match="explicit bot_access") as error:
+        await SecretResolverNode().run(state)
+
+    assert error.value.outcome == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
 async def test_private_bot_with_empty_audience_is_rejected():
     state = _state(_bot_contract())
     state["project_spec"]["config"] = {
