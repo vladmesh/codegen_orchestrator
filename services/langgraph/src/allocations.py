@@ -8,11 +8,15 @@ Used by:
 - deploy_worker (deploy flow)
 """
 
+from datetime import UTC, datetime
+
 import structlog
 
+from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationStatus
 from shared.contracts.dto.server import ServerDTO, ServerStatus
 
 from .clients.api import api_client
+from .config.settings import get_settings
 from .schemas.api_types import AllocationInfo
 
 logger = structlog.get_logger(__name__)
@@ -21,15 +25,13 @@ logger = structlog.get_logger(__name__)
 class AllocationError(Exception):
     """Raised when resource allocation fails."""
 
-    pass
-
 
 async def ensure_project_allocations(
     project_id: str,
     repo_id: str,
     service_name: str,
     modules: list[str] | None = None,
-    min_ram_mb: int = 512,
+    min_ram_mb: int = DEFAULT_APPLICATION_RESERVED_RAM_MB,
     min_disk_mb: int = 1024,
 ) -> dict[str, dict]:
     """Ensure a project has resource allocations, creating them if needed.
@@ -57,20 +59,24 @@ async def ensure_project_allocations(
     if modules is None:
         modules = ["backend"]
 
-    # Find suitable server first (needed for Application creation)
-    server = await _find_suitable_server(min_ram_mb, min_disk_mb)
-    if not server:
-        raise AllocationError("No suitable server found with enough resources")
+    # A placement already exists for this repository. Reuse it before admission:
+    # its reservation and observed memory are already included in server load.
+    existing_apps = await api_client.list_applications({"repo_id": repo_id})
+    if existing_apps:
+        app = existing_apps[0]
+        server_handle = app["server_handle"]
+        server = await api_client.get_server(server_handle)
+    else:
+        server = await _find_suitable_server(min_ram_mb, min_disk_mb)
+        server_handle = server.handle
+        app = await api_client.get_or_create_application(
+            repo_id=repo_id,
+            server_handle=server_handle,
+            service_name=service_name,
+            reserved_ram_mb=min_ram_mb,
+        )
 
-    server_handle = server.handle
     server_ip = server.public_ip
-
-    # Get or create Application
-    app = await api_client.get_or_create_application(
-        repo_id=repo_id,
-        server_handle=server_handle,
-        service_name=service_name,
-    )
     application_id = app["id"]
 
     # Check for existing allocations on this application
@@ -145,28 +151,94 @@ async def ensure_project_allocations(
     return allocated
 
 
-async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO | None:
-    """Find a managed server with enough resources.
+async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
+    """Find a server that can admit the requested RAM allocation conservatively.
 
-    Note: We don't check used_ram_mb because that reflects actual system RAM usage
-    (OS + Docker), not project allocations. A fresh Ubuntu + Docker uses ~3.5GB.
-    Instead, we just check that the server is ready and has enough total capacity.
+    Admission reserves ``min_ram_mb + ALLOCATION_RAM_RESERVE_MB``. It compares that
+    budget against both the persisted sum of application reservations and fresh
+    observed RAM use, then uses the larger value. Metrics older than
+    ``ALLOCATION_METRICS_FRESHNESS_SECONDS`` (or absent) are unknown and reject the
+    server. A rejection reports whether every candidate lacked capacity, fresh
+    metrics, or observed free memory.
     """
     servers = await api_client.list_servers(is_managed=True)
+    settings = get_settings()
+    required_ram_mb = min_ram_mb + settings.allocation_ram_reserve_mb
 
     # Filter to only active/ready/in_use servers
     active_statuses = (ServerStatus.ACTIVE, ServerStatus.READY, ServerStatus.IN_USE)
     servers = [s for s in servers if s.status in active_statuses]
 
-    # Filter by total capacity (not used - that's system RAM, not allocations)
-    suitable = []
+    suitable: list[tuple[ServerDTO, int]] = []
+    rejection_reasons: set[str] = set()
     for srv in servers:
-        # Just check total capacity is sufficient for the project
-        if srv.capacity_ram_mb >= min_ram_mb and srv.capacity_disk_mb >= min_disk_mb:
-            suitable.append(srv)
+        if srv.capacity_disk_mb < min_disk_mb:
+            rejection_reasons.add("insufficient_capacity")
+            continue
+
+        applications = await api_client.list_applications({"server_handle": srv.handle})
+        reserved_ram_mb = sum(
+            app["reserved_ram_mb"] for app in applications if _holds_ram_reservation(app)
+        )
+        if srv.capacity_ram_mb < reserved_ram_mb + required_ram_mb:
+            rejection_reasons.add("insufficient_reserved_memory")
+            continue
+
+        if not _has_fresh_metrics(
+            srv.last_health_check, settings.allocation_metrics_freshness_seconds
+        ):
+            rejection_reasons.add("no_fresh_metrics")
+            continue
+
+        observed_ram_mb = srv.used_ram_mb
+        effective_used_ram_mb = max(reserved_ram_mb, observed_ram_mb)
+        if srv.capacity_ram_mb < effective_used_ram_mb + required_ram_mb:
+            rejection_reasons.add("insufficient_free_memory")
+            continue
+
+        suitable.append((srv, srv.capacity_ram_mb - effective_used_ram_mb))
 
     if not suitable:
-        return None
+        reason = _allocation_failure_reason(rejection_reasons)
+        raise AllocationError(f"No suitable server found: {reason}")
 
-    # Return the one with most capacity
-    return max(suitable, key=lambda s: s.capacity_ram_mb)
+    # Prefer the most remaining RAM after the conservative admission budget.
+    return max(suitable, key=lambda candidate: candidate[1])[0]
+
+
+def _has_fresh_metrics(last_health_check: datetime | None, freshness_seconds: int) -> bool:
+    """Return whether server metrics are recent enough to use for admission."""
+    if last_health_check is None:
+        return False
+    if last_health_check.tzinfo is None:
+        last_health_check = last_health_check.replace(tzinfo=UTC)
+    age_seconds = (datetime.now(UTC) - last_health_check).total_seconds()
+    return 0 <= age_seconds <= freshness_seconds
+
+
+def _allocation_failure_reason(rejection_reasons: set[str]) -> str:
+    """Return all stable, actionable causes for an empty candidate set."""
+    reasons = [
+        reason
+        for reason in (
+            "no_fresh_metrics",
+            "insufficient_free_memory",
+            "insufficient_reserved_memory",
+            "insufficient_capacity",
+        )
+        if reason in rejection_reasons
+    ]
+    return ", ".join(reasons) if reasons else "insufficient_capacity"
+
+
+def _holds_ram_reservation(application: dict) -> bool:
+    """Return whether an application can still consume server RAM.
+
+    An undeployed or stopped application has no running workload and does not
+    reserve admission capacity. Transitional and unhealthy states remain
+    reserved conservatively until the application is explicitly stopped.
+    """
+    return application["status"] not in {
+        ApplicationStatus.NOT_DEPLOYED.value,
+        ApplicationStatus.STOPPED.value,
+    }

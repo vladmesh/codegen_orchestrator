@@ -39,6 +39,7 @@ class TestApplicationDTO:
         assert dto.repo_id == "repo-abc"
         assert dto.server_handle == "srv-1"
         assert dto.service_name == "backend"
+        assert dto.reserved_ram_mb == 512  # noqa: PLR2004
         assert dto.status == "running"
         assert dto.response_time_ms == 150
         assert dto.uptime_pct_24h == 99.9

@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB
+
 
 class EntryPoint(StrEnum):
     """Available entry points for projects."""
@@ -29,5 +31,8 @@ class ProjectSpec(BaseModel):
     entry_points: list[EntryPoint] = Field(..., description="Entry points: telegram, frontend, api")
 
     # Hardcoded defaults for MVP (will be calculated later)
-    estimated_ram_mb: int = Field(default=512, description="Estimated RAM needed in MB")
+    estimated_ram_mb: int = Field(
+        default=DEFAULT_APPLICATION_RESERVED_RAM_MB,
+        description="Estimated RAM needed in MB",
+    )
     estimated_disk_mb: int = Field(default=2048, description="Estimated disk space in MB")

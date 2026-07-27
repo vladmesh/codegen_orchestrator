@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 from shared.contracts.dto.base import TimestampedDTO
 
+DEFAULT_APPLICATION_RESERVED_RAM_MB = 512
+
 
 class ApplicationStatus(StrEnum):
     """Runtime state of an application on a server."""
@@ -32,6 +34,7 @@ class ApplicationDTO(TimestampedDTO):
     repo_id: str
     server_handle: str
     service_name: str
+    reserved_ram_mb: int = DEFAULT_APPLICATION_RESERVED_RAM_MB
     status: ApplicationStatus
     last_health_check: datetime | None = None
     response_time_ms: int | None = None
@@ -49,6 +52,7 @@ class ApplicationCreate(BaseModel):
     repo_id: str
     server_handle: str
     service_name: str
+    reserved_ram_mb: int = DEFAULT_APPLICATION_RESERVED_RAM_MB
     status: ApplicationStatus = ApplicationStatus.NOT_DEPLOYED
 
 

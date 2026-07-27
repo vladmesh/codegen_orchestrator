@@ -12,7 +12,10 @@ import structlog
 
 from shared.clients.github import WorkflowCancellationUnprovenError
 from shared.config_store import ConfigStore
-from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.application import (
+    DEFAULT_APPLICATION_RESERVED_RAM_MB,
+    ApplicationStatus,
+)
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
@@ -82,7 +85,7 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
         modules = list(
             dict.fromkeys([*config.get("modules", ["backend"]), *DEPLOY_INFRA_PORT_SERVICES])
         )
-        min_ram_mb = config.get("estimated_ram_mb", 512)
+        min_ram_mb = config.get("estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB)
 
         # Get repo_id from primary repository
         primary_repo = await api_client.get_primary_repository(project_id)
