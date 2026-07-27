@@ -177,6 +177,13 @@ class SecretResolverNode(FunctionalNode):
         overrides = {**configured, **message}
         legacy_audience = config_secrets.get(_LEGACY_BOT_AUDIENCE_KEY)
         if legacy_audience:
+            if not isinstance(legacy_audience, str) or not parse_allowed_telegram_ids(
+                legacy_audience
+            ):
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "legacy private bot audience contains no Telegram IDs",
+                )
             if _BOT_AUDIENCE_KEY not in contract.entries:
                 raise TypedSecretResolutionError(
                     DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,

@@ -208,6 +208,20 @@ async def test_legacy_admin_secret_is_migrated_to_contract_audience(_decrypt):
 
 @pytest.mark.asyncio
 @patch(
+    "src.subgraphs.devops.secret_resolver.decrypt_dict",
+    return_value={"ADMIN_TELEGRAM_ID": "not-an-id"},
+)
+async def test_malformed_legacy_admin_secret_is_rejected_before_it_can_make_a_bot_public(_decrypt):
+    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+
+    with pytest.raises(TypedSecretResolutionError, match="contains no Telegram IDs") as error:
+        await SecretResolverNode().run(state)
+
+    assert error.value.outcome == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
+@patch(
     "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
 )
 async def test_legacy_admin_secret_requires_a_contract_that_can_preserve_private_access(_decrypt):

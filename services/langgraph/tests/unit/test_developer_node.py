@@ -609,6 +609,26 @@ class TestTaskMessageDescription:
         )
         assert "Provided Environment Variables" not in task_md
 
+    def test_invite_access_task_requires_an_additive_invitation_layer(self):
+        """Invite projects must implement additions without replacing the contract baseline."""
+        from src.nodes.developer import DeveloperNode
+
+        task_md = DeveloperNode()._build_create_task(
+            project_name="test-project",
+            description="A Telegram bot",
+            modules=["backend", "tg_bot"],
+            project_spec={
+                "config": {
+                    "bot_access": {"mode": "invite", "allowed_telegram_ids": "42"},
+                },
+            },
+        )
+
+        assert "Invitation Access Layer" in task_md
+        assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in task_md
+        assert "additive" in task_md
+        assert "not replace" in task_md
+
     def test_feature_task_includes_env_hints(self):
         """_build_feature_task should include env_hints section when hints exist."""
         from src.nodes.developer import DeveloperNode

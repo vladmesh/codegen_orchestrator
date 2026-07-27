@@ -78,6 +78,26 @@ def format_env_hints(project_spec: dict) -> str:
     return "\n".join(lines)
 
 
+def format_bot_access(project_spec: dict) -> str:
+    """Add implementation requirements for the selected invitation access mode."""
+    config = project_spec.get("config") or {}
+    bot_access = config.get("bot_access") or {}
+    if bot_access.get("mode") != "invite":
+        return ""
+
+    return """
+## Invitation Access Layer
+
+This bot uses the Admin + invitations access mode. `TG_BOT_ALLOWED_TELEGRAM_IDS` is the
+contract baseline and already contains the owner's Telegram ID. Implement a tested,
+owner-managed invitation layer with persistent invitations and revocation. It must be additive:
+the contract audience always remains admitted, and an invited identity is admitted by the
+application layer. Do not replace or mutate the contract audience. Integrate the additive
+check at the bot access boundary, so the template's baseline check cannot reject an invited user
+before the application layer evaluates its invitation.
+"""
+
+
 def build_create_task(
     project_name: str,
     description: str,
@@ -104,6 +124,7 @@ def build_create_task(
         )
 
     env_hints_section = format_env_hints(project_spec)
+    bot_access_section = format_bot_access(project_spec)
 
     detailed_spec = project_spec.get("detailed_spec") or feature_description or "N/A"
 
@@ -118,6 +139,7 @@ def build_create_task(
 **Detailed Spec**:
 {detailed_spec}
 {env_hints_section}
+{bot_access_section}
 ## Project Structure (already scaffolded)
 
 The project was scaffolded with `copier` from `service-template`.
@@ -149,6 +171,7 @@ def build_feature_task(
     task_description = feature_description or description or "No description provided"
     modules_str = ", ".join(modules)
     env_hints_section = format_env_hints(project_spec)
+    bot_access_section = format_bot_access(project_spec)
 
     return f"""# Task: {action_label} in {project_name}
 
@@ -162,6 +185,7 @@ def build_feature_task(
 **Description**: {description}
 **Modules**: {modules_str}
 {env_hints_section}
+{bot_access_section}
 ## Important
 
 - This is an **existing, working project** — do NOT regenerate or restructure it
