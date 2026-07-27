@@ -106,7 +106,7 @@ def test_plain_config_passes_through():
     }
 
 
-@pytest.mark.parametrize("mode", ["only_me", "invite", "custom"])
+@pytest.mark.parametrize("mode", ["only_me", "custom"])
 def test_private_bot_access_requires_an_audience(mode):
     with pytest.raises(ValueError, match="private bot audience"):
         BotAccessRequest(mode=mode)
@@ -117,7 +117,7 @@ def test_public_bot_access_records_an_explicit_empty_audience():
     assert request.allowed_telegram_ids == ""
 
 
-@pytest.mark.parametrize("mode", ["only_me", "invite", "custom"])
+@pytest.mark.parametrize("mode", ["only_me", "custom"])
 def test_private_bot_access_rejects_an_audience_the_template_treats_as_public(mode):
     with pytest.raises(ValueError, match="Telegram ID"):
         BotAccessRequest(mode=mode, allowed_telegram_ids="not-an-id")

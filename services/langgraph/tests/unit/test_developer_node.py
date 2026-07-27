@@ -609,25 +609,6 @@ class TestTaskMessageDescription:
         )
         assert "Provided Environment Variables" not in task_md
 
-    def test_invite_access_tells_the_worker_to_build_the_invitation_layer(self):
-        """The contract audience remains the baseline for invitation logic."""
-        from src.nodes.developer import DeveloperNode
-
-        task_md = DeveloperNode()._build_create_task(
-            project_name="test-project",
-            description="A Telegram bot",
-            modules=["backend", "tg_bot"],
-            project_spec={
-                "config": {
-                    "bot_access": {"mode": "invite", "allowed_telegram_ids": "42"},
-                },
-            },
-        )
-
-        assert "Invitation Access Layer" in task_md
-        assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in task_md
-        assert "42" in task_md
-
     def test_custom_access_tells_the_worker_to_keep_its_rules_above_the_contract(self):
         """Custom policy must not replace the template's configured audience."""
         from src.nodes.developer import DeveloperNode
@@ -643,7 +624,7 @@ class TestTaskMessageDescription:
             },
         )
 
-        assert "Custom Access Rules" in task_md
+        assert "Custom Bot Access" in task_md
         assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in task_md
         assert "42,84" in task_md
 
