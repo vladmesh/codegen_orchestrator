@@ -75,6 +75,7 @@ class _ResolutionContext:
     state: DevOpsState
     config_secrets: dict
     provided_secrets: dict
+    env_overrides: dict
 
 
 class SecretResolverNode(FunctionalNode):
@@ -105,7 +106,9 @@ class SecretResolverNode(FunctionalNode):
             state=state,
             config_secrets=decrypt_dict(encrypted) if encrypted else {},
             provided_secrets=state.get("provided_secrets", {}),
+            env_overrides=state.get("env_overrides", {}) or {},
         )
+        self._reject_undeclared_overrides(context.env_overrides, contract)
         resolved = _ResolvedValues()
 
         for key, entry in contract.entries.items():
@@ -146,6 +149,29 @@ class SecretResolverNode(FunctionalNode):
             ),
         }
 
+    @staticmethod
+    def _reject_undeclared_overrides(overrides: dict, contract: CanonicalEnvContract) -> None:
+        """Refuse overrides the contract does not declare as literals.
+
+        An override for an unknown key is a contract change nobody reviewed, and one
+        for a secret-bearing entry would put a caller-supplied value where the
+        contract promised a resolved secret. Both fail loudly instead of quietly
+        reaching the deployed environment.
+        """
+
+        if not overrides:
+            return
+        literal_keys = {
+            key for key, entry in contract.entries.items() if isinstance(entry, LiteralEntry)
+        }
+        undeclared = sorted(set(overrides) - literal_keys)
+        if undeclared:
+            raise TypedSecretResolutionError(
+                DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                "environment overrides are not declared as contract literals: "
+                + ", ".join(undeclared),
+            )
+
     def _resolve_entry(
         self,
         key: str,
@@ -173,7 +199,9 @@ class SecretResolverNode(FunctionalNode):
                     entry.sensitive,
                 )
             case LiteralEntry():
-                resolved.store(key, self._dotenv_value(entry.value), entry.sensitive)
+                override = context.env_overrides.get(key)
+                value = override if override is not None else self._dotenv_value(entry.value)
+                resolved.store(key, value, entry.sensitive)
             case _:
                 raise TypedSecretResolutionError(
                     DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
