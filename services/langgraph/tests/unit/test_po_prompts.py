@@ -73,6 +73,10 @@ class TestSystemPrompt:
         assert "everyone" in prompt_lower or "всем" in prompt_lower
         assert "admin" in prompt_lower
 
+    def test_does_not_promise_runtime_invitations_the_template_guard_cannot_admit(self):
+        assert "admin has /add_user" not in SYSTEM_PROMPT
+        assert "do not promise `/add_user`" in SYSTEM_PROMPT
+
     def test_mentions_user_context(self):
         """Prompt should reference user context (user_id, user_name) from message prefix."""
         assert "user_id" in SYSTEM_PROMPT

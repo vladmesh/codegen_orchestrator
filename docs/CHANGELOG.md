@@ -6,8 +6,11 @@
   records an explicit `bot_access` selection and deploy-time
   `TG_BOT_ALLOWED_TELEGRAM_IDS` literal for private, public, invite and custom audiences;
   private projects with an empty audience fail before deploy. Existing
-  `ADMIN_TELEGRAM_ID` secrets are mapped to the contract audience at deploy time so older bots
-  retain their private access.
+  `ADMIN_TELEGRAM_ID` secrets are mapped to the contract audience when the repository declares
+  it. A pre-0.3.6 repository cannot be safely redeployed with that secret: deploy stops with a
+  diagnostic until its template contract is upgraded, rather than exposing a formerly private bot.
+  The pinned template enforces the configured audience before application handlers, so runtime
+  invitation flows are not promised until their access-contract extension exists.
 
 - Production scaffolding is pinned to service-template `0.3.6`, the release that makes bot access
    a contract instead of code an engineering agent writes per project. The template declares

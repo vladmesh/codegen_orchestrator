@@ -175,13 +175,17 @@ class SecretResolverNode(FunctionalNode):
                     "deploy cannot override the configured bot audience",
                 )
         overrides = {**configured, **message}
-        if (
-            _BOT_AUDIENCE_KEY in contract.entries
-            and _BOT_AUDIENCE_KEY not in overrides
-            and config_secrets.get(_LEGACY_BOT_AUDIENCE_KEY)
-        ):
-            overrides[_BOT_AUDIENCE_KEY] = str(config_secrets[_LEGACY_BOT_AUDIENCE_KEY])
-            logger.info("legacy_bot_access_migrated_for_deploy")
+        legacy_audience = config_secrets.get(_LEGACY_BOT_AUDIENCE_KEY)
+        if legacy_audience:
+            if _BOT_AUDIENCE_KEY not in contract.entries:
+                raise TypedSecretResolutionError(
+                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
+                    "cannot preserve ADMIN_TELEGRAM_ID private access: the deployed "
+                    "repository must declare TG_BOT_ALLOWED_TELEGRAM_IDS before redeploy",
+                )
+            if _BOT_AUDIENCE_KEY not in overrides:
+                overrides[_BOT_AUDIENCE_KEY] = str(legacy_audience)
+                logger.info("legacy_bot_access_migrated_for_deploy")
         return overrides
 
     @staticmethod

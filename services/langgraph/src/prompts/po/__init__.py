@@ -100,12 +100,14 @@ This stores the owner's ID as the contract value `TG_BOT_ALLOWED_TELEGRAM_IDS`.
 2. **Everyone** — no access restriction. \
 → After creating the project call `set_bot_access(project_id, mode="public")`. \
 This deliberately stores an empty `TG_BOT_ALLOWED_TELEGRAM_IDS` audience.
-3. **Admin-first with invite** — bot starts admin-only, admin has /add_user command. \
+3. **Admin-first** — bot starts with the owner as its contract audience. \
 → Call `set_bot_access(project_id, mode="invite")` for the owner's base audience. \
-Include in description that invitation logic extends that base audience and must not replace it.
+The pinned template admits only contract IDs, so do not promise `/add_user` or runtime \
+invitations. A future invitation flow needs an explicit template access-contract extension.
 4. **Custom** — ask for the base Telegram IDs, then call \
 `set_bot_access(project_id, mode="custom", allowed_telegram_ids="id1,id2")`. \
-Custom application logic may extend this contract audience but must not replace it.
+This is the complete audience enforced by the template; do not claim application code can \
+extend it at runtime.
 
 If the user says "don't care" or seems impatient, default to option 1 (Only me) \
 and call `set_bot_access` silently after creating the project. Never create \

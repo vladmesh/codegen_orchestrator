@@ -210,7 +210,7 @@ async def test_legacy_admin_secret_is_migrated_to_contract_audience(_decrypt):
 @patch(
     "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
 )
-async def test_legacy_admin_secret_is_ignored_when_the_contract_has_no_audience_literal(_decrypt):
+async def test_legacy_admin_secret_requires_a_contract_that_can_preserve_private_access(_decrypt):
     entries = {
         "DEBUG": {
             "source": "literal",
@@ -220,11 +220,12 @@ async def test_legacy_admin_secret_is_ignored_when_the_contract_has_no_audience_
         }
     }
 
-    result = await SecretResolverNode().run(
-        _state(entries, secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
-    )
+    with pytest.raises(
+        TypedSecretResolutionError, match="cannot preserve ADMIN_TELEGRAM_ID private access"
+    ) as error:
+        await SecretResolverNode().run(_state(entries, secrets={"ADMIN_TELEGRAM_ID": "encrypted"}))
 
-    assert result["non_secret_values"] == {"DEBUG": "false"}
+    assert error.value.outcome == "environment_contract_invalid"
 
 
 @pytest.mark.asyncio
