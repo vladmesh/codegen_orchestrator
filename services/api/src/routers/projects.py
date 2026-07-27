@@ -47,7 +47,7 @@ from shared.redis.client import RedisStreamClient
 from ..config import get_settings
 from ..database import get_async_session
 from ..dependencies import get_redis_client, is_internal_service
-from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
+from ..schemas import BotAccessRequest, MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
 from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
@@ -55,6 +55,8 @@ from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+_BOT_ALLOWED_IDS_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
 
 
 async def _resolve_user(
@@ -478,6 +480,36 @@ async def merge_secrets(
     )
 
     return {"keys": keys}
+
+
+@router.post("/{project_id}/config/bot-access")
+async def set_bot_access(
+    project_id: uuid.UUID,
+    body: BotAccessRequest,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Store the selected bot audience as a deploy-time contract literal."""
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    project = (await db.execute(query)).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+
+    config = dict(project.config or {})
+    overrides = dict(config.get("env_overrides") or {})
+    overrides[_BOT_ALLOWED_IDS_KEY] = body.allowed_telegram_ids
+    config["env_overrides"] = overrides
+    config["bot_access"] = {
+        "mode": body.mode,
+        "allowed_telegram_ids": body.allowed_telegram_ids,
+    }
+    project.config = config
+    await db.commit()
+
+    logger.info("project_bot_access_set", project_id=str(project_id), mode=body.mode)
+    return {"mode": body.mode, "allowed_telegram_ids": body.allowed_telegram_ids}
 
 
 @router.post("/{project_id}/telegram/token", response_model=TelegramTokenVerdict)

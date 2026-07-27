@@ -6,6 +6,7 @@ from fastapi import HTTPException
 import pytest
 
 from src.routers.projects import _vet_config_write
+from src.schemas.project import BotAccessRequest
 
 BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
 HTTP_UNPROCESSABLE = 422
@@ -71,3 +72,14 @@ def test_plain_config_passes_through():
         "modules": ["backend"],
         "description": "bot",
     }
+
+
+@pytest.mark.parametrize("mode", ["only_me", "invite", "custom"])
+def test_private_bot_access_requires_an_audience(mode):
+    with pytest.raises(ValueError, match="private bot audience"):
+        BotAccessRequest(mode=mode)
+
+
+def test_public_bot_access_records_an_explicit_empty_audience():
+    request = BotAccessRequest(mode="public")
+    assert request.allowed_telegram_ids == ""

@@ -1,0 +1,145 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Copy compose files to server
+        run: |
+          SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=30 -i ~/.ssh/deploy_key"
+          HOST="${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}"
+          TARGET="/opt/services/${{ secrets.PROJECT_NAME }}/infra"
+          for attempt in 1 2 3; do
+            echo "SCP attempt $attempt/3"
+            if ssh $SSH_OPTS "$HOST" "mkdir -p $TARGET" && \
+               scp $SSH_OPTS infra/compose.base.yml infra/compose.prod.yml "$HOST:$TARGET/"; then
+              echo "SCP succeeded"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              wait=$((attempt * 15))
+              echo "SCP failed, retrying in ${wait}s..."
+              sleep $wait
+            fi
+          done
+          echo "SCP failed after 3 attempts"
+          exit 1
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: DOTENV_B64,REGISTRY_URL,REGISTRY_USER,REGISTRY_PASSWORD
+          script: |
+            set -euo pipefail
+            PROJECT_DIR="/opt/services/${{ secrets.PROJECT_NAME }}"
+            mkdir -p "$PROJECT_DIR/infra"
+
+            # Backup previous .env before overwriting
+            cp "$PROJECT_DIR/.env" "$PROJECT_DIR/.env.bak" 2>/dev/null || true
+
+            # Decode .env from base64 DOTENV secret
+            printf '%s' "$DOTENV_B64" | base64 -d > "$PROJECT_DIR/.env"
+            if [ ! -s "$PROJECT_DIR/.env" ]; then
+              echo "FATAL: decoded .env is empty — DOTENV secret missing or corrupt"
+              exit 1
+            fi
+
+            # Open firewall port
+            ufw allow ${{ secrets.DEPLOY_PORT }}/tcp || true
+
+            # Log in to Docker registry
+            for attempt in 1 2 3; do
+              echo "Docker login attempt $attempt/3"
+              if echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_URL" -u "$REGISTRY_USER" --password-stdin; then
+                echo "Docker login succeeded"
+                break
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                wait=$((attempt * 10 - 5))
+                echo "Docker login failed, retrying in ${wait}s..."
+                sleep $wait
+              else
+                echo "Docker login failed after 3 attempts"
+                exit 1
+              fi
+            done
+
+            # Pull and deploy
+            cd "$PROJECT_DIR/infra"
+            COMPOSE="docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
+
+            # First deploy: remove stale volumes to avoid DB name mismatch
+            if [ ! -f "$PROJECT_DIR/.env.bak" ]; then
+              $COMPOSE down -v --remove-orphans 2>/dev/null || true
+            fi
+
+            for attempt in 1 2 3; do
+              echo "Docker pull attempt $attempt/3"
+              if $COMPOSE pull; then
+                echo "Docker pull succeeded"
+                break
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                wait=$((attempt * 10))
+                echo "Docker pull failed, retrying in ${wait}s..."
+                sleep $wait
+              else
+                echo "Docker pull failed after 3 attempts"
+                exit 1
+              fi
+            done
+            $COMPOSE up -d --remove-orphans
+
+            # Health check: wait and verify all containers are running
+            sleep 15
+            $COMPOSE ps --format json | python3 -c "
+            import sys, json
+            raw = sys.stdin.read().strip()
+            if not raw:
+                print('No containers found'); sys.exit(1)
+            try:
+                containers = json.loads(raw)
+            except json.JSONDecodeError:
+                containers = [json.loads(line) for line in raw.splitlines() if line.strip()]
+            if not isinstance(containers, list):
+                containers = [containers]
+            failed = [c['Name'] for c in containers if c.get('State') != 'running']
+            if failed:
+                print(f'FAILED: {failed}'); sys.exit(1)
+            print(f'All {len(containers)} containers running')
+            "
+
+            # Crash loop detection: a container with restart_policy can show
+            # State=running at the exact moment of a point-in-time check while
+            # actually being in a crash loop. RestartCount > 0 right after
+            # deploy is a definitive signal.
+            for cid in $($COMPOSE ps -q); do
+              restarts=$(docker inspect --format '{{.RestartCount}}' "$cid")
+              name=$(docker inspect --format '{{.Name}}' "$cid")
+              if [ "$restarts" -gt 0 ]; then
+                echo "FATAL: $name restarted $restarts times — crash loop detected"
+                exit 1
+              fi
+            done
+            echo "No crash loops detected"
+        env:
+          DOTENV_B64: ${{ secrets.DOTENV }}
+          REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}

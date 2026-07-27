@@ -114,6 +114,59 @@ async def test_contract_missing_user_secret_is_a_typed_waiting_outcome():
     assert result["resolution_outcome"] == "waiting_for_user_secret"
 
 
+def _bot_contract() -> dict:
+    return {
+        "TG_BOT_ALLOWED_TELEGRAM_IDS": {
+            "source": "literal",
+            "value": "",
+            "environments": ["production"],
+            "consumers": ["tg_bot"],
+            "required": False,
+        }
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "audience"),
+    [("only_me", "42"), ("public", ""), ("invite", "42"), ("custom", "42,84")],
+)
+async def test_bot_access_modes_resolve_the_contract_audience(mode, audience):
+    state = _state(_bot_contract())
+    state["project_spec"]["config"] = {
+        "bot_access": {"mode": mode, "allowed_telegram_ids": audience},
+        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": audience},
+    }
+
+    result = await SecretResolverNode().run(state)
+
+    assert result["non_secret_values"]["TG_BOT_ALLOWED_TELEGRAM_IDS"] == audience
+
+
+@pytest.mark.asyncio
+async def test_private_bot_with_empty_audience_is_rejected():
+    state = _state(_bot_contract())
+    state["project_spec"]["config"] = {
+        "bot_access": {"mode": "only_me", "allowed_telegram_ids": ""},
+        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""},
+    }
+
+    with pytest.raises(TypedSecretResolutionError, match="private bot audience is empty") as error:
+        await SecretResolverNode().run(state)
+
+    assert error.value.outcome == "environment_contract_invalid"
+
+
+@pytest.mark.asyncio
+@patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"})
+async def test_legacy_admin_secret_is_migrated_to_contract_audience(_decrypt):
+    state = _state(_bot_contract(), secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+
+    result = await SecretResolverNode().run(state)
+
+    assert result["non_secret_values"]["TG_BOT_ALLOWED_TELEGRAM_IDS"] == "42"
+
+
 @pytest.mark.asyncio
 async def test_contract_missing_allocation_has_a_distinct_outcome():
     entries = {

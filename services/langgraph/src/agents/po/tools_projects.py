@@ -189,6 +189,34 @@ async def set_project_secret(
 
 
 @tool
+async def set_bot_access(
+    project_id: str, mode: str, allowed_telegram_ids: str = "", *, config: RunnableConfig
+) -> str:
+    """Set a Telegram bot's contract audience.
+
+    Use ``only_me`` and ``invite`` without allowed_telegram_ids: the current user's
+    Telegram ID is used. Use ``public`` without IDs. For ``custom``, pass the
+    comma-separated base audience chosen by the user.
+    """
+    user_id = str(config["configurable"].get("user_id", "")).strip()
+    if mode in {"only_me", "invite"}:
+        allowed_telegram_ids = user_id
+    if mode in {"only_me", "invite", "custom"} and not allowed_telegram_ids.strip():
+        return "Error: a private bot needs at least one Telegram ID in its audience."
+
+    api = _get_api()
+    resp = await api.post(
+        f"/api/projects/{project_id}/config/bot-access",
+        json={"mode": mode, "allowed_telegram_ids": allowed_telegram_ids},
+        headers=_user_headers(config),
+    )
+    if resp.status_code == HTTP_UNPROCESSABLE:
+        return f"Error: {resp.json()['detail']}"
+    resp.raise_for_status()
+    return f"Bot access set to '{mode}' for project {project_id}."
+
+
+@tool
 async def teardown_project(project_id: str, *, config: RunnableConfig) -> str:
     """Tear down one of the user's projects: take it offline and free its Telegram bot.
 

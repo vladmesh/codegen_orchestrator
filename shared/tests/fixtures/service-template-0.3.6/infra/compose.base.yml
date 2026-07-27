@@ -1,0 +1,91 @@
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-service}
+  ASYNC_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${POSTGRES_HOST:-db}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-service}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+
+name: ${COMPOSE_PROJECT_NAME:-env_fixture}
+
+# Do not declare custom networks here. Codegen sibling workers replace the
+# implicit default network with their pre-created dev network.
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-env_fixture-backend:latest}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    build:
+      context: ..
+      dockerfile: services/backend/Dockerfile
+      args:
+        INSTALL_DEV_DEPS: ${BACKEND_INSTALL_DEV_DEPS:-false}
+    env_file:
+      - ../.env
+    environment:
+      <<: *backend-env
+    command: ["services/backend/scripts/start.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+  tg_bot:
+    image: ${TG_BOT_IMAGE:-env_fixture-tg:latest}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    build:
+      context: ..
+      dockerfile: services/tg_bot/Dockerfile
+    env_file:
+      - ../.env
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+  notifications_worker:
+    image: ${NOTIFICATIONS_WORKER_IMAGE:-env_fixture-notifications:latest}
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    build:
+      context: ..
+      dockerfile: services/notifications_worker/Dockerfile
+    env_file:
+      - ../.env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-service}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-env_fixture-frontend:latest}
+    build:
+      context: ../services/frontend
+      dockerfile: Dockerfile
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  db_data:

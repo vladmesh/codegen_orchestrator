@@ -22,6 +22,7 @@ from src.agents.po.tools import (
     notify_user,
     reopen_story,
     set_project_secret,
+    set_bot_access,
     set_reminder,
     teardown_project,
     validate_telegram_token,
@@ -319,6 +320,45 @@ class TestSetProjectSecret:
 
         mock_api_client.get.assert_not_called()
         mock_api_client.patch.assert_not_called()
+
+
+class TestBotAccess:
+    @pytest.mark.asyncio
+    async def test_only_me_stores_the_callers_contract_audience(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response({"mode": "only_me"})
+
+        result = await set_bot_access.ainvoke(
+            {"project_id": "abc", "mode": "only_me"}, config=_make_config("77777")
+        )
+
+        assert "only_me" in result
+        assert mock_api_client.post.call_args.args[0] == "/api/projects/abc/config/bot-access"
+        assert mock_api_client.post.call_args.kwargs["json"] == {
+            "mode": "only_me",
+            "allowed_telegram_ids": "77777",
+        }
+
+    @pytest.mark.asyncio
+    async def test_public_stores_an_explicit_empty_audience(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response({"mode": "public"})
+
+        await set_bot_access.ainvoke(
+            {"project_id": "abc", "mode": "public"}, config=_make_config("77777")
+        )
+
+        assert mock_api_client.post.call_args.kwargs["json"] == {
+            "mode": "public",
+            "allowed_telegram_ids": "",
+        }
+
+    @pytest.mark.asyncio
+    async def test_custom_requires_a_base_audience(self, mock_api_client):
+        result = await set_bot_access.ainvoke(
+            {"project_id": "abc", "mode": "custom"}, config=_make_config("77777")
+        )
+
+        assert result.startswith("Error:")
+        mock_api_client.post.assert_not_called()
 
 
 class TestValidateTelegramToken:
@@ -1128,7 +1168,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 14
+        expected_count = 15
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1138,6 +1178,7 @@ class TestGetAllTools:
             "create_project",
             "list_projects",
             "get_project",
+            "set_bot_access",
             "set_project_secret",
             "validate_telegram_token",
             "teardown_project",

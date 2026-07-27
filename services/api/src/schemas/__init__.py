@@ -13,7 +13,7 @@ from .application import (
 from .brainstorm import BrainstormCreate, BrainstormRead, BrainstormTransition, BrainstormUpdate
 from .incident import IncidentCreate, IncidentRead, IncidentUpdate
 from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, PortAllocationRead
-from .project import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
+from .project import BotAccessRequest, MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 from .rag import RAGDocsIngest, RAGDocsIngestResult, RAGMessageCreate, RAGMessageRead
 from .run import RunCreate, RunRead, RunUpdate
 from .server import MetricsHistoryCreate, MetricsHistoryRead, ServerCreate, ServerRead
@@ -59,6 +59,7 @@ __all__ = [
     "ProjectRead",
     "ProjectUpdate",
     "MergeSecretsRequest",
+    "BotAccessRequest",
     "RAGDocsIngest",
     "RAGDocsIngestResult",
     "RAGMessageCreate",

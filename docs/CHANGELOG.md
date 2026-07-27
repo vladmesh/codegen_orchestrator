@@ -2,6 +2,13 @@
 
 ## 2026-07-27
 
+- Telegram bot audiences now come from service-template 0.3.6's environment contract. The PO
+  records an explicit `bot_access` selection and deploy-time
+  `TG_BOT_ALLOWED_TELEGRAM_IDS` literal for private, public, invite and custom audiences;
+  private projects with an empty audience fail before deploy. Existing
+  `ADMIN_TELEGRAM_ID` secrets are mapped to the contract audience at deploy time so older bots
+  retain their private access.
+
 - Grafana now provisions a read-only PostgreSQL datasource and repository-owned server-capacity
   and run-operations dashboards. Server history panels were checked against 508 real snapshots;
   run panels use an isolated disposable database because the live `runs` and `task_events` tables

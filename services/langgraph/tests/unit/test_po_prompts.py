@@ -58,7 +58,9 @@ class TestSystemPrompt:
         """Prompt should ask about bot access control for tg_bot projects."""
         prompt_lower = SYSTEM_PROMPT.lower()
         assert "access" in prompt_lower
-        assert "ADMIN_TELEGRAM_ID" in SYSTEM_PROMPT
+        assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in SYSTEM_PROMPT
+        assert "set_bot_access" in SYSTEM_PROMPT
+        assert "ADMIN_TELEGRAM_ID" not in SYSTEM_PROMPT
 
     def test_access_control_options(self):
         """Prompt should list access control options."""
