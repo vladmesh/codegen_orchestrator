@@ -118,6 +118,7 @@ ALL_SUITES=(
     "infra-service|services/infra-service/tests/unit|$ROOT/services/infra-service"
     "worker-wrapper|packages/worker-wrapper/tests/unit|"
     "shared|shared/tests|"
+    "repo|tests/unit|"
     "live-offline|tests/live||$OFFLINE_LIVE_IGNORE_ARGS"
 )
 

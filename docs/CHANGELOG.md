@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-07-28
+
+- `scripts/system_configs.yaml` is now the source of truth for the keys it declares. Deploy applies
+  it after migrations and overwrites existing values, printing one line per diverged key with the
+  database and file values. A value edited through the API survives until the next deploy; a key
+  absent from the file is still owned by the database alone and is never touched. This closes the
+  two ways the file and the database drifted apart: an edited value that never arrived, and a newly
+  required key that only failed at the next scheduler restart.
+- ConfigStore now separates "the config source is unavailable" from "the key does not exist". An
+  unreachable API, an HTTP error, or a broken response body falls back to the last known value with
+  a warning, so working loops keep running while the API restarts. A 404 is still a `KeyError` and a
+  missing required key still fails service startup.
+
 ## 2026-07-27
 
 - Telegram bot audiences now come from service-template 0.3.6's environment contract. The PO

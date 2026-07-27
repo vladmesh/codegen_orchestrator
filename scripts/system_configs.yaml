@@ -1,5 +1,9 @@
-# System configuration defaults.
-# Seeded via `make seed` — values are only written if key doesn't exist yet.
+# System configuration values.
+# Applied on every deploy (and by `make seed`): each key below is written to the
+# database with the value from this file, overwriting whatever is there. Editing
+# a value here is how it changes in production. A key edited through the API
+# survives only until the next deploy. Keys absent from this file are owned by
+# the database alone and are never touched.
 
 # --- scheduler ---
 - key: scheduler.dispatch_interval_seconds
