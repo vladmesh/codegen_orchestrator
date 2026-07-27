@@ -6,15 +6,36 @@
 
 Сборка распадается на две части, и они не связаны между собой:
 
-1. **Compose-сервисы.** 20 сервисов в `docker-compose.yml`. Семь из них (`api`, `langgraph`,
-   `scheduler`, `scaffolder`, `worker-manager`, `infra-service`, `telegram_bot`) содержат
-   `COPY shared ./shared`, поэтому любая правка под `shared/` требует их пересборки.
+1. **Compose-сервисы.** 20 сервисов в `docker-compose.yml`.
 2. **Образы воркеров.** `worker-base-common` и производные от него `worker-base-claude`,
    `worker-base-factory`, `worker-base-codex`. Плюс `worker:<tag>` — образы, которые
    worker-manager собирает на лету под конкретный запуск.
 
 `docker compose build` не трогает второй контур, а сборка воркеров не трогает первый. Это
 основной источник «пересобрал, а изменения не подхватились».
+
+## Как доезжает shared
+
+`shared` не является устанавливаемым пакетом: в venv он не ставится, установленной копии больше
+нет. Единственный источник — дерево репозитория, и до потребителей оно доезжает двумя каналами.
+
+**Bind-mount** `./shared:/app/shared` — десять compose-сервисов: `api`, `langgraph`,
+`deploy-worker`, `qa-worker`, `engineering-worker`, `architect`, `infra-service`, `telegram_bot`,
+`scheduler`, `scaffolder`. Правка под `shared/` подхватывается рестартом контейнера
+(`docker compose restart <service>`), пересборка образа не нужна.
+
+**`COPY shared`** в Dockerfile — образы воркеров, тестовые образы и `worker-manager`.
+`worker-manager` — единственный build-сервис compose без маунта, поэтому из compose-контура правка
+`shared/` требует пересборки только его. Образы воркеров живут во втором контуре и пересобираются
+по `WORKER_SOURCE_HASH`.
+
+Локально и в тестах `shared` импортируется прямо из дерева: `scripts/test-unit-local.sh` и
+`[tool.pytest.ini_options] pythonpath` держат корень репозитория на `PYTHONPATH`.
+
+Поскольку `shared` нигде не устанавливается, его `dependencies` ничего не ставят: каждый
+потребитель обязан продублировать их в своём `pyproject.toml`. За этим следит
+`shared/tests/unit/test_shared_dependency_parity.py` — он сам находит потребителей по маунтам в
+compose и по `COPY shared` в Dockerfile'ах.
 
 ## Выбор цели
 

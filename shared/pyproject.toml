@@ -1,3 +1,9 @@
+# `shared` is not a distributable package and is never pip-installed.
+# It reaches consumers as a bind-mount (compose) or a `COPY shared` (images), and
+# tests import it from the repo tree. This file is the single declaration of the
+# third-party dependencies that importing `shared` requires; every service that
+# ships `shared` must repeat them in its own pyproject.toml, and
+# shared/tests/unit/test_shared_dependency_parity.py enforces that.
 [project]
 name = "shared"
 version = "0.1.0"
@@ -14,35 +20,3 @@ dependencies = [
     "pyjwt[crypto]>=2.8.0",
     "cryptography>=43.0.0",
 ]
-
-[project.scripts]
-env-contract-check = "shared.contracts.env_usage:main"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = []
-exclude = ["redis"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"__init__.py" = "shared/__init__.py"
-"clients" = "shared/clients"
-"config.py" = "shared/config.py"
-"config_store.py" = "shared/config_store.py"
-"constants.py" = "shared/constants.py"
-"contracts" = "shared/contracts"
-"log_config" = "shared/log_config"
-"models" = "shared/models"
-"notifications.py" = "shared/notifications.py"
-"project_slug.py" = "shared/project_slug.py"
-"queues.py" = "shared/queues.py"
-"redis" = "shared/redis"
-"redis_client.py" = "shared/redis_client.py"
-"crypto.py" = "shared/crypto.py"
-"diagnostics.py" = "shared/diagnostics.py"
-"live_harness_cleanup.py" = "shared/live_harness_cleanup.py"
-"live_harness_remote_cleanup.sh" = "shared/live_harness_remote_cleanup.sh"
-"schemas" = "shared/schemas"
-"tests" = "shared/tests"

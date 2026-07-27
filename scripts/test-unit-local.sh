@@ -2,9 +2,9 @@
 # Run all unit tests locally without Docker.
 # Requires: uv sync (once)
 #
-# Each service uses `from src.xxx` imports, so we set PYTHONPATH per service.
-# Packages (worker-wrapper) and shared use proper package
-# names and don't need PYTHONPATH overrides.
+# Each service uses `from src.xxx` imports, so we prepend the service dir to
+# PYTHONPATH. The repo root is always on PYTHONPATH too: `shared` is not an
+# installed package, so it can only be imported from the tree.
 #
 # We clear env vars that leak from the root .env to avoid pydantic-settings
 # picking up extra/conflicting values in service Settings classes.
@@ -69,7 +69,7 @@ run_tests_serial() {
     echo "🧪 $label..."
     local workdir="${pythonpath:-$ROOT}"
     if (cd "$workdir" && "${CLEAN_ENV[@]}" \
-       PYTHONPATH="${pythonpath:+$pythonpath:}" \
+       PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
        python -m pytest "$ROOT/$test_dir" -v --tb=short -q "${extra_args[@]}") 2>&1; then
         PASSED+=("$label")
     else
@@ -99,7 +99,7 @@ run_tests_parallel() {
     local workdir="${pythonpath:-$ROOT}"
     local rc=0
     (cd "$workdir" && "${CLEAN_ENV[@]}" \
-       PYTHONPATH="${pythonpath:+$pythonpath:}" \
+       PYTHONPATH="${pythonpath:+$pythonpath:}$ROOT" \
        python -m pytest "$ROOT/$test_dir" --tb=short -q "${extra_args[@]}") \
        > "$LOGDIR/$label.log" 2>&1 || rc=$?
     echo "$rc" > "$LOGDIR/$label.rc"

@@ -25,10 +25,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # === Test Stage ===
 FROM test-deps AS test
 
-# Copy shared module
+# Copy shared as plain files (deps are in the service pyproject.toml)
 COPY shared /app/shared
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install ./shared
+ENV PYTHONPATH=/app
 
 # Copy source code
 COPY services/langgraph/src ./src

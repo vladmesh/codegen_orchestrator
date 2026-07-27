@@ -9,10 +9,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.lock && \
     pip install pytest pytest-asyncio pytest-cov httpx respx
 
-# Install shared module (changes more often, but lightweight)
+# Copy shared as plain files (deps come from requirements.lock)
 COPY shared /app/shared
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install /app/shared
+ENV PYTHONPATH=/app
 
 # Copy source
 COPY services/telegram_bot/src ./src

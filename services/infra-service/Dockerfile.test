@@ -16,12 +16,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system "pytest" "pytest-asyncio" "pytest-mock" "fakeredis>=2.34.1"
 
-# Copy and install service + shared
+# Copy service + shared (shared is plain files on PYTHONPATH, never installed)
 COPY services/infra-service/pyproject.toml /app/services/infra-service/
 COPY shared/ /app/shared/
 COPY services/infra-service/src/ /app/services/infra-service/src/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system -e /app/shared && \
     uv pip install --system -e /app/services/infra-service
 
 # Set pythonpath
