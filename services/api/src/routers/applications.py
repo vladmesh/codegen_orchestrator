@@ -60,6 +60,7 @@ async def create_application(
         repo_id=app_in.repo_id,
         server_handle=app_in.server_handle,
         service_name=app_in.service_name,
+        reserved_ram_mb=app_in.reserved_ram_mb,
         status=app_in.status,
     )
     db.add(application)

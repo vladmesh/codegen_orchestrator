@@ -33,6 +33,8 @@ class Application(Base):
 
     # Human-readable name (e.g. "fortune-teller-bot")
     service_name: Mapped[str] = mapped_column(String(255))
+    # Admission reservation saved when the project is first allocated to this server.
+    reserved_ram_mb: Mapped[int] = mapped_column(Integer, nullable=False, default=512)
 
     # Runtime state — updated by deploy consumer and health checker
     status: Mapped[str] = mapped_column(

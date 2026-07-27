@@ -16,6 +16,7 @@ class ApplicationCreate(BaseModel):
     repo_id: str
     server_handle: str
     service_name: str
+    reserved_ram_mb: int = Field(default=512, ge=1)
     status: str = ApplicationStatus.NOT_DEPLOYED.value
 
 
@@ -26,6 +27,7 @@ class ApplicationRead(TimestampedDTO):
     repo_id: str
     server_handle: str
     service_name: str
+    reserved_ram_mb: int
     status: str
     last_health_check: datetime | None = None
     response_time_ms: int | None = None

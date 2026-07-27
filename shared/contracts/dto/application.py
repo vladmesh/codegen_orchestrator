@@ -32,6 +32,7 @@ class ApplicationDTO(TimestampedDTO):
     repo_id: str
     server_handle: str
     service_name: str
+    reserved_ram_mb: int = 512
     status: ApplicationStatus
     last_health_check: datetime | None = None
     response_time_ms: int | None = None
@@ -49,6 +50,7 @@ class ApplicationCreate(BaseModel):
     repo_id: str
     server_handle: str
     service_name: str
+    reserved_ram_mb: int = 512
     status: ApplicationStatus = ApplicationStatus.NOT_DEPLOYED
 
 

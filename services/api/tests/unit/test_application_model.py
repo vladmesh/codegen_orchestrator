@@ -15,6 +15,7 @@ class TestApplicationModel:
             "repo_id",
             "server_handle",
             "service_name",
+            "reserved_ram_mb",
             "status",
             "last_health_check",
             "created_at",
@@ -53,6 +54,11 @@ class TestApplicationModel:
     def test_status_default(self):
         col = Application.__table__.c.status
         assert col.default.arg == ApplicationStatus.NOT_DEPLOYED.value
+
+    def test_ram_reservation_default(self):
+        col = Application.__table__.c.reserved_ram_mb
+        assert not col.nullable
+        assert col.default.arg == 512  # noqa: PLR2004
 
     def test_last_health_check_nullable(self):
         assert Application.__table__.c.last_health_check.nullable
