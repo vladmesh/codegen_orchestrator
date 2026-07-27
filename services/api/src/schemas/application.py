@@ -4,7 +4,10 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.application import (
+    DEFAULT_APPLICATION_RESERVED_RAM_MB,
+    ApplicationStatus,
+)
 from shared.contracts.dto.base import TimestampedDTO
 
 from .port_allocation import PortAllocationRead
@@ -16,7 +19,7 @@ class ApplicationCreate(BaseModel):
     repo_id: str
     server_handle: str
     service_name: str
-    reserved_ram_mb: int = Field(default=512, ge=1)
+    reserved_ram_mb: int = Field(default=DEFAULT_APPLICATION_RESERVED_RAM_MB, ge=1)
     status: str = ApplicationStatus.NOT_DEPLOYED.value
 
 
