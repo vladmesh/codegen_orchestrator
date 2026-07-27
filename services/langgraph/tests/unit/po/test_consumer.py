@@ -71,9 +71,19 @@ class TestHandleMessage:
         mock_graph.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("event_type", ["story_completed", "story_failed", "story_quarantined"])
+    @pytest.mark.parametrize(
+        "event_type",
+        [
+            "story_completed",
+            "story_failed",
+            "story_quarantined",
+            "task_waiting_resources",
+            "task_impossible_capacity",
+            "task_resources_resumed",
+        ],
+    )
     async def test_story_event_passes_through(self, mock_graph, mock_client, event_type):
-        """Story-level events (story_completed, story_failed) should invoke PO."""
+        """User-facing lifecycle events should invoke PO."""
         data = {
             "type": "system_event",
             "event": event_type,

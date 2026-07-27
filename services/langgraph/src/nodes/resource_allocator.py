@@ -2,6 +2,8 @@
 
 import structlog
 
+from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB
+
 from ..allocations import (
     DEFAULT_ALLOCATION_MIN_DISK_MB,
     AllocationError,
@@ -48,7 +50,7 @@ class ResourceAllocatorNode(FunctionalNode):
         # Get config from project spec
         config = project_spec.get("config", {})
         modules = config.get("modules", ["backend"])
-        min_ram_mb = config["estimated_ram_mb"]
+        min_ram_mb = config.get("estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB)
         service_name = project_spec_runtime_slug(project_spec)
 
         # Get repo_id from primary repository

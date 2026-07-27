@@ -294,14 +294,17 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
     msg_type = data.get("type", "user_message")
     event = data.get("event", "")
 
-    # Let story-level events through to PO so it can craft user-friendly messages.
-    # Drop all other system events — PO checks task-level status via reminders.
+    # Let user-facing lifecycle events through so PO can craft their wording.
+    # Drop other system events — PO checks ordinary task status via reminders.
     _STORY_EVENTS = {
         "story_completed",
         "story_failed",
         "story_blocked",
         "story_quarantined",
         "story_waiting_user_secret",
+        "task_waiting_resources",
+        "task_impossible_capacity",
+        "task_resources_resumed",
     }
     if msg_type == "system_event" and event not in _STORY_EVENTS:
         logger.info("po_system_event_dropped", user_id=user_id, event_type=event, text=text)

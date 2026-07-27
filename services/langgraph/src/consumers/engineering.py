@@ -116,7 +116,7 @@ async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDT
         reason = result.get("allocation_failure_reason")
         required_ram_mb = result.get("allocation_required_ram_mb")
         min_disk_mb = result.get("allocation_min_disk_mb")
-        if not isinstance(required_ram_mb, int) or not isinstance(min_disk_mb, int):
+        if reason and (not isinstance(required_ram_mb, int) or not isinstance(min_disk_mb, int)):
             raise RuntimeError("allocation failure omitted admission requirements")
         await api_client.patch(
             f"runs/{task_id}",

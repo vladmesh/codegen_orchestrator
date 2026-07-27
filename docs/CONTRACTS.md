@@ -431,6 +431,7 @@ class TaskStatus(StrEnum):
     TESTING = "testing"
     DONE = "done"
     BLOCKED = "blocked"
+    WAITING_RESOURCES = "waiting_resources"
     WAITING_HUMAN_REVIEW = "waiting_human_review"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -1277,7 +1278,7 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 
 > **Transport note:** PO streams use **flat Redis fields** (not JSON `data` wrapper). Use `to_flat_fields()` / `from_flat_fields()` helpers from `shared.contracts.queues.po` for serialization.
 
-**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`.
+**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`. User-facing resource lifecycle events are `task_waiting_resources`, `task_impossible_capacity`, and `task_resources_resumed`; the scheduler supplies context, PO writes the user text.
 
 ---
 

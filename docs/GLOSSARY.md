@@ -106,7 +106,8 @@ AI который работает внутри Developer Worker контейн�
 
 ### Task (Задача)
 *(Бывший WorkItem)*. Единица планирования работы для разработчика/агента.
-**Статусы:** `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (также: `blocked`, `waiting_human_review`, `failed`, `cancelled`)
+**Статусы:** `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (также: `blocked`, `waiting_resources`, `waiting_human_review`, `failed`, `cancelled`)
+`waiting_resources` — allocator не нашёл текущую ёмкость для размещения, но запрос помещается хотя бы на одном managed server. Scheduler проверяет свежие метрики и автоматически возвращает задачу в `todo`, не увеличивая `current_iteration`; таймаут ожидания переводит её в `waiting_human_review`.
 `waiting_human_review` — developer agent сообщил о блокере через `POST localhost:9090/result` с `{"success": false, "reason": "..."}`. Pipeline приостановлен до вмешательства админа (`POST /tasks/{id}/resume`).
 **Связи:** Story (опционально), Repository (NOT NULL), Project.
 **Таблица:** `tasks`

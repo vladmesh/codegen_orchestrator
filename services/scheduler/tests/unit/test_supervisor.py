@@ -592,6 +592,7 @@ class TestSuperviseWaitingResourceTasks:
             api_client.update_task.call_args.args[1]["failure_metadata"]["resource_wait_started_at"]
             == started_at
         )
+        redis_client.publish_flat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_expired_wait_becomes_visible_human_review(self, api_client, redis_client):

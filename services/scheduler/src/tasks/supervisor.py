@@ -289,6 +289,7 @@ async def _park_task_waiting_resources(
         return False
 
     metadata = dict(task.failure_metadata or {})
+    is_new_wait = "resource_wait_started_at" not in metadata
     metadata.setdefault("resource_wait_started_at", datetime.now(UTC).isoformat())
     metadata.update(
         {
@@ -300,10 +301,11 @@ async def _park_task_waiting_resources(
     await api_client.update_task(task.id, {"failure_metadata": metadata})
     await api_client.transition_task(task.id, TaskStatus.WAITING_RESOURCES, "supervisor")
     log.info("task_waiting_resources", reason=reason.value)
-    try:
-        await _request_resources_via_po(api_client, redis_client, task, log)
-    except Exception:
-        log.warning("waiting_resources_request_failed", exc_info=True)
+    if is_new_wait:
+        try:
+            await _request_resources_via_po(api_client, redis_client, task, log)
+        except Exception:
+            log.warning("waiting_resources_request_failed", exc_info=True)
     return True
 
 
