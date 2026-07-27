@@ -9,6 +9,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.env_overrides import env_overrides_digest
 from shared.contracts.service_ports import is_http_health_port_service
 
 from ...clients.api import api_client
@@ -351,6 +352,7 @@ class DeployerNode(FunctionalNode):
                     "repo_full_name": f"{owner}/{repo}",
                     "branch": "main",
                     "modules": modules,
+                    "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
                 },
                 deployed_sha=run_info.get("head_sha"),
             )

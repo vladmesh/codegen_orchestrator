@@ -19,6 +19,10 @@ from shared.contracts.dto.application import (
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
+from shared.contracts.env_overrides import (
+    EMPTY_OVERRIDES_DIGEST,
+    env_overrides_digest,
+)
 from shared.contracts.queues.deploy import (
     LIFECYCLE_ACTIONS,
     DeployAction,
@@ -143,6 +147,7 @@ def _build_subgraph_input(
         },
         "allocated_resources": allocated_resources,
         "provided_secrets": job_data.get("provided_secrets", {}),
+        "env_overrides": job_data.get("env_overrides", {}),
         "head_sha": head_sha,
         "messages": [],
         "environment_contract": None,
@@ -157,8 +162,17 @@ def _build_subgraph_input(
     }
 
 
-async def _already_deployed_application(allocated_resources: dict, head_sha: str) -> int | None:
-    """Return a running application whose latest successful deploy used ``head_sha``."""
+async def _already_deployed_application(
+    allocated_resources: dict, head_sha: str, env_overrides: dict[str, str] | None = None
+) -> int | None:
+    """Return a running application already deployed from this commit and environment.
+
+    The commit alone does not identify a deploy: the same commit with different
+    deploy-time environment is a different deploy, and treating it as redundant
+    would silently drop the change — including a redeploy whose whole purpose is to
+    remove a value. Records written before the digest existed compare equal to a
+    deploy that sets nothing, which is what they were.
+    """
     application_ids = {
         resource["application_id"]
         for resource in allocated_resources.values()
@@ -174,6 +188,12 @@ async def _already_deployed_application(allocated_resources: dict, head_sha: str
 
         latest_deployment = deployments[0]
         if latest_deployment.get("deployed_sha") != head_sha:
+            continue
+
+        recorded = (latest_deployment.get("deployment_info") or {}).get(
+            "env_overrides_digest", EMPTY_OVERRIDES_DIGEST
+        )
+        if recorded != env_overrides_digest(env_overrides):
             continue
 
         application = await api_client.get_application(application_id)
@@ -349,7 +369,9 @@ async def process_deploy_job(  # noqa: PLR0911, PLR0915
             return live_work_unsettled({"status": "failed", "error": alloc_result})
         allocated_resources = alloc_result
 
-        application_id = await _already_deployed_application(allocated_resources, msg.head_sha)
+        application_id = await _already_deployed_application(
+            allocated_resources, msg.head_sha, msg.env_overrides
+        )
         if application_id is not None:
             reason = "already_deployed_same_sha"
             logger.info(

@@ -32,6 +32,7 @@ class DevOpsState(TypedDict):
     allocated_resources: dict
     repo_info: dict | None
     provided_secrets: dict  # secrets provided by PO
+    env_overrides: dict  # deploy-time literal overrides, see DeployMessage.env_overrides
 
     # Internal environment resolution state
     environment_contract: dict | None

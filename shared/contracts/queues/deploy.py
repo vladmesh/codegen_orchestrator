@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from shared.contracts.base import BaseMessage, BaseResult
 from shared.contracts.git_ref import OptionalCommitSha
@@ -63,6 +63,14 @@ class DeployMessage(BaseMessage):
     # several servers, so the consumer must not pick one itself: it would stop a
     # container nobody asked about and leave the named one up.
     application_id: int | None = None
+    # Non-secret environment values this deploy sets on top of the contract, for
+    # state the caller turns on and off between deploys of the same commit — a
+    # temporary test identity, for instance. Only keys the contract already
+    # declares as literals may appear here; anything else is a contract change and
+    # is rejected by the resolver rather than silently added to the environment.
+    # Deploys of the same commit with different overrides are different deploys,
+    # so the redundant-deploy shortcut compares them.
+    env_overrides: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _lifecycle_names_its_target(self) -> "DeployMessage":
