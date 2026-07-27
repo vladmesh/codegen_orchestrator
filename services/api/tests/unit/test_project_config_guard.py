@@ -49,6 +49,38 @@ def test_stored_secrets_survive_a_config_write_that_omits_them():
     assert stored == {"tree": "src/", "secrets": {"KEY_A": "enc-a"}}
 
 
+def test_selected_private_bot_audience_survives_a_generic_config_write():
+    project = _project(
+        {
+            "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
+            "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
+        }
+    )
+
+    stored = _vet_config_write({"tree": "src/"}, project)
+
+    assert stored["bot_access"] == {"mode": "only_me", "allowed_telegram_ids": "42"}
+    assert stored["env_overrides"] == {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"}
+
+
+def test_generic_config_write_cannot_replace_selected_private_bot_audience():
+    project = _project(
+        {
+            "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
+            "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
+        }
+    )
+
+    with pytest.raises(HTTPException, match="bot access"):
+        _vet_config_write(
+            {
+                "bot_access": {"mode": "public", "allowed_telegram_ids": ""},
+                "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""},
+            },
+            project,
+        )
+
+
 def test_unchanged_secrets_blob_round_trips():
     project = _project({"secrets": {"KEY_A": "enc-a"}})
 

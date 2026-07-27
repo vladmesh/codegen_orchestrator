@@ -63,6 +63,7 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 _BOT_ALLOWED_IDS_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
+_BOT_ACCESS_WRITE_DETAIL = "bot access is managed through /config/bot-access"
 
 
 async def _resolve_user(
@@ -421,6 +422,35 @@ def _vet_config_write(config: dict, project: Project | None) -> dict:
     vetted = {key: value for key, value in config.items() if key != "secrets"}
     if stored:
         vetted["secrets"] = stored
+    stored_config = project.config if project is not None else {}
+    stored_access = stored_config.get("bot_access") if isinstance(stored_config, dict) else None
+    stored_overrides = (
+        stored_config.get("env_overrides", {}) if isinstance(stored_config, dict) else {}
+    )
+    stored_audience = (
+        stored_overrides.get(_BOT_ALLOWED_IDS_KEY) if isinstance(stored_overrides, dict) else None
+    )
+    incoming_access = config.get("bot_access")
+    incoming_overrides = config.get("env_overrides", {})
+
+    if stored_access is not None:
+        if incoming_access is not None and incoming_access != stored_access:
+            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+        vetted["bot_access"] = stored_access
+    elif incoming_access is not None:
+        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+
+    if stored_audience is not None:
+        if not isinstance(incoming_overrides, dict):
+            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+        incoming_audience = incoming_overrides.get(_BOT_ALLOWED_IDS_KEY)
+        if incoming_audience is not None and incoming_audience != stored_audience:
+            raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
+        overrides = dict(incoming_overrides)
+        overrides[_BOT_ALLOWED_IDS_KEY] = stored_audience
+        vetted["env_overrides"] = overrides
+    elif isinstance(incoming_overrides, dict) and _BOT_ALLOWED_IDS_KEY in incoming_overrides:
+        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
     return vetted
 
 

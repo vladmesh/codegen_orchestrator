@@ -66,6 +66,7 @@ __all__ = [
 logger = structlog.get_logger(__name__)
 
 _BOT_AUDIENCE_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
+_LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
 
 _config: ConfigStore | None = None
 
@@ -188,6 +189,24 @@ def _effective_env_overrides(project: ProjectDTO, message_overrides: dict | None
     return {**configured, **message_overrides}
 
 
+def _legacy_bot_audience_needs_contract_resolution(project: ProjectDTO) -> bool:
+    """Keep a legacy private bot out of the redundant-deploy shortcut.
+
+    The typed resolver can migrate the encrypted legacy value only after it has
+    loaded the generated repository's environment contract. At this point the
+    secret key is enough to know that the shortcut must not decide the deploy.
+    """
+    config = project.config or {}
+    secrets = config.get("secrets", {})
+    overrides = config.get("env_overrides", {})
+    return (
+        isinstance(secrets, dict)
+        and _LEGACY_BOT_AUDIENCE_KEY in secrets
+        and not isinstance(config.get("bot_access"), dict)
+        and (not isinstance(overrides, dict) or _BOT_AUDIENCE_KEY not in overrides)
+    )
+
+
 async def _already_deployed_application(
     allocated_resources: dict, head_sha: str, env_overrides: dict[str, str] | None = None
 ) -> int | None:
@@ -281,7 +300,7 @@ async def _handle_lifecycle_action(
     return lifecycle_result
 
 
-async def process_deploy_job(  # noqa: C901, PLR0911, PLR0915
+async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
     job_data: dict, redis: RedisStreamClient
 ) -> dict:
     """Process a single deploy job by running DevOps Subgraph."""
@@ -410,9 +429,11 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0915
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
-        application_id = await _already_deployed_application(
-            allocated_resources, msg.head_sha, env_overrides
-        )
+        application_id = None
+        if not _legacy_bot_audience_needs_contract_resolution(project):
+            application_id = await _already_deployed_application(
+                allocated_resources, msg.head_sha, env_overrides
+            )
         if application_id is not None:
             reason = "already_deployed_same_sha"
             logger.info(
