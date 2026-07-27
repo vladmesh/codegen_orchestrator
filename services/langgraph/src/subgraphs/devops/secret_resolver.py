@@ -114,9 +114,7 @@ class SecretResolverNode(FunctionalNode):
             env_overrides=env_overrides,
         )
         self._reject_undeclared_overrides(context.env_overrides, contract)
-        self._validate_bot_audience(
-            project_spec, config_secrets, context.env_overrides, contract
-        )
+        self._validate_bot_audience(project_spec, config_secrets, context.env_overrides, contract)
         resolved = _ResolvedValues()
 
         for key, entry in contract.entries.items():
@@ -216,8 +214,7 @@ class SecretResolverNode(FunctionalNode):
             modules = config.get("modules")
             is_tg_bot_project = isinstance(modules, list) and "tg_bot" in modules
             has_valid_legacy_audience = (
-                _LEGACY_BOT_AUDIENCE_KEY in config_secrets
-                and _BOT_AUDIENCE_KEY in contract.entries
+                _LEGACY_BOT_AUDIENCE_KEY in config_secrets and _BOT_AUDIENCE_KEY in contract.entries
             )
             if is_tg_bot_project and not has_valid_legacy_audience:
                 raise TypedSecretResolutionError(
