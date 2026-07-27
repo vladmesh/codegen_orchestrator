@@ -26,8 +26,10 @@ observe an absent project directory, while `feature` and `fix` require one. The
 generated workflow creates the directory only after the `create` precheck has
 passed.
 
-Before the next mega deploy, apply the provisioner to adopted target `vps-273978` so
-its `/opt/services` root receives this ownership contract.
+The adopted target `vps-273978` received the monitoring baseline on 2026-07-27; see the
+section below for the operation. The `/opt/services` ownership contract is applied by the
+`deploy_target` role, which the baseline run does not cover — it applies only the
+`monitoring` tag.
 
 ## Monitoring baseline for adopted servers
 
@@ -48,6 +50,21 @@ the last successful exporter observation and the newest metrics sample. Its
 `server_unreachable` incidents are sent to administrators by the health checker
 when the exporter cannot be fetched, and resolved notifications are sent when it
 returns. They also remain visible through `GET /api/servers/SERVER_HANDLE/incidents`.
+
+### Known issue: promtail crash-loops after a baseline run
+
+The `monitoring` role writes a compose file that mounts `/opt/monitoring/promtail.yml`
+unconditionally, but renders that file only `when: loki_push_url is defined`. The variable
+lives in `ansible/group_vars/all.yml`, which is never loaded: the runner writes its inventory
+to a temporary file elsewhere, and `provision_software.yml` loads only `provision_vars.yml`
+explicitly. With the variable undefined the template step is skipped, Docker then creates
+`/opt/monitoring/promtail.yml` as a *directory*, and promtail restarts forever with
+`Unable to parse config: ... is a directory`.
+
+Until the role is fixed, check promtail after a baseline run. `node_exporter` and `cadvisor`
+are unaffected, so server metrics keep flowing. On `vps-273978` promtail was stopped and the
+stray directory removed on 2026-07-27; the host has no orchestrator-deployed containers to
+scrape, so nothing is lost.
 
 ## GitHub Secrets
 
