@@ -129,7 +129,7 @@ def _bot_contract() -> dict:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "audience"),
-    [("only_me", "42"), ("public", ""), ("invite", "42"), ("custom", "42,84")],
+    [("only_me", "42"), ("public", ""), ("custom", "42,84")],
 )
 async def test_bot_access_modes_resolve_the_contract_audience(mode, audience):
     state = _state(_bot_contract())
@@ -263,7 +263,7 @@ async def test_legacy_admin_secret_rejects_a_conflicting_persisted_audience(_dec
 @patch(
     "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
 )
-async def test_legacy_admin_secret_requires_a_contract_that_can_preserve_private_access(_decrypt):
+async def test_legacy_admin_secret_does_not_require_the_new_contract_literal(_decrypt):
     entries = {
         "DEBUG": {
             "source": "literal",
@@ -273,12 +273,33 @@ async def test_legacy_admin_secret_requires_a_contract_that_can_preserve_private
         }
     }
 
-    with pytest.raises(
-        TypedSecretResolutionError, match="cannot preserve ADMIN_TELEGRAM_ID private access"
-    ) as error:
-        await SecretResolverNode().run(_state(entries, secrets={"ADMIN_TELEGRAM_ID": "encrypted"}))
+    result = await SecretResolverNode().run(
+        _state(entries, secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+    )
 
-    assert error.value.outcome == "environment_contract_invalid"
+    assert result["non_secret_values"]["DEBUG"] == "false"
+
+
+@pytest.mark.asyncio
+@patch(
+    "src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={"ADMIN_TELEGRAM_ID": "42"}
+)
+async def test_legacy_admin_secret_keeps_working_with_a_pre_contract_repository(_decrypt):
+    entries = {
+        "ADMIN_TELEGRAM_ID": {
+            "source": "user_secret",
+            "environments": ["production"],
+            "consumers": ["tg_bot"],
+            "required": True,
+            "description": "Legacy bot owner",
+        }
+    }
+
+    result = await SecretResolverNode().run(
+        _state(entries, secrets={"ADMIN_TELEGRAM_ID": "encrypted"})
+    )
+
+    assert result["secret_values"]["ADMIN_TELEGRAM_ID"] == "42"
 
 
 @pytest.mark.asyncio

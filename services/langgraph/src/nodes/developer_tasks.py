@@ -78,6 +78,33 @@ def format_env_hints(project_spec: dict) -> str:
     return "\n".join(lines)
 
 
+def format_bot_access_requirements(project_spec: dict) -> str:
+    """Describe application access work that sits above the template audience."""
+    config = project_spec.get("config") or {}
+    bot_access = config.get("bot_access")
+    if not isinstance(bot_access, dict):
+        return ""
+
+    mode = bot_access.get("mode")
+    audience = bot_access.get("allowed_telegram_ids")
+    if not isinstance(audience, str):
+        return ""
+
+    baseline = (
+        "The deployment contract already sets "
+        f"`TG_BOT_ALLOWED_TELEGRAM_IDS` to `{audience}`. Keep that contract audience "
+        "as the outer access boundary; do not replace it with application configuration."
+    )
+    if mode == "custom":
+        return (
+            "\n## Custom Bot Access\n\n"
+            f"{baseline}\n\n"
+            "Implement the product-specific access rules from the story above the contract "
+            "baseline, with any management state and owner controls those rules need.\n"
+        )
+    return ""
+
+
 def build_create_task(
     project_name: str,
     description: str,
@@ -104,6 +131,7 @@ def build_create_task(
         )
 
     env_hints_section = format_env_hints(project_spec)
+    bot_access_section = format_bot_access_requirements(project_spec)
 
     detailed_spec = project_spec.get("detailed_spec") or feature_description or "N/A"
 
@@ -117,7 +145,7 @@ def build_create_task(
 
 **Detailed Spec**:
 {detailed_spec}
-{env_hints_section}
+{env_hints_section}{bot_access_section}
 ## Project Structure (already scaffolded)
 
 The project was scaffolded with `copier` from `service-template`.
@@ -149,6 +177,7 @@ def build_feature_task(
     task_description = feature_description or description or "No description provided"
     modules_str = ", ".join(modules)
     env_hints_section = format_env_hints(project_spec)
+    bot_access_section = format_bot_access_requirements(project_spec)
 
     return f"""# Task: {action_label} in {project_name}
 
@@ -161,7 +190,7 @@ def build_feature_task(
 **Name**: {project_name}
 **Description**: {description}
 **Modules**: {modules_str}
-{env_hints_section}
+{env_hints_section}{bot_access_section}
 ## Important
 
 - This is an **existing, working project** — do NOT regenerate or restructure it

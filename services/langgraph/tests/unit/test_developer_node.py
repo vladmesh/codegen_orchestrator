@@ -609,8 +609,8 @@ class TestTaskMessageDescription:
         )
         assert "Provided Environment Variables" not in task_md
 
-    def test_invite_access_does_not_make_the_worker_promise_a_template_extension(self):
-        """The pinned template rejects invitees before application handlers run."""
+    def test_custom_access_tells_the_worker_to_keep_its_rules_above_the_contract(self):
+        """Custom policy must not replace the template's configured audience."""
         from src.nodes.developer import DeveloperNode
 
         task_md = DeveloperNode()._build_create_task(
@@ -619,12 +619,14 @@ class TestTaskMessageDescription:
             modules=["backend", "tg_bot"],
             project_spec={
                 "config": {
-                    "bot_access": {"mode": "invite", "allowed_telegram_ids": "42"},
+                    "bot_access": {"mode": "custom", "allowed_telegram_ids": "42,84"},
                 },
             },
         )
 
-        assert "Invitation Access Layer" not in task_md
+        assert "Custom Bot Access" in task_md
+        assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in task_md
+        assert "42,84" in task_md
 
     def test_feature_task_includes_env_hints(self):
         """_build_feature_task should include env_hints section when hints exist."""

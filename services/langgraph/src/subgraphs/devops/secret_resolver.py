@@ -177,7 +177,7 @@ class SecretResolverNode(FunctionalNode):
         overrides = {**configured, **message}
         has_legacy_audience = _LEGACY_BOT_AUDIENCE_KEY in config_secrets
         legacy_audience = config_secrets.get(_LEGACY_BOT_AUDIENCE_KEY)
-        if has_legacy_audience:
+        if has_legacy_audience and _BOT_AUDIENCE_KEY in contract.entries:
             if not isinstance(legacy_audience, str) or not parse_allowed_telegram_ids(
                 legacy_audience
             ):
@@ -189,12 +189,6 @@ class SecretResolverNode(FunctionalNode):
                 raise TypedSecretResolutionError(
                     DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
                     "deploy cannot override the legacy private bot audience",
-                )
-            if _BOT_AUDIENCE_KEY not in contract.entries:
-                raise TypedSecretResolutionError(
-                    DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
-                    "cannot preserve ADMIN_TELEGRAM_ID private access: the deployed "
-                    "repository must declare TG_BOT_ALLOWED_TELEGRAM_IDS before redeploy",
                 )
             if _BOT_AUDIENCE_KEY in overrides and overrides[_BOT_AUDIENCE_KEY] != legacy_audience:
                 raise TypedSecretResolutionError(
@@ -219,7 +213,7 @@ class SecretResolverNode(FunctionalNode):
                 DeployOutcome.ENVIRONMENT_CONTRACT_INVALID, "bot_access must be a mapping"
             )
         mode = bot_access.get("mode")
-        if mode not in {"only_me", "public", "invite", "custom"}:
+        if mode not in {"only_me", "public", "custom"}:
             raise TypedSecretResolutionError(
                 DeployOutcome.ENVIRONMENT_CONTRACT_INVALID, "bot_access mode is invalid"
             )

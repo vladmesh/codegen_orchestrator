@@ -71,9 +71,12 @@ class TestSystemPrompt:
         assert "only me" in prompt_lower or "только мне" in prompt_lower
         assert "everyone" in prompt_lower or "всем" in prompt_lower
 
-    def test_does_not_advertise_invitations_before_the_template_can_admit_them(self):
-        assert "Admin + invitations" not in SYSTEM_PROMPT
-        assert "invitation layer" not in SYSTEM_PROMPT
+    def test_offers_the_supported_contract_access_modes(self):
+        assert "Only me" in SYSTEM_PROMPT
+        assert "Everyone" in SYSTEM_PROMPT
+        assert "Custom" in SYSTEM_PROMPT
+        assert "Me + invitations" not in SYSTEM_PROMPT
+        assert 'mode="invite"' not in SYSTEM_PROMPT
 
     def test_mentions_user_context(self):
         """Prompt should reference user context (user_id, user_name) from message prefix."""

@@ -556,6 +556,12 @@ async def set_bot_access(
         "mode": body.mode,
         "allowed_telegram_ids": body.allowed_telegram_ids,
     }
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+    if _LEGACY_BOT_AUDIENCE_KEY in existing_secrets:
+        del existing_secrets[_LEGACY_BOT_AUDIENCE_KEY]
+        config["secrets"] = encrypt_dict(existing_secrets) if existing_secrets else {}
+        logger.info("legacy_bot_access_replaced", project_id=str(project_id), mode=body.mode)
     project.config = config
     await db.commit()
 
@@ -659,6 +665,9 @@ async def delete_secret(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Secret key '{key}' not found",
         )
+
+    if key == _LEGACY_BOT_AUDIENCE_KEY:
+        raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
 
     del existing_secrets[key]
     config["secrets"] = encrypt_dict(existing_secrets) if existing_secrets else {}

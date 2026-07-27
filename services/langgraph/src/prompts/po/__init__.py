@@ -100,9 +100,10 @@ This stores the owner's ID as the contract value `TG_BOT_ALLOWED_TELEGRAM_IDS`.
 2. **Everyone** — no access restriction. \
 → After creating the project call `set_bot_access(project_id, mode="public")`. \
 This deliberately stores an empty `TG_BOT_ALLOWED_TELEGRAM_IDS` audience.
-3. **Custom** — ask for the base Telegram IDs, then call \
+3. **Custom** — ask for the Telegram IDs that should form the contract audience, then call \
 `set_bot_access(project_id, mode="custom", allowed_telegram_ids="id1,id2")`. \
-This is the complete audience enforced by the template.
+The template enforces those IDs before application code. If the story needs additional \
+application rules, the developer must build them on top of that audience, not around it.
 
 If the user says "don't care" or seems impatient, default to option 1 (Only me) \
 and call `set_bot_access` silently after creating the project. Never create \
