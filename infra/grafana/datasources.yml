@@ -2,9 +2,26 @@ apiVersion: 1
 
 datasources:
   - name: Loki
+    uid: loki
     type: loki
     access: proxy
     url: http://loki:3100
     isDefault: true
     jsonData:
       maxLines: 1000
+  - name: PostgreSQL
+    uid: postgres
+    type: postgres
+    access: proxy
+    url: db:5432
+    user: $GRAFANA_DB_USER
+    database: $POSTGRES_DB
+    isDefault: false
+    jsonData:
+      postgresVersion: 1600
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    secureJsonData:
+      password: $GRAFANA_DB_PASSWORD

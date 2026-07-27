@@ -2,6 +2,11 @@
 
 ## 2026-07-27
 
+- Grafana now provisions a read-only PostgreSQL datasource and repository-owned server-capacity
+  and run-operations dashboards. Server history panels were checked against 508 real snapshots;
+  run panels use an isolated disposable database because the live `runs` and `task_events` tables
+  are empty. The verification report records the query timings and seed coverage.
+
 - Provisioner playbooks now use the repository Ansible configuration without loading the removed
   `yaml` callback. This restores role resolution for both `deploy_target` during new-server
   provisioning and `monitoring` on existing servers.
