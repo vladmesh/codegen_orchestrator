@@ -19,7 +19,7 @@ Codegen Orchestrator — мультиагентная система для ав
 | **Кодогенерация** | service-template (Copier) |
 | **Инфраструктура** | `services/infra-service` (Ansible) |
 | **Хранение** | PostgreSQL + Redis |
-| **Observability** | Loki + Promtail + Grafana (logs) |
+| **Observability** | Loki + Promtail + Grafana (логи), node_exporter + cadvisor (железо), Postgres (прогоны) |
 
 ## Ключевые концепции
 
@@ -49,6 +49,22 @@ Codegen Orchestrator — мультиагентная система для ав
 - `git`, `github` — работа с репозиториями
 - `python`, `node` — runtime environments
 - Docker больше не предоставляется внутри контейнера (DinD удален). Инфраструктура поднимается через compose proxy (`curl localhost:9090/infra/compose`) — запрос проксируется worker-wrapper'ом в worker-manager.
+
+### Размещение проектов
+
+Сервер под проект выбирается не по паспортной ёмкости, а по худшему из двух сигналов: сумме
+заявленных резерваций (`applications.reserved_ram_mb`) и фактически занятой памяти из свежих метрик.
+К требованию проекта добавляется запас `ALLOCATION_RAM_RESERVE_MB`. Сервер, чьи метрики старше
+`ALLOCATION_METRICS_FRESHNESS_SECONDS`, считается неизвестным по загрузке и не выбирается: посторонняя
+нагрузка, не учтённая ни одной аллокацией, иначе осталась бы невидимой.
+
+Отказ несёт типизированную причину и не является аварией. Нехватка места паркует задачу в
+`waiting_resources` без расхода попыток на доведение кода, PO сообщает об этом владельцу проекта, а
+планировщик возобновляет работу, когда метрики покажут свободное место. Запрос, превышающий ёмкость
+любого сервера, эскалируется сразу. Подробнее: [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md).
+
+Само требование проекта пока остаётся константой: `estimated_ram_mb` никем не заполняется и берётся
+из значения по умолчанию.
 
 ## Сервисы
 
@@ -196,11 +212,38 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 
 ### Observability Stack
 
+Наблюдаемость собрана из трёх независимых потоков. Внешнего стека трассировки нет: Langfuse,
+ClickHouse и MinIO сняты как неработавшие, разметка осталась только в виде логов и данных в Postgres.
+
+**Логи.**
+
 ```
 Services (structlog JSON) → stdout → Docker → Promtail → Loki → Grafana
 ```
 
-- **Grafana**: Pre-provisioned "Service Logs" dashboard. Filter by service, level, `correlation_id`. Proxied via admin-frontend at `/grafana/`.
+Promtail поднят и на оркестраторе, и на провижиненных серверах; на серверах он собирает контейнеры
+с меткой `com.codegen.project_id`. Ретеншн Loki задан в `infra/loki.yml` (`retention_period`,
+компактор с `retention_enabled`).
+
+**Железо.**
+
+```
+node_exporter + cadvisor (порты 9100/8080, UFW открыт только оркестратору)
+  → scheduler/health_checker → servers.* и server_metrics_history
+```
+
+Роль `monitoring` ставит экспортеры при провижининге. Существующий сервер приводится к этой базовой
+линии отдельной операцией, см. [docs/DEPLOY.md](docs/DEPLOY.md). Свежесть метрик — значимая величина:
+по ней аллокатор решает, известна ли загрузка сервера.
+
+**Прогоны.** `runs` хранит не только статус и тайминги, но и меру усилий: потраченные токены,
+стоимость, профиль головы. Транскрипт агента сохраняется артефактом на диске со ссылкой из `runs`,
+с чисткой секретов и ограничением размера; путь и срок жизни задаются `WORKER_TRANSCRIPT_*`.
+
+**Панели.** Grafana провижинится из репозитория (`infra/grafana/`) с двумя датасорсами, Loki и
+Postgres (роль только на чтение), и тремя дашбордами: "Service Logs", "Server capacity",
+"Run operations". Проксируется через admin-frontend на `/grafana/`.
+
 - **LangSmith** (optional): `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY`.
 
 ### Логирование
