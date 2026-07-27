@@ -32,6 +32,9 @@ class QAMessage(BaseMessage):
     run_id: str = ""
     bot_username: str | None = None
     qa_attempt: int = 0
+    # Commit that produced the deployment under test. Private-bot QA redeploys
+    # this exact commit to grant and revoke its temporary identity.
+    head_sha: str = ""
 
 
 @dataclass(frozen=True)

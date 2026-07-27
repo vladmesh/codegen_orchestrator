@@ -554,6 +554,13 @@ async def _preflight_agent_qa(
     if not bot_username:
         return None
 
+    return await _probe_telegram_bot_access(conn, bot_username)
+
+
+async def _probe_telegram_bot_access(
+    conn: asyncssh.SSHClientConnection, bot_username: str
+) -> QABlocker | None:
+    """Send `/start` as the deterministic QA identity and retain its observed reply."""
     try:
         await _require_telethon_credentials(conn)
     except TelethonCredentialsError as exc:
@@ -626,6 +633,40 @@ async def _preflight_agent_qa(
             received=received,
         )
     return None
+
+
+async def verify_telegram_access_revoked(
+    *,
+    server_ip: str,
+    ssh_user: str,
+    ssh_key: str,
+    bot_username: str,
+) -> QABlocker:
+    """Actively prove that the temporary QA identity is denied after revocation."""
+    try:
+        async with asyncssh.connect(
+            server_ip,
+            username=ssh_user,
+            client_keys=[ssh_key],
+            known_hosts=None,
+        ) as conn:
+            result = await _probe_telegram_bot_access(conn, bot_username)
+    except Exception as exc:
+        return _unknown_result_blocker(
+            attempted="verify Telegram access is denied after revoking QA test access",
+            sent=f"Telegram /start to @{bot_username}",
+            received=f"revocation probe could not run: {exc}",
+        )
+
+    if result is not None and result.category == QABlockerCategory.TELEGRAM_ACCESS_DENIED:
+        return result
+    if result is not None:
+        return result
+    return _unknown_result_blocker(
+        attempted="verify Telegram access is denied after revoking QA test access",
+        sent=f"Telegram /start to @{bot_username}",
+        received="bot accepted the deterministic QA identity after revocation",
+    )
 
 
 async def run_qa_on_server(

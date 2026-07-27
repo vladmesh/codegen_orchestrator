@@ -350,7 +350,13 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             return live_work_unsettled({"status": "cancelled", "reason": "deploy_lock_held"})
 
         # Update task status to running
-        await api_client.patch(f"runs/{task_id}", json={"status": RunStatus.RUNNING.value})
+        await api_client.patch(
+            f"runs/{task_id}",
+            json={
+                "status": RunStatus.RUNNING.value,
+                "run_metadata": {"head_sha": msg.head_sha},
+            },
+        )
 
         # Publish progress event
         await publish_callback_event(

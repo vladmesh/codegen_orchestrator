@@ -560,7 +560,7 @@ async def supervise_deploying_stories(
 
         if outcome == DeployOutcome.SUCCESS:
             handed_off = await _handle_deploy_success_story(
-                api_client, redis_client, story_id, project_id, run.result, log
+                api_client, redis_client, story_id, project_id, run, run.result, log
             )
             if handed_off:
                 tested += 1
@@ -615,6 +615,7 @@ async def _handle_deploy_success_story(
     redis_client: RedisStreamClient,
     story_id: str,
     project_id: str,
+    run,
     result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
@@ -625,6 +626,7 @@ async def _handle_deploy_success_story(
     """
     deployed_url = result.deployed_url
     application_id = result.application_id
+    head_sha = _deploy_run_head_sha(run)
 
     # A QA handoff needs both the deployed URL and the application id. `application_id`
     # is legitimately optional on a DeployRunResult (a standalone deploy, or one where
@@ -634,7 +636,10 @@ async def _handle_deploy_success_story(
     if deployed_url is None or application_id is None:
         missing = ", ".join(
             name
-            for name, value in (("deployed_url", deployed_url), ("application_id", application_id))
+            for name, value in (
+                ("deployed_url", deployed_url),
+                ("application_id", application_id),
+            )
             if value is None
         )
         log.error("deploy_success_missing_handoff_fields", missing=missing)
@@ -671,6 +676,9 @@ async def _handle_deploy_success_story(
 
     # Create QA run so the consumer can store its outcome
     qa_run_id = f"qa-{uuid.uuid4().hex[:8]}"
+    qa_run_metadata = {"application_id": application_id}
+    if head_sha:
+        qa_run_metadata["head_sha"] = head_sha
     await api_client.create_run(
         {
             "id": qa_run_id,
@@ -678,7 +686,7 @@ async def _handle_deploy_success_story(
             "project_id": project_id,
             "story_id": story_id,
             "status": RunStatus.QUEUED.value,
-            "run_metadata": {"application_id": application_id},
+            "run_metadata": qa_run_metadata,
         }
     )
 
@@ -693,6 +701,7 @@ async def _handle_deploy_success_story(
             acceptance_criteria=acceptance_criteria,
             bot_username=bot_username,
             run_id=qa_run_id,
+            head_sha=head_sha or "",
         ),
     )
     log.info(

@@ -18,8 +18,14 @@
    behind. The Stage 5 compatibility harness was run against the candidate release before the pin
    moved, as the production template rule requires. Filling the audience from the PO access menu
    and driving the temporary identity around a QA run were tracked separately
-   (`codegen_orchestrator-826`, `codegen_orchestrator-744`). The audience menu is now implemented;
-   temporary-identity lifecycle remains in `codegen_orchestrator-744`.
+   (`codegen_orchestrator-826`, `codegen_orchestrator-744`).
+
+- Private-bot QA now deploys the deterministic QA Telegram identity on the exact commit under
+  test, waits for that deploy to finish, and always deploys the same commit again without the
+  override after QA. The final QA result retains grant/revocation run IDs, whether the application
+  is still in test mode and an active Telegram denial probe after revocation. A failed or timed-out
+  revocation remains visible as `in_test_mode`, blocks the verdict, and never gets inferred from a
+  deployment record alone. Service-deployment metadata records the active test-mode state.
 
 - Grafana now provisions a read-only PostgreSQL datasource and repository-owned server-capacity
   and run-operations dashboards. Server history panels were checked against 508 real snapshots;

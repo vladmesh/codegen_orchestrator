@@ -353,6 +353,9 @@ class DeployerNode(FunctionalNode):
                     "branch": "main",
                     "modules": modules,
                     "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
+                    "in_test_mode": bool(
+                        (state.get("env_overrides") or {}).get("TG_BOT_TEST_TELEGRAM_ID")
+                    ),
                 },
                 deployed_sha=run_info.get("head_sha"),
             )
@@ -399,6 +402,10 @@ class DeployerNode(FunctionalNode):
                         "repo_full_name": f"{owner}/{repo}",
                         "branch": "main",
                         "modules": modules,
+                        "env_overrides_digest": env_overrides_digest(state.get("env_overrides")),
+                        "in_test_mode": bool(
+                            (state.get("env_overrides") or {}).get("TG_BOT_TEST_TELEGRAM_ID")
+                        ),
                     },
                     deployed_sha=run_info.get("head_sha"),
                 )

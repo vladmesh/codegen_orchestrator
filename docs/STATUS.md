@@ -27,8 +27,8 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   can carry `env_overrides` for keys the contract declares as literals; the override digest is
   recorded with the deployment, so the same commit with a different environment is a different
   deploy and is not skipped. Filling the audience from the PO access menu is
-  `codegen_orchestrator-826`; issuing and revoking the temporary test identity around a QA run is
-  `codegen_orchestrator-744`.
+  `codegen_orchestrator-826`; `codegen_orchestrator-744` issues the temporary test identity before
+  private-bot QA, revokes it afterwards and records an active denial probe as the closing evidence.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

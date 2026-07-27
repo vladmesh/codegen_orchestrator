@@ -18,6 +18,7 @@ import respx
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QATestAccessLifecycle
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
@@ -275,6 +276,102 @@ class TestProcessQAJobPass:
         assert not hasattr(mock_api_client, "transition_story") or (
             not mock_api_client.transition_story.called
         )
+
+
+class TestPrivateBotTestAccess:
+    @pytest.fixture
+    def private_project(self) -> ProjectDTO:
+        return ProjectDTO(
+            id="116c9678-5872-4ce5-8332-9a267ab27604",
+            title="private_bot",
+            slug="private-bot-0000",
+            status=ProjectStatus.ACTIVE,
+            config={"bot_access": {"mode": "only_me", "allowed_telegram_ids": "12345"}},
+            owner_id=1,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+    @pytest.mark.asyncio
+    async def test_private_bot_grants_then_revokes_and_proves_denial(
+        self, mock_api_client, mock_redis, qa_message_data, private_project
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data.update({"bot_username": "private_bot", "head_sha": "a" * 40})
+        mock_api_client.get_project.return_value = private_project
+        granted = QATestAccessLifecycle(
+            in_test_mode=True, grant_run_id="grant-1", grant_succeeded=True
+        )
+        revoked = granted.model_copy(
+            update={"in_test_mode": False, "revoke_run_id": "revoke-1", "revoke_succeeded": True}
+        )
+        denied = QABlocker(
+            category=QABlockerCategory.TELEGRAM_ACCESS_DENIED,
+            attempted="send /start after revocation",
+            sent="Telegram /start to @private_bot",
+            received="access denied",
+        )
+        with (
+            patch("src.consumers.qa._resolve_server_info", new_callable=AsyncMock) as resolve,
+            patch("src.consumers.qa.grant_temporary_qa_access", new_callable=AsyncMock) as grant,
+            patch("src.consumers.qa.revoke_temporary_qa_access", new_callable=AsyncMock) as revoke,
+            patch(
+                "src.consumers.qa.verify_telegram_access_revoked", new_callable=AsyncMock
+            ) as verify,
+            patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as run,
+        ):
+            resolve.return_value = QAServerInfo("1.2.3.4", "dev", "key", "private-bot-0000")
+            grant.return_value = granted, None
+            revoke.return_value = revoked, None
+            verify.return_value = denied
+            run.return_value = QAResult(passed=True, summary="OK")
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        grant.assert_awaited_once()
+        revoke.assert_awaited_once()
+        verify.assert_awaited_once()
+        stored = mock_api_client.patch.call_args[1]["json"]["result"]["test_access"]
+        assert stored["in_test_mode"] is False
+        assert stored["revocation_verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_private_bot_failure_still_revokes_access(
+        self, mock_api_client, mock_redis, qa_message_data, private_project
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        qa_message_data.update({"bot_username": "private_bot", "head_sha": "a" * 40})
+        mock_api_client.get_project.return_value = private_project
+        granted = QATestAccessLifecycle(in_test_mode=True, grant_succeeded=True)
+        revoked = granted.model_copy(update={"in_test_mode": False, "revoke_succeeded": True})
+        denied = QABlocker(
+            category=QABlockerCategory.TELEGRAM_ACCESS_DENIED,
+            attempted="send /start after revocation",
+            sent="Telegram /start to @private_bot",
+            received="access denied",
+        )
+        with (
+            patch("src.consumers.qa._resolve_server_info", new_callable=AsyncMock) as resolve,
+            patch("src.consumers.qa.grant_temporary_qa_access", new_callable=AsyncMock) as grant,
+            patch("src.consumers.qa.revoke_temporary_qa_access", new_callable=AsyncMock) as revoke,
+            patch(
+                "src.consumers.qa.verify_telegram_access_revoked", new_callable=AsyncMock
+            ) as verify,
+            patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as run,
+        ):
+            resolve.return_value = QAServerInfo("1.2.3.4", "dev", "key", "private-bot-0000")
+            grant.return_value = granted, None
+            revoke.return_value = revoked, None
+            verify.return_value = denied
+            run.return_value = QAResult(
+                passed=False, checks=[{"name": "start", "pass": False, "detail": "bad"}]
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_failed"
+        revoke.assert_awaited_once()
 
 
 class TestProcessQAJobFail:

@@ -151,6 +151,20 @@ class QAStateChange(BaseModel):
     cleanup: QAStateChangeCleanup
 
 
+class QATestAccessLifecycle(BaseModel):
+    """Evidence for the temporary private-bot access granted to QA."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    in_test_mode: bool
+    grant_run_id: str | None = None
+    revoke_run_id: str | None = None
+    grant_succeeded: bool = False
+    revoke_succeeded: bool = False
+    revocation_verified: bool = False
+    revocation_detail: str | None = None
+
+
 class QARunResult(BaseModel):
     """Result of a QA run (written by the QA consumer)."""
 
@@ -165,6 +179,7 @@ class QARunResult(BaseModel):
     error: str | None = None
     blocker: QABlocker | None = None
     state_changes: list[QAStateChange] = Field(default_factory=list)
+    test_access: QATestAccessLifecycle | None = None
 
     @model_validator(mode="after")
     def _outcome_matches_state_traces(self) -> QARunResult:

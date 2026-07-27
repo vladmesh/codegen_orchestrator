@@ -13,7 +13,12 @@ import structlog
 
 from shared.contracts.acceptance import parse_health_only_criteria
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
+from shared.contracts.dto.run_result import (
+    QABlocker,
+    QABlockerCategory,
+    QAFailedCheck,
+    QARunResult,
+)
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -28,6 +33,12 @@ from ._qa_runner import (
     credential_refresh_loop,
     run_health_checks,
     run_qa_on_server,
+    verify_telegram_access_revoked,
+)
+from ._qa_test_access import (
+    grant_temporary_qa_access,
+    needs_temporary_qa_access,
+    revoke_temporary_qa_access,
 )
 
 logger = structlog.get_logger(__name__)
@@ -109,6 +120,15 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         acceptance_criteria = msg.acceptance_criteria
         health_checks = parse_health_only_criteria(acceptance_criteria)
 
+        project = await api_client.get_project(msg.project_id)
+        if needs_temporary_qa_access(project):
+            return await _process_private_bot_qa(
+                msg=msg,
+                redis=redis,
+                project_name=project_runtime_slug(project),
+                health_checks=health_checks,
+            )
+
         blocker = await check_deployed_url_reachable(msg.deployed_url)
         if blocker:
             return await _handle_qa_blocked(run_id=run_id, blocker=blocker)
@@ -118,7 +138,6 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         # an HTTP check must not fail over an SSH key it never reads.
         server_info = None
         if health_checks is None:
-            project = await api_client.get_project(msg.project_id)
             project_name = project_runtime_slug(project)
             server_info = await _resolve_server_info(msg.application_id, project_name)
             if not server_info:
@@ -251,12 +270,141 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         await redis.redis.delete(inflight_key)
 
 
+async def _process_private_bot_qa(
+    *,
+    msg: QAMessage,
+    redis: RedisStreamClient,
+    project_name: str,
+    health_checks,
+) -> dict:
+    """Run private-bot QA with an access grant and unconditional verified revocation."""
+    run_id = msg.run_id
+    if not run_id or not msg.head_sha or not msg.bot_username:
+        missing = ", ".join(
+            name
+            for name, value in (
+                ("run_id", run_id),
+                ("head_sha", msg.head_sha),
+                ("bot_username", msg.bot_username),
+            )
+            if not value
+        )
+        return await _handle_qa_blocked(
+            run_id=run_id,
+            blocker=QABlocker(
+                category=QABlockerCategory.UNKNOWN,
+                attempted="prepare temporary private-bot QA access",
+                sent="QAMessage private bot access fields",
+                received=f"missing {missing}",
+            ),
+        )
+
+    server_info = await _resolve_server_info(msg.application_id, project_name)
+    if not server_info:
+        return await _handle_qa_blocked(
+            run_id=run_id,
+            blocker=QABlocker(
+                category=QABlockerCategory.SERVER_UNAVAILABLE,
+                attempted="resolve server for temporary private-bot QA access",
+                sent=f"application_id={msg.application_id}",
+                received="cannot connect to the QA server for the required revocation probe",
+            ),
+        )
+
+    await api_client.patch(f"runs/{run_id}", json={"status": RunStatus.RUNNING.value})
+    lifecycle, terminal_blocker = await grant_temporary_qa_access(
+        parent_run_id=run_id,
+        project_id=msg.project_id,
+        application_id=msg.application_id,
+        head_sha=msg.head_sha,
+        redis=redis,
+    )
+    qa_result: QAResult | None = None
+    try:
+        if terminal_blocker is None:
+            reachability_blocker = await check_deployed_url_reachable(msg.deployed_url)
+            if reachability_blocker:
+                terminal_blocker = reachability_blocker
+            elif health_checks is not None:
+                qa_result = await run_health_checks(
+                    deployed_url=msg.deployed_url, checks=health_checks
+                )
+            else:
+                qa_result = await run_qa_on_server(
+                    server_ip=server_info.server_ip,
+                    ssh_user=server_info.ssh_user,
+                    ssh_key=server_info.ssh_key,
+                    project_name=project_name,
+                    acceptance_criteria=msg.acceptance_criteria,
+                    deployed_url=msg.deployed_url,
+                    bot_username=msg.bot_username,
+                )
+                if qa_result.blocker:
+                    terminal_blocker = qa_result.blocker
+    except Exception as exc:
+        logger.exception("private_bot_qa_failed", run_id=run_id)
+        terminal_blocker = QABlocker(
+            category=QABlockerCategory.UNKNOWN,
+            attempted="run private-bot QA",
+            sent=f"QAMessage run_id={run_id}",
+            received=f"unexpected error: {exc}",
+        )
+    finally:
+        lifecycle, revoke_blocker = await revoke_temporary_qa_access(
+            lifecycle=lifecycle,
+            parent_run_id=run_id,
+            project_id=msg.project_id,
+            application_id=msg.application_id,
+            head_sha=msg.head_sha,
+            redis=redis,
+        )
+        if revoke_blocker is not None:
+            terminal_blocker = revoke_blocker
+        elif lifecycle.revoke_succeeded:
+            probe = await verify_telegram_access_revoked(
+                server_ip=server_info.server_ip,
+                ssh_user=server_info.ssh_user,
+                ssh_key=server_info.ssh_key,
+                bot_username=msg.bot_username,
+            )
+            verified = probe.category == QABlockerCategory.TELEGRAM_ACCESS_DENIED
+            lifecycle = lifecycle.model_copy(
+                update={"revocation_verified": verified, "revocation_detail": probe.received}
+            )
+            if not verified:
+                terminal_blocker = probe
+
+    if terminal_blocker is not None:
+        return await _handle_qa_blocked(
+            run_id=run_id,
+            blocker=terminal_blocker,
+            state_changes=(qa_result.state_changes if qa_result else []),
+            test_access=lifecycle,
+        )
+    assert qa_result is not None
+    if qa_result.passed:
+        return await _handle_qa_pass(
+            run_id=run_id,
+            deployed_url=msg.deployed_url,
+            report=qa_result.report,
+            state_changes=qa_result.state_changes,
+            test_access=lifecycle,
+        )
+    return await _handle_qa_fail(
+        run_id=run_id,
+        qa_attempt=msg.qa_attempt,
+        qa_result=qa_result,
+        test_access=lifecycle,
+    )
+
+
 async def _handle_qa_pass(
     *,
     run_id: str,
     deployed_url: str,
     report: str = "",
     state_changes: list[dict] | None = None,
+    test_access=None,
 ) -> dict:
     """Handle QA pass — store PASSED outcome in run."""
     await _update_run(
@@ -266,6 +414,7 @@ async def _handle_qa_pass(
         deployed_url=deployed_url,
         report=report,
         state_changes=state_changes or [],
+        test_access=test_access,
     )
     logger.info("qa_passed", run_id=run_id)
     return live_work_settled({"status": "passed"})
@@ -276,6 +425,7 @@ async def _handle_qa_blocked(
     run_id: str,
     blocker: QABlocker,
     state_changes: list[dict] | None = None,
+    test_access=None,
 ) -> dict:
     """Persist a non-product QA blocker for human review."""
     await _update_run(
@@ -285,6 +435,7 @@ async def _handle_qa_blocked(
         summary="QA could not verify the product",
         blocker=blocker,
         state_changes=state_changes or [],
+        test_access=test_access,
     )
     logger.warning("qa_blocked", run_id=run_id, category=blocker.category.value)
     return live_work_settled({"status": "qa_blocked", "blocker": blocker.category.value})
@@ -295,6 +446,7 @@ async def _handle_qa_fail(
     run_id: str,
     qa_attempt: int,
     qa_result: QAResult,
+    test_access=None,
 ) -> dict:
     """Handle QA fail — store FAILED or EXHAUSTED outcome in run."""
     failed_checks = [
@@ -319,6 +471,7 @@ async def _handle_qa_fail(
             qa_attempt=qa_attempt,
             report=qa_result.report,
             state_changes=qa_result.state_changes,
+            test_access=test_access,
         )
         return live_work_settled({"status": "qa_exhausted"})
 
@@ -331,6 +484,7 @@ async def _handle_qa_fail(
         qa_attempt=qa_attempt,
         report=qa_result.report,
         state_changes=qa_result.state_changes,
+        test_access=test_access,
     )
 
     logger.info(
