@@ -153,13 +153,13 @@ A node of a LangGraph graph. A function or class that processes State.
 - LLM node — uses an LLM to make decisions
 - Tool executor — performs Tool calls
 
-**Examples:** `DeveloperNode`, `DeployerNode`, `TesterNode`
+**Examples:** `DeveloperNode`, `DeployerNode`, `SmokeTester`
 
 ### Subgraph
 A group of related Nodes that carry out a certain stage of work.
 
 **Examples:**
-- Engineering Subgraph — Developer → Tester
+- Engineering Subgraph — Developer → done | blocked
 - DevOps Subgraph — EnvironmentContractLoader → SecretResolver → ReadinessCheck → Deployer (triggers GitHub Actions)
 
 ### Tool

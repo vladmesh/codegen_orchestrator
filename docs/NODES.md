@@ -52,8 +52,8 @@ project and freeing the token.
 **Role**: writing the business logic in an already scaffolded project.
 
 **When it is called**:
-- The first stage of the Engineering Subgraph
-- On rework from the Tester (up to 3 iterations)
+- The only working stage of the Engineering Subgraph
+- On a red CI gate, through `_wait_for_ci_and_fix` in `engineering_worker.py`
 
 **Implementation**:
 1. The Scaffolder service (a separate microservice) runs the scaffold phase: copier + make setup + git push, saves the tree + specs_summary to the DB, sets `project.status = active`
@@ -75,26 +75,18 @@ project and freeing the token.
 
 To resume: `POST /tasks/{id}/resume` (the admin gives guidance, task WHR → IN_DEV).
 
-**Output**: code in the repository → Tester | Or `GAVE_UP` → the WHR flow
+**Output**: code in the repository, pushed to the story branch | Or `GAVE_UP` → the WHR flow
 
 ---
 
-## 🧪 Tester (Engineering Subgraph)
+## 🧪 Tester — removed
 
-**Role**: running tests, checking code quality.
+There is no Tester node. The Engineering Subgraph is `START → developer → done | blocked`.
 
-**When it is called**:
-- After the Developer
-- The final stage of the Engineering Subgraph
-
-**Actions**:
-- Running `make test`, `make lint`
-- Checking health endpoints (if deployed)
-
-**Output**:
-- `test_results` with passed/failed/skipped
-- On failure → back to the Developer (max 3 iterations)
-- On success → `EngineeringStatus.DONE` → DevOps
+Testing happens in two places instead. The Developer runs `make test` and `make lint` inside its own
+worker before reporting a result, and CI runs on the pushed branch afterwards, where
+`_wait_for_ci_and_fix` in `engineering_worker.py` handles a red gate. A future tester would sit
+after deploy, validating a running service rather than a working tree.
 
 ---
 
@@ -237,7 +229,7 @@ PO ReactAgent (in langgraph container)
      │                     │
      │                     ▼
      │               Developer node → worker-manager
-     │               → agent writes code → Tester
+     │               → agent writes code → CI gate
      │                                     │
      ├──────────────▶ trigger_deploy ◄─────┘
      │                     │
