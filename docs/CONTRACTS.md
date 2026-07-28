@@ -111,6 +111,7 @@ cannot poison-loop the reclaim.
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
 | `provisioner:queue` | `infrastructure-workers` | ProvisionerMessage | scheduler | infra-service | Provision server |
+| `env-observation:queue` | `infrastructure-workers` | EnvObservationRequest | scheduler | infra-service | Read a deployed service's environment |
 | `provisioner:results` | `scheduler-consumers` | ProvisionerResult | infra-service | scheduler | Provisioning result |
 | `provisioner:results` | `telegram-bot` | ProvisionerResult | infra-service | telegram-bot | Provisioning notifications |
 
@@ -348,6 +349,7 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 | 9 | Architect Consumer | `langgraph/src/consumers/architect.py` | `architect:queue` | manual | `claim_pending` | `model_validate` |
 | 10 | Scaffolder | `scaffolder/src/consumer.py` | `scaffold:queue` | manual | `claim_pending` | `model_validate` |
 | 11 | QA Consumer | `langgraph/src/consumers/qa.py` | `qa:queue` | manual | `claim_pending` | `model_validate` |
+| 12 | Env Observer | `infra-service/src/main.py` | `env-observation:queue` | manual | `claim_pending` | `consume_typed` |
 
 ---
 
@@ -1063,6 +1065,31 @@ a terminal run that has none is not a second outcome: a cancelled run is marked 
 cancelled it, and the worker that owned it records what it did afterwards, which is what settles
 `already_dispatched` above.
 
+### Temporary access: the boundary of the guarantee
+
+The promise about a test identity's access is not "the access can never come back". It cannot be:
+between the decision and the effect stands GitHub Actions, which this system does not own and
+which works asynchronously, so no amount of stopping writers here proves that none of them will
+apply the old value afterwards. The promise is that **the access does not outlive one
+reconciliation interval after the verdict.**
+
+What that rests on: `revoked` is written only after the environment of the running service has been
+read back through `env-observation:queue` and no longer carries the value. Until that reading has
+been made the grant stays live in `revoking`, the sweep keeps revoking, and the operation is
+idempotent. A writer that applies the old value late — a superseded worker's dispatch that GitHub
+accepted anyway, or a hand-run deploy — is then simply a disagreement between what was asked for
+and what is observed, and the next cycle sees it and corrects it. A reading that could not be taken
+settles nothing either way: the grant stays live, and the sweep asks again.
+
+Cancelling runs on Actions, withdrawing a queued dispatch and superseding a dead claim all remain.
+None of them is proof that the access is gone; they shorten the window in which the old value can
+be written back. What says it is gone is the reading.
+
+A disagreement that outlives `supervisor.temporary_access_unrevoked_ttl_minutes` or
+`supervisor.temporary_access_max_revoke_attempts` stops being an internal retry: the QA run fails
+with `qa_cleanup_failed` naming the observed state, and the story goes to a human rather than
+waiting in TESTING.
+
 ### QA handoff plan
 
 `shared/contracts/dto/qa_handoff.py`. What a successful deploy still owes QA, written into the QA
@@ -1436,6 +1463,57 @@ class ProvisionerResult(BaseResult):
     services_redeployed: int = 0
     errors: list[str] | None = None
 ```
+
+---
+
+## EnvObservationRequest
+
+**Queue:** `env-observation:queue`
+**Initiator:** scheduler (the temporary-access sweep)
+**Consumer:** infra-service
+
+A deploy is a request handed to GitHub Actions, not an effect. Whoever has to know that a value is
+gone from the running service asks for it to be read where the SSH key and the playbooks already
+are. The reading changes nothing, so repeating it is free.
+
+```python
+# shared/contracts/queues/env_observation.py
+
+class EnvObservationRequest(BaseMessage):
+    """Read one environment slot of one deployed service."""
+    project_id: str
+    server_handle: str      # where the service runs
+    service_slug: str       # the directory the deploy put it under
+    env_key: str
+
+
+class EnvObservationOutcome(StrEnum):
+    OBSERVED = "observed"
+    # SSH down, playbook failed, nothing running to read. Neither a success nor
+    # a failure of whatever the caller wanted to confirm.
+    UNREACHABLE = "unreachable"
+
+
+class EnvObservationResult(BaseModel):
+    """What the running service has, or why it could not be asked."""
+    request_id: str
+    outcome: EnvObservationOutcome
+    env_key: str
+    present: bool | None = None   # None when nothing was read
+    containers: int = 0
+    detail: str = ""
+```
+
+The answer does not travel on a queue: `observe_service_env` runs
+`ansible/playbooks/observe_service_env.yml`, which reads the slot out of the running containers
+(not the `.env` file next to them), and the result is left in Redis under
+`env_observation_result_key(request_id)` for `ENV_OBSERVATION_RESULT_TTL_SECONDS`. The caller is a
+sweep that will be on a later tick, or in a later process, by the time the playbook is done.
+`env_observation_pending_key(request_id)` is set with an expiry before publishing so one question
+is asked per window rather than one per tick.
+
+`UNREACHABLE` is not a third answer about the slot. It says the reading did not happen, and callers
+must treat it as the absence of an answer: not a confirmation, not a failure.
 
 ---
 

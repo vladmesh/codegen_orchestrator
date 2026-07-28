@@ -38,7 +38,8 @@
   `DeployMessage.fence_active_deploys`: it skips the redundant-deploy shortcut and, through the
   new `GitHubAppClient.fence_workflow`, cancels every unfinished `deploy.yml` run and proves it
   terminal, so the abandoned grant deploy it replaces cannot land afterwards; a stop that cannot
-  be proven refuses the deploy rather than recording the access as removed. The QA runner's Telegram `/start` probe moved to `shared/telegram_access_probe.py`, and
+  be proven refuses the deploy rather than recording the access as removed. The QA runner's
+  Telegram `/start` probe moved to `shared/telegram_access_probe.py`, and
   `tests/live/test_bot_access_revocation.py` drives a real grant on a deployed bot, kills the QA
   run mid-flight, and requires that same probe to observe the bot refusing the QA account after
   the sweep revokes.
@@ -131,6 +132,27 @@
   is on Actions and the fence stops it, and one created afterwards — a worker resuming past its
   lease included — can only read the cleared one. The lease keeps a dead claim from being waited
   on for good, which is all it was ever able to promise.
+
+  What finally closes a grant changed with them, and so did what the system promises. Stopping
+  every writer we own is not a criterion we can meet, so the criterion is now that the observed
+  state matches the wanted one. `revoked` is written only after the environment of the running
+  service has been read back and no longer carries the value; until then the grant stays live in
+  `revoking` and the sweep keeps revoking, which is idempotent. The reading goes to `infra-service`
+  over the SSH path and the playbooks it already has: `EnvObservationRequest` on the new
+  `env-observation:queue`, `ansible/playbooks/observe_service_env.yml` reading the slot out of the
+  running containers rather than out of the `.env` file next to them, and the answer left in Redis
+  under the request id for the sweep to pick up on a later tick. One question per revoke attempt,
+  asked once per `supervisor.temporary_access_observation_window_minutes`. A reading that could not
+  be taken — SSH down, playbook failed, nothing running to read — is neither a success nor a
+  failure: the grant stays live and the sweep asks again, and past
+  `supervisor.temporary_access_unrevoked_ttl_minutes` an unreadable server is reported to admins
+  once. A value that shows up on the server behind the sweep's back is a disagreement the next
+  cycle sees and revokes again; one that outlives the same TTL or
+  `supervisor.temporary_access_max_revoke_attempts` fails the QA run with `qa_cleanup_failed`
+  naming what is being observed, so the story goes to a human instead of waiting in TESTING. The
+  promise is therefore no longer "the access can never come back" but "the access does not outlive
+  one reconciliation interval after the verdict", and the fence, the withdrawal and the supersede
+  are what shorten that window rather than what proves it closed.
 
   And the run outcome rule was still last-writer-wins: `PATCH /api/runs/{id}` read the row without
   a lock and decided from that stale copy, as did the cleanup escalation. A QA worker's `passed`

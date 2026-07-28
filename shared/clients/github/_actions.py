@@ -341,18 +341,24 @@ class ActionsMixin:
         timeout_seconds: int = 300,
         poll_interval: int = 5,
     ) -> list[int]:
-        """Prove that no run of *workflow_file* can still act, and return the ones stopped.
+        """Stop every run of *workflow_file* that exists now, and return the ones stopped.
 
-        A deploy whose whole point is to take an effect away has to know that
-        nothing older is about to put it back. Every unfinished run is cancelled
+        A deploy whose whole point is to take an effect away shortens the time in
+        which something older can put it back. Every unfinished run is cancelled
         and then watched until GitHub reports it terminal; a run that finished on
         its own while being watched is terminal too, and equally unable to write
         anything after this returns.
 
+        This covers the runs that were listable when it ran, which is not the
+        same as no run ever writing the old value again: a dispatch already on its
+        way to GitHub is accepted afterwards and this cannot see it. A caller that
+        needs a value gone confirms that by reading the deployed service and
+        repeating itself; this only makes the wait shorter.
+
         Raises:
             WorkflowCancellationUnprovenError: at least one run could not be
                 proven terminal, so the caller must not treat its own effect as
-                the last word.
+                even the newest one.
         """
         try:
             active = await self.list_unfinished_workflow_runs(owner, repo, workflow_file)

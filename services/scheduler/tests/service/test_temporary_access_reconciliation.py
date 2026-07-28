@@ -26,8 +26,13 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantCreate,
     TemporaryAccessStatus,
 )
+from shared.contracts.queues.env_observation import (
+    EnvObservationOutcome,
+    EnvObservationResult,
+    env_observation_result_key,
+)
 from shared.contracts.queues.qa import QAMessage, QAOutcome
-from shared.queues import DEPLOY_QUEUE
+from shared.queues import DEPLOY_QUEUE, ENV_OBSERVATION_QUEUE
 
 HEAD_SHA = "c" * 40
 ENV_KEY = "TG_BOT_TEST_TELEGRAM_ID"
@@ -64,6 +69,25 @@ async def config(api_client):
     startup.config = previous
 
 
+class _Keys:
+    """The little bit of Redis the sweep carries its question and answer in."""
+
+    def __init__(self):
+        self.values: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str, *, nx: bool = False, ex: int | None = None):
+        if nx and key in self.values:
+            return None
+        self.values[key] = value
+        return True
+
+    async def delete(self, *keys: str) -> int:
+        return sum(self.values.pop(key, None) is not None for key in keys)
+
+
 @pytest.fixture
 def redis_client():
     """Collects what the sweep publishes without needing a broker."""
@@ -71,6 +95,7 @@ def redis_client():
     class _Collector:
         def __init__(self):
             self.published: list[tuple[str, object]] = []
+            self.redis = _Keys()
 
         async def publish_message(self, queue, message):
             self.published.append((queue, message))
@@ -82,6 +107,17 @@ def redis_client():
             return [
                 m for q, m in self.published if q == DEPLOY_QUEUE and m.project_id == project_id
             ]
+
+        def observations(self, project_id: str):
+            return [
+                m
+                for q, m in self.published
+                if q == ENV_OBSERVATION_QUEUE and m.project_id == project_id
+            ]
+
+        def answer(self, request_id: str, result: EnvObservationResult) -> None:
+            """Leave the answer the reader on the server would have left."""
+            self.redis.values[env_observation_result_key(request_id)] = result.model_dump_json()
 
     return _Collector()
 
@@ -243,6 +279,133 @@ async def test_a_claim_inside_its_lease_is_waited_for(api_client, redis_client, 
     assert redis_client.deploys(project_id) == []
     held = await api_client.get_live_temporary_access_grant_for_run(qa_run_id)
     assert held.status is TemporaryAccessStatus.GRANTING
+
+
+@pytest.mark.asyncio
+async def test_a_successful_revoke_deploy_is_not_yet_a_revocation(api_client, redis_client, config):
+    """The deploy reported success and nothing has been read, so nothing is settled.
+
+    This is the whole change of criterion, seen against a real record: the grant
+    stays live in REVOKING and the sweep asks the server what the service is
+    actually running with.
+    """
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    project_id = await _deployed_project(api_client)
+    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id)
+
+    await supervise_temporary_access(api_client, redis_client)
+
+    held = await api_client.get_live_temporary_access_grant_for_run(qa_run_id)
+    assert held is not None
+    assert held.status is TemporaryAccessStatus.REVOKING
+
+    asked = redis_client.observations(project_id)
+    assert [request.request_id for request in asked] == [f"envobs-{revoke_run_id}"]
+    assert asked[0].env_key == ENV_KEY
+
+
+@pytest.mark.asyncio
+async def test_a_reading_that_still_shows_the_value_reaches_a_human(
+    api_client, redis_client, config
+):
+    """A disagreement past the grant's lifetime is an outcome, not another retry.
+
+    A value on the server after a revoke that succeeded is the same thing as a
+    late writer putting it back. Here it has outlived what the config allows, so
+    the QA run says what is being observed and the story stops waiting.
+    """
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    project_id = await _deployed_project(api_client)
+    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id)
+    redis_client.answer(f"envobs-{revoke_run_id}", _observed(revoke_run_id, present=True))
+
+    with patch("src.tasks.temporary_access.notify_admins_best_effort", AsyncMock()):
+        await supervise_temporary_access(api_client, redis_client)
+
+    run = await api_client.get_run(qa_run_id)
+    assert run.status is RunStatus.FAILED
+    assert run.result.blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
+    assert ENV_KEY in run.result.blocker.received
+
+    still_out = await api_client.get_live_temporary_access_grant_for_run(qa_run_id)
+    assert still_out is not None, "an observed value must not leave the grant settled"
+    assert still_out.escalated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_only_a_reading_that_comes_back_empty_closes_the_grant(
+    api_client, redis_client, config
+):
+    """The one way to REVOKED: the environment of the running service says so."""
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    project_id = await _deployed_project(api_client)
+    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id)
+    redis_client.answer(f"envobs-{revoke_run_id}", _observed(revoke_run_id, present=False))
+
+    await supervise_temporary_access(api_client, redis_client)
+
+    assert await api_client.get_live_temporary_access_grant_for_run(qa_run_id) is None
+    settled = await api_client._request("GET", f"temporary-access-grants/tempaccess-{qa_run_id}")
+    assert settled.json()["status"] == TemporaryAccessStatus.REVOKED.value
+
+
+def _observed(revoke_run_id: str, *, present: bool) -> EnvObservationResult:
+    return EnvObservationResult(
+        request_id=f"envobs-{revoke_run_id}",
+        outcome=EnvObservationOutcome.OBSERVED,
+        env_key=ENV_KEY,
+        present=present,
+        containers=2,
+    )
+
+
+async def _deployed_project(api_client) -> str:
+    """A project with something running, which is what can be read back."""
+    project_id = await _project(api_client)
+    handle = f"vps-{uuid.uuid4().hex[:8]}"
+    await api_client._request(
+        "POST",
+        "servers/",
+        json={"handle": handle, "host": f"{handle}.example.com", "public_ip": "10.9.9.9"},
+    )
+    repo = await api_client._request(
+        "POST",
+        "repositories/",
+        json={
+            "project_id": project_id,
+            "name": f"repo-{project_id[:8]}",
+            "git_url": f"https://github.com/test-org/repo-{project_id[:8]}.git",
+        },
+    )
+    await api_client._request(
+        "POST",
+        "applications/",
+        json={
+            "repo_id": repo.json()["id"],
+            "server_handle": handle,
+            "service_name": "temporary-access-bot",
+            "status": "running",
+        },
+    )
+    return project_id
+
+
+async def _grant_being_revoked(api_client, project_id: str) -> tuple[str, str]:
+    """A grant whose revoke deploy is done and reported success."""
+    qa_run_id = await _run(api_client, project_id, f"qa-{uuid.uuid4().hex[:8]}", "qa")
+    revoke_run_id = await _run(
+        api_client, project_id, f"deploy-revoke-{uuid.uuid4().hex[:8]}", "deploy"
+    )
+    grant = await _grant(api_client, project_id, qa_run_id, f"deploy-grant-{uuid.uuid4().hex[:8]}")
+    await api_client.update_run(
+        revoke_run_id,
+        {"status": RunStatus.COMPLETED.value, "result": {"deploy_outcome": "success"}},
+    )
+    await api_client.update_temporary_access_grant(grant.id, _revoking(revoke_run_id, attempts=1))
+    return qa_run_id, revoke_run_id
 
 
 async def _claim_and_expire(api_client, run_id: str) -> dict:
