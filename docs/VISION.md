@@ -1,99 +1,99 @@
 # Product Vision
 
-## Что это
+## What this is
 
-Платформа автоматической генерации и деплоя проектов. Пользователь описывает что хочет в Telegram — получает задеплоенный проект с CI/CD, доменом и SSL за 20-30 минут. Потом итерирует через диалог: "добавь авторизацию", "сделай чтобы бот отправлял картинки" — система понимает контекст и дорабатывает.
+A platform for automatic project generation and deployment. The user describes what they want in Telegram and gets a deployed project with CI/CD, a domain and SSL in 20-30 minutes. Then they iterate through dialogue: "add authorization", "make the bot send pictures" — the system understands the context and extends the project.
 
-Интерфейс — Telegram-бот. PO-агент ведёт сократический диалог, уточняет требования, формулирует ТЗ. Дальше pipeline делает всё сам: scaffold → architect → code → CI → deploy → QA.
+The interface is a Telegram bot. The PO agent runs a Socratic dialogue, clarifies the requirements and formulates the spec. After that the pipeline does everything itself: scaffold → architect → code → CI → deploy → QA.
 
-## Для кого
+## Who it is for
 
-Нетехнические фаундеры и предприниматели, которым нужен работающий MVP за минуты, а не недели. Не нужно знать программирование, не нужно нанимать разработчика, не нужно разбираться в деплое.
+Non-technical founders and entrepreneurs who need a working MVP in minutes, not weeks. No need to know programming, no need to hire a developer, no need to figure out deployment.
 
-## Типы проектов
+## Project types
 
-Сейчас — Telegram-боты на Python (python-telegram-bot/aiogram + FastAPI backend + PostgreSQL). Это основной и единственный стабильный тип.
+Right now — Telegram bots in Python (python-telegram-bot/aiogram + a FastAPI backend + PostgreSQL). This is the main and the only stable type.
 
-Хочу поддерживать:
-- **Веб-приложения** — SPA/SSR с бэкендом и базой. Тот же флоу: описание → готовый сайт с доменом. Большой эпик.
-- **Rust-сервисы** — Axum + SeaORM как альтернатива Python. Строже feedback loop для агентов, быстрее билды. Начать с PoC, потом полная поддержка.
-- **Модульная сборка** — предопределённые модули (auth, payments, notifications) которые можно добавить к существующему проекту через `make add-module`.
+I want to support:
+- **Web applications** — SPA/SSR with a backend and a database. The same flow: a description → a ready site with a domain. A large epic.
+- **Rust services** — Axum + SeaORM as an alternative to Python. A stricter feedback loop for the agents, faster builds. Start with a PoC, then full support.
+- **Modular assembly** — predefined modules (auth, payments, notifications) that can be added to an existing project through `make add-module`.
 
-## Итерация через диалог
+## Iteration through dialogue
 
-Ключевая фича — не одноразовая генерация, а **непрерывная доработка**. Пользователь говорит "хочу чтобы мой бот погоды ещё присылал картинки котов" → система понимает какой проект, добавляет функционал, тестирует, деплоит. Без пересоздания проекта.
+The key feature is not one-off generation but **continuous extension**. The user says "I want my weather bot to also send pictures of cats" → the system figures out which project it is, adds the functionality, tests it and deploys it. Without recreating the project.
 
-PO должен уметь:
-- Выбирать существующий проект пользователя для доработки
-- Понимать контекст предыдущих доработок
-- Отличать "новый проект" от "доработка существующего"
+The PO has to be able to:
+- Pick an existing project of the user to extend
+- Understand the context of previous extensions
+- Tell a "new project" from an "extension of an existing one"
 
-## Масштаб и multi-tenancy
+## Scale and multi-tenancy
 
-Сейчас — один оператор (я). Целевой масштаб — 15-20 одновременных пользователей без конфликтов и лагов.
+Right now — a single operator (me). The target scale is 15-20 simultaneous users without conflicts and lags.
 
-Что для этого нужно:
-- Row-level изоляция данных (RLS или app-level scoping)
-- Project-scoped секреты с шифрованием
-- Rate limiting на вызовы внешних API per tenant
-- Worker pool management: лимит параллельных воркеров, очередь задач при перегрузке
-- Мониторинг нагрузки и алерты
+What is needed for that:
+- Row-level data isolation (RLS or app-level scoping)
+- Project-scoped secrets with encryption
+- Rate limiting on external API calls per tenant
+- Worker pool management: a limit on parallel workers, a task queue under overload
+- Load monitoring and alerts
 
-## Наблюдаемость
+## Observability
 
-Для оператора (меня):
-- **Админка** — единый дашборд: все юзеры, проекты, воркеры, расход токенов, здоровье сервисов
-- **Логи** — централизованные логи всех микросервисов (Loki + Grafana), поиск и фильтрация
-- **LLM tracing** — полная видимость LLM-вызовов: промпты, ответы, tool usage, latency, стоимость
-- **Queue health** — мониторинг Redis streams, застрявшие сообщения, consumer lag
+For the operator (me):
+- **Admin panel** — a single dashboard: all users, projects, workers, token spend, service health
+- **Logs** — centralized logs of all microservices (Loki + Grafana), search and filtering
+- **LLM tracing** — full visibility of LLM calls: prompts, responses, tool usage, latency, cost
+- **Queue health** — monitoring of the Redis streams, stuck messages, consumer lag
 
-Для пользователя:
-- **Дашборд** — продуктовые метрики по его проектам: DAU/WAU, requests/day, p95, error rate
-- **Статус проектов** — "как дела у моих проектов?" → отчёт о здоровье и нагрузке через PO
+For the user:
+- **Dashboard** — product metrics for their projects: DAU/WAU, requests/day, p95, error rate
+- **Project status** — "how are my projects doing?" → a health and load report through the PO
 
-## Здоровье deployed проектов
+## Health of deployed projects
 
-После деплоя проект не бросается — система следит за ним:
-- HTTP health probing + SSL expiry check
+After a deploy the project is not abandoned, the system watches it:
+- HTTP health probing + an SSL expiry check
 - Container drift detection (orphans/ghosts)
-- Автоматическое восстановление при падении (restart/redeploy)
-- Уведомление пользователю если что-то упало
-- Post-release QA: Claude Code на прод-серверах тестирует как реальный юзер
+- Automatic recovery on a crash (restart/redeploy)
+- A notification to the user if something went down
+- Post-release QA: Claude Code on the prod servers tests it like a real user
 
 ## Human-in-the-loop
 
-Воркеры могут упереться в блокер (неясные требования, нехватка ресурсов, баг в инфре). Вместо того чтобы молча сломаться — эскалация:
-- Воркер сигналит "заблокирован" с описанием проблемы
-- Админ видит блокер, может дать guidance и возобновить
-- PO может переоткрыть завершённую стори если проблема повторяется
+Workers can run into a blocker (unclear requirements, a lack of resources, a bug in the infrastructure). Instead of failing silently there is an escalation:
+- The worker signals "blocked" with a description of the problem
+- The admin sees the blocker, can give guidance and resume
+- The PO can reopen a completed story if the problem repeats
 
-В будущем — тарифная модель: базовая подписка (AI only) → дорогая (подключаются живые разработчики через оркестратор).
+In the future — a tariff model: a basic subscription (AI only) → an expensive one (live developers join through the orchestrator).
 
-## Монетизация (идеи)
+## Monetization (ideas)
 
-- **Managed API интеграции** — пользователь не заводит свой OpenAI/SendGrid ключ, а тратит кредиты платформы
-- **Credit-based billing** — внутренние кредиты, оплата per API call через платформенный gateway
-- **Cost tracking** — учёт расхода токенов per user/project для формирования цен
+- **Managed API integrations** — the user does not bring their own OpenAI/SendGrid key but spends platform credits
+- **Credit-based billing** — internal credits, payment per API call through the platform gateway
+- **Cost tracking** — accounting of token spend per user/project to form the prices
 
-## Что НЕ делаем
+## What we do NOT do
 
-- Не general-purpose CI/CD платформа
-- Не code review tool
-- Не self-hosted решение (пока)
-- Не multi-language beyond Python + Rust
-- Не low-code конструктор — генерируем настоящий код, пользователь может форкнуть и развивать сам
+- Not a general-purpose CI/CD platform
+- Not a code review tool
+- Not a self-hosted solution (for now)
+- Not multi-language beyond Python + Rust
+- Not a low-code builder — we generate real code, the user can fork it and develop it themselves
 
 ---
 
-## Архитектурные инварианты
+## Architectural invariants
 
-Audit проверяет каждый из этих пунктов. Нарушение = баг.
+The audit checks every one of these points. A violation = a bug.
 
-1. Сервисы общаются ТОЛЬКО через Redis Streams или API calls. Никаких cross-service imports.
-2. Все статусы — enums в shared/contracts/. Никаких hardcoded строк.
-3. Все queue messages — Pydantic DTOs в shared/contracts/queues/. Никаких raw dicts.
-4. Fail-fast everywhere. Нет .get(key, default), нет fallback values, нет silent None handling.
-5. Worker = ephemeral Docker container с CLI agent. Ничто другое не называется "worker".
-6. Секреты никогда не попадают в LLM context. Handles в state, Python резолвит значения.
-7. Каждый сервис владеет своими моделями. shared/ содержит только contracts (DTOs, enums, queue schemas).
-8. Логирование только через structlog. Никаких print(). Все events структурированные с correlation IDs.
+1. Services communicate ONLY through Redis Streams or API calls. No cross-service imports.
+2. All statuses are enums in shared/contracts/. No hardcoded strings.
+3. All queue messages are Pydantic DTOs in shared/contracts/queues/. No raw dicts.
+4. Fail-fast everywhere. No .get(key, default), no fallback values, no silent None handling.
+5. Worker = an ephemeral Docker container with a CLI agent. Nothing else is called a "worker".
+6. Secrets never reach the LLM context. Handles in state, Python resolves the values.
+7. Every service owns its own models. shared/ contains only contracts (DTOs, enums, queue schemas).
+8. Logging only through structlog. No print(). All events are structured with correlation IDs.

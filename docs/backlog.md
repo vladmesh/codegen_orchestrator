@@ -37,19 +37,19 @@
 - **Priority**: LOW
 - **Plan**: yes (in work item)
 - **Status**: backlog
-- **Brief**: Очистка зависших контейнеров/образов после деплоев (`docker image prune`). SSH hardening уже done в ansible. Priority adjusted by triage (roadmap phase change).
+- **Brief**: cleanup of leftover containers/images after deploys (`docker image prune`). SSH hardening is already done in ansible. Priority adjusted by triage (roadmap phase change).
 
 ### #10 Worker Lifecycle (Pause/Unpause)
-- **Priority**: HIGH (multi-tenant hardening arc: изоляция и лимиты ресурсов)
+- **Priority**: HIGH (multi-tenant hardening arc: isolation and resource limits)
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
+- **Brief**: `docker pause` when idle. CPU/RAM limits on the containers.
 
 ### #1024 Integrate Repository into production flows (webhook, scheduler, worker)
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: Подключить Repository модель в production pipeline. Сейчас webhook/scheduler/worker используют Project.repository_url и Project.github_repo_id напрямую.  1. webhooks.py: lookup через Repository.provider_repo_id вместо Project.github_repo_id 2. github_sync.py: создаёт Repository записи вместо обно...
+- **Brief**: wire the Repository model into the production pipeline. Right now webhook/scheduler/worker use Project.repository_url and Project.github_repo_id directly.  1. webhooks.py: look up through Repository.provider_repo_id instead of Project.github_repo_id 2. github_sync.py: creates Repository records instead of updat...
 
 ### #1025 Fix eager import chains in scaffolded projects
 
@@ -76,13 +76,13 @@
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change). NB: Watchdog/DLQ scope уменьшится — WorkItemEvent (#55) покрывает a...
+- **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory (the agent's "dying note"). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change). NB: the Watchdog/DLQ scope will shrink — WorkItemEvent (#55) covers a...
 
 ### #20 API Key & SSH Key Encryption
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: Применить SecretsCipher (Fernet) к API key values и SSH keys. TODO-комменты в `api_keys.py:36,72` и `servers.py:66`.
+- **Brief**: apply SecretsCipher (Fernet) to the API key values and the SSH keys. TODO comments in `api_keys.py:36,72` and `servers.py:66`.
 
 ### #1028 Unified handlers: error handling strategy
 
@@ -109,19 +109,19 @@
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
+- **Brief**: finish the E2E coverage (Level 5-7). Add E2E mock tests (Level A+B) to CI.
 
-### #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
+### #26 Notifications via Redis Stream (remove the direct dependency on the Telegram API)
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: Сейчас `shared/notifications.py` шлёт в Telegram API напрямую — scheduler, infra-service держат `TELEGRAM_BOT_TOKEN`. Нужно: сервисы публикуют в Redis stream `notifications:queue`, telegram_bot потребляет и отправляет. Убирает `TELEGRAM_BOT_TOKEN` из всех сервисов кроме telegram_bot, упрощает тес...
+- **Brief**: right now `shared/notifications.py` sends to the Telegram API directly — scheduler and infra-service hold `TELEGRAM_BOT_TOKEN`. What is needed: the services publish to the Redis stream `notifications:queue`, telegram_bot consumes and sends. Removes `TELEGRAM_BOT_TOKEN` from every service except telegram_bot, simplifies tes...
 
 ### #41 Parallel Server Provisioning
 - **Priority**: HIGH (multi-tenant hardening arc)
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task`...
+- **Brief**: infra-service processes `provisioner:queue` sequentially — a single consumer loop with an `await` on every job (`services/infra-service/src/main.py:127-148`). With 3+ servers in `PENDING_SETUP` every Ansible run (~15 min) blocks the queue. The LangGraph side is already parallel (`asyncio.create_task`...
 
 ### #1031 Auto-fuzzing and contract testing (schemathesis)
 

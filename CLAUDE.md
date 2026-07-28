@@ -114,9 +114,10 @@ When naming containers, variables, queues, or writing docs — check the glossar
 1. **TDD — test behavior, not implementation**: Red → Green → Refactor still applies, but tests must verify **what the code does**, not how it's structured. Test real data pipelines, real exceptions, real status transitions — not "key exists in dict" or "function returns value". See testing philosophy below.
 2. **Review Trigger**: If a change requires modifying `shared/contracts/` or DB schema not described in the plan — STOP and ask.
 3. **Structured logging**: Use `structlog` everywhere, never `print()`.
-4. **Run tests before committing**: `make test-unit` at minimum.
-5. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the sprint flow (`/go` → `/new-sprint` → `/plan-phase` → `/implement` → `/close-phase` → `/close-sprint`).
-6. **`docs/STATUS.md` is the sprint state**: `/go` reads it to decide next action. Sprint task files live in `docs/sprints/`. `docs/backlog.md` is the deferred pool.
+4. **Documentation language**: Project documentation is written in English, including new entries in `docs/CHANGELOG.md` and `docs/STATUS.md`.
+5. **Run tests before committing**: `make test-unit` at minimum.
+6. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the sprint flow (`/go` → `/new-sprint` → `/plan-phase` → `/implement` → `/close-phase` → `/close-sprint`).
+7. **`docs/STATUS.md` is the sprint state**: `/go` reads it to decide next action. Sprint task files live in `docs/sprints/`. `docs/backlog.md` is the deferred pool.
 
 ### Testing Philosophy
 
