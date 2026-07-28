@@ -8,8 +8,9 @@
   the provider logs `server_sync_incomplete` at error instead of `server_sync_complete` with zero
   counters, and a repeating failure opens one `provider_api_unavailable` incident plus one admin
   alert, resolved automatically when the provider answers again. Incidents can now be
-  platform-level: `incidents.server_handle` is nullable for failures that belong to no single
-  server.
+  platform-level: `incidents.server_handle` is nullable, but only `provider_api_unavailable` may
+  omit it. Every other type stays server-bound, so its `(server_handle, incident_type)` active
+  unique index keeps deduplicating.
 
 - `scripts/system_configs.yaml` is now the source of truth for the keys it declares. Deploy applies
   it after migrations and overwrites existing values, printing one line per diverged key with the

@@ -116,6 +116,31 @@ class TestIncidentCreate:
         with pytest.raises(ValidationError):
             IncidentCreate(server_handle="srv-1", incident_type="disk_full")
 
+    def test_platform_level_incident_needs_no_handle(self):
+        create = IncidentCreate(
+            server_handle=None,
+            incident_type=IncidentType.PROVIDER_API_UNAVAILABLE,
+            details={"dependency": "time4vps_api"},
+        )
+        assert create.server_handle is None
+
+    @pytest.mark.parametrize(
+        "incident_type",
+        [
+            IncidentType.SERVER_UNREACHABLE,
+            IncidentType.PROVISIONING_FAILED,
+            IncidentType.SERVICE_DOWN,
+            IncidentType.RESOURCE_EXHAUSTED,
+            IncidentType.SSL_EXPIRING,
+        ],
+    )
+    def test_server_bound_incident_rejects_missing_handle(self, incident_type):
+        # A NULL handle would defeat the (server_handle, incident_type) active
+        # unique index: Postgres treats NULLs as distinct, so every retry would
+        # open a new episode instead of updating the current one.
+        with pytest.raises(ValidationError):
+            IncidentCreate(incident_type=incident_type)
+
 
 class TestIncidentUpdate:
     def test_exclude_unset(self):

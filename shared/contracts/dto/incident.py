@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -26,6 +26,18 @@ class IncidentType(StrEnum):
     RESOURCE_EXHAUSTED = "resource_exhausted"
     SSL_EXPIRING = "ssl_expiring"
     PROVIDER_API_UNAVAILABLE = "provider_api_unavailable"
+
+
+# Incident types that are not tied to a single server. Everything else is
+# server-bound: its active unique index is (server_handle, incident_type), and a
+# NULL handle would silently break deduplication.
+PLATFORM_LEVEL_INCIDENT_TYPES = frozenset({IncidentType.PROVIDER_API_UNAVAILABLE})
+
+
+def require_server_handle(incident_type: IncidentType, server_handle: str | None) -> None:
+    """Raise if a server-bound incident type comes without a handle."""
+    if server_handle is None and incident_type not in PLATFORM_LEVEL_INCIDENT_TYPES:
+        raise ValueError(f"server_handle is required for incident_type={incident_type.value}")
 
 
 # --- Response DTOs ---
@@ -51,12 +63,17 @@ class IncidentDTO(TimestampedDTO):
 class IncidentCreate(BaseModel):
     """Create incident request."""
 
-    # None for platform-level incidents that are not tied to a single server,
-    # e.g. the provider API being unreachable.
+    # None only for platform-level incidents that are not tied to a single server,
+    # i.e. PROVIDER_API_UNAVAILABLE. Every other type is server-bound.
     server_handle: str | None = None
     incident_type: IncidentType
     details: dict = Field(default_factory=dict)
     affected_services: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_server_handle(self) -> "IncidentCreate":
+        require_server_handle(self.incident_type, self.server_handle)
+        return self
 
 
 class IncidentUpdate(BaseModel):

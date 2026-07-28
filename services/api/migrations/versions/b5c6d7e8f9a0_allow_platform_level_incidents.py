@@ -16,6 +16,10 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+CHECK_NAME = "ck_incidents_server_handle_required"
+CHECK_SQL = "server_handle IS NOT NULL OR incident_type = 'provider_api_unavailable'"
+
+
 def upgrade() -> None:
     op.alter_column(
         "incidents",
@@ -23,9 +27,13 @@ def upgrade() -> None:
         existing_type=sa.String(length=255),
         nullable=True,
     )
+    # Only a provider outage belongs to no server. Every other type is deduplicated
+    # by (server_handle, incident_type), and NULLs never collide in that index.
+    op.create_check_constraint(CHECK_NAME, "incidents", CHECK_SQL)
 
 
 def downgrade() -> None:
+    op.drop_constraint(CHECK_NAME, "incidents", type_="check")
     op.execute("DELETE FROM incidents WHERE server_handle IS NULL")
     op.alter_column(
         "incidents",
