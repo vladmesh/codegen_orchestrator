@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import User
+from shared.analytics_health import (
+    ANALYTICS_HEARTBEAT_KEY,
+    CollectionState,
+    collection_state,
+    decode_heartbeat,
+)
+from shared.models import SystemConfig, User
 from shared.models.analytics_daily import AnalyticsDaily
 from shared.models.analytics_hourly import AnalyticsHourly
 from shared.models.analytics_known_users import AnalyticsKnownUsers
@@ -19,6 +25,7 @@ from ..schemas.lk import (
     ChartDataPoint,
     ChartMetric,
     ChartResponse,
+    CollectionHealth,
     LatestDailySummary,
     LkProject,
     ProjectStatusResponse,
@@ -32,6 +39,28 @@ router = APIRouter(prefix="/lk", tags=["lk"])
 
 # How old the latest hourly bucket can be before we consider the service "down"
 _STATUS_UP_THRESHOLD = dt.timedelta(hours=2)
+
+
+async def _collection_health(
+    db: AsyncSession,
+    project_id: uuid.UUID | None = None,
+) -> CollectionHealth:
+    """Read the aggregator heartbeat so the LK can qualify empty analytics.
+
+    With a project_id, the state also covers that project's own collection: a
+    cycle that finished but failed on this project is not an empty result.
+    """
+    row = await db.get(SystemConfig, ANALYTICS_HEARTBEAT_KEY)
+    heartbeat = decode_heartbeat(row.value) if row else None
+    state = collection_state(
+        heartbeat,
+        dt.datetime.now(dt.UTC),
+        str(project_id) if project_id else None,
+    )
+    return CollectionHealth(
+        state=state,
+        last_cycle_at=heartbeat.completed_at if heartbeat else None,
+    )
 
 
 async def _get_owned_project(
@@ -92,6 +121,7 @@ async def list_projects(
                 name=project.title,
                 status=project.status,
                 latest_daily=latest_daily,
+                collection=await _collection_health(db, project.id),
             )
         )
 
@@ -114,16 +144,17 @@ async def project_summary(
     await _get_owned_project(project_id, user, db)
 
     now = dt.datetime.now(dt.UTC)
+    collection = await _collection_health(db, project_id)
 
     if period == SummaryPeriod.H24:
         # Use hourly data for 24h period
         cutoff = now - dt.timedelta(hours=24)
-        return await _summary_from_hourly(project_id, cutoff, now, db)
+        return await _summary_from_hourly(project_id, cutoff, now, db, collection)
 
     # 7d / 30d — use daily data
     days = 7 if period == SummaryPeriod.D7 else 30
     cutoff_date = dt.date.today() - dt.timedelta(days=days)
-    return await _summary_from_daily(project_id, cutoff_date, days, db)
+    return await _summary_from_daily(project_id, cutoff_date, days, db, collection)
 
 
 async def _summary_from_hourly(
@@ -131,6 +162,7 @@ async def _summary_from_hourly(
     cutoff: dt.datetime,
     now: dt.datetime,
     db: AsyncSession,
+    collection: CollectionHealth,
 ) -> ProjectSummaryResponse:
     """Build summary from analytics_hourly rows."""
     result = await db.execute(
@@ -144,7 +176,7 @@ async def _summary_from_hourly(
     rows = result.scalars().all()
 
     if not rows:
-        return _empty_summary()
+        return _empty_summary(collection)
 
     # Aggregate across all rows
     total_requests = sum(r.total_requests for r in rows)
@@ -186,6 +218,7 @@ async def _summary_from_hourly(
         p95_ms=p95_ms,
         top_endpoints=top_endpoints,
         breakdown=breakdown,
+        collection=collection,
     )
 
 
@@ -194,6 +227,7 @@ async def _summary_from_daily(
     cutoff_date: dt.date,
     days: int,
     db: AsyncSession,
+    collection: CollectionHealth,
 ) -> ProjectSummaryResponse:
     """Build summary from analytics_daily rows."""
     result = await db.execute(
@@ -207,7 +241,7 @@ async def _summary_from_daily(
     rows = result.scalars().all()
 
     if not rows:
-        return _empty_summary()
+        return _empty_summary(collection)
 
     total_requests = sum(r.total_requests for r in rows)
     error_count = sum(r.error_count for r in rows)
@@ -253,10 +287,11 @@ async def _summary_from_daily(
         p95_ms=p95_ms,
         top_endpoints=top_endpoints,
         breakdown=breakdown,
+        collection=collection,
     )
 
 
-def _empty_summary() -> ProjectSummaryResponse:
+def _empty_summary(collection: CollectionHealth) -> ProjectSummaryResponse:
     return ProjectSummaryResponse(
         total_users=0,
         new_users=0,
@@ -268,6 +303,7 @@ def _empty_summary() -> ProjectSummaryResponse:
         p95_ms=None,
         top_endpoints=[],
         breakdown=[],
+        collection=collection,
     )
 
 
@@ -354,7 +390,12 @@ async def project_chart(
         for r in rows
     ]
 
-    return ChartResponse(metric=metric, period=period, data=data)
+    return ChartResponse(
+        metric=metric,
+        period=period,
+        data=data,
+        collection=await _collection_health(db, project_id),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -387,16 +428,25 @@ async def project_status(
     result = await db.execute(select(subq))
     rows = result.all()
 
+    collection = await _collection_health(db, project_id)
+
     services = []
     for row in rows:
         last_bucket = row.last_bucket
-        is_up = (now - last_bucket) < _STATUS_UP_THRESHOLD
+        # Staleness only means "the service is down" while collection is alive;
+        # otherwise the buckets are stale because nobody is filling them.
+        if collection.state is not CollectionState.OK:
+            svc_status = "unknown"
+        elif (now - last_bucket) < _STATUS_UP_THRESHOLD:
+            svc_status = "up"
+        else:
+            svc_status = "down"
         services.append(
             ServiceStatus(
                 name=row.service_name,
-                status="up" if is_up else "down",
+                status=svc_status,
                 last_seen=last_bucket,
             )
         )
 
-    return ProjectStatusResponse(services=services)
+    return ProjectStatusResponse(services=services, collection=collection)

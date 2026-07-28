@@ -5,6 +5,13 @@ export interface TokenExchangeResponse {
   token_type: string
 }
 
+export type CollectionState = 'ok' | 'failing' | 'stale' | 'never'
+
+export interface CollectionHealth {
+  state: CollectionState
+  last_cycle_at: string | null
+}
+
 export interface LatestDailySummary {
   date: string
   total_requests: number
@@ -18,6 +25,7 @@ export interface LkProject {
   name: string
   status: string
   latest_daily: LatestDailySummary | null
+  collection: CollectionHealth
 }
 
 export type SummaryPeriod = '24h' | '7d' | '30d'
@@ -41,6 +49,7 @@ export interface ProjectSummaryResponse {
   p95_ms: number | null
   top_endpoints: Array<Record<string, unknown>>
   breakdown: ServiceBreakdown[]
+  collection: CollectionHealth
 }
 
 export type ChartMetric = 'users' | 'requests' | 'errors'
@@ -54,6 +63,7 @@ export interface ChartResponse {
   metric: ChartMetric
   period: SummaryPeriod
   data: ChartDataPoint[]
+  collection: CollectionHealth
 }
 
 export interface ServiceStatus {
@@ -64,4 +74,5 @@ export interface ServiceStatus {
 
 export interface ProjectStatusResponse {
   services: ServiceStatus[]
+  collection: CollectionHealth
 }

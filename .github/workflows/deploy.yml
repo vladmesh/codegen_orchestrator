@@ -78,6 +78,12 @@ jobs:
 
             # Observability
             LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }}
+            # Loki read address for the analytics aggregator (internal network name)
+            LOKI_URL=http://loki:3100
+
+            # LK (user dashboard)
+            LK_DOMAIN=${{ secrets.LK_DOMAIN }}
+            LK_JWT_SECRET=${{ secrets.LK_JWT_SECRET }}
 
             # Prod secret paths (used by docker-compose.prod.yml)
             GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem

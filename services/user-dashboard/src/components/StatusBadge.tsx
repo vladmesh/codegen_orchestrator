@@ -5,6 +5,7 @@ const variants: Record<string, string> = {
   draft: 'bg-muted text-muted-foreground',
   up: 'bg-success/10 text-success',
   down: 'bg-danger/10 text-danger',
+  unknown: 'bg-muted text-muted-foreground',
 }
 
 export default function StatusBadge({ status }: { status: string }) {

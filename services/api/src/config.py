@@ -6,6 +6,8 @@ Optional: TELEGRAM_BOT_TOKEN (for notifications)
 
 from functools import lru_cache
 
+from pydantic import Field
+
 from shared.config import (
     BaseSettings,
     database_url_field,
@@ -25,8 +27,9 @@ class Settings(BaseSettings):
     # Optional - notifications work without token in dev
     telegram_bot_token: str = telegram_token_field(required=False)
 
-    # LK (user dashboard) JWT auth — required, no default
-    lk_jwt_secret: str
+    # LK (user dashboard) JWT auth — required, no default. An empty string would
+    # sign every dashboard token with a known key, so reject it outright.
+    lk_jwt_secret: str = Field(min_length=1)
 
     # Internal service token — sent by workers, scheduler, langgraph as X-Internal-Key
     internal_api_key: str = internal_api_key_field()

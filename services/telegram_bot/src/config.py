@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     # Worker configuration
     default_agent_type: AgentType = default_agent_type_field()
 
-    # LK (dashboard)
-    lk_domain: str = Field(alias="LK_DOMAIN")
+    # LK (dashboard). An empty value is a misconfiguration, not "no dashboard":
+    # login links would be built against nothing.
+    lk_domain: str = Field(alias="LK_DOMAIN", min_length=1)
 
     # Access Control
     admin_telegram_ids: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")

@@ -6,7 +6,13 @@ import os
 os.environ.setdefault("API_BASE_URL", "http://test:8000")
 os.environ.setdefault("LOKI_URL", "http://test:3100")
 
-from src.tasks.analytics_aggregator import compute_daily_rollup, compute_hourly_metrics
+import pytest
+
+from src.tasks.analytics_aggregator import (
+    analytics_aggregator_worker,
+    compute_daily_rollup,
+    compute_hourly_metrics,
+)
 
 
 def _make_request_log(
@@ -212,3 +218,19 @@ class TestComputeDailyRollup:
         assert result["total_requests"] == 0
         assert result["error_rate"] == 0.0
         assert result["dau"] == 0
+
+
+class TestAggregatorConfig:
+    """A missing read address is a config failure, not an idle mode."""
+
+    async def test_missing_loki_url_raises(self, monkeypatch):
+        monkeypatch.delenv("LOKI_URL", raising=False)
+
+        with pytest.raises(RuntimeError, match="LOKI_URL"):
+            await analytics_aggregator_worker()
+
+    async def test_blank_loki_url_raises(self, monkeypatch):
+        monkeypatch.setenv("LOKI_URL", "")
+
+        with pytest.raises(RuntimeError, match="LOKI_URL"):
+            await analytics_aggregator_worker()

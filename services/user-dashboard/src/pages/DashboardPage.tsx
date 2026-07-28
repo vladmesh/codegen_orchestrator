@@ -12,6 +12,7 @@ import TopEndpoints from '@/components/TopEndpoints'
 import ServiceBreakdown from '@/components/ServiceBreakdown'
 import Spinner from '@/components/Spinner'
 import ErrorMessage from '@/components/ErrorMessage'
+import CollectionNotice from '@/components/CollectionNotice'
 
 export default function DashboardPage() {
   const { id } = useParams<{ id: string }>()
@@ -51,6 +52,9 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      {/* Collection health — an empty dashboard must not look like honest zeroes */}
+      <CollectionNotice collection={summary.collection} />
+
       {/* Period selector */}
       <div className="flex justify-end">
         <PeriodSelector value={period} onChange={setPeriod} />

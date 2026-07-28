@@ -309,6 +309,10 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler
       HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-300}
+      # Loki read address for the analytics aggregator. Not the push path —
+      # LOKI_PUSH_* are Promtail's write credentials. Required: without it
+      # product analytics are not collected, so compose refuses to start.
+      LOKI_URL: ${LOKI_URL:?set LOKI_URL to the Loki read address, e.g. http://loki:3100}
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -319,6 +323,8 @@ services:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      loki:
         condition: service_healthy
     networks:
       - internal

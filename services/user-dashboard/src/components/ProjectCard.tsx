@@ -4,6 +4,7 @@ import type { LkProject } from '@/types/api'
 import StatusBadge from './StatusBadge'
 import MetricValue from './MetricValue'
 import { formatNumber, formatMs, formatPercent } from '@/lib/utils'
+import CollectionNotice, { emptyDataText } from './CollectionNotice'
 
 export default function ProjectCard({ project }: { project: LkProject }) {
   const navigate = useNavigate()
@@ -22,6 +23,13 @@ export default function ProjectCard({ project }: { project: LkProject }) {
         <ChevronRight className="h-4 w-4 text-muted-foreground" />
       </div>
 
+      {/* Per-project: a card may be empty because collection failed for it */}
+      {project.collection.state !== 'ok' && (
+        <div className="mb-3">
+          <CollectionNotice collection={project.collection} />
+        </div>
+      )}
+
       {d ? (
         <div className="grid grid-cols-4 gap-2">
           <MetricValue label="Пользователи" value={formatNumber(d.unique_users)} />
@@ -30,7 +38,7 @@ export default function ProjectCard({ project }: { project: LkProject }) {
           <MetricValue label="Ошибки" value={formatPercent(d.error_rate)} />
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Нет данных</p>
+        <p className="text-sm text-muted-foreground">{emptyDataText(project.collection)}</p>
       )}
     </button>
   )
