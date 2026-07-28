@@ -11,7 +11,7 @@ from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
-from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerUpdate
+from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.user import UserDTO
@@ -119,8 +119,9 @@ class SchedulerAPIClient:
 
     # --- Servers ---
 
-    async def get_servers(self) -> list[ServerDTO]:
-        resp = await self._request("GET", "servers")
+    async def get_servers(self, status: ServerStatus | None = None) -> list[ServerDTO]:
+        params = {"status": status.value} if status else {}
+        resp = await self._request("GET", "servers/", params=params)
         return [ServerDTO.model_validate(s) for s in resp.json()]
 
     async def create_server(self, server: ServerCreate) -> ServerDTO:
