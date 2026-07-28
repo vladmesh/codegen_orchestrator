@@ -6,8 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.clients.github import deploy_pin_tag
 from src.subgraphs.devops.deployer import DeployerNode
 from tests.unit.factories import make_repository
+
+PINNED_SHA = "c" * 40
+PIN_TAG = deploy_pin_tag(PINNED_SHA)
 
 
 class WorkflowCancelledError(RuntimeError):
@@ -358,3 +362,175 @@ class TestDeployerNodeFailures:
         assert result["errors"]
         assert "timeout" in result["errors"][0].lower()
         mock_api.patch.assert_not_called()
+
+
+def _pinned_run(head_sha=PINNED_SHA):
+    return {**_SUCCESS_RUN, "head_sha": head_sha}
+
+
+@patch.dict(
+    os.environ,
+    {
+        "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+        "REGISTRY_USER": "testuser",
+        "REGISTRY_PASSWORD": "testpass",  # noqa: S105
+    },
+)
+class TestDeployerPinnedToCommit:
+    """Deploying one named commit instead of whatever main holds now."""
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_dispatches_a_tag_at_the_requested_commit(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """workflow_dispatch rejects a bare SHA, so the commit is pinned by a tag."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        gh.create_or_reset_tag.assert_awaited_once_with("my-org", "my-repo", PIN_TAG, PINNED_SHA)
+        assert gh.trigger_workflow_dispatch.call_args[1]["ref"] == PIN_TAG
+        wait_kwargs = gh.wait_for_workflow_completion.call_args[1]
+        assert wait_kwargs["branch"] == PIN_TAG
+        assert wait_kwargs["head_sha"] == PINNED_SHA
+        assert result["deployment_result"]["status"] == "success"
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_records_the_requested_commit_as_deployed(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+
+        await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert mock_api.create_deployment.call_args[0][0]["deployed_sha"] == PINNED_SHA
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_tag_is_removed_after_a_successful_run(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+
+        await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_tag_is_removed_after_a_failed_run(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
+        gh.get_latest_workflow_run.return_value = None  # rerun not possible
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["errors"]
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_tag_is_removed_after_a_cancelled_run(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        mock_api.get = AsyncMock(return_value={"status": "running"})
+        gh.wait_for_workflow_completion.side_effect = WorkflowCancelledError("cancelled")
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+
+        assert result["deployment_result"] == {"status": "cancelled"}
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_tag_is_removed_after_an_unproven_cancellation(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.side_effect = WorkflowCancellationUnprovenError("unproven")
+
+        with pytest.raises(WorkflowCancellationUnprovenError):
+            await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_a_run_on_another_commit_is_refused_not_reported_as_success(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run(head_sha="d" * 40)
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["deployment_result"]["status"] == "failed"
+        assert PINNED_SHA in result["errors"][0]
+        mock_api.create_deployment.assert_not_called()
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_rerun_stays_on_the_pinned_tag(self, mock_api, mock_gh_cls, deployer, base_state):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
+        gh.get_latest_workflow_run.return_value = _pinned_run()
+        gh.wait_for_run_completion.return_value = _pinned_run()
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["deployment_result"]["status"] == "success"
+        rerun_lookup = gh.get_latest_workflow_run.call_args
+        assert rerun_lookup[0][3] == PIN_TAG
+        assert rerun_lookup[1]["head_sha"] == PINNED_SHA
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_rerun_on_another_commit_is_refused(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
+        gh.get_latest_workflow_run.return_value = _pinned_run()
+        gh.wait_for_run_completion.return_value = _pinned_run(head_sha="d" * 40)
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["deployment_result"]["status"] == "failed"
+        mock_api.create_deployment.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_deploy_without_a_commit_touches_no_tags(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """The plain 'deploy current main' path is unchanged."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+
+        result = await deployer.run(base_state)
+
+        gh.create_or_reset_tag.assert_not_called()
+        gh.delete_ref.assert_not_called()
+        gh.trigger_workflow_dispatch.assert_called_once_with("my-org", "my-repo", "deploy.yml")
+        assert gh.wait_for_workflow_completion.call_args[1]["branch"] == "main"
+        assert gh.wait_for_workflow_completion.call_args[1]["head_sha"] is None
+        assert result["deployment_result"]["status"] == "success"

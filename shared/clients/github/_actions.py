@@ -639,7 +639,7 @@ class ActionsMixin:
             poll_interval: Seconds between polls
 
         Returns:
-            Dict with {id, status, conclusion, html_url} on success
+            Dict with {id, status, conclusion, html_url, head_sha} on success
 
         Raises:
             RuntimeError: If run completes with non-success conclusion
@@ -673,6 +673,7 @@ class ActionsMixin:
                     "status": run["status"],
                     "conclusion": run.get("conclusion"),
                     "html_url": run["html_url"],
+                    "head_sha": run.get("head_sha"),
                 }
                 if run.get("conclusion") == "success":
                     logger.info(

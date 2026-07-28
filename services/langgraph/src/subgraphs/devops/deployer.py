@@ -7,7 +7,7 @@ import os
 from langchain_core.messages import AIMessage
 import structlog
 
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient, deploy_pin_tag
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.env_overrides import env_overrides_digest
 from shared.contracts.service_ports import is_http_health_port_service
@@ -19,6 +19,18 @@ from .dotenv_builder import build_dotenv, encode_dotenv
 from .state import DevOpsState
 
 logger = structlog.get_logger()
+
+DEPLOY_WORKFLOW = "deploy.yml"
+DEPLOY_TIMEOUT_SECONDS = 600
+
+# Cancellation is signalled by the GitHub client through exception types that this
+# module must not import (tests substitute their own doubles), so they are matched
+# by name.
+_CANCELLATION_ERRORS = ("WorkflowCancelledError", "WorkflowCancellationUnprovenError")
+
+
+class DeployedShaMismatchError(RuntimeError):
+    """The finished deploy run is not the commit the deploy asked for."""
 
 
 async def _create_deployment_record(
@@ -151,6 +163,8 @@ class DeployerNode(FunctionalNode):
         owner: str,
         repo: str,
         dispatch_time: datetime,
+        ref: str = "main",
+        head_sha: str | None = None,
     ) -> dict | None:
         """Attempt to rerun failed deploy workflow jobs.
 
@@ -158,7 +172,12 @@ class DeployerNode(FunctionalNode):
         """
         try:
             failed_run = await github.get_latest_workflow_run(
-                owner, repo, "deploy.yml", "main", created_after=dispatch_time
+                owner,
+                repo,
+                DEPLOY_WORKFLOW,
+                ref,
+                created_after=dispatch_time,
+                head_sha=head_sha,
             )
             if not failed_run:
                 logger.warning("deploy_rerun_no_run_found")
@@ -171,7 +190,7 @@ class DeployerNode(FunctionalNode):
             await asyncio.sleep(3)
 
             run_info = await github.wait_for_run_completion(
-                owner, repo, run_id, timeout_seconds=600
+                owner, repo, run_id, timeout_seconds=DEPLOY_TIMEOUT_SECONDS
             )
             logger.info("deploy_rerun_passed", run_id=run_id)
             return run_info
@@ -182,6 +201,97 @@ class DeployerNode(FunctionalNode):
         except Exception as e:
             logger.error("deploy_rerun_api_error", error=str(e))
             return None
+
+    async def _remove_pin_tag(
+        self, github: GitHubAppClient, owner: str, repo: str, tag: str
+    ) -> None:
+        """Drop the pin tag whatever the run did. A leftover tag is litter in the user's repo.
+
+        A failed cleanup is loud but does not fail the deploy: the tag name is
+        deterministic, so it can be found and removed afterwards.
+        """
+        try:
+            await asyncio.shield(github.delete_ref(owner, repo, f"tags/{tag}"))
+        except Exception as e:
+            logger.error(
+                "deploy_pin_tag_cleanup_failed",
+                owner=owner,
+                repo=repo,
+                tag=tag,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+
+    async def _dispatch_and_wait(
+        self,
+        github: GitHubAppClient,
+        owner: str,
+        repo: str,
+        head_sha: str,
+        run_id: str | None,
+    ) -> tuple[dict, bool]:
+        """Run deploy.yml, optionally pinned to one commit. Returns (run_info, was_rerun).
+
+        workflow_dispatch only accepts a branch or a tag in ``ref`` (a bare SHA is
+        rejected with 422), so a requested commit is pinned by a temporary tag that
+        is dropped on every outcome. Without ``head_sha`` this deploys whatever is on
+        main, as before.
+        """
+        pin_tag = deploy_pin_tag(head_sha) if head_sha else None
+        if pin_tag:
+            await github.create_or_reset_tag(owner, repo, pin_tag, head_sha)
+
+        ref = pin_tag or "main"
+        rerun = False
+        try:
+            # Record dispatch time BEFORE triggering (for race condition safety)
+            dispatch_time = datetime.now(UTC)
+            if pin_tag:
+                await github.trigger_workflow_dispatch(owner, repo, DEPLOY_WORKFLOW, ref=pin_tag)
+            else:
+                await github.trigger_workflow_dispatch(owner, repo, DEPLOY_WORKFLOW)
+
+            try:
+                run_info = await github.wait_for_workflow_completion(
+                    owner=owner,
+                    repo=repo,
+                    workflow_file=DEPLOY_WORKFLOW,
+                    branch=ref,
+                    timeout_seconds=DEPLOY_TIMEOUT_SECONDS,
+                    created_after=dispatch_time,
+                    head_sha=head_sha or None,
+                    cancel_check=lambda: self._run_cancelled(run_id),
+                )
+            except (RuntimeError, TimeoutError) as e:
+                if type(e).__name__ in _CANCELLATION_ERRORS:
+                    raise
+                logger.warning("deploy_workflow_failed", error=str(e))
+
+                # Attempt to rerun failed jobs (gets a new GH Actions runner)
+                rerun_info = await self._try_deploy_rerun(
+                    github, owner, repo, dispatch_time, ref, head_sha or None
+                )
+                if rerun_info is None:
+                    raise
+                run_info, rerun = rerun_info, True
+        finally:
+            if pin_tag:
+                await self._remove_pin_tag(github, owner, repo, pin_tag)
+
+        self._verify_deployed_sha(run_info, head_sha)
+        return run_info, rerun
+
+    @staticmethod
+    def _verify_deployed_sha(run_info: dict, head_sha: str) -> None:
+        """Refuse the deploy unless the finished run is the commit that was asked for."""
+        if not head_sha:
+            return
+        deployed = (run_info.get("head_sha") or "").lower()
+        if deployed != head_sha.lower():
+            raise DeployedShaMismatchError(
+                f"deploy run {run_info['id']} built commit {deployed or 'unknown'}, "
+                f"requested {head_sha}"
+            )
 
     def _extract_deploy_params(self, state: DevOpsState) -> dict | None:
         """Extract and validate deployment parameters from state. Returns None on error."""
@@ -225,7 +335,9 @@ class DeployerNode(FunctionalNode):
         project_spec = state.get("project_spec") or {}
         secret_values = state.get("secret_values", {})
         non_secret_values = state.get("non_secret_values", {})
-        logger.info("deployer_start", project_id=project_id)
+        # Empty means "deploy whatever main holds now"; a SHA means that exact commit.
+        head_sha = state.get("head_sha") or ""
+        logger.info("deployer_start", project_id=project_id, head_sha=head_sha)
 
         if not project_id:
             return {
@@ -312,22 +424,17 @@ class DeployerNode(FunctionalNode):
             if await self._run_cancelled(run_id):
                 return {"deployment_result": {"status": "cancelled"}}
 
-            # 3. Record dispatch time BEFORE triggering (for race condition safety)
-            dispatch_time = datetime.now(UTC)
-
-            # 4. Trigger deploy workflow
-            await github.trigger_workflow_dispatch(owner, repo, "deploy.yml")
-
-            # 5. Wait for workflow completion
-            run_info = await github.wait_for_workflow_completion(
-                owner=owner,
-                repo=repo,
-                workflow_file="deploy.yml",
-                branch="main",
-                timeout_seconds=600,
-                created_after=dispatch_time,
-                cancel_check=lambda: self._run_cancelled(run_id),
-            )
+            # 3. Dispatch deploy.yml and wait for it, pinned to head_sha when one is given
+            try:
+                run_info, rerun = await self._dispatch_and_wait(
+                    github, owner, repo, head_sha, run_id
+                )
+            except DeployedShaMismatchError as e:
+                logger.error("deploy_sha_mismatch", project_id=project_id, error=str(e))
+                return {
+                    "deployment_result": {"status": "failed", "error": str(e)},
+                    "errors": [f"Deploy refused: {e}"],
+                }
 
             logger.info(
                 "deploy_completed",
@@ -335,9 +442,10 @@ class DeployerNode(FunctionalNode):
                 repo=repo,
                 run_id=run_info["id"],
                 head_sha=run_info.get("head_sha"),
+                rerun=rerun,
             )
 
-            # 6. Create service deployment record
+            # 4. Create service deployment record
             config = project_spec.get("config") or {}
             modules = config.get("modules", "backend")
             if isinstance(modules, list):
@@ -358,65 +466,22 @@ class DeployerNode(FunctionalNode):
             )
 
             deployed_url = f"http://{server_ip}:{port}"
+            suffix = " (after rerun)" if rerun else ""
             return {
                 "deployment_result": {"status": "success", "run_id": run_info["id"]},
                 "deployed_url": deployed_url,
                 "application_id": application_id,
-                "messages": [AIMessage(content=f"Deployment successful! URL: {deployed_url}")],
+                "messages": [
+                    AIMessage(content=f"Deployment successful{suffix}! URL: {deployed_url}")
+                ],
             }
 
         except (RuntimeError, TimeoutError) as e:
-            if type(e).__name__ == "WorkflowCancellationUnprovenError":
-                raise
-            if type(e).__name__ == "WorkflowCancelledError":
+            if type(e).__name__ in _CANCELLATION_ERRORS:
+                if type(e).__name__ == "WorkflowCancellationUnprovenError":
+                    raise
                 logger.info("deploy_workflow_cancelled", project_id=project_id, run_id=run_id)
                 return {"deployment_result": {"status": "cancelled"}}
-            logger.warning("deploy_workflow_failed", error=str(e))
-
-            # Attempt to rerun failed jobs (gets a new GH Actions runner)
-            run_info = await self._try_deploy_rerun(github, owner, repo, dispatch_time)
-            if run_info:
-                logger.info(
-                    "deploy_completed",
-                    owner=owner,
-                    repo=repo,
-                    run_id=run_info["id"],
-                    head_sha=run_info.get("head_sha"),
-                    rerun=True,
-                )
-
-                config = project_spec.get("config") or {}
-                modules = config.get("modules", "backend")
-                if isinstance(modules, list):
-                    modules = ",".join(modules)
-
-                application_id = await _create_deployment_record(
-                    project_id=project_id,
-                    service_name=project_name,
-                    server_handle=server_handle,
-                    port=port,
-                    deployment_info={
-                        "repo_full_name": f"{owner}/{repo}",
-                        "branch": "main",
-                        "modules": modules,
-                    },
-                    deployed_sha=run_info.get("head_sha"),
-                )
-
-                deployed_url = f"http://{server_ip}:{port}"
-                return {
-                    "deployment_result": {
-                        "status": "success",
-                        "run_id": run_info["id"],
-                    },
-                    "deployed_url": deployed_url,
-                    "application_id": application_id,
-                    "messages": [
-                        AIMessage(
-                            content=f"Deployment successful (after rerun)! URL: {deployed_url}"
-                        )
-                    ],
-                }
 
             error_prefix = (
                 "Deploy timeout" if isinstance(e, TimeoutError) else "Deploy workflow failed"
