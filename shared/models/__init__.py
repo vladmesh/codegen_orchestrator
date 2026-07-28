@@ -22,6 +22,7 @@ from .server_metrics_history import ServerMetricsHistory
 from .story import Story
 from .system_config import SystemConfig
 from .task import Task, TaskEvent
+from .temporary_access_grant import TemporaryAccessGrant
 from .user import User
 
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     "PortAllocation",
     "Task",
     "TaskEvent",
+    "TemporaryAccessGrant",
     "APIKey",
     "User",
     "Incident",

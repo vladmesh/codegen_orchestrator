@@ -117,6 +117,21 @@
   category: supervisor
   description: "Maximum age of server metrics used to resume capacity-waiting tasks"
 
+- key: supervisor.temporary_access_ttl_minutes
+  value: 60
+  category: supervisor
+  description: "Minutes a temporary access grant may live before it is revoked by timeout"
+
+- key: supervisor.temporary_access_revoke_stale_minutes
+  value: 15
+  category: supervisor
+  description: "Minutes an unfinished revoke deploy may run before the revoke is re-dispatched"
+
+- key: supervisor.temporary_access_max_revoke_attempts
+  value: 3
+  category: supervisor
+  description: "Revoke attempts before an unrevoked temporary access is escalated to admins"
+
 # --- deploy ---
 - key: deploy.max_deploy_fix_attempts
   value: 2

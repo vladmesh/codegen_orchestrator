@@ -40,6 +40,11 @@ from .task import (
     TaskTransition,
     TaskUpdate,
 )
+from .temporary_access import (
+    TemporaryAccessGrantCreate,
+    TemporaryAccessGrantRead,
+    TemporaryAccessGrantUpdate,
+)
 from .user import UserCreate, UserRead, UserUpdate, UserUpsert
 
 __all__ = [
@@ -97,6 +102,9 @@ __all__ = [
     "TaskRead",
     "TaskTransition",
     "TaskUpdate",
+    "TemporaryAccessGrantCreate",
+    "TemporaryAccessGrantRead",
+    "TemporaryAccessGrantUpdate",
     "UserUpsert",
     "SystemConfigCreate",
     "SystemConfigRead",

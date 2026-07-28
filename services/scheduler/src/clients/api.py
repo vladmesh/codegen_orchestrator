@@ -14,6 +14,11 @@ from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.contracts.dto.temporary_access import (
+    TemporaryAccessGrantCreate,
+    TemporaryAccessGrantDTO,
+    TemporaryAccessGrantUpdate,
+)
 from shared.contracts.dto.user import UserDTO
 from shared.log_config.correlation import get_correlation_id
 from src.config import get_settings
@@ -175,6 +180,47 @@ class SchedulerAPIClient:
         if not rows:
             return None
         return RunDTO.model_validate(rows[0])
+
+    async def get_run_if_missing_returns_none(self, run_id: str) -> RunDTO | None:
+        """Read a run, or None when it is gone.
+
+        A run that no longer exists is a real state for the temporary-access
+        sweep: whatever it was granted for cannot finish, so the grant is
+        settled by revoking it rather than by waiting forever.
+        """
+        try:
+            resp = await self._request("GET", f"runs/{run_id}")
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
+        return RunDTO.model_validate(resp.json())
+
+    # --- Temporary access grants ---
+
+    async def create_temporary_access_grant(
+        self, grant: TemporaryAccessGrantCreate
+    ) -> TemporaryAccessGrantDTO:
+        """Write the grant down before the access is handed out."""
+        resp = await self._request(
+            "POST", "temporary-access-grants/", json=grant.model_dump(mode="json")
+        )
+        return TemporaryAccessGrantDTO.model_validate(resp.json())
+
+    async def list_live_temporary_access_grants(self) -> list[TemporaryAccessGrantDTO]:
+        """Every grant that still holds access, whatever process granted it."""
+        resp = await self._request("GET", "temporary-access-grants/", params={"live": "true"})
+        return [TemporaryAccessGrantDTO.model_validate(row) for row in resp.json()]
+
+    async def update_temporary_access_grant(
+        self, grant_id: str, update: TemporaryAccessGrantUpdate
+    ) -> TemporaryAccessGrantDTO:
+        resp = await self._request(
+            "PATCH",
+            f"temporary-access-grants/{grant_id}",
+            json=update.model_dump(mode="json", exclude_unset=True),
+        )
+        return TemporaryAccessGrantDTO.model_validate(resp.json())
 
     # --- Stories ---
 

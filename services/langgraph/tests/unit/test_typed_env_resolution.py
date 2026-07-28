@@ -474,3 +474,52 @@ async def test_template_contract_fixture_resolves_production_entries(_decrypt, a
     assert result["missing_user_secrets"] == []
     assert result["non_secret_values"]["POSTGRES_DB"] == "db_project_1"
     assert result["non_secret_values"]["POSTGRES_REQUIRE_SSL"] == "false"
+
+
+def _test_identity_contract() -> dict:
+    """The template slot a QA run borrows and gives back."""
+    return {
+        **_bot_contract(),
+        "TG_BOT_TEST_TELEGRAM_ID": {
+            "source": "literal",
+            "value": "",
+            "environments": ["production"],
+            "consumers": ["tg_bot"],
+            "required": False,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_revoking_the_test_identity_deploys_an_empty_value():
+    """Revocation reaches the deployed environment as no identity at all.
+
+    The bot decides access from this value, so an override that cleared it must
+    arrive as an empty literal rather than as the previously granted id.
+    """
+    state = _state(_test_identity_contract())
+    state["project_spec"]["config"]["bot_access"] = {
+        "mode": "only_me",
+        "allowed_telegram_ids": "42",
+    }
+    state["project_spec"]["config"]["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"}
+    state["env_overrides"] = {"TG_BOT_TEST_TELEGRAM_ID": ""}
+
+    result = await SecretResolverNode().run(state)
+
+    assert result["non_secret_values"]["TG_BOT_TEST_TELEGRAM_ID"] == ""
+
+
+@pytest.mark.asyncio
+async def test_granting_the_test_identity_deploys_the_borrowed_id():
+    state = _state(_test_identity_contract())
+    state["project_spec"]["config"]["bot_access"] = {
+        "mode": "only_me",
+        "allowed_telegram_ids": "42",
+    }
+    state["project_spec"]["config"]["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"}
+    state["env_overrides"] = {"TG_BOT_TEST_TELEGRAM_ID": "424242"}
+
+    result = await SecretResolverNode().run(state)
+
+    assert result["non_secret_values"]["TG_BOT_TEST_TELEGRAM_ID"] == "424242"

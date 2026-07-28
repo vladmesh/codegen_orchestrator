@@ -2,6 +2,20 @@
 
 ## 2026-07-28
 
+- Temporary test access to a deployed bot is now revoked by state instead of by the tail of a
+  successful QA run. Handing the access out writes a `temporary_access_grants` row first (what
+  was given, to which project, on which commit, for which QA run) and only then deploys the
+  value. A scheduler sweep reads every live grant and revokes it once the run it was made for
+  reached any terminal state, disappeared, or the grant outlived
+  `supervisor.temporary_access_ttl_minutes` (a separate `temporary_access_grant_expired` event
+  plus an admin alert, not a quiet cleanup). Revocation redeploys the granted commit with the
+  value cleared, using the pinned-commit deploy, so the bot that loses the access is the bot that
+  was given it. The record survives every process involved: a revoke deploy that is abandoned or
+  never finishes is re-dispatched, and repeating a revoke that already landed is a redundant
+  deploy, not an error. Access that cannot be taken back fails that QA run with the grant named
+  (`qa_cleanup_failed`) and stays live for the next sweep; it never crashes the consumer or the
+  scheduler, and never passes as success.
+
 - Deploy can now roll out one named commit instead of whatever main holds at dispatch time.
   `workflow_dispatch` only accepts a branch or a tag in `ref`, so a requested `head_sha` is pinned
   by a temporary tag `codegen-deploy-pin-<sha>`, created before the dispatch and dropped on every

@@ -139,3 +139,18 @@ def test_legacy_private_bot_rejects_a_deploy_audience_override() -> None:
 
     with pytest.raises(ValueError, match="legacy private bot"):
         _effective_env_overrides(project, {"TG_BOT_ALLOWED_TELEGRAM_IDS": ""})
+
+
+@pytest.mark.asyncio
+async def test_repeating_a_landed_revoke_is_redundant() -> None:
+    """Revoking access that is already gone must not be an error.
+
+    The reconciler retries until it sees a successful deploy, so a retry that
+    arrives after the value was cleared has to be cheap and successful rather
+    than a second rollout.
+    """
+
+    cleared = {"TG_BOT_TEST_TELEGRAM_ID": ""}
+    recorded = _deployment(HEAD, env_overrides_digest(cleared))
+    with patch("src.consumers.deploy.api_client", _api([recorded])):
+        assert await _already_deployed_application(ALLOCATED, HEAD, cleared) == 7

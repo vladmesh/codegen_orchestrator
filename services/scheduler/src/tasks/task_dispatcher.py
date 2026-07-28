@@ -46,6 +46,7 @@ from .supervisor import (
     supervise_waiting_resource_tasks,
     supervise_waiting_user_secret_stories,
 )
+from .temporary_access import supervise_temporary_access
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
@@ -67,6 +68,7 @@ __all__ = [
     "supervise_stuck_tasks",
     "supervise_testing_stories",
     "supervise_waiting_resource_tasks",
+    "supervise_temporary_access",
     "supervise_waiting_user_secret_stories",
     "task_dispatcher_loop",
 ]
@@ -367,6 +369,7 @@ async def task_dispatcher_loop() -> None:
                     api_client, redis_client
                 )
                 testing = await supervise_testing_stories(api_client, redis_client)
+                temporary_access = await supervise_temporary_access(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -394,6 +397,9 @@ async def task_dispatcher_loop() -> None:
                     + testing.get("completed", 0)
                     + testing.get("redispatched", 0)
                     + testing.get("failed", 0)
+                    + temporary_access.get("dispatched", 0)
+                    + temporary_access.get("revoked", 0)
+                    + temporary_access.get("revoke_failed", 0)
                 )
                 if supervisor_active:
                     logger.info(
@@ -413,6 +419,10 @@ async def task_dispatcher_loop() -> None:
                         qa_completed=testing.get("completed", 0),
                         qa_redispatched=testing.get("redispatched", 0),
                         qa_failed=testing.get("failed", 0),
+                        temporary_access_dispatched=temporary_access.get("dispatched", 0),
+                        temporary_access_revoked=temporary_access.get("revoked", 0),
+                        temporary_access_expired=temporary_access.get("expired", 0),
+                        temporary_access_revoke_failed=temporary_access.get("revoke_failed", 0),
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")

@@ -28,7 +28,11 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   recorded with the deployment, so the same commit with a different environment is a different
   deploy and is not skipped. Filling the audience from the PO access menu is
   `codegen_orchestrator-826`; issuing and revoking the temporary test identity around a QA run is
-  `codegen_orchestrator-744`.
+  `codegen_orchestrator-744`. `codegen_orchestrator-843` landed the mechanism it stands on: a
+  grant is a durable `temporary_access_grants` row written before the deploy that applies the
+  value, and the scheduler sweep `supervise_temporary_access` revokes it by redeploying the
+  same commit with the value cleared once the QA run it serves reached any terminal state,
+  vanished, or the grant outlived its TTL.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker
