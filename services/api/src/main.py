@@ -7,6 +7,7 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import structlog
@@ -56,9 +57,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         headers=dict(request.headers),
     )
 
+    # A model_validator raising ValueError puts the exception object itself into
+    # the error ctx, which json.dumps cannot take. Encode before responding.
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors(), "body": exc.body},
+        content=jsonable_encoder({"detail": exc.errors(), "body": exc.body}),
     )
 
 

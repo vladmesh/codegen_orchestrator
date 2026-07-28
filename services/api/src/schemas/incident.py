@@ -2,16 +2,19 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.incident import IncidentStatus, IncidentType
+from shared.contracts.dto.incident import IncidentStatus, IncidentType, require_server_handle
 
 
 class IncidentBase(BaseModel):
     """Base incident schema."""
 
-    server_handle: str = Field(description="Server handle")
+    server_handle: str | None = Field(
+        default=None,
+        description="Server handle; None only for provider_api_unavailable incidents",
+    )
     incident_type: IncidentType = Field(description="Type of incident")
     details: dict = Field(default_factory=dict, description="Additional details")
     affected_services: list = Field(default_factory=list, description="List of affected services")
@@ -20,7 +23,10 @@ class IncidentBase(BaseModel):
 class IncidentCreate(IncidentBase):
     """Schema for creating an incident."""
 
-    pass
+    @model_validator(mode="after")
+    def _require_server_handle(self) -> "IncidentCreate":
+        require_server_handle(self.incident_type, self.server_handle)
+        return self
 
 
 class IncidentUpdate(BaseModel):

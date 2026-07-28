@@ -1,6 +1,8 @@
 import httpx
 import pytest
 
+from shared.clients.time4vps import Time4VPSAPIError
+from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerStatus
 from src.tasks import server_sync
 
@@ -78,3 +80,52 @@ async def test_server_sync_integration_flow(time4vps_mock, api_client):
     assert target.handle == "vps-999"
     assert target.status == ServerStatus.PENDING_SETUP  # New managed servers are pending setup
     assert target.is_managed is True
+
+
+@pytest.mark.asyncio
+async def test_provider_outage_is_one_incident_that_closes_on_recovery(time4vps_mock, api_client):
+    """A repeating Time4VPS failure opens exactly one incident and resolves on recovery."""
+    async with httpx.AsyncClient(base_url=api_client.base_url) as client:
+        resp = await client.post(
+            "/api/api-keys/",
+            json={
+                "service": "time4vps",
+                "type": "credentials",
+                "value": {"username": "test", "password": "test"},
+                "project_id": None,
+            },
+        )
+        assert resp.status_code == httpx.codes.CREATED, f"Failed to seed API key: {resp.text}"
+
+    failing = time4vps_mock.get("/api/server").respond(
+        status_code=401,
+        text='{"error":["ipnotallowed","unauthorized"]}',
+    )
+
+    time4vps_client = await server_sync.get_time4vps_client()
+
+    for _ in range(3):
+        with pytest.raises(Time4VPSAPIError):
+            await server_sync._sync_server_list(time4vps_client)
+
+    assert failing.call_count == 3  # noqa: PLR2004
+
+    outages = [
+        incident
+        for incident in await api_client.list_active_incidents()
+        if incident.incident_type is IncidentType.PROVIDER_API_UNAVAILABLE
+    ]
+    assert len(outages) == 1
+    assert outages[0].server_handle is None
+    assert "ipnotallowed" in outages[0].details["response_body"]
+    assert outages[0].details["status_code"] == httpx.codes.UNAUTHORIZED
+
+    time4vps_mock.get("/api/server").respond(status_code=200, json=[])
+    await server_sync._sync_server_list(time4vps_client)
+
+    still_active = [
+        incident
+        for incident in await api_client.list_active_incidents()
+        if incident.incident_type is IncidentType.PROVIDER_API_UNAVAILABLE
+    ]
+    assert still_active == []

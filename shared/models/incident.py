@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.incident import IncidentStatus, IncidentType  # noqa: F401
@@ -14,10 +14,19 @@ class Incident(Base):
     """Incident model - tracks server and service incidents."""
 
     __tablename__ = "incidents"
+    __table_args__ = (
+        CheckConstraint(
+            "server_handle IS NOT NULL OR incident_type = "
+            f"'{IncidentType.PROVIDER_API_UNAVAILABLE.value}'",
+            name="ck_incidents_server_handle_required",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    server_handle: Mapped[str] = mapped_column(
-        String(255), ForeignKey("servers.handle"), index=True
+    # NULL only for a provider API outage: every other type is deduplicated by
+    # (server_handle, incident_type), and NULLs never collide in that index.
+    server_handle: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("servers.handle"), index=True, nullable=True
     )
     incident_type: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(50), default=IncidentStatus.DETECTED.value)

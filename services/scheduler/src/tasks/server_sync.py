@@ -8,7 +8,7 @@ import time
 
 import structlog
 
-from shared.clients.time4vps import Time4VPSClient
+from shared.clients.time4vps import Time4VPSAPIError, Time4VPSClient
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
 from shared.notifications import notify_admins_best_effort
@@ -22,6 +22,9 @@ logger = structlog.get_logger()
 # Config
 GHOST_SERVERS = os.getenv("GHOST_SERVERS", "").split(",")
 GHOST_SERVERS = [ip.strip() for ip in GHOST_SERVERS if ip.strip()]
+
+# Label for the external dependency this worker depends on, stored in incident details.
+PROVIDER_DEPENDENCY = "time4vps_api"
 
 
 def _sync_interval() -> int:
@@ -73,9 +76,12 @@ async def sync_servers_worker():
         details_updated = 0
         triggers_published = 0
         incidents_resolved = 0
+        sync_completed = False
+        failure_reason: str | None = None
         try:
             client = await get_time4vps_client()
             if not client:
+                failure_reason = "time4vps_credentials_missing"
                 logger.warning("time4vps_credentials_missing")
             else:
                 # Basic sync every iteration
@@ -94,8 +100,10 @@ async def sync_servers_worker():
                 # Check for servers requiring provisioning
                 triggers_published = await _check_provisioning_triggers()
                 incidents_resolved = await _reconcile_provisioning_incidents()
+                sync_completed = True
 
         except Exception as e:
+            failure_reason = f"{type(e).__name__}: {e}"
             logger.error(
                 "server_sync_worker_error",
                 error=str(e),
@@ -104,22 +112,31 @@ async def sync_servers_worker():
             )
         finally:
             duration = time.time() - start_time
-            logger.info(
-                "server_sync_complete",
-                servers_discovered=servers_discovered,
-                servers_updated=servers_updated,
-                servers_missing=servers_missing,
-                details_updated=details_updated,
-                triggers_published=triggers_published,
-                incidents_resolved=incidents_resolved,
-                duration_sec=round(duration, 2),
-            )
+            counters = {
+                "servers_discovered": servers_discovered,
+                "servers_updated": servers_updated,
+                "servers_missing": servers_missing,
+                "details_updated": details_updated,
+                "triggers_published": triggers_published,
+                "incidents_resolved": incidents_resolved,
+                "duration_sec": round(duration, 2),
+            }
+            if sync_completed:
+                logger.info("server_sync_complete", **counters)
+            else:
+                # Zero counters from an aborted cycle read exactly like "no servers
+                # exist". Never report an unfinished cycle at info level.
+                logger.error("server_sync_incomplete", reason=failure_reason, **counters)
 
         await asyncio.sleep(_sync_interval())
 
 
 async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
-    """Sync basic server list - discover new, mark missing."""
+    """Sync basic server list - discover new, mark missing.
+
+    Raises whatever the provider call raised: a cycle that could not read the
+    provider has not synced anything and must not report zero counters as a result.
+    """
     try:
         api_servers = await client.get_servers()
     except Exception as e:
@@ -129,7 +146,10 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
             error_type=type(e).__name__,
             exc_info=True,
         )
-        return 0, 0, 0
+        await _record_provider_outage(e)
+        raise
+
+    await _resolve_provider_outage()
 
     # Fetch existing servers from API
     db_servers_list = await api_client.get_servers()
@@ -251,6 +271,57 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
             server_handle=server.handle,
         )
     return discovered_count, updated_count, missing_count
+
+
+def _outage_details(error: Exception) -> dict:
+    """Describe a provider failure, keeping the response body when there is one."""
+    details: dict = {
+        "dependency": PROVIDER_DEPENDENCY,
+        "error_type": type(error).__name__,
+        "error": str(error),
+    }
+    if isinstance(error, Time4VPSAPIError):
+        details["status_code"] = error.status_code
+        details["response_body"] = error.body
+    return details
+
+
+async def _active_provider_outages() -> list:
+    incidents = await api_client.list_active_incidents()
+    return [
+        incident
+        for incident in incidents
+        if incident.incident_type is IncidentType.PROVIDER_API_UNAVAILABLE
+    ]
+
+
+async def _record_provider_outage(error: Exception) -> None:
+    """Open one incident per provider outage, not one signal per failed cycle."""
+    if await _active_provider_outages():
+        return  # Already tracked: the outage is one incident, not one per minute
+
+    details = _outage_details(error)
+    await api_client.create_incident(
+        server_handle=None,
+        incident_type=IncidentType.PROVIDER_API_UNAVAILABLE,
+        details=details,
+    )
+    await notify_admins_best_effort(
+        f"Time4VPS API is unavailable, server sync is stopped. Reason: {details['error']}",
+        level="critical",
+        component="server_sync",
+    )
+
+
+async def _resolve_provider_outage() -> None:
+    """Close the outage incident once the provider answers again."""
+    for incident in await _active_provider_outages():
+        await api_client.resolve_incident(incident.id)
+        await notify_admins_best_effort(
+            "Time4VPS API is reachable again, server sync resumed. Incident auto-resolved.",
+            level="success",
+            component="server_sync",
+        )
 
 
 async def _sync_server_details(client: Time4VPSClient) -> int:

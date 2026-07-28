@@ -2,7 +2,9 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
+from shared.clients.time4vps import Time4VPSAPIError
 from shared.contracts.dto.incident import IncidentDTO, IncidentStatus, IncidentType
 from shared.contracts.dto.server import ServerDTO, ServerStatus
 from src.tasks import server_sync
@@ -50,6 +52,7 @@ async def test_sync_server_list_discovers_new_managed(
     mock_time4vps_client.get_servers.return_value = [api_server]
 
     mock_api_client.get_servers = AsyncMock(return_value=[])  # No DB servers
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
 
     new_server_dto = ServerDTO(
         handle="vps-1001",
@@ -242,3 +245,162 @@ async def test_reconcile_is_idempotent_after_the_incident_is_resolved(
     assert (first, second) == (1, 0)
     mock_api_client.resolve_incident.assert_awaited_once_with(1)
     mock_notify_admins.assert_not_awaited()
+
+
+def _provider_outage_incident(incident_id: int = 7) -> IncidentDTO:
+    return IncidentDTO(
+        id=incident_id,
+        server_handle=None,
+        incident_type=IncidentType.PROVIDER_API_UNAVAILABLE,
+        status=IncidentStatus.DETECTED,
+        detected_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_aborts_the_sync_instead_of_reporting_zeros(
+    mock_api_client, mock_time4vps_client, mock_notify_admins
+):
+    mock_time4vps_client.get_servers.side_effect = Time4VPSAPIError(
+        "GET", "https://billing.time4vps.com/api/server", 401, '{"error":["ipnotallowed"]}'
+    )
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.create_incident = AsyncMock()
+
+    with pytest.raises(Time4VPSAPIError):
+        await server_sync._sync_server_list(mock_time4vps_client)
+
+    mock_api_client.get_servers.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_opens_one_incident_carrying_the_response_body(
+    mock_api_client, mock_time4vps_client, mock_notify_admins
+):
+    mock_time4vps_client.get_servers.side_effect = Time4VPSAPIError(
+        "GET", "https://billing.time4vps.com/api/server", 401, '{"error":["ipnotallowed"]}'
+    )
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.create_incident = AsyncMock()
+
+    with pytest.raises(Time4VPSAPIError):
+        await server_sync._sync_server_list(mock_time4vps_client)
+
+    mock_api_client.create_incident.assert_awaited_once()
+    kwargs = mock_api_client.create_incident.await_args.kwargs
+    assert kwargs["server_handle"] is None
+    assert kwargs["incident_type"] is IncidentType.PROVIDER_API_UNAVAILABLE
+    assert kwargs["details"]["status_code"] == 401  # noqa: PLR2004
+    assert "ipnotallowed" in kwargs["details"]["response_body"]
+    mock_notify_admins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_repeated_provider_failure_does_not_signal_every_cycle(
+    mock_api_client, mock_time4vps_client, mock_notify_admins
+):
+    mock_time4vps_client.get_servers.side_effect = Time4VPSAPIError(
+        "GET", "https://billing.time4vps.com/api/server", 401, '{"error":["ipnotallowed"]}'
+    )
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[_provider_outage_incident()])
+    mock_api_client.create_incident = AsyncMock()
+
+    for _ in range(3):
+        with pytest.raises(Time4VPSAPIError):
+            await server_sync._sync_server_list(mock_time4vps_client)
+
+    mock_api_client.create_incident.assert_not_awaited()
+    mock_notify_admins.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_provider_resolves_the_outage_incident(
+    mock_api_client, mock_time4vps_client, mock_notify_admins
+):
+    mock_time4vps_client.get_servers.return_value = []
+    mock_api_client.get_servers = AsyncMock(return_value=[])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[_provider_outage_incident(7)])
+    mock_api_client.resolve_incident = AsyncMock()
+
+    await server_sync._sync_server_list(mock_time4vps_client)
+
+    mock_api_client.resolve_incident.assert_awaited_once_with(7)
+    mock_notify_admins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_healthy_cycle_leaves_the_journal_alone(
+    mock_api_client, mock_time4vps_client, mock_notify_admins
+):
+    mock_time4vps_client.get_servers.return_value = []
+    mock_api_client.get_servers = AsyncMock(return_value=[])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.resolve_incident = AsyncMock()
+    mock_api_client.create_incident = AsyncMock()
+
+    await server_sync._sync_server_list(mock_time4vps_client)
+
+    mock_api_client.resolve_incident.assert_not_awaited()
+    mock_api_client.create_incident.assert_not_awaited()
+
+
+async def _run_one_worker_cycle() -> list[dict]:
+    """Run a single sync_servers_worker iteration and return the emitted log entries."""
+    with (
+        patch("src.tasks.server_sync.asyncio.sleep", side_effect=_StopWorker),
+        patch("src.tasks.server_sync._sync_interval", return_value=1),
+        patch("src.tasks.server_sync._details_sync_interval", return_value=10_000),
+        capture_logs() as logs,
+        pytest.raises(_StopWorker),
+    ):
+        await server_sync.sync_servers_worker()
+    return logs
+
+
+class _StopWorker(Exception):
+    """Breaks the worker's infinite loop after one cycle."""
+
+
+@pytest.mark.asyncio
+async def test_failed_cycle_is_not_logged_as_a_completed_sync(
+    mock_api_client, mock_time4vps_client, mock_notify_admins
+):
+    mock_time4vps_client.get_servers.side_effect = Time4VPSAPIError(
+        "GET", "https://billing.time4vps.com/api/server", 401, '{"error":["ipnotallowed"]}'
+    )
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.create_incident = AsyncMock()
+
+    with patch(
+        "src.tasks.server_sync.get_time4vps_client",
+        new=AsyncMock(return_value=mock_time4vps_client),
+    ):
+        logs = await _run_one_worker_cycle()
+
+    events = [entry["event"] for entry in logs]
+    assert "server_sync_complete" not in events
+    incomplete = [entry for entry in logs if entry["event"] == "server_sync_incomplete"]
+    assert len(incomplete) == 1
+    assert incomplete[0]["log_level"] == "error"
+    assert "ipnotallowed" in incomplete[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_successful_empty_cycle_still_reports_completion(
+    mock_api_client, mock_time4vps_client, mock_notify_admins
+):
+    mock_time4vps_client.get_servers.return_value = []
+    mock_api_client.get_servers = AsyncMock(return_value=[])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+
+    with patch(
+        "src.tasks.server_sync.get_time4vps_client",
+        new=AsyncMock(return_value=mock_time4vps_client),
+    ):
+        logs = await _run_one_worker_cycle()
+
+    events = [entry["event"] for entry in logs]
+    assert "server_sync_complete" in events
+    assert "server_sync_incomplete" not in events

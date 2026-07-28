@@ -211,6 +211,9 @@ async def my_node(state: dict) -> dict:
 | `server_sync_worker_started` | info | Server sync started | — |
 | `server_reappeared` | info | Server back online | `server_ip` |
 | `server_missing_from_time4vps` | warning | Server not in provider | `server_ip` |
+| `server_sync_complete` | info | Sync cycle finished | counters, `duration_sec` |
+| `server_sync_incomplete` | error | Cycle aborted, counters are meaningless | `reason`, counters |
+| `time4vps_http_error` | error | Provider answered 4xx/5xx | `method`, `url`, `status_code`, `body` |
 | `server_details_sync_start` | info | Details sync started | — |
 | `server_details_sync_complete` | info | Details sync done | `updated_count` |
 | `server_pending_setup_trigger` | info | Setup triggered | `server_handle` |
