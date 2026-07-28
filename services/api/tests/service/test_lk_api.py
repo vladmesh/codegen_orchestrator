@@ -13,7 +13,7 @@ import jwt
 import pytest
 from redis.asyncio import Redis
 
-from shared.analytics_health import ANALYTICS_HEARTBEAT_KEY
+from shared.analytics_health import ANALYTICS_HEARTBEAT_KEY, encode_heartbeat
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
@@ -206,7 +206,11 @@ class TestListProjects:
 # ---------------------------------------------------------------------------
 
 
-async def _set_heartbeat(async_client, moment: dt.datetime | None):
+async def _set_heartbeat(
+    async_client,
+    moment: dt.datetime | None,
+    failed_project_ids: set[str] = frozenset(),
+):
     """Write (or remove) the analytics aggregator heartbeat."""
     if moment is None:
         await async_client.delete(f"/api/system-configs/{ANALYTICS_HEARTBEAT_KEY}")
@@ -215,7 +219,7 @@ async def _set_heartbeat(async_client, moment: dt.datetime | None):
         "/api/system-configs/",
         json={
             "key": ANALYTICS_HEARTBEAT_KEY,
-            "value": moment.isoformat(),
+            "value": encode_heartbeat(moment, failed_project_ids),
             "category": "analytics",
             "description": "Last completed analytics aggregation cycle",
             "updated_by": "service-test",
@@ -487,7 +491,7 @@ class TestCollectionHealth:
         data = resp.json()
         assert data["total_requests"] == 0
         assert data["collection"]["state"] == "ok"
-        assert data["collection"]["last_success_at"] is not None
+        assert data["collection"]["last_cycle_at"] is not None
 
     async def test_summary_reports_never_without_heartbeat(self, async_client, lk_user_and_project):
         """Aggregator never completed a cycle → zeros are not a real answer."""
@@ -502,7 +506,7 @@ class TestCollectionHealth:
         assert resp.status_code == 200
         collection = resp.json()["collection"]
         assert collection["state"] == "never"
-        assert collection["last_success_at"] is None
+        assert collection["last_cycle_at"] is None
 
     async def test_stale_heartbeat_marks_collection_stale(self, async_client, lk_user_and_project):
         await _set_heartbeat(async_client, dt.datetime.now(dt.UTC) - dt.timedelta(hours=5))
@@ -553,3 +557,34 @@ class TestCollectionHealth:
         projects = resp.json()
         assert projects
         assert all(p["collection"]["state"] == "ok" for p in projects)
+
+    async def test_fresh_cycle_that_failed_on_this_project_is_not_ok(
+        self, async_client, lk_user_and_project
+    ):
+        """A cycle finishing with this project failed must not read as 'no traffic'."""
+        project_id = lk_user_and_project["project_id"]
+        await _set_heartbeat(async_client, dt.datetime.now(dt.UTC), {project_id})
+        token = _make_jwt(lk_user_and_project["user_id"])
+
+        resp = await async_client.get(
+            f"/api/lk/projects/{project_id}/summary",
+            params={"period": "7d"},
+            headers=_auth_header(token),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["collection"]["state"] == "failing"
+
+    async def test_other_projects_stay_ok_when_one_project_fails(
+        self, async_client, lk_user_and_project
+    ):
+        """A failure on someone else's project doesn't invalidate this one's zeros."""
+        await _set_heartbeat(async_client, dt.datetime.now(dt.UTC), {str(uuid.uuid4())})
+        token = _make_jwt(lk_user_and_project["user_id"])
+
+        resp = await async_client.get(
+            f"/api/lk/projects/{lk_user_and_project['project_id']}/summary",
+            params={"period": "7d"},
+            headers=_auth_header(token),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["collection"]["state"] == "ok"

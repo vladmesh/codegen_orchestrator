@@ -4,7 +4,7 @@ import type { LkProject } from '@/types/api'
 import StatusBadge from './StatusBadge'
 import MetricValue from './MetricValue'
 import { formatNumber, formatMs, formatPercent } from '@/lib/utils'
-import { emptyDataText } from './CollectionNotice'
+import CollectionNotice, { emptyDataText } from './CollectionNotice'
 
 export default function ProjectCard({ project }: { project: LkProject }) {
   const navigate = useNavigate()
@@ -22,6 +22,13 @@ export default function ProjectCard({ project }: { project: LkProject }) {
         </div>
         <ChevronRight className="h-4 w-4 text-muted-foreground" />
       </div>
+
+      {/* Per-project: a card may be empty because collection failed for it */}
+      {project.collection.state !== 'ok' && (
+        <div className="mb-3">
+          <CollectionNotice collection={project.collection} />
+        </div>
+      )}
 
       {d ? (
         <div className="grid grid-cols-4 gap-2">

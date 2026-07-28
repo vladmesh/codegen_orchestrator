@@ -1,9 +1,10 @@
 import { AlertTriangle } from 'lucide-react'
-import type { CollectionHealth } from '@/types/api'
+import type { CollectionHealth, CollectionState } from '@/types/api'
 
-const NOTICE: Record<string, string> = {
+const NOTICE: Record<Exclude<CollectionState, 'ok'>, string> = {
   never: 'Сбор аналитики ни разу не отработал. Цифры ниже пустые из-за этого, а не из-за отсутствия трафика.',
   stale: 'Сбор аналитики не работает: последние данные не обновлялись. Показанные цифры устарели.',
+  failing: 'Сбор аналитики по этому проекту падает: последний цикл не собрал данные. Цифры ниже неполные.',
 }
 
 /** Text for an empty metric block — honest about why it is empty. */
@@ -15,8 +16,8 @@ export function emptyDataText(collection: CollectionHealth): string {
 export default function CollectionNotice({ collection }: { collection: CollectionHealth }) {
   if (collection.state === 'ok') return null
 
-  const since = collection.last_success_at
-    ? ` Последний успешный сбор: ${new Date(collection.last_success_at).toLocaleString('ru-RU')}.`
+  const since = collection.last_cycle_at
+    ? ` Последний завершённый цикл сбора: ${new Date(collection.last_cycle_at).toLocaleString('ru-RU')}.`
     : ''
 
   return (

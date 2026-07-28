@@ -13,14 +13,14 @@ from shared.analytics_health import CollectionState
 
 
 class CollectionHealth(BaseModel):
-    """Whether analytics are being collected at all.
+    """Whether analytics are being collected for this project.
 
-    Lets the dashboard say "no traffic yet" only when collection is actually
-    running; otherwise it reports that collection is down.
+    Lets the dashboard say "no traffic yet" only when collection actually ran
+    and succeeded; otherwise it reports that collection is down.
     """
 
     state: CollectionState
-    last_success_at: dt.datetime | None
+    last_cycle_at: dt.datetime | None
 
 
 # --- Auth ---

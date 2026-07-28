@@ -5,11 +5,11 @@ export interface TokenExchangeResponse {
   token_type: string
 }
 
-export type CollectionState = 'ok' | 'stale' | 'never'
+export type CollectionState = 'ok' | 'failing' | 'stale' | 'never'
 
 export interface CollectionHealth {
   state: CollectionState
-  last_success_at: string | null
+  last_cycle_at: string | null
 }
 
 export interface LatestDailySummary {

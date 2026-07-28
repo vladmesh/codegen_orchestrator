@@ -11,6 +11,7 @@ from shared.analytics_health import (
     ANALYTICS_HEARTBEAT_KEY,
     CollectionState,
     collection_state,
+    decode_heartbeat,
 )
 from shared.models import SystemConfig, User
 from shared.models.analytics_daily import AnalyticsDaily
@@ -40,13 +41,25 @@ router = APIRouter(prefix="/lk", tags=["lk"])
 _STATUS_UP_THRESHOLD = dt.timedelta(hours=2)
 
 
-async def _collection_health(db: AsyncSession) -> CollectionHealth:
-    """Read the aggregator heartbeat so the LK can qualify empty analytics."""
+async def _collection_health(
+    db: AsyncSession,
+    project_id: uuid.UUID | None = None,
+) -> CollectionHealth:
+    """Read the aggregator heartbeat so the LK can qualify empty analytics.
+
+    With a project_id, the state also covers that project's own collection: a
+    cycle that finished but failed on this project is not an empty result.
+    """
     row = await db.get(SystemConfig, ANALYTICS_HEARTBEAT_KEY)
-    last_success_at = dt.datetime.fromisoformat(row.value) if row else None
+    heartbeat = decode_heartbeat(row.value) if row else None
+    state = collection_state(
+        heartbeat,
+        dt.datetime.now(dt.UTC),
+        str(project_id) if project_id else None,
+    )
     return CollectionHealth(
-        state=collection_state(last_success_at, dt.datetime.now(dt.UTC)),
-        last_success_at=last_success_at,
+        state=state,
+        last_cycle_at=heartbeat.completed_at if heartbeat else None,
     )
 
 
@@ -81,7 +94,6 @@ async def list_projects(
     )
     projects = result.scalars().all()
 
-    collection = await _collection_health(db)
     response = []
     for project in projects:
         # Get latest daily summary
@@ -109,7 +121,7 @@ async def list_projects(
                 name=project.title,
                 status=project.status,
                 latest_daily=latest_daily,
-                collection=collection,
+                collection=await _collection_health(db, project.id),
             )
         )
 
@@ -132,7 +144,7 @@ async def project_summary(
     await _get_owned_project(project_id, user, db)
 
     now = dt.datetime.now(dt.UTC)
-    collection = await _collection_health(db)
+    collection = await _collection_health(db, project_id)
 
     if period == SummaryPeriod.H24:
         # Use hourly data for 24h period
@@ -382,7 +394,7 @@ async def project_chart(
         metric=metric,
         period=period,
         data=data,
-        collection=await _collection_health(db),
+        collection=await _collection_health(db, project_id),
     )
 
 
@@ -416,7 +428,7 @@ async def project_status(
     result = await db.execute(select(subq))
     rows = result.all()
 
-    collection = await _collection_health(db)
+    collection = await _collection_health(db, project_id)
 
     services = []
     for row in rows:

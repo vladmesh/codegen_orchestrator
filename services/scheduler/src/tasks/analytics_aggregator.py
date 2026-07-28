@@ -10,6 +10,7 @@ Runs every hour at :05. For each active project:
 
 import asyncio
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import hashlib
 import os
@@ -17,7 +18,7 @@ import time
 
 import structlog
 
-from shared.analytics_health import ANALYTICS_HEARTBEAT_KEY
+from shared.analytics_health import ANALYTICS_HEARTBEAT_KEY, encode_heartbeat
 from shared.clients.loki import LokiClient
 from src.clients.api import api_client
 
@@ -170,13 +171,27 @@ def _hash_user_id(user_id: str) -> str:
     return hashlib.sha256(user_id.encode()).hexdigest()
 
 
-async def _aggregate_hourly(loki: LokiClient, bucket_start: datetime, bucket_end: datetime):
+@dataclass
+class CycleResult:
+    """Which projects a cycle tried to collect, and which of them failed."""
+
+    attempted: set[str] = field(default_factory=set)
+    failed: set[str] = field(default_factory=set)
+
+
+async def _aggregate_hourly(
+    loki: LokiClient,
+    bucket_start: datetime,
+    bucket_end: datetime,
+) -> CycleResult:
     """Run hourly aggregation for all active projects."""
+    result = CycleResult()
+
     # Get projects that have running applications
     apps = await api_client.get_applications(status="running")
     if not apps:
         logger.info("analytics_no_active_apps")
-        return
+        return result
 
     # Group applications by project_id (via repo → project chain)
     # We need project_id for each app; get it from repositories
@@ -186,19 +201,25 @@ async def _aggregate_hourly(loki: LokiClient, bucket_start: datetime, bucket_end
         matching = [r for r in repo if r.id == app.repo_id]
         if not matching:
             continue
-        pid = matching[0].project_id
+        # DTO carries a UUID; everything downstream (LogQL labels, JSON
+        # payloads, heartbeat) works with the string form.
+        pid = str(matching[0].project_id)
         if pid not in project_services:
             project_services[pid] = set()
         project_services[pid].add(app.service_name)
 
     for project_id, services in project_services.items():
+        result.attempted.add(project_id)
         try:
             await _aggregate_project_hourly(loki, project_id, services, bucket_start, bucket_end)
         except Exception:
+            result.failed.add(project_id)
             logger.exception(
                 "analytics_project_error",
                 project_id=project_id,
             )
+
+    return result
 
 
 async def _aggregate_project_hourly(
@@ -263,8 +284,8 @@ async def _aggregate_project_hourly(
     )
 
 
-async def _run_daily_rollup(yesterday: datetime):
-    """Roll up hourly data into daily for yesterday."""
+async def _run_daily_rollup(yesterday: datetime) -> set[str]:
+    """Roll up hourly data into daily for yesterday. Returns failed project ids."""
     yesterday_date = yesterday.date().isoformat()
     today_start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     yesterday_start = today_start - timedelta(days=1)
@@ -276,8 +297,9 @@ async def _run_daily_rollup(yesterday: datetime):
         repos = await api_client.get_repositories()
         matching = [r for r in repos if r.id == app.repo_id]
         if matching:
-            project_ids.add(matching[0].project_id)
+            project_ids.add(str(matching[0].project_id))
 
+    failed: set[str] = set()
     for project_id in project_ids:
         try:
             hourly_rows = await api_client.get_analytics_hourly(
@@ -305,10 +327,13 @@ async def _run_daily_rollup(yesterday: datetime):
                 date=yesterday_date,
             )
         except Exception:
+            failed.add(project_id)
             logger.exception(
                 "analytics_daily_rollup_error",
                 project_id=project_id,
             )
+
+    return failed
 
 
 async def _cleanup():
@@ -322,16 +347,17 @@ async def _cleanup():
     )
 
 
-async def _record_heartbeat(completed_at: datetime):
-    """Publish the timestamp of a completed aggregation cycle.
+async def _record_heartbeat(completed_at: datetime, failed_project_ids: set[str]):
+    """Publish what the cycle collected, including which projects it failed on.
 
     The LK reads this to tell "no traffic" apart from "collection is broken".
+    A project listed as failed never counts as an honest empty result.
     """
     await api_client.upsert_system_config(
         key=ANALYTICS_HEARTBEAT_KEY,
-        value=completed_at.isoformat(),
+        value=encode_heartbeat(completed_at, failed_project_ids),
         category="analytics",
-        description="UTC timestamp of the last completed analytics aggregation cycle",
+        description="Result of the last completed analytics aggregation cycle",
     )
 
 
@@ -378,17 +404,25 @@ async def analytics_aggregator_worker():
             )
 
             try:
-                await _aggregate_hourly(loki, bucket_start, bucket_end)
+                cycle = await _aggregate_hourly(loki, bucket_start, bucket_end)
 
                 # Daily rollup at midnight UTC (when current hour is 0)
                 if now.hour == 0:
                     yesterday = now - timedelta(days=1)
-                    await _run_daily_rollup(yesterday)
+                    cycle.failed |= await _run_daily_rollup(yesterday)
                     await _cleanup()
 
-                await _record_heartbeat(datetime.now(UTC))
+                if cycle.failed:
+                    logger.error(
+                        "analytics_cycle_projects_failed",
+                        failed_projects=sorted(cycle.failed),
+                        attempted=len(cycle.attempted),
+                    )
+                await _record_heartbeat(datetime.now(UTC), cycle.failed)
 
             except Exception:
+                # No heartbeat for a cycle that never finished — the LK reports
+                # collection as stale rather than showing zeros as an answer.
                 logger.exception("analytics_cycle_error")
 
             duration = time.time() - start_time

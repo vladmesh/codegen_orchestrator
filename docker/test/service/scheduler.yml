@@ -45,6 +45,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # Real Loki — the analytics aggregator reads its logs from here
+  loki:
+    image: grafana/loki:3.4
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ../../../infra/loki.yml:/etc/loki/loki.yml:ro
+      # World-writable tmpfs: the image runs Loki as a non-root user
+      - type: tmpfs
+        target: /loki
+        tmpfs:
+          mode: 0777
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --output-document=- http://localhost:3100/ready | grep -q ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   # Scheduler Test Runner
   scheduler-test-runner:
     build:
@@ -59,9 +77,12 @@ services:
       - TIME4VPS_USERNAME=test
       - TIME4VPS_PASSWORD=test
       - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
+      - LOKI_URL=http://loki:3100
       - PYTHONPATH=/app:/app/src
     depends_on:
       api:
+        condition: service_healthy
+      loki:
         condition: service_healthy
     volumes:
       - ../../../services/scheduler/src:/app/src
