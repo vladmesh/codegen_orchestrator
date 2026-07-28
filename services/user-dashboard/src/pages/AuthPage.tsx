@@ -8,7 +8,12 @@ import ErrorMessage from '@/components/ErrorMessage'
 export default function AuthPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  const [error, setError] = useState<string | null>(null)
+  const [exchangeError, setExchangeError] = useState<string | null>(null)
+
+  // A missing token is visible from the URL alone, so it is derived rather than
+  // written into state from inside the effect.
+  const token = searchParams.get('token')
+  const error = token ? exchangeError : 'Ссылка недействительна. Запросите новую через Telegram.'
 
   useEffect(() => {
     if (isAuthenticated()) {
@@ -16,11 +21,7 @@ export default function AuthPage() {
       return
     }
 
-    const token = searchParams.get('token')
-    if (!token) {
-      setError('Ссылка недействительна. Запросите новую через Telegram.')
-      return
-    }
+    if (!token) return
 
     fetch(`${import.meta.env.BASE_URL}api/lk/auth/token`, {
       method: 'POST',
@@ -39,9 +40,9 @@ export default function AuthPage() {
         navigate('/projects', { replace: true })
       })
       .catch((err: Error) => {
-        setError(err.message)
+        setExchangeError(err.message)
       })
-  }, [searchParams, navigate])
+  }, [token, navigate])
 
   return (
     <div className="flex min-h-svh items-center justify-center bg-background px-4">

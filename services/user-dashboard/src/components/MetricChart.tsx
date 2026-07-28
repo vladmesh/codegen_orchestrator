@@ -18,16 +18,30 @@ interface MetricChartProps {
 
 export default function MetricChart({ projectId, period }: MetricChartProps) {
   const [metric, setMetric] = useState<ChartMetric>('requests')
-  const [data, setData] = useState<ChartResponse | null>(null)
-  const [loading, setLoading] = useState(true)
+  // The answer carries the request it belongs to, so switching metric shows the
+  // spinner without a synchronous state write inside the effect.
+  const [answer, setAnswer] = useState<{ key: string; data: ChartResponse | null } | null>(null)
+
+  const requestKey = `${projectId}|${metric}|${period}`
+  const settled = answer?.key === requestKey
+  const data = settled ? answer.data : null
+  const loading = !settled
 
   useEffect(() => {
-    setLoading(true)
+    let cancelled = false
+
     api.get<ChartResponse>(`/lk/projects/${projectId}/chart?metric=${metric}&period=${period}`)
-      .then(setData)
-      .catch(() => setData(null))
-      .finally(() => setLoading(false))
-  }, [projectId, metric, period])
+      .then((d) => {
+        if (!cancelled) setAnswer({ key: requestKey, data: d })
+      })
+      .catch(() => {
+        if (!cancelled) setAnswer({ key: requestKey, data: null })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, metric, period, requestKey])
 
   return (
     <div>
