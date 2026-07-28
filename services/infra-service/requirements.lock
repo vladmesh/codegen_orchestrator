@@ -2,7 +2,7 @@
 #    uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.2
+aiohttp==3.14.3
     # via infra-service (services/infra-service/pyproject.toml)
 aiosignal==1.4.0
     # via aiohttp
@@ -88,6 +88,7 @@ structlog==25.5.0
     # via infra-service (services/infra-service/pyproject.toml)
 typing-extensions==4.15.0
     # via
+    #   aiohttp
     #   aiosignal
     #   anyio
     #   pydantic

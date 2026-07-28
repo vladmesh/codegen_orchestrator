@@ -2,7 +2,7 @@
 #    uv pip compile services/langgraph/pyproject.toml -o services/langgraph/requirements.lock
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.2
+aiohttp==3.14.3
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 aiosignal==1.4.0
     # via aiohttp
@@ -15,7 +15,7 @@ anyio==4.12.0
     #   anthropic
     #   httpx
     #   openai
-asyncssh==2.22.0
+asyncssh==2.24.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 attrs==25.4.0
     # via aiohttp
@@ -32,7 +32,7 @@ charset-normalizer==3.4.4
     # via requests
 click==8.3.1
     # via ddgs
-cryptography==46.0.3
+cryptography==49.0.0
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
     #   asyncssh
@@ -214,6 +214,7 @@ trustcall==0.0.39
     # via langmem
 typing-extensions==4.15.0
     # via
+    #   aiohttp
     #   aiosignal
     #   anthropic
     #   anyio

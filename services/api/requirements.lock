@@ -2,7 +2,7 @@
 #    uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.2
+aiohttp==3.14.3
     # via api (services/api/pyproject.toml)
 aiosignal==1.4.0
     # via aiohttp
@@ -121,6 +121,7 @@ tiktoken==0.12.0
     # via api (services/api/pyproject.toml)
 typing-extensions==4.15.0
     # via
+    #   aiohttp
     #   aiosignal
     #   alembic
     #   anyio
