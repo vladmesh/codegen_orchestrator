@@ -18,8 +18,8 @@ dependencies = [
     
     # Utils
     "structlog>=25.1.0",
-    "pyjwt[crypto]>=2.8.0",
-    "pydantic>=2.0.0",
+    "pyjwt[crypto]>=2.13.0",
+    "pydantic>=2.13.4",
     "pydantic-settings>=2.0.0",
     "PyYAML>=6.0.0",
     "tiktoken>=0.12.0",

@@ -177,7 +177,7 @@ pydantic-core==2.41.5
     # via pydantic
 pydantic-settings==2.12.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
-pyjwt==2.10.1
+pyjwt==2.13.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 pynacl==1.6.1
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)

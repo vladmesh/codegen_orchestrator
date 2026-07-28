@@ -30,15 +30,15 @@ pgvector==0.5.0
     # via scaffolder (services/scaffolder/pyproject.toml)
 pycparser==3.0
     # via cffi
-pydantic==2.12.5
+pydantic==2.13.4
     # via
     #   scaffolder (services/scaffolder/pyproject.toml)
     #   pydantic-settings
-pydantic-core==2.41.5
+pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.13.1
     # via scaffolder (services/scaffolder/pyproject.toml)
-pyjwt==2.11.0
+pyjwt==2.13.0
     # via scaffolder (services/scaffolder/pyproject.toml)
 pynacl==1.6.2
     # via scaffolder (services/scaffolder/pyproject.toml)
