@@ -1,12 +1,12 @@
 # Roadmap
 
-> **Updated**: 2026-07-27 (hand-maintained)
+> **Updated**: 2026-07-29 (hand-maintained)
 >
-> Story-level arcs only. Active tasks live on the external Pipeline board, the deferred pool in
-> [backlog.md](backlog.md), sequencing for the current arc in
-> [plans/codegen-stabilization-v1.md](plans/codegen-stabilization-v1.md). The internal dogfooding
-> generators that used to rebuild this file were removed (`codegen_orchestrator-668`); pre-668
-> generated content, including the client-bot story dumps, is in git history.
+> Story-level arcs only. Active work lives on the Pipeline board; the deferred pool, the plans and
+> the history of past sprints live in the driving installation's knowledge store under
+> `state/knowledge/projects/codegen-orchestrator/`. The internal dogfooding generators that used to
+> rebuild this file were removed (`codegen_orchestrator-668`); pre-668 generated content, including
+> the client-bot story dumps, is in git history.
 
 ## Current arc: stabilize core pipeline
 

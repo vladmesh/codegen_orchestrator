@@ -9,7 +9,7 @@ Multi-agent orchestrator using LangGraph for automated code generation and deplo
 **Philosophy**: Autonomous operation (human checks in periodically), agents as graph nodes, non-linear agent calls, spec-first code generation.
 
 > [!IMPORTANT]
-> **Sprint-based development**: Work is organized in sprints (`docs/sprints/`). `docs/STATUS.md` tracks current sprint state. `/go` is the main entry point — it reads STATUS.md and invokes the right skill. `docs/backlog.md` is a deferred pool for tech debt and ideas, processed during tech sprints. Tasks for the orchestrator itself are created and tracked in the external pipeline, not in the local Tasks DB; `docs/backlog.md` and `docs/STATUS.md` are maintained by hand and have no generators. Pipeline-testing skills (`/e2e-run`, `/escort`, `/architect`) still require `make up`.
+> **Where the work comes from**: tasks for the orchestrator itself are scoped and tracked outside this repository, on the Pipeline board — not in the local Tasks DB and not in markdown here. This repository holds no sprint state, backlog or roadmap bookkeeping; brainstorms, plans and past sprints live in the driving installation's knowledge store under `state/knowledge/projects/codegen-orchestrator/`. Pipeline-testing skills (`/e2e-run`, `/escort`, `/architect`) require `make up`.
 
 ## Commands
 
@@ -55,7 +55,7 @@ Full pipeline: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes: [docs/NO
 - `shared/pyproject.toml` declares shared's third-party deps but installs nothing; every consumer repeats them in its own `pyproject.toml`, enforced by `shared/tests/unit/test_shared_dependency_parity.py`.
 - External coding agents (Claude Code, Factory.ai Droid) run inside worker containers managed by `worker-manager`
 
-**Related Projects**: `/home/vlad/projects/service-template` — spec-first framework for generating microservices
+**Related Projects**: `/home/dev/projects/service-template` — spec-first framework for generating microservices
 
 ## Critical Anti-Patterns
 
@@ -114,10 +114,9 @@ When naming containers, variables, queues, or writing docs — check the glossar
 1. **TDD — test behavior, not implementation**: Red → Green → Refactor still applies, but tests must verify **what the code does**, not how it's structured. Test real data pipelines, real exceptions, real status transitions — not "key exists in dict" or "function returns value". See testing philosophy below.
 2. **Review Trigger**: If a change requires modifying `shared/contracts/` or DB schema not described in the plan — STOP and ask.
 3. **Structured logging**: Use `structlog` everywhere, never `print()`.
-4. **Documentation language**: Project documentation is written in English, including new entries in `docs/CHANGELOG.md` and `docs/STATUS.md`.
+4. **Documentation language**: Project documentation is written in English, including new entries in `docs/CHANGELOG.md`.
 5. **Run tests before committing**: `make test-unit` at minimum.
-6. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the sprint flow (`/go` → `/new-sprint` → `/plan-phase` → `/implement` → `/close-phase` → `/close-sprint`).
-7. **`docs/STATUS.md` is the sprint state**: `/go` reads it to decide next action. Sprint task files live in `docs/sprints/`. `docs/backlog.md` is the deferred pool.
+6. **Code outside a card**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Anything larger needs a card on the Pipeline board.
 
 ### Testing Philosophy
 
@@ -193,7 +192,7 @@ def deploy_to_server(server_handle: str):
 ## Documentation Map
 
 ### Architecture (read when working with code)
-- [DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — **mandatory**: sprint-based dev workflow, skill reference
+- [ARCHITECTURE.md](ARCHITECTURE.md) — services, data flows, the system as a whole
 - [PIPELINE_V2.md](docs/PIPELINE_V2.md) — target 7-phase pipeline architecture
 - [NODES.md](docs/NODES.md) — agent nodes, tools, Redis Streams communication
 - [CONTRACTS.md](docs/CONTRACTS.md) — queue registry, DTOs, correlation IDs
@@ -210,15 +209,8 @@ def deploy_to_server(server_handle: str):
 - [GLOSSARY.md](docs/GLOSSARY.md) — project terminology
 - [playbooks/line2-engineering.md](docs/playbooks/line2-engineering.md) — manual test matrix
 
-### Sprint & task management
-- [VISION.md](docs/VISION.md) — architectural invariants (audit checks these)
-- [STATUS.md](docs/STATUS.md) — current sprint state (`/go` reads this)
-- [sprints/](docs/sprints/) — sprint directories with task files
-- [backlog.md](docs/backlog.md) — deferred pool (tech debt, ideas, future work)
-- [ROADMAP.md](docs/ROADMAP.md) — story milestones and progress
+### Direction and history
+- [VISION.md](docs/VISION.md) — what the product is, who it is for, architectural invariants
+- [ROADMAP.md](docs/ROADMAP.md) — product arcs and what is deferred
 - [CHANGELOG.md](docs/CHANGELOG.md) — release history
-
-### Working files
-- [audit.md](docs/audit.md) — latest /audit results
-- [skill-feedback.md](docs/skill-feedback.md) — accumulated skill execution feedback
 

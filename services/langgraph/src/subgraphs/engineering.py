@@ -142,7 +142,7 @@ def create_engineering_subgraph() -> StateGraph:
                            └─ (ok) → done → END
 
     Tester node removed — was a stub (always passed). Future tester will be
-    added after deploy (staging or prod validation). See docs/backlog.md.
+    added after deploy (staging or prod validation).
 
     CI checks are handled by _wait_for_ci_and_fix in engineering_worker.py,
     which runs after this subgraph completes.

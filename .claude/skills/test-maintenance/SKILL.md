@@ -191,7 +191,7 @@ Update `state.json`:
 }
 ```
 
-Write the report to `docs/plans/test-maintenance-report.md`:
+Report the results in your final response:
 
 ```markdown
 # Test Maintenance Report — <date>
@@ -258,7 +258,7 @@ Order matters: `make up` first ensures the dev stack's images are in use. Then `
 
 ## Self-Feedback
 
-If you encounter issues during the run, add an entry to `docs/skill-feedback.md`:
+If you encounter issues during the run, end your response with a `Skill feedback` section:
 
 ```markdown
 ## [test-maintenance] — <today's date>

@@ -52,7 +52,7 @@ not in production and no contract-less repos exist, so no LLM fallback classific
 is kept. Typed deploy outcomes, distinguishable in `run.result`:
 `waiting_for_user_secret`, `allocation_missing`, `environment_contract_invalid`,
 `environment_resolution_failed`. Secret and non-secret maps stay separate until final
-dotenv assembly (mixed only in the deployer). Design: `docs/plans/typed-env-contract-mvp.md`.
+dotenv assembly (mixed only in the deployer).
 
 Migration state: schema + validator (codegen) and baseline fragments (template) →
 env-usage extractor + CI gate → typed deploy resolution → legacy analyzer / LLM
@@ -87,4 +87,4 @@ make test-live-clean     # always run after a live attempt
 ```
 
 The mega runs only on explicit request. Live-run logs go to `.live-runs/`, debug
-artifacts to `docs/e2e_results/`.
+artifacts to `docs/e2e_results/` (local, gitignored).

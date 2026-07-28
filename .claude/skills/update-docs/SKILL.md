@@ -101,15 +101,12 @@ Each group bundles logically related docs. The "Code signals" column tells incre
 
 | Doc | Code signals |
 |-----|-------------|
-| `docs/DEV_PIPELINE.md` | skills, API routes for tasks/stories, scheduler, consumer changes |
 
 ### Not managed by this skill
 
-- `docs/CHANGELOG.md` — updated by `/implement`, not by doc sync
-- `docs/backlog.md`, `docs/STATUS.md`, `docs/ROADMAP.md`, `docs/audit.md` — managed by sprint skills
-- `docs/sprints/*` — managed by sprint skills (`/plan-phase`, `/implement`, `/close-phase`, `/close-sprint`)
-- `docs/e2e_results/*`, `docs/brainstorms/*` — historical records
-- `docs/skill-feedback.md` — append-only log
+- `docs/CHANGELOG.md` — written per card, not by doc sync
+- `docs/ROADMAP.md`, `docs/VISION.md` — product direction, maintained by hand
+- `docs/e2e_results/*` — gitignored run artifacts
 - `.claude/skills/*/SKILL.md` — managed by `/skill-creator`
 - `CLAUDE.md`, `AGENTS.md` — meta-config, edited manually
 
@@ -209,7 +206,7 @@ Quick heuristics:
 
 ## Self-Feedback
 
-If you encountered any of these during the run, add an entry to `docs/skill-feedback.md`:
+If you encountered any of these during the run, end your response with a `Skill feedback` section:
 
 - A doc should be added to or removed from a group
 - The "Code signals" mapping missed something (change X should have flagged doc Y)

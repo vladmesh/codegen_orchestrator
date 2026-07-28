@@ -351,7 +351,7 @@ For each problem, classify it into one of four types:
 | Type | Description | Where to fix |
 |------|-------------|--------------|
 | **orchestrator** | Bug or issue in this project (codegen_orchestrator) | Fix in this repo |
-| **template** | Bug or issue in `service-template` (scaffolding, framework, generated code). The template lives at `/home/vlad/projects/service-template` — read it to confirm root cause. | Fix in service-template repo |
+| **template** | Bug or issue in `service-template` (scaffolding, framework, generated code). The template lives at `/home/dev/projects/service-template` — read it to confirm root cause. | Fix in service-template repo |
 | **meta** | Error in test setup: wrong commands, missing prerequisites, unclear playbook instructions | Fix by updating this playbook |
 | **other** | Network failures, hardware issues, transient errors, anything not in the above three | Document and move on |
 
@@ -390,7 +390,8 @@ problems it hit while writing code. Reference key findings in the Problems secti
 #### 7b. Commit report
 
 ```bash
-git add docs/e2e_results/${PROJECT_NAME}-$(date +%Y%m%d).md
+# docs/e2e_results/ is gitignored — the report stays local
+ls docs/e2e_results/${PROJECT_NAME}-$(date +%Y%m%d).md
 git commit -m "docs: e2e report for ${PROJECT_NAME}"
 ```
 
