@@ -117,6 +117,11 @@
   category: supervisor
   description: "Maximum age of server metrics used to resume capacity-waiting tasks"
 
+- key: supervisor.qa_handoff_recovery_minutes
+  value: 5
+  category: supervisor
+  description: "Minutes a queued QA run may sit unstarted before the supervisor finishes its handoff from the stored plan"
+
 - key: supervisor.temporary_access_ttl_minutes
   value: 60
   category: supervisor
@@ -126,6 +131,11 @@
   value: 15
   category: supervisor
   description: "Minutes an unfinished revoke deploy may run before the revoke is re-dispatched"
+
+- key: supervisor.temporary_access_dispatch_settle_seconds
+  value: 120
+  category: supervisor
+  description: "Seconds after a deploy worker claims dispatch before its GitHub Actions run is assumed listable by the revoke fence"
 
 - key: supervisor.temporary_access_max_revoke_attempts
   value: 3

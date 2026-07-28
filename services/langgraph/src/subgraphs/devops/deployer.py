@@ -45,6 +45,14 @@ class DeployFenceUnprovenError(DeployRefusedError):
     """An older deploy run may still be able to write, so this one cannot be the last word."""
 
 
+class DeployDispatchWithdrawnError(RuntimeError):
+    """This run was stopped before it reached GitHub, so nothing was dispatched.
+
+    Not a DeployRefusedError: nothing failed. The deploy was called off while it
+    could still be called off, which is the whole point of asking.
+    """
+
+
 async def _create_deployment_record(
     project_id: str,
     service_name: str,
@@ -201,6 +209,9 @@ class DeployerNode(FunctionalNode):
             run_id = failed_run["id"]
             logger.info("deploy_rerun_attempting", run_id=run_id)
 
+            # A rerun restarts the same external effect, so it crosses the same
+            # boundary and asks the same question first.
+            await self._claim_dispatch(deploy_run_id)
             await github.rerun_failed_jobs(owner, repo, run_id)
             await asyncio.sleep(3)
 
@@ -214,6 +225,11 @@ class DeployerNode(FunctionalNode):
             logger.info("deploy_rerun_passed", run_id=run_id)
             return run_info
 
+        except DeployDispatchWithdrawnError:
+            # The run was called off before the rerun was requested. Swallowing
+            # it here would report "rerun not possible" and let the caller retry
+            # an effect somebody already withdrew.
+            raise
         except (RuntimeError, TimeoutError) as e:
             if type(e).__name__ in _CANCELLATION_ERRORS:
                 raise
@@ -300,6 +316,10 @@ class DeployerNode(FunctionalNode):
             # GitHub, and a tag applied but not tracked is exactly the litter case.
             if pin_tag:
                 await github.create_or_reset_tag(owner, repo, pin_tag, head_sha)
+
+            # Last thing before the deploy leaves the system. After this the run
+            # exists on GitHub Actions and can only be stopped there.
+            await self._claim_dispatch(run_id)
 
             # Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
@@ -389,7 +409,34 @@ class DeployerNode(FunctionalNode):
         run = await api_client.get(f"runs/{run_id}")
         return run.get("status") == "cancelled"
 
-    async def run(self, state: DevOpsState) -> dict:
+    async def _claim_dispatch(self, run_id: str | None) -> None:
+        """Take the dispatch boundary, or refuse to cross it.
+
+        Called immediately before every call that starts work on GitHub Actions.
+        A plain read of the run status cannot do this job: between reading it and
+        dispatching, a revoke can cancel the run, see no Actions run to fence,
+        clear the value and finish, and only then does this deploy write the
+        value back. The claim and that cancellation are decided against the same
+        locked row, so one of them loses and knows it.
+
+        Raises:
+            DeployDispatchWithdrawnError: the run was stopped first. Nothing was
+                dispatched and nothing needs stopping outside.
+        """
+        if not run_id:
+            return
+        claim = await api_client.claim_deploy_dispatch(run_id)
+        if not claim.granted:
+            logger.info(
+                "deploy_dispatch_withdrawn",
+                run_id=run_id,
+                run_status=claim.run_status.value,
+            )
+            raise DeployDispatchWithdrawnError(
+                f"deploy run {run_id} was {claim.run_status.value} before it was dispatched"
+            )
+
+    async def run(self, state: DevOpsState) -> dict:  # noqa: PLR0911
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
         run_id = state.get("run_id")
@@ -506,6 +553,12 @@ class DeployerNode(FunctionalNode):
                 run_info, rerun = await self._dispatch_and_wait(
                     github, owner, repo, head_sha, run_id
                 )
+            except DeployDispatchWithdrawnError as e:
+                # Stopped before anything left the system. Reported as cancelled,
+                # like a run stopped on Actions, so the consumer records the same
+                # terminal outcome either way.
+                logger.info("deploy_withdrawn_before_dispatch", project_id=project_id, error=str(e))
+                return {"deployment_result": {"status": "cancelled"}}
             except DeployRefusedError as e:
                 logger.error(
                     "deploy_refused",

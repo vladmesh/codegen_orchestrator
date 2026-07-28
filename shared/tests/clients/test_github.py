@@ -870,29 +870,90 @@ def _run_response(run: dict) -> MagicMock:
     return response
 
 
+def _fake_actions_api(listing: list[dict], details: dict[int, list[dict]]):
+    """Answer the workflow-runs listing from *listing*, run reads from *details*.
+
+    The fence asks for one unfinished status at a time and pages each to
+    exhaustion, so a fixed list of canned responses can no longer stand in for
+    the API: the number and order of calls is part of what is under test.
+    """
+    page_size = 100
+
+    async def _request(method, url, **kwargs):
+        params = kwargs.get("params") or {}
+        if url.endswith("/runs"):
+            matching = [run for run in listing if run["status"] == params["status"]]
+            start = (params["page"] - 1) * page_size
+            return _runs_response(matching[start : start + page_size])
+        run_id = int(url.rsplit("/", 1)[-1])
+        states = details[run_id]
+        return _run_response(states.pop(0) if len(states) > 1 else states[0])
+
+    return AsyncMock(side_effect=_request)
+
+
 @pytest.mark.asyncio
 async def test_fence_stops_every_unfinished_run_of_the_workflow(authed_client):
     """A deploy that must be the last writer cancels the ones that are not finished."""
     authed_client.get_token = AsyncMock(return_value="token")
     authed_client.cancel_workflow_run = AsyncMock()
-    authed_client._make_request = AsyncMock(
-        side_effect=[
-            _runs_response(
-                [
-                    {"id": 41, "status": "completed", "conclusion": "success"},
-                    {"id": 42, "status": "in_progress", "conclusion": None},
-                    {"id": 43, "status": "queued", "conclusion": None},
-                ]
-            ),
-            _run_response({"id": 42, "status": "completed", "conclusion": "cancelled"}),
-            _run_response({"id": 43, "status": "completed", "conclusion": "cancelled"}),
-        ]
+    authed_client._make_request = _fake_actions_api(
+        [
+            {"id": 41, "status": "completed", "conclusion": "success"},
+            {"id": 42, "status": "in_progress", "conclusion": None},
+            {"id": 43, "status": "queued", "conclusion": None},
+        ],
+        {
+            42: [{"id": 42, "status": "completed", "conclusion": "cancelled"}],
+            43: [{"id": 43, "status": "completed", "conclusion": "cancelled"}],
+        },
     )
 
     fenced = await authed_client.fence_workflow("my-org", "my-repo", "deploy.yml")
 
-    assert fenced == [42, 43]
-    assert [c.args[2] for c in authed_client.cancel_workflow_run.await_args_list] == [42, 43]
+    assert sorted(fenced) == [42, 43]
+    assert sorted(c.args[2] for c in authed_client.cancel_workflow_run.await_args_list) == [42, 43]
+
+
+@pytest.mark.asyncio
+async def test_fence_reaches_a_run_beyond_the_first_page(authed_client):
+    """The run that can still write is not always among the newest ones.
+
+    A grant deploy queued behind a busy repository sits below every run started
+    after it. A single page would answer "nothing unfinished", the revoke would
+    clear the value, and that run would deploy the identity again afterwards.
+    """
+    authed_client.get_token = AsyncMock(return_value="token")
+    authed_client.cancel_workflow_run = AsyncMock()
+    buried = {"id": 999, "status": "queued", "conclusion": None}
+    listing = [{"id": i, "status": "queued", "conclusion": None} for i in range(120)] + [buried]
+    authed_client._make_request = _fake_actions_api(
+        listing,
+        {
+            run["id"]: [{"id": run["id"], "status": "completed", "conclusion": "cancelled"}]
+            for run in listing
+        },
+    )
+
+    fenced = await authed_client.fence_workflow("my-org", "my-repo", "deploy.yml")
+
+    assert 999 in fenced
+    assert len(fenced) == len(listing)
+
+
+@pytest.mark.asyncio
+async def test_fence_fails_closed_when_the_listing_runs_past_its_bound(authed_client):
+    """An answer that is only a subset must not read as the whole set."""
+    authed_client.get_token = AsyncMock(return_value="token")
+    authed_client.cancel_workflow_run = AsyncMock()
+    authed_client._make_request = AsyncMock(
+        side_effect=lambda *a, **kw: _runs_response(
+            [{"id": i, "status": "queued", "conclusion": None} for i in range(100)]
+        )
+    )
+
+    with pytest.raises(WorkflowCancellationUnprovenError):
+        await authed_client.fence_workflow("my-org", "my-repo", "deploy.yml")
 
 
 @pytest.mark.asyncio
@@ -900,11 +961,9 @@ async def test_fence_accepts_a_run_that_finished_on_its_own(authed_client):
     """The question is whether it can still write, not how it ended."""
     authed_client.get_token = AsyncMock(return_value="token")
     authed_client.cancel_workflow_run = AsyncMock()
-    authed_client._make_request = AsyncMock(
-        side_effect=[
-            _runs_response([{"id": 42, "status": "in_progress", "conclusion": None}]),
-            _run_response({"id": 42, "status": "completed", "conclusion": "success"}),
-        ]
+    authed_client._make_request = _fake_actions_api(
+        [{"id": 42, "status": "in_progress", "conclusion": None}],
+        {42: [{"id": 42, "status": "completed", "conclusion": "success"}]},
     )
 
     assert await authed_client.fence_workflow("my-org", "my-repo", "deploy.yml") == [42]
@@ -915,12 +974,9 @@ async def test_fence_fails_closed_when_a_run_will_not_stop(authed_client):
     """A run still going after the wait is a writer this deploy cannot rule out."""
     authed_client.get_token = AsyncMock(return_value="token")
     authed_client.cancel_workflow_run = AsyncMock()
-    authed_client._make_request = AsyncMock(
-        side_effect=[
-            _runs_response([{"id": 42, "status": "in_progress", "conclusion": None}]),
-            _run_response({"id": 42, "status": "in_progress", "conclusion": None}),
-            _run_response({"id": 42, "status": "in_progress", "conclusion": None}),
-        ]
+    authed_client._make_request = _fake_actions_api(
+        [{"id": 42, "status": "in_progress", "conclusion": None}],
+        {42: [{"id": 42, "status": "in_progress", "conclusion": None}]},
     )
 
     with patch("shared.clients.github._actions.asyncio.sleep", new=AsyncMock()):

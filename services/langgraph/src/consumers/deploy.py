@@ -358,6 +358,14 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                     "error_message": (
                         f"Skipped: another deploy is already in progress for project {project_id}"
                     ),
+                    # Terminal and typed for the same reason as the fenced case
+                    # below: a cancelled run with no outcome is skipped by every
+                    # supervisor, so the story it belongs to would wait forever
+                    # on a deploy that was never going to run.
+                    "result": DeployRunResult(
+                        deploy_outcome=DeployOutcome.CANCELLED,
+                        action=msg.action,
+                    ).model_dump(mode="json"),
                 },
             )
             return live_work_unsettled({"status": "cancelled", "reason": "deploy_lock_held"})
@@ -551,7 +559,24 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
         )
 
         if result.get("deployment_result", {}).get("status") == "cancelled":
+            # A cancelled deploy is terminal, and the run has to say so. Left at
+            # RUNNING it is skipped by every supervisor for good, and the story
+            # behind it waits on a deploy nobody is carrying any more. The fence
+            # a revoke takes cancels ordinary deploys as a matter of course, so
+            # this is a normal path, not a teardown corner.
             logger.info("deploy_job_cancelled_during_actions", task_id=task_id)
+            await api_client.patch(
+                f"runs/{task_id}",
+                json={
+                    "status": RunStatus.CANCELLED.value,
+                    "error_message": "Deploy was cancelled before it could finish",
+                    "result": DeployRunResult(
+                        deploy_outcome=DeployOutcome.CANCELLED,
+                        action=msg.action,
+                        deployment_result=result.get("deployment_result"),
+                    ).model_dump(mode="json"),
+                },
+            )
             return live_work_unsettled({"status": "cancelled"})
 
         if result.get("deployed_url"):

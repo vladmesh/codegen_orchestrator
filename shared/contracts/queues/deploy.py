@@ -42,6 +42,11 @@ class DeployOutcome(StrEnum):
     ENVIRONMENT_CONTRACT_INVALID = "environment_contract_invalid"
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
     HEAD_SHA_MISSING = "head_sha_missing"
+    # Somebody stopped this deploy on purpose: a fence taken by a deploy that has
+    # to be the last writer, a teardown, or a withdrawal before it reached
+    # GitHub. Nothing failed and nothing was deployed, so the story it belongs to
+    # is redeployed rather than retried as a failure or left waiting.
+    CANCELLED = "cancelled"
 
 
 class DeployMessage(BaseMessage):

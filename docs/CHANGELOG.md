@@ -44,6 +44,39 @@
   project lock and refuses one that was cancelled. A grant deploy picked up late can no longer
   write the test identity back after the revoke landed.
 
+  Four holes the same fence still had, closed by making each of them a state somebody can read:
+
+  `GitHubAppClient.list_unfinished_workflow_runs` asked for one page of 50 and presented it as
+  every unfinished run. A grant deploy queued behind a busy repository sits below every run
+  started after it, so the revoke could clear the value and record the grant revoked while that
+  run was still able to deploy the identity again. It now queries one unfinished status at a time
+  and pages each to exhaustion, and a listing that runs past its page bound raises
+  `WorkflowRunListingIncompleteError` rather than answering with a subset.
+
+  Cancelling a run was not a fence for a deploy worker that had decided to dispatch but had not
+  reached GitHub yet: no Actions run existed for the fence to find. The crossing is now recorded
+  on the run under a row lock. `POST /api/runs/{id}/dispatch-claim` is taken immediately before
+  every `workflow_dispatch` and every rerun, and refuses a cancelled run;
+  `POST /api/runs/{id}/dispatch-withdraw` takes the same boundary from the other side and reports
+  whether the deploy got out first. A refused claim ends the deploy as cancelled without
+  dispatching. A withdrawal that arrives late holds the revoke back until the dispatch is old
+  enough for GitHub to be listing it (`supervisor.temporary_access_dispatch_settle_seconds`).
+
+  A deploy cancelled on GitHub Actions left its run at `running` with no result, which every
+  supervisor skips for good — and a revoke's fence cancels ordinary story deploys as a matter of
+  course, so this was a normal path. Cancellation is now terminal and typed
+  (`DeployOutcome.CANCELLED`), and `supervise_deploying_stories` redeploys the story's commit
+  under the same retry bound that stops a failing deploy from looping. The same is recorded when a
+  deploy loses the project lock.
+
+  The deploy→QA handoff had a crash window with nothing durable in it: story TESTING and a queued
+  QA run existed before the grant did, so a process death in between left a story no supervisor
+  was watching. The QA run is now created *before* the story leaves DEPLOYING and carries the
+  whole `QAHandoffPlan` — the QA message and the access to be borrowed — in its `run_metadata`.
+  Its id derives from the deploy run and the grant id from the QA run, so a repeat lands on the
+  same records. `supervise_testing_stories` finishes any queued QA run whose handoff was left
+  unfinished for `supervisor.qa_handoff_recovery_minutes`.
+
 - Deploy can now roll out one named commit instead of whatever main holds at dispatch time.
   `workflow_dispatch` only accepts a branch or a tag in `ref`, so a requested `head_sha` is pinned
   by a temporary tag `codegen-deploy-pin-<sha>`, created before the dispatch and dropped on every

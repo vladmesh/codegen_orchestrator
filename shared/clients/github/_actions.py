@@ -25,6 +25,26 @@ _RUNNER_WRAPPER_LOG_LINE = re.compile(
 )
 _PYTEST_SUMMARY_LINE = re.compile(r"\bFAILED\b|\b\d+ failed\b", re.IGNORECASE)
 
+# Every status GitHub reports for a run it has not finished. Asked one at a time
+# they answer "what can still act" directly, instead of paging through a history
+# of completed runs in the hope the unfinished ones are near the front.
+UNFINISHED_WORKFLOW_RUN_STATUSES = (
+    "queued",
+    "in_progress",
+    "requested",
+    "waiting",
+    "pending",
+)
+_RUNS_PAGE_SIZE = 100
+# Reached only if a repository holds more unfinished runs of one workflow than
+# any real project can. Hitting it means the listing is not complete, and an
+# incomplete listing is the one answer the fence must never round down to "none".
+_MAX_RUNS_PAGES = 20
+
+
+class WorkflowRunListingIncompleteError(RuntimeError):
+    """The set of runs that can still act could not be enumerated in full."""
+
 
 def _failure_log_excerpt(log: str, line_limit: int) -> str:
     """Return a bounded excerpt centered on a diagnostic, not a test summary."""
@@ -252,30 +272,65 @@ class ActionsMixin:
 
         No branch or commit filter: the question is what can still change the
         deployment, and a run started from another ref changes it just as much.
+
+        One query per unfinished status, each paged to exhaustion. A single
+        unfiltered page would answer with the newest runs, and the run that can
+        still write is not always among them: a grant deploy queued behind a busy
+        repository sits below every run started after it. Exhausting the pages is
+        what makes "nothing came back" mean "nothing can act".
+
+        Raises:
+            WorkflowRunListingIncompleteError: the listing ran past its page
+                bound, so the answer would be a subset presented as the whole.
         """
         token = await self.get_token(owner, repo)
-        try:
-            resp = await self._make_request(
-                "GET",
-                f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_file}/runs",
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github+json",
-                },
-                params={"per_page": 50},
-            )
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == httpx.codes.NOT_FOUND:
-                raise WorkflowNotFoundError(
-                    f"Workflow '{workflow_file}' not found in {owner}/{repo}"
-                ) from e
-            raise
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_file}/runs"
 
-        return [
-            {"id": run["id"], "status": run["status"], "head_sha": run.get("head_sha")}
-            for run in resp.json().get("workflow_runs", [])
-            if run["status"] != "completed"
-        ]
+        by_id: dict[int, dict] = {}
+        for run_status in UNFINISHED_WORKFLOW_RUN_STATUSES:
+            for page in range(1, _MAX_RUNS_PAGES + 1):
+                try:
+                    resp = await self._make_request(
+                        "GET",
+                        url,
+                        headers=headers,
+                        params={
+                            "status": run_status,
+                            "per_page": _RUNS_PAGE_SIZE,
+                            "page": page,
+                        },
+                    )
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == httpx.codes.NOT_FOUND:
+                        raise WorkflowNotFoundError(
+                            f"Workflow '{workflow_file}' not found in {owner}/{repo}"
+                        ) from e
+                    raise
+
+                runs = resp.json().get("workflow_runs", [])
+                for run in runs:
+                    # A run that completed between two pages is terminal and
+                    # cannot write again, so it is dropped rather than fenced.
+                    if run["status"] != "completed":
+                        by_id[run["id"]] = {
+                            "id": run["id"],
+                            "status": run["status"],
+                            "head_sha": run.get("head_sha"),
+                        }
+                if len(runs) < _RUNS_PAGE_SIZE:
+                    break
+            else:
+                raise WorkflowRunListingIncompleteError(
+                    f"Workflow '{workflow_file}' in {owner}/{repo} has more than "
+                    f"{_MAX_RUNS_PAGES * _RUNS_PAGE_SIZE} runs with status {run_status}; "
+                    "the set of runs that can still act cannot be proven complete"
+                )
+
+        return list(by_id.values())
 
     async def fence_workflow(
         self,

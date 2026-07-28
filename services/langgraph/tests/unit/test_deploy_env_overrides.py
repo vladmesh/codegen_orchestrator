@@ -14,7 +14,12 @@ import pytest
 
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.env_overrides import EMPTY_OVERRIDES_DIGEST, env_overrides_digest
-from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
+from shared.contracts.queues.deploy import (
+    DeployAction,
+    DeployMessage,
+    DeployOutcome,
+    DeployTrigger,
+)
 from src.consumers.deploy import _already_deployed_application, _effective_env_overrides
 from tests.unit.factories import make_project, make_repository
 
@@ -329,3 +334,71 @@ async def test_an_unfenced_repeat_of_the_same_deploy_still_takes_the_shortcut() 
 
     assert result["reason"] == "already_deployed_same_sha"
     graph.ainvoke.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_deploy_records_a_terminal_outcome() -> None:
+    """A stopped deploy has to say so on its run, or nothing ever routes it.
+
+    A revoke fences every unfinished deploy.yml run of the repository, so an
+    ordinary story deploy being cancelled is a normal path here, not a teardown
+    corner. Left RUNNING with no result, its run is skipped by every supervisor
+    for good and the story behind it waits on a deploy nobody is carrying.
+    """
+    from src.consumers.deploy import process_deploy_job
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    redis.redis.set = AsyncMock(return_value=True)
+    redis.redis.exists = AsyncMock(return_value=False)
+
+    api = _api([])
+    api.patch = AsyncMock()
+    api.get_project = AsyncMock(return_value=make_project(config={}))
+    api.get_primary_repository = AsyncMock(return_value=make_repository())
+
+    graph = AsyncMock()
+    graph.ainvoke = AsyncMock(return_value={"deployment_result": {"status": "cancelled"}})
+
+    with (
+        patch("src.consumers.deploy.api_client", api),
+        patch("src.consumers.deploy_precheck.api_client", api),
+        patch("src.consumers.deploy_precheck._pre_check_server", AsyncMock(return_value=None)),
+        patch(
+            "src.allocations.ensure_project_allocations",
+            AsyncMock(return_value=ALLOCATED_RUNNING),
+        ),
+        patch("src.consumers.deploy.create_devops_subgraph", return_value=graph),
+    ):
+        result = await process_deploy_job(_fenced_job(), redis)
+
+    assert result["status"] == "cancelled"
+    terminal = [
+        call.kwargs["json"]
+        for call in api.patch.await_args_list
+        if call.kwargs["json"].get("status") == RunStatus.CANCELLED.value
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["result"]["deploy_outcome"] == DeployOutcome.CANCELLED.value
+
+
+@pytest.mark.asyncio
+async def test_a_deploy_that_loses_the_lock_records_a_terminal_outcome() -> None:
+    """Same reason: the story is still owed a deploy, so its run must be routable."""
+    from src.consumers.deploy import process_deploy_job
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    redis.redis.set = AsyncMock(return_value=None)  # somebody else holds the lock
+    redis.redis.exists = AsyncMock(return_value=False)
+
+    api = _api([])
+    api.patch = AsyncMock()
+
+    with patch("src.consumers.deploy.api_client", api):
+        result = await process_deploy_job(_fenced_job(), redis)
+
+    assert result["reason"] == "deploy_lock_held"
+    patched = api.patch.await_args.kwargs["json"]
+    assert patched["status"] == RunStatus.CANCELLED.value
+    assert patched["result"]["deploy_outcome"] == DeployOutcome.CANCELLED.value

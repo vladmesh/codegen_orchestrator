@@ -71,6 +71,10 @@ def _revoke_stale_minutes() -> int:
     return startup.get_config().get_int("supervisor.temporary_access_revoke_stale_minutes")
 
 
+def _dispatch_settle_seconds() -> int:
+    return startup.get_config().get_int("supervisor.temporary_access_dispatch_settle_seconds")
+
+
 def _max_revoke_attempts() -> int:
     return startup.get_config().get_int("supervisor.temporary_access_max_revoke_attempts")
 
@@ -100,8 +104,12 @@ async def grant_temporary_access(
     QA is not published here. The handoff travels on the record and the sweep
     releases it once the deploy has confirmed, so a lagging grant deploy can
     never apply the value after the access was already taken back.
+
+    The id names the QA run, so asking twice is asking for the same grant: a
+    caller repeating a handoff it could not confirm gets the first record back
+    rather than a second grant competing for the same contract slot.
     """
-    grant_id = f"tempaccess-{uuid.uuid4().hex[:12]}"
+    grant_id = f"tempaccess-{qa_message.run_id}"[:255]
     grant_run_id = _new_deploy_run_id("grant")
     grant = await api_client.create_temporary_access_grant(
         TemporaryAccessGrantCreate(
@@ -342,11 +350,19 @@ async def _abandon_grant(
     "unconfirmed" means here. The revoke this dispatches carries the fence, so it
     stops that run before writing rather than racing it. A grant deploy that no
     consumer has picked up yet is not on Actions and no fence can reach it, so
-    its run is cancelled first: a deploy consumer refuses a run that was
+    its run is withdrawn first: a deploy consumer refuses a run that was
     cancelled before it started.
+
+    A withdrawal that arrives after the worker claimed the dispatch is the one
+    case where neither mechanism can settle it now: the Actions run may not exist
+    yet, so the fence cannot see it, and the worker is on its way to creating it.
+    Nothing is revoked on that tick. The worker reads the cancellation, stops its
+    own run and records it terminal, and the next sweep revokes against a state
+    that can be fenced.
     """
     log.error("temporary_access_grant_failed", detail=detail)
-    await _stop_grant_deploy(api_client, grant, detail, log)
+    if not await _stop_grant_deploy(api_client, grant, detail, log):
+        return
     await _fail_qa_run(
         api_client,
         grant,
@@ -369,27 +385,66 @@ async def _stop_grant_deploy(
     grant: TemporaryAccessGrantDTO,
     detail: str,
     log: structlog.stdlib.BoundLogger,
-) -> None:
+) -> bool:
     """Withdraw the grant deploy before anything clears the value it would set.
 
     Cancelling the GitHub Actions run is the revoke deploy's fence, and it only
-    reaches a deploy that already started. The message this grant published can
-    still be sitting in the queue with no consumer on it, and picked up after the
-    revoke landed it would write the identity back onto a grant recorded as
-    revoked. The run is the record a consumer reads before it acts, so marking it
-    cancelled is what withdraws the message.
+    reaches a deploy that already started. Between the queue and that run there
+    are two states no fence covers: a message no consumer has picked up, and a
+    worker that has decided to dispatch but has not reached GitHub yet. Both
+    would write the identity back onto a grant recorded as revoked.
+
+    Withdrawing settles the first outright and answers the second honestly. The
+    withdrawal and the worker's claim are decided against the same locked row, so
+    a deploy that has not crossed the boundary never will, and one that has is
+    reported as already outside.
+
+    A deploy that did cross keeps the revoke waiting, but only until its dispatch
+    is old enough for GitHub to be listing it. That bound does not depend on the
+    worker still being alive: after the withdrawal no further dispatch is
+    possible — every dispatch re-claims and a cancelled run is refused — so the
+    only Actions run that can exist is one already made, and the fence sees it.
+
+    Returns True when the revoke may proceed, False while the grant deploy is
+    still on its way out and has to be waited for.
     """
     run = await api_client.get_run_if_missing_returns_none(grant.grant_run_id)
-    if run is None or run.status in TERMINAL_RUN_STATUSES:
-        return
-    await api_client.update_run(
+    if run is None:
+        return True
+    if run.status in TERMINAL_RUN_STATUSES and run.result is not None:
+        # The worker wrote its own outcome, which it only does when it is done
+        # with this deploy. There is nothing left to withdraw and nothing left in
+        # flight; whatever it dispatched is on Actions for the fence to find.
+        return True
+
+    withdrawal = await api_client.withdraw_deploy_dispatch(
         grant.grant_run_id,
-        {
-            "status": RunStatus.CANCELLED.value,
-            "error_message": f"temporary access grant {grant.id} was abandoned: {detail}",
-        },
+        f"temporary access grant {grant.id} was abandoned: {detail}",
     )
-    log.info("temporary_access_grant_deploy_cancelled", grant_run_id=grant.grant_run_id)
+    if withdrawal.claimed_at is None:
+        log.info(
+            "temporary_access_grant_deploy_cancelled",
+            grant_run_id=grant.grant_run_id,
+            outcome=withdrawal.outcome.value,
+        )
+        return True
+
+    settled_for = (datetime.now(UTC) - withdrawal.claimed_at).total_seconds()
+    if settled_for < _dispatch_settle_seconds():
+        log.warning(
+            "temporary_access_grant_deploy_already_dispatched",
+            grant_run_id=grant.grant_run_id,
+            claimed_at=withdrawal.claimed_at.isoformat(),
+            settled_for_seconds=round(settled_for, 1),
+        )
+        return False
+
+    log.info(
+        "temporary_access_grant_deploy_dispatch_settled",
+        grant_run_id=grant.grant_run_id,
+        claimed_at=withdrawal.claimed_at.isoformat(),
+    )
+    return True
 
 
 async def _release_qa(

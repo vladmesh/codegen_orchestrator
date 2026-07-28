@@ -1011,6 +1011,30 @@ class DeployResult(BaseResult):
     deployed_url: str | None = None
     server_ip: str | None = None
     port: int | None = None
+```
+
+### Deploy dispatch boundary
+
+`shared/contracts/dto/deploy_dispatch.py`. A deploy run stops being stoppable from inside the
+system the moment its worker reaches GitHub Actions. The crossing is recorded on the run under a
+row lock, so a worker about to dispatch and a caller trying to stop it first cannot both win.
+
+| Endpoint | Taken by | Answers |
+| --- | --- | --- |
+| `POST /api/runs/{id}/dispatch-claim` | the deploy worker, immediately before `workflow_dispatch` and before a rerun | `DeployDispatchClaim` — `granted=False` for a run already cancelled, and the worker then dispatches nothing |
+| `POST /api/runs/{id}/dispatch-withdraw` | whoever needs the deploy stopped (the temporary-access sweep) | `DeployDispatchWithdrawal` — `withdrawn` (never left), `already_dispatched` (stop it on Actions instead), `already_terminal` |
+
+The claim stamps `run_metadata.dispatch_claimed_at`; the withdrawal reads it. A withdrawal always
+marks the run cancelled, because the worker polls that to stop its own Actions run.
+
+### QA handoff plan
+
+`shared/contracts/dto/qa_handoff.py`. What a successful deploy still owes QA, written into the QA
+run's `run_metadata` under `qa_handoff` in the same call that creates the run — before the story
+leaves DEPLOYING. `QAHandoffPlan` carries the `QAMessage` and, when the deployed bot does not
+already admit the QA identity, a `TemporaryAccessRequest` (`env_key`, `subject`, `head_sha`).
+`supervise_testing_stories` finishes any handoff left unfinished from this plan, so no step of it
+depends on the process that planned it still being alive.
 
 
 ---

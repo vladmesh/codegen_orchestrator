@@ -34,7 +34,11 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   runs the whole lifecycle — it starts the QA run only once the grant deploy confirmed, and
   revokes by redeploying the same commit with the value cleared once that run reached any
   terminal state, vanished, or the grant outlived its TTL. A story stays in TESTING until its
-  access is settled, so no outcome is published while the test identity is still admitted.
+  access is settled, so no outcome is published while the test identity is still admitted. The
+  fence that makes this hold is three things together: the unfinished-runs listing is exhausted
+  rather than sampled, the dispatch boundary is claimed on the run itself so a cancelled deploy
+  cannot reach GitHub, and the handoff is recoverable from the QA run because the plan is written
+  with it.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

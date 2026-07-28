@@ -1,6 +1,10 @@
 """GitHub App client — split into domain modules, composed via mixins."""
 
-from ._actions import ActionsMixin
+from ._actions import (
+    UNFINISHED_WORKFLOW_RUN_STATUSES,
+    ActionsMixin,
+    WorkflowRunListingIncompleteError,
+)
 from ._base import (
     GitHubAppClientBase,
     WorkflowCancellationUnprovenError,
@@ -38,6 +42,8 @@ class GitHubAppClient(
 
 __all__ = [
     "DEPLOY_PIN_TAG_PREFIX",
+    "UNFINISHED_WORKFLOW_RUN_STATUSES",
+    "WorkflowRunListingIncompleteError",
     "GitHubAppClient",
     "deploy_pin_tag",
     "WorkflowCancelledError",

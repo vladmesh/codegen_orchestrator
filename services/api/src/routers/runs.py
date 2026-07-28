@@ -1,6 +1,6 @@
 """Runs router (execution layer)."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -8,15 +8,27 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.deploy_dispatch import (
+    DISPATCH_CLAIMED_AT_KEY,
+    DeployDispatchClaim,
+    DeployDispatchWithdrawal,
+    DispatchWithdrawal,
+)
+from shared.contracts.dto.run import RunStatus
 from shared.models import Run, User
 
 from ..database import get_async_session
-from ..dependencies import is_internal_service
+from ..dependencies import is_internal_service, require_internal_or_admin
 from ..schemas import RunCreate, RunRead, RunUpdate
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+# A run in one of these has produced its outcome; nothing may start work for it.
+_TERMINAL_RUN_STATUSES = frozenset(
+    {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
+)
 
 
 async def _resolve_user(
@@ -235,3 +247,108 @@ async def update_run(
     )
 
     return run
+
+
+async def _lock_run(run_id: str, db: AsyncSession) -> Run:
+    """Read a run with its row locked for the length of this transaction.
+
+    Claiming the dispatch boundary and withdrawing it are the same decision seen
+    from two sides, and both are taken by different processes at the same moment.
+    Read-then-write without the lock would let both sides read "not claimed yet"
+    and both act.
+    """
+    result = await db.execute(select(Run).where(Run.id == run_id).with_for_update())
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run {run_id} not found",
+        )
+    return run
+
+
+def _claimed_at(run: Run) -> datetime | None:
+    stamp = (run.run_metadata or {}).get(DISPATCH_CLAIMED_AT_KEY)
+    return datetime.fromisoformat(stamp) if stamp else None
+
+
+@router.post("/{run_id}/dispatch-claim", response_model=DeployDispatchClaim)
+async def claim_run_dispatch(
+    run_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> DeployDispatchClaim:
+    """Take the dispatch boundary for a run that is about to reach GitHub.
+
+    A cancelled run is refused, and the refusal is what keeps it from crossing:
+    the worker asks immediately before it dispatches, so a cancellation that
+    landed at any point up to here stops the deploy instead of racing it.
+    Claiming again is the same answer, so a retry after a lost response is safe.
+    """
+    run = await _lock_run(run_id, db)
+    if run.status in _TERMINAL_RUN_STATUSES:
+        await db.commit()
+        logger.info("run_dispatch_claim_refused", run_id=run_id, run_status=run.status)
+        return DeployDispatchClaim(
+            run_id=run_id,
+            granted=False,
+            run_status=RunStatus(run.status),
+            claimed_at=_claimed_at(run),
+        )
+
+    claimed_at = _claimed_at(run)
+    if claimed_at is None:
+        claimed_at = datetime.now(UTC)
+        run.run_metadata = {
+            **(run.run_metadata or {}),
+            DISPATCH_CLAIMED_AT_KEY: claimed_at.isoformat(),
+        }
+    await db.commit()
+    logger.info("run_dispatch_claimed", run_id=run_id, claimed_at=claimed_at.isoformat())
+    return DeployDispatchClaim(
+        run_id=run_id,
+        granted=True,
+        run_status=RunStatus(run.status),
+        claimed_at=claimed_at,
+    )
+
+
+@router.post("/{run_id}/dispatch-withdraw", response_model=DeployDispatchWithdrawal)
+async def withdraw_run_dispatch(
+    run_id: str,
+    reason: str = Query("", description="Recorded on the run as error_message"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> DeployDispatchWithdrawal:
+    """Stop a deploy run, and say whether it was stopped before it reached GitHub.
+
+    Cancelling is not enough on its own to know what the caller is dealing with.
+    An unclaimed run is withdrawn outright and nothing of it exists outside. A
+    claimed one is still marked cancelled — the worker polls that and stops its
+    own Actions run — but the caller is told the deploy is already outside, so it
+    waits for the run to end rather than acting as if nothing was dispatched.
+    """
+    run = await _lock_run(run_id, db)
+    claimed_at = _claimed_at(run)
+
+    if run.status in _TERMINAL_RUN_STATUSES:
+        await db.commit()
+        return DeployDispatchWithdrawal(
+            run_id=run_id,
+            outcome=DispatchWithdrawal.ALREADY_TERMINAL,
+            run_status=RunStatus(run.status),
+            claimed_at=claimed_at,
+        )
+
+    run.status = RunStatus.CANCELLED.value
+    if reason:
+        run.error_message = reason
+    await db.commit()
+    outcome = DispatchWithdrawal.ALREADY_DISPATCHED if claimed_at else DispatchWithdrawal.WITHDRAWN
+    logger.info("run_dispatch_withdrawn", run_id=run_id, outcome=outcome.value)
+    return DeployDispatchWithdrawal(
+        run_id=run_id,
+        outcome=outcome,
+        run_status=RunStatus.CANCELLED,
+        claimed_at=claimed_at,
+    )

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 from _run_routing_factories import _make_run
 import pytest
 
+from shared.contracts.dto.deploy_dispatch import DeployDispatchWithdrawal, DispatchWithdrawal
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantDTO,
@@ -78,12 +79,28 @@ def _deploy_run(status: RunStatus, outcome: DeployOutcome | None = None, **overr
     )
 
 
+def _withdrawal(
+    outcome: DispatchWithdrawal = DispatchWithdrawal.WITHDRAWN,
+    *,
+    run_id: str = "deploy-grant-1",
+    claimed_at: datetime | None = None,
+) -> DeployDispatchWithdrawal:
+    return DeployDispatchWithdrawal(
+        run_id=run_id,
+        outcome=outcome,
+        run_status=RunStatus.CANCELLED,
+        claimed_at=claimed_at,
+    )
+
+
 @pytest.fixture
 def api_client():
     client = AsyncMock()
     client.update_temporary_access_grant = AsyncMock()
     client.update_run = AsyncMock()
     client.create_run = AsyncMock()
+    # Default: the grant deploy never left the system, so a withdrawal settles it.
+    client.withdraw_deploy_dispatch = AsyncMock(return_value=_withdrawal())
     return client
 
 
@@ -346,8 +363,8 @@ class TestGrantInFlight:
         )
 
         order = []
-        api_client.update_run.side_effect = lambda run_id, patch: order.append(
-            (run_id, patch["status"])
+        api_client.withdraw_deploy_dispatch.side_effect = lambda run_id, reason: (
+            order.append(("withdraw", run_id)) or _withdrawal()
         )
         redis_client.publish_message.side_effect = lambda queue, message: order.append(
             (queue, message.env_overrides[ENV_KEY])
@@ -356,7 +373,7 @@ class TestGrantInFlight:
         await supervise_temporary_access(api_client, redis_client)
 
         # The grant deploy is withdrawn before the clear goes out, not after it landed.
-        assert order[0] == ("deploy-grant-1", RunStatus.CANCELLED.value)
+        assert order[0] == ("withdraw", "deploy-grant-1")
         assert order[-1] == (DEPLOY_QUEUE, "")
 
     @pytest.mark.asyncio
@@ -373,6 +390,7 @@ class TestGrantInFlight:
 
         await supervise_temporary_access(api_client, redis_client)
 
+        api_client.withdraw_deploy_dispatch.assert_not_awaited()
         assert [call.args[0] for call in api_client.update_run.call_args_list] == ["qa-1"]
 
 
@@ -888,3 +906,84 @@ class TestRevokeFencesTheGrantDeploy:
         message = _published_deploy(redis_client)
         assert message.env_overrides == {ENV_KEY: ""}
         assert message.fence_active_deploys is True
+
+
+class TestRevokeWaitsForADeployThatAlreadyLeft:
+    """A grant deploy past the dispatch boundary is stopped where it now lives.
+
+    The revoke's fence reads GitHub Actions. A worker that has claimed the
+    dispatch but not yet reached GitHub is invisible to it, so clearing the value
+    on that tick would record the grant revoked while that deploy writes the
+    identity back. The withdrawal reports the crossing, and the revoke waits.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_grant_deploy_that_just_crossed_holds_the_revoke_back(
+        self, api_client, redis_client
+    ):
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.RUNNING, id="deploy-grant-1"
+        )
+        api_client.withdraw_deploy_dispatch.return_value = _withdrawal(
+            DispatchWithdrawal.ALREADY_DISPATCHED, claimed_at=datetime.now(UTC)
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        # Nothing cleared and nothing failed: the tick ends without a revoke.
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+        assert _grant_updates(api_client) == []
+        api_client.update_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_revoke_goes_out_once_the_dispatch_is_old_enough_to_fence(
+        self, api_client, redis_client
+    ):
+        """The wait is bounded and does not need the worker to still be alive.
+
+        After the withdrawal no further dispatch is possible — every dispatch
+        re-claims and a cancelled run is refused — so once the claim is older
+        than the settle window, any Actions run it made is listed by the fence.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.RUNNING, id="deploy-grant-1"
+        )
+        api_client.withdraw_deploy_dispatch.return_value = _withdrawal(
+            DispatchWithdrawal.ALREADY_DISPATCHED,
+            claimed_at=datetime.now(UTC) - timedelta(minutes=10),
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        message = _published_deploy(redis_client)
+        assert message.env_overrides == {ENV_KEY: ""}
+        assert message.fence_active_deploys is True
+
+    @pytest.mark.asyncio
+    async def test_a_worker_that_recorded_its_own_outcome_is_not_waited_for(
+        self, api_client, redis_client
+    ):
+        """A run carrying a result is a worker that finished; nothing is in flight."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.CANCELLED, DeployOutcome.CANCELLED, id="deploy-grant-1"
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        api_client.withdraw_deploy_dispatch.assert_not_awaited()
+        assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}

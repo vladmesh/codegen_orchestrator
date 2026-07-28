@@ -7,6 +7,7 @@ import os
 import httpx
 
 from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.deploy_dispatch import DeployDispatchWithdrawal
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
@@ -145,6 +146,19 @@ class SchedulerAPIClient:
         resp = await self._request("POST", "runs/", json=run_data)
         return RunDTO.model_validate(resp.json())
 
+    async def create_run_if_absent(self, run_data: dict) -> RunDTO:
+        """Create a run, or return the one already carrying this id.
+
+        The handoff names its QA run after the deploy run it came from, so a tick
+        repeating a handoff that died part-way through has to land on the same
+        run. A second run for the same deploy would be a second QA attempt, and
+        the story would then have two runs disagreeing about its outcome.
+        """
+        existing = await self.get_run_if_missing_returns_none(run_data["id"])
+        if existing is not None:
+            return existing
+        return await self.create_run(run_data)
+
     async def get_run(self, run_id: str) -> RunDTO:
         resp = await self._request("GET", f"runs/{run_id}")
         return RunDTO.model_validate(resp.json())
@@ -162,6 +176,13 @@ class SchedulerAPIClient:
     async def update_run(self, run_id: str, data: dict) -> None:
         """Patch run fields (status, error_message, result)."""
         await self._request("PATCH", f"runs/{run_id}", json=data)
+
+    async def withdraw_deploy_dispatch(self, run_id: str, reason: str) -> DeployDispatchWithdrawal:
+        """Stop a deploy run, and learn whether it got out before the stop landed."""
+        resp = await self._request(
+            "POST", f"runs/{run_id}/dispatch-withdraw", params={"reason": reason}
+        )
+        return DeployDispatchWithdrawal.model_validate(resp.json())
 
     async def get_latest_run_by_story(
         self, story_id: str, run_type: str | None = None
@@ -231,6 +252,19 @@ class SchedulerAPIClient:
         if len(rows) > 1:
             raise RuntimeError(f"QA run {qa_run_id} has {len(rows)} live temporary access grants")
         return TemporaryAccessGrantDTO.model_validate(rows[0])
+
+    async def temporary_access_grant_exists_for_run(self, qa_run_id: str) -> bool:
+        """Whether any grant was ever recorded for this QA run, live or settled.
+
+        A handoff being recovered asks this, not whether a grant still holds
+        access: a grant that has already been revoked means the handoff got
+        through, and handing the access out again would restart a lifecycle that
+        already ended.
+        """
+        resp = await self._request(
+            "GET", "temporary-access-grants/", params={"qa_run_id": qa_run_id}
+        )
+        return bool(resp.json())
 
     async def update_temporary_access_grant(
         self, grant_id: str, update: TemporaryAccessGrantUpdate

@@ -18,6 +18,12 @@ from shared.contracts.bot_access import (
     project_bot_audience,
 )
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.qa_handoff import (
+    QA_DISPATCHED_AT_KEY,
+    QA_HANDOFF_KEY,
+    QAHandoffPlan,
+    TemporaryAccessRequest,
+)
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import (
@@ -92,6 +98,10 @@ def _qa_failure_limit() -> int:
 
 def _qa_fix_limit() -> int:
     return startup.get_config().get_int("supervisor.qa_max_fix_attempts")
+
+
+def _qa_handoff_recovery_minutes() -> int:
+    return startup.get_config().get_int("supervisor.qa_handoff_recovery_minutes")
 
 
 def _resource_wait_timeout_minutes() -> int:
@@ -585,7 +595,14 @@ async def supervise_deploying_stories(
             else:
                 failed += 1
 
-        elif outcome == DeployOutcome.RETRY:
+        elif outcome in (DeployOutcome.RETRY, DeployOutcome.CANCELLED):
+            # A cancelled deploy did not fail and did not deploy: something took
+            # the project away from it — the fence a temporary-access revoke
+            # takes, or another deploy holding the lock. The story still needs
+            # its commit deployed, so it goes round again under the same bound
+            # that stops a failing deploy from looping.
+            if outcome is DeployOutcome.CANCELLED:
+                log.info("deploy_supervisor_redeploy_after_cancel", run_id=run.id)
             was_retried = await _handle_deploy_retry(
                 api_client, redis_client, redis, story_id, project_id, run, log
             )
@@ -704,21 +721,13 @@ async def _handle_deploy_success_story(
         )
         return False
 
-    await api_client.transition_story(story_id, "test")
-
-    # Create QA run so the consumer can store its outcome
-    qa_run_id = f"qa-{uuid.uuid4().hex[:8]}"
-    await api_client.create_run(
-        {
-            "id": qa_run_id,
-            "type": RunType.QA.value,
-            "project_id": project_id,
-            "story_id": story_id,
-            "status": RunStatus.QUEUED.value,
-            "run_metadata": {"application_id": application_id},
-        }
-    )
-
+    # The QA run is created before the story leaves DEPLOYING, and it carries the
+    # whole plan. Order matters in both directions: a crash before this leaves
+    # the story where the deploy supervisor still sees it and this runs again,
+    # and a crash after it leaves a run that says what was supposed to happen.
+    # Its id is derived from the deploy run, so the retry lands on the same run
+    # instead of creating a second one for the same deploy.
+    qa_run_id = _qa_run_id_for_deploy(run.id)
     qa_message = QAMessage(
         story_id=story_id,
         project_id=project_id,
@@ -729,34 +738,86 @@ async def _handle_deploy_success_story(
         bot_username=bot_username,
         run_id=qa_run_id,
     )
-
-    if grant_needed:
-        grant = await grant_temporary_access(
-            api_client,
-            redis_client,
-            project_id=project_id,
+    plan = QAHandoffPlan(
+        qa_message=qa_message,
+        access=TemporaryAccessRequest(
             env_key=TEST_IDENTITY_ENV_KEY,
             subject=str(QA_TEST_TELEGRAM_ID),
             head_sha=head_sha,
-            qa_message=qa_message,
+        )
+        if grant_needed
+        else None,
+    )
+    await api_client.create_run_if_absent(
+        {
+            "id": qa_run_id,
+            "type": RunType.QA.value,
+            "project_id": project_id,
+            "story_id": story_id,
+            "status": RunStatus.QUEUED.value,
+            "run_metadata": {
+                "application_id": application_id,
+                QA_HANDOFF_KEY: plan.model_dump(mode="json"),
+            },
+        }
+    )
+
+    await api_client.transition_story(story_id, "test")
+
+    await _execute_qa_handoff(api_client, redis_client, qa_run_id, plan, log)
+    return True
+
+
+def _qa_run_id_for_deploy(deploy_run_id: str) -> str:
+    """One QA run per deploy run, named so a repeat of the handoff finds it."""
+    return f"qa-{deploy_run_id}"[:255]
+
+
+async def _execute_qa_handoff(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    qa_run_id: str,
+    plan: QAHandoffPlan,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Do what the stored plan says, from whichever tick gets there.
+
+    Either the access is recorded — after which the temporary-access sweep owns
+    the run and releases it once the value is confirmed deployed — or the message
+    goes straight to QA. Both are safe to repeat: the grant id is derived from
+    the run, so a second attempt returns the first record, and the publish is
+    stamped on the run so it is not repeated once it landed.
+    """
+    if plan.access is not None:
+        grant = await grant_temporary_access(
+            api_client,
+            redis_client,
+            project_id=plan.qa_message.project_id,
+            env_key=plan.access.env_key,
+            subject=plan.access.subject,
+            head_sha=plan.access.head_sha,
+            qa_message=plan.qa_message,
         )
         log.info(
             "deploy_supervisor_qa_handoff_awaiting_access",
-            deployed_url=deployed_url,
+            deployed_url=plan.qa_message.deployed_url,
             qa_run_id=qa_run_id,
-            bot_username=bot_username,
+            bot_username=plan.qa_message.bot_username,
             grant_id=grant.id,
         )
-        return True
+        return
 
-    await redis_client.publish_message(QA_QUEUE, qa_message)
+    await redis_client.publish_message(QA_QUEUE, plan.qa_message)
+    await api_client.update_run(
+        qa_run_id,
+        {"run_metadata": {QA_DISPATCHED_AT_KEY: datetime.now(UTC).isoformat()}},
+    )
     log.info(
         "deploy_supervisor_qa_handoff",
-        deployed_url=deployed_url,
+        deployed_url=plan.qa_message.deployed_url,
         qa_run_id=qa_run_id,
-        bot_username=bot_username,
+        bot_username=plan.qa_message.bot_username,
     )
-    return True
 
 
 async def _temporary_access_is_needed(
@@ -1232,12 +1293,19 @@ async def supervise_testing_stories(
     """
     stories = await api_client.get_stories_by_status(StoryStatus.TESTING)
     if not stories:
-        return {"completed": 0, "redispatched": 0, "failed": 0, "waiting_for_access": 0}
+        return {
+            "completed": 0,
+            "redispatched": 0,
+            "failed": 0,
+            "waiting_for_access": 0,
+            "recovered": 0,
+        }
 
     completed = 0
     redispatched = 0
     failed = 0
     waiting_for_access = 0
+    recovered = 0
 
     for story in stories:
         story_id = story.id
@@ -1254,8 +1322,16 @@ async def supervise_testing_stories(
         if run is None:
             continue
 
-        # Skip runs still in progress
-        if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        if run.status is RunStatus.QUEUED:
+            # A queued QA run in a TESTING story is either about to be picked up
+            # or is the remains of a handoff that died before it finished. The
+            # plan stored on the run is what tells the two apart and what lets
+            # this tick finish the work the dead process started.
+            if await _recover_qa_handoff(api_client, redis_client, run, log):
+                recovered += 1
+            continue
+
+        if run.status is RunStatus.RUNNING:
             continue
 
         # A terminal QA run always carries a result (validation enforces it);
@@ -1311,7 +1387,53 @@ async def supervise_testing_stories(
         "redispatched": redispatched,
         "failed": failed,
         "waiting_for_access": waiting_for_access,
+        "recovered": recovered,
     }
+
+
+async def _recover_qa_handoff(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Finish a QA handoff whose process died before it did.
+
+    Everything that decides the handoff is on the run, so this needs no memory of
+    the tick that planned it. What it must not do is repeat work that landed: a
+    plan that wanted access is left alone once any grant exists for the run,
+    because from that moment the temporary-access sweep owns it, and a plan that
+    only had to publish is left alone once the publish is stamped.
+
+    The age bound keeps this off a handoff that is merely in progress — a run
+    created seconds ago is being worked on, not abandoned.
+
+    Returns True if this tick took the handoff over.
+    """
+    plan_data = run.run_metadata.get(QA_HANDOFF_KEY)
+    if plan_data is None:
+        # A run from before the plan was recorded, or one created by something
+        # other than the deploy handoff. Nothing here can be reconstructed.
+        return False
+    if run.run_metadata.get(QA_DISPATCHED_AT_KEY):
+        return False
+
+    age_minutes = (datetime.now(UTC) - _parse_datetime(run.created_at)).total_seconds() / 60
+    if age_minutes < _qa_handoff_recovery_minutes():
+        return False
+
+    plan = QAHandoffPlan.model_validate(plan_data)
+    if plan.access is not None and await api_client.temporary_access_grant_exists_for_run(run.id):
+        return False
+
+    log.warning(
+        "qa_handoff_recovered",
+        run_id=run.id,
+        age_minutes=round(age_minutes, 1),
+        needs_access=plan.access is not None,
+    )
+    await _execute_qa_handoff(api_client, redis_client, run.id, plan, log)
+    return True
 
 
 def _access_failure_is_recorded(grant: TemporaryAccessGrantDTO, result: QARunResult) -> bool:
