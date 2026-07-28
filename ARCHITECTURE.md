@@ -74,10 +74,12 @@ taken from the default value.
 | `telegram_bot` | The Telegram interface (PO via Redis Streams) |
 | `scaffolder` | Preparation of repositories for new projects (copier + make setup + git push). Consumes `scaffold:queue`, saves the tree to the DB. A light image without the Docker SDK and without an LLM |
 | `worker-manager` | Docker containers with CLI agents and a `docker compose` proxy for sidecar infrastructure (Flat Dev Environment). Mounts pre-scaffolded workspace volumes. Workers run in the isolated `codegen_worker` network. |
-| `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, and `qa-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
-| `scheduler` | Background workers: architect consumer (story→tasks LLM decomposition), task dispatcher (scaffold trigger, dispatch unblocked tasks, complete stories), github_sync, server_sync, health_checker |
+| `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
+| `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
+| `scheduler` | Background workers: task dispatcher (scaffold trigger, dispatch unblocked tasks), story completion, pr_poller, supervisor, provisioner trigger and result listener, github_sync, server_sync, health_checker, app_health_prober, ssl_checker, analytics_aggregator, rag_summarizer, queue_cleanup, temporary_access |
 | `infra-service` | An Ansible runner, SSH operations (formerly infrastructure-worker) |
 | `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000, `/wm-api/*` → worker-manager. Basic auth via htpasswd. Grafana is embedded at `/grafana/` |
+| `user-dashboard` | React 19 + Vite SPA. The end user's own view of their projects: auth through Telegram, analytics from Loki |
 | `loki` | Log aggregation (7-day retention) |
 | `promtail` | Docker log scraper → Loki |
 | `grafana` | Dashboards + log viewer. Proxied via admin-frontend at `/grafana/` |
@@ -105,7 +107,7 @@ graph TD
     Scaffolder --> |"copier + make setup + git push"| API
     Scaffolder --> |"saves tree, status=scaffolded"| API
 
-    ArchQueue --> ArchConsumer[Architect Consumer<br/>scheduler]
+    ArchQueue --> ArchConsumer[Architect Consumer<br/>architect container]
     ArchConsumer --> |"LLM: story → tasks<br/>(sees tree + specs)"| API
     ArchConsumer --> |"creates tasks with deps"| API
 
@@ -151,7 +153,7 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        │      │                    │ saves tree → API
                        │      │                    └ project.status = scaffolded
                        │      │
-                       ├──► XADD architect:queue → Architect Consumer (scheduler)
+                       ├──► XADD architect:queue → Architect Consumer (architect container)
                        │                              │ LLM decomposition (sees tree + specs)
                        │                              ▼
                        │                           API: create tasks with blocked_by chains
