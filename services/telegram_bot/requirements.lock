@@ -34,11 +34,11 @@ pgvector==0.5.0
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 pycparser==3.0
     # via cffi
-pydantic==2.12.5
+pydantic==2.13.4
     # via
     #   telegram-bot (services/telegram_bot/pyproject.toml)
     #   pydantic-settings
-pydantic-core==2.41.5
+pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.12.0
     # via telegram-bot (services/telegram_bot/pyproject.toml)

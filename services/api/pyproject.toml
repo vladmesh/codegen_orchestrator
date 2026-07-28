@@ -6,8 +6,8 @@ requires-python = ">=3.12"
 dependencies = [
     # API
     "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "pydantic>=2.0.0",
+    "uvicorn[standard]>=0.51.0",
+    "pydantic>=2.13.4",
     "pydantic-settings>=2.0.0",
     
     # Database
@@ -25,7 +25,7 @@ dependencies = [
     
     # Utils
     "structlog>=25.1.0",
-    "pyjwt[crypto]>=2.8.0",
+    "pyjwt[crypto]>=2.13.0",
     "PyYAML>=6.0.2",
     "tiktoken>=0.12.0",
 

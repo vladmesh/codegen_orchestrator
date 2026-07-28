@@ -18,7 +18,7 @@ dependencies = [
 
     # Utils
     "structlog>=25.1.0",
-    "pyjwt[crypto]>=2.9.0",
+    "pyjwt[crypto]>=2.13.0",
     "pydantic-settings>=2.0.0",
 
     # GitHub secrets encryption

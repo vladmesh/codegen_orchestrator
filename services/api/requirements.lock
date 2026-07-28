@@ -54,7 +54,7 @@ hiredis==3.3.0
     # via redis
 httpcore==1.0.9
     # via httpx
-httptools==0.7.1
+httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via api (services/api/pyproject.toml)
@@ -82,16 +82,16 @@ propcache==0.4.1
     #   yarl
 pycparser==2.23
     # via cffi
-pydantic==2.12.5
+pydantic==2.13.4
     # via
     #   api (services/api/pyproject.toml)
     #   fastapi
     #   pydantic-settings
-pydantic-core==2.41.5
+pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.12.0
     # via api (services/api/pyproject.toml)
-pyjwt==2.10.1
+pyjwt==2.13.0
     # via api (services/api/pyproject.toml)
 pynacl==1.6.2
     # via api (services/api/pyproject.toml)
@@ -136,7 +136,7 @@ typing-inspection==0.4.2
     #   pydantic-settings
 urllib3==2.6.2
     # via requests
-uvicorn==0.40.0
+uvicorn==0.51.0
     # via api (services/api/pyproject.toml)
 uvloop==0.22.1
     # via uvicorn

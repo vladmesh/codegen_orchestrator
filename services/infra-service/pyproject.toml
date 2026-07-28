@@ -20,7 +20,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
 
     # JWT for shared/clients
-    "pyjwt[crypto]>=2.9.0",
+    "pyjwt[crypto]>=2.13.0",
 
     # Async HTTP for shared/notifications
     "aiohttp>=3.9.0",

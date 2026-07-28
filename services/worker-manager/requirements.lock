@@ -56,7 +56,7 @@ pydantic-core==2.41.5
     # via pydantic
 pydantic-settings==2.12.0
     # via worker-manager (services/worker-manager/pyproject.toml)
-pyjwt==2.11.0
+pyjwt==2.13.0
     # via worker-manager (services/worker-manager/pyproject.toml)
 pynacl==1.6.2
     # via worker-manager (services/worker-manager/pyproject.toml)
