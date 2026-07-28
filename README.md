@@ -1,167 +1,124 @@
 # Codegen Orchestrator
 
-A multi-agent orchestrator built on LangGraph for automatic project generation and deployment.
+A person describes a project in Telegram. Twenty to thirty minutes later that project is running in
+production, with a repository, CI, a domain and a certificate. Between those two moments no human
+touches anything.
 
-**Input**: a project description in Telegram  
-**Output**: a working project in production (code, CI/CD, domain, SSL)
+The system is a set of agents built on LangGraph. A Product Owner agent runs the dialogue and
+decides what to build; an architect splits the result into tasks; coding agents in isolated
+containers write the code; the pipeline puts it through CI, deploy and post-release QA. The user
+comes back and says "now make it send pictures of cats", and the same machinery extends the running
+project rather than generating a new one.
 
-## Philosophy
+Generated projects are built from [service-template](https://github.com/vladmesh/service-template),
+a spec-first framework, so the pipeline reasons about a declared contract instead of guessing at
+free-form code.
 
-- **Autonomy**: a human drops in every few days, looks at the reports, tops up the money
-- **Agents as graph nodes**: the Product Owner is a LangGraph agent that drives the process.
-- **Worker Manager**: starts isolated containers for Engineering/DevOps tasks (Claude Code, Factory.ai, OpenAI Codex).
-- **Non-linearity**: agents can call each other in any order
-- **Spec-first**: we use [service-template](https://github.com/vladmesh/service-template) to generate code
+**Status**: Telegram bots in Python are the working project type, verified end to end. What is done
+and what is next is in [docs/ROADMAP.md](docs/ROADMAP.md); what the product is meant to be is in
+[docs/VISION.md](docs/VISION.md).
 
-## Architecture
+## How a request flows
 
 ```mermaid
 graph TD
-    User((User)) <--> |Telegram| Bot[Telegram Bot Service]
-    Bot <--> |"Redis Stream"| PO[Product Owner Agent]
+    User((User)) <--> |Telegram| Bot[Telegram Bot]
+    Bot <--> |Redis Stream| PO[Product Owner Agent]
 
-    subgraph "LangGraph Service"
-        PO
-        EngGraph[Engineering Subgraph]
-        DepGraph[DevOps Subgraph]
-    end
+    PO --> |tools| API[API Service]
+    PO --> |create story| ArchQueue[architect:queue]
 
-    PO --> |"tools"| API[API Service]
-    PO --> |"create story"| ArchQueue[architect:queue]
-
-    subgraph "Scheduler"
+    subgraph Scheduler
         Dispatcher[Task Dispatcher]
-        ArchConsumer[Architect Consumer]
     end
 
-    Dispatcher --> |"scaffold:queue"| Scaffolder[Scaffolder Service]
-    ArchQueue --> ArchConsumer
-    Dispatcher --> |"engineering:queue"| EngGraph
-    Dispatcher --> |"story complete"| DeployQueue[deploy:queue]
+    ArchQueue --> Architect[Architect]
+    Architect --> |tasks| API
+    Dispatcher --> |scaffold:queue| Scaffolder[Scaffolder]
+    Dispatcher --> |engineering:queue| Eng[Engineering Worker]
+    Dispatcher --> |deploy:queue| Dep[Deploy Worker]
+    Dep --> |qa:queue| QA[QA Worker]
 
-    subgraph "Worker Manager"
-        Worker[Developer Worker Containers]
-    end
+    Eng --> |manages| Workers[Coding Agent Containers]
 
-    EngGraph --> |"Manage"| Worker
-
-    API --> |"data"| DB[(PostgreSQL)]
-    DeployQueue --> DepGraph
-
-    %% Feedback Loops
-    EngGraph --> |"Result / Progress"| PO
-    DepGraph --> |"Result / Progress"| PO
+    API --> |data| DB[(PostgreSQL)]
+    Eng --> |result| PO
+    Dep --> |result| PO
+    QA --> |result| PO
 ```
 
-### Main components
+A project moves through `DRAFT → scaffold → ACTIVE → architect → tasks → PR_REVIEW → DEPLOYING →
+TESTING → COMPLETED`. Each arrow is a queue with a typed contract, not a function call, so a stage
+can fail and be retried without the rest of the system knowing.
 
-- **API**: a FastAPI service, the single source of truth (DAL) for PostgreSQL.
-- **Telegram Bot**: the user interface, manages PO sessions.
-- **Product Owner (PO)**: a LangGraph ReactAgent that talks to the user and assigns tasks.
-- **Scaffolder**: repository preparation (copier + make setup + git push). Runs before the architect.
-- **Worker Manager**: manages the Docker containers of Developer agents. Mounts pre-scaffolded workspaces. Workers are isolated in the `codegen_worker` network.
-- **LangGraph**: the business-process orchestrator (Engineering, DevOps). Engineering-worker and deploy-worker are separate containers of the same Docker image with their own entrypoints (Redis stream consumers).
-- **Infra Service**: an Ansible runner for server setup.
-- **Scheduler**: architect consumer (story→tasks), task dispatcher (scaffold trigger, dispatch, supervisor), github_sync, server_sync, health_checker.
-- **Admin Frontend**: React SPA (port 3001) — dashboard, projects, tasks, workers, queues, and users. Nginx proxy with basic auth.
-- **Observability**: Loki + Promtail + Grafana for structured logs.
+Stage by stage: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes and their tools:
+[docs/NODES.md](docs/NODES.md). The queues and DTOs themselves:
+[docs/CONTRACTS.md](docs/CONTRACTS.md).
 
-### Related projects
+## Services
 
-| Project | Description | Repo |
-|--------|----------|------|
-| **service-template** | A spec-first framework for generating microservices | [GitHub](https://github.com/vladmesh/service-template) |
+| Service | What it does |
+|---|---|
+| `api` | FastAPI, the single source of truth over PostgreSQL. Every other service reads and writes through it. |
+| `telegram_bot` | The user interface; owns PO sessions. |
+| `langgraph` | The PO agent and the Engineering/DevOps subgraphs. |
+| `architect` | Splits a story into tasks. Its own container, not part of the scheduler. |
+| `scheduler` | Task dispatcher, scaffold trigger, github/server sync, health checker. |
+| `scaffolder` | Prepares the repository: copier, `make setup`, first push. Runs before the architect. |
+| `engineering-worker`, `deploy-worker`, `qa-worker` | Redis-stream consumers. Separate entrypoints on the shared `langgraph` image. |
+| `worker-manager` | Starts and reaps the coding-agent containers, isolated on the `codegen_worker` network. |
+| `infra-service` | Ansible runner: provisions and configures the servers projects land on. |
+| `admin-frontend` | React SPA on 3001 behind nginx basic auth: projects, tasks, workers, queues. |
+| `user-dashboard` | The end user's own view of their projects. |
+| `loki`, `promtail`, `grafana` | Structured logs and dashboards. |
 
-## Infrastructure
+Coding agents run inside the worker containers rather than being written here: Claude Code,
+Factory.ai Droid and OpenAI Codex are interchangeable behind one interface
+([docs/coding-agents.md](docs/coding-agents.md)).
 
-- **LangGraph server**: a dedicated server for the orchestrator and the agents
-- **Prod servers**: managed through infra-service (Ansible)
-- **Telegram**: the main interface
+## Running it locally
 
-## Development Setup
+Needs Docker with Compose, Python 3.12+ and `uv`.
 
-### Prerequisites
-- Docker & Docker Compose
-- Python 3.12+
-- Git
+```bash
+cp .env.example .env      # then fill in the credentials
+make setup-hooks
+make up
+make migrate
+make seed
+```
 
-### Quick Start
+The stack is up when `curl -sf http://localhost:8000/health` answers. From there, `make test-unit`
+is the fast gate and `make test-integration` needs the stack running.
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/vladmesh/codegen_orchestrator.git
-   cd codegen_orchestrator
-   ```
+Two details that cost the most time when they are unknown:
 
-2. **Install git hooks**
-   ```bash
-   make setup-hooks
-   ```
+- `shared/` is never installed as a package. Compose bind-mounts it, images `COPY` it, tests import
+  it from the tree. Editing it needs no rebuild for bind-mounted services — see
+  [docs/REBUILD.md](docs/REBUILD.md), which is also where the two separate build loops are
+  explained.
+- Nothing takes a default value. A missing key raises rather than falling back, on purpose. The
+  reasoning is in [CLAUDE.md](CLAUDE.md#critical-anti-patterns).
 
-3. **Set up environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your credentials
-   ```
-
-4. **Start services**
-   ```bash
-   make up
-   make migrate
-   make seed
-   ```
-
-5. **Run tests**
-   ```bash
-   make test-unit         # Fast unit tests
-   make test-integration  # Integration tests (require running services)
-   ```
-
-### Development Workflow
-
-- **Code quality**: `ruff format` (pre-commit), linters/tests (pre-push).
-- **Testing**: `services/{service}/tests/{unit,integration}/`.
-- **CI/CD**: GitHub Actions.
-
-See [docs/TESTING.md](docs/TESTING.md) for detailed testing guide.
+Test layers, what each one costs and when to run it: [docs/TESTING.md](docs/TESTING.md).
 
 ## Documentation
 
-- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — the feature lifecycle and the working process (**MANDATORY READ**)
-- [AGENTS.md](AGENTS.md) — general instructions for agents
-- [ARCHITECTURE.md](ARCHITECTURE.md) — the current architecture and data flows
-- [docs/LOGGING.md](docs/LOGGING.md) — a guide to structured logging
+| | |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Services, data flows, the system as a whole |
+| [docs/CONTRACTS.md](docs/CONTRACTS.md) | Queue registry, DTOs, correlation IDs |
+| [docs/GLOSSARY.md](docs/GLOSSARY.md) | What an entity is called and what it means |
+| [docs/DEPLOY.md](docs/DEPLOY.md) | Production deploy, GitHub Actions, server setup |
+| [docs/SECRETS.md](docs/SECRETS.md) | The three secret levels: platform, project, user |
+| [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) | Error categories, retry and timeout policy |
+| [docs/LOGGING.md](docs/LOGGING.md) | structlog patterns, the Loki/Grafana stack |
+| [AGENTS.md](AGENTS.md) | How AI assistants should work in this repository |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | What has been done |
 
-## Logging
-
-The project uses `structlog` (JSON for prod, console for dev).
-
-```python
-from shared.log_config import setup_logging
-import structlog
-
-setup_logging(service_name="my_service")
-logger = structlog.get_logger()
-logger.info("event_name", user_id=123)
-```
-
-## GitHub Secrets
-
-Secrets are stored in GitHub Actions (`Settings → Secrets → Actions`):
-
-| Secret | Description |
-|--------|-------------|
-| `GH_APP_ID` | GitHub App ID |
-| `GH_APP_PRIVATE_KEY` | GitHub App private key |
-| `E2E_TEST_ORG` | Test organization |
-| `E2E_TEST_INSTALLATION_ID` | Test installation ID |
-
-## Roadmap
-
-- [docs/ROADMAP.md](docs/ROADMAP.md) — milestones and phases
-- [docs/STATUS.md](docs/STATUS.md) — the current task
-- [docs/backlog.md](docs/backlog.md) — the task queue (auto-generated read-only view)
-- [docs/CHANGELOG.md](docs/CHANGELOG.md) — what has been done
+Work on the orchestrator itself is scoped and tracked outside this repository, on a Pipeline board.
+Brainstorms, plans and the history of past sprints live in the knowledge store of the installation
+that drives that work, under `state/knowledge/projects/codegen-orchestrator/`.
 
 ## License
 
