@@ -706,3 +706,135 @@ class TestRevokedGrants:
         assert second["revoked"] == 1
         for update in _grant_updates(api_client):
             assert update.status is TemporaryAccessStatus.REVOKED
+
+
+class TestEscalationOrdering:
+    """The story is only let past a live grant after the QA run says why."""
+
+    @pytest.mark.asyncio
+    async def test_the_qa_run_is_failed_before_the_grant_is_escalated(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """Order matters: the escalation stamp is what stops the story waiting."""
+        from src.tasks import temporary_access as module
+
+        monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
+        writes: list[str] = []
+        api_client.update_run.side_effect = lambda *a, **k: writes.append("qa_run")
+        api_client.update_temporary_access_grant.side_effect = lambda *a, **k: writes.append(
+            "grant"
+        )
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=3,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.FAILED, DeployOutcome.GIVE_UP
+        )
+
+        await module.supervise_temporary_access(api_client, redis_client)
+
+        assert writes == ["qa_run", "grant"]
+
+    @pytest.mark.asyncio
+    async def test_a_qa_run_that_cannot_be_failed_leaves_the_grant_unescalated(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """A process that dies between the two writes must not open the bypass.
+
+        The grant keeps holding the story back, which is the safe side: the
+        access is still out and the run has not been told. The next sweep
+        repeats both writes.
+        """
+        from src.tasks import temporary_access as module
+
+        monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
+        api_client.update_run.side_effect = RuntimeError("API died mid-write")
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=3,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.FAILED, DeployOutcome.GIVE_UP
+        )
+
+        await module.supervise_temporary_access(api_client, redis_client)
+
+        assert all(update.escalated is not True for update in _grant_updates(api_client)), (
+            "the grant must not be escalated while the QA run still reads as it did"
+        )
+
+        api_client.update_run.side_effect = None
+        await module.supervise_temporary_access(api_client, redis_client)
+
+        assert api_client.update_run.call_args.args[0] == "qa-1"
+        assert _grant_updates(api_client)[-1].escalated is True
+
+
+class TestRevokeFencesTheGrantDeploy:
+    """A revoke has to be the last writer, not merely the latest request."""
+
+    @pytest.mark.asyncio
+    async def test_the_revoke_deploy_fences_earlier_deploys(self, api_client, redis_client):
+        """The grant deploy may still be live on Actions when this is dispatched."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [_make_grant()]
+        api_client.get_run_if_missing_returns_none.return_value = _make_run(
+            id="qa-1", type=RunType.QA, status=RunStatus.CANCELLED, story_id="story-1"
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        assert _published_deploy(redis_client).fence_active_deploys is True
+
+    @pytest.mark.asyncio
+    async def test_the_grant_deploy_does_not_fence(self, api_client, redis_client):
+        """Handing access out has nothing to outlive; only taking it back does."""
+        from src.tasks.temporary_access import grant_temporary_access
+
+        api_client.create_temporary_access_grant.return_value = _granting()
+
+        await grant_temporary_access(
+            api_client,
+            redis_client,
+            project_id=PROJECT_ID,
+            env_key=ENV_KEY,
+            subject="424242",
+            head_sha=HEAD_SHA,
+            qa_message=_qa_message(),
+        )
+
+        assert _published_deploy(redis_client).fence_active_deploys is False
+
+    @pytest.mark.asyncio
+    async def test_an_abandoned_grant_deploy_is_fenced_by_the_revoke_that_replaces_it(
+        self, api_client, redis_client
+    ):
+        """The grant workflow is still running — exactly the ordering to exclude.
+
+        The sweep gives up on it and clears the slot; that clear must stop the
+        run that can still write the identity back, so it carries the fence.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(hours=6))
+        ]
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["dispatched"] == 1
+        message = _published_deploy(redis_client)
+        assert message.env_overrides == {ENV_KEY: ""}
+        assert message.fence_active_deploys is True

@@ -24,6 +24,20 @@
   own admission rule now lives in `shared/contracts/bot_access.bot_admits`, so tests check that
   the environment a revoke ships refuses the QA identity rather than that a variable is absent.
 
+  Three things the same lifecycle needed to hold under process death:
+  the QA run is failed *before* the grant is stamped as escalated, and a story is only let past a
+  live grant when both the stamp and the run's own `qa_cleanup_failed` blocker are there — a
+  scheduler that dies between the two writes now leaves the story waiting instead of completing
+  it while the bot still admits the test identity. A revoke deploy carries
+  `DeployMessage.fence_active_deploys`: it skips the redundant-deploy shortcut and, through the
+  new `GitHubAppClient.fence_workflow`, cancels every unfinished `deploy.yml` run and proves it
+  terminal before writing its secrets, so the abandoned grant deploy it replaces cannot land
+  afterwards; a stop that cannot be proven refuses the deploy rather than recording the access as
+  removed. The QA runner's Telegram `/start` probe moved to `shared/telegram_access_probe.py`, and
+  `tests/live/test_bot_access_revocation.py` drives a real grant on a deployed bot, kills the QA
+  run mid-flight, and requires that same probe to observe the bot refusing the QA account after
+  the sweep revokes.
+
 - Deploy can now roll out one named commit instead of whatever main holds at dispatch time.
   `workflow_dispatch` only accepts a branch or a tag in `ref`, so a requested `head_sha` is pinned
   by a temporary tag `codegen-deploy-pin-<sha>`, created before the dispatch and dropped on every

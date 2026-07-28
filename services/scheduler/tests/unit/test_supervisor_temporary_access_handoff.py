@@ -335,3 +335,32 @@ class TestStoriesWaitForTheAccessToGoBack:
         assert result["waiting_for_access"] == 0
         api_client.stop_application.assert_awaited_once_with(42)
         api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+
+    @pytest.mark.asyncio
+    async def test_an_escalation_stamp_alone_does_not_publish_a_passed_story(
+        self, api_client, redis_client
+    ):
+        """The stamp landed, the QA run's failure did not — the story still waits.
+
+        This is the crash window between the two writes the sweep makes. Routing
+        on the run as it stands would complete a story whose bot may still admit
+        the test identity, because the run still says the QA passed.
+        """
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _passed_qa_run()
+        api_client.get_live_temporary_access_grant_for_run.return_value = _live_grant(
+            status=TemporaryAccessStatus.REVOKE_FAILED,
+            revoke_attempts=3,
+            escalated_at=datetime.now(UTC),
+            last_error="revoke deploy deploy-revoke-1 ended failed (give_up)",
+        )
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["waiting_for_access"] == 1
+        assert result["completed"] == 0
+        api_client.transition_story.assert_not_called()

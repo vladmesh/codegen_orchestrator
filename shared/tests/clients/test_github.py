@@ -856,3 +856,106 @@ async def test_interrupted_wait_fails_closed_when_actions_run_cannot_be_identifi
             await authed_client.wait_for_workflow_completion("my-org", "my-repo", "deploy.yml")
 
     authed_client.cancel_workflow_run.assert_not_called()
+
+
+def _runs_response(runs: list[dict]) -> MagicMock:
+    response = MagicMock()
+    response.json.return_value = {"workflow_runs": runs}
+    return response
+
+
+def _run_response(run: dict) -> MagicMock:
+    response = MagicMock()
+    response.json.return_value = run
+    return response
+
+
+@pytest.mark.asyncio
+async def test_fence_stops_every_unfinished_run_of_the_workflow(authed_client):
+    """A deploy that must be the last writer cancels the ones that are not finished."""
+    authed_client.get_token = AsyncMock(return_value="token")
+    authed_client.cancel_workflow_run = AsyncMock()
+    authed_client._make_request = AsyncMock(
+        side_effect=[
+            _runs_response(
+                [
+                    {"id": 41, "status": "completed", "conclusion": "success"},
+                    {"id": 42, "status": "in_progress", "conclusion": None},
+                    {"id": 43, "status": "queued", "conclusion": None},
+                ]
+            ),
+            _run_response({"id": 42, "status": "completed", "conclusion": "cancelled"}),
+            _run_response({"id": 43, "status": "completed", "conclusion": "cancelled"}),
+        ]
+    )
+
+    fenced = await authed_client.fence_workflow("my-org", "my-repo", "deploy.yml")
+
+    assert fenced == [42, 43]
+    assert [c.args[2] for c in authed_client.cancel_workflow_run.await_args_list] == [42, 43]
+
+
+@pytest.mark.asyncio
+async def test_fence_accepts_a_run_that_finished_on_its_own(authed_client):
+    """The question is whether it can still write, not how it ended."""
+    authed_client.get_token = AsyncMock(return_value="token")
+    authed_client.cancel_workflow_run = AsyncMock()
+    authed_client._make_request = AsyncMock(
+        side_effect=[
+            _runs_response([{"id": 42, "status": "in_progress", "conclusion": None}]),
+            _run_response({"id": 42, "status": "completed", "conclusion": "success"}),
+        ]
+    )
+
+    assert await authed_client.fence_workflow("my-org", "my-repo", "deploy.yml") == [42]
+
+
+@pytest.mark.asyncio
+async def test_fence_fails_closed_when_a_run_will_not_stop(authed_client):
+    """A run still going after the wait is a writer this deploy cannot rule out."""
+    authed_client.get_token = AsyncMock(return_value="token")
+    authed_client.cancel_workflow_run = AsyncMock()
+    authed_client._make_request = AsyncMock(
+        side_effect=[
+            _runs_response([{"id": 42, "status": "in_progress", "conclusion": None}]),
+            _run_response({"id": 42, "status": "in_progress", "conclusion": None}),
+            _run_response({"id": 42, "status": "in_progress", "conclusion": None}),
+        ]
+    )
+
+    with patch("shared.clients.github._actions.asyncio.sleep", new=AsyncMock()):
+        with pytest.raises(WorkflowCancellationUnprovenError):
+            await authed_client.fence_workflow(
+                "my-org", "my-repo", "deploy.yml", timeout_seconds=0, poll_interval=0
+            )
+
+
+@pytest.mark.asyncio
+async def test_fence_fails_closed_when_the_runs_cannot_be_listed(authed_client):
+    """Not knowing what is running is not the same as nothing running."""
+    authed_client.get_token = AsyncMock(return_value="token")
+    authed_client._make_request = AsyncMock(side_effect=httpx.ConnectError("no route"))
+
+    with pytest.raises(WorkflowCancellationUnprovenError):
+        await authed_client.fence_workflow("my-org", "my-repo", "deploy.yml")
+
+
+@pytest.mark.asyncio
+async def test_an_externally_cancelled_run_is_not_reported_as_a_failure(authed_client):
+    """A fenced run must not come back as a failure the caller would rerun."""
+    authed_client.get_latest_workflow_run = AsyncMock(
+        return_value={
+            "id": 42,
+            "status": "completed",
+            "conclusion": "cancelled",
+            "html_url": "https://example.test/runs/42",
+        }
+    )
+    authed_client.get_workflow_failure_logs = AsyncMock(return_value="logs")
+
+    with pytest.raises(WorkflowCancelledError):
+        await authed_client.wait_for_workflow_completion(
+            "my-org", "my-repo", "deploy.yml", poll_interval=0
+        )
+
+    authed_client.get_workflow_failure_logs.assert_not_called()

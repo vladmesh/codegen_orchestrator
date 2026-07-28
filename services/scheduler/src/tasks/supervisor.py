@@ -24,11 +24,13 @@ from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     DeployRunResult,
     EngineeringRunResult,
+    QABlockerCategory,
     QARunResult,
 )
 from shared.contracts.dto.server import ServerStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
@@ -1263,7 +1265,7 @@ async def supervise_testing_stories(
             continue
 
         grant = await api_client.get_live_temporary_access_grant_for_run(run.id)
-        if grant is not None and grant.escalated_at is None:
+        if grant is not None and not _access_failure_is_recorded(grant, run.result):
             # The sweep is still working on the access. Once it either takes it
             # back or reports that it cannot, this story routes on what the QA
             # run says then — which for an unrevoked grant is a blocker.
@@ -1310,6 +1312,22 @@ async def supervise_testing_stories(
         "failed": failed,
         "waiting_for_access": waiting_for_access,
     }
+
+
+def _access_failure_is_recorded(grant: TemporaryAccessGrantDTO, result: QARunResult) -> bool:
+    """Whether a live grant may stop holding its story back.
+
+    Only one thing lets a story past an unrevoked grant: the sweep gave up on
+    the access *and* wrote that up on the QA run itself. Both are required. The
+    escalation stamp alone would let a run that still reads `passed` through if
+    the sweep died between the two writes, and the blocker alone belongs to a
+    revoke that is still being retried.
+    """
+    if grant.escalated_at is None:
+        return False
+    return result.blocker is not None and result.blocker.category is (
+        QABlockerCategory.QA_CLEANUP_FAILED
+    )
 
 
 def _qa_quarantine_reason(result: QARunResult) -> dict:

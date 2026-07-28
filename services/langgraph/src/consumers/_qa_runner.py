@@ -25,8 +25,9 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
 )
+from shared.telegram_access_probe import build_access_probe_command, classify_access_probe
 
-from ..prompts.qa import QA_TEST_TELEGRAM_ID, TELETHON_ENV_FILE, build_qa_prompt
+from ..prompts.qa import TELETHON_ENV_FILE, build_qa_prompt
 
 logger = structlog.get_logger(__name__)
 
@@ -46,7 +47,6 @@ TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
 # it follows the prompt. Same reason PATH is exported here.
 TELETHON_ENV_PREFIX = f"set -a && . {TELETHON_ENV_FILE} && set +a && "
 CLAUDE_PATH_PREFIX = 'export PATH="$HOME/.local/bin:$PATH" && '
-TELEGRAM_ACCESS_PROBE_TIMEOUT = 10
 _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
 
@@ -564,68 +564,14 @@ async def _preflight_agent_qa(
             received=str(exc),
         )
 
-    probe = (
-        f"set -a && . {TELETHON_ENV_FILE} && set +a; "
-        "/opt/qa-runner/venv/bin/python3 -c "
-        + shlex.quote(
-            "import os\n"
-            "from telethon.sync import TelegramClient\n"
-            "from telethon.sessions import StringSession\n"
-            "import sys\n"
-            "import time\n"
-            "client = TelegramClient(StringSession(os.environ['TELETHON_SESSION']), "
-            "int(os.environ['TELETHON_API_ID']), os.environ['TELETHON_API_HASH'])\n"
-            "client.start()\n"
-            "try:\n"
-            "    me = client.get_me()\n"
-            f"    if me.id != {QA_TEST_TELEGRAM_ID}:\n"
-            "        print('telegram_identity_mismatch:expected="
-            f"{QA_TEST_TELEGRAM_ID};actual=' + str(me.id))\n"
-            "        sys.exit(3)\n"
-            f"    bot = client.get_entity('@{bot_username}')\n"
-            "    sent = client.send_message(bot, '/start')\n"
-            f"    deadline = time.monotonic() + {TELEGRAM_ACCESS_PROBE_TIMEOUT}\n"
-            "    while time.monotonic() < deadline:\n"
-            "        replies = client.get_messages(bot, min_id=sent.id, limit=5)\n"
-            "        for reply in replies:\n"
-            "            if reply.out or reply.id <= sent.id:\n"
-            "                continue\n"
-            "            text = (reply.raw_text or reply.message or '').strip()\n"
-            "            normalized = text.casefold()\n"
-            "            denied = ('доступ запрещ' in normalized or 'access denied' in normalized "
-            "or 'not authorized' in normalized or 'unauthorized' in normalized "
-            "or 'forbidden' in normalized)\n"
-            "            if denied:\n"
-            "                print('telegram_access_denied:' + text[:500])\n"
-            "                sys.exit(2)\n"
-            "        time.sleep(1)\n"
-            "    print('telegram_access_probe_passed')\n"
-            "finally:\n"
-            "    client.disconnect()"
-        )
-    )
+    probe = build_access_probe_command(bot_username, TELETHON_ENV_FILE)
     result = await conn.run(probe, check=False)
-    if result.exit_status != 0:
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        denial_marker = "telegram_access_denied:"
-        identity_marker = "telegram_identity_mismatch:"
-        if identity_marker in stdout:
-            category = QABlockerCategory.UNKNOWN
-            received = stdout.split(identity_marker, maxsplit=1)[1].strip()[-500:]
-        elif denial_marker in stdout:
-            category = QABlockerCategory.TELEGRAM_ACCESS_DENIED
-            received = stdout.split(denial_marker, maxsplit=1)[1].strip()[-500:]
-        else:
-            category = QABlockerCategory.UNKNOWN
-            received = stderr or stdout or "Telegram probe failed"
-        return QABlocker(
-            category=category,
-            attempted="verify the deterministic Telegram QA identity and send /start access probe",
-            sent=f"Telegram /start to @{bot_username}",
-            received=received,
-        )
-    return None
+    return classify_access_probe(
+        exit_status=result.exit_status,
+        stdout=result.stdout or "",
+        stderr=result.stderr or "",
+        bot_username=bot_username,
+    )
 
 
 async def run_qa_on_server(

@@ -41,6 +41,10 @@ class DeployPinTagLeakedError(DeployRefusedError):
     """The temporary pin tag survived the run, so the deploy left litter in the user's repo."""
 
 
+class DeployFenceUnprovenError(DeployRefusedError):
+    """An older deploy run may still be able to write, so this one cannot be the last word."""
+
+
 async def _create_deployment_record(
     project_id: str,
     service_name: str,
@@ -242,6 +246,36 @@ class DeployerNode(FunctionalNode):
             return e
         return None
 
+    async def _fence_active_deploys(
+        self, github: GitHubAppClient, owner: str, repo: str, project_id: str
+    ) -> list[int]:
+        """Stop every deploy run that could still write after this one.
+
+        The project deploy lock only serialises consumers, and it expires; the
+        GitHub Actions run it started does not stop when it does. A deploy that
+        exists to remove a value therefore has to prove that no earlier run is
+        about to write it back, before this one writes its secrets. An unproven
+        stop refuses the deploy rather than reporting a removal it cannot claim.
+        """
+        try:
+            fenced = await github.fence_workflow(owner, repo, DEPLOY_WORKFLOW)
+        except Exception as e:
+            if type(e).__name__ not in _CANCELLATION_ERRORS:
+                raise
+            raise DeployFenceUnprovenError(
+                f"an earlier {DEPLOY_WORKFLOW} run in {owner}/{repo} could not be proven "
+                f"stopped: {e}"
+            ) from e
+        if fenced:
+            logger.info(
+                "deploy_fenced_active_runs",
+                project_id=project_id,
+                owner=owner,
+                repo=repo,
+                run_ids=fenced,
+            )
+        return fenced
+
     async def _dispatch_and_wait(
         self,
         github: GitHubAppClient,
@@ -408,6 +442,22 @@ class DeployerNode(FunctionalNode):
                     },
                     "errors": [f"No SSH key for server {server_handle}"],
                 }
+
+            # 0.5 Fence older runs when this deploy must be the last writer.
+            if state.get("fence_active_deploys"):
+                try:
+                    await self._fence_active_deploys(github, owner, repo, project_id)
+                except DeployRefusedError as e:
+                    logger.error(
+                        "deploy_fence_unproven",
+                        project_id=project_id,
+                        reason=type(e).__name__,
+                        error=str(e),
+                    )
+                    return {
+                        "deployment_result": {"status": "failed", "error": str(e)},
+                        "errors": [f"Deploy refused: {e}"],
+                    }
 
             # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
             all_env = {

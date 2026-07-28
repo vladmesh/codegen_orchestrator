@@ -245,6 +245,124 @@ class ActionsMixin:
             "head_sha": run.get("head_sha"),
         }
 
+    async def list_unfinished_workflow_runs(
+        self, owner: str, repo: str, workflow_file: str
+    ) -> list[dict]:
+        """Every run of *workflow_file* GitHub has not finished yet.
+
+        No branch or commit filter: the question is what can still change the
+        deployment, and a run started from another ref changes it just as much.
+        """
+        token = await self.get_token(owner, repo)
+        try:
+            resp = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_file}/runs",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                params={"per_page": 50},
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                raise WorkflowNotFoundError(
+                    f"Workflow '{workflow_file}' not found in {owner}/{repo}"
+                ) from e
+            raise
+
+        return [
+            {"id": run["id"], "status": run["status"], "head_sha": run.get("head_sha")}
+            for run in resp.json().get("workflow_runs", [])
+            if run["status"] != "completed"
+        ]
+
+    async def fence_workflow(
+        self,
+        owner: str,
+        repo: str,
+        workflow_file: str,
+        *,
+        timeout_seconds: int = 300,
+        poll_interval: int = 5,
+    ) -> list[int]:
+        """Prove that no run of *workflow_file* can still act, and return the ones stopped.
+
+        A deploy whose whole point is to take an effect away has to know that
+        nothing older is about to put it back. Every unfinished run is cancelled
+        and then watched until GitHub reports it terminal; a run that finished on
+        its own while being watched is terminal too, and equally unable to write
+        anything after this returns.
+
+        Raises:
+            WorkflowCancellationUnprovenError: at least one run could not be
+                proven terminal, so the caller must not treat its own effect as
+                the last word.
+        """
+        try:
+            active = await self.list_unfinished_workflow_runs(owner, repo, workflow_file)
+        except Exception as exc:
+            raise WorkflowCancellationUnprovenError(
+                f"Workflow {workflow_file} runs in {owner}/{repo} could not be listed"
+            ) from exc
+
+        fenced: list[int] = []
+        for run in active:
+            run_id = run["id"]
+            try:
+                await self.cancel_workflow_run(owner, repo, run_id)
+                await self._wait_for_terminal_workflow_run(
+                    owner, repo, run_id, timeout_seconds, poll_interval
+                )
+            except Exception as exc:
+                raise WorkflowCancellationUnprovenError(
+                    f"Workflow {workflow_file} run {run_id} in {owner}/{repo} could not be "
+                    "proven terminal"
+                ) from exc
+            fenced.append(run_id)
+            logger.info(
+                "workflow_run_fenced",
+                owner=owner,
+                repo=repo,
+                workflow=workflow_file,
+                run_id=run_id,
+            )
+        return fenced
+
+    async def _wait_for_terminal_workflow_run(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+        timeout_seconds: int,
+        poll_interval: int,
+    ) -> str:
+        """Wait until GitHub reports one run completed, whatever it concluded.
+
+        Unlike the teardown wait, any conclusion ends this: the fence asks
+        whether the run can still act, not how it ended.
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        start = datetime.now(UTC)
+        while True:
+            response = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}",
+                headers=headers,
+            )
+            run = response.json()
+            if run["status"] == "completed":
+                return run.get("conclusion") or "unknown"
+            if (datetime.now(UTC) - start).total_seconds() > timeout_seconds:
+                raise TimeoutError(
+                    f"Workflow run {run_id} was still {run['status']} after {timeout_seconds}s"
+                )
+            await asyncio.sleep(poll_interval)
+
     async def wait_for_workflow_completion(
         self,
         owner: str,
@@ -328,6 +446,19 @@ class ActionsMixin:
                             run_id=run["id"],
                         )
                         return run
+                    if run["conclusion"] == "cancelled":
+                        # Somebody stopped this run on purpose — a fence taken by a
+                        # deploy that has to be the last writer, or a teardown.
+                        # Reported as a failure it would be retried, and the retry
+                        # would redo exactly the effect the stop was for.
+                        logger.info(
+                            "workflow_cancelled_externally",
+                            workflow=workflow_file,
+                            run_id=run["id"],
+                        )
+                        raise WorkflowCancelledError(
+                            f"Workflow {workflow_file} run {run['id']} was cancelled"
+                        )
                     try:
                         failure_logs = await self.get_workflow_failure_logs(owner, repo, run["id"])
                     except Exception:

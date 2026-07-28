@@ -13,11 +13,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.contracts.env_overrides import EMPTY_OVERRIDES_DIGEST, env_overrides_digest
-from shared.contracts.queues.deploy import DeployAction, DeployMessage
+from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from src.consumers.deploy import _already_deployed_application, _effective_env_overrides
+from tests.unit.factories import make_project, make_repository
 
 HEAD = "a" * 40
 ALLOCATED = {"backend": {"application_id": 7}}
+ALLOCATED_RUNNING = {"backend": {"server_ip": "1.2.3.4", "port": 8080, "application_id": 7}}
 
 
 def _deployment(sha: str, digest: str | None) -> dict:
@@ -191,3 +193,100 @@ def test_a_deploy_that_read_no_contract_reports_no_slot() -> None:
     from src.consumers.deploy_result_handler import _declares_test_identity_slot
 
     assert not _declares_test_identity_slot({"environment_contract": None})
+
+
+def _fenced_job(**overrides) -> dict:
+    job = {
+        "task_id": "deploy-revoke-1",
+        "project_id": "proj-1",
+        "user_id": "",
+        "callback_stream": "",
+        "triggered_by": DeployTrigger.ADMIN.value,
+        "action": DeployAction.FEATURE.value,
+        "head_sha": HEAD,
+        "env_overrides": {"TG_BOT_TEST_TELEGRAM_ID": ""},
+        "fence_active_deploys": True,
+    }
+    job.update(overrides)
+    return job
+
+
+@pytest.mark.asyncio
+async def test_a_fenced_deploy_runs_even_when_it_looks_redundant() -> None:
+    """The shortcut cannot answer for a deploy that has to stop other runs.
+
+    A revoke whose value is already recorded still has to reach the fence: the
+    deploy that set the value may be live on Actions right now, and reporting
+    this one successful without running it would call the access removed while
+    it can still be written back.
+    """
+    from src.consumers.deploy import process_deploy_job
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    redis.redis.set = AsyncMock(return_value=True)
+    redis.redis.exists = AsyncMock(return_value=False)
+
+    cleared = {"TG_BOT_TEST_TELEGRAM_ID": ""}
+    api = _api([_deployment(HEAD, env_overrides_digest(cleared))])
+    api.patch = AsyncMock()
+    api.get_project = AsyncMock(
+        return_value=make_project(name="my-project", config={"modules": ["backend"]})
+    )
+    api.get_primary_repository = AsyncMock(
+        return_value=make_repository(git_url="https://github.com/org/my-project")
+    )
+
+    graph = AsyncMock()
+    graph.ainvoke = AsyncMock(
+        return_value={"deployed_url": "http://1.2.3.4:8080", "deployment_result": {}}
+    )
+
+    with (
+        patch("src.consumers.deploy.api_client", api),
+        patch("src.consumers.deploy_result_handler.api_client", api),
+        patch("src.consumers.deploy_precheck.api_client", api),
+        patch("src.consumers.deploy_precheck._pre_check_server", AsyncMock(return_value=None)),
+        patch(
+            "src.allocations.ensure_project_allocations",
+            AsyncMock(return_value=ALLOCATED_RUNNING),
+        ),
+        patch("src.consumers.deploy.create_devops_subgraph", return_value=graph),
+    ):
+        await process_deploy_job(_fenced_job(), redis)
+
+    graph.ainvoke.assert_awaited_once()
+    assert graph.ainvoke.await_args.args[0]["fence_active_deploys"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_unfenced_repeat_of_the_same_deploy_still_takes_the_shortcut() -> None:
+    """Control for the test above: the shortcut itself is unchanged."""
+    from src.consumers.deploy import process_deploy_job
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    redis.redis.set = AsyncMock(return_value=True)
+    redis.redis.exists = AsyncMock(return_value=False)
+
+    cleared = {"TG_BOT_TEST_TELEGRAM_ID": ""}
+    api = _api([_deployment(HEAD, env_overrides_digest(cleared))])
+    api.patch = AsyncMock()
+    api.get_project = AsyncMock(
+        return_value=make_project(name="my-project", config={"modules": ["backend"]})
+    )
+
+    graph = AsyncMock()
+
+    with (
+        patch("src.consumers.deploy.api_client", api),
+        patch(
+            "src.allocations.ensure_project_allocations",
+            AsyncMock(return_value=ALLOCATED_RUNNING),
+        ),
+        patch("src.consumers.deploy.create_devops_subgraph", return_value=graph),
+    ):
+        result = await process_deploy_job(_fenced_job(fence_active_deploys=False), redis)
+
+    assert result["reason"] == "already_deployed_same_sha"
+    graph.ainvoke.assert_not_called()

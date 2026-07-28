@@ -996,6 +996,14 @@ class DeployMessage(BaseMessage):
     # A project can run on several servers, so the consumer must bring down the
     # application it was told about instead of picking one itself.
     application_id: int | None = None
+    # Deploy-time literals on top of the contract, for state a caller turns on and
+    # off between deploys of the same commit (QA's temporary test identity). Only
+    # keys the contract declares as literals are accepted.
+    env_overrides: dict[str, str] = {}
+    # This deploy must be the last writer: it skips the redundant-deploy shortcut
+    # and stops every unfinished deploy.yml run before writing. Set by a revoke,
+    # whose whole point is removing a value an older run could put back.
+    fence_active_deploys: bool = False
 
 
 class DeployResult(BaseResult):

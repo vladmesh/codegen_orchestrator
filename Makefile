@@ -290,6 +290,7 @@ test-integration: $(INTEGRATION_TESTS)
 
 LIVE_OFFLINE_IGNORE_FLAGS = \
 	--ignore=tests/live/test_api_crud.py \
+	--ignore=tests/live/test_bot_access_revocation.py \
 	--ignore=tests/live/test_capability_cleanup_redis.py \
 	--ignore=tests/live/test_ci_prompt.py \
 	--ignore=tests/live/test_deploy_infra.py \

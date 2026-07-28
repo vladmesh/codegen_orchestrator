@@ -134,6 +134,7 @@ def _build_subgraph_input(
     allocated_resources: dict,
     job_data: dict,
     head_sha: str,
+    fence_active_deploys: bool,
 ) -> dict:
     """Build DevOps subgraph input from deploy job data."""
     if not head_sha:
@@ -152,6 +153,7 @@ def _build_subgraph_input(
         "provided_secrets": job_data.get("provided_secrets", {}),
         "env_overrides": _effective_env_overrides(project, job_data.get("env_overrides", {})),
         "head_sha": head_sha,
+        "fence_active_deploys": fence_active_deploys,
         "messages": [],
         "environment_contract": None,
         "resolution_outcome": None,
@@ -437,8 +439,12 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
+        # A fenced deploy has to run: the shortcut would report a value removed
+        # while the run that set it is still live on GitHub Actions.
         application_id = None
-        if not _legacy_bot_audience_needs_contract_resolution(project):
+        if not msg.fence_active_deploys and not _legacy_bot_audience_needs_contract_resolution(
+            project
+        ):
             application_id = await _already_deployed_application(
                 allocated_resources, msg.head_sha, env_overrides
             )
@@ -519,6 +525,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             allocated_resources,
             job_data,
             head_sha=msg.head_sha,
+            fence_active_deploys=msg.fence_active_deploys,
         )
         result = await devops_subgraph.ainvoke(subgraph_input)
 

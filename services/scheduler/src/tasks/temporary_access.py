@@ -179,6 +179,7 @@ async def _publish_deploy(
     run_id: str,
     value: str,
     run_metadata: dict,
+    fence_active_deploys: bool,
 ) -> None:
     """Deploy the granted commit with *value* in the grant's contract slot.
 
@@ -206,6 +207,7 @@ async def _publish_deploy(
             action=DeployAction.FEATURE,
             head_sha=grant.head_sha,
             env_overrides={grant.env_key: value},
+            fence_active_deploys=fence_active_deploys,
         ),
     )
 
@@ -223,6 +225,7 @@ async def _publish_grant_deploy(
         run_id=grant_run_id,
         value=grant.subject,
         run_metadata={"triggered_by": "temporary_access_grant"},
+        fence_active_deploys=False,
     )
 
 
@@ -334,6 +337,10 @@ async def _abandon_grant(
     Whether the value reached the application is exactly what is unknown, so the
     slot is cleared either way and the QA run that was waiting for the access
     fails with the reason named instead of starting without it.
+
+    The abandoned deploy may still be live on GitHub Actions — that is what
+    "unconfirmed" means here. The revoke this dispatches carries the fence, so it
+    stops that run before writing rather than racing it.
     """
     log.error("temporary_access_grant_failed", detail=detail)
     await _fail_qa_run(
@@ -495,6 +502,12 @@ async def _dispatch_revoke(
         run_id=revoke_run_id,
         value="",
         run_metadata={"triggered_by": "temporary_access_revoke", "revoke_reason": reason.value},
+        # The grant deploy this revoke replaces may still be running on GitHub
+        # Actions — that is exactly the case where the grant was abandoned
+        # unconfirmed. Clearing the value while it can still be written back
+        # would mark the grant revoked with the identity still admitted, so the
+        # revoke deploy stops it first and fails if it cannot.
+        fence_active_deploys=True,
     )
     log.info(
         "temporary_access_revoke_dispatched",
@@ -580,17 +593,16 @@ async def _record_revoke_failure(
     the failure stops being an internal retry and becomes the QA run's, which is
     what lets the story reach a visible outcome instead of waiting on a revoke
     that keeps failing.
+
+    The QA run is failed before the grant is stamped as escalated, and never the
+    other way round. The stamp is what stops the story from waiting on this
+    grant, so writing it first would open that gate with the QA run still saying
+    the run passed — one dead process in between and a story publishes success
+    while the identity is still admitted. In the order below the crash window
+    leaves the story waiting, which the next sweep resolves.
     """
     error = _deploy_failure_detail(run, "revoke")
     exhausted = grant.revoke_attempts >= _max_revoke_attempts() and grant.escalated_at is None
-    await api_client.update_temporary_access_grant(
-        grant.id,
-        TemporaryAccessGrantUpdate(
-            status=TemporaryAccessStatus.REVOKE_FAILED,
-            last_error=error,
-            escalated=True if exhausted else None,
-        ),
-    )
     log.error(
         "temporary_access_revoke_failed",
         revoke_run_id=run.id,
@@ -600,6 +612,12 @@ async def _record_revoke_failure(
     )
     counts["revoke_failed"] += 1
     if not exhausted:
+        await api_client.update_temporary_access_grant(
+            grant.id,
+            TemporaryAccessGrantUpdate(
+                status=TemporaryAccessStatus.REVOKE_FAILED, last_error=error
+            ),
+        )
         return
 
     await notify_admins_best_effort(
@@ -620,6 +638,12 @@ async def _record_revoke_failure(
         summary="temporary test access could not be revoked",
         error_message=f"temporary access {grant.env_key} is still granted: {error}",
         log=log,
+    )
+    await api_client.update_temporary_access_grant(
+        grant.id,
+        TemporaryAccessGrantUpdate(
+            status=TemporaryAccessStatus.REVOKE_FAILED, last_error=error, escalated=True
+        ),
     )
 
 

@@ -638,3 +638,96 @@ class TestDeployerPinnedToCommit:
         assert gh.wait_for_workflow_completion.call_args[1]["branch"] == "main"
         assert gh.wait_for_workflow_completion.call_args[1]["head_sha"] is None
         assert result["deployment_result"]["status"] == "success"
+
+
+@patch.dict(
+    os.environ,
+    {
+        "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+        "REGISTRY_USER": "testuser",
+        "REGISTRY_PASSWORD": "testpass",  # noqa: S105
+    },
+)
+class TestDeployerFencesEarlierRuns:
+    """A deploy that removes a value must outlive every run that could restore it."""
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_earlier_runs_are_stopped_before_this_one_writes(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """Secrets are written for the fenced deploy only once nothing else can act.
+
+        Writing first would hand the value to a run that is already going.
+        """
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        order = []
+        gh.fence_workflow = AsyncMock(side_effect=lambda *a, **k: order.append("fence") or [7])
+        gh.set_repository_secrets = AsyncMock(
+            side_effect=lambda *a, **k: order.append("secrets") or True
+        )
+        gh.trigger_workflow_dispatch = AsyncMock(
+            side_effect=lambda *a, **k: order.append("dispatch") or True
+        )
+
+        result = await deployer.run({**base_state, "fence_active_deploys": True})
+
+        assert order == ["fence", "secrets", "dispatch"]
+        gh.fence_workflow.assert_awaited_once_with("my-org", "my-repo", "deploy.yml")
+        assert result["deployment_result"]["status"] == "success"
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_an_unstoppable_earlier_run_refuses_the_deploy(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """The grant-after-revoke ordering: an older run that may still write.
+
+        Reporting this deploy successful would record the value as removed while
+        the run that set it is still able to put it back, so the deploy fails and
+        nothing is dispatched.
+        """
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.fence_workflow = AsyncMock(
+            side_effect=WorkflowCancellationUnprovenError("run 7 could not be proven terminal")
+        )
+
+        result = await deployer.run({**base_state, "fence_active_deploys": True})
+
+        assert result["deployment_result"]["status"] == "failed"
+        assert "could not be proven stopped" in result["deployment_result"]["error"]
+        gh.set_repository_secrets.assert_not_called()
+        gh.trigger_workflow_dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_an_ordinary_deploy_does_not_fence(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """Only a deploy that has to be last pays for the fence."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.fence_workflow = AsyncMock()
+
+        await deployer.run(base_state)
+
+        gh.fence_workflow.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_a_fenced_out_run_is_not_rerun(self, mock_api, mock_gh_cls, deployer, base_state):
+        """The other side of the fence: the deploy that was stopped stays stopped.
+
+        Rerunning it would put back exactly the value the deploy that fenced it
+        removed, which is the ordering this whole mechanism exists to exclude.
+        """
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.side_effect = WorkflowCancelledError("run 7 was cancelled")
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["deployment_result"]["status"] == "cancelled"
+        gh.rerun_failed_jobs.assert_not_called()
