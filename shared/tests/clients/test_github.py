@@ -369,6 +369,102 @@ async def test_wait_for_run_completion_timeout(authed_client):
                     )
 
 
+def _run_payload(owner, repo, run_id, status, conclusion=None):
+    return {
+        "id": run_id,
+        "status": status,
+        "conclusion": conclusion,
+        "html_url": f"https://github.com/{owner}/{repo}/actions/runs/{run_id}",
+        "head_sha": "a" * 40,
+    }
+
+
+@pytest.mark.asyncio
+async def test_wait_for_run_completion_cancels_the_run_it_is_polling(authed_client):
+    """A teardown during a rerun must stop that run, not just abandon the wait."""
+    owner, repo, run_id = "my-org", "my-repo", 12345
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/runs/{run_id}").mock(
+                side_effect=[
+                    httpx.Response(200, json=_run_payload(owner, repo, run_id, "in_progress")),
+                    httpx.Response(
+                        200, json=_run_payload(owner, repo, run_id, "completed", "cancelled")
+                    ),
+                ]
+            )
+            cancel_route = respx_mock.post(
+                f"/repos/{owner}/{repo}/actions/runs/{run_id}/cancel"
+            ).mock(return_value=httpx.Response(202))
+
+            with pytest.raises(WorkflowCancelledError):
+                await authed_client.wait_for_run_completion(
+                    owner,
+                    repo,
+                    run_id,
+                    timeout_seconds=10,
+                    poll_interval=1,
+                    cancel_check=AsyncMock(return_value=True),
+                )
+
+            assert cancel_route.called
+
+
+@pytest.mark.asyncio
+async def test_wait_for_run_completion_fails_closed_when_the_stop_is_unproven(authed_client):
+    owner, repo, run_id = "my-org", "my-repo", 12345
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/runs/{run_id}").mock(
+                return_value=httpx.Response(
+                    200, json=_run_payload(owner, repo, run_id, "in_progress")
+                )
+            )
+            respx_mock.post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/cancel").mock(
+                return_value=httpx.Response(500)
+            )
+
+            with pytest.raises(WorkflowCancellationUnprovenError):
+                await authed_client.wait_for_run_completion(
+                    owner,
+                    repo,
+                    run_id,
+                    timeout_seconds=10,
+                    poll_interval=1,
+                    cancel_check=AsyncMock(return_value=True),
+                )
+
+
+@pytest.mark.asyncio
+async def test_interrupted_run_wait_cancels_the_run_before_propagating(authed_client):
+    """An interrupted rerun wait leaves no live workflow behind."""
+    owner, repo, run_id = "my-org", "my-repo", 12345
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/runs/{run_id}").mock(
+                side_effect=[
+                    httpx.Response(200, json=_run_payload(owner, repo, run_id, "in_progress")),
+                    httpx.Response(
+                        200, json=_run_payload(owner, repo, run_id, "completed", "cancelled")
+                    ),
+                ]
+            )
+            cancel_route = respx_mock.post(
+                f"/repos/{owner}/{repo}/actions/runs/{run_id}/cancel"
+            ).mock(return_value=httpx.Response(202))
+
+            with patch("asyncio.sleep", side_effect=asyncio.CancelledError()):
+                with pytest.raises(asyncio.CancelledError):
+                    await authed_client.wait_for_run_completion(
+                        owner, repo, run_id, timeout_seconds=10, poll_interval=1
+                    )
+
+            assert cancel_route.called
+
+
 # --- Pull Request methods ---
 
 

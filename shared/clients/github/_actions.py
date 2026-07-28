@@ -624,6 +624,7 @@ class ActionsMixin:
         run_id: int,
         timeout_seconds: int = 600,
         poll_interval: int = 15,
+        cancel_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict:
         """Wait for a specific workflow run to complete.
 
@@ -637,13 +638,18 @@ class ActionsMixin:
             run_id: Workflow run ID to poll
             timeout_seconds: Max wait time
             poll_interval: Seconds between polls
+            cancel_check: If set, polled each round; a requested teardown stops this
+                run and proves it terminal before raising, so no live rerun outlives
+                the wait.
 
         Returns:
-            Dict with {id, status, conclusion, html_url} on success
+            Dict with {id, status, conclusion, html_url, head_sha} on success
 
         Raises:
             RuntimeError: If run completes with non-success conclusion
             TimeoutError: If run doesn't complete within timeout
+            WorkflowCancelledError: Teardown stopped the run and it is terminal
+            WorkflowCancellationUnprovenError: The stop could not be verified
         """
         token = await self.get_token(owner, repo)
         headers = {
@@ -652,49 +658,102 @@ class ActionsMixin:
         }
 
         start = datetime.now(UTC)
+        workflow_label = f"run {run_id}"
+        last_status: str | None = None
 
-        while True:
-            elapsed = (datetime.now(UTC) - start).total_seconds()
-            if elapsed > timeout_seconds:
-                raise TimeoutError(
-                    f"Workflow run {run_id} did not complete within {timeout_seconds}s"
+        try:
+            while True:
+                elapsed = (datetime.now(UTC) - start).total_seconds()
+                if elapsed > timeout_seconds:
+                    raise TimeoutError(
+                        f"Workflow run {run_id} did not complete within {timeout_seconds}s"
+                    )
+
+                resp = await self._make_request(
+                    "GET",
+                    f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}",
+                    headers=headers,
                 )
+                run = resp.json()
+                last_status = run["status"]
 
-            resp = await self._make_request(
-                "GET",
-                f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}",
-                headers=headers,
-            )
-            run = resp.json()
-
-            if run["status"] == "completed":
-                result = {
-                    "id": run["id"],
-                    "status": run["status"],
-                    "conclusion": run.get("conclusion"),
-                    "html_url": run["html_url"],
-                }
-                if run.get("conclusion") == "success":
-                    logger.info(
-                        "workflow_run_completed_success",
-                        run_id=run_id,
-                    )
-                    return result
-                else:
-                    # Fetch failure details for better error context
+                if cancel_check:
                     try:
-                        failure_logs = await self.get_workflow_failure_logs(owner, repo, run_id)
-                    except Exception:
-                        failure_logs = "(could not fetch failure details)"
-                    raise RuntimeError(
-                        f"Workflow run {run_id} failed: {run.get('conclusion')}. "
-                        f"See: {run['html_url']}\n{failure_logs}"
-                    )
+                        cancel_requested = await cancel_check()
+                    except Exception as exc:
+                        # A failed check cannot tell teardown from a healthy run, so
+                        # the run stays live and unproven. Fail closed.
+                        raise WorkflowCancellationUnprovenError(
+                            f"Workflow run {run_id} cancellation check could not be evaluated"
+                        ) from exc
+                    if cancel_requested and last_status != "completed":
+                        # Never returns normally.
+                        await self._cancel_and_confirm_workflow_run(
+                            owner, repo, run_id, workflow_label, timeout_seconds, poll_interval
+                        )
 
-            logger.info(
-                "workflow_run_in_progress",
-                run_id=run_id,
-                status=run["status"],
-                elapsed_sec=int(elapsed),
+                if run["status"] == "completed":
+                    result = {
+                        "id": run["id"],
+                        "status": run["status"],
+                        "conclusion": run.get("conclusion"),
+                        "html_url": run["html_url"],
+                        "head_sha": run.get("head_sha"),
+                    }
+                    if run.get("conclusion") == "success":
+                        logger.info(
+                            "workflow_run_completed_success",
+                            run_id=run_id,
+                        )
+                        return result
+                    else:
+                        # Fetch failure details for better error context
+                        try:
+                            failure_logs = await self.get_workflow_failure_logs(owner, repo, run_id)
+                        except Exception:
+                            failure_logs = "(could not fetch failure details)"
+                        raise RuntimeError(
+                            f"Workflow run {run_id} failed: {run.get('conclusion')}. "
+                            f"See: {run['html_url']}\n{failure_logs}"
+                        )
+
+                logger.info(
+                    "workflow_run_in_progress",
+                    run_id=run_id,
+                    status=run["status"],
+                    elapsed_sec=int(elapsed),
+                )
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            await self._cancel_interrupted_run_wait(
+                owner, repo, run_id, workflow_label, last_status, timeout_seconds, poll_interval
             )
-            await asyncio.sleep(poll_interval)
+            raise
+
+    async def _cancel_interrupted_run_wait(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+        workflow_label: str,
+        last_status: str | None,
+        timeout_seconds: int,
+        poll_interval: int,
+    ) -> None:
+        """Stop and verify one known run when the task awaiting it is interrupted."""
+        if last_status == "completed":
+            return
+        try:
+            await asyncio.shield(
+                self._cancel_and_confirm_workflow_run(
+                    owner, repo, run_id, workflow_label, timeout_seconds, poll_interval
+                )
+            )
+        except WorkflowCancelledError:
+            return
+        except WorkflowCancellationUnprovenError:
+            raise
+        except Exception as exc:
+            raise WorkflowCancellationUnprovenError(
+                f"Workflow run {run_id} cancellation could not be verified"
+            ) from exc
