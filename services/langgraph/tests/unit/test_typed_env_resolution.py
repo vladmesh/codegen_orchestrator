@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import yaml
 
+from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID, bot_admits
 from shared.contracts.env_contract import merge_env_contract_fragments
 from shared.contracts.env_usage import load_env_contract_fragments
 from src.subgraphs.devops.env_contract_loader import load_environment_contract
@@ -474,3 +475,86 @@ async def test_template_contract_fixture_resolves_production_entries(_decrypt, a
     assert result["missing_user_secrets"] == []
     assert result["non_secret_values"]["POSTGRES_DB"] == "db_project_1"
     assert result["non_secret_values"]["POSTGRES_REQUIRE_SSL"] == "false"
+
+
+def _test_identity_contract() -> dict:
+    """The template slot a QA run borrows and gives back."""
+    return {
+        **_bot_contract(),
+        "TG_BOT_TEST_TELEGRAM_ID": {
+            "source": "literal",
+            "value": "",
+            "environments": ["production"],
+            "consumers": ["tg_bot"],
+            "required": False,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_revoking_the_test_identity_deploys_an_empty_value():
+    """Revocation reaches the deployed environment as no identity at all.
+
+    The bot decides access from this value, so an override that cleared it must
+    arrive as an empty literal rather than as the previously granted id.
+    """
+    state = _state(_test_identity_contract())
+    state["project_spec"]["config"]["bot_access"] = {
+        "mode": "only_me",
+        "allowed_telegram_ids": "42",
+    }
+    state["project_spec"]["config"]["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"}
+    state["env_overrides"] = {"TG_BOT_TEST_TELEGRAM_ID": ""}
+
+    result = await SecretResolverNode().run(state)
+
+    assert result["non_secret_values"]["TG_BOT_TEST_TELEGRAM_ID"] == ""
+
+
+@pytest.mark.asyncio
+async def test_granting_the_test_identity_deploys_the_borrowed_id():
+    state = _state(_test_identity_contract())
+    state["project_spec"]["config"]["bot_access"] = {
+        "mode": "only_me",
+        "allowed_telegram_ids": "42",
+    }
+    state["project_spec"]["config"]["env_overrides"] = {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"}
+    state["env_overrides"] = {"TG_BOT_TEST_TELEGRAM_ID": "424242"}
+
+    result = await SecretResolverNode().run(state)
+
+    assert result["non_secret_values"]["TG_BOT_TEST_TELEGRAM_ID"] == "424242"
+
+
+@pytest.mark.asyncio
+async def test_the_deployed_environment_admits_qa_only_while_granted():
+    """The point of the revoke, checked the way the bot decides access.
+
+    An empty test slot is not just a missing variable: read by the template's
+    admission rule, the environment the revoke deploy ships refuses the QA
+    identity while the project's own audience keeps working.
+    """
+    project_config = {
+        "bot_access": {"mode": "only_me", "allowed_telegram_ids": "42"},
+        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42"},
+    }
+
+    async def _deployed_environment(test_identity: str) -> dict:
+        state = _state(_test_identity_contract())
+        state["project_spec"]["config"] = project_config
+        state["env_overrides"] = {"TG_BOT_TEST_TELEGRAM_ID": test_identity}
+        return (await SecretResolverNode().run(state))["non_secret_values"]
+
+    granted = await _deployed_environment(str(QA_TEST_TELEGRAM_ID))
+    revoked = await _deployed_environment("")
+
+    def _admits(env: dict, telegram_id: int) -> bool:
+        return bot_admits(
+            audience=env["TG_BOT_ALLOWED_TELEGRAM_IDS"],
+            test_identity=env["TG_BOT_TEST_TELEGRAM_ID"],
+            telegram_id=telegram_id,
+        )
+
+    assert _admits(granted, QA_TEST_TELEGRAM_ID)
+    assert not _admits(revoked, QA_TEST_TELEGRAM_ID)
+    assert _admits(revoked, 42)

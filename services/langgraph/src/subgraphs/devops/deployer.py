@@ -9,6 +9,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient, deploy_pin_tag
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.env_overrides import env_overrides_digest
 from shared.contracts.service_ports import is_http_health_port_service
 
@@ -39,6 +40,48 @@ class DeployedShaMismatchError(DeployRefusedError):
 
 class DeployPinTagLeakedError(DeployRefusedError):
     """The temporary pin tag survived the run, so the deploy left litter in the user's repo."""
+
+
+class DeployFenceUnprovenError(DeployRefusedError):
+    """An older deploy run may still be able to write, so this one cannot be the last word."""
+
+
+class DeployDispatchWithdrawnError(RuntimeError):
+    """This run was stopped before it reached GitHub, so nothing was dispatched.
+
+    Not a DeployRefusedError: nothing failed. The deploy was called off while it
+    could still be called off, which is the whole point of asking.
+    """
+
+
+def _require_live_lease(claim: DeployDispatchClaim | None, moment: datetime) -> None:
+    """Refuse to dispatch once the claim's deadline has passed.
+
+    Holding the boundary is a lease, not a possession, and this is the promise
+    that makes it one: reconciliation may take a claim back after its deadline,
+    and a worker that stalled in between should not go on to start work nobody is
+    waiting for.
+
+    This is housekeeping, not a fence. Read on the worker's own clock and one
+    HTTP call before the effect, it cannot rule out a dispatch GitHub accepts
+    after the deadline anyway, so nothing may be recorded as removed on the
+    strength of it. What a caller removing a value relies on instead is reading
+    the deployed service back and repeating itself until what it reads is what
+    it asked for.
+    """
+    if claim is None or claim.lease_expires_at is None:
+        return
+    if moment < claim.lease_expires_at:
+        return
+    logger.warning(
+        "deploy_dispatch_lease_expired",
+        run_id=claim.run_id,
+        lease_expires_at=claim.lease_expires_at.isoformat(),
+    )
+    raise DeployDispatchWithdrawnError(
+        f"deploy run {claim.run_id} held its dispatch claim past "
+        f"{claim.lease_expires_at.isoformat()} and may no longer dispatch"
+    )
 
 
 async def _create_deployment_record(
@@ -197,6 +240,10 @@ class DeployerNode(FunctionalNode):
             run_id = failed_run["id"]
             logger.info("deploy_rerun_attempting", run_id=run_id)
 
+            # A rerun restarts the same external effect, so it crosses the same
+            # boundary and asks the same question first.
+            claim = await self._claim_dispatch(deploy_run_id)
+            _require_live_lease(claim, datetime.now(UTC))
             await github.rerun_failed_jobs(owner, repo, run_id)
             await asyncio.sleep(3)
 
@@ -210,6 +257,11 @@ class DeployerNode(FunctionalNode):
             logger.info("deploy_rerun_passed", run_id=run_id)
             return run_info
 
+        except DeployDispatchWithdrawnError:
+            # The run was called off before the rerun was requested. Swallowing
+            # it here would report "rerun not possible" and let the caller retry
+            # an effect somebody already withdrew.
+            raise
         except (RuntimeError, TimeoutError) as e:
             if type(e).__name__ in _CANCELLATION_ERRORS:
                 raise
@@ -242,6 +294,43 @@ class DeployerNode(FunctionalNode):
             return e
         return None
 
+    async def _fence_active_deploys(
+        self, github: GitHubAppClient, owner: str, repo: str, project_id: str
+    ) -> list[int]:
+        """Stop every deploy run that could still write the payload this one replaced.
+
+        The project deploy lock only serialises consumers, and it expires; the
+        GitHub Actions run it started does not stop when it does. So a deploy that
+        exists to remove a value stops the runs that can still write the old one:
+        called after the new payload is in the repository secrets, it covers the
+        runs that already read the old payload, while the write itself covers
+        everything created afterwards.
+
+        Together they make the window small, not empty. GitHub is asynchronous
+        and not ours, so a dispatch already in flight can still be accepted after
+        all of this. Whoever needs the old value gone confirms that by reading
+        the deployed service; this only shortens the wait. An unproven stop
+        refuses the deploy rather than reporting a removal it cannot claim.
+        """
+        try:
+            fenced = await github.fence_workflow(owner, repo, DEPLOY_WORKFLOW)
+        except Exception as e:
+            if type(e).__name__ not in _CANCELLATION_ERRORS:
+                raise
+            raise DeployFenceUnprovenError(
+                f"an earlier {DEPLOY_WORKFLOW} run in {owner}/{repo} could not be proven "
+                f"stopped: {e}"
+            ) from e
+        if fenced:
+            logger.info(
+                "deploy_fenced_active_runs",
+                project_id=project_id,
+                owner=owner,
+                repo=repo,
+                run_ids=fenced,
+            )
+        return fenced
+
     async def _dispatch_and_wait(
         self,
         github: GitHubAppClient,
@@ -267,8 +356,13 @@ class DeployerNode(FunctionalNode):
             if pin_tag:
                 await github.create_or_reset_tag(owner, repo, pin_tag, head_sha)
 
+            # Last thing before the deploy leaves the system. After this the run
+            # exists on GitHub Actions and can only be stopped there.
+            claim = await self._claim_dispatch(run_id)
+
             # Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
+            _require_live_lease(claim, dispatch_time)
             if pin_tag:
                 await github.trigger_workflow_dispatch(owner, repo, DEPLOY_WORKFLOW, ref=pin_tag)
             else:
@@ -355,7 +449,35 @@ class DeployerNode(FunctionalNode):
         run = await api_client.get(f"runs/{run_id}")
         return run.get("status") == "cancelled"
 
-    async def run(self, state: DevOpsState) -> dict:
+    async def _claim_dispatch(self, run_id: str | None) -> DeployDispatchClaim | None:
+        """Take the dispatch boundary, or refuse to cross it.
+
+        Called immediately before every call that starts work on GitHub Actions.
+        A plain read of the run status cannot do this job: between reading it and
+        dispatching, a revoke can cancel the run, see no Actions run to fence,
+        clear the value and finish, and only then does this deploy write the
+        value back. The claim and that cancellation are decided against the same
+        locked row, so one of them loses and knows it.
+
+        Raises:
+            DeployDispatchWithdrawnError: the run was stopped first. Nothing was
+                dispatched and nothing needs stopping outside.
+        """
+        if not run_id:
+            return None
+        claim = await api_client.claim_deploy_dispatch(run_id)
+        if not claim.granted:
+            logger.info(
+                "deploy_dispatch_withdrawn",
+                run_id=run_id,
+                run_status=claim.run_status.value,
+            )
+            raise DeployDispatchWithdrawnError(
+                f"deploy run {run_id} was {claim.run_status.value} before it was dispatched"
+            )
+        return claim
+
+    async def run(self, state: DevOpsState) -> dict:  # noqa: PLR0911
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
         run_id = state.get("run_id")
@@ -448,6 +570,30 @@ class DeployerNode(FunctionalNode):
                     repo=repo,
                 )
 
+            # 2.5 Fence older runs when this deploy must be the last writer, and
+            # only once the payload above is already the repository's. What the
+            # workflow deploys is read from the repository secrets when it runs,
+            # not from whoever asked for it, so ordering it this way leaves the
+            # smallest window: a run that could read the old payload is on
+            # Actions by now and is stopped here, and one created afterwards —
+            # a worker resuming past its dispatch lease, above all — reads what
+            # this just wrote. Smallest, not none; the caller confirms the
+            # removal by reading the deployed service.
+            if state.get("fence_active_deploys"):
+                try:
+                    await self._fence_active_deploys(github, owner, repo, project_id)
+                except DeployRefusedError as e:
+                    logger.error(
+                        "deploy_fence_unproven",
+                        project_id=project_id,
+                        reason=type(e).__name__,
+                        error=str(e),
+                    )
+                    return {
+                        "deployment_result": {"status": "failed", "error": str(e)},
+                        "errors": [f"Deploy refused: {e}"],
+                    }
+
             if await self._run_cancelled(run_id):
                 return {"deployment_result": {"status": "cancelled"}}
 
@@ -456,6 +602,12 @@ class DeployerNode(FunctionalNode):
                 run_info, rerun = await self._dispatch_and_wait(
                     github, owner, repo, head_sha, run_id
                 )
+            except DeployDispatchWithdrawnError as e:
+                # Stopped before anything left the system. Reported as cancelled,
+                # like a run stopped on Actions, so the consumer records the same
+                # terminal outcome either way.
+                logger.info("deploy_withdrawn_before_dispatch", project_id=project_id, error=str(e))
+                return {"deployment_result": {"status": "cancelled"}}
             except DeployRefusedError as e:
                 logger.error(
                     "deploy_refused",

@@ -42,6 +42,11 @@ class DeployOutcome(StrEnum):
     ENVIRONMENT_CONTRACT_INVALID = "environment_contract_invalid"
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
     HEAD_SHA_MISSING = "head_sha_missing"
+    # Somebody stopped this deploy on purpose: a fence taken by a deploy that has
+    # to be the last writer, a teardown, or a withdrawal before it reached
+    # GitHub. Nothing failed and nothing was deployed, so the story it belongs to
+    # is redeployed rather than retried as a failure or left waiting.
+    CANCELLED = "cancelled"
 
 
 class DeployMessage(BaseMessage):
@@ -71,6 +76,13 @@ class DeployMessage(BaseMessage):
     # Deploys of the same commit with different overrides are different deploys,
     # so the redundant-deploy shortcut compares them.
     env_overrides: dict[str, str] = Field(default_factory=dict)
+    # Set when this deploy exists to take an effect away and must therefore be
+    # the last one to write. The consumer then refuses the redundant-deploy
+    # shortcut and the deployer proves every earlier Actions run of this
+    # repository stopped before writing anything — the project deploy lock
+    # expires and does not reach the run it started, so an abandoned deploy can
+    # otherwise land after the one that cleared its value.
+    fence_active_deploys: bool = False
 
     @model_validator(mode="after")
     def _lifecycle_names_its_target(self) -> "DeployMessage":

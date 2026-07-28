@@ -72,6 +72,11 @@ class DeployRunResult(BaseModel):
     deployed_url: str | None = None
     application_id: int | None = None
     bot_username: str | None = None
+    # Whether the deployed commit declares the contract slot a QA run borrows to
+    # reach a private bot. The scheduler cannot see the generated repository, and
+    # sending an undeclared override would fail the next deploy, so the deploy
+    # that read the contract is what reports it.
+    test_identity_slot: bool = False
     deploy_fix_attempt: int = 0
     error_details: str | None = None
     missing_user_secrets: list[MissingUserSecret] = Field(default_factory=list)
@@ -99,6 +104,10 @@ class QABlockerCategory(StrEnum):
     TELEGRAM_ACCESS_DENIED = "telegram_access_denied"
     SERVER_UNAVAILABLE = "server_unavailable"
     QA_CLEANUP_FAILED = "qa_cleanup_failed"
+    # The temporary identity QA tests private bots with: never handed over, or
+    # taken back while the run was still using it.
+    QA_ACCESS_GRANT_FAILED = "qa_access_grant_failed"
+    QA_ACCESS_EXPIRED = "qa_access_expired"
     UNKNOWN = "unknown"
 
 

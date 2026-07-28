@@ -111,6 +111,7 @@ cannot poison-loop the reclaim.
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
 | `provisioner:queue` | `infrastructure-workers` | ProvisionerMessage | scheduler | infra-service | Provision server |
+| `env-observation:queue` | `infrastructure-workers` | EnvObservationRequest | scheduler | infra-service | Read a deployed service's environment |
 | `provisioner:results` | `scheduler-consumers` | ProvisionerResult | infra-service | scheduler | Provisioning result |
 | `provisioner:results` | `telegram-bot` | ProvisionerResult | infra-service | telegram-bot | Provisioning notifications |
 
@@ -348,6 +349,7 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 | 9 | Architect Consumer | `langgraph/src/consumers/architect.py` | `architect:queue` | manual | `claim_pending` | `model_validate` |
 | 10 | Scaffolder | `scaffolder/src/consumer.py` | `scaffold:queue` | manual | `claim_pending` | `model_validate` |
 | 11 | QA Consumer | `langgraph/src/consumers/qa.py` | `qa:queue` | manual | `claim_pending` | `model_validate` |
+| 12 | Env Observer | `infra-service/src/main.py` | `env-observation:queue` | manual | `claim_pending` | `consume_typed` |
 
 ---
 
@@ -996,6 +998,15 @@ class DeployMessage(BaseMessage):
     # A project can run on several servers, so the consumer must bring down the
     # application it was told about instead of picking one itself.
     application_id: int | None = None
+    # Deploy-time literals on top of the contract, for state a caller turns on and
+    # off between deploys of the same commit (QA's temporary test identity). Only
+    # keys the contract declares as literals are accepted.
+    env_overrides: dict[str, str] = {}
+    # This deploy must be the last writer: it skips the redundant-deploy shortcut
+    # and, once its own payload is in the repository secrets, stops every
+    # unfinished deploy.yml run. Set by a revoke, whose whole point is removing a
+    # value an older run could put back.
+    fence_active_deploys: bool = False
 
 
 class DeployResult(BaseResult):
@@ -1003,6 +1014,143 @@ class DeployResult(BaseResult):
     deployed_url: str | None = None
     server_ip: str | None = None
     port: int | None = None
+```
+
+### Deploy dispatch boundary
+
+`shared/contracts/dto/deploy_dispatch.py`. A deploy run stops being stoppable from inside the
+system the moment its worker reaches GitHub Actions. The crossing is recorded on the run under a
+row lock, so a worker about to dispatch and a caller trying to stop it first cannot both win.
+
+| Endpoint | Taken by | Answers |
+| --- | --- | --- |
+| `POST /api/runs/{id}/start` | any worker taking a run to `running`, as its first act on the message | `DeployRunStart` — `started=False` for a run that is already terminal, and the worker then does nothing with it |
+| `POST /api/runs/{id}/dispatch-claim` | the deploy worker, immediately before `workflow_dispatch` and before a rerun | `DeployDispatchClaim` — `granted=False` for a run already cancelled, and the worker then dispatches nothing; `lease_expires_at` is how long the claim is good for |
+| `POST /api/runs/{id}/dispatch-withdraw` | whoever needs the deploy stopped (the temporary-access sweep) | `DeployDispatchWithdrawal` — `withdrawn` (never left), `already_dispatched` (stop it on Actions instead), `already_terminal` |
+| `POST /api/runs/{id}/dispatch-supersede` | the same caller, once an `already_dispatched` claim has gone quiet | `DeployDispatchSupersede` — `superseded`, `already_settled`, `not_claimed`, or `lease_live` (wait) |
+
+The claim stamps `run_metadata.dispatch_claimed_at` and `run_metadata.dispatch_lease_expires_at`;
+the withdrawal reads the first. A withdrawal always marks the run cancelled, because the worker
+polls that to stop its own Actions run.
+
+A terminal run never goes back to a live one: `PATCH /api/runs/{id}` refuses such a move with 409,
+and `start` is the locked form of the same transition. Without it a worker's read-then-write would
+overwrite a cancellation that landed in between, and the resurrected run would pass the claim.
+
+`already_dispatched` is ordinarily settled by the claiming worker's own recorded outcome — a
+terminal run carrying a typed result. A worker that dies after claiming never writes one, so
+holding the boundary is a lease rather than a possession: the claim carries a deadline (renewed
+each time the worker asks), the worker re-reads the clock immediately before dispatching and
+refuses once it has passed, and past the deadline `dispatch-supersede` closes the boundary against
+it — cancelling the run so it can never be re-claimed and stamping
+`run_metadata.dispatch_superseded_at`. That stamp settles the dispatch for any later reader, which
+is what lets a restarted sweep revoke instead of waiting on a process that is gone.
+
+The lease is not a fence around the GitHub effect and nothing may be revoked on the strength of
+it. It is read on the worker's own clock one HTTP call before the request, so a paused worker, or
+a delayed request, can still be accepted after the deadline. What makes that harmless is on the
+deploy side: a workflow reads its payload from the repository secrets when it runs, and a fencing
+deploy writes its payload before it fences, so a run created after that point carries the new
+value whatever asked for it.
+
+A run's outcome is the first one written, and every writer takes the run's row before it reads it
+— the rule is decided from the run's current state, and a plain read decides it from a state
+another transaction is already replacing. Once a terminal run carries a result, `PATCH
+/api/runs/{id}` refuses any change to `status`, `result` or `error_message` with 409; an identical
+repeat is accepted as the no-op it is, and fields that are not the outcome (metadata, token
+accounting) are still writable. Two writers race for one run whenever a supervisor ends a run its
+worker is still inside — the temporary-access sweep failing a QA run whose borrowed identity
+expired — and terminal-to-terminal is the same overwrite as terminal-to-live. Filling the result of
+a terminal run that has none is not a second outcome: a cancelled run is marked terminal by whoever
+cancelled it, and the worker that owned it records what it did afterwards, which is what settles
+`already_dispatched` above.
+
+### Temporary access: the boundary of the guarantee
+
+The promise about a test identity's access is not "the access can never come back". It cannot be:
+between the decision and the effect stands GitHub Actions, which this system does not own and
+which works asynchronously, so no amount of stopping writers here proves that none of them will
+apply the old value afterwards. The promise is that **the access does not outlive one
+reconciliation interval after it is seen**, and it is made at two speeds:
+
+- **Fast, while the slot is watched** — the grant's own lifetime plus
+  `supervisor.temporary_access_revoked_watch_minutes` after the readings closed it. Here the value
+  does not outlive one reconciliation interval. This is the level a dispatch that was already in
+  flight lands in, and it is worth an ssh every few minutes.
+- **Slow, for as long as the slot exists** — the invariant *the key is empty while no grant holds
+  it* is checked on its own cadence, `supervisor.temporary_access_contract_audit_hours`, for every
+  `(project, env_key)` slot the record knows, however long ago its last grant closed. Here the value
+  does not outlive one slow-check interval. It costs one ssh and one playbook per slot, which is why
+  it is counted in hours rather than minutes.
+
+The watch expiring is therefore not the end of the promise, only a change of speed. A value applied
+a minute after the fast watch ends is found by the slow check, revoked by the same code, and fails
+the same way visibly if it will not go.
+
+What that rests on: `revoked` is written only after the environment of the running service has been
+read back through `env-observation:queue` and no longer carries the value. Until that reading has
+been made the grant stays live in `revoking`, the sweep keeps revoking, and the operation is
+idempotent. A writer that applies the old value late — a superseded worker's dispatch that GitHub
+accepted anyway, or a hand-run deploy — is then simply a disagreement between what was asked for
+and what is observed, and the next cycle sees it and corrects it. A reading that could not be taken
+settles nothing either way: the grant stays live, and the sweep asks again.
+
+Three rules make that hold rather than merely describe it:
+
+- **No caller may declare a grant revoked.** `PATCH /api/temporary-access-grants/{id}` refuses
+  `status=revoked` outright (422). The only path to that status is
+  `POST /api/temporary-access-grants/{id}/observation`, which takes a `TemporaryAccessObservation`
+  and decides from the record. A grant closed on a caller's belief would be exactly the claim the
+  system cannot make.
+- **The reading must be of the deployment QA tested.** Applications are unique per
+  `(repo_id, server_handle)`, so a project can be running on several servers at once. The
+  observation names its `application_id`, and the record refuses one that is not the
+  `application_id` carried in the grant's stored `QAMessage`. An empty slot on another machine says
+  nothing about the bot the test identity was admitted by.
+- **One empty reading closes nothing.** A reading is a moment, and a dispatch already in flight
+  lands after moments. The grant stays under reconciliation until `REVOKE_CONFIRMATION_READINGS`
+  readings taken over `REVOKE_CONFIRMATION_WINDOW` (both in
+  `shared/contracts/dto/temporary_access.py`) have agreed. A reading that finds the value again
+  restarts the streak and the sweep revokes again. That window *is* the reconciliation interval the
+  promise above is written in.
+- **Closing the grant does not stop the readings.** The writer that can land between two readings
+  can land after the last one, so a closed grant keeps being read for
+  `supervisor.temporary_access_revoked_watch_minutes` — the sweep asks the API for the live grants
+  plus the ones revoked since that cutoff (`GET /api/temporary-access-grants/?live=true&
+  revoked_after=…`). A reading that finds the value on a closed grant puts it back to `revoking`
+  under `revoke_reason=observed_after_revoke`, with `reopened_at` stamped and the retry budget
+  counted from there, and the sweep clears it again on the same tick. Unless the slot has a live
+  owner by then: the contract holds one value per `(project, env_key)`, so what is being read may
+  be a later grant's access, and that grant is reconciled on its own.
+- **Past the watch window the slot is still read, only rarely.** The invariant does not expire with
+  the window, so the sweep also asks for the owner of every closed slot last read before
+  `now - supervisor.temporary_access_contract_audit_hours` (`GET /api/temporary-access-grants/
+  ?live=true&slot_audit_before=…`). One row per slot: the grant that answers for it is the newest
+  recorded for that `(project, env_key)`, and the older ones would be the same ssh repeated for
+  history. `observed_at` is what makes a slot due and every reading stamps it, so a slot inside the
+  fast watch is never audited on top of being watched. A slot on a server that cannot be reached is
+  never read and would otherwise be asked for every tick, so the scheduler takes a marker
+  (`temporary-access:slot-audit:{project}:{env_key}`, expiring with the interval) before the
+  question goes out. What the slow check finds goes down the same path as the fast one: reopened
+  under `observed_after_revoke`, revoked, and escalated to a human if it stays.
+
+Cancelling runs on Actions, withdrawing a queued dispatch and superseding a dead claim all remain.
+None of them is proof that the access is gone; they shorten the window in which the old value can
+be written back. What says it is gone is the reading.
+
+A disagreement that outlives `supervisor.temporary_access_unrevoked_ttl_minutes` or
+`supervisor.temporary_access_max_revoke_attempts` stops being an internal retry: the QA run fails
+with `qa_cleanup_failed` naming the observed state, and the story goes to a human rather than
+waiting in TESTING.
+
+### QA handoff plan
+
+`shared/contracts/dto/qa_handoff.py`. What a successful deploy still owes QA, written into the QA
+run's `run_metadata` under `qa_handoff` in the same call that creates the run — before the story
+leaves DEPLOYING. `QAHandoffPlan` carries the `QAMessage` and, when the deployed bot does not
+already admit the QA identity, a `TemporaryAccessRequest` (`env_key`, `subject`, `head_sha`).
+`supervise_testing_stories` finishes any handoff left unfinished from this plan, so no step of it
+depends on the process that planned it still being alive.
 
 
 ---
@@ -1368,6 +1516,57 @@ class ProvisionerResult(BaseResult):
     services_redeployed: int = 0
     errors: list[str] | None = None
 ```
+
+---
+
+## EnvObservationRequest
+
+**Queue:** `env-observation:queue`
+**Initiator:** scheduler (the temporary-access sweep)
+**Consumer:** infra-service
+
+A deploy is a request handed to GitHub Actions, not an effect. Whoever has to know that a value is
+gone from the running service asks for it to be read where the SSH key and the playbooks already
+are. The reading changes nothing, so repeating it is free.
+
+```python
+# shared/contracts/queues/env_observation.py
+
+class EnvObservationRequest(BaseMessage):
+    """Read one environment slot of one deployed service."""
+    project_id: str
+    server_handle: str      # where the service runs
+    service_slug: str       # the directory the deploy put it under
+    env_key: str
+
+
+class EnvObservationOutcome(StrEnum):
+    OBSERVED = "observed"
+    # SSH down, playbook failed, nothing running to read. Neither a success nor
+    # a failure of whatever the caller wanted to confirm.
+    UNREACHABLE = "unreachable"
+
+
+class EnvObservationResult(BaseModel):
+    """What the running service has, or why it could not be asked."""
+    request_id: str
+    outcome: EnvObservationOutcome
+    env_key: str
+    present: bool | None = None   # None when nothing was read
+    containers: int = 0
+    detail: str = ""
+```
+
+The answer does not travel on a queue: `observe_service_env` runs
+`ansible/playbooks/observe_service_env.yml`, which reads the slot out of the running containers
+(not the `.env` file next to them), and the result is left in Redis under
+`env_observation_result_key(request_id)` for `ENV_OBSERVATION_RESULT_TTL_SECONDS`. The caller is a
+sweep that will be on a later tick, or in a later process, by the time the playbook is done.
+`env_observation_pending_key(request_id)` is set with an expiry before publishing so one question
+is asked per window rather than one per tick.
+
+`UNREACHABLE` is not a third answer about the slot. It says the reading did not happen, and callers
+must treat it as the absence of an answer: not a confirmation, not a failure.
 
 ---
 

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import time
@@ -43,6 +44,7 @@ class AnsibleRunner:
         orchestrator_hostname: str | None = None,
         tags: list[str] | None = None,
         timeout: int = 600,
+        extra_vars: dict[str, str] | None = None,
     ) -> tuple[bool, str]:
         """Run an Ansible playbook.
 
@@ -59,6 +61,8 @@ class AnsibleRunner:
             orchestrator_hostname: Optional orchestrator hostname for Loki push URL
             tags: Optional Ansible tags, for applying one supported baseline component
             timeout: Execution timeout in seconds
+            extra_vars: Additional playbook variables, for playbooks whose inputs
+                are their own rather than part of the provisioning vocabulary
 
         Returns:
             Tuple of (success: bool, output: str)
@@ -102,19 +106,22 @@ class AnsibleRunner:
             inventory_path = inv_file.name
 
         # Extra vars for playbook
-        extra_vars = f"target_host={server_ip} server_hostname={server_handle}"
+        vars_arg = f"target_host={server_ip} server_hostname={server_handle}"
 
         if ssh_public_key:
-            extra_vars += f" ssh_public_key='{ssh_public_key}'"
+            vars_arg += f" ssh_public_key='{ssh_public_key}'"
 
         if deploy_user:
-            extra_vars += f" deploy_user={deploy_user}"
+            vars_arg += f" deploy_user={deploy_user}"
 
         if orchestrator_ip:
-            extra_vars += f" orchestrator_ip={orchestrator_ip}"
+            vars_arg += f" orchestrator_ip={orchestrator_ip}"
 
         if orchestrator_hostname:
-            extra_vars += f" orchestrator_hostname={orchestrator_hostname}"
+            vars_arg += f" orchestrator_hostname={orchestrator_hostname}"
+
+        for key, value in (extra_vars or {}).items():
+            vars_arg += f" {key}={shlex.quote(value)}"
 
         # Construct ansible-playbook command
         cmd = [
@@ -125,7 +132,7 @@ class AnsibleRunner:
             inventory_path,
             playbook_path,
             "--extra-vars",
-            extra_vars,
+            vars_arg,
             "-v",
         ]
         if tags:

@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tests.unit.factories import make_run, make_run_start
+
 
 @pytest.fixture
 def mock_redis():
@@ -37,6 +39,8 @@ def mock_deploy_api():
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get = AsyncMock(return_value=[])
+        api.get_run = AsyncMock(return_value=make_run())
+        api.start_run = AsyncMock(return_value=make_run_start())
         api.get_project = AsyncMock(return_value=None)
         yield api
 

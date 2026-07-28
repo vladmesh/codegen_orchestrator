@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import os
 
 import httpx
 
 from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.deploy_dispatch import (
+    DeployDispatchSupersede,
+    DeployDispatchWithdrawal,
+)
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
+from shared.contracts.dto.run_result import QARunResult
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.contracts.dto.temporary_access import (
+    TemporaryAccessGrantCreate,
+    TemporaryAccessGrantDTO,
+    TemporaryAccessGrantUpdate,
+    TemporaryAccessObservation,
+)
 from shared.contracts.dto.user import UserDTO
 from shared.log_config.correlation import get_correlation_id
 from src.config import get_settings
@@ -140,6 +152,19 @@ class SchedulerAPIClient:
         resp = await self._request("POST", "runs/", json=run_data)
         return RunDTO.model_validate(resp.json())
 
+    async def create_run_if_absent(self, run_data: dict) -> RunDTO:
+        """Create a run, or return the one already carrying this id.
+
+        The handoff names its QA run after the deploy run it came from, so a tick
+        repeating a handoff that died part-way through has to land on the same
+        run. A second run for the same deploy would be a second QA attempt, and
+        the story would then have two runs disagreeing about its outcome.
+        """
+        existing = await self.get_run_if_missing_returns_none(run_data["id"])
+        if existing is not None:
+            return existing
+        return await self.create_run(run_data)
+
     async def get_run(self, run_id: str) -> RunDTO:
         resp = await self._request("GET", f"runs/{run_id}")
         return RunDTO.model_validate(resp.json())
@@ -158,6 +183,37 @@ class SchedulerAPIClient:
         """Patch run fields (status, error_message, result)."""
         await self._request("PATCH", f"runs/{run_id}", json=data)
 
+    async def record_run_outcome_unless_settled(self, run_id: str, data: dict) -> bool:
+        """Write a terminal outcome onto a run, unless it already has one.
+
+        Both the sweep and the worker inside a run can decide it is over, and the
+        API keeps whichever answer landed first. False here means the run had
+        already recorded its own, so the caller's reason is not the one the run
+        carries — which is information, not a failure to be raised: the access
+        this was about still has to be taken back either way.
+        """
+        try:
+            await self._request("PATCH", f"runs/{run_id}", json=data)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != httpx.codes.CONFLICT:
+                raise
+            return False
+        return True
+
+    async def withdraw_deploy_dispatch(self, run_id: str, reason: str) -> DeployDispatchWithdrawal:
+        """Stop a deploy run, and learn whether it got out before the stop landed."""
+        resp = await self._request(
+            "POST", f"runs/{run_id}/dispatch-withdraw", params={"reason": reason}
+        )
+        return DeployDispatchWithdrawal.model_validate(resp.json())
+
+    async def supersede_deploy_dispatch(self, run_id: str, reason: str) -> DeployDispatchSupersede:
+        """Take a silent dispatch claim back once its holder may no longer act."""
+        resp = await self._request(
+            "POST", f"runs/{run_id}/dispatch-supersede", params={"reason": reason}
+        )
+        return DeployDispatchSupersede.model_validate(resp.json())
+
     async def get_latest_run_by_story(
         self, story_id: str, run_type: str | None = None
     ) -> RunDTO | None:
@@ -175,6 +231,147 @@ class SchedulerAPIClient:
         if not rows:
             return None
         return RunDTO.model_validate(rows[0])
+
+    async def get_run_if_missing_returns_none(self, run_id: str) -> RunDTO | None:
+        """Read a run, or None when it is gone.
+
+        A run that no longer exists is a real state for the temporary-access
+        sweep: whatever it was granted for cannot finish, so the grant is
+        settled by revoking it rather than by waiting forever.
+        """
+        try:
+            resp = await self._request("GET", f"runs/{run_id}")
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
+        return RunDTO.model_validate(resp.json())
+
+    # --- Temporary access grants ---
+
+    async def create_temporary_access_grant(
+        self, grant: TemporaryAccessGrantCreate
+    ) -> TemporaryAccessGrantDTO:
+        """Write the grant down before the access is handed out."""
+        resp = await self._request(
+            "POST", "temporary-access-grants/", json=grant.model_dump(mode="json")
+        )
+        return TemporaryAccessGrantDTO.model_validate(resp.json())
+
+    async def list_temporary_access_grants_under_watch(
+        self, revoked_after: datetime, slot_audit_before: datetime
+    ) -> list[TemporaryAccessGrantDTO]:
+        """Every grant the sweep still has to read, whatever process granted it.
+
+        Three sets in one answer. Every grant that may hold access. The ones
+        closed since *revoked_after*: a closed grant is not holding access as far
+        as the record knows, and the record only knows what was read, so a
+        dispatch that was already on its way can write the value back afterwards
+        and nobody would see it if the readings stopped when the grant closed.
+        And the owner of every closed slot last read before *slot_audit_before*,
+        which is the slow level — the value that came back after the fast watch
+        ended is found there, later but not never.
+        """
+        resp = await self._request(
+            "GET",
+            "temporary-access-grants/",
+            params={
+                "live": "true",
+                "revoked_after": revoked_after.isoformat(),
+                "slot_audit_before": slot_audit_before.isoformat(),
+            },
+        )
+        return [TemporaryAccessGrantDTO.model_validate(row) for row in resp.json()]
+
+    async def get_live_temporary_access_grant_for_run(
+        self, qa_run_id: str
+    ) -> TemporaryAccessGrantDTO | None:
+        """The grant that still holds access for this QA run, if there is one.
+
+        The live slot is unique per (project, env key), so a QA run has at most
+        one. Two would mean the sweep could revoke one and leave the other.
+        """
+        resp = await self._request(
+            "GET",
+            "temporary-access-grants/",
+            params={"live": "true", "qa_run_id": qa_run_id},
+        )
+        rows = resp.json()
+        if not rows:
+            return None
+        if len(rows) > 1:
+            raise RuntimeError(f"QA run {qa_run_id} has {len(rows)} live temporary access grants")
+        return TemporaryAccessGrantDTO.model_validate(rows[0])
+
+    async def temporary_access_grant_exists_for_run(self, qa_run_id: str) -> bool:
+        """Whether any grant was ever recorded for this QA run, live or settled.
+
+        A handoff being recovered asks this, not whether a grant still holds
+        access: a grant that has already been revoked means the handoff got
+        through, and handing the access out again would restart a lifecycle that
+        already ended.
+        """
+        resp = await self._request(
+            "GET", "temporary-access-grants/", params={"qa_run_id": qa_run_id}
+        )
+        return bool(resp.json())
+
+    async def escalate_temporary_access_grant(
+        self,
+        grant_id: str,
+        *,
+        error: str,
+        run_error_message: str,
+        run_result: QARunResult,
+    ) -> TemporaryAccessGrantDTO:
+        """Give up on a quiet revoke: the QA run carries the failure, in one write.
+
+        The run's own verdict is superseded here, and deliberately so. A run that
+        borrowed a test identity has not finished while the identity is still
+        out, so a worker's pass is provisional until the access is settled; if
+        the sweep spends its attempts, the named cleanup failure is what the run
+        says. Doing this through the ordinary run patch would be refused, and
+        rightly — that path is where a stale worker verdict would overwrite a
+        supervisor's.
+        """
+        resp = await self._request(
+            "POST",
+            f"temporary-access-grants/{grant_id}/escalate",
+            json={
+                "error": error,
+                "run_error_message": run_error_message,
+                "run_result": run_result.model_dump(mode="json"),
+            },
+        )
+        return TemporaryAccessGrantDTO.model_validate(resp.json())
+
+    async def record_temporary_access_observation(
+        self, grant_id: str, observation: TemporaryAccessObservation
+    ) -> TemporaryAccessGrantDTO:
+        """Hand the record a reading of the running service and read back what it means.
+
+        The caller does not decide whether the grant is closed. It reports what
+        the server showed; the record holds the streak of agreeing readings and
+        the window they have to span, and answers with the grant as it now
+        stands. That way one clear reading cannot end reconciliation, and a
+        reading that finds the value again puts the streak back to the start.
+        """
+        resp = await self._request(
+            "POST",
+            f"temporary-access-grants/{grant_id}/observation",
+            json=observation.model_dump(mode="json"),
+        )
+        return TemporaryAccessGrantDTO.model_validate(resp.json())
+
+    async def update_temporary_access_grant(
+        self, grant_id: str, update: TemporaryAccessGrantUpdate
+    ) -> TemporaryAccessGrantDTO:
+        resp = await self._request(
+            "PATCH",
+            f"temporary-access-grants/{grant_id}",
+            json=update.model_dump(mode="json", exclude_unset=True),
+        )
+        return TemporaryAccessGrantDTO.model_validate(resp.json())
 
     # --- Stories ---
 
@@ -363,6 +560,23 @@ class SchedulerAPIClient:
             params["status"] = status
         resp = await self._request("GET", "applications/", params=params)
         return [ApplicationDTO.model_validate(a) for a in resp.json()]
+
+    async def get_application_if_missing_returns_none(
+        self, application_id: int
+    ) -> ApplicationDTO | None:
+        """One application by id, or None if the record is gone.
+
+        A caller that has to read the machine a particular deployment runs on
+        asks for it by id rather than picking one of the project's. Missing is
+        an answer here: the deployment it names is not there to be read.
+        """
+        try:
+            resp = await self._request("GET", f"applications/{application_id}")
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
+        return ApplicationDTO.model_validate(resp.json())
 
     async def update_application(self, app_id: int, fields: dict) -> ApplicationDTO:
         """Update application fields (status, health metrics, etc.)."""

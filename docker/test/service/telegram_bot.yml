@@ -22,7 +22,7 @@ services:
     depends_on:
       - redis
     volumes:
-      - ../../../services/telegram_bot:/app
+      - ../../../services/telegram_bot/src:/app/src
       - ../../../shared:/app/shared
     networks:
       - test-net
@@ -38,8 +38,15 @@ services:
       LK_DOMAIN: https://lk.test.example.com
       PYTHONPATH: /app
     volumes:
+      # Mounted file by file on purpose. Binding the whole service directory
+      # over /app makes Docker create the nested mount point /app/shared on the
+      # host as an empty services/telegram_bot/shared, and that directory then
+      # shadows the repository's shared package for anything importing from the
+      # service path — including `make test-unit`, which is how it was found.
       - /var/run/docker.sock:/var/run/docker.sock
-      - ../../../services/telegram_bot:/app
+      - ../../../services/telegram_bot/src:/app/src
+      - ../../../services/telegram_bot/tests:/app/tests
+      - ../../../services/telegram_bot/pytest.ini:/app/pytest.ini
       - ../../../shared:/app/shared
     working_dir: /app
     command: ["pytest", "tests/service", "-v", "-s", "--asyncio-mode=auto"]

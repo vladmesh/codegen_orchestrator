@@ -42,6 +42,8 @@ class DevOpsState(TypedDict):
 
     # Deploy target
     head_sha: str | None  # exact commit SHA to deploy (from merged PR)
+    # Whether this deploy must be the last writer, see DeployMessage.fence_active_deploys
+    fence_active_deploys: bool
 
     # Output (returned to parent). Each entry is a serialized MissingUserSecret
     # ({"key", "description"}) so the scheduler can name secrets to the user.

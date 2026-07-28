@@ -40,3 +40,19 @@ The full pipeline has a separate post-deploy gate. Once the application is `runn
 starts a health-only QA observation against `/health` and `/v1/health`. It accepts only the terminal
 contract `status=completed` with `qa_outcome=passed`. An unreachable endpoint, a non-200 response or
 timeout makes the live run red. This gate does not publish to `qa:queue` and does not run an LLM.
+
+## Bot access revocation
+
+`tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a
+revoked identity is really refused; everything else reads the values a deploy would ship. It needs
+a project already deployed with a private bot whose commit declares the test identity slot:
+
+```bash
+BOT_ACCESS_PROJECT_ID=<project-uuid> uv run pytest tests/live/test_bot_access_revocation.py
+```
+
+It records a grant, lets the scheduler sweep deploy it, sends `/start` from the QA account with
+the same probe the QA runner uses, then cancels the QA run mid-flight and requires the bot to
+refuse that account once the sweep reports the grant revoked. The test never clears the value
+itself — a cleanup it performed would prove its own cleanup, not the pipeline's. Two real deploys,
+so it is excluded from the offline live regressions.

@@ -23,6 +23,7 @@ DEPLOY_QUEUE = "deploy:queue"
 ENGINEERING_QUEUE = "engineering:queue"
 PROVISIONER_QUEUE = "provisioner:queue"
 PROVISIONER_RESULTS = "provisioner:results"
+ENV_OBSERVATION_QUEUE = "env-observation:queue"
 ARCHITECT_QUEUE = "architect:queue"
 SCAFFOLD_QUEUE = "scaffold:queue"
 WORKER_COMMANDS = "worker:commands"
@@ -75,6 +76,7 @@ QUEUE_TOPOLOGY: list[QueueBinding] = [
     QueueBinding(ENGINEERING_QUEUE, WORKER_GROUP, "Engineering tasks"),
     QueueBinding(DEPLOY_QUEUE, WORKER_GROUP, "Deploy tasks"),
     QueueBinding(PROVISIONER_QUEUE, INFRA_GROUP, "Server provisioning"),
+    QueueBinding(ENV_OBSERVATION_QUEUE, INFRA_GROUP, "Reading a deployed service's environment"),
     QueueBinding(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, "Provisioner results → scheduler"),
     QueueBinding(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, "Provisioner results → telegram-bot"),
     QueueBinding(WORKER_COMMANDS, WORKER_MANAGER_GROUP, "Worker lifecycle commands"),

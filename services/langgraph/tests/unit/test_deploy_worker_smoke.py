@@ -9,7 +9,7 @@ import pytest
 
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
-from tests.unit.factories import make_project, make_repository
+from tests.unit.factories import make_project, make_repository, make_run, make_run_start
 
 
 @pytest.fixture
@@ -36,6 +36,8 @@ def mock_api():
     ):
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])
+        api.get_run = AsyncMock(return_value=make_run())
+        api.start_run = AsyncMock(return_value=make_run_start())
         api.get_project = AsyncMock(
             return_value=make_project(
                 name="my-project",
@@ -251,6 +253,7 @@ async def test_build_subgraph_input_includes_smoke_result():
         allocated_resources={"srv:8000": {"server_ip": "1.2.3.4", "port": 8000}},
         job_data={},
         head_sha="a" * 40,
+        fence_active_deploys=False,
     )
     assert "smoke_result" in result, "smoke_result must be initialized in subgraph input"
     assert result["smoke_result"] is None

@@ -134,6 +134,7 @@ def _build_subgraph_input(
     allocated_resources: dict,
     job_data: dict,
     head_sha: str,
+    fence_active_deploys: bool,
 ) -> dict:
     """Build DevOps subgraph input from deploy job data."""
     if not head_sha:
@@ -152,6 +153,7 @@ def _build_subgraph_input(
         "provided_secrets": job_data.get("provided_secrets", {}),
         "env_overrides": _effective_env_overrides(project, job_data.get("env_overrides", {})),
         "head_sha": head_sha,
+        "fence_active_deploys": fence_active_deploys,
         "messages": [],
         "environment_contract": None,
         "resolution_outcome": None,
@@ -326,6 +328,17 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
         triggered_by=msg.triggered_by.value,
     )
 
+    # A run cancelled before this message was picked up is a deploy somebody
+    # already gave up on and replaced — the temporary access sweep withdrawing a
+    # grant deploy it could not confirm, for one. Its message can outlive the
+    # decision in the queue, and running it now would apply an effect after the
+    # state that asked for it is gone. Checked before the lock, so refusing does
+    # not touch a lock this job never took.
+    run = await api_client.get_run(task_id)
+    if run.status is RunStatus.CANCELLED:
+        logger.info("deploy_job_run_cancelled", task_id=task_id, project_id=project_id)
+        return live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
+
     lock_key = f"deploy:{project_id}:lock"
 
     try:
@@ -345,12 +358,33 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                     "error_message": (
                         f"Skipped: another deploy is already in progress for project {project_id}"
                     ),
+                    # Terminal and typed for the same reason as the fenced case
+                    # below: a cancelled run with no outcome is skipped by every
+                    # supervisor, so the story it belongs to would wait forever
+                    # on a deploy that was never going to run.
+                    "result": DeployRunResult(
+                        deploy_outcome=DeployOutcome.CANCELLED,
+                        action=msg.action,
+                    ).model_dump(mode="json"),
                 },
             )
             return live_work_unsettled({"status": "cancelled", "reason": "deploy_lock_held"})
 
-        # Update task status to running
-        await api_client.patch(f"runs/{task_id}", json={"status": RunStatus.RUNNING.value})
+        # Take the run to running as one locked decision. The read above is a
+        # cheap early-out, not a guard: a withdrawal landing between it and here
+        # would be overwritten by a blind patch, and the resurrected run then
+        # passes the dispatch claim and deploys the value the withdrawal was
+        # revoking. A run cancelled by that point stays cancelled and this job
+        # ends instead of starting.
+        start = await api_client.start_run(task_id)
+        if not start.started:
+            logger.info(
+                "deploy_job_run_cancelled_before_start",
+                task_id=task_id,
+                project_id=project_id,
+                run_status=start.run_status.value,
+            )
+            return live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
 
         # Publish progress event
         await publish_callback_event(
@@ -437,8 +471,12 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
+        # A fenced deploy has to run: the shortcut would report a value removed
+        # while the run that set it is still live on GitHub Actions.
         application_id = None
-        if not _legacy_bot_audience_needs_contract_resolution(project):
+        if not msg.fence_active_deploys and not _legacy_bot_audience_needs_contract_resolution(
+            project
+        ):
             application_id = await _already_deployed_application(
                 allocated_resources, msg.head_sha, env_overrides
             )
@@ -519,6 +557,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             allocated_resources,
             job_data,
             head_sha=msg.head_sha,
+            fence_active_deploys=msg.fence_active_deploys,
         )
         result = await devops_subgraph.ainvoke(subgraph_input)
 
@@ -533,7 +572,24 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
         )
 
         if result.get("deployment_result", {}).get("status") == "cancelled":
+            # A cancelled deploy is terminal, and the run has to say so. Left at
+            # RUNNING it is skipped by every supervisor for good, and the story
+            # behind it waits on a deploy nobody is carrying any more. The fence
+            # a revoke takes cancels ordinary deploys as a matter of course, so
+            # this is a normal path, not a teardown corner.
             logger.info("deploy_job_cancelled_during_actions", task_id=task_id)
+            await api_client.patch(
+                f"runs/{task_id}",
+                json={
+                    "status": RunStatus.CANCELLED.value,
+                    "error_message": "Deploy was cancelled before it could finish",
+                    "result": DeployRunResult(
+                        deploy_outcome=DeployOutcome.CANCELLED,
+                        action=msg.action,
+                        deployment_result=result.get("deployment_result"),
+                    ).model_dump(mode="json"),
+                },
+            )
             return live_work_unsettled({"status": "cancelled"})
 
         if result.get("deployed_url"):

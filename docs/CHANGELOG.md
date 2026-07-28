@@ -2,6 +2,219 @@
 
 ## 2026-07-28
 
+- Temporary test access to a deployed bot is now a durable state machine instead of two steps at
+  either end of a successful QA run. The whole lifecycle is driven by a `temporary_access_grants`
+  row: the deploy→QA handoff records what was given, to which project, on which commit, for which
+  QA run, plus the deploy run that applies the value and the QA message being held. A scheduler
+  sweep (`supervise_temporary_access`, which runs before stories are routed on their QA runs)
+  moves it from there. QA starts only after the grant deploy has confirmed success, so a lagging
+  grant deploy can no longer apply the value after a revoke already cleared it; a grant deploy
+  that fails, is superseded, or never confirms clears the slot anyway and fails the QA run with
+  `qa_access_grant_failed`. Revocation follows the same rule as before — any terminal state of the
+  QA run, a run that disappeared, or a grant that outlived
+  `supervisor.temporary_access_ttl_minutes` (a separate `temporary_access_grant_expired` event,
+  an admin alert, and `qa_access_expired` on the run it outlived, not a quiet cleanup). Every
+  deploy is of the granted commit through the pinned-commit deploy, so the bot that loses the
+  access is the bot that was given it. Repeating a revoke that already landed is a redundant
+  deploy, not an error. A revoke that keeps failing is retried quietly until
+  `supervisor.temporary_access_max_revoke_attempts`, then reported to admins and turned into that
+  QA run's failure (`qa_cleanup_failed`); the grant stays live and is still retried. Until the
+  access is settled the story does not leave TESTING, so an unrevoked grant can no longer end as
+  a completed story, and an escalated one reaches human review with the bot stopped. The bot's
+  own admission rule now lives in `shared/contracts/bot_access.bot_admits`, so tests check that
+  the environment a revoke ships refuses the QA identity rather than that a variable is absent.
+
+  Three things the same lifecycle needed to hold under process death:
+  giving up on a revoke is one write. `POST /api/temporary-access-grants/{id}/escalate` stamps the
+  grant and records the `qa_cleanup_failed` outcome on its QA run in one transaction, so there is
+  no state where one landed and the other did not, and a story is only let past a live grant when
+  both are there. That call is also the one writer allowed the last word on a QA run's outcome: a
+  run that borrowed a test identity has not finished while the identity is still admitted, so a
+  worker's `passed` is provisional until the access is settled. Without it, a run the QA worker
+  had already passed could never be told the access was stuck, and its story would sit in TESTING
+  for good. Everything else still meets the ordinary refusal on `PATCH /api/runs/{id}`, so a
+  worker reporting after an escalation is rejected and both orders end in the same place. A revoke
+  deploy carries
+  `DeployMessage.fence_active_deploys`: it skips the redundant-deploy shortcut and, through the
+  new `GitHubAppClient.fence_workflow`, cancels every unfinished `deploy.yml` run and proves it
+  terminal, so the abandoned grant deploy it replaces cannot land afterwards; a stop that cannot
+  be proven refuses the deploy rather than recording the access as removed. The QA runner's
+  Telegram `/start` probe moved to `shared/telegram_access_probe.py`, and
+  `tests/live/test_bot_access_revocation.py` drives a real grant on a deployed bot, kills the QA
+  run mid-flight, and requires that same probe to observe the bot refusing the QA account after
+  the sweep revokes.
+
+  The fence on GitHub Actions only reaches a deploy that already started. A grant deploy whose
+  message is still queued is stopped by its own run instead: abandoning a grant cancels its deploy
+  run before the clear is published, and the deploy consumer reads its run before it takes the
+  project lock and refuses one that was cancelled. A grant deploy picked up late can no longer
+  write the test identity back after the revoke landed.
+
+  Four holes the same fence still had, closed by making each of them a state somebody can read:
+
+  `GitHubAppClient.list_unfinished_workflow_runs` asked for one page of 50 and presented it as
+  every unfinished run. A grant deploy queued behind a busy repository sits below every run
+  started after it, so the revoke could clear the value and record the grant revoked while that
+  run was still able to deploy the identity again. It now queries one unfinished status at a time
+  and pages each to exhaustion, and a listing that runs past its page bound raises
+  `WorkflowRunListingIncompleteError` rather than answering with a subset.
+
+  Cancelling a run was not a fence for a deploy worker that had decided to dispatch but had not
+  reached GitHub yet: no Actions run existed for the fence to find. The crossing is now recorded
+  on the run under a row lock. `POST /api/runs/{id}/dispatch-claim` is taken immediately before
+  every `workflow_dispatch` and every rerun, and refuses a cancelled run;
+  `POST /api/runs/{id}/dispatch-withdraw` takes the same boundary from the other side and reports
+  whether the deploy got out first. A refused claim ends the deploy as cancelled without
+  dispatching.
+
+  Two ways past that boundary remained. A worker read its run, found it live, and then wrote
+  `running` blindly; a withdrawal landing in between was overwritten, and the resurrected run
+  passed the dispatch claim afterwards. Taking a run to `running` is now the locked transition
+  `POST /api/runs/{id}/start`, which refuses a run that is already terminal, and `PATCH
+  /api/runs/{id}` refuses any move from a terminal status back to a live one, so no writer can
+  undo a cancellation. And a withdrawal that arrived after the claim used to hold the revoke back
+  until the claiming worker recorded its own outcome, which it writes on every path it can leave a
+  deploy by. That is still the ordinary proof — but a worker that dies after claiming never writes
+  it, and waiting on it left the grant unreconciled for good with an alert as the only trace.
+  Elapsed time cannot replace it either: a paused worker still reaches `workflow_dispatch`
+  afterwards. So holding the boundary is a lease. A claim carries a deadline (`DISPATCH_LEASE`,
+  renewed each time the worker asks), the worker re-reads the clock immediately before dispatching
+  and refuses once it has passed, and `POST /api/runs/{id}/dispatch-supersede` takes an expired
+  claim back under the same row lock the claim was granted under — cancelling the run so it can
+  never be re-claimed and stamping the crossing as superseded, which a restarted sweep reads
+  without asking again. From there anything the dead worker did put on Actions is listable and the
+  revoke's fence reaches it. A claim still inside its lease is waited for, and one that somehow
+  stays live past `supervisor.temporary_access_revoke_stale_minutes` is reported as
+  `temporary_access_grant_deploy_dispatch_stuck` with an admin alert. The QA run that borrowed the
+  access is failed with its reason first, whatever the grant deploy turns out to have done.
+  `supervisor.temporary_access_dispatch_settle_seconds` is gone.
+
+  A deploy cancelled on GitHub Actions left its run at `running` with no result, which every
+  supervisor skips for good — and a revoke's fence cancels ordinary story deploys as a matter of
+  course, so this was a normal path. Cancellation is now terminal and typed
+  (`DeployOutcome.CANCELLED`), and `supervise_deploying_stories` redeploys the story's commit
+  under the same retry bound that stops a failing deploy from looping. The same is recorded when a
+  deploy loses the project lock.
+
+  The deploy→QA handoff had a crash window with nothing durable in it: story TESTING and a queued
+  QA run existed before the grant did, so a process death in between left a story no supervisor
+  was watching. The QA run is now created *before* the story leaves DEPLOYING and carries the
+  whole `QAHandoffPlan` — the QA message and the access to be borrowed — in its `run_metadata`.
+  Its id derives from the deploy run and the grant id from the QA run, so a repeat lands on the
+  same records. `supervise_testing_stories` finishes any queued QA run whose handoff was left
+  unfinished for `supervisor.qa_handoff_recovery_minutes`.
+
+  Two more states the lifecycle read from the wrong place. Which deploy carries the access is
+  decided by the grant record and never by the caller: a handoff repeating after a lost response
+  used to propose a fresh run id and deploy under it, while the sweep followed the id the record
+  already held — so the untracked deploy could write the identity back after the grant was
+  recorded revoked. The proposed id is now only a proposal, everything after the record uses
+  `grant.grant_run_id`, and the deploy is published only while the record still says GRANTING and
+  no run carries it yet. And a run's terminal outcome is now the first one written: `PATCH
+  /api/runs/{id}` refused only the move back to a live status, so an expiring grant's
+  `qa_access_expired` failure could be replaced by the QA worker's later `passed` and the story
+  supervisor would publish that. A terminal run that already carries a result refuses any rewrite
+  of its status, result or error, while a cancelled run with no result may still have one filled
+  in — that record is what proves a withdrawn deploy's dispatch is over. Both writers treat the
+  refusal as information: the QA consumer drops its stale outcome and keeps consuming, and the
+  sweep revokes the access regardless of which reason the run ended up carrying.
+
+  Two things that rule still needed to be true under overlap rather than in sequence.
+
+  An expired dispatch lease was being treated as a fence around the GitHub effect, and it cannot
+  be one: the worker reads its own clock and only then starts the `workflow_dispatch` request, so
+  it can be paused, or its request delayed, after the check and before GitHub accepts it. The
+  sweep would supersede the claim, run a revoke whose fence saw no workflow, and record the grant
+  revoked — and the late dispatch would deploy the identity back with no live grant left to remove
+  it. What the value actually rides on is the repository secrets, which a workflow reads when it
+  runs and not when it is asked for, so a revoke deploy now writes its cleared payload *before* it
+  fences. The two together cover every run there can be: one that already read the granted payload
+  is on Actions and the fence stops it, and one created afterwards — a worker resuming past its
+  lease included — can only read the cleared one. The lease keeps a dead claim from being waited
+  on for good, which is all it was ever able to promise.
+
+  What finally closes a grant changed with them, and so did what the system promises. Stopping
+  every writer we own is not a criterion we can meet, so the criterion is now that the observed
+  state matches the wanted one. `revoked` is written only after the environment of the running
+  service has been read back and no longer carries the value; until then the grant stays live in
+  `revoking` and the sweep keeps revoking, which is idempotent. The reading goes to `infra-service`
+  over the SSH path and the playbooks it already has: `EnvObservationRequest` on the new
+  `env-observation:queue`, `ansible/playbooks/observe_service_env.yml` reading the slot out of the
+  running containers rather than out of the `.env` file next to them, and the answer left in Redis
+  under the request id for the sweep to pick up on a later tick. One question per revoke attempt,
+  asked once per `supervisor.temporary_access_observation_window_minutes`. A reading that could not
+  be taken — SSH down, playbook failed, nothing running to read — is neither a success nor a
+  failure: the grant stays live and the sweep asks again, and past
+  `supervisor.temporary_access_unrevoked_ttl_minutes` an unreadable server is reported to admins
+  once. A value that shows up on the server behind the sweep's back is a disagreement the next
+  cycle sees and revokes again; one that outlives the same TTL or
+  `supervisor.temporary_access_max_revoke_attempts` fails the QA run with `qa_cleanup_failed`
+  naming what is being observed, so the story goes to a human instead of waiting in TESTING. The
+  promise is therefore no longer "the access can never come back" but "the access does not outlive
+  one reconciliation interval after it is seen", and the fence, the withdrawal and the supersede
+  are what shorten that window rather than what proves it closed.
+
+  Closing the grant used to stop anyone looking at the slot, which put the same hole one step
+  later: the writer that can land between two readings can land after the last one, and a value
+  applied after the confirmation stayed on the running bot with no live grant to bring it back to
+  the sweep. A closed grant is now still read for
+  `supervisor.temporary_access_revoked_watch_minutes` — the sweep asks for the live grants plus the
+  ones revoked since that cutoff (`GET /api/temporary-access-grants/?live=true&revoked_after=…`) —
+  and a reading that finds the value on one puts it back to `revoking` with
+  `revoke_reason=observed_after_revoke`, stamps `reopened_at`, and gets a fresh retry budget
+  counted from there rather than an exhausted one from hours ago. The clearing deploy goes out on
+  the same tick, and admins are told the value came back after it was confirmed gone. The one
+  reading that does not reopen a grant is one whose slot has a live owner again: the contract holds
+  one value per `(project, env_key)`, so what was read may be the next grant's access, and taking
+  it off from here would revoke a grant that is being used.
+
+  That watch is bounded in minutes, and the writer it handles is not. A value restored just past
+  the window used to stand for good: nothing read the slot again, so there was no revoke, no
+  visible failure and no human. The promise is now made at two speeds. The fast level is the watch
+  above, unchanged. Under it the invariant itself — the key is empty while no grant holds it — is
+  checked on its own cadence, `supervisor.temporary_access_contract_audit_hours` (24 by default),
+  for every `(project, env_key)` slot the record knows, however long ago its last grant closed. The
+  sweep asks for it in the same call
+  (`GET /api/temporary-access-grants/?live=true&slot_audit_before=…`), which returns one row per
+  slot — the newest grant recorded for it — because the slot holds one value and the older grants
+  would be the same ssh repeated for history. `observed_at` is what makes a slot due and every
+  reading stamps it, so a slot inside the fast watch is never audited on top of being watched, and
+  a slot whose server cannot be reached is held to one playbook per interval by a marker the
+  scheduler takes before asking. What the slow level finds goes down the existing path: reopened as
+  `observed_after_revoke`, revoked, and escalated to a human if it will not go. So the promise no
+  longer ends with the window; it becomes slower. The access does not outlive one reconciliation
+  interval while the slot is watched, and does not outlive one slow-check interval after that.
+
+  Three things that criterion needed before it was one. `PATCH /api/temporary-access-grants/{id}`
+  still accepted `status=revoked` from any internal caller, which is the whole claim the system
+  cannot make, so it now refuses it (422) and `POST /api/temporary-access-grants/{id}/observation`
+  is the only way to that status: it takes a `TemporaryAccessObservation` and the record decides.
+  The reading also has to be of the right machine — applications are unique per
+  `(repo_id, server_handle)`, so a project can run on several servers, and reading whichever one
+  came back first let an empty slot elsewhere close a grant whose bot still admitted the test
+  identity. The observation names its `application_id` and the record refuses one that is not the
+  `application_id` in the grant's stored `QAMessage`. And a single empty reading ended
+  reconciliation for good, which left a delayed dispatch nothing to be caught by: the grant now
+  stays live until `REVOKE_CONFIRMATION_READINGS` readings taken over
+  `REVOKE_CONFIRMATION_WINDOW` agree, a reading that finds the value again restarts the streak and
+  revokes, and that window is the reconciliation interval the promise is written in. The grant
+  record carries the readings (`observed_at`, `observation_id`, `slot_clear_since`,
+  `slot_clear_readings`), so a reading delivered twice counts once and the streak survives a
+  restart.
+
+  And the run outcome rule was still last-writer-wins: `PATCH /api/runs/{id}` read the row without
+  a lock and decided from that stale copy, as did the cleanup escalation. A QA worker's `passed`
+  and the sweep's `qa_access_expired` or `qa_cleanup_failed` both read a running run, both passed
+  every check, and whichever committed second was what the story read — so a late pass could erase
+  the named access failure. Every writer that decides something from what a run already says now
+  takes the row first, and the escalation takes its grant and its run the same way.
+
+- The `telegram_bot` service tests bound the whole service directory over `/app`, which made
+  Docker materialise the nested `/app/shared` mount point on the host as an empty
+  `services/telegram_bot/shared`. That directory shadows the repository's `shared` package for
+  anything importing from a service path, so running those tests once left `make test-unit` red
+  until it was deleted by hand. Mounted file by file now, like every other service.
+
 - Deploy can now roll out one named commit instead of whatever main holds at dispatch time.
   `workflow_dispatch` only accepts a branch or a tag in `ref`, so a requested `head_sha` is pinned
   by a temporary tag `codegen-deploy-pin-<sha>`, created before the dispatch and dropped on every

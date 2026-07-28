@@ -20,6 +20,7 @@ from _run_routing_factories import (
 import pytest
 
 from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.deploy import DeployOutcome
@@ -40,6 +41,8 @@ def api_client():
     client = AsyncMock()
     # QA runs the repository's criteria, so the deploy→QA handoff resolves them.
     client.get_primary_repository.return_value = _make_repo()
+    # Most stories borrow no temporary access; the ones that do say so.
+    client.get_live_temporary_access_grant_for_run.return_value = None
     return client
 
 
@@ -87,8 +90,8 @@ class TestSuperviseDeployingStories:
         api_client.transition_story.assert_called_once_with("story-1", "test")
 
         # QA run should be created
-        api_client.create_run.assert_called_once()
-        run_data = api_client.create_run.call_args[0][0]
+        api_client.create_run_if_absent.assert_called_once()
+        run_data = api_client.create_run_if_absent.call_args[0][0]
         assert run_data["type"] == RunType.QA.value
         assert run_data["story_id"] == "story-1"
 
@@ -103,7 +106,10 @@ class TestSuperviseDeployingStories:
         assert qa_msg.run_id  # run_id must be set
         # The criteria travel on the message — QA does not resolve them itself.
         assert qa_msg.acceptance_criteria == BASELINE_ACCEPTANCE_CRITERIA
-        assert api_client.create_run.call_args.args[0]["run_metadata"] == {"application_id": 42}
+        metadata = api_client.create_run_if_absent.call_args.args[0]["run_metadata"]
+        assert metadata["application_id"] == 42
+        # The plan is stored with the run, so a restart can finish this handoff.
+        assert QAHandoffPlan.model_validate(metadata[QA_HANDOFF_KEY]).access is None
 
     @pytest.mark.asyncio
     async def test_criteria_are_resolved_before_the_story_moves(self, api_client, redis_client):
@@ -355,6 +361,60 @@ class TestSuperviseDeployingStories:
 
         run_data = api_client.create_run.call_args[0][0]
         assert run_data["run_metadata"]["head_sha"] == "a" * 40
+
+    @pytest.mark.asyncio
+    async def test_cancelled_deploy_is_redeployed_not_left_waiting(self, api_client, redis_client):
+        """A cancelled deploy neither failed nor deployed, so the story is owed one.
+
+        A temporary-access revoke fences every unfinished deploy.yml run of the
+        repository, which cancels ordinary story deploys as a matter of course.
+        Without a route the story would sit in DEPLOYING with a run every
+        supervisor skips.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.CANCELLED,
+            run_metadata={"head_sha": "a" * 40},
+            result={"deploy_outcome": DeployOutcome.CANCELLED.value},
+        )
+        api_client.create_run.return_value = {}
+        redis_client._redis.incr.return_value = 1
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 1
+        deploy_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
+        ]
+        assert len(deploy_calls) == 1
+        assert deploy_calls[0][0][1].head_sha == "a" * 40
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_deploy_stops_looping_at_the_retry_bound(
+        self, api_client, redis_client
+    ):
+        """The redeploy is bounded by the same counter that stops a failing deploy."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.CANCELLED,
+            run_metadata={"head_sha": "a" * 40},
+            result={"deploy_outcome": DeployOutcome.CANCELLED.value},
+        )
+        redis_client._redis.incr.return_value = 3
+
+        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
 
     @pytest.mark.asyncio
     async def test_retry_without_original_head_sha_fails_story(self, api_client, redis_client):
@@ -777,7 +837,13 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        assert result == {
+            "completed": 0,
+            "redispatched": 0,
+            "failed": 0,
+            "waiting_for_access": 0,
+            "recovered": 0,
+        }
         api_client.create_task.assert_not_awaited()
         api_client.transition_story.assert_awaited_once_with("story-1", "start")
 
@@ -826,7 +892,13 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 1}
+        assert result == {
+            "completed": 0,
+            "redispatched": 0,
+            "failed": 1,
+            "waiting_for_access": 0,
+            "recovered": 0,
+        }
         api_client.create_task.assert_not_awaited()
         api_client.update_story.assert_awaited_with(
             "story-1",
@@ -1081,7 +1153,13 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        assert result == {
+            "completed": 0,
+            "redispatched": 0,
+            "failed": 0,
+            "waiting_for_access": 0,
+            "recovered": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_no_testing_stories(self, api_client, redis_client):
@@ -1092,7 +1170,13 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        assert result == {
+            "completed": 0,
+            "redispatched": 0,
+            "failed": 0,
+            "waiting_for_access": 0,
+            "recovered": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_no_qa_runs_skips(self, api_client, redis_client):
@@ -1106,7 +1190,13 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        assert result == {
+            "completed": 0,
+            "redispatched": 0,
+            "failed": 0,
+            "waiting_for_access": 0,
+            "recovered": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_invalid_qa_result_fails_story(self, api_client, redis_client):

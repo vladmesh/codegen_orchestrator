@@ -9,6 +9,7 @@ Run standalone: python -m src.consumers.qa
 
 from __future__ import annotations
 
+import httpx
 import structlog
 
 from shared.contracts.acceptance import parse_health_only_criteria
@@ -173,9 +174,19 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                         ),
                     ),
                 )
-        # Mark run as running before starting the checks.
+        # Mark run as running before starting the checks. A run that already
+        # ended is not restarted: the temporary access sweep fails a QA run whose
+        # borrowed identity expired, and starting the checks anyway would drive
+        # an agent against a bot that has just stopped answering it.
         if run_id:
-            await api_client.patch(f"runs/{run_id}", json={"status": RunStatus.RUNNING.value})
+            start = await api_client.start_run(run_id)
+            if not start.started:
+                logger.info(
+                    "qa_run_already_terminal",
+                    run_id=run_id,
+                    run_status=start.run_status.value,
+                )
+                return live_work_settled({"status": "skipped", "reason": start.run_status.value})
 
         if health_checks is not None:
             logger.info("qa_health_only_criteria", story_id=story_id, checks=len(health_checks))
@@ -347,18 +358,36 @@ async def _update_run(
     qa_outcome: QAOutcome,
     **extra_result: object,
 ) -> None:
-    """Update run status and result with QA outcome."""
+    """Update run status and result with QA outcome.
+
+    A run this worker is still inside can be ended by something outside it —
+    the temporary access it borrowed expiring underneath it, for one. That run
+    already carries the reason it ended and the API refuses to have it rewritten,
+    so the outcome computed here is dropped rather than replacing a named failure
+    with a pass. It is the QA job's answer that is stale, not the run's, and the
+    consumer keeps going.
+    """
     if not run_id:
         logger.warning("qa_no_run_id_skip_update")
         return
     run_result = QARunResult(qa_outcome=qa_outcome, **extra_result)
-    await api_client.patch(
-        f"runs/{run_id}",
-        json={
-            "status": status.value,
-            "result": run_result.model_dump(mode="json"),
-        },
-    )
+    try:
+        await api_client.patch(
+            f"runs/{run_id}",
+            json={
+                "status": status.value,
+                "result": run_result.model_dump(mode="json"),
+            },
+        )
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code != httpx.codes.CONFLICT:
+            raise
+        logger.warning(
+            "qa_run_already_settled",
+            run_id=run_id,
+            dropped_outcome=qa_outcome.value,
+            detail=error.response.text,
+        )
 
 
 def main():

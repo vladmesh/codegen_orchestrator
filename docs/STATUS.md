@@ -28,7 +28,48 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   recorded with the deployment, so the same commit with a different environment is a different
   deploy and is not skipped. Filling the audience from the PO access menu is
   `codegen_orchestrator-826`; issuing and revoking the temporary test identity around a QA run is
-  `codegen_orchestrator-744`.
+  `codegen_orchestrator-744`. `codegen_orchestrator-843` landed the mechanism it stands on: a
+  grant is a durable `temporary_access_grants` row written before the deploy that applies the
+  value and carrying the QA handoff itself, so the scheduler sweep `supervise_temporary_access`
+  runs the whole lifecycle — it starts the QA run only once the grant deploy confirmed, and
+  revokes by redeploying the same commit with the value cleared once that run reached any
+  terminal state, vanished, or the grant outlived its TTL. A story stays in TESTING until its
+  access is settled, so no outcome is published while the test identity is still admitted. The
+  fence that makes this hold is three things together: the unfinished-runs listing is exhausted
+  rather than sampled, the dispatch boundary is claimed on the run itself so a cancelled deploy
+  cannot reach GitHub, and the handoff is recoverable from the QA run because the plan is written
+  with it. Cancellation is terminal on both sides of that boundary: a run only reaches `running`
+  through the locked `POST /api/runs/{id}/start`, so no worker can write over a cancellation it
+  raced, and a withdrawal that arrived after the claim is settled by the claiming worker's own
+  recorded outcome — or, when that worker is dead, by its claim's lease running out and the sweep
+  taking the boundary back through `POST /api/runs/{id}/dispatch-supersede`. A run's terminal
+  outcome is the first one written — a supervisor ending a run the worker is still inside is not
+  overwritten by that worker's later answer — while a cancelled run with no result may still have
+  one filled in. The single exception is the access sweep giving up on a revoke: cleanup is part
+  of a QA run that borrowed a test identity, so
+  `POST /api/temporary-access-grants/{id}/escalate` records the `qa_cleanup_failed` outcome and
+  the grant's escalation stamp in one transaction, even over a `passed` the QA worker already
+  wrote. Without that a run the worker had passed could never be told the access was stuck.
+  What closes a grant is not any of that machinery but readings of the deployed service: the sweep
+  asks `infra-service` over `env-observation:queue` what the running containers actually carry, and
+  writes `revoked` only when the slot has read empty on the application the QA run was tested on,
+  more than once, over the confirmation window. Until then the grant stays live in `revoking` and
+  the sweep repeats the revoke, so a value applied behind its back — including a dispatch that
+  lands after an empty reading was taken — is corrected by the next cycle, an unreadable server
+  settles nothing, and a disagreement that outlives the grant's TTL or its revoke attempts fails
+  the QA run naming the observed state and hands the story to a human. No caller can declare the
+  access gone: `PATCH` refuses `status=revoked` and only
+  `POST /api/temporary-access-grants/{id}/observation` reaches it. Closing the grant does not stop
+  the readings either: the slot is still read for
+  `supervisor.temporary_access_revoked_watch_minutes` afterwards, and a value found on a closed
+  grant puts it back under reconciliation as `observed_after_revoke` and is cleared again, unless a
+  later grant owns the slot by then. Past that window the slot is still read, only rarely: the
+  invariant "the key is empty while no grant holds it" is checked every
+  `supervisor.temporary_access_contract_audit_hours` for every `(project, env_key)` slot on record,
+  one reading per slot, through the same observation channel and into the same revoke and the same
+  escalation. The guarantee this buys is bounded and stated that way, at two speeds: the access
+  does not outlive one reconciliation interval after it is seen while the slot is watched, and does
+  not outlive one slow-check interval after that.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

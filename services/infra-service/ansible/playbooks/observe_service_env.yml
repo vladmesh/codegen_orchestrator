@@ -1,0 +1,49 @@
+---
+# Observe Service Environment Playbook
+# Reads one environment slot out of the containers a deployed service is
+# actually running with, so a caller can tell what is live from what was asked
+# for. Read-only: it changes nothing on the server.
+#
+# Usage: ansible-playbook -i inventory.ini playbooks/observe_service_env.yml \
+#        -e "target_host=1.2.3.4 service_slug=my-project-abc env_key=TG_BOT_TEST_TELEGRAM_ID"
+
+- name: Observe a deployed service's environment
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    project_dir: "/opt/services/{{ service_slug }}"
+    compose_cmd: "docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
+
+  tasks:
+    # The value is read out of the running containers rather than out of the
+    # .env file next to them: the file is what the last deploy wrote, the
+    # container environment is what the process actually got.
+    - name: Read the slot from the running containers
+      ansible.builtin.shell: |
+        set -eu
+        containers=0
+        filled=0
+        for cid in $({{ compose_cmd }} ps -q); do
+          containers=$((containers + 1))
+          value=$(docker inspect --format '{% raw %}{{range .Config.Env}}{{println .}}{{end}}{% endraw %}' "$cid" \
+            | sed -n "s/^${OBSERVED_ENV_KEY}=//p" | tail -1)
+          if [ -n "$value" ]; then
+            filled=1
+          fi
+        done
+        echo "ENV_OBSERVATION containers=$containers filled=$filled"
+      args:
+        chdir: "{{ project_dir }}/infra"
+      environment:
+        # Passed as a variable, never interpolated into the script, so a key
+        # name can only ever be a key name.
+        OBSERVED_ENV_KEY: "{{ env_key }}"
+      register: observation
+      changed_when: false
+
+    # The single line the caller parses. Printed on its own so the reading is
+    # not mistaken for one of the many other things Ansible says.
+    - name: Report the observation
+      ansible.builtin.debug:
+        msg: "{{ observation.stdout_lines | last }}"

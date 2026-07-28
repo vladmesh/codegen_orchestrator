@@ -23,6 +23,7 @@ from . import (
     stories,
     system_configs,
     tasks,
+    temporary_access,
     users,
 )
 
@@ -49,5 +50,6 @@ __all__ = [
     "stories",
     "system_configs",
     "tasks",
+    "temporary_access",
     "users",
 ]
