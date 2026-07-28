@@ -51,7 +51,11 @@ export default function MetricChart({ projectId, period }: MetricChartProps) {
       {loading ? (
         <div className="flex justify-center py-12"><Spinner /></div>
       ) : !data || data.data.length === 0 ? (
-        <p className="text-sm text-muted-foreground text-center py-12">Нет данных для графика</p>
+        <p className="text-sm text-muted-foreground text-center py-12">
+          {data && data.collection.state !== 'ok'
+            ? 'Сбор данных не работает — графика нет по этой причине'
+            : 'Нет данных для графика'}
+        </p>
       ) : (
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={data.data}>

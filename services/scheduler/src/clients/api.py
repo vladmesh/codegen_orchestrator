@@ -482,6 +482,29 @@ class SchedulerAPIClient:
         )
         return resp.json()
 
+    # --- System configs ---
+
+    async def upsert_system_config(
+        self,
+        key: str,
+        value: str,
+        category: str,
+        description: str,
+    ) -> dict:
+        """Create or overwrite a system config entry."""
+        resp = await self._request(
+            "POST",
+            "system-configs/",
+            json={
+                "key": key,
+                "value": value,
+                "category": category,
+                "description": description,
+                "updated_by": "scheduler",
+            },
+        )
+        return resp.json()
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()

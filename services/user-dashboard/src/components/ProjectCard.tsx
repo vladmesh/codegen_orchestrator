@@ -4,6 +4,7 @@ import type { LkProject } from '@/types/api'
 import StatusBadge from './StatusBadge'
 import MetricValue from './MetricValue'
 import { formatNumber, formatMs, formatPercent } from '@/lib/utils'
+import { emptyDataText } from './CollectionNotice'
 
 export default function ProjectCard({ project }: { project: LkProject }) {
   const navigate = useNavigate()
@@ -30,7 +31,7 @@ export default function ProjectCard({ project }: { project: LkProject }) {
           <MetricValue label="Ошибки" value={formatPercent(d.error_rate)} />
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Нет данных</p>
+        <p className="text-sm text-muted-foreground">{emptyDataText(project.collection)}</p>
       )}
     </button>
   )

@@ -12,10 +12,12 @@ import asyncio
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 import hashlib
+import os
 import time
 
 import structlog
 
+from shared.analytics_health import ANALYTICS_HEARTBEAT_KEY
 from shared.clients.loki import LokiClient
 from src.clients.api import api_client
 
@@ -320,15 +322,27 @@ async def _cleanup():
     )
 
 
+async def _record_heartbeat(completed_at: datetime):
+    """Publish the timestamp of a completed aggregation cycle.
+
+    The LK reads this to tell "no traffic" apart from "collection is broken".
+    """
+    await api_client.upsert_system_config(
+        key=ANALYTICS_HEARTBEAT_KEY,
+        value=completed_at.isoformat(),
+        category="analytics",
+        description="UTC timestamp of the last completed analytics aggregation cycle",
+    )
+
+
 async def analytics_aggregator_worker():
     """Background worker — runs hourly aggregation at :05 past the hour."""
-    import os
-
     if not os.environ.get("LOKI_URL"):
-        logger.warning("analytics_aggregator_disabled", reason="LOKI_URL not set")
-        # Stay alive but idle — don't crash the scheduler
-        while True:
-            await asyncio.sleep(3600)
+        raise RuntimeError(
+            "LOKI_URL is not set — the analytics aggregator cannot read logs and "
+            "product analytics would stay empty. Set it to the Loki read address "
+            "(http://loki:3100 inside the compose network)."
+        )
 
     logger.info("analytics_aggregator_worker_started")
 
@@ -371,6 +385,8 @@ async def analytics_aggregator_worker():
                     yesterday = now - timedelta(days=1)
                     await _run_daily_rollup(yesterday)
                     await _cleanup()
+
+                await _record_heartbeat(datetime.now(UTC))
 
             except Exception:
                 logger.exception("analytics_cycle_error")

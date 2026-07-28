@@ -4,6 +4,7 @@ import type { LkProject } from '@/types/api'
 import ProjectCard from '@/components/ProjectCard'
 import Spinner from '@/components/Spinner'
 import ErrorMessage from '@/components/ErrorMessage'
+import CollectionNotice from '@/components/CollectionNotice'
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<LkProject[]>([])
@@ -35,6 +36,7 @@ export default function ProjectsPage() {
 
   return (
     <div className="space-y-3">
+      <CollectionNotice collection={projects[0].collection} />
       {projects.map((p) => (
         <ProjectCard key={p.id} project={p} />
       ))}

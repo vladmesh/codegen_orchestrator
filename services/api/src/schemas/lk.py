@@ -7,6 +7,22 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 
+from shared.analytics_health import CollectionState
+
+# --- Collection health ---
+
+
+class CollectionHealth(BaseModel):
+    """Whether analytics are being collected at all.
+
+    Lets the dashboard say "no traffic yet" only when collection is actually
+    running; otherwise it reports that collection is down.
+    """
+
+    state: CollectionState
+    last_success_at: dt.datetime | None
+
+
 # --- Auth ---
 
 
@@ -45,6 +61,7 @@ class LkProject(BaseModel):
     name: str
     status: str
     latest_daily: LatestDailySummary | None
+    collection: CollectionHealth
 
 
 # --- Summary ---
@@ -81,6 +98,7 @@ class ProjectSummaryResponse(BaseModel):
     p95_ms: float | None
     top_endpoints: list[dict[str, Any]]
     breakdown: list[ServiceBreakdown]
+    collection: CollectionHealth
 
 
 # --- Chart ---
@@ -107,6 +125,7 @@ class ChartResponse(BaseModel):
     metric: ChartMetric
     period: SummaryPeriod
     data: list[ChartDataPoint]
+    collection: CollectionHealth
 
 
 # --- Status ---
@@ -124,3 +143,4 @@ class ProjectStatusResponse(BaseModel):
     """Service health status for a project."""
 
     services: list[ServiceStatus]
+    collection: CollectionHealth

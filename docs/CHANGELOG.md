@@ -2,6 +2,19 @@
 
 ## 2026-07-28
 
+- Product analytics are collected again. The scheduler gets `LOKI_URL` (the Loki read address,
+  `http://loki:3100` inside compose — not the `LOKI_PUSH_*` write credentials), and the aggregator
+  no longer treats a missing value as a mode: it raises a configuration error instead of sleeping
+  forever, so the scheduler fails loudly instead of silently producing no analytics. After every
+  completed cycle it records a heartbeat in `analytics.aggregator_last_success_at`.
+- The LK now tells "no traffic" apart from "nothing is collecting". Every LK analytics response
+  carries a `collection` block (`ok` / `stale` / `never` plus the last successful cycle), the
+  dashboard shows a banner and honest empty-state text when collection is down, and per-service
+  status reads `unknown` instead of `down` when stale buckets are the aggregator's fault.
+- `.env.example` covers everything compose expects without a default: `LK_DOMAIN` and
+  `LK_JWT_SECRET` were missing and rode through as empty strings. Both settings now reject an empty
+  value, and `docker compose config` runs without unset-variable warnings.
+
 - A failing Time4VPS API no longer hides for a day. The client logs the response body with the
   status for every request and raises `Time4VPSAPIError` carrying it, so `ipnotallowed` (the
   provider's IP allowlist) is no longer read as bad credentials. A sync cycle that could not read

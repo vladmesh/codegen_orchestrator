@@ -57,6 +57,7 @@ logger.info("event_name", key1="value1", key2=123)
 | `LOG_LEVEL` | `INFO` | Logging level: DEBUG, INFO, WARNING, ERROR |
 | `LOG_FORMAT` | `console` | Output format: `json` (production) or `console` (dev) |
 | `SERVICE_NAME` | `unknown` | Service name added to all logs |
+| `LOKI_URL` | — | Loki **read** address for log consumers (`http://loki:3100`). The scheduler's analytics aggregator refuses to start without it. Unrelated to `LOKI_PUSH_*`, which are Promtail's write credentials. |
 
 ### Example Output
 
