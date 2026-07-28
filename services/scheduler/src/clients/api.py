@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import os
 
 import httpx
@@ -257,9 +258,22 @@ class SchedulerAPIClient:
         )
         return TemporaryAccessGrantDTO.model_validate(resp.json())
 
-    async def list_live_temporary_access_grants(self) -> list[TemporaryAccessGrantDTO]:
-        """Every grant that still holds access, whatever process granted it."""
-        resp = await self._request("GET", "temporary-access-grants/", params={"live": "true"})
+    async def list_temporary_access_grants_under_watch(
+        self, revoked_after: datetime
+    ) -> list[TemporaryAccessGrantDTO]:
+        """Every grant the sweep still has to read, whatever process granted it.
+
+        That is every grant that may hold access, plus the ones closed since
+        *revoked_after*. A closed grant is not holding access as far as the
+        record knows, and the record only knows what was read: a dispatch that
+        was already on its way can write the value back afterwards, and nobody
+        would see it if the readings stopped at the moment the grant closed.
+        """
+        resp = await self._request(
+            "GET",
+            "temporary-access-grants/",
+            params={"live": "true", "revoked_after": revoked_after.isoformat()},
+        )
         return [TemporaryAccessGrantDTO.model_validate(row) for row in resp.json()]
 
     async def get_live_temporary_access_grant_for_run(

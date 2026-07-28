@@ -108,3 +108,4 @@ class TemporaryAccessGrantRead(TimestampedDTO):
     observation_id: str | None = None
     slot_clear_since: datetime | None = None
     slot_clear_readings: int = 0
+    reopened_at: datetime | None = None

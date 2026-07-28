@@ -147,6 +147,11 @@
   category: supervisor
   description: "Minutes a grant may hold access before an unfinished revoke stops being an internal retry and is handed to a human"
 
+- key: supervisor.temporary_access_revoked_watch_minutes
+  value: 60
+  category: supervisor
+  description: "Minutes a revoked grant keeps being read after the readings closed it, so a value written back afterwards is seen and revoked again"
+
 # --- deploy ---
 - key: deploy.max_deploy_fix_attempts
   value: 2

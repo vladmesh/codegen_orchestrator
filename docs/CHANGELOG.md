@@ -151,8 +151,23 @@
   `supervisor.temporary_access_max_revoke_attempts` fails the QA run with `qa_cleanup_failed`
   naming what is being observed, so the story goes to a human instead of waiting in TESTING. The
   promise is therefore no longer "the access can never come back" but "the access does not outlive
-  one reconciliation interval after the verdict", and the fence, the withdrawal and the supersede
+  one reconciliation interval after it is seen", and the fence, the withdrawal and the supersede
   are what shorten that window rather than what proves it closed.
+
+  Closing the grant used to stop anyone looking at the slot, which put the same hole one step
+  later: the writer that can land between two readings can land after the last one, and a value
+  applied after the confirmation stayed on the running bot with no live grant to bring it back to
+  the sweep. A closed grant is now still read for
+  `supervisor.temporary_access_revoked_watch_minutes` — the sweep asks for the live grants plus the
+  ones revoked since that cutoff (`GET /api/temporary-access-grants/?live=true&revoked_after=…`) —
+  and a reading that finds the value on one puts it back to `revoking` with
+  `revoke_reason=observed_after_revoke`, stamps `reopened_at`, and gets a fresh retry budget
+  counted from there rather than an exhausted one from hours ago. The clearing deploy goes out on
+  the same tick, and admins are told the value came back after it was confirmed gone. The one
+  reading that does not reopen a grant is one whose slot has a live owner again: the contract holds
+  one value per `(project, env_key)`, so what was read may be the next grant's access, and taking
+  it off from here would revoke a grant that is being used. Past the watch window the record is
+  closed for good, and that is where the promise ends.
 
   Three things that criterion needed before it was one. `PATCH /api/temporary-access-grants/{id}`
   still accepted `status=revoked` from any internal caller, which is the whole claim the system

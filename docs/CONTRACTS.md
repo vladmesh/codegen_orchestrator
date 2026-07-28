@@ -1071,7 +1071,8 @@ The promise about a test identity's access is not "the access can never come bac
 between the decision and the effect stands GitHub Actions, which this system does not own and
 which works asynchronously, so no amount of stopping writers here proves that none of them will
 apply the old value afterwards. The promise is that **the access does not outlive one
-reconciliation interval after the verdict.**
+reconciliation interval after it is seen** — while the slot is being watched, which is the grant's
+own lifetime plus `supervisor.temporary_access_revoked_watch_minutes` after the readings closed it.
 
 What that rests on: `revoked` is written only after the environment of the running service has been
 read back through `env-observation:queue` and no longer carries the value. Until that reading has
@@ -1099,6 +1100,16 @@ Three rules make that hold rather than merely describe it:
   `shared/contracts/dto/temporary_access.py`) have agreed. A reading that finds the value again
   restarts the streak and the sweep revokes again. That window *is* the reconciliation interval the
   promise above is written in.
+- **Closing the grant does not stop the readings.** The writer that can land between two readings
+  can land after the last one, so a closed grant keeps being read for
+  `supervisor.temporary_access_revoked_watch_minutes` — the sweep asks the API for the live grants
+  plus the ones revoked since that cutoff (`GET /api/temporary-access-grants/?live=true&
+  revoked_after=…`). A reading that finds the value on a closed grant puts it back to `revoking`
+  under `revoke_reason=observed_after_revoke`, with `reopened_at` stamped and the retry budget
+  counted from there, and the sweep clears it again on the same tick. Unless the slot has a live
+  owner by then: the contract holds one value per `(project, env_key)`, so what is being read may
+  be a later grant's access, and that grant is reconciled on its own. Past the watch window the
+  grant is closed for good, and that bound is where the promise above ends.
 
 Cancelling runs on Actions, withdrawing a queued dispatch and superseding a dead claim all remain.
 None of them is proof that the access is gone; they shorten the window in which the old value can

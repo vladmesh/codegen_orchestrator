@@ -333,8 +333,8 @@ async def test_slot_is_free_again_once_the_access_is_gone(async_client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_revoked_grant_is_terminal_evidence(async_client: AsyncClient, db_engine):
-    """Nothing reopens a revoked grant, and no reading is taken against it."""
+async def test_no_caller_reopens_a_revoked_grant_by_hand(async_client: AsyncClient, db_engine):
+    """A closed grant is evidence, and an opinion does not move it."""
     project_id, run_id = await _project_with_run(async_client)
     payload = _grant_payload(project_id, run_id)
     await async_client.post("/api/temporary-access-grants/", json=payload)
@@ -344,10 +344,122 @@ async def test_revoked_grant_is_terminal_evidence(async_client: AsyncClient, db_
     reopened = await async_client.patch(grant_url, json={"status": "granted"})
     assert reopened.status_code == status.HTTP_409_CONFLICT
 
+
+@pytest.mark.asyncio
+async def test_a_value_read_after_the_grant_closed_puts_it_back_under_reconciliation(
+    async_client: AsyncClient, db_engine
+):
+    """The reviewed hole: the readings stopped mattering the moment they agreed.
+
+    A dispatch GitHub Actions had already accepted lands after the confirmation,
+    and the record was closed with nothing left watching the slot. So a reading
+    is still taken against a closed grant, and one that finds the value reopens
+    it — with its own retry budget, because this is a new disagreement rather
+    than the one that was already settled.
+    """
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    grant_url = f"/api/temporary-access-grants/{payload['id']}"
+    await _revoke_by_observation(async_client, db_engine, payload["id"])
+
     late = await async_client.post(
         f"{grant_url}/observation", json=_reading(True, observation_id="envobs-deploy-revoke-1-9")
     )
-    assert late.status_code == status.HTTP_409_CONFLICT
+
+    assert late.status_code == status.HTTP_200_OK
+    body = late.json()
+    assert body["status"] == "revoking"
+    assert body["revoke_reason"] == "observed_after_revoke"
+    assert body["revoked_at"] is None
+    assert body["reopened_at"] is not None
+    assert body["revoke_attempts"] == 0
+    assert body["slot_clear_readings"] == 0
+    assert ENV_KEY in body["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_slot_read_after_the_grant_closed_leaves_it_closed(
+    async_client: AsyncClient, db_engine
+):
+    """The watch that catches a returned value must not disturb the ordinary case."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    grant_url = f"/api/temporary-access-grants/{payload['id']}"
+    await _revoke_by_observation(async_client, db_engine, payload["id"])
+
+    again = await async_client.post(
+        f"{grant_url}/observation", json=_reading(False, observation_id="envobs-deploy-revoke-1-9")
+    )
+
+    assert again.status_code == status.HTTP_200_OK
+    body = again.json()
+    assert body["status"] == "revoked"
+    assert body["reopened_at"] is None
+    # Each reading of a closed slot is its own question, so the count moves on.
+    assert body["slot_clear_readings"] == REVOKE_CONFIRMATION_READINGS + 1
+    assert body["observation_id"] == "envobs-deploy-revoke-1-9"
+
+
+@pytest.mark.asyncio
+async def test_a_closed_grant_does_not_take_back_a_later_grants_slot(
+    async_client: AsyncClient, db_engine
+):
+    """The slot holds one value, and a live grant owns it.
+
+    Reopening the closed grant here would revoke the access the next QA run is
+    using: what the reading found is that grant's value, not this one's leftover.
+    """
+    project_id, run_id = await _project_with_run(async_client)
+    closed = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=closed)
+    await _revoke_by_observation(async_client, db_engine, closed["id"])
+
+    successor = _grant_payload(project_id, run_id)
+    made = await async_client.post("/api/temporary-access-grants/", json=successor)
+    assert made.status_code == status.HTTP_201_CREATED
+
+    late = await async_client.post(
+        f"/api/temporary-access-grants/{closed['id']}/observation",
+        json=_reading(True, observation_id="envobs-deploy-revoke-1-9"),
+    )
+
+    assert late.status_code == status.HTTP_200_OK
+    assert late.json()["status"] == "revoked"
+    still_live = await async_client.get(f"/api/temporary-access-grants/{successor['id']}")
+    assert still_live.json()["status"] == "granting"
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_reads_recently_closed_grants_and_forgets_older_ones(
+    async_client: AsyncClient, db_engine
+):
+    """The watch is bounded: the sweep names how far back a closed slot is read."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    await _revoke_by_observation(async_client, db_engine, payload["id"])
+
+    watched = await async_client.get(
+        "/api/temporary-access-grants/",
+        params={
+            "live": "true",
+            "project_id": project_id,
+            "revoked_after": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+        },
+    )
+    assert [row["id"] for row in watched.json()] == [payload["id"]]
+
+    forgotten = await async_client.get(
+        "/api/temporary-access-grants/",
+        params={
+            "live": "true",
+            "project_id": project_id,
+            "revoked_after": (datetime.now(UTC) + timedelta(minutes=1)).isoformat(),
+        },
+    )
+    assert forgotten.json() == []
 
 
 @pytest.mark.asyncio

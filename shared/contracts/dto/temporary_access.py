@@ -28,7 +28,11 @@ from shared.contracts.queues.qa import QAMessage
 # ours, so a writer carrying the old value can still land after an empty reading
 # was taken. One empty reading therefore closes nothing; several taken apart over
 # this span do. This is the span the guarantee is written in: the access does not
-# outlive one reconciliation interval after the verdict.
+# outlive one reconciliation interval after it is seen.
+#
+# Closing the grant does not stop the readings either. The sweep keeps reading
+# the slot for a while after the record says REVOKED, and a value found there
+# puts the grant back under reconciliation with OBSERVED_AFTER_REVOKE.
 REVOKE_CONFIRMATION_WINDOW = timedelta(minutes=10)
 REVOKE_CONFIRMATION_READINGS = 2
 
@@ -67,6 +71,11 @@ class TemporaryAccessRevokeReason(StrEnum):
     # The deploy meant to hand the access out never confirmed, so whether the
     # value landed is unknown and the slot must be cleared either way.
     GRANT_FAILED = "grant_failed"
+    # The readings had agreed the slot was empty and the grant was closed, and a
+    # later reading found the value again — a late dispatch that landed after the
+    # confirmation, or a write from outside. Either way it is a value that should
+    # not be there, and the grant goes back under reconciliation.
+    OBSERVED_AFTER_REVOKE = "observed_after_revoke"
 
 
 class TemporaryAccessGrantCreate(BaseModel):
@@ -180,6 +189,11 @@ class TemporaryAccessGrantDTO(TimestampedDTO):
     # start, because the streak is what the confirmation is made of.
     slot_clear_since: datetime | None = None
     slot_clear_readings: int = 0
+    # When a reading put a closed grant back under reconciliation. The retry
+    # budget and the age at which an unfinished revoke goes to a human are
+    # counted from here, because a returned value is a new disagreement rather
+    # than a continuation of the one that was already settled.
+    reopened_at: datetime | None = None
 
     @model_validator(mode="after")
     def _revoked_grant_carries_its_evidence(self) -> TemporaryAccessGrantDTO:

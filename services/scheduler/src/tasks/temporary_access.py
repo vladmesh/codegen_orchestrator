@@ -25,14 +25,19 @@ itself — and on more than one of them, taken apart over a window, because a
 single empty reading is a moment and a late dispatch lands after moments. Until
 those readings agree, the grant stays live in REVOKING and the sweep keeps
 revoking; a value that comes back is then simply a disagreement between what we
-want and what we see, and the cycle that sees it corrects it. What the system
-promises is therefore not "the access can never come back" but "the access does
-not outlive one reconciliation interval after the verdict".
+want and what we see, and the cycle that sees it corrects it.
+
+Closing the grant does not stop the readings. The same writer that could land
+between two readings can land after the last one, so the slot is read for the
+whole watch window after the record closed, and a value found there reopens the
+grant and is revoked again. What the system promises is therefore not "the
+access can never come back" but "the access does not outlive one reconciliation
+interval after it is seen".
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple
 import uuid
 
@@ -112,6 +117,10 @@ def _observation_window_minutes() -> int:
 
 def _unrevoked_ttl_minutes() -> int:
     return startup.get_config().get_int("supervisor.temporary_access_unrevoked_ttl_minutes")
+
+
+def _revoked_watch_minutes() -> int:
+    return startup.get_config().get_int("supervisor.temporary_access_revoked_watch_minutes")
 
 
 def _age_minutes(moment: datetime) -> float:
@@ -203,11 +212,18 @@ async def supervise_temporary_access(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
-    """Settle every grant that still holds access.
+    """Settle every grant that still holds access, and watch the ones just closed.
+
+    A closed grant is read for a while longer. The record closed it on readings,
+    and readings are moments: a dispatch that was already on its way to GitHub
+    Actions can put the value back afterwards. So the slot keeps being read for
+    the watch window, and a value found there puts the grant back under
+    reconciliation instead of standing on a bot nobody is looking at.
 
     Returns counts of the actions taken this tick.
     """
-    grants = await api_client.list_live_temporary_access_grants()
+    watch_from = datetime.now(UTC) - timedelta(minutes=_revoked_watch_minutes())
+    grants = await api_client.list_temporary_access_grants_under_watch(watch_from)
     counts = _empty_counts()
     if not grants:
         return counts
@@ -224,6 +240,8 @@ async def supervise_temporary_access(
                 await _settle_grant_in_flight(api_client, redis_client, grant, counts, log)
             elif grant.status is TemporaryAccessStatus.REVOKING:
                 await _settle_revoke_in_flight(api_client, redis_client, grant, counts, log)
+            elif grant.status is TemporaryAccessStatus.REVOKED:
+                await _watch_closed_grant(api_client, redis_client, grant, counts, log)
             else:
                 await _settle_granted(api_client, redis_client, grant, counts, log)
         except Exception:
@@ -851,6 +869,67 @@ async def _settle_revoke_in_flight(
     counts["revoked"] += 1
 
 
+async def _watch_closed_grant(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    counts: dict[str, int],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Keep reading the slot of a grant the readings already closed.
+
+    Closing is what the readings said at the time, and a writer we do not own can
+    land after them: a ``workflow_dispatch`` accepted by GitHub Actions before
+    the revoke, a hand-run playbook, a redeploy of the wrong commit. None of that
+    is visible from here, and all of it is visible in the environment the service
+    is running with.
+
+    So a reading that finds the value puts the grant back under reconciliation —
+    the record does that, not this — and the revoke goes out again on the same
+    tick. The story the grant belonged to has usually finished by then; that is
+    the point. What was promised is not that the value can never come back, but
+    that it does not stay: the sweep that sees it takes it off.
+    """
+    read = await _observe_running_service(api_client, redis_client, grant, log)
+    if read is None:
+        return
+    observation, settled = read
+
+    if not observation.present:
+        return
+
+    if settled.status is not TemporaryAccessStatus.REVOKING:
+        # The record kept the grant closed, which means the slot has a live owner
+        # again: a later grant holds this key on purpose and is reconciled on its
+        # own. Revoking from here would take that grant's value off under it.
+        log.info(
+            "temporary_access_observed_value_belongs_to_another_grant",
+            grant_status=settled.status.value,
+        )
+        return
+
+    log.error(
+        "temporary_access_value_returned_after_revoke",
+        revoked_at=grant.revoked_at.isoformat() if grant.revoked_at else None,
+        observation_id=settled.observation_id,
+    )
+    await notify_admins_best_effort(
+        f"Temporary access {grant.env_key} for project {grant.project_id} (grant {grant.id}) "
+        "is set on the running service again after it was confirmed removed; revoking it again",
+        level="error",
+        component="temporary_access",
+        grant_id=grant.id,
+    )
+    await _dispatch_revoke(
+        api_client,
+        redis_client,
+        settled,
+        TemporaryAccessRevokeReason.OBSERVED_AFTER_REVOKE,
+        log,
+    )
+    counts["dispatched"] += 1
+
+
 def _observation_request_id(grant: TemporaryAccessGrantDTO) -> str:
     """One question per reading, named after the revoke attempt and the streak.
 
@@ -1056,7 +1135,14 @@ async def _report_unobservable_grant(
     about, so past the same window that bounds everything else here it is said
     once.
     """
-    if _age_minutes(grant.granted_at) < _unrevoked_ttl_minutes():
+    if grant.status is TemporaryAccessStatus.REVOKED:
+        # The readings that closed this grant said the access is gone. Reading it
+        # again is the watch for a value that comes back, and a server that
+        # cannot be reached during it is not a grant being kept live by one —
+        # there is nothing left to complain about, and the record refuses to be
+        # written anyway.
+        return
+    if _age_minutes(_reconciling_since(grant)) < _unrevoked_ttl_minutes():
         return
     if (grant.last_error or "").startswith(_UNOBSERVABLE_ERROR):
         return
@@ -1085,8 +1171,19 @@ def _retries_are_spent(grant: TemporaryAccessGrantDTO) -> bool:
     """
     return (
         grant.revoke_attempts >= _max_revoke_attempts()
-        or _age_minutes(grant.granted_at) >= _unrevoked_ttl_minutes()
+        or _age_minutes(_reconciling_since(grant)) >= _unrevoked_ttl_minutes()
     )
+
+
+def _reconciling_since(grant: TemporaryAccessGrantDTO) -> datetime:
+    """When the disagreement being worked on now started.
+
+    Usually the grant itself. A grant that was closed and then found holding the
+    value again is a new disagreement: it starts at the reopening, so the age
+    bounds are measured against it and a returned value gets its own attempts
+    rather than inheriting an exhausted budget from hours ago.
+    """
+    return grant.reopened_at or grant.granted_at
 
 
 async def _record_revoke_failure(

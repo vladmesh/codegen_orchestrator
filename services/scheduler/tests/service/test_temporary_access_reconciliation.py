@@ -50,6 +50,9 @@ _CONFIG = {
     # about, and waiting one out would only make them slow.
     "supervisor.temporary_access_observation_window_minutes": 0,
     "supervisor.temporary_access_unrevoked_ttl_minutes": 0,
+    # How long a closed grant keeps being read. Not zero: these tests must see
+    # the sweep still asking about a slot the record has already closed.
+    "supervisor.temporary_access_revoked_watch_minutes": 60,
 }
 
 

@@ -59,9 +59,13 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   settles nothing, and a disagreement that outlives the grant's TTL or its revoke attempts fails
   the QA run naming the observed state and hands the story to a human. No caller can declare the
   access gone: `PATCH` refuses `status=revoked` and only
-  `POST /api/temporary-access-grants/{id}/observation` reaches it. The guarantee this buys is
-  bounded and stated that way: the access does not outlive one reconciliation interval after the
-  verdict.
+  `POST /api/temporary-access-grants/{id}/observation` reaches it. Closing the grant does not stop
+  the readings either: the slot is still read for
+  `supervisor.temporary_access_revoked_watch_minutes` afterwards, and a value found on a closed
+  grant puts it back under reconciliation as `observed_after_revoke` and is cleared again, unless a
+  later grant owns the slot by then. The guarantee this buys is bounded and stated that way: the
+  access does not outlive one reconciliation interval after it is seen, for as long as the slot is
+  watched.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

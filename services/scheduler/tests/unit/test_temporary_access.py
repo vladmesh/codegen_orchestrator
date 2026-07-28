@@ -476,7 +476,7 @@ class TestGrantInFlight:
     async def test_confirmed_grant_releases_the_qa_run(self, api_client, redis_client):
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_granting()]
 
         async def _read_run(run_id):
             if run_id == "deploy-grant-1":
@@ -507,7 +507,7 @@ class TestGrantInFlight:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_granting()]
 
         async def _read_run(run_id):
             if run_id == "deploy-grant-1":
@@ -535,7 +535,7 @@ class TestGrantInFlight:
         """The access landed late; it is taken back, and QA is not started on it."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_granting()]
 
         async def _read_run(run_id):
             if run_id == "deploy-grant-1":
@@ -556,7 +556,7 @@ class TestGrantInFlight:
         """A process that died before publishing leaves the intent on the record."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_granting()]
         api_client.get_run_if_missing_returns_none.return_value = None
 
         counts = await supervise_temporary_access(api_client, redis_client)
@@ -572,7 +572,7 @@ class TestGrantInFlight:
     async def test_superseded_grant_deploy_is_dispatched_again(self, api_client, redis_client):
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_granting()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.CANCELLED, id="deploy-grant-1"
         )
@@ -589,7 +589,7 @@ class TestGrantInFlight:
         """Whether the value landed is unknown, so it is cleared and QA fails."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_granting()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.FAILED, DeployOutcome.GIVE_UP, id="deploy-grant-1"
         )
@@ -614,7 +614,7 @@ class TestGrantInFlight:
     ):
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -638,7 +638,7 @@ class TestGrantInFlight:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -666,7 +666,7 @@ class TestGrantInFlight:
         """Nothing rewrites the outcome of a deploy that reported one."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_granting()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.FAILED, DeployOutcome.GIVE_UP, id="deploy-grant-1"
         )
@@ -691,7 +691,7 @@ class TestRevocationTriggers:
         """A QA run killed mid-flight leaves the access revoked, not standing."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_make_grant()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_make_grant()]
         api_client.get_run_if_missing_returns_none.return_value = _make_run(
             id="qa-1",
             type=RunType.QA,
@@ -715,7 +715,7 @@ class TestRevocationTriggers:
         """A run that no longer exists will never release the grant itself."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_make_grant()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_make_grant()]
         api_client.get_run_if_missing_returns_none.return_value = None
 
         counts = await supervise_temporary_access(api_client, redis_client)
@@ -730,7 +730,7 @@ class TestRevocationTriggers:
         """QA still running, so the identity is still using the access."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_make_grant()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_make_grant()]
         api_client.get_run_if_missing_returns_none.return_value = _make_run(
             id="qa-1", type=RunType.QA, status=RunStatus.RUNNING, result=None
         )
@@ -761,7 +761,7 @@ class TestRevocationTriggers:
             AsyncMock(side_effect=lambda *a, **k: notified.append((a, k))),
         )
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _make_run(
@@ -796,7 +796,7 @@ class TestRevocationTriggers:
         from src.tasks import temporary_access as module
 
         monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _make_run(
@@ -822,7 +822,7 @@ class TestRevokeInFlight:
     ):
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
                 revoke_run_id="deploy-revoke-1",
@@ -845,7 +845,7 @@ class TestRevokeInFlight:
     async def test_running_revoke_deploy_is_left_alone(self, api_client, redis_client):
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
                 revoke_run_id="deploy-revoke-1",
@@ -877,7 +877,7 @@ class TestRevokeInFlight:
         """Losing the project's deploy lock is contention, not a QA failure."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
                 revoke_run_id="deploy-revoke-1",
@@ -905,7 +905,7 @@ class TestRevokeInFlight:
         """The process that published the revoke died; the access is still out."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
                 revoke_run_id="deploy-revoke-1",
@@ -937,7 +937,7 @@ class TestRevokeInFlight:
         """A single failed deploy is a retry, not yet the QA run's outcome."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
                 revoke_run_id="deploy-revoke-1",
@@ -971,7 +971,7 @@ class TestRevokeInFlight:
             AsyncMock(side_effect=lambda *a, **k: notified.append((a, k))),
         )
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
                 revoke_run_id="deploy-revoke-1",
@@ -999,7 +999,7 @@ class TestRevokeInFlight:
         """A revoke that failed stays live and is attempted again, same reason."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKE_FAILED,
                 revoke_run_id="deploy-revoke-1",
@@ -1024,7 +1024,7 @@ class TestRevokeInFlight:
         """A broken grant fails alone; the scheduler keeps sweeping."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(id="tempaccess-broken", qa_run_id="qa-broken"),
             _make_grant(id="tempaccess-ok", qa_run_id="qa-ok"),
         ]
@@ -1050,7 +1050,7 @@ class TestRevokedGrants:
         """The sweep reads live grants only; a revoked one is done with."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = []
+        api_client.list_temporary_access_grants_under_watch.return_value = []
 
         counts = await supervise_temporary_access(api_client, redis_client)
 
@@ -1081,7 +1081,7 @@ class TestRevokedGrants:
             revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
             revoke_attempts=1,
         )
-        api_client.list_live_temporary_access_grants.return_value = [grant]
+        api_client.list_temporary_access_grants_under_watch.return_value = [grant]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1116,7 +1116,7 @@ class TestEscalationIsOneDecision:
         from src.tasks import temporary_access as module
 
         monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
                 revoke_run_id="deploy-revoke-1",
@@ -1164,7 +1164,7 @@ class TestEscalationIsOneDecision:
 
         monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
         api_client.escalate_temporary_access_grant.side_effect = RuntimeError("API died mid-write")
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
                 revoke_run_id="deploy-revoke-1",
@@ -1196,7 +1196,7 @@ class TestRevokeFencesTheGrantDeploy:
         """The grant deploy may still be live on Actions when this is dispatched."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_make_grant()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_make_grant()]
         api_client.get_run_if_missing_returns_none.return_value = _make_run(
             id="qa-1", type=RunType.QA, status=RunStatus.CANCELLED, story_id="story-1"
         )
@@ -1235,7 +1235,7 @@ class TestRevokeFencesTheGrantDeploy:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(hours=6))
         ]
 
@@ -1263,7 +1263,7 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
     ):
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -1300,7 +1300,7 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -1330,7 +1330,7 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -1352,7 +1352,7 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
         """A worker that never says what it did is a visible event, not a silent loop."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -1384,7 +1384,7 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         # Live when the sweep looks, terminal with a result once it withdrew.
@@ -1410,7 +1410,7 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
         """A run carrying a result is a worker that finished; nothing is in flight."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -1456,7 +1456,7 @@ class TestRevocationIsObserved:
         """Nothing has been read yet, so nothing is settled — and the reading is asked for."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_revoking()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_revoking()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1491,7 +1491,7 @@ class TestRevocationIsObserved:
         api_client.get_application_if_missing_returns_none.return_value = _application(
             application_id=42, server_handle="vps-the-bot-was-tested-on"
         )
-        api_client.list_live_temporary_access_grants.return_value = [_revoking()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_revoking()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1512,7 +1512,7 @@ class TestRevocationIsObserved:
         api_client.get_application_if_missing_returns_none.return_value = _application(
             repo_id="repo-of-another-project"
         )
-        api_client.list_live_temporary_access_grants.return_value = [_revoking()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_revoking()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1534,7 +1534,7 @@ class TestRevocationIsObserved:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_revoking()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_revoking()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1555,7 +1555,7 @@ class TestRevocationIsObserved:
     ):
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _revoking(
                 slot_clear_readings=1, slot_clear_since=datetime.now(UTC) - timedelta(hours=1)
             )
@@ -1585,7 +1585,7 @@ class TestRevocationIsObserved:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_revoking()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_revoking()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1601,7 +1601,7 @@ class TestRevocationIsObserved:
         assert ENV_KEY in held.last_error
 
         # And the next sweep, reading the grant back, revokes again.
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKE_FAILED,
                 revoke_run_id="deploy-revoke-1",
@@ -1627,7 +1627,7 @@ class TestRevocationIsObserved:
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _revoking(
                 slot_clear_readings=1,
                 slot_clear_since=datetime.now(UTC) - timedelta(minutes=20),
@@ -1653,7 +1653,7 @@ class TestRevocationIsObserved:
         """A channel that is down says nothing about the access, so it settles nothing."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_revoking()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_revoking()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1678,7 +1678,7 @@ class TestRevocationIsObserved:
         api_client.get_application_if_missing_returns_none.return_value = _application(
             ApplicationStatus.STOPPED
         )
-        api_client.list_live_temporary_access_grants.return_value = [_revoking()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_revoking()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1694,7 +1694,7 @@ class TestRevocationIsObserved:
         """The sweep runs far more often than a playbook takes."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [_revoking()]
+        api_client.list_temporary_access_grants_under_watch.return_value = [_revoking()]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
@@ -1710,7 +1710,7 @@ class TestRevocationIsObserved:
         """A reading just taken is not re-taken on the very next tick."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _revoking(
                 slot_clear_readings=1,
                 slot_clear_since=datetime.now(UTC),
@@ -1731,7 +1731,7 @@ class TestRevocationIsObserved:
         """An answer about the previous attempt cannot settle this one."""
         from src.tasks.temporary_access import supervise_temporary_access
 
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _revoking(revoke_run_id="deploy-revoke-2", revoke_attempts=2)
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -1755,7 +1755,7 @@ class TestRevocationIsObserved:
         from src.tasks import temporary_access as module
 
         monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
-        api_client.list_live_temporary_access_grants.return_value = [
+        api_client.list_temporary_access_grants_under_watch.return_value = [
             _revoking(granted_at=datetime.now(UTC) - timedelta(minutes=121))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
@@ -1771,3 +1771,178 @@ class TestRevocationIsObserved:
         assert blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
         assert ENV_KEY in blocker.received
         assert "still carries" in blocker.received
+
+
+def _closed(**overrides) -> TemporaryAccessGrantDTO:
+    """A grant the readings have closed, still inside the watch window."""
+    fields = {
+        "status": TemporaryAccessStatus.REVOKED,
+        "revoke_run_id": "deploy-revoke-1",
+        "revoke_reason": TemporaryAccessRevokeReason.RUN_TERMINAL,
+        "revoke_attempts": 1,
+        "revoked_at": datetime.now(UTC) - timedelta(minutes=20),
+        "observed_at": datetime.now(UTC) - timedelta(minutes=20),
+        "observation_id": _question(readings=2),
+        "slot_clear_since": datetime.now(UTC) - timedelta(minutes=40),
+        "slot_clear_readings": REVOKE_CONFIRMATION_READINGS,
+    }
+    fields.update(overrides)
+    return _make_grant(**fields)
+
+
+def _reopened(**overrides) -> TemporaryAccessGrantDTO:
+    """The record's answer to a reading that found the value on a closed grant."""
+    fields = {
+        "status": TemporaryAccessStatus.REVOKING,
+        "revoke_run_id": "deploy-revoke-1",
+        "revoke_reason": TemporaryAccessRevokeReason.OBSERVED_AFTER_REVOKE,
+        "revoke_attempts": 0,
+        "revoked_at": None,
+        "reopened_at": datetime.now(UTC),
+        "observed_at": datetime.now(UTC),
+        "observation_id": _question(readings=REVOKE_CONFIRMATION_READINGS),
+        "slot_clear_since": None,
+        "slot_clear_readings": 0,
+        "last_error": f"{ENV_KEY} is set on application 42 after the grant was confirmed revoked",
+    }
+    fields.update(overrides)
+    return _make_grant(**fields)
+
+
+class TestAValueThatComesBackAfterTheGrantClosed:
+    """The reviewed hole: closing the grant stopped anybody looking at the slot.
+
+    The record closes a grant on readings, and readings are moments. The same
+    writer that can land between two of them can land after the last one — a
+    dispatch GitHub Actions had already accepted, or a hand-run deploy. So the
+    slot is read for a while after the grant closed, and a value found there is
+    taken off again.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_closed_grant_is_still_read(self, api_client, redis_client):
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [_closed()]
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == _no_action()
+        asked = _published(redis_client, ENV_OBSERVATION_QUEUE)
+        assert [request.request_id for request in asked] == [
+            _question(readings=REVOKE_CONFIRMATION_READINGS)
+        ]
+        # Nothing was decided from the deploy runs; the slot itself is the question.
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+
+    @pytest.mark.asyncio
+    async def test_a_value_applied_after_the_grant_closed_is_revoked_by_the_next_sweep(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """The card's promise: access does not outlive the cycle that sees it."""
+        from src.tasks import temporary_access as module
+
+        monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
+        api_client.list_temporary_access_grants_under_watch.return_value = [_closed()]
+        api_client.record_temporary_access_observation.return_value = _reopened()
+        redis_client.redis.answer(
+            _observed(present=True, request_id=_question(readings=REVOKE_CONFIRMATION_READINGS))
+        )
+
+        counts = await module.supervise_temporary_access(api_client, redis_client)
+
+        assert counts["dispatched"] == 1
+        deploy = _published_deploy(redis_client)
+        assert deploy.env_overrides == {ENV_KEY: ""}
+        assert deploy.head_sha == HEAD_SHA
+        reopened = _grant_updates(api_client)[-1]
+        assert reopened.status is TemporaryAccessStatus.REVOKING
+        assert reopened.revoke_reason is TemporaryAccessRevokeReason.OBSERVED_AFTER_REVOKE
+        # The returned value gets its own attempts rather than inheriting a
+        # budget the first episode already spent.
+        assert reopened.revoke_attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_a_closed_grant_whose_slot_reads_empty_is_left_alone(
+        self, api_client, redis_client
+    ):
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [_closed()]
+        api_client.record_temporary_access_observation.return_value = _closed(
+            slot_clear_readings=REVOKE_CONFIRMATION_READINGS + 1,
+            observed_at=datetime.now(UTC),
+            observation_id=_question(readings=REVOKE_CONFIRMATION_READINGS),
+        )
+        redis_client.redis.answer(
+            _observed(present=False, request_id=_question(readings=REVOKE_CONFIRMATION_READINGS))
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == _no_action()
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+        assert _grant_updates(api_client) == []
+
+    @pytest.mark.asyncio
+    async def test_a_value_the_record_will_not_reopen_is_left_to_its_owner(
+        self, api_client, redis_client
+    ):
+        """A later grant may hold the same slot on purpose.
+
+        The contract has one slot per key, so what is being read can be the next
+        grant's value rather than this one's leftover. The record refuses to
+        reopen then, and revoking from here would take the live grant's access
+        off under it.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [_closed()]
+        api_client.record_temporary_access_observation.return_value = _closed(
+            observed_at=datetime.now(UTC),
+            observation_id=_question(readings=REVOKE_CONFIRMATION_READINGS),
+        )
+        redis_client.redis.answer(
+            _observed(present=True, request_id=_question(readings=REVOKE_CONFIRMATION_READINGS))
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == _no_action()
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+
+    @pytest.mark.asyncio
+    async def test_the_watch_is_asked_for_by_the_window_it_covers(self, api_client, redis_client):
+        """The sweep names how far back a closed grant is still worth reading."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = []
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        cutoff = api_client.list_temporary_access_grants_under_watch.call_args.args[0]
+        assert 59 <= (datetime.now(UTC) - cutoff).total_seconds() / 60 <= 61
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_server_leaves_a_closed_grant_closed(
+        self, api_client, redis_client
+    ):
+        """Silence is not a reading, so it neither reopens the grant nor clears it."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [
+            # Old enough that a live grant would be reported as unrevokable by
+            # now. A closed one has nothing to report: it is being watched, not
+            # waited on, and the record refuses to be written anyway.
+            _closed(granted_at=datetime.now(UTC) - timedelta(minutes=121))
+        ]
+        redis_client.redis.answer(
+            _unreachable(request_id=_question(readings=REVOKE_CONFIRMATION_READINGS))
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == _no_action()
+        assert _posted(api_client) == []
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+        assert _grant_updates(api_client) == []

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.run import RunStatus
@@ -13,6 +13,7 @@ from shared.contracts.dto.temporary_access import (
     REVOKE_CONFIRMATION_READINGS,
     REVOKE_CONFIRMATION_WINDOW,
     TemporaryAccessObservation,
+    TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
 )
 from shared.models import Run, TemporaryAccessGrant
@@ -106,8 +107,23 @@ async def list_grants(
     qa_run_id: str | None = Query(None, description="Grants made for one QA run"),
     grant_status: list[TemporaryAccessStatus] | None = Query(None, alias="status"),
     live: bool = Query(False, description="Only grants that still hold access"),
+    revoked_after: datetime | None = Query(
+        None,
+        description=(
+            "With live=true, also return grants closed no earlier than this moment, "
+            "so the sweep keeps watching a slot for a while after it was confirmed empty"
+        ),
+    ),
 ) -> list[TemporaryAccessGrant]:
-    """List grants, newest first."""
+    """List grants, newest first.
+
+    ``live`` and ``revoked_after`` widen one set rather than narrowing it. A
+    closed grant is not holding access, but the value can still come back onto
+    the running service after the readings agreed it was gone — a dispatch that
+    was already on its way, or a write from outside — and nothing would notice if
+    the sweep stopped looking the moment the record closed. So the sweep asks for
+    the live grants plus the recently closed ones, and reads the slot of both.
+    """
     query = select(TemporaryAccessGrant).order_by(TemporaryAccessGrant.granted_at.desc())
     if project_id is not None:
         query = query.where(TemporaryAccessGrant.project_id == project_id)
@@ -116,9 +132,18 @@ async def list_grants(
     if grant_status:
         query = query.where(TemporaryAccessGrant.status.in_([item.value for item in grant_status]))
     if live:
-        query = query.where(
-            TemporaryAccessGrant.status.in_([item.value for item in LIVE_TEMPORARY_ACCESS_STATUSES])
+        held = TemporaryAccessGrant.status.in_(
+            [item.value for item in LIVE_TEMPORARY_ACCESS_STATUSES]
         )
+        if revoked_after is not None:
+            held = or_(
+                held,
+                and_(
+                    TemporaryAccessGrant.status == TemporaryAccessStatus.REVOKED.value,
+                    TemporaryAccessGrant.revoked_at >= revoked_after,
+                ),
+            )
+        query = query.where(held)
     result = await db.execute(query)
     return list(result.scalars().all())
 
@@ -218,6 +243,13 @@ async def record_observation(
     outside — from here the two are the same disagreement and get the same
     answer, which is that the access is still out.
 
+    Closing the grant does not end the readings. A grant that has been closed is
+    still read for as long as the sweep keeps it under watch, and a reading that
+    finds the value on it puts it back to REVOKING under
+    ``OBSERVED_AFTER_REVOKE`` — a dispatch that landed after the confirmation and
+    a write from outside are the same thing seen from here, a value that should
+    not be there, and the answer to both is to take it off again.
+
     Repeating one reading is not two: the id it carries is stored, and an
     observation the caller already delivered is returned as the no-op it is.
     """
@@ -240,16 +272,19 @@ async def record_observation(
             ),
         )
 
-    if grant.status != TemporaryAccessStatus.REVOKING.value:
-        # Nothing to settle. A grant still holding the access on purpose, or one
-        # already closed, is not waiting for a reading, and a reading that finds
-        # the value on a closed grant is a repair the sweep must decide, not
-        # something to fold into this record silently.
+    if grant.status not in (
+        TemporaryAccessStatus.REVOKING.value,
+        TemporaryAccessStatus.REVOKED.value,
+    ):
+        # Nothing to settle. A grant that is still meant to hold the access is
+        # not waiting for a reading, and an empty slot under it is a broken
+        # grant deploy for the sweep to decide, not something to fold into this
+        # record silently.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Temporary access grant {grant_id} is {grant.status}; "
-                "only a grant being revoked is settled by a reading"
+                "only a grant being revoked or already closed is read"
             ),
         )
 
@@ -259,6 +294,9 @@ async def record_observation(
     now = datetime.now(UTC)
     grant.observation_id = observation.observation_id
     grant.observed_at = now
+
+    if grant.status == TemporaryAccessStatus.REVOKED.value:
+        return await _read_a_closed_grant(grant, observation, now, db)
 
     if observation.present:
         grant.slot_clear_since = None
@@ -285,6 +323,60 @@ async def record_observation(
             )
         grant.status = TemporaryAccessStatus.REVOKED.value
         grant.revoked_at = now
+
+    await db.commit()
+    await db.refresh(grant)
+    return grant
+
+
+async def _read_a_closed_grant(
+    grant: TemporaryAccessGrant,
+    observation: TemporaryAccessObservation,
+    now: datetime,
+    db: AsyncSession,
+) -> TemporaryAccessGrant:
+    """Fold a reading taken after the grant was closed into the record.
+
+    An empty slot is the confirmation holding, and only the moment of the reading
+    is worth keeping — it is what paces the next question and what makes each
+    reading a separate one.
+
+    A slot that is filled again is a value that should not be there. The grant
+    goes back to REVOKING and the sweep takes it off, with the retry budget
+    counted from the reopening: this is a new disagreement, not the continuation
+    of one that was already settled.
+
+    Unless the slot has an owner. The contract has one slot per (project, key),
+    so a later grant may already be holding it on purpose, and what is being read
+    is that grant's value rather than this one's leftover. Reopening then would
+    make two grants revoke each other. The reading is kept and the slot is left
+    to the grant that owns it, which is under reconciliation itself.
+    """
+    if not observation.present:
+        grant.slot_clear_readings += 1
+        await db.commit()
+        await db.refresh(grant)
+        return grant
+
+    owner = await db.execute(
+        select(TemporaryAccessGrant).where(
+            TemporaryAccessGrant.project_id == grant.project_id,
+            TemporaryAccessGrant.env_key == grant.env_key,
+            TemporaryAccessGrant.status != TemporaryAccessStatus.REVOKED.value,
+        )
+    )
+    if owner.scalar_one_or_none() is None:
+        grant.status = TemporaryAccessStatus.REVOKING.value
+        grant.revoke_reason = TemporaryAccessRevokeReason.OBSERVED_AFTER_REVOKE.value
+        grant.revoked_at = None
+        grant.reopened_at = now
+        grant.revoke_attempts = 0
+        grant.slot_clear_since = None
+        grant.slot_clear_readings = 0
+        grant.last_error = (
+            f"{observation.env_key} is set on application {observation.application_id} "
+            f"after the grant was confirmed revoked"
+        )
 
     await db.commit()
     await db.refresh(grant)

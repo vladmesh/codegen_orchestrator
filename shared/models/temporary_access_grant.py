@@ -74,6 +74,10 @@ class TemporaryAccessGrant(Base):
     )
     slot_clear_readings: Mapped[int] = mapped_column(Integer, default=0)
 
+    # When a reading found the value again on a grant that was already closed and
+    # put it back under reconciliation. The retry budget is counted from here.
+    reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     def __repr__(self) -> str:
         return (
             f"<TemporaryAccessGrant(id={self.id}, project={self.project_id}, "
