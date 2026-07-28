@@ -25,7 +25,7 @@
     "noUncheckedSideEffectImports": true,
 
     /* Path aliases */
-    "baseUrl": ".",
+    // No baseUrl: "paths" resolves relative to this file (baseUrl is gone in TypeScript 7).
     "paths": {
       "@/*": ["./src/*"]
     }

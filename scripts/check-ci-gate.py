@@ -32,6 +32,7 @@ EXPECTED_GATE_NEEDS = {
     "test-service",
     "test-integration",
     "template-compatibility",
+    "web-checks",
 }
 EXPECTED_FILTERS = {
     "api",
@@ -46,6 +47,7 @@ EXPECTED_FILTERS = {
     "ci",
     "deps",
     "integration-tests",
+    "web",
 }
 HYPHENATED_OUTPUTS = {"worker-manager", "infra-service", "docker-test", "integration-tests"}
 TEMPLATE_COMPAT_TIMEOUT_MINUTES = 30

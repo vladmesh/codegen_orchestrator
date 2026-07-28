@@ -19,6 +19,12 @@ updates:
       # or it does not, so patches ride together.
       frontend-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # TypeScript 7 makes typescript-eslint refuse to load, so linting stops
+      # working entirely. Drop this once typescript-eslint supports TS >= 7.1:
+      # https://github.com/typescript-eslint/typescript-eslint/issues/10940
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: uv
     directory: /

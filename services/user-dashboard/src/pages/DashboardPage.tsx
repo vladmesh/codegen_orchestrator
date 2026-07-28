@@ -17,26 +17,37 @@ import CollectionNotice from '@/components/CollectionNotice'
 export default function DashboardPage() {
   const { id } = useParams<{ id: string }>()
   const [period, setPeriod] = useState<SummaryPeriod>('7d')
-  const [summary, setSummary] = useState<ProjectSummaryResponse | null>(null)
-  const [status, setStatus] = useState<ProjectStatusResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  // Data and error carry the request they answer, so "loading" is derived rather
+  // than set: a synchronous reset inside the effect would restart the render pass.
+  const [loaded, setLoaded] = useState<
+    { key: string; summary: ProjectSummaryResponse; status: ProjectStatusResponse } | null
+  >(null)
+  const [failed, setFailed] = useState<{ key: string; message: string } | null>(null)
+
+  const requestKey = `${id}|${period}`
+  const summary = loaded?.key === requestKey ? loaded.summary : null
+  const status = loaded?.key === requestKey ? loaded.status : null
+  const error = failed?.key === requestKey ? failed.message : null
+  const loading = !summary && !error
 
   useEffect(() => {
-    setLoading(true)
-    setError(null)
+    let cancelled = false
 
     Promise.all([
       api.get<ProjectSummaryResponse>(`/lk/projects/${id}/summary?period=${period}`),
       api.get<ProjectStatusResponse>(`/lk/projects/${id}/status`),
     ])
       .then(([s, st]) => {
-        setSummary(s)
-        setStatus(st)
+        if (!cancelled) setLoaded({ key: requestKey, summary: s, status: st })
       })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false))
-  }, [id, period])
+      .catch((err: Error) => {
+        if (!cancelled) setFailed({ key: requestKey, message: err.message })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [id, period, requestKey])
 
   if (loading) {
     return <div className="flex justify-center py-12"><Spinner /></div>
