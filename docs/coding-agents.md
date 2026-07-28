@@ -2,26 +2,13 @@
 
 For development tasks we use production-ready tools instead of writing our own agents.
 
-## Current implementation: Factory.ai Droid
-
-An autonomous coding agent with autonomy levels.
-
-```bash
-# Interactive mode
-droid
-
-# Single-shot (for automation)
-droid exec "Implement feature X" --autonomy high
-
-# From a file (used in coding-worker)
-droid exec --prompt-file TASK.md --skip-permissions-unsafe
-```
-
-**Autonomy levels:** low (many confirmations), medium, high (full autonomy).
+Three are implemented and interchangeable: Claude Code, Factory.ai Droid and OpenAI Codex.
+A project picks one at creation time; when it does not, `DEFAULT_AGENT_TYPE` decides, and that
+default is `claude`.
 
 ## Claude Code
 
-Claude Code is a CLI tool from Anthropic for agentic coding. Implemented on a par with Droid.
+The default. A CLI tool from Anthropic for agentic coding.
 
 ```bash
 # Installation (native installer)
@@ -36,7 +23,17 @@ cat error.log | claude -p "Fix this error"
 
 **Context:** natively uses `CLAUDE.md` files. Worker-manager automatically maps `INSTRUCTIONS.md` → `CLAUDE.md`.
 
-**Price:** a Pro/Max subscription (~$20-100/month), cheaper than the API.
+**Price:** a Pro/Max subscription, cheaper than the API. Workers authenticate through their own
+session, separate from the operator's.
+
+## Factory.ai Droid
+
+An autonomous coding agent with autonomy levels: low (many confirmations), medium, high (full
+autonomy). The worker runs it non-interactively:
+
+```bash
+droid exec --prompt-file TASK.md --skip-permissions-unsafe
+```
 
 ## OpenAI Codex CLI
 
@@ -99,7 +96,7 @@ the project is created.
 3. Worker-manager creates/checks out story feature branch (`story/{story_id}`)
 4. Injects the static instructions from `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` → an agent-specific file (`CLAUDE.md` / `AGENTS.md`)
 5. Injects a dynamic `TASK.md` into `/workspace/TASK.md` with the project-specific task. Previous tasks archived in `.story/old_tasks/`
-6. Starts the coding agent (Droid, Claude Code or Codex) in non-interactive mode
+6. Starts the coding agent (Claude Code, Droid or Codex) in non-interactive mode
 7. The agent commits and pushes to the feature branch. Worker-wrapper pulls from the current branch (not a hardcoded `main`)
 8. The agent reports the result over HTTP: `curl -X POST localhost:9090/result -d '{"success":true,"commit":"<sha>","summary":"..."}'`
 9. If the task cannot be completed: `curl -X POST localhost:9090/result -d '{"success":false,"reason":"..."}'`
@@ -116,6 +113,6 @@ the project is created.
 | Node | Tool | Status |
 |------|------------|--------|
 | **Scaffolder** | Copier template | ✅ Implemented |
-| **Developer** | Factory.ai Droid / Claude Code / OpenAI Codex | ✅ Implemented (Native execution, Flat Dev Environment) |
-| **Tester** | A functional node (running the tests) | ⚠️ A stub (for now the Developer runs the tests itself through `make`) |
+| **Developer** | Claude Code / Factory.ai Droid / OpenAI Codex | ✅ Implemented (Native execution, Flat Dev Environment) |
+| **Tester** | — | ❌ Removed. The Developer runs the tests through `make`; CI checks run after the subgraph |
 | **DevOps** | GitHub Actions (deploy.yml) | ✅ Implemented |

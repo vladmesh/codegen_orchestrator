@@ -72,7 +72,7 @@ cannot poison-loop the reclaim.
 
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
-| `architect:queue` | `architect-consumers` | ArchitectMessage | PO ReactAgent | scheduler | Story → tasks LLM decomposition |
+| `architect:queue` | `architect-consumers` | ArchitectMessage | PO ReactAgent | architect | Story → tasks LLM decomposition |
 
 ---
 
