@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.run_result import QARunResult
@@ -36,6 +36,12 @@ class TemporaryAccessGrantUpdate(BaseModel):
     `qa_dispatched` and `escalated` are requests to stamp a moment, not values
     to write: the record keeps when the handoff was released and when the sweep
     reported the access as still standing.
+
+    REVOKED is not one of the statuses this can ask for. A caller asking for it
+    would be asserting that the deployed service no longer holds the value, which
+    nothing inside this system can know: the deploy that clears it is handed to
+    GitHub Actions and applied whenever that gets to it. The record is closed by
+    ``POST /{grant_id}/observation`` instead, against a reading of the server.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -48,6 +54,15 @@ class TemporaryAccessGrantUpdate(BaseModel):
     revoke_attempts: int | None = None
     escalated: bool | None = None
     last_error: str | None = None
+
+    @model_validator(mode="after")
+    def _revoked_is_not_a_field_to_set(self) -> "TemporaryAccessGrantUpdate":
+        if self.status is TemporaryAccessStatus.REVOKED:
+            raise ValueError(
+                "a grant is revoked by an observation of the running service, not by an update; "
+                "post the reading to /temporary-access-grants/{id}/observation"
+            )
+        return self
 
 
 class TemporaryAccessEscalation(BaseModel):
@@ -89,3 +104,7 @@ class TemporaryAccessGrantRead(TimestampedDTO):
     revoke_attempts: int = 0
     escalated_at: datetime | None = None
     last_error: str | None = None
+    observed_at: datetime | None = None
+    observation_id: str | None = None
+    slot_clear_since: datetime | None = None
+    slot_clear_readings: int = 0

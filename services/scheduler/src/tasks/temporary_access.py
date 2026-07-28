@@ -19,20 +19,21 @@ What "it landed" means for the revoke is the one thing that cannot be decided
 from inside this system. Between the decision and the effect stands GitHub
 Actions: it is not ours, it works asynchronously, and no amount of stopping
 writers here proves that none of them will apply the old value afterwards. So
-the grant is not closed on a successful revoke deploy. It is closed on a reading
+the grant is not closed on a successful revoke deploy. It is closed on readings
 of the environment the service is actually running with, taken from the server
-itself. Until that reading has been made, the grant stays live in REVOKING and
-the sweep keeps revoking; a late writer that puts the value back is then simply
-a disagreement between what we want and what we see, and the next cycle sees it
-and corrects it. What the system promises is therefore not "the access can never
-come back" but "the access does not outlive one reconciliation interval after
-the verdict".
+itself — and on more than one of them, taken apart over a window, because a
+single empty reading is a moment and a late dispatch lands after moments. Until
+those readings agree, the grant stays live in REVOKING and the sweep keeps
+revoking; a value that comes back is then simply a disagreement between what we
+want and what we see, and the cycle that sees it corrects it. What the system
+promises is therefore not "the access can never come back" but "the access does
+not outlive one reconciliation interval after the verdict".
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 import uuid
 
 import structlog
@@ -49,6 +50,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantDTO,
     TemporaryAccessGrantUpdate,
+    TemporaryAccessObservation,
     TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
 )
@@ -807,13 +809,17 @@ async def _settle_revoke_in_flight(
         return
 
     # The deploy is only the request. What settles the grant is the environment
-    # the service is running with, read from the server.
-    cleared = await _slot_observed_clear(api_client, redis_client, grant, log)
-    if cleared is None:
+    # the service is running with, read from the server — and read more than
+    # once, because one empty reading is a moment a late writer can still land
+    # after. The record holds the streak and decides; this reports the reading.
+    read = await _observe_running_service(api_client, redis_client, grant, log)
+    if read is None:
         # Nothing was read. Not a revocation and not a failure: the grant stays
         # live in REVOKING and the next tick asks again.
         return
-    if not cleared:
+    observation, settled = read
+
+    if observation.present:
         await _record_revoke_failure(
             api_client,
             grant,
@@ -823,43 +829,54 @@ async def _settle_revoke_in_flight(
         )
         return
 
-    await api_client.update_temporary_access_grant(
-        grant.id, TemporaryAccessGrantUpdate(status=TemporaryAccessStatus.REVOKED)
-    )
+    if settled.status is not TemporaryAccessStatus.REVOKED:
+        # Read empty, and still under reconciliation. The next readings decide;
+        # until they agree over the confirmation window the grant stays live and
+        # a value that comes back is seen.
+        log.info(
+            "temporary_access_revoke_awaiting_confirmation",
+            revoke_run_id=run.id,
+            readings=settled.slot_clear_readings,
+            clear_since=settled.slot_clear_since.isoformat() if settled.slot_clear_since else None,
+        )
+        return
+
     log.info(
         "temporary_access_revoked",
         revoke_run_id=run.id,
         reason=grant.revoke_reason.value,
         attempts=grant.revoke_attempts,
+        readings=settled.slot_clear_readings,
     )
     counts["revoked"] += 1
 
 
 def _observation_request_id(grant: TemporaryAccessGrantDTO) -> str:
-    """One question per revoke attempt, named after the attempt that asked it.
+    """One question per reading, named after the revoke attempt and the streak.
 
-    A new revoke gets a new run id, so it also gets a new question; an answer to
-    the previous attempt can never be mistaken for an answer to this one.
+    A new revoke gets a new run id, so it also gets new questions; an answer to
+    the previous attempt can never be mistaken for an answer to this one. The
+    streak length distinguishes the readings within one attempt, so confirming a
+    revoke is several separate questions rather than one answer re-read.
     """
-    return f"envobs-{grant.revoke_run_id}"
+    return f"envobs-{grant.revoke_run_id}-{grant.slot_clear_readings}"
 
 
-async def _slot_observed_clear(
+async def _observe_running_service(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
     grant: TemporaryAccessGrantDTO,
     log: structlog.stdlib.BoundLogger,
-) -> bool | None:
-    """Whether the running service was read and no longer carries the value.
+) -> tuple[EnvObservationResult, TemporaryAccessGrantDTO] | None:
+    """Take one reading of the running service and record it against the grant.
 
-    Returns True when it was read and the slot is empty, False when it was read
-    and the value is still there, and None when there is no reading — the
-    request has only just gone out, or the answer is that the service could not
-    be reached.
+    Returns the reading and the grant as the record left it, or None when there
+    is no reading — the request has only just gone out, the window since the last
+    one has not passed, or the answer is that the service could not be reached.
 
-    None is deliberately not a third kind of failure. A channel that is down
-    says nothing about the access, so the caller neither closes the grant nor
-    counts an attempt against it; it asks again next tick.
+    None is deliberately not a third kind of failure. A channel that is down says
+    nothing about the access, so the caller neither closes the grant nor counts
+    an attempt against it; it asks again next tick.
     """
     request_id = _observation_request_id(grant)
     observation = await _read_observation(redis_client, request_id)
@@ -867,18 +884,24 @@ async def _slot_observed_clear(
         await _ask_for_observation(api_client, redis_client, grant, request_id, log)
         return None
 
+    # The answer has been taken, so the next reading is a fresh question rather
+    # than this one read twice. What paces the next question is the moment this
+    # reading is stamped on the record.
+    await redis_client.redis.delete(env_observation_result_key(request_id))
+
     if observation.outcome is EnvObservationOutcome.UNREACHABLE:
         log.warning(
             "temporary_access_observation_unreachable",
             request_id=request_id,
             detail=observation.detail,
         )
-        # Drop the answer and the marker so the next tick asks the same question
-        # again rather than re-reading a silence.
-        await redis_client.redis.delete(
-            env_observation_result_key(request_id), env_observation_pending_key(request_id)
-        )
         await _report_unobservable_grant(api_client, grant, observation.detail, log)
+        return None
+
+    target = await _observation_target(api_client, grant, log)
+    if target is None:
+        # The application went away between asking and answering. The reading
+        # cannot be attributed to a deployment, so it is not evidence.
         return None
 
     log.info(
@@ -887,7 +910,19 @@ async def _slot_observed_clear(
         present=observation.present,
         containers=observation.containers,
     )
-    return not observation.present
+    settled = await api_client.record_temporary_access_observation(
+        grant.id,
+        TemporaryAccessObservation(
+            observation_id=request_id,
+            application_id=target.application_id,
+            server_handle=target.server_handle,
+            service_slug=target.service_slug,
+            env_key=grant.env_key,
+            present=observation.present,
+            containers=observation.containers,
+        ),
+    )
+    return observation, settled
 
 
 async def _read_observation(
@@ -908,14 +943,20 @@ async def _ask_for_observation(
 ) -> None:
     """Ask the server what the service is running with, once per window.
 
-    The sweep runs far more often than a playbook takes, so the marker is what
-    keeps one question from becoming a queue of them. Losing the marker costs a
-    repeated reading, and a reading changes nothing.
+    Two things keep one question from becoming a queue of them. The marker stops
+    a question being asked twice while the playbook is still running; the moment
+    of the last recorded reading stops the next question following the previous
+    answer immediately. Losing either costs a repeated reading, and a reading
+    changes nothing.
     """
+    if grant.observed_at is not None and _age_minutes(grant.observed_at) < (
+        _observation_window_minutes()
+    ):
+        return
+
     target = await _observation_target(api_client, grant, log)
     if target is None:
         return
-    server_handle, service_slug = target
 
     asked = await redis_client.redis.set(
         env_observation_pending_key(request_id),
@@ -931,40 +972,74 @@ async def _ask_for_observation(
         EnvObservationRequest(
             request_id=request_id,
             project_id=grant.project_id,
-            server_handle=server_handle,
-            service_slug=service_slug,
+            server_handle=target.server_handle,
+            service_slug=target.service_slug,
             env_key=grant.env_key,
         ),
     )
     log.info(
         "temporary_access_observation_requested",
         request_id=request_id,
-        server_handle=server_handle,
+        server_handle=target.server_handle,
+        application_id=target.application_id,
     )
+
+
+class _ObservationTarget(NamedTuple):
+    """The one deployment whose environment answers this grant's question."""
+
+    application_id: int
+    server_handle: str
+    service_slug: str
 
 
 async def _observation_target(
     api_client: SchedulerAPIClient,
     grant: TemporaryAccessGrantDTO,
     log: structlog.stdlib.BoundLogger,
-) -> tuple[str, str] | None:
-    """Which server and which deployed service to read, or None if unknowable.
+) -> _ObservationTarget | None:
+    """Which deployment to read, or None if there is nothing readable.
+
+    The application is the one the QA run tested, named by the handoff the grant
+    carries. Applications are unique per (repository, server), so a project can
+    be running on several machines at once; reading whichever one comes back
+    first would let an empty slot on an unrelated deployment close a grant whose
+    bot still admits the test identity.
 
     An application that is not running is not an environment that can be read,
-    and neither is a project with no application at all. Both are the observation
-    channel being unavailable rather than access that is gone.
+    and neither is one that is gone. Both are the observation channel being
+    unavailable rather than access that is gone.
     """
-    applications = await api_client.get_applications_by_project(grant.project_id)
-    running = [app for app in applications if app.status is ApplicationStatus.RUNNING]
-    if not running:
-        log.warning("temporary_access_observation_no_application")
+    application_id = grant.qa_message.application_id
+    application = await api_client.get_application_if_missing_returns_none(application_id)
+    if application is None:
+        log.warning("temporary_access_observation_no_application", application_id=application_id)
+        return None
+
+    repositories = await api_client.get_repositories(grant.project_id)
+    if application.repo_id not in {repository.id for repository in repositories}:
+        # The handoff names a deployment of another project. Nothing about this
+        # grant can be read from it, and quietly reading it anyway is how a
+        # grant gets closed on the wrong machine.
+        raise ValueError(
+            f"grant {grant.id} names application {application_id}, "
+            f"which belongs to repository {application.repo_id} outside project "
+            f"{grant.project_id}"
+        )
+
+    if application.status is not ApplicationStatus.RUNNING:
+        log.warning(
+            "temporary_access_observation_application_not_running",
+            application_id=application_id,
+            application_status=application.status.value,
+        )
         return None
 
     project = await api_client.get_project(grant.project_id)
     if project is None:
         log.warning("temporary_access_observation_no_project")
         return None
-    return running[0].server_handle, project.slug
+    return _ObservationTarget(application.id, application.server_handle, project.slug)
 
 
 async def _report_unobservable_grant(

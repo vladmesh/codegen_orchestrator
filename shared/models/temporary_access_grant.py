@@ -64,6 +64,16 @@ class TemporaryAccessGrant(Base):
     escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # What the running service was last seen holding. The grant is closed from
+    # here and nowhere else: a deploy is a request, and only a reading of the
+    # server says the value is gone.
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    slot_clear_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    slot_clear_readings: Mapped[int] = mapped_column(Integer, default=0)
+
     def __repr__(self) -> str:
         return (
             f"<TemporaryAccessGrant(id={self.id}, project={self.project_id}, "

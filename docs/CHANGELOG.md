@@ -154,6 +154,23 @@
   one reconciliation interval after the verdict", and the fence, the withdrawal and the supersede
   are what shorten that window rather than what proves it closed.
 
+  Three things that criterion needed before it was one. `PATCH /api/temporary-access-grants/{id}`
+  still accepted `status=revoked` from any internal caller, which is the whole claim the system
+  cannot make, so it now refuses it (422) and `POST /api/temporary-access-grants/{id}/observation`
+  is the only way to that status: it takes a `TemporaryAccessObservation` and the record decides.
+  The reading also has to be of the right machine — applications are unique per
+  `(repo_id, server_handle)`, so a project can run on several servers, and reading whichever one
+  came back first let an empty slot elsewhere close a grant whose bot still admitted the test
+  identity. The observation names its `application_id` and the record refuses one that is not the
+  `application_id` in the grant's stored `QAMessage`. And a single empty reading ended
+  reconciliation for good, which left a delayed dispatch nothing to be caught by: the grant now
+  stays live until `REVOKE_CONFIRMATION_READINGS` readings taken over
+  `REVOKE_CONFIRMATION_WINDOW` agree, a reading that finds the value again restarts the streak and
+  revokes, and that window is the reconciliation interval the promise is written in. The grant
+  record carries the readings (`observed_at`, `observation_id`, `slot_clear_since`,
+  `slot_clear_readings`), so a reading delivered twice counts once and the streak survives a
+  restart.
+
   And the run outcome rule was still last-writer-wins: `PATCH /api/runs/{id}` read the row without
   a lock and decided from that stale copy, as did the cleanup escalation. A QA worker's `passed`
   and the sweep's `qa_access_expired` or `qa_cleanup_failed` both read a running run, both passed

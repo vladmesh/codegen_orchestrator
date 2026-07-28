@@ -34,7 +34,10 @@ import pytest
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID, TEST_IDENTITY_ENV_KEY
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlockerCategory
-from shared.contracts.dto.temporary_access import TemporaryAccessStatus
+from shared.contracts.dto.temporary_access import (
+    REVOKE_CONFIRMATION_WINDOW,
+    TemporaryAccessStatus,
+)
 from shared.telegram_access_probe import build_access_probe_command, classify_access_probe
 
 # The QA runner reads its Telethon credentials from the QA user's home; the probe
@@ -42,7 +45,9 @@ from shared.telegram_access_probe import build_access_probe_command, classify_ac
 TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
 
 GRANT_TIMEOUT = 900  # a real deploy of the pinned commit, plus the sweep's cycle
-REVOKE_TIMEOUT = 900
+# The same, plus the confirmation window: the record is closed by readings of the
+# running service that agree over that span, not by the deploy that asked.
+REVOKE_TIMEOUT = 900 + int(REVOKE_CONFIRMATION_WINDOW.total_seconds())
 POLL_INTERVAL = 5
 
 PROJECT_ID = os.getenv("BOT_ACCESS_PROJECT_ID", "")

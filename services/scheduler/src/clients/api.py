@@ -23,6 +23,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantDTO,
     TemporaryAccessGrantUpdate,
+    TemporaryAccessObservation,
 )
 from shared.contracts.dto.user import UserDTO
 from shared.log_config.correlation import get_correlation_id
@@ -323,6 +324,24 @@ class SchedulerAPIClient:
         )
         return TemporaryAccessGrantDTO.model_validate(resp.json())
 
+    async def record_temporary_access_observation(
+        self, grant_id: str, observation: TemporaryAccessObservation
+    ) -> TemporaryAccessGrantDTO:
+        """Hand the record a reading of the running service and read back what it means.
+
+        The caller does not decide whether the grant is closed. It reports what
+        the server showed; the record holds the streak of agreeing readings and
+        the window they have to span, and answers with the grant as it now
+        stands. That way one clear reading cannot end reconciliation, and a
+        reading that finds the value again puts the streak back to the start.
+        """
+        resp = await self._request(
+            "POST",
+            f"temporary-access-grants/{grant_id}/observation",
+            json=observation.model_dump(mode="json"),
+        )
+        return TemporaryAccessGrantDTO.model_validate(resp.json())
+
     async def update_temporary_access_grant(
         self, grant_id: str, update: TemporaryAccessGrantUpdate
     ) -> TemporaryAccessGrantDTO:
@@ -520,6 +539,23 @@ class SchedulerAPIClient:
             params["status"] = status
         resp = await self._request("GET", "applications/", params=params)
         return [ApplicationDTO.model_validate(a) for a in resp.json()]
+
+    async def get_application_if_missing_returns_none(
+        self, application_id: int
+    ) -> ApplicationDTO | None:
+        """One application by id, or None if the record is gone.
+
+        A caller that has to read the machine a particular deployment runs on
+        asks for it by id rather than picking one of the project's. Missing is
+        an answer here: the deployment it names is not there to be read.
+        """
+        try:
+            resp = await self._request("GET", f"applications/{application_id}")
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
+        return ApplicationDTO.model_validate(resp.json())
 
     async def update_application(self, app_id: int, fields: dict) -> ApplicationDTO:
         """Update application fields (status, health metrics, etc.)."""

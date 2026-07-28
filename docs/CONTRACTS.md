@@ -1081,6 +1081,25 @@ accepted anyway, or a hand-run deploy — is then simply a disagreement between 
 and what is observed, and the next cycle sees it and corrects it. A reading that could not be taken
 settles nothing either way: the grant stays live, and the sweep asks again.
 
+Three rules make that hold rather than merely describe it:
+
+- **No caller may declare a grant revoked.** `PATCH /api/temporary-access-grants/{id}` refuses
+  `status=revoked` outright (422). The only path to that status is
+  `POST /api/temporary-access-grants/{id}/observation`, which takes a `TemporaryAccessObservation`
+  and decides from the record. A grant closed on a caller's belief would be exactly the claim the
+  system cannot make.
+- **The reading must be of the deployment QA tested.** Applications are unique per
+  `(repo_id, server_handle)`, so a project can be running on several servers at once. The
+  observation names its `application_id`, and the record refuses one that is not the
+  `application_id` carried in the grant's stored `QAMessage`. An empty slot on another machine says
+  nothing about the bot the test identity was admitted by.
+- **One empty reading closes nothing.** A reading is a moment, and a dispatch already in flight
+  lands after moments. The grant stays under reconciliation until `REVOKE_CONFIRMATION_READINGS`
+  readings taken over `REVOKE_CONFIRMATION_WINDOW` (both in
+  `shared/contracts/dto/temporary_access.py`) have agreed. A reading that finds the value again
+  restarts the streak and the sweep revokes again. That window *is* the reconciliation interval the
+  promise above is written in.
+
 Cancelling runs on Actions, withdrawing a queued dispatch and superseding a dead claim all remain.
 None of them is proof that the access is gone; they shorten the window in which the old value can
 be written back. What says it is gone is the reading.

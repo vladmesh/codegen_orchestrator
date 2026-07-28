@@ -50,14 +50,18 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   `POST /api/temporary-access-grants/{id}/escalate` records the `qa_cleanup_failed` outcome and
   the grant's escalation stamp in one transaction, even over a `passed` the QA worker already
   wrote. Without that a run the worker had passed could never be told the access was stuck.
-  What closes a grant is not any of that machinery but a reading of the deployed service: the sweep
+  What closes a grant is not any of that machinery but readings of the deployed service: the sweep
   asks `infra-service` over `env-observation:queue` what the running containers actually carry, and
-  writes `revoked` only when the slot is empty. Until then the grant stays live in `revoking` and
-  the sweep repeats the revoke, so a value applied behind its back is corrected by the next cycle,
-  an unreadable server settles nothing, and a disagreement that outlives the grant's TTL or its
-  revoke attempts fails the QA run naming the observed state and hands the story to a human. The
-  guarantee this buys is bounded and stated that way: the access does not outlive one
-  reconciliation interval after the verdict.
+  writes `revoked` only when the slot has read empty on the application the QA run was tested on,
+  more than once, over the confirmation window. Until then the grant stays live in `revoking` and
+  the sweep repeats the revoke, so a value applied behind its back — including a dispatch that
+  lands after an empty reading was taken — is corrected by the next cycle, an unreadable server
+  settles nothing, and a disagreement that outlives the grant's TTL or its revoke attempts fails
+  the QA run naming the observed state and hands the story to a human. No caller can declare the
+  access gone: `PATCH` refuses `status=revoked` and only
+  `POST /api/temporary-access-grants/{id}/observation` reaches it. The guarantee this buys is
+  bounded and stated that way: the access does not outlive one reconciliation interval after the
+  verdict.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

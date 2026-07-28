@@ -14,7 +14,7 @@ lagging grant deploy can never land after the access was already taken back.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -22,6 +22,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.git_ref import CommitSha
 from shared.contracts.queues.qa import QAMessage
+
+# A reading of the running service is a moment, not a state. The deploy that
+# clears the value is handed to GitHub Actions, which is asynchronous and not
+# ours, so a writer carrying the old value can still land after an empty reading
+# was taken. One empty reading therefore closes nothing; several taken apart over
+# this span do. This is the span the guarantee is written in: the access does not
+# outlive one reconciliation interval after the verdict.
+REVOKE_CONFIRMATION_WINDOW = timedelta(minutes=10)
+REVOKE_CONFIRMATION_READINGS = 2
 
 
 class TemporaryAccessStatus(StrEnum):
@@ -85,7 +94,14 @@ class TemporaryAccessGrantCreate(BaseModel):
 
 
 class TemporaryAccessGrantUpdate(BaseModel):
-    """Fields the reconciler moves as a grant settles."""
+    """Fields the reconciler moves as a grant settles.
+
+    Every status except REVOKED. Asking for REVOKED here is asking for the record
+    to say the access is gone because a caller believes it, and no caller can:
+    what the deployed service holds is read from the server, and the reading is
+    what closes the grant. So the only way in is
+    ``POST /temporary-access-grants/{id}/observation``, and this refuses.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -97,6 +113,39 @@ class TemporaryAccessGrantUpdate(BaseModel):
     revoke_attempts: int | None = None
     escalated: bool | None = None
     last_error: str | None = None
+
+    @model_validator(mode="after")
+    def _revoked_is_not_a_field_to_set(self) -> TemporaryAccessGrantUpdate:
+        if self.status is TemporaryAccessStatus.REVOKED:
+            raise ValueError(
+                "a grant is revoked by an observation of the running service, not by an update"
+            )
+        return self
+
+
+class TemporaryAccessObservation(BaseModel):
+    """One reading of the environment a deployed service is actually running with.
+
+    This is the only evidence that closes a grant. It names which application was
+    read, because a project may run on several servers and a clear slot on the
+    wrong one says nothing about the bot the QA run tested.
+
+    ``containers`` is at least one by contract: a service with nothing running has
+    no environment to read, and the reading channel reports that as unreachable
+    rather than as an empty slot.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Names this reading, so a caller repeating one it could not confirm is
+    # counted once rather than twice towards the confirmation.
+    observation_id: str = Field(min_length=1)
+    application_id: int
+    server_handle: str = Field(min_length=1)
+    service_slug: str = Field(min_length=1)
+    env_key: str = Field(min_length=1)
+    present: bool
+    containers: int = Field(ge=1)
 
 
 class TemporaryAccessGrantDTO(TimestampedDTO):
@@ -122,11 +171,21 @@ class TemporaryAccessGrantDTO(TimestampedDTO):
     # story no longer wait for them.
     escalated_at: datetime | None = None
     last_error: str | None = None
+    # The last reading of the running service, and which one it was. The moment
+    # paces the next question; the id makes a repeated answer count once.
+    observed_at: datetime | None = None
+    observation_id: str | None = None
+    # When the readings started agreeing the slot is empty, and how many have
+    # agreed since. A reading that finds the value again puts both back to the
+    # start, because the streak is what the confirmation is made of.
+    slot_clear_since: datetime | None = None
+    slot_clear_readings: int = 0
 
     @model_validator(mode="after")
     def _revoked_grant_carries_its_evidence(self) -> TemporaryAccessGrantDTO:
-        if self.status is TemporaryAccessStatus.REVOKED and (
-            self.revoked_at is None or self.revoke_reason is None
-        ):
-            raise ValueError("a revoked grant must carry revoked_at and revoke_reason")
+        if self.status is TemporaryAccessStatus.REVOKED:
+            if self.revoked_at is None or self.revoke_reason is None:
+                raise ValueError("a revoked grant must carry revoked_at and revoke_reason")
+            if self.observation_id is None:
+                raise ValueError("a revoked grant must name the reading that closed it")
         return self

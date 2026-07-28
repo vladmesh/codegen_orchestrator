@@ -46,7 +46,9 @@ _CONFIG = {
     "supervisor.temporary_access_ttl_minutes": 0,
     "supervisor.temporary_access_revoke_stale_minutes": 0,
     "supervisor.temporary_access_max_revoke_attempts": _MAX_REVOKE_ATTEMPTS,
-    "supervisor.temporary_access_observation_window_minutes": 5,
+    # Zero here too: the pacing between readings is not what these tests are
+    # about, and waiting one out would only make them slow.
+    "supervisor.temporary_access_observation_window_minutes": 0,
     "supervisor.temporary_access_unrevoked_ttl_minutes": 0,
 }
 
@@ -144,7 +146,13 @@ async def _run(api_client, project_id: str, run_id: str, run_type: str) -> str:
     return run_id
 
 
-async def _grant(api_client, project_id: str, qa_run_id: str, grant_run_id: str):
+async def _grant(
+    api_client,
+    project_id: str,
+    qa_run_id: str,
+    grant_run_id: str,
+    application_id: int = 42,
+):
     return await api_client.create_temporary_access_grant(
         TemporaryAccessGrantCreate(
             id=f"tempaccess-{qa_run_id}",
@@ -159,7 +167,9 @@ async def _grant(api_client, project_id: str, qa_run_id: str, grant_run_id: str)
                 project_id=project_id,
                 user_id="",
                 deployed_url="https://example.com",
-                application_id=42,
+                # The deployment QA tested the borrowed identity on. The reading
+                # that closes this grant has to be of that machine and no other.
+                application_id=application_id,
                 acceptance_criteria="the bot answers /start",
                 run_id=qa_run_id,
             ),
@@ -291,8 +301,8 @@ async def test_a_successful_revoke_deploy_is_not_yet_a_revocation(api_client, re
     """
     from src.tasks.temporary_access import supervise_temporary_access
 
-    project_id = await _deployed_project(api_client)
-    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id)
+    project_id, application_id = await _deployed_project(api_client)
+    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id, application_id)
 
     await supervise_temporary_access(api_client, redis_client)
 
@@ -301,7 +311,7 @@ async def test_a_successful_revoke_deploy_is_not_yet_a_revocation(api_client, re
     assert held.status is TemporaryAccessStatus.REVOKING
 
     asked = redis_client.observations(project_id)
-    assert [request.request_id for request in asked] == [f"envobs-{revoke_run_id}"]
+    assert [request.request_id for request in asked] == [_question(revoke_run_id)]
     assert asked[0].env_key == ENV_KEY
 
 
@@ -317,9 +327,9 @@ async def test_a_reading_that_still_shows_the_value_reaches_a_human(
     """
     from src.tasks.temporary_access import supervise_temporary_access
 
-    project_id = await _deployed_project(api_client)
-    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id)
-    redis_client.answer(f"envobs-{revoke_run_id}", _observed(revoke_run_id, present=True))
+    project_id, application_id = await _deployed_project(api_client)
+    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id, application_id)
+    redis_client.answer(_question(revoke_run_id), _observed(_question(revoke_run_id), present=True))
 
     with patch("src.tasks.temporary_access.notify_admins_best_effort", AsyncMock()):
         await supervise_temporary_access(api_client, redis_client)
@@ -335,26 +345,78 @@ async def test_a_reading_that_still_shows_the_value_reaches_a_human(
 
 
 @pytest.mark.asyncio
-async def test_only_a_reading_that_comes_back_empty_closes_the_grant(
-    api_client, redis_client, config
-):
-    """The one way to REVOKED: the environment of the running service says so."""
+async def test_one_empty_reading_does_not_end_the_reconciliation(api_client, redis_client, config):
+    """The reviewed hole: a single empty reading closed the grant for good.
+
+    A dispatch already on its way to GitHub Actions lands after a reading was
+    taken, so a grant closed on the first empty one has nothing left watching it.
+    The record keeps it live, the sweep asks a fresh question, and a value that
+    comes back is somebody's problem again.
+    """
     from src.tasks.temporary_access import supervise_temporary_access
 
-    project_id = await _deployed_project(api_client)
-    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id)
-    redis_client.answer(f"envobs-{revoke_run_id}", _observed(revoke_run_id, present=False))
+    project_id, application_id = await _deployed_project(api_client)
+    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id, application_id)
+    redis_client.answer(
+        _question(revoke_run_id), _observed(_question(revoke_run_id), present=False)
+    )
 
     await supervise_temporary_access(api_client, redis_client)
 
-    assert await api_client.get_live_temporary_access_grant_for_run(qa_run_id) is None
-    settled = await api_client._request("GET", f"temporary-access-grants/tempaccess-{qa_run_id}")
-    assert settled.json()["status"] == TemporaryAccessStatus.REVOKED.value
+    held = await api_client.get_live_temporary_access_grant_for_run(qa_run_id)
+    assert held is not None, "one reading is a moment, not a confirmed state"
+    assert held.status is TemporaryAccessStatus.REVOKING
+    assert held.slot_clear_readings == 1
+    assert held.observation_id == _question(revoke_run_id)
+
+    # And the next sweep asks its own question rather than re-reading that one.
+    await supervise_temporary_access(api_client, redis_client)
+    assert [request.request_id for request in redis_client.observations(project_id)] == [
+        _question(revoke_run_id, readings=1)
+    ]
 
 
-def _observed(revoke_run_id: str, *, present: bool) -> EnvObservationResult:
+@pytest.mark.asyncio
+async def test_a_value_that_comes_back_after_an_empty_reading_is_revoked_again(
+    api_client, redis_client, config
+):
+    """The late writer the guarantee is written against, against a real record.
+
+    The first reading found the slot empty. Because that did not close the grant,
+    the second reading has something to disagree with, and the disagreement is
+    acted on.
+    """
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    project_id, application_id = await _deployed_project(api_client)
+    qa_run_id, revoke_run_id = await _grant_being_revoked(api_client, project_id, application_id)
+    redis_client.answer(
+        _question(revoke_run_id), _observed(_question(revoke_run_id), present=False)
+    )
+    await supervise_temporary_access(api_client, redis_client)
+
+    # Something applied the old value after the empty reading was taken.
+    redis_client.answer(
+        _question(revoke_run_id, readings=1),
+        _observed(_question(revoke_run_id, readings=1), present=True),
+    )
+    with patch("src.tasks.temporary_access.notify_admins_best_effort", AsyncMock()):
+        await supervise_temporary_access(api_client, redis_client)
+
+    caught = await api_client.get_live_temporary_access_grant_for_run(qa_run_id)
+    assert caught is not None
+    assert caught.slot_clear_readings == 0
+    assert ENV_KEY in caught.last_error
+
+
+def _question(revoke_run_id: str, readings: int = 0) -> str:
+    """The id of one reading: which revoke attempt asked, and which reading it is."""
+    return f"envobs-{revoke_run_id}-{readings}"
+
+
+def _observed(request_id: str, *, present: bool) -> EnvObservationResult:
     return EnvObservationResult(
-        request_id=f"envobs-{revoke_run_id}",
+        request_id=request_id,
         outcome=EnvObservationOutcome.OBSERVED,
         env_key=ENV_KEY,
         present=present,
@@ -362,7 +424,7 @@ def _observed(revoke_run_id: str, *, present: bool) -> EnvObservationResult:
     )
 
 
-async def _deployed_project(api_client) -> str:
+async def _deployed_project(api_client) -> tuple[str, int]:
     """A project with something running, which is what can be read back."""
     project_id = await _project(api_client)
     handle = f"vps-{uuid.uuid4().hex[:8]}"
@@ -380,7 +442,7 @@ async def _deployed_project(api_client) -> str:
             "git_url": f"https://github.com/test-org/repo-{project_id[:8]}.git",
         },
     )
-    await api_client._request(
+    application = await api_client._request(
         "POST",
         "applications/",
         json={
@@ -390,16 +452,22 @@ async def _deployed_project(api_client) -> str:
             "status": "running",
         },
     )
-    return project_id
+    return project_id, application.json()["id"]
 
 
-async def _grant_being_revoked(api_client, project_id: str) -> tuple[str, str]:
+async def _grant_being_revoked(api_client, project_id: str, application_id: int) -> tuple[str, str]:
     """A grant whose revoke deploy is done and reported success."""
     qa_run_id = await _run(api_client, project_id, f"qa-{uuid.uuid4().hex[:8]}", "qa")
     revoke_run_id = await _run(
         api_client, project_id, f"deploy-revoke-{uuid.uuid4().hex[:8]}", "deploy"
     )
-    grant = await _grant(api_client, project_id, qa_run_id, f"deploy-grant-{uuid.uuid4().hex[:8]}")
+    grant = await _grant(
+        api_client,
+        project_id,
+        qa_run_id,
+        f"deploy-grant-{uuid.uuid4().hex[:8]}",
+        application_id=application_id,
+    )
     await api_client.update_run(
         revoke_run_id,
         {"status": RunStatus.COMPLETED.value, "result": {"deploy_outcome": "success"}},

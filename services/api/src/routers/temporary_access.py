@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.temporary_access import (
     LIVE_TEMPORARY_ACCESS_STATUSES,
+    REVOKE_CONFIRMATION_READINGS,
+    REVOKE_CONFIRMATION_WINDOW,
+    TemporaryAccessObservation,
     TemporaryAccessStatus,
 )
 from shared.models import Run, TemporaryAccessGrant
@@ -187,6 +190,107 @@ async def escalate_grant(
     return grant
 
 
+@router.post("/{grant_id}/observation", response_model=TemporaryAccessGrantRead)
+async def record_observation(
+    grant_id: str,
+    observation: TemporaryAccessObservation,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> TemporaryAccessGrant:
+    """Record what the running service was seen holding, and close the grant on it.
+
+    This is the only way to REVOKED. A deploy that cleared the value is a request
+    accepted by GitHub Actions, not an effect: the workflow runs when it runs, and
+    a dispatch already on its way can write the identity back afterwards. So the
+    record follows the server rather than the request, and this is where the
+    server gets a say.
+
+    The reading has to be of the right machine. A project may run on several
+    servers, and the QA run borrowed the identity on exactly one application —
+    the one its handoff names. A clear slot somewhere else says nothing about the
+    bot that was tested, so a reading of another application is refused.
+
+    One clear reading still closes nothing. It is a moment, and a late writer
+    lands after moments; so the grant stays under reconciliation, being read
+    again, until enough readings taken over ``REVOKE_CONFIRMATION_WINDOW`` have
+    agreed. A reading that finds the value again puts the streak back to the
+    start, whether the value was never removed or was written back by something
+    outside — from here the two are the same disagreement and get the same
+    answer, which is that the access is still out.
+
+    Repeating one reading is not two: the id it carries is stored, and an
+    observation the caller already delivered is returned as the no-op it is.
+    """
+    grant = await _load(grant_id, db, lock=True)
+
+    if observation.env_key != grant.env_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Grant {grant_id} holds {grant.env_key}; the reading is of {observation.env_key}"
+            ),
+        )
+    expected_application = grant.qa_message["application_id"]
+    if observation.application_id != expected_application:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Grant {grant_id} was tested on application {expected_application}; "
+                f"the reading is of application {observation.application_id}"
+            ),
+        )
+
+    if grant.status != TemporaryAccessStatus.REVOKING.value:
+        # Nothing to settle. A grant still holding the access on purpose, or one
+        # already closed, is not waiting for a reading, and a reading that finds
+        # the value on a closed grant is a repair the sweep must decide, not
+        # something to fold into this record silently.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Temporary access grant {grant_id} is {grant.status}; "
+                "only a grant being revoked is settled by a reading"
+            ),
+        )
+
+    if grant.observation_id == observation.observation_id:
+        return grant
+
+    now = datetime.now(UTC)
+    grant.observation_id = observation.observation_id
+    grant.observed_at = now
+
+    if observation.present:
+        grant.slot_clear_since = None
+        grant.slot_clear_readings = 0
+        await db.commit()
+        await db.refresh(grant)
+        return grant
+
+    if grant.slot_clear_since is None:
+        grant.slot_clear_since = now
+        grant.slot_clear_readings = 1
+    else:
+        grant.slot_clear_readings += 1
+
+    confirmed = (
+        grant.slot_clear_readings >= REVOKE_CONFIRMATION_READINGS
+        and now - grant.slot_clear_since >= REVOKE_CONFIRMATION_WINDOW
+    )
+    if confirmed:
+        if grant.revoke_reason is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Temporary access grant {grant_id} is revoking without a reason",
+            )
+        grant.status = TemporaryAccessStatus.REVOKED.value
+        grant.revoked_at = now
+
+    await db.commit()
+    await db.refresh(grant)
+    return grant
+
+
 @router.patch("/{grant_id}", response_model=TemporaryAccessGrantRead)
 async def update_grant(
     grant_id: str,
@@ -194,32 +298,23 @@ async def update_grant(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> TemporaryAccessGrant:
-    """Move a grant along, or confirm it is already where the caller wants it.
+    """Move a grant along its lifecycle, short of closing it.
 
-    Revoking an already revoked grant is the expected outcome of a retry, not an
-    error: the caller asked for access to be gone and it is gone. Any other write
-    to a revoked grant is refused, because the record is terminal evidence.
+    A revoked grant is terminal evidence and nothing here reopens it. Neither can
+    anything here produce it: the schema refuses REVOKED, because that status is
+    a statement about the deployed service that only a reading of the server can
+    make. See ``record_observation``.
     """
     grant = await _load(grant_id, db, lock=True)
     fields = update.model_dump(exclude_unset=True)
 
     if grant.status == TemporaryAccessStatus.REVOKED.value:
-        if fields.get("status") is TemporaryAccessStatus.REVOKED:
-            return grant
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Temporary access grant {grant_id} is already revoked",
         )
 
     new_status = fields.pop("status", None)
-    if new_status is TemporaryAccessStatus.REVOKED:
-        reason = fields.get("revoke_reason") or grant.revoke_reason
-        if reason is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="revoke_reason is required to revoke a grant",
-            )
-        grant.revoked_at = datetime.now(UTC)
 
     # Both moments are stamped once. The sweep re-asks after a crash it cannot
     # remember, and the first answer is the one that happened.

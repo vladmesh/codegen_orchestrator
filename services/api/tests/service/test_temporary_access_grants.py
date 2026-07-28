@@ -1,22 +1,28 @@
 """The grant record is the thing revocation is driven from, so it must hold.
 
 One live grant per contract slot, a write that survives being repeated, and a
-revoke that is not an error the second time.
+record that closes only on readings of the server the access was handed out on.
 """
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 import uuid
 
 from fastapi import status
 from httpx import AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from shared.contracts.dto.temporary_access import (
+    REVOKE_CONFIRMATION_READINGS,
+    REVOKE_CONFIRMATION_WINDOW,
+)
 from shared.models import TemporaryAccessGrant
 
 HEAD_SHA = "b" * 40
 ENV_KEY = "TG_BOT_TEST_TELEGRAM_ID"
+APPLICATION_ID = 42
 
 
 async def _project_with_run(async_client: AsyncClient) -> tuple[str, str]:
@@ -69,6 +75,65 @@ def _grant_payload(project_id: str, run_id: str, **overrides) -> dict:
     return payload
 
 
+def _reading(present: bool, *, observation_id: str, **overrides) -> dict:
+    """One reading of the running service, as the reconciler reports it."""
+    payload = {
+        "observation_id": observation_id,
+        "application_id": APPLICATION_ID,
+        "server_handle": "vps-1",
+        "service_slug": "palindrome-bot",
+        "env_key": ENV_KEY,
+        "present": present,
+        "containers": 2,
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _start_revoking(async_client: AsyncClient, grant_id: str) -> None:
+    await async_client.patch(
+        f"/api/temporary-access-grants/{grant_id}",
+        json={
+            "status": "revoking",
+            "revoke_reason": "run_terminal",
+            "revoke_run_id": "deploy-revoke-1",
+        },
+    )
+
+
+async def _age_the_clear_streak(db_engine, grant_id: str) -> None:
+    """Put the first empty reading far enough back for the window to have passed.
+
+    The confirmation window is real time, and a test must not wait it out.
+    """
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as session:
+        await session.execute(
+            update(TemporaryAccessGrant)
+            .where(TemporaryAccessGrant.id == grant_id)
+            .values(slot_clear_since=datetime.now(UTC) - REVOKE_CONFIRMATION_WINDOW - timedelta(1))
+        )
+        await session.commit()
+
+
+async def _revoke_by_observation(async_client: AsyncClient, db_engine, grant_id: str):
+    """Take a grant to revoked the only way there is: readings that agree."""
+    await _start_revoking(async_client, grant_id)
+    for reading in range(REVOKE_CONFIRMATION_READINGS - 1):
+        answer = await async_client.post(
+            f"/api/temporary-access-grants/{grant_id}/observation",
+            json=_reading(False, observation_id=f"envobs-deploy-revoke-1-{reading}"),
+        )
+        assert answer.status_code == status.HTTP_200_OK
+    await _age_the_clear_streak(db_engine, grant_id)
+    return await async_client.post(
+        f"/api/temporary-access-grants/{grant_id}/observation",
+        json=_reading(
+            False, observation_id=f"envobs-deploy-revoke-1-{REVOKE_CONFIRMATION_READINGS - 1}"
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_grant_survives_being_written_twice(async_client: AsyncClient):
     """A caller that crashed after writing must be able to write again."""
@@ -116,34 +181,150 @@ async def test_one_live_grant_per_contract_slot(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_revoking_twice_is_not_an_error(async_client: AsyncClient):
-    """A retry of a revoke that already landed asks for a state that is true."""
+async def test_nothing_may_declare_a_grant_revoked(async_client: AsyncClient):
+    """The hard invariant: no caller can assert what the deployed service holds.
+
+    Between the deploy that clears the value and the running service stands
+    GitHub Actions, so a caller saying "revoked" is saying it believes an effect
+    it cannot see. The record only accepts readings of the server.
+    """
     project_id, run_id = await _project_with_run(async_client)
     payload = _grant_payload(project_id, run_id)
     await async_client.post("/api/temporary-access-grants/", json=payload)
     grant_url = f"/api/temporary-access-grants/{payload['id']}"
 
-    first = await async_client.patch(
+    declared = await async_client.patch(
         grant_url, json={"status": "revoked", "revoke_reason": "run_terminal"}
     )
-    assert first.status_code == status.HTTP_200_OK
-    assert first.json()["revoked_at"] is not None
 
-    second = await async_client.patch(grant_url, json={"status": "revoked"})
-    assert second.status_code == status.HTTP_200_OK
-    assert second.json()["revoked_at"] == first.json()["revoked_at"]
+    assert declared.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    stored = await async_client.get(grant_url)
+    assert stored.json()["status"] == "granting"
+    assert stored.json()["revoked_at"] is None
+
+    listed = await async_client.get(
+        "/api/temporary-access-grants/", params={"live": "true", "project_id": project_id}
+    )
+    assert payload["id"] in [row["id"] for row in listed.json()]
 
 
 @pytest.mark.asyncio
-async def test_slot_is_free_again_once_the_access_is_gone(async_client: AsyncClient):
+async def test_readings_that_agree_over_the_window_close_the_grant(
+    async_client: AsyncClient, db_engine
+):
+    """The one way in: the server was read, more than once, and it stayed empty."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+
+    revoked = await _revoke_by_observation(async_client, db_engine, payload["id"])
+
+    assert revoked.status_code == status.HTTP_200_OK
+    body = revoked.json()
+    assert body["status"] == "revoked"
+    assert body["revoked_at"] is not None
+    assert body["revoke_reason"] == "run_terminal"
+    assert body["slot_clear_readings"] >= REVOKE_CONFIRMATION_READINGS
+
+
+@pytest.mark.asyncio
+async def test_one_clear_reading_does_not_end_reconciliation(async_client: AsyncClient):
+    """A reading is a moment, and a dispatch already in flight lands after moments.
+
+    So the grant stays live and readable by the sweep, which is what gives the
+    next cycle something to correct.
+    """
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    await _start_revoking(async_client, payload["id"])
+
+    answer = await async_client.post(
+        f"/api/temporary-access-grants/{payload['id']}/observation",
+        json=_reading(False, observation_id="envobs-deploy-revoke-1-0"),
+    )
+
+    assert answer.status_code == status.HTTP_200_OK
+    assert answer.json()["status"] == "revoking"
+    assert answer.json()["slot_clear_readings"] == 1
+    live = await async_client.get(
+        "/api/temporary-access-grants/", params={"live": "true", "project_id": project_id}
+    )
+    assert payload["id"] in [row["id"] for row in live.json()]
+
+
+@pytest.mark.asyncio
+async def test_a_value_seen_again_restarts_the_confirmation(async_client: AsyncClient, db_engine):
+    """A late writer during the window is caught, and the streak starts over."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    grant_url = f"/api/temporary-access-grants/{payload['id']}"
+    await _start_revoking(async_client, payload["id"])
+
+    await async_client.post(
+        f"{grant_url}/observation", json=_reading(False, observation_id="envobs-deploy-revoke-1-0")
+    )
+    await _age_the_clear_streak(db_engine, payload["id"])
+    back = await async_client.post(
+        f"{grant_url}/observation", json=_reading(True, observation_id="envobs-deploy-revoke-1-1")
+    )
+
+    assert back.json()["status"] == "revoking"
+    assert back.json()["slot_clear_readings"] == 0
+    assert back.json()["slot_clear_since"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_reading_of_another_application_is_refused(async_client: AsyncClient):
+    """A project may run on several servers; only one ran the bot QA tested."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    await _start_revoking(async_client, payload["id"])
+
+    elsewhere = await async_client.post(
+        f"/api/temporary-access-grants/{payload['id']}/observation",
+        json=_reading(
+            False, observation_id="envobs-deploy-revoke-1-0", application_id=APPLICATION_ID + 1
+        ),
+    )
+
+    assert elsewhere.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    stored = await async_client.get(f"/api/temporary-access-grants/{payload['id']}")
+    assert stored.json()["slot_clear_readings"] == 0
+
+
+@pytest.mark.asyncio
+async def test_the_same_reading_delivered_twice_counts_once(async_client: AsyncClient, db_engine):
+    """A reconciler repeating what it could not confirm must not confirm itself."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    grant_url = f"/api/temporary-access-grants/{payload['id']}"
+    await _start_revoking(async_client, payload["id"])
+    await _age_the_clear_streak(db_engine, payload["id"])
+
+    first = await async_client.post(
+        f"{grant_url}/observation", json=_reading(False, observation_id="envobs-deploy-revoke-1-0")
+    )
+    await _age_the_clear_streak(db_engine, payload["id"])
+    again = await async_client.post(
+        f"{grant_url}/observation", json=_reading(False, observation_id="envobs-deploy-revoke-1-0")
+    )
+
+    assert first.json()["slot_clear_readings"] == 1
+    assert again.json()["slot_clear_readings"] == 1
+    assert again.json()["status"] == "revoking"
+
+
+@pytest.mark.asyncio
+async def test_slot_is_free_again_once_the_access_is_gone(async_client: AsyncClient, db_engine):
     """A revoked grant does not block the next QA run's access."""
     project_id, run_id = await _project_with_run(async_client)
     first = _grant_payload(project_id, run_id)
     await async_client.post("/api/temporary-access-grants/", json=first)
-    await async_client.patch(
-        f"/api/temporary-access-grants/{first['id']}",
-        json={"status": "revoked", "revoke_reason": "run_terminal"},
-    )
+    await _revoke_by_observation(async_client, db_engine, first["id"])
 
     again = await async_client.post(
         "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
@@ -152,16 +333,21 @@ async def test_slot_is_free_again_once_the_access_is_gone(async_client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_revoked_grant_is_terminal_evidence(async_client: AsyncClient):
-    """Nothing reopens a revoked grant."""
+async def test_revoked_grant_is_terminal_evidence(async_client: AsyncClient, db_engine):
+    """Nothing reopens a revoked grant, and no reading is taken against it."""
     project_id, run_id = await _project_with_run(async_client)
     payload = _grant_payload(project_id, run_id)
     await async_client.post("/api/temporary-access-grants/", json=payload)
     grant_url = f"/api/temporary-access-grants/{payload['id']}"
-    await async_client.patch(grant_url, json={"status": "revoked", "revoke_reason": "run_terminal"})
+    await _revoke_by_observation(async_client, db_engine, payload["id"])
 
     reopened = await async_client.patch(grant_url, json={"status": "granted"})
     assert reopened.status_code == status.HTTP_409_CONFLICT
+
+    late = await async_client.post(
+        f"{grant_url}/observation", json=_reading(True, observation_id="envobs-deploy-revoke-1-9")
+    )
+    assert late.status_code == status.HTTP_409_CONFLICT
 
 
 @pytest.mark.asyncio
@@ -367,17 +553,14 @@ async def test_escalating_twice_is_the_same_state(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_a_revoked_grant_has_nothing_to_escalate(async_client: AsyncClient):
+async def test_a_revoked_grant_has_nothing_to_escalate(async_client: AsyncClient, db_engine):
     """The access went back. Failing the run now would invent a problem."""
     project_id, run_id = await _project_with_run(async_client)
     grant = await async_client.post(
         "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
     )
-    revoked = await async_client.patch(
-        f"/api/temporary-access-grants/{grant.json()['id']}",
-        json={"status": "revoked", "revoke_reason": "run_terminal"},
-    )
-    assert revoked.status_code == status.HTTP_200_OK
+    revoked = await _revoke_by_observation(async_client, db_engine, grant.json()["id"])
+    assert revoked.json()["status"] == "revoked"
 
     escalated = await async_client.post(
         f"/api/temporary-access-grants/{grant.json()['id']}/escalate", json=_cleanup_failure()
