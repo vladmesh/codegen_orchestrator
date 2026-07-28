@@ -29,8 +29,16 @@ DEPLOY_TIMEOUT_SECONDS = 600
 _CANCELLATION_ERRORS = ("WorkflowCancelledError", "WorkflowCancellationUnprovenError")
 
 
-class DeployedShaMismatchError(RuntimeError):
+class DeployRefusedError(RuntimeError):
+    """This deploy cannot be called successful. Refuses the deploy, does not stop the service."""
+
+
+class DeployedShaMismatchError(DeployRefusedError):
     """The finished deploy run is not the commit the deploy asked for."""
+
+
+class DeployPinTagLeakedError(DeployRefusedError):
+    """The temporary pin tag survived the run, so the deploy left litter in the user's repo."""
 
 
 async def _create_deployment_record(
@@ -165,10 +173,13 @@ class DeployerNode(FunctionalNode):
         dispatch_time: datetime,
         ref: str = "main",
         head_sha: str | None = None,
+        deploy_run_id: str | None = None,
     ) -> dict | None:
         """Attempt to rerun failed deploy workflow jobs.
 
         Returns run_info dict on success, None on failure or if rerun is not possible.
+        A cancellation during the rerun is re-raised rather than downgraded to None:
+        the rerun is live work that teardown has to stop before cleanup runs.
         """
         try:
             failed_run = await github.get_latest_workflow_run(
@@ -190,12 +201,18 @@ class DeployerNode(FunctionalNode):
             await asyncio.sleep(3)
 
             run_info = await github.wait_for_run_completion(
-                owner, repo, run_id, timeout_seconds=DEPLOY_TIMEOUT_SECONDS
+                owner,
+                repo,
+                run_id,
+                timeout_seconds=DEPLOY_TIMEOUT_SECONDS,
+                cancel_check=lambda: self._run_cancelled(deploy_run_id),
             )
             logger.info("deploy_rerun_passed", run_id=run_id)
             return run_info
 
         except (RuntimeError, TimeoutError) as e:
+            if type(e).__name__ in _CANCELLATION_ERRORS:
+                raise
             logger.error("deploy_rerun_failed", error=str(e))
             return None
         except Exception as e:
@@ -204,11 +221,12 @@ class DeployerNode(FunctionalNode):
 
     async def _remove_pin_tag(
         self, github: GitHubAppClient, owner: str, repo: str, tag: str
-    ) -> None:
+    ) -> Exception | None:
         """Drop the pin tag whatever the run did. A leftover tag is litter in the user's repo.
 
-        A failed cleanup is loud but does not fail the deploy: the tag name is
-        deterministic, so it can be found and removed afterwards.
+        Returns the failure instead of raising, so cleanup never masks the exception
+        the run itself is already propagating. The caller turns a surviving tag into
+        a refused deploy.
         """
         try:
             await asyncio.shield(github.delete_ref(owner, repo, f"tags/{tag}"))
@@ -221,6 +239,8 @@ class DeployerNode(FunctionalNode):
                 error=str(e),
                 error_type=type(e).__name__,
             )
+            return e
+        return None
 
     async def _dispatch_and_wait(
         self,
@@ -238,12 +258,15 @@ class DeployerNode(FunctionalNode):
         main, as before.
         """
         pin_tag = deploy_pin_tag(head_sha) if head_sha else None
-        if pin_tag:
-            await github.create_or_reset_tag(owner, repo, pin_tag, head_sha)
-
         ref = pin_tag or "main"
         rerun = False
+        cleanup_error: Exception | None = None
         try:
+            # Inside the cleanup guard: an interrupted create can still have reached
+            # GitHub, and a tag applied but not tracked is exactly the litter case.
+            if pin_tag:
+                await github.create_or_reset_tag(owner, repo, pin_tag, head_sha)
+
             # Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
             if pin_tag:
@@ -269,15 +292,19 @@ class DeployerNode(FunctionalNode):
 
                 # Attempt to rerun failed jobs (gets a new GH Actions runner)
                 rerun_info = await self._try_deploy_rerun(
-                    github, owner, repo, dispatch_time, ref, head_sha or None
+                    github, owner, repo, dispatch_time, ref, head_sha or None, run_id
                 )
                 if rerun_info is None:
                     raise
                 run_info, rerun = rerun_info, True
         finally:
             if pin_tag:
-                await self._remove_pin_tag(github, owner, repo, pin_tag)
+                cleanup_error = await self._remove_pin_tag(github, owner, repo, pin_tag)
 
+        if cleanup_error is not None:
+            raise DeployPinTagLeakedError(
+                f"deploy pin tag {pin_tag} survived in {owner}/{repo}: {cleanup_error}"
+            )
         self._verify_deployed_sha(run_info, head_sha)
         return run_info, rerun
 
@@ -429,8 +456,13 @@ class DeployerNode(FunctionalNode):
                 run_info, rerun = await self._dispatch_and_wait(
                     github, owner, repo, head_sha, run_id
                 )
-            except DeployedShaMismatchError as e:
-                logger.error("deploy_sha_mismatch", project_id=project_id, error=str(e))
+            except DeployRefusedError as e:
+                logger.error(
+                    "deploy_refused",
+                    project_id=project_id,
+                    reason=type(e).__name__,
+                    error=str(e),
+                )
                 return {
                     "deployment_result": {"status": "failed", "error": str(e)},
                     "errors": [f"Deploy refused: {e}"],

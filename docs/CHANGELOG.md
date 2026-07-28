@@ -10,6 +10,11 @@
   it no longer passes as success. Reruns stay on the pinned tag. A deploy with no `head_sha`
   behaves exactly as before. `shared/clients/github` gained ref operations (`create_ref`,
   `update_ref`, `delete_ref`, `get_ref_sha`, `create_or_reset_tag`).
+  A pin tag that survives cleanup refuses the deploy with the tag named instead of writing a
+  successful deployment record, and the tag is created inside the cleanup guard, so an interrupted
+  create that GitHub already applied is still removed. The rerun wait polls the deploy's
+  cancellation state and stops the rerun it is watching, so teardown leaves no live workflow
+  behind: `wait_for_run_completion` takes a `cancel_check`.
 
 - Product analytics are collected again. `LOKI_URL` (the Loki read address, `http://loki:3100`
   inside compose — not the `LOKI_PUSH_*` write credentials) is now a required compose variable with

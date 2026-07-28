@@ -1,5 +1,6 @@
 """Unit tests for DeployerNode."""
 
+import asyncio
 from datetime import datetime
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -516,6 +517,109 @@ class TestDeployerPinnedToCommit:
 
         assert result["deployment_result"]["status"] == "failed"
         mock_api.create_deployment.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_a_surviving_tag_refuses_the_deploy_instead_of_logging_it(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """A pin tag left in the user's repo is a failed deploy, not a successful one."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.return_value = _pinned_run()
+        gh.delete_ref.side_effect = RuntimeError("502 from GitHub")
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["deployment_result"]["status"] == "failed"
+        assert PIN_TAG in result["errors"][0]
+        mock_api.create_deployment.assert_not_called()
+        mock_api.update_application.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_tag_removal_is_attempted_when_the_create_call_itself_fails(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """GitHub may have applied the ref before the call failed, so cleanup still runs."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.create_or_reset_tag.side_effect = RuntimeError("connection reset after PATCH")
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        assert result["deployment_result"]["status"] == "failed"
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+        gh.trigger_workflow_dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_tag_removal_is_attempted_when_the_create_call_is_cancelled(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.create_or_reset_tag.side_effect = asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            await deployer.run({**base_state, "head_sha": PINNED_SHA})
+
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_rerun_wait_watches_for_cancellation(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """The rerun is live work: teardown has to reach it, not only the first run."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        mock_api.get = AsyncMock(return_value={"status": "running"})
+        gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
+        gh.get_latest_workflow_run.return_value = _pinned_run()
+        gh.wait_for_run_completion.return_value = _pinned_run()
+
+        await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+
+        cancel_check = gh.wait_for_run_completion.call_args[1]["cancel_check"]
+        mock_api.get.return_value = {"status": "cancelled"}
+        assert await cancel_check() is True
+        assert mock_api.get.call_args[0][0] == "runs/deploy-1"
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_cancellation_during_rerun_is_not_downgraded_to_a_failed_deploy(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        mock_api.get = AsyncMock(return_value={"status": "running"})
+        gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
+        gh.get_latest_workflow_run.return_value = _pinned_run()
+        gh.wait_for_run_completion.side_effect = WorkflowCancelledError("rerun cancelled")
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+
+        assert result["deployment_result"] == {"status": "cancelled"}
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+        mock_api.create_deployment.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_unproven_cancellation_during_rerun_keeps_failing_closed(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        mock_api.get = AsyncMock(return_value={"status": "running"})
+        gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
+        gh.get_latest_workflow_run.return_value = _pinned_run()
+        gh.wait_for_run_completion.side_effect = WorkflowCancellationUnprovenError("unproven")
+
+        with pytest.raises(WorkflowCancellationUnprovenError):
+            await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
