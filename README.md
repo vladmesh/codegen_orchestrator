@@ -1,19 +1,19 @@
 # Codegen Orchestrator
 
-Мультиагентный оркестратор на базе LangGraph для автоматической генерации и деплоя проектов.
+A multi-agent orchestrator built on LangGraph for automatic project generation and deployment.
 
-**Вход**: Описание проекта в Телеграме  
-**Выход**: Работающий проект в продакшене (код, CI/CD, домен, SSL)
+**Input**: a project description in Telegram  
+**Output**: a working project in production (code, CI/CD, domain, SSL)
 
-## Философия
+## Philosophy
 
-- **Автономность**: Человек заходит раз в несколько дней, смотрит отчёты, докидывает деньги
-- **Агенты как узлы графа**: Product Owner — это агент LangGraph, управляющий процессом.
-- **Worker Manager**: Запускает изолированные контейнеры для Engineering/DevOps задач (Claude Code, Factory.ai, OpenAI Codex).
-- **Нелинейность**: Агенты могут вызывать друг друга в любом порядке
-- **Spec-first**: Используем [service-template](https://github.com/vladmesh/service-template) для генерации кода
+- **Autonomy**: a human drops in every few days, looks at the reports, tops up the money
+- **Agents as graph nodes**: the Product Owner is a LangGraph agent that drives the process.
+- **Worker Manager**: starts isolated containers for Engineering/DevOps tasks (Claude Code, Factory.ai, OpenAI Codex).
+- **Non-linearity**: agents can call each other in any order
+- **Spec-first**: we use [service-template](https://github.com/vladmesh/service-template) to generate code
 
-## Архитектура
+## Architecture
 
 ```mermaid
 graph TD
@@ -53,30 +53,30 @@ graph TD
     DepGraph --> |"Result / Progress"| PO
 ```
 
-### Основные компоненты
+### Main components
 
-- **API**: FastAPI сервис, единственный источник правды (DAL) для PostgreSQL.
-- **Telegram Bot**: Интерфейс для пользователя, управляет PO сессиями.
-- **Product Owner (PO)**: LangGraph ReactAgent, общающийся с пользователем и ставящий задачи.
-- **Scaffolder**: Подготовка репозиториев (copier + make setup + git push). Запускается до architect.
-- **Worker Manager**: Управляет Docker контейнерами Developer агентов. Монтирует pre-scaffolded workspaces. Воркеры изолированы в сети `codegen_worker`.
-- **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps). Engineering-worker и deploy-worker — отдельные контейнеры того же Docker-образа с собственными entrypoint'ами (Redis stream consumers).
-- **Infra Service**: Ansible runner для настройки серверов.
-- **Scheduler**: Architect consumer (story→tasks), task dispatcher (scaffold trigger, dispatch, supervisor), github_sync, server_sync, health_checker.
+- **API**: a FastAPI service, the single source of truth (DAL) for PostgreSQL.
+- **Telegram Bot**: the user interface, manages PO sessions.
+- **Product Owner (PO)**: a LangGraph ReactAgent that talks to the user and assigns tasks.
+- **Scaffolder**: repository preparation (copier + make setup + git push). Runs before the architect.
+- **Worker Manager**: manages the Docker containers of Developer agents. Mounts pre-scaffolded workspaces. Workers are isolated in the `codegen_worker` network.
+- **LangGraph**: the business-process orchestrator (Engineering, DevOps). Engineering-worker and deploy-worker are separate containers of the same Docker image with their own entrypoints (Redis stream consumers).
+- **Infra Service**: an Ansible runner for server setup.
+- **Scheduler**: architect consumer (story→tasks), task dispatcher (scaffold trigger, dispatch, supervisor), github_sync, server_sync, health_checker.
 - **Admin Frontend**: React SPA (port 3001) — dashboard, projects, tasks, workers, queues, and users. Nginx proxy with basic auth.
 - **Observability**: Loki + Promtail + Grafana for structured logs.
 
-### Связанные проекты
+### Related projects
 
-| Проект | Описание | Репо |
+| Project | Description | Repo |
 |--------|----------|------|
-| **service-template** | Spec-first фреймворк для генерации микросервисов | [GitHub](https://github.com/vladmesh/service-template) |
+| **service-template** | A spec-first framework for generating microservices | [GitHub](https://github.com/vladmesh/service-template) |
 
-## Инфраструктура
+## Infrastructure
 
-- **LangGraph сервер**: Отдельный сервер для оркестратора и агентов
-- **Prod серверы**: Управляются через infra-service (Ansible)
-- **Телеграм**: Основной интерфейс
+- **LangGraph server**: a dedicated server for the orchestrator and the agents
+- **Prod servers**: managed through infra-service (Ansible)
+- **Telegram**: the main interface
 
 ## Development Setup
 
@@ -125,16 +125,16 @@ graph TD
 
 See [docs/TESTING.md](docs/TESTING.md) for detailed testing guide.
 
-## Документация
+## Documentation
 
-- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — жизненный цикл фичи и процесс работы (**MANDATORY READ**)
-- [AGENTS.md](AGENTS.md) — общая инструкция для агентов
-- [ARCHITECTURE.md](ARCHITECTURE.md) — актуальная архитектура и потоки данных
-- [docs/LOGGING.md](docs/LOGGING.md) — руководство по структурированному логированию
+- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — the feature lifecycle and the working process (**MANDATORY READ**)
+- [AGENTS.md](AGENTS.md) — general instructions for agents
+- [ARCHITECTURE.md](ARCHITECTURE.md) — the current architecture and data flows
+- [docs/LOGGING.md](docs/LOGGING.md) — a guide to structured logging
 
 ## Logging
 
-Проект использует `structlog` (JSON для prod, console для dev).
+The project uses `structlog` (JSON for prod, console for dev).
 
 ```python
 from shared.log_config import setup_logging
@@ -147,7 +147,7 @@ logger.info("event_name", user_id=123)
 
 ## GitHub Secrets
 
-Секреты хранятся в GitHub Actions (`Settings → Secrets → Actions`):
+Secrets are stored in GitHub Actions (`Settings → Secrets → Actions`):
 
 | Secret | Description |
 |--------|-------------|
@@ -158,7 +158,11 @@ logger.info("event_name", user_id=123)
 
 ## Roadmap
 
-- [docs/ROADMAP.md](docs/ROADMAP.md) — вехи и фазы
-- [docs/STATUS.md](docs/STATUS.md) — текущая задача
-- [docs/backlog.md](docs/backlog.md) — очередь задач (auto-generated read-only view)
-- [docs/CHANGELOG.md](docs/CHANGELOG.md) — что сделано
+- [docs/ROADMAP.md](docs/ROADMAP.md) — milestones and phases
+- [docs/STATUS.md](docs/STATUS.md) — the current task
+- [docs/backlog.md](docs/backlog.md) — the task queue (auto-generated read-only view)
+- [docs/CHANGELOG.md](docs/CHANGELOG.md) — what has been done
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,25 +1,25 @@
 # Error Handling Strategy
 
-Общая стратегия обработки ошибок для всех сервисов codegen_orchestrator.
+The common error handling strategy for all codegen_orchestrator services.
 
 ---
 
 ## 1. Error Categories
 
-Все ошибки классифицируются на 4 категории для принятия решения о retry.
+All errors are classified into 4 categories in order to decide about a retry.
 
 | Category | Description | Examples | Retry Strategy |
 |----------|-------------|----------|----------------|
-| **TRANSIENT** | Временный сбой, успех вероятен при повторе | Redis timeout, API HTTP 503, Network glitch | **Retry** (Short backoff) |
-| **UPSTREAM** | Сбой внешней системы, требующий ожидания | GitHub Rate Limit, OpenAI API Overload | **Retry** (Long backoff) |
-| **PERMANENT** | Логическая ошибка, повтор бессмысленен | HTTP 400 Bad Request, Validation Error, 404 | **No Retry** (Fail fast) |
-| **FATAL** | Критическая проблема конфигурации | Auth failed, DB Connection failed (persistent), Config missing | **Abort** (Alert admin) |
+| **TRANSIENT** | A temporary failure, success is likely on a retry | Redis timeout, API HTTP 503, Network glitch | **Retry** (Short backoff) |
+| **UPSTREAM** | A failure of an external system that requires waiting | GitHub Rate Limit, OpenAI API Overload | **Retry** (Long backoff) |
+| **PERMANENT** | A logic error, a retry is pointless | HTTP 400 Bad Request, Validation Error, 404 | **No Retry** (Fail fast) |
+| **FATAL** | A critical configuration problem | Auth failed, DB Connection failed (persistent), Config missing | **Abort** (Alert admin) |
 
 ---
 
 ## 2. Retry Policy
 
-Глобальные политики ретраев. Конкретные значения могут переопределяться в конфиге сервиса.
+The global retry policies. Specific values can be overridden in a service's config.
 
 ### Transient Policy
 - **Count:** 3 retries
@@ -36,7 +36,7 @@
 
 ## 3. Timeout Policy
 
-Таймауты для предотвращения зависания системы.
+Timeouts to prevent the system from hanging.
 
 | Operation | Default Timeout | Action on Timeout |
 |-----------|-----------------|-------------------|
@@ -51,43 +51,43 @@
 
 ## 4. Propagation Flow
 
-Как ошибки "всплывают" от низкоуровневых компонентов к пользователю.
+How errors "bubble up" from the low-level components to the user.
 
 ### A. CLI / API Errors
-1. **Validation Error (Permanent):** Вернуть HTTP 400 + JSON Error. CLI показывает читаемую ошибку.
-2. **Infrastructure Error (Transient):** CLI делает ретрай (до 3 раз). Если не вышло — показать "System unavailable, try again later".
+1. **Validation Error (Permanent):** return HTTP 400 + a JSON Error. The CLI shows a readable error.
+2. **Infrastructure Error (Transient):** the CLI retries (up to 3 times). If that did not work, show "System unavailable, try again later".
 
 ### B. Worker Errors (Async)
-1. **Crash/OOM:** `worker-manager` ловит exit code != 0 (через Docker events).
-   - Публикует результат в output queue: `status="failed", error="Process crashed"`.
-2. **Logic Error (in container):** Агент ловит exception.
-   - Публикует результат: `status="failed", error="Exception message"`.
+1. **Crash/OOM:** `worker-manager` catches an exit code != 0 (through Docker events).
+   - Publishes the result to the output queue: `status="failed", error="Process crashed"`.
+2. **Logic Error (in container):** the agent catches an exception.
+   - Publishes the result: `status="failed", error="Exception message"`.
 
 ### C. Consumer Errors (Redis)
 
 All consumers use unified `RedisStreamClient.consume()` API with two ACK modes:
 
-**Manual ACK (`auto_ack=False`)** — используется большинством consumer'ов:
-1. Сообщение читается, но не ACK'ается автоматически.
-2. Consumer обрабатывает сообщение.
-3. При успехе — `await client.ack(stream, group, msg.message_id)`.
-4. При ошибке — ACK не вызывается, сообщение остаётся в PEL.
+**Manual ACK (`auto_ack=False`)** — used by most consumers:
+1. The message is read but not ACKed automatically.
+2. The consumer processes the message.
+3. On success — `await client.ack(stream, group, msg.message_id)`.
+4. On an error the ACK is not called and the message stays in the PEL.
 
-**Auto ACK (`auto_ack=True`)** — для fire-and-forget (ProactiveListener, ProvisionerNotifier):
-1. Сообщение ACK'ается сразу при чтении.
-2. Потеря при краше допустима (уведомления, не критичные данные).
+**Auto ACK (`auto_ack=True`)** — for fire-and-forget (ProactiveListener, ProvisionerNotifier):
+1. The message is ACKed immediately on read.
+2. Losing it on a crash is acceptable (notifications, not critical data).
 
 **PEL Recovery** (`claim_pending=True`):
-- При старте consumer вызывает `XAUTOCLAIM` и подбирает сообщения, зависшие в PEL дольше `pending_timeout_ms` (default: 60s).
-- Это покрывает сценарий краша consumer'а mid-processing — после рестарта сообщение автоматически переобрабатывается.
-- PEL recovery идёт до основного `XREADGROUP` цикла.
+- On startup the consumer calls `XAUTOCLAIM` and picks up messages that have been stuck in the PEL longer than `pending_timeout_ms` (default: 60s).
+- This covers the scenario of a consumer crashing mid-processing — after a restart the message is reprocessed automatically.
+- PEL recovery runs before the main `XREADGROUP` loop.
 
 **Error handling flow:**
-1. **Processing Error (Transient):** Не вызываем ACK → сообщение остаётся в PEL → PEL recovery подхватит при рестарте.
-2. **Processing Error (Permanent):** ACK + XADD в DLQ (если реализован).
-3. **Consumer Crash:** Сообщение в PEL → другой инстанс или рестарт подхватит через `XAUTOCLAIM`.
+1. **Processing Error (Transient):** we do not call ACK → the message stays in the PEL → PEL recovery picks it up on a restart.
+2. **Processing Error (Permanent):** ACK + XADD to the DLQ (if implemented).
+3. **Consumer Crash:** the message is in the PEL → another instance or a restart picks it up through `XAUTOCLAIM`.
 
-2. **DLQ Handling:** Отдельный процесс или админ ручками разбирает DLQ.
+2. **DLQ Handling:** a separate process or the admin goes through the DLQ by hand.
 
 ---
 
@@ -127,12 +127,12 @@ PO sends user-facing lifecycle messages through `po:proactive`: deploy success, 
 - `deploy:queue:dlq`
 
 **When to send to DLQ:**
-1. Сообщение невалидно (не парсится Pydantic).
-2. Исчерпаны ретраи для Transient ошибок.
-3. Логическая ошибка, которую сервис не может обработать.
+1. The message is invalid (does not parse with Pydantic).
+2. The retries for Transient errors are exhausted.
+3. A logic error that the service cannot handle.
 
 **Payload:**
-Копия оригинального сообщения + метаданные ошибки:
+A copy of the original message + the error metadata:
 ```json
 {
   "original_message": {...},

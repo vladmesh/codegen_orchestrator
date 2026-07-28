@@ -1,45 +1,45 @@
 # Secrets Management Architecture
 
-Архитектура управления секретами в Codegen Orchestrator разделяет ответственности между Оркестратором и Пользовательскими проектами.
+The secrets management architecture in Codegen Orchestrator separates the responsibilities between the Orchestrator and the user projects.
 
 ## 1. Classification of Secrets
 
-Мы выделяем три уровня секретов, которые имеют разные модели жизненного цикла и хранения.
+We distinguish three levels of secrets, which have different lifecycle and storage models.
 
-| Уровень | Описание | Примеры | Владелец | Хранение (Master) | Использование |
+| Level | Description | Examples | Owner | Storage (Master) | Usage |
 |---------|----------|---------|----------|-------------------|---------------|
-| **L1. Platform** | Инфраструктурные ключи самого Оркестратора | `GH_APP_PRIVATE_KEY`, `POSTGRES_URL`, `OPENAI_API_KEY`, `CLOUDFLARE_API_TOKEN` | DevOps Оркестратора | K8s Secrets / `.env` | Внедряются в контейнеры сервисов (Worker, API, Infra) |
-| **L2. Project** | Секреты для запуска сгенерированных приложений | `TELEGRAM_BOT_TOKEN`, `STRIPE_KEY` | Пользователь | **GitHub Repository Secrets** (в репо проекта) | CI/CD пайплайны (`service_template`), Ansible |
-| **L3. User** | Личные ключи пользователя для провайдеров (Future) | User's Cloudflare Key, AWS Key | Пользователь | **Encrypted DB Table** (`user_vault`) | Infra Service (для провижининга от имени юзера) |
+| **L1. Platform** | The infrastructure keys of the Orchestrator itself | `GH_APP_PRIVATE_KEY`, `POSTGRES_URL`, `OPENAI_API_KEY`, `CLOUDFLARE_API_TOKEN` | The Orchestrator's DevOps | K8s Secrets / `.env` | Injected into the service containers (Worker, API, Infra) |
+| **L2. Project** | Secrets for running the generated applications | `TELEGRAM_BOT_TOKEN`, `STRIPE_KEY` | The user | **GitHub Repository Secrets** (in the project repo) | CI/CD pipelines (`service_template`), Ansible |
+| **L3. User** | The user's personal keys for providers (Future) | User's Cloudflare Key, AWS Key | The user | **Encrypted DB Table** (`user_vault`) | Infra Service (for provisioning on behalf of the user) |
 
 ---
 
 ## 2. Detailed Strategy
 
 ### Level 1: Platform Secrets (The Orchestrator)
-Эти секреты необходимы для функционирования самой платформы.
-*   **Storage**: Переменные окружения.
-*   **Access**: Читаются при старте сервисов (`os.getenv`).
-*   **Repo**: Хранятся в `.env` (локально) или в Secret Manager платформы хостинга.
+These secrets are required for the platform itself to function.
+*   **Storage**: environment variables.
+*   **Access**: read at service startup (`os.getenv`).
+*   **Repo**: stored in `.env` (locally) or in the Secret Manager of the hosting platform.
 
 ### Level 2: Project Secrets (The Generated App)
-Ключевой момент: **Секреты зашифрованы at rest в PostgreSQL** (Fernet encryption).
-*   **Storage**: `project.config.secrets` (JSONB) — все значения зашифрованы Fernet-токенами (`gAAAAA...`).
-*   **Encryption**: `shared/crypto.py` — `SecretsCipher` читает `SECRETS_ENCRYPTION_KEY` из env. `encrypt_dict`/`decrypt_dict` шифруют/дешифруют все значения в dict.
-*   **Graceful degradation**: При расшифровке plaintext-значений (legacy) — warning в лог, значение возвращается as-is. При следующей записи мигрирует в encrypted (encrypt-on-write).
+The key point: **the secrets are encrypted at rest in PostgreSQL** (Fernet encryption).
+*   **Storage**: `project.config.secrets` (JSONB) — all values are encrypted as Fernet tokens (`gAAAAA...`).
+*   **Encryption**: `shared/crypto.py` — `SecretsCipher` reads `SECRETS_ENCRYPTION_KEY` from the env. `encrypt_dict`/`decrypt_dict` encrypt/decrypt all the values in a dict.
+*   **Graceful degradation**: when decrypting plaintext values (legacy) — a warning to the log, the value is returned as-is. On the next write it migrates to encrypted (encrypt-on-write).
 *   **Lifecycle**:
-    1.  Пользователь вводит токен (например, Telegram Token) через PO в Telegram.
+    1.  The user enters a token (for example, a Telegram Token) through the PO in Telegram.
     2.  PO tool `set_project_secret` → atomic merge via `POST /projects/{id}/config/secrets` (server-side `SELECT FOR UPDATE` locking, handles concurrent writes).
     3.  DevOps subgraph `SecretResolverNode` → decrypt from DB → resolve → encrypt → save back via atomic merge.
 *   **Usage**:
-    *   Secrets доступны в расшифрованном виде только в runtime (при вызове `decrypt_dict`)
-    *   В БД всегда зашифрованы — даже при прямом SELECT видны только Fernet-токены
+    *   The secrets are available decrypted only at runtime (when `decrypt_dict` is called)
+    *   In the DB they are always encrypted — even a direct SELECT shows only Fernet tokens
 
 ### Level 3: User Secrets (The Provider Accounts) - *Future/Complex*
-Если пользователю нужно провижить ресурсы на своём аккаунте (например, VPS на его DigitalOcean).
-*   **Storage**: Таблица `user_vault` (user_id, key, encrypted_value).
-*   **Encryption**: Symmetric Key Encryption (AES-GCM), ключ шифрования — это L1 Secret (`VAULT_MASTER_KEY`).
-*   **Usage**: Infra Service расшифровывает "на лету" перед вызовом провайдера (Terraform/Ansible).
+For the case where the user needs to provision resources in their own account (for example, a VPS on their DigitalOcean).
+*   **Storage**: the `user_vault` table (user_id, key, encrypted_value).
+*   **Encryption**: Symmetric Key Encryption (AES-GCM), the encryption key is an L1 Secret (`VAULT_MASTER_KEY`).
+*   **Usage**: the Infra Service decrypts them "on the fly" before calling the provider (Terraform/Ansible).
 
 ---
 

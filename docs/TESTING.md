@@ -1,6 +1,6 @@
 # Test Infrastructure
 
-> **Актуально на**: 2026-03-18
+> **Up to date as of**: 2026-03-18
 
 ## Test Layers
 

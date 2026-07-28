@@ -1,88 +1,88 @@
-# Архитектура
+# Architecture
 
-> **Актуально на**: 2026-03-19
+> **Up to date as of**: 2026-03-19
 
-## Обзор
+## Overview
 
-Codegen Orchestrator — мультиагентная система для автоматической генерации и деплоя проектов. Пользователь описывает что хочет в Telegram → система создаёт, тестирует и деплоит.
+Codegen Orchestrator is a multi-agent system for automatic project generation and deployment. The user describes what they want in Telegram → the system creates, tests and deploys it.
 
-## Технический стек
+## Technology stack
 
-| Компонент | Технология |
+| Component | Technology |
 |-----------|------------|
 | **PO** | LangGraph ReactAgent (direct API/Redis tool calls) |
 | **Developer Agents** | Claude Code, Factory.ai Droid via worker-manager (Docker + Redis) |
 | **Backend Orchestration** | LangGraph (subgraphs) |
 | **LLM** | Anthropic Claude (via CLI or API) |
-| **Интерфейс** | Telegram Bot |
+| **Interface** | Telegram Bot |
 | **Admin UI** | React SPA (admin-frontend, nginx proxy) |
-| **Кодогенерация** | service-template (Copier) |
-| **Инфраструктура** | `services/infra-service` (Ansible) |
-| **Хранение** | PostgreSQL + Redis |
-| **Observability** | Loki + Promtail + Grafana (логи), node_exporter + cadvisor (железо), Postgres (прогоны) |
+| **Code generation** | service-template (Copier) |
+| **Infrastructure** | `services/infra-service` (Ansible) |
+| **Storage** | PostgreSQL + Redis |
+| **Observability** | Loki + Promtail + Grafana (logs), node_exporter + cadvisor (hardware), Postgres (runs) |
 
-## Ключевые концепции
+## Key concepts
 
 ### Planning Layer (Stories → Tasks → Runs)
 
-Трёхуровневая абстракция для продуктового управления:
-- **Story** — высокоуровневое требование от пользователя (через PO). Статусы: `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (также: `waiting_human_review`, `failed`, `reopened`).
-- **Task** — конкретная техническая задача. Статусы: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (также: `blocked`, `waiting_human_review`, `failed`, `cancelled`). Задачи могут иметь зависимости (`blocked_by_task_id`).
-- **Run** — единица исполнения (engineering или deploy). Привязан к Task через `task_id`.
+A three-level abstraction for product management:
+- **Story** — a high-level requirement from the user (through the PO). Statuses: `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (also: `waiting_human_review`, `failed`, `reopened`).
+- **Task** — a concrete technical task. Statuses: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (also: `blocked`, `waiting_human_review`, `failed`, `cancelled`). Tasks can have dependencies (`blocked_by_task_id`).
+- **Run** — a unit of execution (engineering or deploy). Bound to a Task through `task_id`.
 
-**Pipeline** (scheduler + scaffolder services) автоматически готовит проект и декомпозирует Story в Tasks:
-1. PO создаёт Project + Repository + Story
-2. Task Dispatcher (каждые 30с) обнаруживает draft-проект со stories → публикует `ScaffoldMessage` (mode=full) в `scaffold:queue`
-3. Scaffolder выполняет copier + make setup + git push, сохраняет tree в DB, ставит `project.status = active`
-   - Для existing проектов: ensure-workspace gate (mode=ensure) проверяет наличие workspace перед dispatch задач
-4. PO публикует `ArchitectMessage` в `architect:queue`
-5. Architect Consumer вызывает LLM — видит tree скафолдированного проекта → создаёт tasks только на diff (бизнес-логику)
-6. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
-7. После завершения всех tasks — PR story/* → main, auto-merge → deploy → QA → story completed
+**Pipeline** (the scheduler + scaffolder services) automatically prepares the project and decomposes a Story into Tasks:
+1. The PO creates a Project + Repository + Story
+2. The Task Dispatcher (every 30s) finds a draft project with stories → publishes a `ScaffoldMessage` (mode=full) to `scaffold:queue`
+3. The Scaffolder runs copier + make setup + git push, saves the tree to the DB, sets `project.status = active`
+   - For existing projects: the ensure-workspace gate (mode=ensure) checks that the workspace exists before dispatching tasks
+4. The PO publishes an `ArchitectMessage` to `architect:queue`
+5. The Architect Consumer calls the LLM, which sees the tree of the scaffolded project → creates tasks only for the diff (the business logic)
+6. The Task Dispatcher finds unblocked tasks, creates Runs, publishes to `engineering:queue`
+7. Once all tasks are done — a PR story/* → main, auto-merge → deploy → QA → story completed
 
-Сущности Story / Task / Run / `TaskEvent` в API описывают работу над **клиентскими** проектами — их создаёт и ведёт сам пайплайн (PO, Architect, Task Dispatcher, воркеры).
+The Story / Task / Run / `TaskEvent` entities in the API describe work on **client** projects; they are created and maintained by the pipeline itself (PO, Architect, Task Dispatcher, workers).
 
-Разработка самого оркестратора идёт по спринтам (`/go` → `/new-sprint` → `/plan-phase` → `/implement` → `/close-phase` → `/close-sprint`). Задачи по разработке оркестратора заводятся и ведутся во внешнем пайплайне, а не в локальной Tasks DB. Файлы `docs/backlog.md` и `docs/STATUS.md` поддерживаются вручную; генераторов под них нет.
+Development of the orchestrator itself is sprint-based (`/go` → `/new-sprint` → `/plan-phase` → `/implement` → `/close-phase` → `/close-sprint`). Tasks for developing the orchestrator are created and tracked in an external pipeline, not in the local Tasks DB. The files `docs/backlog.md` and `docs/STATUS.md` are maintained by hand; there are no generators for them.
 
 ### Capabilities
-Возможности Developer агента конфигурируются через `WorkerConfig.capabilities`:
-- `git`, `github` — работа с репозиториями
+The capabilities of a Developer agent are configured through `WorkerConfig.capabilities`:
+- `git`, `github` — working with repositories
 - `python`, `node` — runtime environments
-- Docker больше не предоставляется внутри контейнера (DinD удален). Инфраструктура поднимается через compose proxy (`curl localhost:9090/infra/compose`) — запрос проксируется worker-wrapper'ом в worker-manager.
+- Docker is no longer provided inside the container (DinD was removed). Infrastructure is brought up through the compose proxy (`curl localhost:9090/infra/compose`): the request is proxied by worker-wrapper to worker-manager.
 
-### Размещение проектов
+### Project placement
 
-Сервер под проект выбирается не по паспортной ёмкости, а по худшему из двух сигналов: сумме
-заявленных резерваций (`applications.reserved_ram_mb`) и фактически занятой памяти из свежих метрик.
-К требованию проекта добавляется запас `ALLOCATION_RAM_RESERVE_MB`. Сервер, чьи метрики старше
-`ALLOCATION_METRICS_FRESHNESS_SECONDS`, считается неизвестным по загрузке и не выбирается: посторонняя
-нагрузка, не учтённая ни одной аллокацией, иначе осталась бы невидимой.
+The server for a project is chosen not by its nominal capacity but by the worse of two signals: the sum
+of the declared reservations (`applications.reserved_ram_mb`) and the memory actually in use according to
+fresh metrics. The `ALLOCATION_RAM_RESERVE_MB` headroom is added to the project's requirement. A server
+whose metrics are older than `ALLOCATION_METRICS_FRESHNESS_SECONDS` is considered unknown in terms of load
+and is not selected: foreign load that no allocation accounts for would otherwise stay invisible.
 
-Отказ несёт типизированную причину и не является аварией. Нехватка места паркует задачу в
-`waiting_resources` без расхода попыток на доведение кода, PO сообщает об этом владельцу проекта, а
-планировщик возобновляет работу, когда метрики покажут свободное место. Запрос, превышающий ёмкость
-любого сервера, эскалируется сразу. Подробнее: [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md).
+A refusal carries a typed reason and is not a failure. A lack of capacity parks the task in
+`waiting_resources` without spending attempts on finishing the code, the PO reports this to the project
+owner, and the scheduler resumes work once the metrics show free space. A request that exceeds the capacity
+of any server is escalated immediately. Details: [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md).
 
-Само требование проекта пока остаётся константой: `estimated_ram_mb` никем не заполняется и берётся
-из значения по умолчанию.
+The project's requirement itself is still a constant: `estimated_ram_mb` is not filled in by anyone and is
+taken from the default value.
 
-## Сервисы
+## Services
 
-| Сервис | Описание |
+| Service | Description |
 |--------|----------|
-| `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
-| `telegram_bot` | Telegram интерфейс (PO via Redis Streams) |
-| `scaffolder` | Подготовка репозиториев новых проектов (copier + make setup + git push). Потребляет `scaffold:queue`, сохраняет tree в DB. Лёгкий образ без Docker SDK и LLM |
-| `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment). Монтирует pre-scaffolded workspace volumes. Воркеры работают в изолированной сети `codegen_worker`. |
+| `api` | FastAPI + SQLAlchemy — projects, servers, users, configs |
+| `telegram_bot` | The Telegram interface (PO via Redis Streams) |
+| `scaffolder` | Preparation of repositories for new projects (copier + make setup + git push). Consumes `scaffold:queue`, saves the tree to the DB. A light image without the Docker SDK and without an LLM |
+| `worker-manager` | Docker containers with CLI agents and a `docker compose` proxy for sidecar infrastructure (Flat Dev Environment). Mounts pre-scaffolded workspace volumes. Workers run in the isolated `codegen_worker` network. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, and `qa-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `scheduler` | Background workers: architect consumer (story→tasks LLM decomposition), task dispatcher (scaffold trigger, dispatch unblocked tasks, complete stories), github_sync, server_sync, health_checker |
-| `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
+| `infra-service` | An Ansible runner, SSH operations (formerly infrastructure-worker) |
 | `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000, `/wm-api/*` → worker-manager. Basic auth via htpasswd. Grafana is embedded at `/grafana/` |
 | `loki` | Log aggregation (7-day retention) |
 | `promtail` | Docker log scraper → Loki |
 | `grafana` | Dashboards + log viewer. Proxied via admin-frontend at `/grafana/` |
 
-## Граф
+## Graph
 
 ```mermaid
 graph TD
@@ -130,7 +130,7 @@ graph TD
     Dispatcher -.-> |"story completed → po:proactive"| Bot
 ```
 
-### Потоки данных
+### Data flows
 
 ```
 User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
@@ -182,17 +182,17 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 - **QA Consumer**: SSHes to prod server, runs Claude Code CLI with story-based QA prompt. Tests endpoints, checks responses against story description. Pass → story completed. Fail → creates fix task, loops back to engineering.
 - **Unified Redis Consumers**: All 10 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)
 
-## Внешние зависимости
+## External dependencies
 
-| Репозиторий | Использование |
+| Repository | Usage |
 |-------------|---------------|
-| [service-template](https://github.com/vladmesh/service-template) | Copier шаблон для генерации проектов |
+| [service-template](https://github.com/vladmesh/service-template) | A Copier template for generating projects |
 
-## Документация
+## Documentation
 
-Детальная документация вынесена в отдельные файлы:
+Detailed documentation lives in separate files:
 
-| Тема | Файл |
+| Topic | File |
 |------|------|
 | **Contracts (DTO)** | [docs/CONTRACTS.md](docs/CONTRACTS.md) |
 | **Glossary** | [docs/GLOSSARY.md](docs/GLOSSARY.md) |
@@ -208,45 +208,45 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 | Logging | [docs/LOGGING.md](docs/LOGGING.md) |
 
 
-## Мониторинг
+## Monitoring
 
 ### Observability Stack
 
-Наблюдаемость собрана из трёх независимых потоков. Внешнего стека трассировки нет: Langfuse,
-ClickHouse и MinIO сняты как неработавшие, разметка осталась только в виде логов и данных в Postgres.
+Observability is assembled from three independent streams. There is no external tracing stack: Langfuse,
+ClickHouse and MinIO were removed as non-working, and the instrumentation is left only as logs and data in Postgres.
 
-**Логи.**
+**Logs.**
 
 ```
 Services (structlog JSON) → stdout → Docker → Promtail → Loki → Grafana
 ```
 
-Promtail поднят и на оркестраторе, и на провижиненных серверах; на серверах он собирает контейнеры
-с меткой `com.codegen.project_id`. Ретеншн Loki задан в `infra/loki.yml` (`retention_period`,
-компактор с `retention_enabled`).
+Promtail runs both on the orchestrator and on the provisioned servers; on the servers it collects containers
+labeled `com.codegen.project_id`. Loki retention is set in `infra/loki.yml` (`retention_period`,
+the compactor with `retention_enabled`).
 
-**Железо.**
+**Hardware.**
 
 ```
-node_exporter + cadvisor (порты 9100/8080, UFW открыт только оркестратору)
-  → scheduler/health_checker → servers.* и server_metrics_history
+node_exporter + cadvisor (ports 9100/8080, UFW open only to the orchestrator)
+  → scheduler/health_checker → servers.* and server_metrics_history
 ```
 
-Роль `monitoring` ставит экспортеры при провижининге. Существующий сервер приводится к этой базовой
-линии отдельной операцией, см. [docs/DEPLOY.md](docs/DEPLOY.md). Свежесть метрик — значимая величина:
-по ней аллокатор решает, известна ли загрузка сервера.
+The `monitoring` role installs the exporters during provisioning. An existing server is brought to this
+baseline by a separate operation, see [docs/DEPLOY.md](docs/DEPLOY.md). Metrics freshness is a meaningful
+value: the allocator uses it to decide whether a server's load is known.
 
-**Прогоны.** `runs` хранит не только статус и тайминги, но и меру усилий: потраченные токены,
-стоимость, профиль головы. Транскрипт агента сохраняется артефактом на диске со ссылкой из `runs`,
-с чисткой секретов и ограничением размера; путь и срок жизни задаются `WORKER_TRANSCRIPT_*`.
+**Runs.** `runs` stores not only the status and the timings but also a measure of effort: the tokens spent,
+the cost, the head profile. The agent transcript is saved as an artifact on disk with a link from `runs`,
+with secrets scrubbed and a size limit; the path and the lifetime are set by `WORKER_TRANSCRIPT_*`.
 
-**Панели.** Grafana провижинится из репозитория (`infra/grafana/`) с двумя датасорсами, Loki и
-Postgres (роль только на чтение), и тремя дашбордами: "Service Logs", "Server capacity",
-"Run operations". Проксируется через admin-frontend на `/grafana/`.
+**Dashboards.** Grafana is provisioned from the repository (`infra/grafana/`) with two datasources, Loki and
+Postgres (a read-only role), and three dashboards: "Service Logs", "Server capacity",
+"Run operations". It is proxied through admin-frontend at `/grafana/`.
 
 - **LangSmith** (optional): `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY`.
 
-### Логирование
+### Logging
 
-Все сервисы используют `structlog` (JSON для prod, console для dev).
-Подробнее: [docs/LOGGING.md](docs/LOGGING.md)
+All services use `structlog` (JSON for prod, console for dev).
+Details: [docs/LOGGING.md](docs/LOGGING.md)
