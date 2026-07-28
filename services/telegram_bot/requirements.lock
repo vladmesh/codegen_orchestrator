@@ -48,7 +48,7 @@ pynacl==1.6.2
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 python-dotenv==1.2.1
     # via pydantic-settings
-python-telegram-bot==22.5
+python-telegram-bot==22.8
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 pyyaml==6.0.3
     # via telegram-bot (services/telegram_bot/pyproject.toml)
