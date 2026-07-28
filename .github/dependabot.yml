@@ -1,0 +1,40 @@
+version: 2
+
+# Without this file nothing opens pull requests and the alerts just accumulate:
+# 53 of them had piled up on the two frontends before it existed.
+#
+# Security updates arrive regardless of the schedule below. The weekly runs are
+# for ordinary version drift, grouped so a bump is one review rather than thirty.
+updates:
+  - package-ecosystem: npm
+    directories:
+      - /services/admin-frontend
+      - /services/user-dashboard
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # A frontend has no runtime of its own to break: the build either passes
+      # or it does not, so patches ride together.
+      frontend-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
