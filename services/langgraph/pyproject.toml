@@ -11,7 +11,7 @@ dependencies = [
 
     # HTTP client
     "httpx>=0.27.0",
-    "aiohttp>=3.9.0",
+    "aiohttp>=3.14.3",
 
     # Redis (for stream communication)
     "redis[hiredis]>=8.0.0",
@@ -35,7 +35,7 @@ dependencies = [
     "ddgs>=7.0.0",
 
     # SSH for deploy pre-checks (server directory validation)
-    "asyncssh>=2.14.0",
+    "asyncssh>=2.24.0",
 
     # shared/ deps (shared is COPY'd as plain files, not pip-installed)
     "pgvector>=0.2.5",

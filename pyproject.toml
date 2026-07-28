@@ -7,11 +7,11 @@ requires-python = ">=3.12"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0.0",
+    "pytest>=9.1.1",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
-    "jsonschema>=4.0.0",
+    "jsonschema>=4.26.0",
     # Pinned below 0.16 deliberately. 0.16 formats Python inside Markdown, and it also
     # stops treating services/worker-manager as its own config root, which surfaces 132
     # real violations there (blind except, typing.Dict, unsorted imports, naive datetimes).
