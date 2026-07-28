@@ -13,6 +13,26 @@ from shared.schemas import Time4VPSServer, Time4VPSServerDetails, Time4VPSTask
 
 logger = get_logger(__name__)
 
+# Provider error bodies are short JSON like {"error":["ipnotallowed","unauthorized"]}.
+# Cap anyway so an HTML error page can't flood the log or an exception message.
+_ERROR_BODY_LIMIT = 2000
+
+
+class Time4VPSAPIError(Exception):
+    """Time4VPS answered with 4xx/5xx. Carries the response body, which names the reason.
+
+    The provider answers with the actual cause (`ipnotallowed`, `wronglogin`), while
+    httpx's own message only says "Unauthorized". Keep the body on the exception so
+    callers log the reason without re-issuing the request by hand.
+    """
+
+    def __init__(self, method: str, url: str, status_code: int, body: str):
+        self.method = method
+        self.url = url
+        self.status_code = status_code
+        self.body = body
+        super().__init__(f"{method} {url} -> {status_code}: {body}")
+
 
 class Time4VPSClient:
     """Client for Time4VPS API."""
@@ -21,8 +41,13 @@ class Time4VPSClient:
         """Initialize Time4VPS Client.
 
         Args:
-            username: Time4VPS username. Defaults to TIME4VPS_USERNAME env var.
+            username: Time4VPS account login. Callers pass it explicitly; the env
+                fallback is TIME4VPS_USERNAME.
             password: Time4VPS password. Defaults to TIME4VPS_PASSWORD env var.
+
+        Note: access to the API is restricted by an IP allowlist on the provider side.
+        A correct login from an unlisted address answers 401 with
+        {"error":["ipnotallowed","unauthorized"]}.
         """
         self.base_url = "https://billing.time4vps.com/api"
         self.username = username or os.getenv("TIME4VPS_USERNAME")
@@ -47,55 +72,59 @@ class Time4VPSClient:
             self._auth_header = f"Basic {encoded_auth}"
         return {"Authorization": self._auth_header}
 
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Send an authenticated request, logging the response body on 4xx/5xx."""
+        headers = self._get_auth_header()
+        url = f"{self.base_url}{path}"
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.request(method, url, headers=headers, **kwargs)
+
+        if resp.is_error:
+            body = resp.text[:_ERROR_BODY_LIMIT]
+            logger.error(
+                "time4vps_http_error",
+                method=method,
+                url=url,
+                status_code=resp.status_code,
+                body=body,
+            )
+            raise Time4VPSAPIError(method, url, resp.status_code, body)
+
+        return resp
+
     async def get_servers(self) -> list[Time4VPSServer]:
         """List all servers."""
-        headers = self._get_auth_header()
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/server", headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            # API returns list of servers
-            return [Time4VPSServer.model_validate(item) for item in data]
+        resp = await self._request("GET", "/server")
+        # API returns list of servers
+        return [Time4VPSServer.model_validate(item) for item in resp.json()]
 
     async def get_server_details(self, server_id: int) -> Time4VPSServerDetails:
         """Get details for a specific server.
 
         Note: The response does not include server_id - use the parameter if needed.
         """
-        headers = self._get_auth_header()
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/server/{server_id}", headers=headers)
-            resp.raise_for_status()
-            return Time4VPSServerDetails.model_validate(resp.json())
+        resp = await self._request("GET", f"/server/{server_id}")
+        return Time4VPSServerDetails.model_validate(resp.json())
 
     async def reset_password(self, server_id: int) -> int:
         """Reset server root password.
 
         Returns task_id for polling the result.
         """
-        headers = self._get_auth_header()
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self.base_url}/server/{server_id}/resetpassword", headers=headers
-            )
-            resp.raise_for_status()
-            result = resp.json()
+        resp = await self._request("POST", f"/server/{server_id}/resetpassword")
+        result = resp.json()
 
-            if "task_id" not in result:
-                logger.error("time4vps_reset_password_missing_task_id", response=result)
-                raise ValueError(f"No task_id in reset_password response: {result}")
+        if "task_id" not in result:
+            logger.error("time4vps_reset_password_missing_task_id", response=result)
+            raise ValueError(f"No task_id in reset_password response: {result}")
 
-            return result["task_id"]
+        return result["task_id"]
 
     async def get_task_result(self, server_id: int, task_id: int) -> Time4VPSTask:
         """Get task status and result."""
-        headers = self._get_auth_header()
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{self.base_url}/server/{server_id}/task/{task_id}", headers=headers
-            )
-            resp.raise_for_status()
-            return Time4VPSTask.model_validate(resp.json())
+        resp = await self._request("GET", f"/server/{server_id}/task/{task_id}")
+        return Time4VPSTask.model_validate(resp.json())
 
     async def wait_for_password_reset(
         self, server_id: int, task_id: int, timeout: int = 300, poll_interval: int = 5
@@ -185,11 +214,8 @@ class Time4VPSClient:
         Returns:
             List of available OS templates
         """
-        headers = self._get_auth_header()
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/server/{server_id}/oses", headers=headers)
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._request("GET", f"/server/{server_id}/oses")
+        return resp.json()
 
     async def reinstall_server(
         self,
@@ -211,7 +237,6 @@ class Time4VPSClient:
         Returns:
             task_id for polling completion
         """
-        headers = self._get_auth_header()
         payload: dict[str, Any] = {"os": os_template}
 
         if ssh_key:
@@ -225,21 +250,17 @@ class Time4VPSClient:
             os_template=os_template,
         )
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self.base_url}/server/{server_id}/reinstall", headers=headers, json=payload
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            logger.debug("time4vps_reinstall_response", response=result)
+        resp = await self._request("POST", f"/server/{server_id}/reinstall", json=payload)
+        result = resp.json()
+        logger.debug("time4vps_reinstall_response", response=result)
 
-            if "task_id" not in result:
-                logger.error("time4vps_reinstall_missing_task_id", response=result)
-                raise ValueError(f"No task_id in reinstall response: {result}")
+        if "task_id" not in result:
+            logger.error("time4vps_reinstall_missing_task_id", response=result)
+            raise ValueError(f"No task_id in reinstall response: {result}")
 
-            task_id = result["task_id"]
-            logger.info("time4vps_reinstall_task_created", task_id=task_id, server_id=server_id)
-            return task_id
+        task_id = result["task_id"]
+        logger.info("time4vps_reinstall_task_created", task_id=task_id, server_id=server_id)
+        return task_id
 
     async def get_server_id_by_handle(self, server_handle: str) -> int | None:
         """Get Time4VPS server_id from handle.

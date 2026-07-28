@@ -11,7 +11,9 @@ from shared.contracts.dto.incident import IncidentStatus, IncidentType
 class IncidentBase(BaseModel):
     """Base incident schema."""
 
-    server_handle: str = Field(description="Server handle")
+    server_handle: str | None = Field(
+        default=None, description="Server handle; None for platform-level incidents"
+    )
     incident_type: IncidentType = Field(description="Type of incident")
     details: dict = Field(default_factory=dict, description="Additional details")
     affected_services: list = Field(default_factory=list, description="List of affected services")

@@ -16,8 +16,9 @@ class Incident(Base):
     __tablename__ = "incidents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    server_handle: Mapped[str] = mapped_column(
-        String(255), ForeignKey("servers.handle"), index=True
+    # NULL for platform-level incidents not tied to a server (provider API outage).
+    server_handle: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("servers.handle"), index=True, nullable=True
     )
     incident_type: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(50), default=IncidentStatus.DETECTED.value)

@@ -2,6 +2,15 @@
 
 ## 2026-07-28
 
+- A failing Time4VPS API no longer hides for a day. The client logs the response body with the
+  status for every request and raises `Time4VPSAPIError` carrying it, so `ipnotallowed` (the
+  provider's IP allowlist) is no longer read as bad credentials. A sync cycle that could not read
+  the provider logs `server_sync_incomplete` at error instead of `server_sync_complete` with zero
+  counters, and a repeating failure opens one `provider_api_unavailable` incident plus one admin
+  alert, resolved automatically when the provider answers again. Incidents can now be
+  platform-level: `incidents.server_handle` is nullable for failures that belong to no single
+  server.
+
 - `scripts/system_configs.yaml` is now the source of truth for the keys it declares. Deploy applies
   it after migrations and overwrites existing values, printing one line per diverged key with the
   database and file values. A value edited through the API survives until the next deploy; a key

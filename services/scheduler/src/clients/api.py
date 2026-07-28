@@ -280,7 +280,7 @@ class SchedulerAPIClient:
 
     async def create_incident(
         self,
-        server_handle: str,
+        server_handle: str | None,
         incident_type: str,
         details: dict,
         affected_services: list[str] | None = None,
