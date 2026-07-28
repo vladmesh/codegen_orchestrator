@@ -166,8 +166,24 @@
   the same tick, and admins are told the value came back after it was confirmed gone. The one
   reading that does not reopen a grant is one whose slot has a live owner again: the contract holds
   one value per `(project, env_key)`, so what was read may be the next grant's access, and taking
-  it off from here would revoke a grant that is being used. Past the watch window the record is
-  closed for good, and that is where the promise ends.
+  it off from here would revoke a grant that is being used.
+
+  That watch is bounded in minutes, and the writer it handles is not. A value restored just past
+  the window used to stand for good: nothing read the slot again, so there was no revoke, no
+  visible failure and no human. The promise is now made at two speeds. The fast level is the watch
+  above, unchanged. Under it the invariant itself — the key is empty while no grant holds it — is
+  checked on its own cadence, `supervisor.temporary_access_contract_audit_hours` (24 by default),
+  for every `(project, env_key)` slot the record knows, however long ago its last grant closed. The
+  sweep asks for it in the same call
+  (`GET /api/temporary-access-grants/?live=true&slot_audit_before=…`), which returns one row per
+  slot — the newest grant recorded for it — because the slot holds one value and the older grants
+  would be the same ssh repeated for history. `observed_at` is what makes a slot due and every
+  reading stamps it, so a slot inside the fast watch is never audited on top of being watched, and
+  a slot whose server cannot be reached is held to one playbook per interval by a marker the
+  scheduler takes before asking. What the slow level finds goes down the existing path: reopened as
+  `observed_after_revoke`, revoked, and escalated to a human if it will not go. So the promise no
+  longer ends with the window; it becomes slower. The access does not outlive one reconciliation
+  interval while the slot is watched, and does not outlive one slow-check interval after that.
 
   Three things that criterion needed before it was one. `PATCH /api/temporary-access-grants/{id}`
   still accepted `status=revoked` from any internal caller, which is the whole claim the system

@@ -44,6 +44,7 @@ REQUIRED_KEYS = [
     "supervisor.temporary_access_observation_window_minutes",
     "supervisor.temporary_access_unrevoked_ttl_minutes",
     "supervisor.temporary_access_revoked_watch_minutes",
+    "supervisor.temporary_access_contract_audit_hours",
     "health.ram_threshold_pct",
     "health.disk_threshold_pct",
     "health.consecutive_failure_threshold",

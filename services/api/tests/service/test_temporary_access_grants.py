@@ -681,3 +681,142 @@ async def test_a_revoked_grant_has_nothing_to_escalate(async_client: AsyncClient
     assert escalated.status_code == status.HTTP_409_CONFLICT
     run = await async_client.get(f"/api/runs/{run_id}")
     assert run.json()["status"] != "failed"
+
+
+async def _age_the_slot(db_engine, grant_id: str, *, days: int) -> None:
+    """Put a closed grant far enough back that only the slow check would find it.
+
+    The fast watch is bounded in minutes and a test must not wait it out; what is
+    being checked here is the level that runs when that one has long stopped.
+    """
+    long_ago = datetime.now(UTC) - timedelta(days=days)
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as session:
+        await session.execute(
+            update(TemporaryAccessGrant)
+            .where(TemporaryAccessGrant.id == grant_id)
+            .values(granted_at=long_ago, revoked_at=long_ago, observed_at=long_ago)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_slot_the_watch_has_forgotten_comes_back_for_the_slow_check(
+    async_client: AsyncClient, db_engine
+):
+    """The reviewed hole: past the watch, nothing read the slot ever again.
+
+    A value written back at minute 61 stood for good. The contract still says the
+    key is empty while no grant holds it, so the slot returns on its own cadence
+    however long ago the grant closed.
+    """
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    await _revoke_by_observation(async_client, db_engine, payload["id"])
+    await _age_the_slot(db_engine, payload["id"], days=9)
+
+    forgotten_by_the_watch = await async_client.get(
+        "/api/temporary-access-grants/",
+        params={
+            "live": "true",
+            "project_id": project_id,
+            "revoked_after": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert forgotten_by_the_watch.json() == []
+
+    due = await async_client.get(
+        "/api/temporary-access-grants/",
+        params={
+            "live": "true",
+            "project_id": project_id,
+            "revoked_after": datetime.now(UTC).isoformat(),
+            "slot_audit_before": (datetime.now(UTC) - timedelta(hours=24)).isoformat(),
+        },
+    )
+    assert [row["id"] for row in due.json()] == [payload["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_slot_read_within_the_interval_is_not_asked_for_again(
+    async_client: AsyncClient, db_engine
+):
+    """One ssh per slot per interval: a slot just read is not due."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    await _revoke_by_observation(async_client, db_engine, payload["id"])
+
+    due = await async_client.get(
+        "/api/temporary-access-grants/",
+        params={
+            "live": "true",
+            "project_id": project_id,
+            "revoked_after": datetime.now(UTC).isoformat(),
+            "slot_audit_before": (datetime.now(UTC) - timedelta(hours=24)).isoformat(),
+        },
+    )
+
+    assert due.json() == []
+
+
+@pytest.mark.asyncio
+async def test_the_slow_check_reads_a_slot_once_however_many_grants_it_held(
+    async_client: AsyncClient, db_engine
+):
+    """The slot holds one value, so checking it is one reading, not one per grant.
+
+    Every grant a project ever made for the key is closed, and the one that
+    answers for the slot now is the newest. Returning the older ones would be the
+    same ssh repeated for history.
+    """
+    project_id, run_id = await _project_with_run(async_client)
+    first = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=first)
+    await _revoke_by_observation(async_client, db_engine, first["id"])
+    await _age_the_slot(db_engine, first["id"], days=30)
+
+    second = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=second)
+    await _revoke_by_observation(async_client, db_engine, second["id"])
+    await _age_the_slot(db_engine, second["id"], days=9)
+
+    due = await async_client.get(
+        "/api/temporary-access-grants/",
+        params={
+            "live": "true",
+            "project_id": project_id,
+            "revoked_after": datetime.now(UTC).isoformat(),
+            "slot_audit_before": (datetime.now(UTC) - timedelta(hours=24)).isoformat(),
+        },
+    )
+
+    assert [row["id"] for row in due.json()] == [second["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_live_grant_is_not_also_a_slot_the_slow_check_reads(
+    async_client: AsyncClient, db_engine
+):
+    """A slot with an owner is reconciled by that owner, on the fast cadence."""
+    project_id, run_id = await _project_with_run(async_client)
+    closed = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=closed)
+    await _revoke_by_observation(async_client, db_engine, closed["id"])
+    await _age_the_slot(db_engine, closed["id"], days=9)
+
+    live = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=live)
+
+    due = await async_client.get(
+        "/api/temporary-access-grants/",
+        params={
+            "live": "true",
+            "project_id": project_id,
+            "revoked_after": datetime.now(UTC).isoformat(),
+            "slot_audit_before": (datetime.now(UTC) - timedelta(hours=24)).isoformat(),
+        },
+    )
+
+    assert [row["id"] for row in due.json()] == [live["id"]]

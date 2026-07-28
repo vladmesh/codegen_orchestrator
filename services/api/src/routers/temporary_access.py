@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.temporary_access import (
@@ -114,15 +115,32 @@ async def list_grants(
             "so the sweep keeps watching a slot for a while after it was confirmed empty"
         ),
     ),
+    slot_audit_before: datetime | None = Query(
+        None,
+        description=(
+            "With live=true, also return the grant that owns each closed slot last read "
+            "before this moment, so the slow check of the project's contract picks it up"
+        ),
+    ),
 ) -> list[TemporaryAccessGrant]:
     """List grants, newest first.
 
-    ``live`` and ``revoked_after`` widen one set rather than narrowing it. A
-    closed grant is not holding access, but the value can still come back onto
-    the running service after the readings agreed it was gone — a dispatch that
-    was already on its way, or a write from outside — and nothing would notice if
-    the sweep stopped looking the moment the record closed. So the sweep asks for
-    the live grants plus the recently closed ones, and reads the slot of both.
+    ``live``, ``revoked_after`` and ``slot_audit_before`` widen one set rather
+    than narrowing it. A closed grant is not holding access, but the value can
+    still come back onto the running service after the readings agreed it was
+    gone — a dispatch that was already on its way, or a write from outside — and
+    nothing would notice if the sweep stopped looking the moment the record
+    closed. So the sweep asks for the live grants plus the recently closed ones,
+    and reads the slot of both.
+
+    ``slot_audit_before`` is the second, slower level of that. The fast watch
+    ends, and a value written back afterwards would otherwise stand for good; so
+    a slot whose last reading is older than the given moment comes back for one
+    more reading however long ago it was closed. It is one slot per
+    ``(project, env_key)``, not one per grant: the contract holds a single value
+    there, and the grant that owns it is the newest one recorded for it. Older
+    grants for the same slot are somebody else's history and reading them would
+    be the same ssh repeated.
     """
     query = select(TemporaryAccessGrant).order_by(TemporaryAccessGrant.granted_at.desc())
     if project_id is not None:
@@ -143,9 +161,42 @@ async def list_grants(
                     TemporaryAccessGrant.revoked_at >= revoked_after,
                 ),
             )
+        if slot_audit_before is not None:
+            held = or_(held, _slot_due_for_audit(slot_audit_before))
         query = query.where(held)
     result = await db.execute(query)
     return list(result.scalars().all())
+
+
+def _slot_due_for_audit(read_before: datetime):
+    """The closed grants whose slot has not been read since *read_before*.
+
+    One row per slot. A project may have handed the same key out many times, and
+    every one of those grants is closed; the value that can be sitting there now
+    is one value, and reading it once is the whole check. The grant that answers
+    for it is the newest recorded for that ``(project, env_key)`` — the others
+    describe deploys that have since been replaced.
+
+    ``observed_at`` is what makes a slot due, and it is stamped by every reading
+    of it, whichever level took it. So a slot still inside the fast watch is
+    never audited on top of being watched, and one that nothing has looked at
+    since the watch ended comes back exactly once per interval.
+    """
+    newer = aliased(TemporaryAccessGrant)
+    return and_(
+        TemporaryAccessGrant.status == TemporaryAccessStatus.REVOKED.value,
+        or_(
+            TemporaryAccessGrant.observed_at.is_(None),
+            TemporaryAccessGrant.observed_at < read_before,
+        ),
+        ~select(newer.id)
+        .where(
+            newer.project_id == TemporaryAccessGrant.project_id,
+            newer.env_key == TemporaryAccessGrant.env_key,
+            newer.granted_at > TemporaryAccessGrant.granted_at,
+        )
+        .exists(),
+    )
 
 
 @router.get("/{grant_id}", response_model=TemporaryAccessGrantRead)

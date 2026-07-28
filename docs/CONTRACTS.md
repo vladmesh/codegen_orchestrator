@@ -1071,8 +1071,21 @@ The promise about a test identity's access is not "the access can never come bac
 between the decision and the effect stands GitHub Actions, which this system does not own and
 which works asynchronously, so no amount of stopping writers here proves that none of them will
 apply the old value afterwards. The promise is that **the access does not outlive one
-reconciliation interval after it is seen** — while the slot is being watched, which is the grant's
-own lifetime plus `supervisor.temporary_access_revoked_watch_minutes` after the readings closed it.
+reconciliation interval after it is seen**, and it is made at two speeds:
+
+- **Fast, while the slot is watched** — the grant's own lifetime plus
+  `supervisor.temporary_access_revoked_watch_minutes` after the readings closed it. Here the value
+  does not outlive one reconciliation interval. This is the level a dispatch that was already in
+  flight lands in, and it is worth an ssh every few minutes.
+- **Slow, for as long as the slot exists** — the invariant *the key is empty while no grant holds
+  it* is checked on its own cadence, `supervisor.temporary_access_contract_audit_hours`, for every
+  `(project, env_key)` slot the record knows, however long ago its last grant closed. Here the value
+  does not outlive one slow-check interval. It costs one ssh and one playbook per slot, which is why
+  it is counted in hours rather than minutes.
+
+The watch expiring is therefore not the end of the promise, only a change of speed. A value applied
+a minute after the fast watch ends is found by the slow check, revoked by the same code, and fails
+the same way visibly if it will not go.
 
 What that rests on: `revoked` is written only after the environment of the running service has been
 read back through `env-observation:queue` and no longer carries the value. Until that reading has
@@ -1108,8 +1121,18 @@ Three rules make that hold rather than merely describe it:
   under `revoke_reason=observed_after_revoke`, with `reopened_at` stamped and the retry budget
   counted from there, and the sweep clears it again on the same tick. Unless the slot has a live
   owner by then: the contract holds one value per `(project, env_key)`, so what is being read may
-  be a later grant's access, and that grant is reconciled on its own. Past the watch window the
-  grant is closed for good, and that bound is where the promise above ends.
+  be a later grant's access, and that grant is reconciled on its own.
+- **Past the watch window the slot is still read, only rarely.** The invariant does not expire with
+  the window, so the sweep also asks for the owner of every closed slot last read before
+  `now - supervisor.temporary_access_contract_audit_hours` (`GET /api/temporary-access-grants/
+  ?live=true&slot_audit_before=…`). One row per slot: the grant that answers for it is the newest
+  recorded for that `(project, env_key)`, and the older ones would be the same ssh repeated for
+  history. `observed_at` is what makes a slot due and every reading stamps it, so a slot inside the
+  fast watch is never audited on top of being watched. A slot on a server that cannot be reached is
+  never read and would otherwise be asked for every tick, so the scheduler takes a marker
+  (`temporary-access:slot-audit:{project}:{env_key}`, expiring with the interval) before the
+  question goes out. What the slow check finds goes down the same path as the fast one: reopened
+  under `observed_after_revoke`, revoked, and escalated to a human if it stays.
 
 Cancelling runs on Actions, withdrawing a queued dispatch and superseding a dead claim all remain.
 None of them is proof that the access is gone; they shorten the window in which the old value can

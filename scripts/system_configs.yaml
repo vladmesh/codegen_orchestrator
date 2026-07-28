@@ -152,6 +152,11 @@
   category: supervisor
   description: "Minutes a revoked grant keeps being read after the readings closed it, so a value written back afterwards is seen and revoked again"
 
+- key: supervisor.temporary_access_contract_audit_hours
+  value: 24
+  category: supervisor
+  description: "Hours between the slow checks that a project's test identity slot is empty while no grant holds it; one ssh and one playbook per project, so it is counted in hours rather than minutes"
+
 # --- deploy ---
 - key: deploy.max_deploy_fix_attempts
   value: 2

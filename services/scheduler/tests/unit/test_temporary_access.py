@@ -1946,3 +1946,212 @@ class TestAValueThatComesBackAfterTheGrantClosed:
         assert _posted(api_client) == []
         assert _published(redis_client, DEPLOY_QUEUE) == []
         assert _grant_updates(api_client) == []
+
+
+def _long_closed(**overrides) -> TemporaryAccessGrantDTO:
+    """A grant closed long enough ago that the cooling-off watch is over.
+
+    Nothing is looking at its slot on the fast cadence any more. What still
+    holds is the contract: the key is empty while no grant owns it, and the slow
+    check is what reads that.
+    """
+    long_ago = datetime.now(UTC) - timedelta(days=9)
+    fields = {
+        "granted_at": long_ago,
+        "revoked_at": long_ago,
+        "observed_at": long_ago,
+    }
+    fields.update(overrides)
+    return _closed(**fields)
+
+
+class TestTheSlowCheckOfTheContractSlot:
+    """The reviewed hole: the promise used to end when the fast watch did.
+
+    The writer the guarantee is about is GitHub Actions and whatever else can
+    reach the server, and neither is bounded by a 60-minute window. A value
+    applied at minute 61 fell out of the watch and stood for good: nothing read
+    the slot again, so no revoke, no visible failure and no human.
+
+    So the promise is made twice. The fast level, paced in minutes, is unchanged
+    and covers the dispatch that was already in flight. The slow level, paced in
+    hours, checks the invariant itself for as long as the slot exists — the key
+    is empty while no grant holds it — and hands what it finds to the same
+    revoke and the same escalation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_value_restored_after_the_watch_expired_is_still_taken_off(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """The regression the review asked for, at the far side of the window."""
+        from src.tasks import temporary_access as module
+
+        monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
+        api_client.list_temporary_access_grants_under_watch.return_value = [_long_closed()]
+        api_client.record_temporary_access_observation.return_value = _reopened()
+        redis_client.redis.answer(
+            _observed(present=True, request_id=_question(readings=REVOKE_CONFIRMATION_READINGS))
+        )
+
+        counts = await module.supervise_temporary_access(api_client, redis_client)
+
+        assert counts["dispatched"] == 1
+        deploy = _published_deploy(redis_client)
+        assert deploy.env_overrides == {ENV_KEY: ""}
+        assert deploy.head_sha == HEAD_SHA
+        reopened = _grant_updates(api_client)[-1]
+        assert reopened.status is TemporaryAccessStatus.REVOKING
+        assert reopened.revoke_reason is TemporaryAccessRevokeReason.OBSERVED_AFTER_REVOKE
+
+    @pytest.mark.asyncio
+    async def test_a_slot_nobody_watches_is_asked_for_by_its_own_cadence(
+        self, api_client, redis_client
+    ):
+        """The sweep names both cutoffs: minutes for the watch, hours for the check."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = []
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        watch_from, audit_before = (
+            api_client.list_temporary_access_grants_under_watch.call_args.args
+        )
+        assert 59 <= (datetime.now(UTC) - watch_from).total_seconds() / 60 <= 61
+        assert 23.9 <= (datetime.now(UTC) - audit_before).total_seconds() / 3600 <= 24.1
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_cannot_be_read_costs_one_playbook_per_interval(
+        self, api_client, redis_client
+    ):
+        """An ssh per project is what makes this cadence hours rather than minutes.
+
+        A slot is due until something reads it, and a machine that is down is
+        never read. Without a marker of its own the slow check would ask on every
+        tick for as long as the machine stayed down, which is the cost the
+        cadence exists to avoid.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [_long_closed()]
+
+        await supervise_temporary_access(api_client, redis_client)
+        await supervise_temporary_access(api_client, redis_client)
+
+        assert len(_published(redis_client, ENV_OBSERVATION_QUEUE)) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_slot_with_nothing_left_to_read_is_not_worked_on_every_tick(
+        self, api_client, redis_client
+    ):
+        """A slot whose application is gone costs the same one attempt as any other.
+
+        Nothing can be read there, so nothing ever stamps it and it stays due for
+        good. Deciding that afresh on every tick would be a round of lookups per
+        tick for every project that ever held a grant, so the interval is taken
+        before the lookups rather than before the question.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [_long_closed()]
+        api_client.get_application_if_missing_returns_none.return_value = None
+
+        await supervise_temporary_access(api_client, redis_client)
+        await supervise_temporary_access(api_client, redis_client)
+
+        assert api_client.get_application_if_missing_returns_none.await_count == 1
+        assert _published(redis_client, ENV_OBSERVATION_QUEUE) == []
+
+    @pytest.mark.asyncio
+    async def test_the_fast_watch_still_reads_every_window(self, api_client, redis_client):
+        """The slow marker must not slow the level it does not belong to.
+
+        A grant closed a moment ago is where a dispatch already in flight lands,
+        and that is read on the observation window. Only a slot past the watch is
+        the slow check's.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [
+            _closed(observed_at=datetime.now(UTC) - timedelta(minutes=6))
+        ]
+
+        await supervise_temporary_access(api_client, redis_client)
+        redis_client.redis.values.pop(
+            env_observation_pending_key(_question(readings=REVOKE_CONFIRMATION_READINGS))
+        )
+        await supervise_temporary_access(api_client, redis_client)
+
+        assert len(_published(redis_client, ENV_OBSERVATION_QUEUE)) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_slot_the_slow_check_reads_empty_is_left_alone(self, api_client, redis_client):
+        """The invariant holding is the ordinary answer and costs nothing else."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [_long_closed()]
+        api_client.record_temporary_access_observation.return_value = _long_closed(
+            observed_at=datetime.now(UTC),
+            slot_clear_readings=REVOKE_CONFIRMATION_READINGS + 1,
+        )
+        redis_client.redis.answer(
+            _observed(present=False, request_id=_question(readings=REVOKE_CONFIRMATION_READINGS))
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == _no_action()
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+        assert _grant_updates(api_client) == []
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_server_leaves_the_slow_check_undecided(
+        self, api_client, redis_client
+    ):
+        """Silence is not a reading here either: no revoke, no failure, no human."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_temporary_access_grants_under_watch.return_value = [_long_closed()]
+        redis_client.redis.answer(
+            _unreachable(request_id=_question(readings=REVOKE_CONFIRMATION_READINGS))
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == _no_action()
+        assert _posted(api_client) == []
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+        assert _grant_updates(api_client) == []
+
+    @pytest.mark.asyncio
+    async def test_a_value_the_slow_check_cannot_remove_reaches_a_human(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """A discrepancy found late fails as visibly as one found early.
+
+        The reopening gives the disagreement its own budget, and once that is
+        spent the QA run carries the named cleanup failure and the story goes to
+        a person instead of waiting in TESTING.
+        """
+        from src.tasks import temporary_access as module
+
+        monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
+        spent = _reopened(
+            reopened_at=datetime.now(UTC) - timedelta(minutes=121),
+            revoke_attempts=3,
+        )
+        api_client.list_temporary_access_grants_under_watch.return_value = [spent]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.COMPLETED, DeployOutcome.SUCCESS
+        )
+        redis_client.redis.answer(_observed(present=True))
+        api_client.record_temporary_access_observation.return_value = spent
+
+        await module.supervise_temporary_access(api_client, redis_client)
+
+        _, escalation = _escalation(api_client)
+        blocker = escalation["run_result"].blocker
+        assert blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
+        assert ENV_KEY in blocker.received
+        assert "still carries" in blocker.received

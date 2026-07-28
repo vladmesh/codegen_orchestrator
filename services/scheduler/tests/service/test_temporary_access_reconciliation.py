@@ -53,6 +53,7 @@ _CONFIG = {
     # How long a closed grant keeps being read. Not zero: these tests must see
     # the sweep still asking about a slot the record has already closed.
     "supervisor.temporary_access_revoked_watch_minutes": 60,
+    "supervisor.temporary_access_contract_audit_hours": 24,
 }
 
 

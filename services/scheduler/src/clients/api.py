@@ -259,20 +259,27 @@ class SchedulerAPIClient:
         return TemporaryAccessGrantDTO.model_validate(resp.json())
 
     async def list_temporary_access_grants_under_watch(
-        self, revoked_after: datetime
+        self, revoked_after: datetime, slot_audit_before: datetime
     ) -> list[TemporaryAccessGrantDTO]:
         """Every grant the sweep still has to read, whatever process granted it.
 
-        That is every grant that may hold access, plus the ones closed since
-        *revoked_after*. A closed grant is not holding access as far as the
-        record knows, and the record only knows what was read: a dispatch that
-        was already on its way can write the value back afterwards, and nobody
-        would see it if the readings stopped at the moment the grant closed.
+        Three sets in one answer. Every grant that may hold access. The ones
+        closed since *revoked_after*: a closed grant is not holding access as far
+        as the record knows, and the record only knows what was read, so a
+        dispatch that was already on its way can write the value back afterwards
+        and nobody would see it if the readings stopped when the grant closed.
+        And the owner of every closed slot last read before *slot_audit_before*,
+        which is the slow level — the value that came back after the fast watch
+        ended is found there, later but not never.
         """
         resp = await self._request(
             "GET",
             "temporary-access-grants/",
-            params={"live": "true", "revoked_after": revoked_after.isoformat()},
+            params={
+                "live": "true",
+                "revoked_after": revoked_after.isoformat(),
+                "slot_audit_before": slot_audit_before.isoformat(),
+            },
         )
         return [TemporaryAccessGrantDTO.model_validate(row) for row in resp.json()]
 

@@ -63,9 +63,13 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   the readings either: the slot is still read for
   `supervisor.temporary_access_revoked_watch_minutes` afterwards, and a value found on a closed
   grant puts it back under reconciliation as `observed_after_revoke` and is cleared again, unless a
-  later grant owns the slot by then. The guarantee this buys is bounded and stated that way: the
-  access does not outlive one reconciliation interval after it is seen, for as long as the slot is
-  watched.
+  later grant owns the slot by then. Past that window the slot is still read, only rarely: the
+  invariant "the key is empty while no grant holds it" is checked every
+  `supervisor.temporary_access_contract_audit_hours` for every `(project, env_key)` slot on record,
+  one reading per slot, through the same observation channel and into the same revoke and the same
+  escalation. The guarantee this buys is bounded and stated that way, at two speeds: the access
+  does not outlive one reconciliation interval after it is seen while the slot is watched, and does
+  not outlive one slow-check interval after that.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

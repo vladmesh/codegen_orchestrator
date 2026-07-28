@@ -33,6 +33,14 @@ whole watch window after the record closed, and a value found there reopens the
 grant and is revoked again. What the system promises is therefore not "the
 access can never come back" but "the access does not outlive one reconciliation
 interval after it is seen".
+
+That promise is made at two speeds, because the writer it is meant to handle is
+not bounded by our windows. The cooling-off window above is the fast one, paced
+in minutes and worth an ssh that often. Under it runs the slow one: the slot the
+contract declares must be empty while no grant holds it, and that is checked on
+its own cadence, counted in hours, for as long as the slot exists. A value that
+lands a minute after the fast watch expires is not lost — it waits for the slow
+check, is revoked by the same code, and fails the same way visibly if it stays.
 """
 
 from __future__ import annotations
@@ -121,6 +129,22 @@ def _unrevoked_ttl_minutes() -> int:
 
 def _revoked_watch_minutes() -> int:
     return startup.get_config().get_int("supervisor.temporary_access_revoked_watch_minutes")
+
+
+def _contract_audit_hours() -> int:
+    return startup.get_config().get_int("supervisor.temporary_access_contract_audit_hours")
+
+
+def _slot_audit_key(grant: TemporaryAccessGrantDTO) -> str:
+    """Marks a slot whose slow check has been attempted in this interval.
+
+    The due set is decided from when the slot was last read, and a slot that
+    cannot be read is never read — so without this a project whose server is down
+    or whose application is gone would be worked on every tick forever. The
+    marker expires with the interval, which is what makes the slow check cost one
+    attempt per slot per interval whether or not anything answers.
+    """
+    return f"temporary-access:slot-audit:{grant.project_id}:{grant.env_key}"
 
 
 def _age_minutes(moment: datetime) -> float:
@@ -212,7 +236,7 @@ async def supervise_temporary_access(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
-    """Settle every grant that still holds access, and watch the ones just closed.
+    """Settle every grant that still holds access, and read the closed slots.
 
     A closed grant is read for a while longer. The record closed it on readings,
     and readings are moments: a dispatch that was already on its way to GitHub
@@ -220,10 +244,19 @@ async def supervise_temporary_access(
     the watch window, and a value found there puts the grant back under
     reconciliation instead of standing on a bot nobody is looking at.
 
+    Past that window the slot is still read, only rarely: the contract says the
+    key is empty while no grant holds it, and that stays true whether or not any
+    grant is recent. The slow reading costs an ssh and a playbook per slot, so it
+    is asked for once per ``supervisor.temporary_access_contract_audit_hours``
+    rather than once per tick. A value found by it goes down exactly the same
+    path as one found by the fast watch.
+
     Returns counts of the actions taken this tick.
     """
-    watch_from = datetime.now(UTC) - timedelta(minutes=_revoked_watch_minutes())
-    grants = await api_client.list_temporary_access_grants_under_watch(watch_from)
+    now = datetime.now(UTC)
+    watch_from = now - timedelta(minutes=_revoked_watch_minutes())
+    audit_before = now - timedelta(hours=_contract_audit_hours())
+    grants = await api_client.list_temporary_access_grants_under_watch(watch_from, audit_before)
     counts = _empty_counts()
     if not grants:
         return counts
@@ -889,8 +922,18 @@ async def _watch_closed_grant(
     tick. The story the grant belonged to has usually finished by then; that is
     the point. What was promised is not that the value can never come back, but
     that it does not stay: the sweep that sees it takes it off.
+
+    Two cadences reach here and the handling is deliberately one. Inside the
+    cooling-off window the slot is read every observation window, because that is
+    where a dispatch already in flight lands. Outside it the same slot is read
+    once per audit interval, because the invariant it is checked against — the
+    key is empty while no grant holds it — does not expire with the window. A
+    value that came back an hour after the record closed and one that came back a
+    week after are the same value that should not be there.
     """
-    read = await _observe_running_service(api_client, redis_client, grant, log)
+    read = await _observe_running_service(
+        api_client, redis_client, grant, log, slow_audit=_past_the_watch_window(grant)
+    )
     if read is None:
         return
     observation, settled = read
@@ -912,6 +955,7 @@ async def _watch_closed_grant(
         "temporary_access_value_returned_after_revoke",
         revoked_at=grant.revoked_at.isoformat() if grant.revoked_at else None,
         observation_id=settled.observation_id,
+        slow_audit=_past_the_watch_window(grant),
     )
     await notify_admins_best_effort(
         f"Temporary access {grant.env_key} for project {grant.project_id} (grant {grant.id}) "
@@ -930,6 +974,18 @@ async def _watch_closed_grant(
     counts["dispatched"] += 1
 
 
+def _past_the_watch_window(grant: TemporaryAccessGrantDTO) -> bool:
+    """Whether this closed grant is here for the slow check rather than the watch.
+
+    A grant closed within the cooling-off window is being watched, and the watch
+    is paced in minutes. Past it, the record is only here because the slot it
+    owns is due a reading, and that is paced in hours.
+    """
+    if grant.revoked_at is None:
+        return False
+    return _age_minutes(grant.revoked_at) >= _revoked_watch_minutes()
+
+
 def _observation_request_id(grant: TemporaryAccessGrantDTO) -> str:
     """One question per reading, named after the revoke attempt and the streak.
 
@@ -946,6 +1002,8 @@ async def _observe_running_service(
     redis_client: RedisStreamClient,
     grant: TemporaryAccessGrantDTO,
     log: structlog.stdlib.BoundLogger,
+    *,
+    slow_audit: bool = False,
 ) -> tuple[EnvObservationResult, TemporaryAccessGrantDTO] | None:
     """Take one reading of the running service and record it against the grant.
 
@@ -960,7 +1018,9 @@ async def _observe_running_service(
     request_id = _observation_request_id(grant)
     observation = await _read_observation(redis_client, request_id)
     if observation is None:
-        await _ask_for_observation(api_client, redis_client, grant, request_id, log)
+        await _ask_for_observation(
+            api_client, redis_client, grant, request_id, log, slow_audit=slow_audit
+        )
         return None
 
     # The answer has been taken, so the next reading is a fresh question rather
@@ -1019,6 +1079,8 @@ async def _ask_for_observation(
     grant: TemporaryAccessGrantDTO,
     request_id: str,
     log: structlog.stdlib.BoundLogger,
+    *,
+    slow_audit: bool = False,
 ) -> None:
     """Ask the server what the service is running with, once per window.
 
@@ -1027,9 +1089,26 @@ async def _ask_for_observation(
     of the last recorded reading stops the next question following the previous
     answer immediately. Losing either costs a repeated reading, and a reading
     changes nothing.
+
+    A slow check is paced by neither. What makes a slot due is its last reading,
+    and a slot that cannot be read produces no reading — a server that is down, an
+    application that has been taken away — so it would be worked on every tick
+    until that changed. Its own marker is what holds the interval, and it is taken
+    before anything is looked up rather than before the question goes out: an
+    unreadable slot costs the same one attempt per interval as a readable one,
+    instead of a round of lookups per tick for every project that ever held a
+    grant.
     """
     if grant.observed_at is not None and _age_minutes(grant.observed_at) < (
         _observation_window_minutes()
+    ):
+        return
+
+    if slow_audit and not await redis_client.redis.set(
+        _slot_audit_key(grant),
+        request_id,
+        nx=True,
+        ex=_contract_audit_hours() * 3600,
     ):
         return
 
@@ -1061,6 +1140,7 @@ async def _ask_for_observation(
         request_id=request_id,
         server_handle=target.server_handle,
         application_id=target.application_id,
+        slow_audit=slow_audit,
     )
 
 
