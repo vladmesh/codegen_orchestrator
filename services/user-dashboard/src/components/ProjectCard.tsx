@@ -4,7 +4,8 @@ import type { LkProject } from '@/types/api'
 import StatusBadge from './StatusBadge'
 import MetricValue from './MetricValue'
 import { formatNumber, formatMs, formatPercent } from '@/lib/utils'
-import CollectionNotice, { emptyDataText } from './CollectionNotice'
+import CollectionNotice from './CollectionNotice'
+import { emptyDataText } from './emptyDataText'
 
 export default function ProjectCard({ project }: { project: LkProject }) {
   const navigate = useNavigate()

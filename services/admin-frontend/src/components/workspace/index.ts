@@ -1,4 +1,5 @@
-export { FileTree, buildTree } from './FileTree'
-export type { TreeNode } from './FileTree'
+export { FileTree } from './FileTree'
+export { buildTree } from './buildTree'
+export type { TreeNode } from './buildTree'
 export { FileViewer } from './FileViewer'
 export { WorkspaceBrowser } from './WorkspaceBrowser'

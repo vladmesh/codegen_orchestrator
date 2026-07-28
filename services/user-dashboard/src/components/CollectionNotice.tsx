@@ -7,11 +7,6 @@ const NOTICE: Record<Exclude<CollectionState, 'ok'>, string> = {
   failing: 'Сбор аналитики по этому проекту падает: последний цикл не собрал данные. Цифры ниже неполные.',
 }
 
-/** Text for an empty metric block — honest about why it is empty. */
-export function emptyDataText(collection: CollectionHealth): string {
-  return collection.state === 'ok' ? 'Нет данных' : 'Сбор данных не работает'
-}
-
 /** Banner shown whenever analytics collection is not running. */
 export default function CollectionNotice({ collection }: { collection: CollectionHealth }) {
   if (collection.state === 'ok') return null
