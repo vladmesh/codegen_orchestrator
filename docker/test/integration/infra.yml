@@ -90,6 +90,10 @@ services:
       - TIME4VPS_PASSWORD=test
       - HEALTH_CHECK_INTERVAL=300
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      # The analytics aggregator refuses to start without a Loki read address.
+      # No Loki runs in this stack; queries fail inside the cycle's error
+      # handler, which is enough for the infra tests.
+      - LOKI_URL=http://loki:3100
     depends_on:
       system-config-seed:
         condition: service_healthy
