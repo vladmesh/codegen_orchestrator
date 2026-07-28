@@ -439,7 +439,7 @@
   joined SQL predicates, discover worker containers by ownership label, reconnect idle pubsub
   listeners, and keep raw git output out of noop failure results.
 
-Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
+Format: [Keep a Changelog](https://keepachangelog.com/). Grouped by date.
 
 ## 2026-07-14
 
@@ -507,7 +507,7 @@
 ## 2026-03-21
 
 ### Added
-- **ЛК frontend SPA** (#1036): New `services/user-dashboard/` — React + Vite + Tailwind CSS + Recharts SPA for non-technical founders. Auth flow (one-time token → JWT), project list with summary metrics, project dashboard with period selector (24h/7d/30d), 4 KPI cards, line chart with metric switching, service status, top endpoints, per-service breakdown. Docker: node build → nginx:alpine, port 3003. Light theme, Russian UI, mobile-responsive.
+- **Personal-area frontend SPA** (#1036): New `services/user-dashboard/` — React + Vite + Tailwind CSS + Recharts SPA for non-technical founders. Auth flow (one-time token → JWT), project list with summary metrics, project dashboard with period selector (24h/7d/30d), 4 KPI cards, line chart with metric switching, service status, top endpoints, per-service breakdown. Docker: node build → nginx:alpine, port 3003. Light theme, Russian UI, mobile-responsive.
 - **LK API: auth + analytics endpoints** (#1034): JWT auth flow via `POST /api/lk/auth/token` (one-time Redis token → 24h JWT). 4 owner-scoped analytics endpoints: projects list with daily summary, project summary, chart data, service status. 18 service tests.
 - **Telegram bot: dashboard button** (#1035): `/dashboard` command generates one-time Redis token (TTL 5min) and sends inline URL button to open the LK dashboard.
 

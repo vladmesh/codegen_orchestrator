@@ -1,211 +1,211 @@
-# Glossary / Словарь терминов
+# Glossary
 
-Единая терминология для проекта codegen_orchestrator.
+Single source of terminology for the codegen_orchestrator project.
 
 ## Core Concepts
 
-### Service (Сервис)
-Долгоживущий процесс. Один контейнер = один сервис.
+### Service
+A long-lived process. One container = one service.
 
-**Примеры:** `api`, `telegram-bot`, `langgraph`, `scheduler`
+**Examples:** `api`, `telegram-bot`, `langgraph`, `scheduler`
 
-### Consumer (Консьюмер)
-**Роль, а не имя сервиса.** Любой сервис или компонент, который слушает Redis queue.
+### Consumer
+**A role, not a service name.** Any service or component that listens to a Redis queue.
 
-Сервис становится consumer'ом только в контексте конкретной очереди:
-- `langgraph` — consumer для `engineering:queue`, `deploy:queue`
-- `infra-service` — consumer для `provisioner:queue` (provisioning only)
-- `worker-manager` — consumer для `worker:commands`
-- `worker-wrapper` — consumer для `worker:*:input` (внутри контейнера воркера)
+A service becomes a consumer only in the context of a specific queue:
+- `langgraph` — consumer of `engineering:queue`, `deploy:queue`
+- `infra-service` — consumer of `provisioner:queue` (provisioning only)
+- `worker-manager` — consumer of `worker:commands`
+- `worker-wrapper` — consumer of `worker:*:input` (inside the worker container)
 
-> **Важно:** Не путайте с именем сервиса. Нет сервиса `engineering-consumer` — есть сервис `langgraph`, который является consumer'ом очереди `engineering:queue`.
+> **Important:** Do not confuse this with a service name. There is no `engineering-consumer` service — there is the `langgraph` service, which is a consumer of the `engineering:queue` queue.
 
-### Worker (Воркер)
-Docker-контейнер с CLI coding agent внутри. Используется только для Developer workers.
+### Worker
+A Docker container with a CLI coding agent inside. Used only for Developer workers.
 
 | Type | Lifecycle | Queue Pattern | Session |
 |------|-----------|---------------|---------|
 | **Developer Worker** | Per-story (reused) or per-task (standalone) | `worker:{worker_id}:*` | No (stateless) |
 
-**Developer Worker** — Контейнер с coding agent. Для задач внутри Story — переиспользуется между задачами (worker_id хранится в Redis hash `story:workers`). Для standalone задач — эфемерный, удаляется после завершения. Stateless — контекст это код в репо + ошибки.
+**Developer Worker** — a container with a coding agent. For tasks inside a Story it is reused between tasks (worker_id is stored in the Redis hash `story:workers`). For standalone tasks it is ephemeral and removed after completion. Stateless — its context is the code in the repo plus the errors.
 
-**Управляется:** `worker-manager`
-**Конфигурация:** Промпты хранятся в `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory и Codex → `AGENTS.md`. Также инжектится `TASK.md` с конкретной задачей.
+**Managed by:** `worker-manager`
+**Configuration:** prompts are stored in `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager maps them to agent-specific files through `get_instruction_path()`: Claude → `CLAUDE.md`, Factory and Codex → `AGENTS.md`. A `TASK.md` with the specific task is injected as well.
 
-### Project Status (Статус проекта)
-Жизненный цикл проекта. Минимальный набор: `draft` → `active` → `paused` / `archived`. Не содержит процессных статусов (scaffolding, deploying) — активность определяется дочерними сущностями (Story, Run).
+### Project Status
+The project lifecycle. Minimal set: `draft` → `active` → `paused` / `archived`. It carries no process statuses (scaffolding, deploying) — activity is determined by child entities (Story, Run).
 
-### Application (Приложение)
-Runtime-сущность, связывающая репозиторий с сервером. Одно приложение = один deployable unit на конкретном сервере. Уникально по паре `(repo_id, server_handle)`. Трекает runtime-статус через `ApplicationStatus`.
-**Статусы:** `not_deployed`, `deploying`, `running`, `stopping`, `stopped`, `undeploying`, `down`, `degraded`
-**Связи:** Repository (repo_id), Server (server_handle)
-**Таблица:** `applications`
+### Application
+A runtime entity that links a repository to a server. One application = one deployable unit on a specific server. Unique by the pair `(repo_id, server_handle)`. Tracks runtime status through `ApplicationStatus`.
+**Statuses:** `not_deployed`, `deploying`, `running`, `stopping`, `stopped`, `undeploying`, `down`, `degraded`
+**Relations:** Repository (repo_id), Server (server_handle)
+**Table:** `applications`
 
-### Deployment (Деплоймент)
-Immutable запись попытки деплоя. Каждый deploy создаёт новую запись. Связан с Application через `application_id`. Результат фиксируется через `DeploymentResult`: `pending`, `success`, `failed`, `canceled`.
-**Таблица:** `service_deployments`
+### Deployment
+An immutable record of a deploy attempt. Every deploy creates a new record. Linked to an Application through `application_id`. The result is recorded through `DeploymentResult`: `pending`, `success`, `failed`, `canceled`.
+**Table:** `service_deployments`
 
-### Service Status (Статус сервиса)
-Runtime-состояние задеплоенного сервиса проекта. Отдельно от lifecycle-статуса проекта. Значения: `not_deployed`, `running`, `degraded`, `down`, `stopped`. Хранится в `project.service_status`.
+### Service Status
+The runtime state of a deployed project service. Separate from the project lifecycle status. Values: `not_deployed`, `running`, `degraded`, `down`, `stopped`. Stored in `project.service_status`.
 
-### Repository Status (Статус репозитория)
-Доступность git-репозитория. Значения: `active` (доступен на GitHub), `missing` (удалён или недоступен). Заменяет старый `ProjectStatus.MISSING`.
+### Repository Status
+Availability of the git repository. Values: `active` (available on GitHub), `missing` (deleted or unavailable). Replaces the old `ProjectStatus.MISSING`.
 
-### Service Agent (Сервисный Агент)
-LangGraph ReactAgent, живущий внутри сервиса langgraph, выполняющий специализированную профильную работу с доступом к инструментам консьюмера.
-В отличие от CLI-агента, не использует изолированный Docker-контейнер и является частью долгоживущего процесса.
+### Service Agent
+A LangGraph ReactAgent living inside the langgraph service, doing specialized domain work with access to the consumer's tools.
+Unlike a CLI agent, it does not use an isolated Docker container and is part of a long-lived process.
 
-**Примеры:** Product Owner, Architect (располагаются в `services/langgraph/src/agents/`)
+**Examples:** Product Owner, Architect (located in `services/langgraph/src/agents/`)
 
 ### Product Owner (PO)
-Сервисный агент в langgraph-сервисе (`services/langgraph/src/agents/po/`).
-- Принимает сообщения через `po:input`, отвечает через `po:response:{request_id}`.
-- Использует Python @tool функции для вызова API и Redis.
-- PostgreSQL checkpointer для сохранения контекста между сообщениями (per-user thread).
-- Делегирует задачи в "отделы" (Engineering, DevOps).
+A service agent in the langgraph service (`services/langgraph/src/agents/po/`).
+- Receives messages through `po:input`, replies through `po:response:{request_id}`.
+- Uses Python @tool functions to call the API and Redis.
+- PostgreSQL checkpointer to preserve context between messages (per-user thread).
+- Delegates tasks to "departments" (Engineering, DevOps).
 
-### Architect (Архитектор)
-Сервисный агент в langgraph-сервисе (`services/langgraph/src/agents/architect/`).
-- Одноразовый (one-shot) агент, слушающий `architect:queue`.
-- Занимается анализом фичей (Stories) из базы данных и их декомпозицией на конкретные задачи разработки (Tasks).
+### Architect
+A service agent in the langgraph service (`services/langgraph/src/agents/architect/`).
+- A one-shot agent listening to `architect:queue`.
+- Analyzes features (Stories) from the database and decomposes them into concrete development tasks (Tasks).
 
-### CLI-Agent (CLI-Агент)
-AI который работает внутри Developer Worker контейнера.
-**Реализации:** Claude Code, Factory.ai Droid, OpenAI Codex CLI.
+### CLI-Agent
+The AI that works inside a Developer Worker container.
+**Implementations:** Claude Code, Factory.ai Droid, OpenAI Codex CLI.
 
-**Отличие от Service Agent:** CLI-Agent — это "личность" в эфемерном контейнере с доступом к bash и ФС, а Service Agent — нода в графе langgraph-сервиса, общающаяся через @tool.
+**Difference from a Service Agent:** a CLI-Agent is a "personality" in an ephemeral container with access to bash and the filesystem, while a Service Agent is a node in the graph of the langgraph service, communicating through @tool.
 
 ### Engineering vs Developer
 
-**Engineering** — подграф LangGraph, абстракция "отдела разработки".
-**Developer** — конкретная нода внутри Engineering Subgraph.
+**Engineering** — a LangGraph subgraph, the abstraction of a "development department".
+**Developer** — a concrete node inside the Engineering Subgraph.
 
-| Термин | Уровень | Видимость | Описание |
+| Term | Level | Visibility | Description |
 |--------|---------|-----------|----------|
-| **Engineering** | Subgraph | Внешний (PO) | Абстракция. PO ставит задачу "отделу", не зная внутренней структуры |
-| **Developer** | Node/Worker | Внутренний | Конкретная реализация — воркер, который пишет код |
+| **Engineering** | Subgraph | External (PO) | An abstraction. The PO assigns a task to the "department" without knowing its internal structure |
+| **Developer** | Node/Worker | Internal | A concrete implementation — the worker that writes the code |
 
-**Правило:** Термин "Developer" используется только когда обсуждаем реализацию внутри подграфа или конфигурацию воркера.
+**Rule:** the term "Developer" is used only when discussing the implementation inside the subgraph or the worker configuration.
 
 ---
 
 ## Planning & Management
 
-### Story (Пользовательская история)
-Крупная фича или потребность пользователя. Генерирует одну или несколько Tasks. Живет на уровне всего проекта.
-**Типы:** `product` (пользовательская ценность) | `technical` (внутренние инициативы, напр. Rust migration).
-**Статусы:** `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (также: `reopened`, `waiting_human_review`, `failed`, `archived`). `pr_review` — все задачи выполнены, PR создан из story branch в main, ожидание CI + auto-merge. `deploying` — deploy gate: story ждёт успешного деплоя. `testing` — задеплоенный сервис проходит QA тестирование. `waiting_human_review` — developer agent сообщил о блокере; ожидание вмешательства админа. `reopened` — пользователь сообщил о проблеме с completed/failed story; architect пересматривает и создаёт fix-задачи.
-**Таблица:** `stories`
+### Story
+A large feature or user need. Generates one or more Tasks. Lives at the level of the whole project.
+**Types:** `product` (user value) | `technical` (internal initiatives, e.g. Rust migration).
+**Statuses:** `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (also: `reopened`, `waiting_human_review`, `failed`, `archived`). `pr_review` — all tasks are done, a PR is created from the story branch into main, waiting for CI + auto-merge. `deploying` — deploy gate: the story waits for a successful deploy. `testing` — the deployed service goes through QA testing. `waiting_human_review` — the developer agent reported a blocker; waiting for admin intervention. `reopened` — the user reported a problem with a completed/failed story; the architect reviews it and creates fix tasks.
+**Table:** `stories`
 
-### Epic (Эпик)
-Группировка Story через `parent_story_id` для очень крупных фич.
+### Epic
+A grouping of Stories through `parent_story_id` for very large features.
 
-### Repository (Репозиторий)
-Сущность в БД, связывающая код с конкретным git-репозиторием. Каждый репозиторий имеет `provider_repo_id` (GitHub ID) и `git_url`.
-**Таблица:** `repositories`
+### Repository
+An entity in the DB that links code to a specific git repository. Every repository has a `provider_repo_id` (GitHub ID) and a `git_url`.
+**Table:** `repositories`
 
-### Task (Задача)
-*(Бывший WorkItem)*. Единица планирования работы для разработчика/агента.
-**Статусы:** `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (также: `blocked`, `waiting_resources`, `waiting_human_review`, `failed`, `cancelled`)
-`waiting_resources` — allocator не нашёл текущую ёмкость для размещения, но запрос помещается хотя бы на одном managed server. Scheduler проверяет свежие метрики и автоматически возвращает задачу в `todo`, не увеличивая `current_iteration`; таймаут ожидания переводит её в `waiting_human_review`.
-`waiting_human_review` — developer agent сообщил о блокере через `POST localhost:9090/result` с `{"success": false, "reason": "..."}`. Pipeline приостановлен до вмешательства админа (`POST /tasks/{id}/resume`).
-**Связи:** Story (опционально), Repository (NOT NULL), Project.
-**Таблица:** `tasks`
+### Task
+*(Formerly WorkItem)*. The unit of work planning for a developer/agent.
+**Statuses:** `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (also: `blocked`, `waiting_resources`, `waiting_human_review`, `failed`, `cancelled`)
+`waiting_resources` — the allocator found no current capacity to place the task, but the request fits on at least one managed server. The scheduler checks fresh metrics and automatically returns the task to `todo` without incrementing `current_iteration`; a waiting timeout moves it to `waiting_human_review`.
+`waiting_human_review` — the developer agent reported a blocker through `POST localhost:9090/result` with `{"success": false, "reason": "..."}`. The pipeline is paused until admin intervention (`POST /tasks/{id}/resume`).
+**Relations:** Story (optional), Repository (NOT NULL), Project.
+**Table:** `tasks`
 
-### Brainstorm (Мозговой штурм)
-Запись в БД для обсуждения технических решений до начала кодинга.
-**Таблица:** `brainstorms`
+### Brainstorm
+A record in the DB for discussing technical decisions before coding starts.
+**Table:** `brainstorms`
 
 ## Data & Messaging
 
-### Run (Запуск)
-*(Бывший Task)*. Сущность в PostgreSQL. Отслеживает выполнение асинхронной работы (engineering, deploy, QA).
-**Типы:** `RunType` — `ENGINEERING`, `DEPLOY`, `QA`
-**Статусы:** `QUEUED` → `RUNNING` → `COMPLETED` / `FAILED` / `CANCELLED`
+### Run
+*(Formerly Task)*. An entity in PostgreSQL. Tracks the execution of asynchronous work (engineering, deploy, QA).
+**Types:** `RunType` — `ENGINEERING`, `DEPLOY`, `QA`
+**Statuses:** `QUEUED` → `RUNNING` → `COMPLETED` / `FAILED` / `CANCELLED`
 
-**Связи:** Project, Story (optional, via `story_id` FK)
+**Relations:** Project, Story (optional, via `story_id` FK)
 
-**Таблица:** `tasks` (в процессе переименования)
+**Table:** `tasks` (renaming in progress)
 
-### Message (Сообщение)
-Данные в Redis Stream queue. Содержит `task_id` и параметры для обработки.
+### Message
+Data in a Redis Stream queue. Contains a `task_id` and the parameters for processing.
 
-**Не путать с:** Event (уведомление о прогрессе)
+**Do not confuse with:** Event (a progress notification)
 
-**Формат:** JSON обёрнутый в `{"data": "..."}`
+**Format:** JSON wrapped in `{"data": "..."}`
 
-### Event (Событие)
-Уведомление о прогрессе выполнения Run. Публикуется в `callback_stream`.
+### Event
+A notification about the progress of a Run. Published to `callback_stream`.
 
-**Типы:** `started`, `progress`, `completed`, `failed`
+**Types:** `started`, `progress`, `completed`, `failed`
 
-**Используется для:** Показа прогресса пользователю в Telegram
+**Used for:** showing progress to the user in Telegram
 
 ---
 
 ## LangGraph
 
-### Node (Нода)
-Узел LangGraph графа. Функция или класс обрабатывающий State.
+### Node
+A node of a LangGraph graph. A function or class that processes State.
 
-**Типы:**
-- Функциональная нода — простая async функция
-- LLM нода — использует LLM для принятия решений
-- Tool executor — выполняет вызовы Tools
+**Types:**
+- Functional node — a plain async function
+- LLM node — uses an LLM to make decisions
+- Tool executor — performs Tool calls
 
-**Примеры:** `DeveloperNode`, `DeployerNode`, `TesterNode`
+**Examples:** `DeveloperNode`, `DeployerNode`, `TesterNode`
 
-### Subgraph (Подграф)
-Группа связанных Nodes, выполняющих определённый этап работы.
+### Subgraph
+A group of related Nodes that carry out a certain stage of work.
 
-**Примеры:**
+**Examples:**
 - Engineering Subgraph — Developer → Tester
 - DevOps Subgraph — EnvironmentContractLoader → SecretResolver → ReadinessCheck → Deployer (triggers GitHub Actions)
 
-### Tool (Инструмент)
-Функция доступная LLM для вызова. Декоратор `@tool`.
+### Tool
+A function available to the LLM to call. The `@tool` decorator.
 
-**Примеры:** `create_github_repo`, `allocate_port`, `get_server_info`
+**Examples:** `create_github_repo`, `allocate_port`, `get_server_info`
 
 ---
 
 ## Background Processing
 
-### Background Task (Фоновая задача)
-Периодическая задача в scheduler. Cron-like выполнение.
+### Background Task
+A periodic task in the scheduler. Cron-like execution.
 
-**Примеры:**
-- `github_sync` — синхронизация репозиториев
-- `server_sync` — синхронизация статусов серверов
-- `health_checker` — проверка здоровья серверов
+**Examples:**
+- `github_sync` — repository synchronization
+- `server_sync` — server status synchronization
+- `health_checker` — server health checks
 
 ---
 
 ## Queues
 
-### Job Queue (Очередь задач)
-Redis Stream для асинхронной обработки. Consumer читает Messages из очереди.
+### Job Queue
+A Redis Stream for asynchronous processing. A consumer reads Messages from the queue.
 
-**Очереди:**
-- `engineering:queue` — задачи на разработку
-- `deploy:queue` — задачи на деплой
-- `provisioner:queue` — провизия серверов
+**Queues:**
+- `engineering:queue` — development tasks
+- `deploy:queue` — deploy tasks
+- `provisioner:queue` — server provisioning
 
 
-### Command Queue (Очередь команд)
-Redis Stream для управления Workers.
+### Command Queue
+A Redis Stream for managing Workers.
 
-**Очереди:**
-- `worker:commands` — команды для worker-manager (create, delete)
-- `worker:responses:developer` — ответы от worker-manager для Developer воркеров
+**Queues:**
+- `worker:commands` — commands for worker-manager (create, delete)
+- `worker:responses:developer` — responses from worker-manager for Developer workers
 
 ### Story Worker Registry
-Redis Hash `story:workers` — маппинг `story_id → worker_id`. Engineering consumer записывает после первого spawn, читает для последующих задач в story. Scheduler очищает при завершении или провале story.
+The Redis hash `story:workers` — a `story_id → worker_id` mapping. The engineering consumer writes to it after the first spawn and reads it for subsequent tasks in the story. The scheduler clears it when the story completes or fails.
 
 ### Callback Stream
-Redis Stream для Events прогресса конкретного Run.
+A Redis Stream for the progress Events of a specific Run.
 
-**Формат имени:** `task_progress:{task_id}` (пока использует префикс task)
+**Name format:** `task_progress:{task_id}` (still uses the task prefix)
 
 ---
 

@@ -1,132 +1,132 @@
 # Resource Management & Secrets Isolation
 
-> Ресурсы выделяются через `ResourceAllocator` в Engineering Worker. Этот документ описывает паттерн изоляции секретов, используемый в системе.
+> Resources are allocated through the `ResourceAllocator` in the Engineering Worker. This document describes the secret isolation pattern used in the system.
 
-## Принцип: LLM никогда не видит секреты
+## Principle: the LLM never sees secrets
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    LangGraph State                          │
-│  (это видят агенты - Product Owner)                        │
+│  (this is what the agents see - Product Owner)              │
 │                                                             │
-│  allocated_resources: {                                    │
-│      "server_handle:8000": {                               │
-│          "port": 8000,                                     │
-│          "server_handle": "prod_vps_1",  ← имя, не IP/SSH  │
-│          "service_name": "backend"                         │
-│      }                                                     │
+│  allocated_resources: {                                     │
+│      "server_handle:8000": {                                │
+│          "port": 8000,                                      │
+│          "server_handle": "prod_vps_1",  ← a name, not IP   │
+│          "service_name": "backend"                          │
+│      }                                                      │
 │  }                                                          │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  Выделение ресурсов                         │
+│                  Resource allocation                        │
 │                                                             │
-│  Functional-часть (ResourceAllocatorNode в Engineering):   │
-│  - Автоматически выделяет порты и сервера через API        │
-│  - Переиспользует логику из `tools/allocator.py`           │
-│  - НЕ использует LLM (полностью детерминировано)           │
+│  Functional part (ResourceAllocatorNode in Engineering):    │
+│  - Automatically allocates ports and servers through the API│
+│  - Reuses the logic from `tools/allocator.py`               │
+│  - Does NOT use an LLM (fully deterministic)                │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                   Secrets Storage                           │
-│  project.config.secrets (PostgreSQL, Fernet-encrypted)     │
+│  project.config.secrets (PostgreSQL, Fernet-encrypted)      │
 │                                                             │
-│  Пример (телеграм токен):                                  │
-│  В БД: "gAAAAA..."  ← зашифрован Fernet at rest            │
+│  Example (a telegram token):                                │
+│  In the DB: "gAAAAA..."  ← Fernet-encrypted at rest         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Текущая реализация: PostgreSQL + Fernet encryption
+## Current implementation: PostgreSQL + Fernet encryption
 
-Секреты хранятся в поле `config.secrets` модели `Project`, зашифрованные Fernet at rest:
+Secrets are stored in the `config.secrets` field of the `Project` model, Fernet-encrypted at rest:
 
 ```python
 from shared.crypto import decrypt_dict, encrypt_dict
 
-# Чтение: decrypt после получения из API
+# Read: decrypt after receiving from the API
 config_secrets = project_spec.get("config", {}).get("secrets", {})
 config_secrets = decrypt_dict(config_secrets) if config_secrets else {}
 
-# Запись: encrypt перед отправкой в API
+# Write: encrypt before sending to the API
 config["secrets"] = encrypt_dict(secrets)
 await api_client.patch(f"/projects/{project_id}", json={"config": config})
 ```
 
-Ключ шифрования: env var `SECRETS_ENCRYPTION_KEY` (Fernet key). При отсутствии — `RuntimeError` при первом вызове encrypt/decrypt.
+The encryption key: the env var `SECRETS_ENCRYPTION_KEY` (a Fernet key). If it is missing — a `RuntimeError` on the first encrypt/decrypt call.
 
-## Типы секретов
+## Secret types
 
-DevOps subgraph классифицирует переменные окружения на три типа:
+The DevOps subgraph classifies environment variables into three types:
 
-| Тип | Описание | Пример |
+| Type | Description | Example |
 |-----|----------|--------|
-| `infra` | Генерируются автоматически | `DATABASE_URL`, `REDIS_URL` |
-| `computed` | Вычисляются из контекста | `APP_NAME`, `PORT` |
-| `user` | Требуются от пользователя | `TELEGRAM_BOT_TOKEN`, `API_KEY` |
+| `infra` | Generated automatically | `DATABASE_URL`, `REDIS_URL` |
+| `computed` | Computed from the context | `APP_NAME`, `PORT` |
+| `user` | Required from the user | `TELEGRAM_BOT_TOKEN`, `API_KEY` |
 
-## Взаимодействие Product Owner'а с секретами
+## How the Product Owner deals with secrets
 
-Агент Product Owner напрямую запрашивает у пользователя секреты (например, `TELEGRAM_BOT_TOKEN`), если они требуются для выбранных модулей.
-PO вызывает tool `set_project_secret`, который сохраняет токен в БД, сразу шифруя его через Fernet. Никакие инфраструктурные ключи (SSH, БД) PO не видит и не генерирует.
+The Product Owner agent asks the user for secrets directly (for example, `TELEGRAM_BOT_TOKEN`) if they are required by the selected modules.
+The PO calls the `set_project_secret` tool, which stores the token in the DB, encrypting it with Fernet right away. The PO never sees or generates any infrastructure keys (SSH, DB).
 
-## Управление Инфраструктурой (Server Management)
+## Server Management
 
-Система поддерживает гибридную инфраструктуру, синхронизируемую с провайдером (Time4VPS).
+The system supports a hybrid infrastructure synchronized with the provider (Time4VPS).
 
-1.  **Source of Truth**: База данных (`api` сервис).
-    *   Фоновый worker (`server_sync.py`) каждую минуту опрашивает Time4VPS API.
-    *   Новые сервера автоматически добавляются со статусом `discovered`.
-    *   Удаленные сервера помечаются как `missing`.
+1.  **Source of Truth**: the database (the `api` service).
+    *   A background worker (`server_sync.py`) polls the Time4VPS API every minute.
+    *   New servers are added automatically with the `discovered` status.
+    *   Removed servers are marked as `missing`.
 
-2.  **Доступ к Time4VPS API ограничен списком адресов** на стороне провайдера (личный кабинет,
-    API access). Логин может быть верным, но запрос с неразрешённого адреса получит `401` с телом
-    `{"error":["ipnotallowed","unauthorized"]}`. При смене IP сервера, выходного маршрута или
-    переезде планировщика это первое, что нужно проверять, до кредов. Тело ответа пишется в лог
-    событием `time4vps_http_error`; неверный логин даёт `{"error":["wronglogin","unauthorized"]}`.
+2.  **Access to the Time4VPS API is restricted by an address list** on the provider's side (the personal
+    account, API access). The login can be correct, but a request from a disallowed address gets a `401` with the body
+    `{"error":["ipnotallowed","unauthorized"]}`. When the server IP, the egress route or the scheduler's
+    location changes, this is the first thing to check, before the credentials. The response body is written to the log
+    as the `time4vps_http_error` event; a wrong login gives `{"error":["wronglogin","unauthorized"]}`.
 
-    Повторяющийся отказ поднимает один инцидент `provider_api_unavailable` (без `server_handle`,
-    это отказ платформенной зависимости, а не сервера; пустой `server_handle` разрешён только
-    этому типу, остальные привязаны к серверу и без него отклоняются с 422, иначе ломается
-    дедупликация по индексу `(server_handle, incident_type)`) и один алерт админам. Инцидент закрывается
-    автоматически, когда провайдер снова отвечает. Цикл, не сумевший прочитать провайдера, пишет
-    `server_sync_incomplete` уровня error и не выдаёт нулевые счётчики за успешную синхронизацию.
+    A repeated refusal raises a single `provider_api_unavailable` incident (without a `server_handle`,
+    since this is a failure of a platform dependency, not of a server; an empty `server_handle` is allowed only for
+    this type, the rest are bound to a server and without one are rejected with 422, otherwise the
+    deduplication by the `(server_handle, incident_type)` index breaks) and a single alert to the admins. The incident is closed
+    automatically once the provider responds again. A cycle that failed to read the provider writes
+    `server_sync_incomplete` at the error level and does not report zero counters as a successful synchronization.
 
 3.  **Ghost Servers & Filtering**:
-    *   Сервера, которые нужно игнорировать (личные машины разработчиков), прописываются в `GHOST_SERVERS`.
-    *   В базе они помечаются как `is_managed=False`.
-    *   `ResourceAllocator` использует функцию `list_managed_servers`, которая возвращает только `is_managed=True`.
+    *   Servers that have to be ignored (developers' personal machines) are listed in `GHOST_SERVERS`.
+    *   In the database they are marked as `is_managed=False`.
+    *   The `ResourceAllocator` uses the `list_managed_servers` function, which returns only `is_managed=True`.
 
 ## GitHub App & Secrets
 
-Для работы с GitHub (создание репозиториев, управление workflows) используется GitHub App.
+A GitHub App is used to work with GitHub (creating repositories, managing workflows).
 
-| Secret Name | Описание | Где хранится |
+| Secret Name | Description | Where it is stored |
 |-------------|----------|--------------|
-| `GH_APP_ID` | App ID приложения Project-Factory-Keeper | GitHub Secrets |
-| `GH_APP_PRIVATE_KEY` | Private Key (.pem) для подписи JWT | GitHub Secrets |
+| `GH_APP_ID` | The App ID of the Project-Factory-Keeper application | GitHub Secrets |
+| `GH_APP_PRIVATE_KEY` | The Private Key (.pem) for signing the JWT | GitHub Secrets |
 
-**Локальная разработка:**
+**Local development:**
 - `GITHUB_APP_ID` → `.env`
-- Private Key → `~/.gemini/keys/github_app.pem` (mount в docker-compose)
+- The private key → `~/.gemini/keys/github_app.pem` (mounted in docker-compose)
 
 **Production:**
-- Secrets записываются на сервер через CI/CD workflow
-- Путь на проде: `/opt/secrets/github_app.pem`
+- The secrets are written to the server through the CI/CD workflow
+- The path in production: `/opt/secrets/github_app.pem`
 
-## Worker Garbage Collection (Управление мусором)
+## Worker Garbage Collection
 
-Для параллельных воркеров (см. [docs/parallel-workers.md](parallel-workers.md)) система создает временные ресурсы (workspaces, networks, containers) на хосте.
+For parallel workers (see [docs/parallel-workers.md](parallel-workers.md)) the system creates temporary resources (workspaces, networks, containers) on the host.
 
-1. **Жизненный цикл**:
-   * Воркер получает workspace директорию (pre-scaffolded: `/data/workspaces/{repo_id}/`, ephemeral: `/tmp/codegen/workspaces/{worker_id}/`) и изолированную Docker сеть `dev_proj_<worker_id>`.
-   * Агент вызывает compose proxy через `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose` для управления sidecar'ами внутри этого пространства имён.
-2. **Очистка (Garbage Collection)**:
-   * Явное удаление: при завершении LangGraph вызывает `worker-manager` `delete_worker`, который удаляет контейнеры, сеть, и пространство на диске.
-   * Фоновый сбор мусора (GC): `scheduler` раз в 30 минут триггерит GC в `worker-manager`. Метод `WorkerManager.garbage_collect_orphaned_resources()` находит "осиротевшие" контейнеры воркеров, сети `dev_proj_*` и директории на диске (сопоставляя с активными ключами `worker:status:*` в Redis) и удаляет их, защищая систему от утечек после крэшей или OOM-событий.
+1. **The lifecycle**:
+   * A worker gets a workspace directory (pre-scaffolded: `/data/workspaces/{repo_id}/`, ephemeral: `/tmp/codegen/workspaces/{worker_id}/`) and an isolated Docker network `dev_proj_<worker_id>`.
+   * The agent calls the compose proxy through `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose` to manage sidecars inside that namespace.
+2. **Garbage Collection**:
+   * Explicit removal: on completion LangGraph calls `delete_worker` on `worker-manager`, which removes the containers, the network and the space on disk.
+   * Background garbage collection (GC): the `scheduler` triggers GC in `worker-manager` every 30 minutes. The `WorkerManager.garbage_collect_orphaned_resources()` method finds "orphaned" worker containers, `dev_proj_*` networks and directories on disk (matching them against the active `worker:status:*` keys in Redis) and removes them, protecting the system from leaks after crashes or OOM events.
 
-## См. также
+## See also
 
-- [SECRETS.md](SECRETS.md) — архитектура управления секретами (уровни L1/L2/L3)
-- [secrets-vault-implementation.md](tasks/secrets-vault-implementation.md) — исторический план (superseded by Fernet encryption in `shared/crypto.py`)
+- [SECRETS.md](SECRETS.md) — the secret management architecture (the L1/L2/L3 levels)
+- [secrets-vault-implementation.md](tasks/secrets-vault-implementation.md) — a historical plan (superseded by Fernet encryption in `shared/crypto.py`)

@@ -6,7 +6,7 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 
 ## Current Sprint
 - **Sprint**: 002-thermo-nuclear-hardening
-- **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
+- **Goal**: close the findings of the thermo-nuclear-review — typed boundaries, fail-fast, removal of dead code
 - **Type**: tech
 - **Started**: 2026-07-01
 - **Current Phase**: Stage 8 (Telegram end-to-end) is verified. On 2026-07-24 a Telegram message
@@ -128,10 +128,10 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Security quick-wins (B2 crypto, fail-open auth) | COMPLETE |
-| 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
-| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | COMPLETE — B7 enums (`codegen_orchestrator-435`), duplicated vocabularies (`codegen_orchestrator-436`), typed `Run.result` union (`codegen_orchestrator-440`) |
-| 3 | Типизированный consume + мёртвый код (B5, B6) | COMPLETE — `consume_typed` (PR #40), B6 worker result (PR #41), engineering consumer typed + dead-layer removal (`codegen_orchestrator-457`, PR #42) |
-| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | COMPLETE — rerun audit on `b0463fb3` closes scaffolder/auth diagnostics, worker compose, provisioner outage and notification caller-policy boundaries. |
+| 1 | Unblock CI (ruff format) + security blockers (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
+| 2 | Tighten the shared/ contracts (B7 + vocabularies + RunResult) | COMPLETE — B7 enums (`codegen_orchestrator-435`), duplicated vocabularies (`codegen_orchestrator-436`), typed `Run.result` union (`codegen_orchestrator-440`) |
+| 3 | Typed consume + dead code (B5, B6) | COMPLETE — `consume_typed` (PR #40), B6 worker result (PR #41), engineering consumer typed + dead-layer removal (`codegen_orchestrator-457`, PR #42) |
+| 4 | Silent errors → fail-fast (B3, B4, swallow-list) | COMPLETE — rerun audit on `b0463fb3` closes scaffolder/auth diagnostics, worker compose, provisioner outage and notification caller-policy boundaries. |
 | 5 | Deterministic mock smoke | COMPLETE — `codegen_orchestrator-496` |
 | 6 | service-template compatibility matrix | COMPLETE — `codegen_orchestrator-499` |
 | 7 | Live mega and cleanup hardening | COMPLETE — Mega 2.0 green (PR #99); 2026-07-18..21 wave closed teardown fences (645/659/662), head_sha env contracts (658/661), slug migration (646/647/663), teardown module (666), typed deploy outcomes (620), web port by role (665), waiting_for_user_secret (670), failure-safe dispatch (672). Tail debt on the board: 600, 548, 676→527, 597, 673 |
@@ -163,4 +163,4 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
 
 | # | Goal | Type | Dates | Phases |
 |---|------|------|-------|--------|
-| 001 | Tech code hygiene (github split, noqa, secret storage) | tech | 2026-04-10 – parked | Phase 0/1 done; Phase 2 поглощена 002 |
+| 001 | Tech code hygiene (github split, noqa, secret storage) | tech | 2026-04-10 – parked | Phase 0/1 done; Phase 2 absorbed into 002 |

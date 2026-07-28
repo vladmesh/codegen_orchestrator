@@ -7,7 +7,7 @@ Orchestrator tasks are created and tracked in the external pipeline, not in a lo
 ## Pipeline Flow
 
 ```
-/brainstorm (свободный формат, вне спринта)
+/brainstorm (free form, outside a sprint)
      ↓ (user routes action items manually)
      ├── → VISION.md (product direction changes)
      ├── → backlog.md (deferred pool)

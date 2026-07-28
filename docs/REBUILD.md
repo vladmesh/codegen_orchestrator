@@ -1,124 +1,124 @@
-# Rebuild / Пересборка стенда
+# Rebuild
 
-Как пересобрать оркестратор целиком и не оставить половину системы на старом коде.
+How to rebuild the whole orchestrator without leaving half the system on old code.
 
-## Два независимых контура
+## Two independent circuits
 
-Сборка распадается на две части, и они не связаны между собой:
+The build splits into two parts, and they are not connected to each other:
 
-1. **Compose-сервисы.** 20 сервисов в `docker-compose.yml`.
-2. **Образы воркеров.** `worker-base-common` и производные от него `worker-base-claude`,
-   `worker-base-factory`, `worker-base-codex`. Плюс `worker:<tag>` — образы, которые
-   worker-manager собирает на лету под конкретный запуск.
+1. **Compose services.** 20 services in `docker-compose.yml`.
+2. **Worker images.** `worker-base-common` and the images derived from it: `worker-base-claude`,
+   `worker-base-factory`, `worker-base-codex`. Plus `worker:<tag>` — the images that
+   worker-manager builds on the fly for a specific run.
 
-`docker compose build` не трогает второй контур, а сборка воркеров не трогает первый. Это
-основной источник «пересобрал, а изменения не подхватились».
+`docker compose build` does not touch the second circuit, and building the workers does not touch the
+first. This is the main source of "I rebuilt it and the changes did not get picked up".
 
-## Как доезжает shared
+## How shared gets delivered
 
-`shared` не является устанавливаемым пакетом: в venv он не ставится, установленной копии больше
-нет. Единственный источник — дерево репозитория, и до потребителей оно доезжает двумя каналами.
+`shared` is not an installable package: it is not installed into the venv, and there is no installed
+copy anymore. The only source is the repository tree, and it reaches its consumers through two channels.
 
-**Bind-mount** `./shared:/app/shared` — десять compose-сервисов: `api`, `langgraph`,
+**Bind-mount** `./shared:/app/shared` — ten compose services: `api`, `langgraph`,
 `deploy-worker`, `qa-worker`, `engineering-worker`, `architect`, `infra-service`, `telegram_bot`,
-`scheduler`, `scaffolder`. Правка под `shared/` подхватывается рестартом контейнера
-(`docker compose restart <service>`), пересборка образа не нужна.
+`scheduler`, `scaffolder`. An edit under `shared/` is picked up by restarting the container
+(`docker compose restart <service>`), no image rebuild is needed.
 
-**`COPY shared`** в Dockerfile — образы воркеров, тестовые образы и `worker-manager`.
-`worker-manager` — единственный build-сервис compose без маунта, поэтому из compose-контура правка
-`shared/` требует пересборки только его. Образы воркеров живут во втором контуре и пересобираются
-по `WORKER_SOURCE_HASH`.
+**`COPY shared`** in the Dockerfile — the worker images, the test images and `worker-manager`.
+`worker-manager` is the only build service in compose without a mount, so within the compose circuit an
+edit to `shared/` requires rebuilding only that one. The worker images live in the second circuit and are
+rebuilt according to `WORKER_SOURCE_HASH`.
 
-Локально и в тестах `shared` импортируется прямо из дерева: `scripts/test-unit-local.sh` и
-`[tool.pytest.ini_options] pythonpath` держат корень репозитория на `PYTHONPATH`.
+Locally and in tests `shared` is imported straight from the tree: `scripts/test-unit-local.sh` and
+`[tool.pytest.ini_options] pythonpath` keep the repository root on `PYTHONPATH`.
 
-Поскольку `shared` нигде не устанавливается, его `dependencies` ничего не ставят: каждый
-потребитель обязан продублировать их в своём `pyproject.toml`. За этим следит
-`shared/tests/unit/test_shared_dependency_parity.py` — он сам находит потребителей по маунтам в
-compose и по `COPY shared` в Dockerfile'ах.
+Since `shared` is not installed anywhere, its `dependencies` install nothing: every
+consumer has to repeat them in its own `pyproject.toml`. This is watched by
+`shared/tests/unit/test_shared_dependency_parity.py` — it finds the consumers itself, by the mounts in
+compose and by `COPY shared` in the Dockerfiles.
 
-## Выбор цели
+## Choosing a target
 
-| Цель | Образы сервисов | Образы воркеров | Тома и БД | Миграции |
+| Target | Service images | Worker images | Volumes and DB | Migrations |
 |---|---|---|---|---|
-| `make build` | пересобирает | только если протух хеш | не трогает | нет |
-| `make rebuild` | пересобирает | пересобирает всегда | **сохраняет** | через entrypoint `api` |
-| `make nuke` | пересобирает | проверяет хеш и чинит | **сносит** | явный upgrade + `seed` |
-| `make nuke-hard` | `--no-cache` + `builder prune` | то же | **сносит** | явный upgrade + `seed` |
+| `make build` | rebuilds | only if the hash is stale | does not touch | no |
+| `make rebuild` | rebuilds | always rebuilds | **preserves** | through the `api` entrypoint |
+| `make nuke` | rebuilds | checks the hash and fixes it | **wipes** | explicit upgrade + `seed` |
+| `make nuke-hard` | `--no-cache` + `builder prune` | the same | **wipes** | explicit upgrade + `seed` |
 
-Обычная пересборка после мержа — `make rebuild`. `nuke` нужен, только когда действительно нужна
-чистая база: он удаляет тома `db_data`, `redis_data`, `caddy-config`, `registry-data`.
-Том `caddy-data` с TLS-сертификатами `nuke` сохраняет намеренно, чтобы не выгребать новые
-сертификаты у Let's Encrypt.
+The usual rebuild after a merge is `make rebuild`. `nuke` is needed only when a genuinely
+clean database is required: it removes the volumes `db_data`, `redis_data`, `caddy-config`, `registry-data`.
+The `caddy-data` volume with the TLS certificates is preserved by `nuke` deliberately, so as not to pull new
+certificates from Let's Encrypt.
 
-Перед сносом базы `nuke` вызывает `infra/scripts/dump-server-keys.sh`, а `make seed` потом
-восстанавливает серверы через `restore-server-keys.sh`. Если этот шаг упадёт, SSH-ключи
-провизионированных серверов будут потеряны вместе с базой.
+Before wiping the database `nuke` calls `infra/scripts/dump-server-keys.sh`, and `make seed` then
+restores the servers through `restore-server-keys.sh`. If that step fails, the SSH keys of the
+provisioned servers will be lost together with the database.
 
-## Что делает make rebuild
+## What make rebuild does
 
 1. `docker compose down --remove-orphans`.
-2. Убивает осиротевшие контейнеры `worker-*`, не принадлежащие проекту.
-3. `docker compose build` — все сервисы.
-4. `make rebuild-worker-images` — четыре базовых образа воркеров.
+2. Kills orphaned `worker-*` containers that do not belong to the project.
+3. `docker compose build` — all services.
+4. `make rebuild-worker-images` — the four base worker images.
 5. `docker compose up -d`.
 
-Тома не затрагиваются, поэтому база и реестр переживают пересборку.
+Volumes are not touched, so the database and the registry survive the rebuild.
 
-## Миграции
+## Migrations
 
-`services/api/entrypoint.sh` выполняет `alembic upgrade head` до запуска uvicorn. В compose у `api`
-стоит `depends_on: db: {condition: service_healthy}`, а у `db` есть healthcheck, поэтому при
-`up -d` база гарантированно готова к моменту миграции. Отдельно дёргать `make migrate` после
-`rebuild` не нужно.
+`services/api/entrypoint.sh` runs `alembic upgrade head` before starting uvicorn. In compose `api`
+has `depends_on: db: {condition: service_healthy}`, and `db` has a healthcheck, so on
+`up -d` the database is guaranteed to be ready by the time of the migration. There is no need to call
+`make migrate` separately after `rebuild`.
 
-Важно: у `api` нет restart-политики. Если миграция упадёт, контейнер останется лежать и сам не
-поднимется, а остальной стек будет работать против старой схемы. После пересборки всегда
-проверять `docker compose ps api` и `docker compose logs api`.
+Important: `api` has no restart policy. If a migration fails, the container stays down and will not
+come up on its own, while the rest of the stack keeps working against the old schema. After a rebuild always
+check `docker compose ps api` and `docker compose logs api`.
 
-`make migrate` (`compose exec api alembic upgrade head`) нужен только чтобы накатить схему без
-перезапуска сервиса.
+`make migrate` (`compose exec api alembic upgrade head`) is needed only to apply the schema without
+restarting the service.
 
-## Образы воркеров: почему отдельная механика
+## Worker images: why a separate mechanism
 
-**Хеш свежести.** `WORKER_SOURCE_HASH` в Makefile — это sha256 от:
+**The freshness hash.** `WORKER_SOURCE_HASH` in the Makefile is the sha256 of:
 
-- всего `shared/`
-- всего `packages/worker-wrapper/`
-- всего `services/worker-manager/images/`
+- all of `shared/`
+- all of `packages/worker-wrapper/`
+- all of `services/worker-manager/images/`
 
-(без `__pycache__` и `*.pyc`)
+(excluding `__pycache__` and `*.pyc`)
 
-Это ровно то, что Dockerfile'ы воркеров кладут в образ: `COPY shared /app/shared` копирует весь
-`shared`, а не подмножество. Любая правка под `shared/` — включая `shared/models`,
-`shared/clients`, `shared/schemas` — делает базовые образы воркеров протухшими и ведёт к их
-пересборке. Цена принята сознательно: лишняя пересборка дешевле молча устаревшего образа.
+This is exactly what the worker Dockerfiles put into the image: `COPY shared /app/shared` copies all of
+`shared`, not a subset. Any edit under `shared/` — including `shared/models`,
+`shared/clients`, `shared/schemas` — makes the base worker images stale and leads to a
+rebuild. The price is accepted deliberately: an extra rebuild is cheaper than a silently outdated image.
 
-**Порядок сборки обязателен.** `worker-base-claude`, `-factory`, `-codex` объявлены как
-`FROM ${BASE_IMAGE}` с дефолтом `worker-base-common:latest`. Все четыре образа получают
-`--build-arg SOURCE_HASH` и проставляют свой label `org.codegen.worker_source_hash` сами, а не
-наследуют его от базы. Собрать производный образ, не пересобрав common, значит получить старый код
-под текущим хешем. `make rebuild-worker-images` соблюдает порядок; собирая руками, соблюдать его
-самому.
+**The build order is mandatory.** `worker-base-claude`, `-factory`, `-codex` are declared as
+`FROM ${BASE_IMAGE}` with the default `worker-base-common:latest`. All four images get
+`--build-arg SOURCE_HASH` and set their own `org.codegen.worker_source_hash` label themselves, rather than
+inheriting it from the base. Building a derived image without rebuilding common means getting old code
+under the current hash. `make rebuild-worker-images` respects the order; when building by hand, respect it
+yourself.
 
-**Производные образы инвалидируются автоматически.** `worker:<tag>` строит worker-manager в
-рантайме (`services/worker-manager/src/image_builder.py`). Тег считается от capabilities,
-agent_type и label `org.codegen.worker_source_hash` базового образа, прочитанного в момент сборки.
-Смена кода базы даёт другой тег, поэтому cache hit на образ со старым кодом невозможен и ручной
-`docker rmi worker:*` в make-целях не нужен. Если у базового образа label отсутствует,
-worker-manager падает с `RuntimeError` вместо того, чтобы закешировать неизвестный код.
+**Derived images are invalidated automatically.** `worker:<tag>` is built by worker-manager at
+runtime (`services/worker-manager/src/image_builder.py`). The tag is computed from the capabilities, the
+agent_type and the `org.codegen.worker_source_hash` label of the base image, read at build time.
+A change to the base code produces a different tag, so a cache hit on an image with old code is impossible and a
+manual `docker rmi worker:*` in the make targets is not needed. If the base image has no label,
+worker-manager fails with a `RuntimeError` instead of caching unknown code.
 
-**Проверка и починка разведены.**
+**Checking and fixing are separated.**
 
-| Цель | Что делает |
+| Target | What it does |
 |---|---|
-| `make check-worker-images` | read-only: сравнивает `WORKER_SOURCE_HASH` с label каждого из четырёх образов, печатает расхождение и завершается ненулевым кодом. Ничего не собирает. |
-| `make ensure-worker-images` | та же проверка, но при расхождении вызывает `rebuild-worker-images`. |
+| `make check-worker-images` | read-only: compares `WORKER_SOURCE_HASH` with the label of each of the four images, prints the mismatch and exits with a non-zero code. Builds nothing. |
+| `make ensure-worker-images` | the same check, but on a mismatch it calls `rebuild-worker-images`. |
 
-Из других целей (`make build`, `nuke`) вызывается `ensure-worker-images`. `check-worker-images`
-годится для CI и для ручной диагностики: на него можно опереться, он не мутирует систему.
+Other targets (`make build`, `nuke`) call `ensure-worker-images`. `check-worker-images`
+is suitable for CI and for manual diagnostics: you can rely on it, it does not mutate the system.
 
-## Чистая пересборка после мержа
+## A clean rebuild after a merge
 
 ```bash
 cd /home/dev/projects/codegen_orchestrator
@@ -126,34 +126,34 @@ git checkout main && git pull
 
 make rebuild
 
-# схема доехала до головы
+# the schema reached head
 docker compose exec -T db psql -U postgres -d orchestrator -tAc \
   "SELECT version_num FROM alembic_version"
 
-# api не лёг на миграции
+# api did not die on the migrations
 docker compose ps api
 docker compose logs --tail=30 api
 
-# образы воркеров совпадают с исходниками
+# the worker images match the sources
 make check-worker-images
 ```
 
-Ожидаемое: `alembic_version` равен последней ревизии в
-`services/api/migrations/versions/`, `api` в статусе healthy, `check-worker-images` печатает
+Expected: `alembic_version` equals the latest revision in
+`services/api/migrations/versions/`, `api` is healthy, `check-worker-images` prints
 `up to date`.
 
-## Мелочи, которые сбивают с толку
+## Small things that cause confusion
 
-- `--profile build` в целях Makefile ни на что не влияет: профилей в compose нет,
-  `docker compose config --profiles` пуст. Флаг остался от прошлой схемы сборки.
-- `make down` не только останавливает стек, но и удаляет осиротевшие контейнеры `worker-*` и сеть
-  `codegen_worker`.
-- `make stop` — алиас `make down`, не пауза.
-- Скрипт `scripts/clean_live_tests.py` читает схему `projects` напрямую. После миграций, меняющих
-  эту таблицу, его нужно проверять отдельно: он ломается тихо.
-- `admin-frontend` собирает конфиг nginx на этапе сборки образа. Если мерж убрал или добавил
-  сервис, на который nginx проксирует, точечной перезагрузки мало: контейнер уйдёт в петлю с
-  `host not found in upstream`, пока образ не пересобран.
-- Точечная пересборка после мержа требует сверить два места: изменённые сервисы и то, что compose
-  не подхватывает изменение своих переменных у уже запущенного контейнера. Контейнер с новым
-  окружением в compose пересоздаётся только при следующем `up -d` этого сервиса.
+- `--profile build` in the Makefile targets has no effect: there are no profiles in compose,
+  `docker compose config --profiles` is empty. The flag is left over from a previous build scheme.
+- `make down` not only stops the stack but also removes orphaned `worker-*` containers and the
+  `codegen_worker` network.
+- `make stop` is an alias of `make down`, not a pause.
+- The script `scripts/clean_live_tests.py` reads the `projects` schema directly. After migrations that change
+  that table it has to be checked separately: it breaks silently.
+- `admin-frontend` builds the nginx config at image build time. If a merge removed or added a
+  service that nginx proxies to, a targeted reload is not enough: the container will loop with
+  `host not found in upstream` until the image is rebuilt.
+- A targeted rebuild after a merge requires checking two places: the changed services, and the fact that compose
+  does not pick up changes to the environment variables of an already running container. A container with a new
+  environment is recreated in compose only on the next `up -d` of that service.

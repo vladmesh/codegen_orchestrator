@@ -1,13 +1,13 @@
-# Параллельные Workers
+# Parallel Workers
 
-Для кодогенерации используются изолированные Docker-контейнеры с AI coding agents.
+Isolated Docker containers with AI coding agents are used for code generation.
 
-## Текущая архитектура
+## Current architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                 LangGraph Orchestrator              │
-│          (Developer node в Engineering)             │
+│          (the Developer node in Engineering)        │
 └─────────────────────────────────────────────────────┘
                          │
                   Redis streams
@@ -22,43 +22,43 @@
                          ▼
 ┌─────────────────────────────────────────────────────┐
 │        Worker Container (ephemeral)                 │
-│  - Образ: worker-base-common + тулинг               │
-│  - Нативные утилиты: ruff, pytest, make, python     │
-│  - Выполняет coding task                            │
-│  - Запрашивает инфраструктуру через CLI             │
+│  - Image: worker-base-common + tooling              │
+│  - Native tools: ruff, pytest, make, python         │
+│  - Runs the coding task                             │
+│  - Requests infrastructure through the CLI          │
 └─────────────────────────────────────────────────────┘
 ```
 
-## Изоляция и Flat Dev Environment
+## Isolation and the Flat Dev Environment
 
-Вместо Docker-in-Docker (Sysbox), система использует парадигму **Flat Dev Environment**, управляемую с хоста через `worker-manager`. Это решает проблемы с RAM, кэшами слоёв и стабильностью.
+Instead of Docker-in-Docker (Sysbox), the system uses the **Flat Dev Environment** paradigm, managed from the host through `worker-manager`. This solves the problems with RAM, layer caches and stability.
 
 1. **Dual-Network Setup**:
-   Каждый воркер подключён к двум сетям:
-   - `internal` (shared codegen network) — для связи с `api`, `redis` и `worker-manager`.
-   - `dev_proj_<worker_id>` — изолированная сеть для сайдкар-контейнеров проекта.
+   Every worker is connected to two networks:
+   - `internal` (the shared codegen network) — for talking to `api`, `redis` and `worker-manager`.
+   - `dev_proj_<worker_id>` — an isolated network for the project's sidecar containers.
 
 2. **Compose Proxy**:
-   Воркеры (инжектированные AI-агенты) **не имеют доступа к Docker**. Для запуска инфраструктурных зависимостей (DB, Redis) агенты вызывают compose proxy через `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose`, который проксирует запрос в `worker-manager`.
+   The workers (the injected AI agents) **have no access to Docker**. To start the infrastructure dependencies (DB, Redis) the agents call the compose proxy through `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose`, which proxies the request to `worker-manager`.
 
 3. **Workspace Bind-Mount**:
-   Scaffolded workspace монтируется в `/workspace` внутри контейнера. Два режима:
-   - **Pre-scaffolded** (story tasks): путь на хосте `/data/workspaces/{repo_id}/` — репозиторий уже подготовлен scaffolder'ом (copier + make setup + git push), workspace переиспользуется между задачами в story.
-   - **Ephemeral** (standalone tasks): `/tmp/codegen/workspaces/{worker_id}/workspace/` — создаётся на лету, удаляется после завершения.
-   `docker compose` на хосте использует файлы из этого воркспейса для поднятия сайдкар-контейнеров.
+   The scaffolded workspace is mounted at `/workspace` inside the container. Two modes:
+   - **Pre-scaffolded** (story tasks): the host path `/data/workspaces/{repo_id}/` — the repository is already prepared by the scaffolder (copier + make setup + git push), the workspace is reused between the tasks of a story.
+   - **Ephemeral** (standalone tasks): `/tmp/codegen/workspaces/{worker_id}/workspace/` — created on the fly, removed after completion.
+   `docker compose` on the host uses the files from that workspace to bring up the sidecar containers.
 
-## Запрет портов и конвенции
+## The ban on ports, and conventions
 
-- **Никаких `ports:` в compose**: Сервисы шаблона не публикуют порты на хост, так как это вызовет конфликты при параллельной работе воркеров.
-- Агенты обращаются к сайдкар-сервисам по именам хостов (`db:5432`) внутри изолированной сети `dev_proj_<worker_id>`.
+- **No `ports:` in compose**: the template services do not publish ports on the host, because that would cause conflicts when workers run in parallel.
+- The agents reach the sidecar services by host name (`db:5432`) inside the isolated `dev_proj_<worker_id>` network.
 
-## Worker Образы
+## Worker Images
 
-Worker-base образ `worker-base-common` унифицирован:
+The worker-base image `worker-base-common` is unified:
 - Ubuntu + Python 3.12 + Node.js
-- **Shared Tooling Layer**: `ruff`, `pytest`, `mypy`, `copier`, и т.д. установлены на уровне образа (не дублируются на каждый воркер).
-- Non-root user `worker` (uid 1000). Код на хосте через bind-mount не становится `root`-owned.
-- Выполнение тестов и линтеров происходит **нативно** через per-service venv-ы, без запуска дополнительных эфемерных контейнеров.
+- **Shared Tooling Layer**: `ruff`, `pytest`, `mypy`, `copier` and so on are installed at the image level (not duplicated per worker).
+- A non-root user `worker` (uid 1000). Code on the host reached through the bind-mount does not become `root`-owned.
+- Tests and linters run **natively** through per-service venvs, without starting extra ephemeral containers.
 
 ## Worker Lifecycle & Cleanup
 

@@ -10,9 +10,9 @@
 
 ## Current arc: stabilize core pipeline
 
-Довести генерацию Telegram-ботов до стабильного E2E. Юзер приходит в Telegram → общается с PO →
-получает работающего бота за 20-30 минут. Потом просит доработки через диалог → получает
-обновлённого бота.
+Bring Telegram bot generation to a stable E2E state. A user comes to Telegram → talks to the PO →
+gets a working bot in 20-30 minutes. Then asks for changes through dialogue → gets an
+updated bot.
 
 Stages 1-8 of the stabilization plan are complete: CI gate, template contract audit and
 corrections, Sprint 002 hardening, deterministic mock smoke, template matrix, live validation and
@@ -20,88 +20,88 @@ the Telegram end-to-end. Both are verified as of 2026-07-24: the full mega passe
 plus LLM 5/5 through generated code, CI, merge, deploy, `/health` and QA), and a Telegram message
 produced a working generated bot without a manual step. Next:
 
-- Stage 9: worker isolation hardening — обязателен до онбординга внешних пользователей.
-- Stage 10: swarm seams — по триггеру (второй worker-хост или устойчивая параллельная нагрузка).
+- Stage 9: worker isolation hardening — mandatory before onboarding external users.
+- Stage 10: swarm seams — on a trigger (a second worker host or sustained parallel load).
 
 Stage 7 tail debt is on the board (548, 676→527, 597, 673; 600 landed in PR #127) and gates
-nothing. Проверяемость приватных ботов ведётся отдельно: доступ задаётся контрактом шаблона
-(service-template 0.3.6), заполнение аудитории из меню PO — `codegen_orchestrator-826`, выдача и
-отзыв временной тестовой личности вокруг прогона QA — `codegen_orchestrator-744`.
+nothing. Testability of private bots is tracked separately: access is set by the template contract
+(service-template 0.3.6), filling the audience from the PO menu is `codegen_orchestrator-826`, and issuing and
+revoking a temporary test identity around the QA run is `codegen_orchestrator-744`.
 
 ## Next arcs
 
 ### Autonomy: smart steward
 
-Пайплайн чинит себя сам, человек — последняя ступень эскалации, а не первая. Пререквизит
-(fail-fast и типизированные границы, фазы 2-4 спринта 002) выполнен.
+The pipeline fixes itself, and the human is the last escalation step, not the first. The prerequisite
+(fail-fast and typed boundaries, phases 2-4 of sprint 002) is done.
 
-- Починить incident-подсистему infra-service (реализовать client-методы, убрать swallow-обёртки)
-- Память фейлов: дистилляция транскриптов ранов в базу знаний для architect и fix-тасков
-- Triage-агент: ступень эскалации перед WAITING_HUMAN_REVIEW
-- Активная доска: события доски как шина, агенты подписываются, треды на карточках
+- Fix the incident subsystem of infra-service (implement the client methods, remove the swallow wrappers)
+- Failure memory: distilling run transcripts into a knowledge base for the architect and for fix tasks
+- A triage agent: an escalation step before WAITING_HUMAN_REVIEW
+- An active board: board events as a bus, agents subscribe, threads on the cards
 
 ### Multi-tenant hardening
 
-Реальная изоляция юзеров и проектов до того, как появятся чужие клиенты. Пересекается со
-Stage 9/10 плана стабилизации.
+Real isolation of users and projects before other people's clients appear. Overlaps with
+Stage 9/10 of the stabilization plan.
 
-- API auth + enforcement owner_id на эндпоинтах (backlog #1022)
-- Сетевая изоляция и CPU/RAM-лимиты проектов на общих VPS (backlog #10)
+- API auth + owner_id enforcement on the endpoints (backlog #1022)
+- Network isolation and CPU/RAM limits for projects on shared VPS (backlog #10)
 - Parallel Server Provisioning (#41)
-- Метеринг стоимости per-user (LLM-токены, серверные ресурсы)
-- MicroVM worker runtime / elastic worker hosts — по триггерам (backlog #1050, #1051)
+- Per-user cost metering (LLM tokens, server resources)
+- MicroVM worker runtime / elastic worker hosts — on triggers (backlog #1050, #1051)
 
 ### Product decomposition + Architect node
 
-PO принимает высокоуровневое описание и формулирует продуктовые stories; Architect дробит story
-на технические tasks с зависимостями. Юзер видит stories, tasks абстрагированы. Спека:
+The PO takes a high-level description and formulates product stories; the Architect splits a story
+into technical tasks with dependencies. The user sees the stories, the tasks are abstracted away. The spec:
 [PIPELINE_V2.md](PIPELINE_V2.md), brainstorm bs-d302b6a1.
 
-- Architect: story decomposition into tasks (остаток арки)
-- Architect: sub-story decomposition — определять, что story слишком большая, дробить или
-  возвращать PO на уточнение scope
+- Architect: story decomposition into tasks (the remainder of the arc)
+- Architect: sub-story decomposition — detect that a story is too large, split it or
+  return it to the PO to clarify the scope
 
-## Later arcs (укрупнённо, порядок не зафиксирован)
+## Later arcs (coarse-grained, the order is not fixed)
 
-- **Frontend generation** — модуль фронтенда в service-template; описание → сайт с доменом.
-- **Post-release testing** — QA через Claude Code на прод-сервере после деплоя: story → TESTING →
-  тест по описанию как реальный пользователь → pass/fail loop. Brainstorm bs-eece61a8.
-- **Pre-release testing** — feature-стенды, preview environments; E2E completion (#11),
+- **Frontend generation** — a frontend module in service-template; a description → a site with a domain.
+- **Post-release testing** — QA through Claude Code on the prod server after a deploy: story → TESTING →
+  a test based on the description, as a real user → a pass/fail loop. Brainstorm bs-eece61a8.
+- **Pre-release testing** — feature environments, preview environments; E2E completion (#11),
   contract testing (schemathesis).
-- **GitHub integration** — юзер подключает свой GitHub, видит репозиторий, может форкнуть.
-  Остаток: Repository model в production flows (backlog #1024).
-- **Admin dashboard v2/v3** — логи воркеров, вмешательство оператора; затем полная observability
-  с алертами. Остатки конфиг-арки: ConfigStore TTL cache, перевод сервисов на ConfigStore.
-- **User dashboard** — ЛК для нетехнического фаундера: базовая версия готова (auth через
-  Telegram, аналитика из Loki); развитие по мере спроса.
-- **Conversation summarization** — сжатие переписки PO↔юзер, контекст-менеджмент.
-- **Worker swarm** — параллельные воркеры, переиспользование контейнеров (после Stage 10 seams).
+- **GitHub integration** — the user connects their own GitHub, sees the repository, can fork it.
+  The remainder: the Repository model in the production flows (backlog #1024).
+- **Admin dashboard v2/v3** — worker logs, operator intervention; then full observability
+  with alerts. The remainder of the config arc: the ConfigStore TTL cache, moving the services to ConfigStore.
+- **User dashboard** — a personal area for a non-technical founder: the basic version is ready (auth through
+  Telegram, analytics from Loki); further development as demand appears.
+- **Conversation summarization** — compressing the PO↔user conversation, context management.
+- **Worker swarm** — parallel workers, container reuse (after the Stage 10 seams).
 - **Security hardening** — deploy cleanup audit (#7), key encryption (#20), agent hierarchy &
   incident response (#2), rate limiting.
-- **Full RAG** — поиск по проекту/докам/переписке для агентов.
+- **Full RAG** — search over the project/docs/conversation for the agents.
 
-## Codegen features (deferred, по мере спроса)
+## Codegen features (deferred, as demand appears)
 
-Фичи генератора и service-template, не привязанные к аркам: scaffolder ensure-workspace gate;
-eager import chains (backlog #1025); авто-роутеры из domain specs (#1026); make add-module
-(#1027); unified handlers error strategy; авто-обновление `__init__.py` re-exports; notifications
-через Redis Stream (#26); enum types в model fields; Celery worker support; ddgs rename (#46);
+Generator and service-template features not tied to an arc: the scaffolder ensure-workspace gate;
+eager import chains (backlog #1025); auto-routers from domain specs (#1026); make add-module
+(#1027); a unified handlers error strategy; auto-updating the `__init__.py` re-exports; notifications
+through a Redis Stream (#26); enum types in model fields; Celery worker support; the ddgs rename (#46);
 high-level architecture spec; spec-first observability (OpenTelemetry); spec-only module storage;
 standardize PYTHONPATH (backlog #1005); integration test scheduler-langgraph lifecycle (#1003).
 
-## Deferred (после product-market fit)
+## Deferred (after product-market fit)
 
-- **Rust migration** — service-template и сгенерированные сервисы на Rust (Axum + SeaORM, Tera);
-  сначала language-agnostic YAML-спеки и PoC.
-- **Human-in-the-loop** — тарифная модель с эскалацией задач от AI к живым разработчикам.
+- **Rust migration** — service-template and the generated services in Rust (Axum + SeaORM, Tera);
+  language-agnostic YAML specs and a PoC first.
+- **Human-in-the-loop** — a tariff model with escalation of tasks from the AI to live developers.
 
 ## Closed arcs
 
-- **Dev process automation** (internal tasks/skills/doc generation) — закрыта `codegen_orchestrator-668`:
-  внутренний dogfooding снят, задачи оркестратора идут через внешний пайплайн. Tasks/Stories API
-  остаётся для клиентских проектов.
-- **Admin dashboard v1** — read-only админка готова.
+- **Dev process automation** (internal tasks/skills/doc generation) — closed by `codegen_orchestrator-668`:
+  internal dogfooding was removed, orchestrator tasks go through the external pipeline. The Tasks/Stories API
+  remains for client projects.
+- **Admin dashboard v1** — the read-only admin panel is ready.
 - **Server & application health monitoring** — node_exporter/cadvisor, health_checker, admin UI
-  готовы; остатки drift detection в backlog (#1017, #1018).
-- Клиентские боты эпохи dogfooding (LessWrong bot, fortune teller, cat bot, reverse bot и пр.) —
-  это client-project stories, а не milestones оркестратора; тексты в git history.
+  are ready; the remainder of drift detection is in the backlog (#1017, #1018).
+- The client bots from the dogfooding era (LessWrong bot, fortune teller, cat bot, reverse bot and so on) are
+  client-project stories, not orchestrator milestones; the texts are in git history.

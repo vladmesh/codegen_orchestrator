@@ -1,55 +1,57 @@
 # Agents Playbook
 
-Инструкция для AI-ассистентов, работающих над этим проектом.
+Instructions for AI assistants working on this project.
 
-## Навигация
+## Navigation
 
-| Документ | Когда читать |
+| Document | When to read it |
 |----------|-------------|
-| [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) | **ОБЯЗАТЕЛЬНО К ПРОЧТЕНИЮ** — жизненный цикл фичи и дата-дривен процесс |
-| [docs/STATUS.md](docs/STATUS.md) | **Всегда первым** — текущая задача и контекст |
-| [docs/backlog.md](docs/backlog.md) | Отложенный пул задач и идей (поддерживается вручную) |
-| [docs/CONTRACTS.md](docs/CONTRACTS.md) | Перед изменением DTO, очередей, API |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Для понимания системы в целом |
-| [docs/NODES.md](docs/NODES.md) | Описание агентов-узлов LangGraph |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Фазы и вехи |
-| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Что уже сделано |
+| [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) | **MANDATORY READ** — the feature lifecycle and the data-driven process |
+| [docs/STATUS.md](docs/STATUS.md) | **Always first** — the current task and context |
+| [docs/backlog.md](docs/backlog.md) | The deferred pool of tasks and ideas (maintained by hand) |
+| [docs/CONTRACTS.md](docs/CONTRACTS.md) | Before changing DTOs, queues, the API |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | To understand the system as a whole |
+| [docs/NODES.md](docs/NODES.md) | A description of the LangGraph agent nodes |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Phases and milestones |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | What has already been done |
 
-## Связанные проекты
+## Related projects
 
-- **service-template** (`/home/vlad/projects/service-template`) — фреймворк для генерации проектов
+- **service-template** (`/home/vlad/projects/service-template`) — a framework for generating projects
 
 ## Dev Pipeline
 
-Задачи по разработке самого оркестратора заводятся и ведутся во внешнем пайплайне, а не в локальной Tasks DB. Локальный процесс — спринтовый, состояние живёт в markdown-файлах, которые поддерживаются вручную (генераторов под них нет). Полное описание: [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md).
+Tasks for developing the orchestrator itself are created and tracked in an external pipeline, not in the local Tasks DB. The local process is sprint-based, its state lives in markdown files that are maintained by hand (there are no generators for them). Full description: [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md).
 
 ```
-/go (диспетчер — читает docs/STATUS.md, первое совпадение выигрывает)
- ├─ нет спринта ───────────── /new-sprint
- ├─ фаза без задач ────────── /plan-phase
- ├─ есть задачи ───────────── /implement (по задаче, TDD)
- ├─ все задачи done ───────── /close-phase
- └─ все фазы done ─────────── endgame: /audit + /e2e-run → фиксы → /update-docs → /close-sprint
+/go (dispatcher — reads docs/STATUS.md, first match wins)
+ ├─ no sprint ─────────────── /new-sprint
+ ├─ phase without tasks ───── /plan-phase
+ ├─ tasks exist ───────────── /implement (one task at a time, TDD)
+ ├─ all tasks done ────────── /close-phase
+ └─ all phases done ───────── endgame: /audit + /e2e-run → fixes → /update-docs → /close-sprint
 ```
 
-Скиллы получают контекст из `docs/STATUS.md` (текущий спринт и фаза) и работают с markdown-файлами спринта в `docs/sprints/NNN-slug/` напрямую.
+Skills take their context from `docs/STATUS.md` (the current sprint and phase) and work with the sprint markdown files in `docs/sprints/NNN-slug/` directly.
 
-**Код вне flow** допустим для мелких фиксов (< 3 файлов). Обязательно: запись в CHANGELOG + коммит с `[hotfix]` префиксом. Крупные изменения — только через flow.
+**Code outside the flow** is allowed for small fixes (< 3 files). Required: a CHANGELOG entry + a commit with the `[hotfix]` prefix. Larger changes go through the flow only.
 
 ## TDD Workflow (MANDATORY)
 
-Red → Green → Refactor. Без исключений.
+Red → Green → Refactor. No exceptions.
 
-1. **Context**: прочитай `docs/STATUS.md` и `docs/CONTRACTS.md`
-2. **Red**: напиши тест в `services/<service>/tests/{unit,integration}/`, убедись что падает
-3. **Green**: минимальный код для прохождения теста
-4. **Gate**: `make test-unit` + `make lint`. Обнови STATUS, CHANGELOG, backlog вручную по мере необходимости.
+1. **Context**: read `docs/STATUS.md` and `docs/CONTRACTS.md`
+2. **Red**: write a test in `services/<service>/tests/{unit,integration}/`, make sure it fails
+3. **Green**: the minimal code to make the test pass
+4. **Gate**: `make test-unit` + `make lint`. Update STATUS, CHANGELOG, backlog by hand as needed.
 
-**Review Trigger**: изменение `shared/contracts/` или схемы БД, не описанное в плане → **STOP**, спроси пользователя.
+**Review Trigger**: a change to `shared/contracts/` or the DB schema that is not described in the plan → **STOP**, ask the user.
 
-## Правила
+## Rules
 
-**Переменные окружения** — никогда не используй default values:
+**Documentation language** — project documentation is written in English, including new entries in `docs/CHANGELOG.md` and `docs/STATUS.md`.
+
+**Environment variables** — never use default values:
 ```python
 # Wrong
 api_key = os.getenv("OPENAI_API_KEY", "sk-test")
@@ -60,7 +62,7 @@ if not api_key:
     raise RuntimeError("OPENAI_API_KEY is not set")
 ```
 
-**Логирование** — `structlog` везде, никогда `print()`:
+**Logging** — `structlog` everywhere, never `print()`:
 ```python
 from shared.log_config import setup_logging
 import structlog
@@ -68,7 +70,7 @@ setup_logging(service_name="my_service")
 logger = structlog.get_logger()
 ```
 
-**LangGraph узлы** — state как TypedDict, возвращать dict:
+**LangGraph nodes** — state as a TypedDict, return a dict:
 ```python
 async def my_node(state: OrchestratorState) -> dict:
     return {"messages": [...], "current_agent": "my_node"}
@@ -88,21 +90,21 @@ make test-service SERVICE=api # Per-service integration test
 
 ## Skills (`.claude/skills/`)
 
-У части скиллов есть альтернативы для не-Claude агентов в `.agents/workflows/`.
+Some skills have alternatives for non-Claude agents in `.agents/workflows/`.
 
-| Skill | Описание |
+| Skill | Description |
 |-------|----------|
-| `/go` | Диспетчер: читает `docs/STATUS.md`, вызывает нужный скилл |
-| `/new-sprint` | Создать спринт из VISION + ROADMAP + backlog |
-| `/plan-phase` | Сгенерировать файлы задач для текущей фазы (с арх-гейтом) |
-| `/implement` | TDD-цикл по одной задаче спринта, PR + CI + merge |
-| `/close-phase` | Интеграционные тесты + переход к следующей фазе |
-| `/close-sprint` | Финальный гейт: push, CHANGELOG, ROADMAP, история STATUS |
-| `/audit` | Скан кода + проверка инвариантов VISION; находки → `docs/backlog.md` |
-| `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | E2E тест (engineering → CI → deploy → verify, `--feature` пропускает scaffolding) |
-| `/test-maintenance` | Прогон/починка интеграционных тестов локально |
-| `/brainstorm <topic>` | Структурированное обсуждение темы → `docs/brainstorms/<topic>.md` |
-| `/update-docs` | Синхронизация живой документации с кодом |
-| `/optimize` | Обработка фидбека по скиллам (`docs/skill-feedback.md`) и авто-улучшение |
-| `/architect` | Декомпозиция Story → Tasks (для клиентских проектов, через API) |
-| `/escort` | Сопровождение реального пользователя через полный пайплайн |
+| `/go` | Dispatcher: reads `docs/STATUS.md`, invokes the right skill |
+| `/new-sprint` | Create a sprint from VISION + ROADMAP + backlog |
+| `/plan-phase` | Generate the task files for the current phase (with an architecture gate) |
+| `/implement` | A TDD cycle for one sprint task, PR + CI + merge |
+| `/close-phase` | Integration tests + moving to the next phase |
+| `/close-sprint` | The final gate: push, CHANGELOG, ROADMAP, STATUS history |
+| `/audit` | A code scan + a check of the VISION invariants; findings → `docs/backlog.md` |
+| `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | An E2E test (engineering → CI → deploy → verify, `--feature` skips scaffolding) |
+| `/test-maintenance` | Running/fixing integration tests locally |
+| `/brainstorm <topic>` | A structured discussion of a topic → `docs/brainstorms/<topic>.md` |
+| `/update-docs` | Synchronizing the living documentation with the code |
+| `/optimize` | Processing skill feedback (`docs/skill-feedback.md`) and auto-improvement |
+| `/architect` | Decomposing a Story → Tasks (for client projects, through the API) |
+| `/escort` | Escorting a real user through the full pipeline |

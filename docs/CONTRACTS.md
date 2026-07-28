@@ -1,13 +1,13 @@
-# Contracts / Контракты
+# Contracts
 
-Типизированные схемы для REST API и Redis очередей.
+Typed schemas for the REST API and the Redis queues.
 
 ## Design Principles
 
-1. **Schema-first** — все сообщения валидируются Pydantic схемами
-2. **1:1 Queues** — одна очередь = один Writer → один Consumer (+ optional observers)
-3. **Logical Actors** — указываем роль (PO ReactAgent, Developer-Worker, langgraph), не техническую прослойку
-4. **Traceable** — `correlation_id` для сквозной трассировки
+1. **Schema-first** — all messages are validated by Pydantic schemas
+2. **1:1 Queues** — one queue = one Writer → one Consumer (+ optional observers)
+3. **Logical Actors** — we name the role (PO ReactAgent, Developer-Worker, langgraph), not the technical layer
+4. **Traceable** — a `correlation_id` for end-to-end tracing
 
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 
@@ -194,7 +194,7 @@ sequenceDiagram
     participant LG as langgraph
     participant WM as worker-manager
 
-    User->>TG: "Сделай блог"
+    User->>TG: "Build me a blog"
     TG->>Redis: XADD po:input {text, user_id, request_id}
     Redis-->>PO: Consumer reads (po-consumer group)
 
@@ -203,9 +203,9 @@ sequenceDiagram
     API-->>PO: project_id
     PO->>API: create_repository(project_id)
     PO->>API: create_story(project_id, description)
-    PO->>Redis: XADD po:response:{request_id} {text: "Начал разработку!"}
+    PO->>Redis: XADD po:response:{request_id} {text: "Started development!"}
     Redis-->>TG: XREAD po:response:{request_id}
-    TG->>User: "Начал разработку!"
+    TG->>User: "Started development!"
 
     Note over SCH: Task Dispatcher (30s poll) detects draft project + stories
     SCH->>Redis: XADD scaffold:queue {project_id, repo_id, modules}
@@ -242,14 +242,14 @@ sequenceDiagram
     participant LG as langgraph
     participant GH as GitHub API
 
-    User->>TG: "Задеплой проект X"
+    User->>TG: "Deploy project X"
     TG->>Redis: XADD po:input {text, user_id, request_id}
     Redis-->>PO: Consumer reads (po-consumer group)
     PO->>API: trigger_deploy(project_id)
     PO->>Redis: XADD deploy:queue
-    PO->>Redis: XADD po:response:{request_id} {text: "Запускаю деплой!"}
+    PO->>Redis: XADD po:response:{request_id} {text: "Starting the deploy!"}
     Redis-->>TG: XREAD po:response:{request_id}
-    TG->>User: "Запускаю деплой!"
+    TG->>User: "Starting the deploy!"
     Redis-->>LG: Consumer reads
     LG->>LG: DevOps Subgraph (EnvironmentContractLoader → SecretResolver)
     LG->>GH: POST /repos/{owner}/{repo}/actions/workflows/deploy.yml/dispatches
@@ -1294,11 +1294,11 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 
 ## Developer Worker I/O
 
-> **Terminology:** Developer — это конкретная нода внутри Engineering Subgraph.
-> Engineering — абстракция "отдела" для PO. Developer — реализация (воркер, пишущий код).
-> См. [GLOSSARY.md](./GLOSSARY.md#engineering-vs-developer).
+> **Terminology:** Developer is a concrete node inside the Engineering Subgraph.
+> Engineering is the "department" abstraction for the PO. Developer is the implementation (the worker that writes the code).
+> See [GLOSSARY.md](./GLOSSARY.md#engineering-vs-developer).
 
-Коммуникация между LangGraph (Engineering Subgraph, а именно DeveloperNode) и Developer Worker.
+The communication between LangGraph (the Engineering Subgraph, specifically the DeveloperNode) and a Developer Worker.
 
 **Design Decision:** Developer Workers are **ephemeral** (stateless). Each task spawns a fresh worker.
 Context is the code in repo + error messages — no session persistence needed.

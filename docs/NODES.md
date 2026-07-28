@@ -1,18 +1,18 @@
-# Агенты и Ноды
+# Agents and Nodes
 
-Каждый агент — это узел LangGraph с собственным набором инструментов и специализацией.
+Every agent is a LangGraph node with its own set of tools and its own specialization.
 
 ---
 
 ## 🧭 Product Owner (LangGraph ReactAgent)
 
-**Роль**: Центральный координатор. Управляет жизненным циклом проекта через API tools, единственная точка коммуникации с пользователем.
+**Role**: the central coordinator. Manages the project lifecycle through API tools, the single point of communication with the user.
 
-**Реализация**: LangGraph `create_react_agent` в `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container — no separate Docker container needed. Conversation state persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); falls back to in-memory `MemorySaver` without `CHECKPOINT_DATABASE_URL`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) — old messages are summarized into a running summary stored in `state["context"]` instead of being silently dropped.
+**Implementation**: LangGraph `create_react_agent` in `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container — no separate Docker container needed. Conversation state persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); falls back to in-memory `MemorySaver` without `CHECKPOINT_DATABASE_URL`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) — old messages are summarized into a running summary stored in `state["context"]` instead of being silently dropped.
 
-**Инструменты** (`src/agents/po/tools.py`):
-- `create_project`, `list_projects`, `get_project`: управление проектами через API
-- `set_project_secret`: сохранение секретов. Bot tokens are refused server-side (422) — the API only takes them through the validator.
+**Tools** (`src/agents/po/tools.py`):
+- `create_project`, `list_projects`, `get_project`: project management through the API
+- `set_project_secret`: storing secrets. Bot tokens are refused server-side (422) — the API only takes them through the validator.
 - `validate_telegram_token`: posts the token to `POST /api/projects/{id}/telegram/token`. The API runs the check chain (format, `getMe`, then the external-activity probes: `getWebhookInfo` and a `getUpdates` probe that answers 409 when another poller holds the token, then uniqueness across
 projects: a bot held by another live project is refused, naming that project only when the same
 user owns it), stores `TELEGRAM_BOT_TOKEN` / `TELEGRAM_BOT_USERNAME` and `Repository.bot_username` only on a passing verdict, and returns a typed `TelegramTokenVerdict` (`shared/contracts/dto/telegram.py`) with a user-facing message. PO only relays it. The hold ends with the
@@ -30,129 +30,129 @@ telling the agent the bot is free. A failed undeploy run surfaces as `failed` ra
 wait. Someone else's project is refused with 403 and stays untouched. This is the way out of a
 `bound_to_own_project` verdict — PO offers the user the choice between continuing in the holding
 project and freeing the token.
-- `create_story`: создание user story + автоматический запуск engineering work
-- `reopen_story`: переоткрытие завершённой story с user_report (контекст проблемы)
-- `list_stories`, `get_story`: просмотр stories, привязанных tasks и их runs (с id, status, type, error, timing)
-- `get_run_status`: детальный статус конкретного engineering/deploy run
-- `set_reminder`: отложенные проверки через Redis ZSET
+- `create_story`: creating a user story + automatically starting engineering work
+- `reopen_story`: reopening a completed story with a user_report (the context of the problem)
+- `list_stories`, `get_story`: viewing stories, the tasks attached to them and their runs (with id, status, type, error, timing)
+- `get_run_status`: the detailed status of a specific engineering/deploy run
+- `set_reminder`: deferred checks through a Redis ZSET
 - `notify_user`: proactive message to user via `po:proactive` stream
-- `web_search`: поиск документации внешних API через DuckDuckGo
+- `web_search`: searching the documentation of external APIs through DuckDuckGo
 
-**System events**: PO consumer принимает три story-level события: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW). Все остальные system events дропаются — PO проверяет прогресс через reminders.
+**System events**: the PO consumer accepts three story-level events: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW). All other system events are dropped — the PO checks progress through reminders.
 
 **Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). All PO streams use Pydantic contracts from `shared.contracts.queues.po` (`POInputMessage`, `POResponse`, `POProactiveMessage`) with flat-field serialization (`to_flat_fields()` / `from_flat_fields()`). PO Consumer has PEL recovery via `XAUTOCLAIM` on startup. Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
 
-**Выход**: Действия через tools, сообщения пользователю через Telegram
+**Output**: actions through tools, messages to the user through Telegram
 
 ---
 
 
 ## 👨‍💻 Developer (Engineering Subgraph)
 
-**Роль**: Написание бизнес-логики в уже scaffolded проекте.
+**Role**: writing the business logic in an already scaffolded project.
 
-**Когда вызывается**:
-- Первый этап Engineering Subgraph
-- При rework от Tester (до 3 итераций)
+**When it is called**:
+- The first stage of the Engineering Subgraph
+- On rework from the Tester (up to 3 iterations)
 
-**Реализация**:
-1. Scaffolder service (отдельный микросервис) выполняет scaffold phase: copier + make setup + git push, сохраняет tree + specs_summary в DB, ставит `project.status = active`
-2. Architect Consumer (langgraph) ждёт завершения scaffold (poll project.status != draft, до 5 мин), затем декомпозирует story в tasks (видит tree, specs summary: модели, домены, события)
-3. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue` с `branch=story/{story_id}`
-4. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets
-5. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai / OpenAI Codex)
-6. Worker-manager creates/checks out `story/{story_id}` branch, инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` (в `/workspace/TASK.md`)
-7. Агент работает на feature branch и пушит туда
+**Implementation**:
+1. The Scaffolder service (a separate microservice) runs the scaffold phase: copier + make setup + git push, saves the tree + specs_summary to the DB, sets `project.status = active`
+2. The Architect Consumer (langgraph) waits for the scaffold to finish (polling project.status != draft, up to 5 min), then decomposes the story into tasks (it sees the tree and the specs summary: models, domains, events)
+3. The Task Dispatcher finds unblocked tasks, creates Runs, publishes to `engineering:queue` with `branch=story/{story_id}`
+4. The engineering worker creates the GitHub repository and sets the registry secrets
+5. Spawns a container through `worker-manager` (Claude Code / Factory.ai / OpenAI Codex)
+6. Worker-manager creates/checks out the `story/{story_id}` branch and injects the instructions from `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` and `TASK.md` (into `/workspace/TASK.md`)
+7. The agent works on the feature branch and pushes to it
 
-**Валидация**: Проверяет наличие commit SHA в результате.
+**Validation**: checks that a commit SHA is present in the result.
 
-**Обработка gave-up**: Если developer agent не может выполнить задачу (missing credentials, 404 URLs, contradictory requirements), он вызывает `curl -X POST localhost:9090/result -d '{"success":false,"reason":"..."}'`. Worker-wrapper HTTP-сервер принимает запрос и публикует результат в Redis. Developer node возвращает `engineering_status=EngineeringStatus.GAVE_UP`. Engineering consumer вызывает `handle_worker_gave_up()`:
-- Task → `waiting_human_review` с `failure_metadata = {reason: "..."}`
+**Handling gave-up**: if the developer agent cannot complete the task (missing credentials, 404 URLs, contradictory requirements), it calls `curl -X POST localhost:9090/result -d '{"success":false,"reason":"..."}'`. The worker-wrapper HTTP server accepts the request and publishes the result to Redis. The Developer node returns `engineering_status=EngineeringStatus.GAVE_UP`. The engineering consumer calls `handle_worker_gave_up()`:
+- Task → `waiting_human_review` with `failure_metadata = {reason: "..."}`
 - Story → `waiting_human_review`
-- Уведомление admin через `notify_admins()` (level=warning)
-- Уведомление пользователя через PO (`story_blocked` event)
-- Worker container **не удаляется** (admin может инспектировать)
+- The admin is notified through `notify_admins()` (level=warning)
+- The user is notified through the PO (a `story_blocked` event)
+- The worker container is **not removed** (the admin can inspect it)
 
-Для возобновления: `POST /tasks/{id}/resume` (admin даёт guidance, task WHR → IN_DEV).
+To resume: `POST /tasks/{id}/resume` (the admin gives guidance, task WHR → IN_DEV).
 
-**Выход**: Код в репозитории → Tester | Или `GAVE_UP` → WHR flow
+**Output**: code in the repository → Tester | Or `GAVE_UP` → the WHR flow
 
 ---
 
 ## 🧪 Tester (Engineering Subgraph)
 
-**Роль**: Запуск тестов, проверка качества кода.
+**Role**: running tests, checking code quality.
 
-**Когда вызывается**:
-- После Developer
-- Финальный этап Engineering Subgraph
+**When it is called**:
+- After the Developer
+- The final stage of the Engineering Subgraph
 
-**Действия**:
-- Запуск `make test`, `make lint`
-- Проверка health endpoints (если задеплоено)
+**Actions**:
+- Running `make test`, `make lint`
+- Checking health endpoints (if deployed)
 
-**Выход**:
-- `test_results` с passed/failed/skipped
-- При неудаче → возврат к Developer (max 3 итерации)
-- При успехе → `EngineeringStatus.DONE` → DevOps
+**Output**:
+- `test_results` with passed/failed/skipped
+- On failure → back to the Developer (max 3 iterations)
+- On success → `EngineeringStatus.DONE` → DevOps
 
 ---
 
 ## 🔧 DevOps (Subgraph)
 
-**Роль**: Деплой с типизированным контрактом окружения.
+**Role**: deployment with a typed environment contract.
 
-**Когда вызывается**:
-- После Engineering Subgraph
-- При `trigger_deploy` от PO
-- При обнаружении merged PR (PR poller в scheduler, 30s poll) → deploy:queue
+**When it is called**:
+- After the Engineering Subgraph
+- On `trigger_deploy` from the PO
+- When a merged PR is detected (the PR poller in the scheduler, 30s poll) → deploy:queue
 
-**Структура пакета** (`src/subgraphs/devops/`):
+**Package structure** (`src/subgraphs/devops/`):
 ```
 devops/
-├── __init__.py          # Экспорты
+├── __init__.py          # Exports
 ├── state.py             # DevOpsState TypedDict
-├── env_contract_loader.py # Загрузка и валидация обязательного контракта
+├── env_contract_loader.py # Loading and validating the mandatory contract
 ├── nodes.py             # SecretResolver, ReadinessCheck, Deployer, SmokeTester
 └── graph.py             # Routing + create_devops_subgraph
 ```
 
-**Ноды внутри subgraph**:
+**Nodes inside the subgraph**:
 
-1. **EnvironmentContractLoader**: Загружает фрагменты `env.contract.yaml` из
-   репозитория. Отсутствующий или некорректный контракт завершает deploy с
-   различимым contract-outcome.
+1. **EnvironmentContractLoader**: loads the `env.contract.yaml` fragments from the
+   repository. A missing or invalid contract ends the deploy with a
+   distinguishable contract outcome.
 
 2. **SecretResolver (Functional)**:
-   - Дешифрует существующие секреты из БД (`decrypt_dict`)
-   - Резолвит production-значения обязательного типизированного контракта: user secrets, generated secrets, allocations, derived и literal values
-   - Сохраняет generated secrets, проверяет наличие обязательных user secrets
-   - Шифрует и сохраняет новые секреты обратно в БД (`encrypt_dict`)
+   - Decrypts the existing secrets from the DB (`decrypt_dict`)
+   - Resolves the production values of the mandatory typed contract: user secrets, generated secrets, allocations, derived and literal values
+   - Stores the generated secrets, checks that the required user secrets are present
+   - Encrypts the new secrets and saves them back to the DB (`encrypt_dict`)
 
 3. **ReadinessCheck (Functional)**:
-   - Проверяет готовность к деплою
-   - Если есть missing_user_secrets → возврат к PO
-   - Если всё готово → Deployer
+   - Checks readiness for deployment
+   - If there are missing_user_secrets → back to the PO
+   - If everything is ready → the Deployer
 
 4. **Deployer (Functional)**:
-   - Собирает DOTENV из `secret_values` и `non_secret_values` (`build_dotenv` → `encode_dotenv` → base64)
-   - Записывает 9 GitHub Secrets: DOTENV, DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PORT, PROJECT_NAME, REGISTRY_URL, REGISTRY_USER, REGISTRY_PASSWORD
-   - Тригерит `deploy.yml` через `trigger_workflow_dispatch`
-   - Ждёт завершения через `wait_for_workflow_completion` (poll, timeout 600s)
-   - Post-deployment операции:
+   - Builds DOTENV from `secret_values` and `non_secret_values` (`build_dotenv` → `encode_dotenv` → base64)
+   - Writes 9 GitHub Secrets: DOTENV, DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PORT, PROJECT_NAME, REGISTRY_URL, REGISTRY_USER, REGISTRY_PASSWORD
+   - Triggers `deploy.yml` through `trigger_workflow_dispatch`
+   - Waits for completion through `wait_for_workflow_completion` (poll, timeout 600s)
+   - Post-deployment operations:
      * Creates or updates Application record (repo + server → runtime entity with `ApplicationStatus`)
-     * Создает Deployment record (immutable deploy log с `DeploymentResult` и `deployed_sha`)
-     * Устанавливает статус проекта = active
+     * Creates a Deployment record (an immutable deploy log with `DeploymentResult` and `deployed_sha`)
+     * Sets the project status = active
 
 5. **SmokeTester (Functional)**:
-   - Делает HTTP `/health` check для бекендов; для tg_bot — Bot API `getMe` по токену проекта
-     плюс `docker compose ps` на сервере, что контейнер `tg_bot` running. Обе пробы обязательны:
-     нет токена, handle сервера или SSH — это `fail` с текстом причины, а не skip.
-   - Реализует retry logic (3 попытки, 5s delay).
+   - Does an HTTP `/health` check for backends; for tg_bot it is the Bot API `getMe` with the project's token
+     plus `docker compose ps` on the server to confirm that the `tg_bot` container is running. Both probes are mandatory:
+     a missing token, a missing server handle or missing SSH is a `fail` with the reason text, not a skip.
+   - Implements retry logic (3 attempts, 5s delay).
    - On failure: SSHes into deploy server, captures `docker compose logs --tail=50`, appends to check `detail` field. Logs flow through deploy→engineering feedback loop so fix tasks get actual tracebacks.
-   - Записывает `smoke_result` в `DevOpsState` для проброса статуса в deploy-worker.
+   - Writes `smoke_result` into `DevOpsState` to pass the status through to the deploy worker.
 
-**Архитектура**:
+**Architecture**:
 ```
 Deployer → build_dotenv → set_repository_secrets (GitHub API)
                         → trigger_workflow_dispatch (deploy.yml)
@@ -163,9 +163,9 @@ Deployer → build_dotenv → set_repository_secrets (GitHub API)
                               Docker build + deploy to VPS
 ```
 
-**Выход**:
-- `deployed_url` при успехе
-- `missing_user_secrets` если нужны секреты от пользователя
+**Output**:
+- `deployed_url` on success
+- `missing_user_secrets` if secrets are needed from the user
 
 **Proactive notifications**:
 Filtered to reduce spam — only two events reach user via `po:proactive`: (1) deploy success (deployed URL), (2) permanent story failure (user-friendly message). All intermediate failures (smoke, precheck, workflow) are routed through the deploy→engineering feedback loop for automated fixing.
@@ -177,18 +177,18 @@ Deploy worker writes `DeployOutcome` to `run.result`. The supervisor (`supervise
 
 ## 🚧 Infra Service
 
-**Роль**: Изолированный сервис для выполнения Ansible операций (provisioning).
+**Role**: an isolated service for running Ansible operations (provisioning).
 
-**Реализация**: Отдельный сервис `infra-service` для изоляции тяжёлых зависимостей (Ansible, SSH).
+**Implementation**: a separate `infra-service` service to isolate the heavy dependencies (Ansible, SSH).
 
-**Типы jobs**:
+**Job types**:
 1. **Provisioning** (`provisioner:queue`):
-   - Password reset через Time4VPS API
-   - OS reinstall при необходимости
-   - Ansible playbooks для настройки сервера
-   - Редеплой сервисов после восстановления
+   - A password reset through the Time4VPS API
+   - An OS reinstall if needed
+   - Ansible playbooks for server setup
+   - Redeploying the services after recovery
 
-**Архитектура**:
+**Architecture**:
 ```
 infra-service
   ├── Listen: provisioner:queue (RedisStreamClient.consume, auto_ack=False, claim_pending=True)
@@ -197,14 +197,14 @@ infra-service
   └── Publish: provisioner:results
 ```
 
-**Выход**: Результаты в Redis Stream `provisioner:results`
+**Output**: the results go to the Redis Stream `provisioner:results`
 
 ---
 
-## 🔄 Взаимодействие
+## 🔄 Interaction
 
 ```
-Пользователь (Telegram)
+User (Telegram)
      │
      ▼
 Telegram Bot → Redis (po:input)
@@ -212,7 +212,7 @@ Telegram Bot → Redis (po:input)
      ▼
 PO ReactAgent (in langgraph container)
      │ tool calls (httpx/Redis)
-     ├──────────────▶ po:response:{request_id} ──▶ Пользователь
+     ├──────────────▶ po:response:{request_id} ──▶ User
      │
      ├──────────────▶ scaffold:queue → Scaffolder Service
      │               (copier + make setup + git push, saves tree + specs_summary)
@@ -238,7 +238,7 @@ PO ReactAgent (in langgraph container)
      │               DevOps Subgraph
      │               EnvironmentContractLoader → SecretResolver → ReadinessCheck → Deployer
      │                                                      │
-     └──────────────▶ (завершение) ◄─────────────────────────┘
+     └──────────────▶ (completion) ◄─────────────────────────┘
 
 
 PR Poller (scheduler, 30s poll)
@@ -250,7 +250,7 @@ Scheduler → story → deploying, create Run
 Redis (deploy:queue) → deploy-worker → DevOps Subgraph
      │
      ▼
-Redis (po:proactive) → Telegram Bot → Пользователь
+Redis (po:proactive) → Telegram Bot → User
 ```
 
-**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder (отдельный сервис) подготавливает репозиторий (copier + make setup + git push) до запуска architect. Worker-manager монтирует pre-scaffolded workspace volume из `/data/workspaces/{repo_id}/` в контейнер воркера. Deploy после merge обнаруживается PR poller'ом в scheduler — webhook'и удалены.
+**Important**: the PO ReactAgent coordinates the whole flow through LangChain tools. The Scaffolder (a separate service) prepares the repository (copier + make setup + git push) before the architect runs. Worker-manager mounts the pre-scaffolded workspace volume from `/data/workspaces/{repo_id}/` into the worker container. A deploy after a merge is detected by the PR poller in the scheduler; webhooks have been removed.
