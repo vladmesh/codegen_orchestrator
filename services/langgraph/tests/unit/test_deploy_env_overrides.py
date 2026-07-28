@@ -21,7 +21,7 @@ from shared.contracts.queues.deploy import (
     DeployTrigger,
 )
 from src.consumers.deploy import _already_deployed_application, _effective_env_overrides
-from tests.unit.factories import make_project, make_repository
+from tests.unit.factories import make_project, make_repository, make_run_start
 
 HEAD = "a" * 40
 ALLOCATED = {"backend": {"application_id": 7}}
@@ -39,12 +39,21 @@ class _Running:
     status = "running"
 
 
-def _api(deployments: list[dict], run_status: RunStatus = RunStatus.QUEUED) -> AsyncMock:
+def _api(
+    deployments: list[dict],
+    run_status: RunStatus = RunStatus.QUEUED,
+    start_status: RunStatus | None = None,
+) -> AsyncMock:
     client = AsyncMock()
     client.get = AsyncMock(return_value=deployments)
     client.get_application = AsyncMock(return_value=_Running())
-    # The consumer reads its own run before acting on the message.
+    # The consumer reads its own run before acting on the message, then takes it
+    # to running as a locked transition that a cancellation refuses.
     client.get_run = AsyncMock(return_value=SimpleNamespace(status=run_status))
+    started = start_status or RunStatus.RUNNING
+    client.start_run = AsyncMock(
+        return_value=make_run_start(started=started is RunStatus.RUNNING, run_status=started)
+    )
     return client
 
 
@@ -301,6 +310,47 @@ async def test_a_withdrawn_deploy_is_refused_when_its_message_is_picked_up_later
     graph.ainvoke.assert_not_called()
     api.patch.assert_not_awaited()
     redis.redis.set.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawal_landing_after_the_first_read_still_stops_the_deploy() -> None:
+    """The read is an early-out, not the guard. The transition to running is.
+
+    This is the narrow interleaving the earlier check cannot cover: the consumer
+    reads a live run, and only then does the sweep withdraw it. A blind patch to
+    running would put the cancelled run back into a state the dispatch claim
+    accepts, so the revoke would clear the value, record the grant revoked, and
+    this deploy would write the identity back afterwards.
+    """
+    from src.consumers.deploy import process_deploy_job
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    redis.redis.set = AsyncMock(return_value=True)
+    redis.redis.exists = AsyncMock(return_value=False)
+
+    # Live when read, cancelled by the time the run is taken to running.
+    api = _api([], run_status=RunStatus.QUEUED, start_status=RunStatus.CANCELLED)
+    api.patch = AsyncMock()
+
+    graph = AsyncMock()
+
+    with (
+        patch("src.consumers.deploy.api_client", api),
+        patch("src.consumers.deploy.create_devops_subgraph", return_value=graph),
+    ):
+        result = await process_deploy_job(
+            _fenced_job(task_id="deploy-grant-1", env_overrides={"TG_BOT_TEST_TELEGRAM_ID": "42"}),
+            redis,
+        )
+
+    assert result["reason"] == "run_cancelled"
+    graph.ainvoke.assert_not_called()
+    # Nothing resurrected the run, and nothing was deployed under it.
+    api.patch.assert_not_awaited()
+    api.get_project.assert_not_awaited()
+    # The lock this job did take is released.
+    redis.redis.delete.assert_awaited_once()
 
 
 @pytest.mark.asyncio

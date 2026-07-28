@@ -58,6 +58,10 @@ logger = structlog.get_logger(__name__)
 # A run in any of these states will never come back to release its grant.
 TERMINAL_RUN_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
 
+# Marks a grant whose deploy claimed the dispatch and then went quiet. Kept as a
+# prefix on last_error so the report is made once rather than every tick.
+_UNSETTLED_DISPATCH_ERROR = "grant deploy dispatch unsettled"
+
 
 def _empty_counts() -> dict[str, int]:
     return {"dispatched": 0, "released": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
@@ -69,10 +73,6 @@ def _grant_ttl_minutes() -> int:
 
 def _revoke_stale_minutes() -> int:
     return startup.get_config().get_int("supervisor.temporary_access_revoke_stale_minutes")
-
-
-def _dispatch_settle_seconds() -> int:
-    return startup.get_config().get_int("supervisor.temporary_access_dispatch_settle_seconds")
 
 
 def _max_revoke_attempts() -> int:
@@ -357,12 +357,14 @@ async def _abandon_grant(
     case where neither mechanism can settle it now: the Actions run may not exist
     yet, so the fence cannot see it, and the worker is on its way to creating it.
     Nothing is revoked on that tick. The worker reads the cancellation, stops its
-    own run and records it terminal, and the next sweep revokes against a state
+    own run and records its outcome, and the next sweep revokes against a state
     that can be fenced.
+
+    The QA run is failed before any of that. It is not waiting for the access any
+    more whatever the grant deploy turns out to have done, and a grant deploy
+    that never settles must not leave the run with no named reason.
     """
     log.error("temporary_access_grant_failed", detail=detail)
-    if not await _stop_grant_deploy(api_client, grant, detail, log):
-        return
     await _fail_qa_run(
         api_client,
         grant,
@@ -374,6 +376,8 @@ async def _abandon_grant(
         error_message=f"temporary access {grant.env_key} was never confirmed: {detail}",
         log=log,
     )
+    if not await _stop_grant_deploy(api_client, grant, detail, log):
+        return
     await _dispatch_revoke(
         api_client, redis_client, grant, TemporaryAccessRevokeReason.GRANT_FAILED, log
     )
@@ -399,11 +403,16 @@ async def _stop_grant_deploy(
     a deploy that has not crossed the boundary never will, and one that has is
     reported as already outside.
 
-    A deploy that did cross keeps the revoke waiting, but only until its dispatch
-    is old enough for GitHub to be listing it. That bound does not depend on the
-    worker still being alive: after the withdrawal no further dispatch is
-    possible — every dispatch re-claims and a cancelled run is refused — so the
-    only Actions run that can exist is one already made, and the fence sees it.
+    A deploy that did cross keeps the revoke waiting until the worker holding it
+    says what it did. Time cannot stand in for that. Elapsed seconds prove only
+    that a claim is old, not that the GitHub run it was about to make exists to
+    be fenced: a worker paused past the wait, or one whose claim response arrived
+    late, still reaches ``workflow_dispatch`` afterwards, and the value goes back
+    on an application whose grant is already recorded revoked. So the only thing
+    accepted as proof is the claimer's own recorded outcome, which it writes on
+    every path it can leave the deploy by. Until then this grant is not
+    revocable, and a claim that stays unanswered too long is reported rather than
+    waited out.
 
     Returns True when the revoke may proceed, False while the grant deploy is
     still on its way out and has to be waited for.
@@ -411,10 +420,7 @@ async def _stop_grant_deploy(
     run = await api_client.get_run_if_missing_returns_none(grant.grant_run_id)
     if run is None:
         return True
-    if run.status in TERMINAL_RUN_STATUSES and run.result is not None:
-        # The worker wrote its own outcome, which it only does when it is done
-        # with this deploy. There is nothing left to withdraw and nothing left in
-        # flight; whatever it dispatched is on Actions for the fence to find.
+    if _dispatch_settled(run):
         return True
 
     withdrawal = await api_client.withdraw_deploy_dispatch(
@@ -429,22 +435,79 @@ async def _stop_grant_deploy(
         )
         return True
 
-    settled_for = (datetime.now(UTC) - withdrawal.claimed_at).total_seconds()
-    if settled_for < _dispatch_settle_seconds():
-        log.warning(
-            "temporary_access_grant_deploy_already_dispatched",
+    # Claimed. The withdrawal cancelled the run, so the worker will stop, but
+    # only it knows whether it got to GitHub first.
+    run = await api_client.get_run_if_missing_returns_none(grant.grant_run_id)
+    if run is not None and _dispatch_settled(run):
+        log.info(
+            "temporary_access_grant_deploy_dispatch_settled",
             grant_run_id=grant.grant_run_id,
             claimed_at=withdrawal.claimed_at.isoformat(),
-            settled_for_seconds=round(settled_for, 1),
         )
-        return False
+        return True
 
-    log.info(
-        "temporary_access_grant_deploy_dispatch_settled",
+    await _report_unsettled_dispatch(api_client, grant, withdrawal.claimed_at, log)
+    return False
+
+
+def _dispatch_settled(run: RunDTO) -> bool:
+    """Whether the worker that owned this deploy has recorded what it did.
+
+    It writes a typed result on every path it can leave a deploy by, cancelled
+    ones included, and only once it is done with it. Until that result is there,
+    a dispatch to GitHub Actions may still be ahead of it; after it, whatever
+    exists on Actions is listable and a fence reaches it.
+    """
+    return run.status in TERMINAL_RUN_STATUSES and run.result is not None
+
+
+async def _report_unsettled_dispatch(
+    api_client: SchedulerAPIClient,
+    grant: TemporaryAccessGrantDTO,
+    claimed_at: datetime,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Say out loud that a claimed grant deploy has gone quiet.
+
+    Ordinarily this is a tick or two while the worker stops its own Actions run.
+    A claim that stays unanswered past the stale bound is a worker that is not
+    coming back, and the access it may have applied cannot be revoked until
+    something outside this sweep deals with it. That is worth an event and an
+    admin, not a quiet retry loop.
+    """
+    waited = _age_minutes(claimed_at)
+    log.warning(
+        "temporary_access_grant_deploy_dispatch_unsettled",
         grant_run_id=grant.grant_run_id,
-        claimed_at=withdrawal.claimed_at.isoformat(),
+        claimed_at=claimed_at.isoformat(),
+        waited_minutes=round(waited, 1),
     )
-    return True
+    if waited < _revoke_stale_minutes():
+        return
+    if (grant.last_error or "").startswith(_UNSETTLED_DISPATCH_ERROR):
+        # Already reported for this grant; repeating it every tick would bury it.
+        return
+
+    error = (
+        f"{_UNSETTLED_DISPATCH_ERROR}: grant deploy {grant.grant_run_id} claimed the dispatch "
+        f"{round(waited)} minutes ago and never recorded an outcome"
+    )
+    log.error(
+        "temporary_access_grant_deploy_dispatch_stuck",
+        grant_run_id=grant.grant_run_id,
+        waited_minutes=round(waited, 1),
+    )
+    await notify_admins_best_effort(
+        f"Temporary access {grant.env_key} for project {grant.project_id} cannot be revoked "
+        f"(grant {grant.id}): deploy {grant.grant_run_id} claimed the dispatch "
+        f"{round(waited)} minutes ago and never said whether it reached GitHub",
+        level="error",
+        component="temporary_access",
+        grant_id=grant.id,
+    )
+    await api_client.update_temporary_access_grant(
+        grant.id, TemporaryAccessGrantUpdate(last_error=error)
+    )
 
 
 async def _release_qa(

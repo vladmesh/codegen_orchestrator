@@ -47,6 +47,57 @@ async def _deploy_run(async_client: AsyncClient, *, run_status: str = "running")
 
 
 @pytest.mark.asyncio
+async def test_a_cancelled_run_cannot_be_started(async_client: AsyncClient):
+    """The interleaving the worker's own read cannot cover.
+
+    A worker reads a live run, the sweep withdraws it, and the worker then takes
+    it to running. If that write lands, the dispatch claim below sees a run that
+    is not terminal and grants it: the revoke has already cleared the value and
+    recorded the grant revoked, and this deploy writes the identity back.
+    """
+    run_id = await _deploy_run(async_client)
+
+    await async_client.post(f"/api/runs/{run_id}/dispatch-withdraw")
+    started = await async_client.post(f"/api/runs/{run_id}/start")
+
+    assert started.status_code == status.HTTP_200_OK
+    assert started.json()["started"] is False
+    assert started.json()["run_status"] == "cancelled"
+
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "cancelled"
+    claimed = await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+    assert claimed.json()["granted"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_plain_patch_cannot_resurrect_a_cancelled_run(async_client: AsyncClient):
+    """Not only the deploy worker's path: no writer may undo a terminal state."""
+    run_id = await _deploy_run(async_client)
+
+    await async_client.post(f"/api/runs/{run_id}/dispatch-withdraw")
+    patched = await async_client.patch(f"/api/runs/{run_id}", json={"status": "running"})
+
+    assert patched.status_code == status.HTTP_409_CONFLICT
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_starting_a_live_run_twice_is_the_same_answer(async_client: AsyncClient):
+    """A worker retrying after a lost response must not be refused its own start."""
+    run_id = await _deploy_run(async_client, run_status="queued")
+
+    first = await async_client.post(f"/api/runs/{run_id}/start")
+    second = await async_client.post(f"/api/runs/{run_id}/start")
+
+    assert first.json()["started"] is True
+    assert second.json()["started"] is True
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_a_live_run_may_claim_the_dispatch(async_client: AsyncClient):
     run_id = await _deploy_run(async_client)
 

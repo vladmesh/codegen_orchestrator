@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.contracts.queues.deploy import DeployOutcome
-from tests.unit.factories import make_project, make_repository, make_run
+from tests.unit.factories import make_project, make_repository, make_run, make_run_start
 
 
 @pytest.fixture
@@ -38,6 +38,7 @@ def mock_api():
         api.post = AsyncMock()
         api.get = AsyncMock(return_value=[])  # _check_duplicate_deploy
         api.get_run = AsyncMock(return_value=make_run())
+        api.start_run = AsyncMock(return_value=make_run_start())
         api.get_project = AsyncMock(
             return_value=make_project(
                 name="test-project",

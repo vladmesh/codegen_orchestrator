@@ -38,6 +38,24 @@ class DeployDispatchClaim(BaseModel):
     claimed_at: datetime | None = None
 
 
+class DeployRunStart(BaseModel):
+    """Answer to a worker asking whether it may begin work on a run at all.
+
+    Taking a run to RUNNING is the first thing a worker does with it, and doing
+    it with a blind write is how a cancelled run comes back to life: the worker
+    read the run, a withdrawal cancelled it, and the write put it back into a
+    state the dispatch claim accepts. So the transition is decided against the
+    locked row like the claim is, and a run that is already terminal stays that
+    way.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    started: bool
+    run_status: RunStatus
+
+
 class DispatchWithdrawal(StrEnum):
     """What a withdrawal found when it took the boundary."""
 

@@ -38,7 +38,10 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   fence that makes this hold is three things together: the unfinished-runs listing is exhausted
   rather than sampled, the dispatch boundary is claimed on the run itself so a cancelled deploy
   cannot reach GitHub, and the handoff is recoverable from the QA run because the plan is written
-  with it.
+  with it. Cancellation is terminal on both sides of that boundary: a run only reaches `running`
+  through the locked `POST /api/runs/{id}/start`, so no worker can write over a cancellation it
+  raced, and a withdrawal that arrived after the claim is settled by the claiming worker's own
+  recorded outcome rather than by elapsed time.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

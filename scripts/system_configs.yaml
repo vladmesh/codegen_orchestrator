@@ -132,11 +132,6 @@
   category: supervisor
   description: "Minutes an unfinished revoke deploy may run before the revoke is re-dispatched"
 
-- key: supervisor.temporary_access_dispatch_settle_seconds
-  value: 120
-  category: supervisor
-  description: "Seconds after a deploy worker claims dispatch before its GitHub Actions run is assumed listable by the revoke fence"
-
 - key: supervisor.temporary_access_max_revoke_attempts
   value: 3
   category: supervisor

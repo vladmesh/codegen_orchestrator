@@ -12,6 +12,7 @@ from shared.contracts.dto.deploy_dispatch import (
     DISPATCH_CLAIMED_AT_KEY,
     DeployDispatchClaim,
     DeployDispatchWithdrawal,
+    DeployRunStart,
     DispatchWithdrawal,
 )
 from shared.contracts.dto.run import RunStatus
@@ -227,6 +228,22 @@ async def update_run(
 
     # Update fields
     update_data = run_update.model_dump(exclude_unset=True)
+
+    # A terminal run has produced its outcome and nothing may start work for it
+    # again. Letting a blind write take it back to QUEUED or RUNNING is how a
+    # cancelled deploy comes back: whoever cancelled it acted on the cancellation
+    # being final, and the resurrected run then passes every later check.
+    requested_status = update_data.get("status")
+    if (
+        run.status in _TERMINAL_RUN_STATUSES
+        and requested_status is not None
+        and requested_status not in _TERMINAL_RUN_STATUSES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Run {run_id} is {run.status} and cannot go back to {requested_status}",
+        )
+
     for field, value in update_data.items():
         if field == "run_metadata" and value is not None:
             # Merge metadata instead of replacing to preserve existing keys.
@@ -270,6 +287,35 @@ async def _lock_run(run_id: str, db: AsyncSession) -> Run:
 def _claimed_at(run: Run) -> datetime | None:
     stamp = (run.run_metadata or {}).get(DISPATCH_CLAIMED_AT_KEY)
     return datetime.fromisoformat(stamp) if stamp else None
+
+
+@router.post("/{run_id}/start", response_model=DeployRunStart)
+async def start_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> DeployRunStart:
+    """Take a run to RUNNING, or report that it is already over.
+
+    A worker picking a message up reads the run first and then marks it running.
+    Between those two calls a withdrawal can cancel it, and the plain write puts
+    the cancellation back into a state every later check accepts — including the
+    dispatch claim. Read and write are one locked decision here, so a run
+    cancelled at any moment before this call stays cancelled and the worker is
+    told to stop instead of starting.
+
+    Starting a run that is already running is the same answer, so a worker
+    retrying after a lost response is not refused its own start.
+    """
+    run = await _lock_run(run_id, db)
+    if run.status in _TERMINAL_RUN_STATUSES:
+        await db.commit()
+        logger.info("run_start_refused", run_id=run_id, run_status=run.status)
+        return DeployRunStart(run_id=run_id, started=False, run_status=RunStatus(run.status))
+
+    run.status = RunStatus.RUNNING.value
+    await db.commit()
+    return DeployRunStart(run_id=run_id, started=True, run_status=RunStatus.RUNNING)
 
 
 @router.post("/{run_id}/dispatch-claim", response_model=DeployDispatchClaim)

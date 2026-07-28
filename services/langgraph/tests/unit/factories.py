@@ -7,6 +7,7 @@ so test mocks return the same types as the real API client.
 from datetime import UTC, datetime
 import uuid
 
+from shared.contracts.dto.deploy_dispatch import DeployRunStart
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
@@ -46,6 +47,13 @@ def make_run(**overrides) -> RunDTO:
     }
     base.update(overrides)
     return RunDTO(**base)
+
+
+def make_run_start(**overrides) -> DeployRunStart:
+    """The answer a consumer gets when it takes its run to RUNNING."""
+    base = {"run_id": "deploy-1", "started": True, "run_status": RunStatus.RUNNING}
+    base.update(overrides)
+    return DeployRunStart(**base)
 
 
 def make_repository(**overrides) -> RepositoryDTO:

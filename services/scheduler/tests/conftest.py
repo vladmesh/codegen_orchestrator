@@ -56,7 +56,6 @@ def initialized_scheduler_config(monkeypatch):
         "supervisor.resource_wait_metrics_freshness_seconds": 300,
         "supervisor.temporary_access_ttl_minutes": 60,
         "supervisor.temporary_access_revoke_stale_minutes": 15,
-        "supervisor.temporary_access_dispatch_settle_seconds": 120,
         "supervisor.qa_handoff_recovery_minutes": 5,
         "supervisor.temporary_access_max_revoke_attempts": 3,
         "health.ram_threshold_pct": 90.0,

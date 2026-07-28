@@ -370,8 +370,21 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             )
             return live_work_unsettled({"status": "cancelled", "reason": "deploy_lock_held"})
 
-        # Update task status to running
-        await api_client.patch(f"runs/{task_id}", json={"status": RunStatus.RUNNING.value})
+        # Take the run to running as one locked decision. The read above is a
+        # cheap early-out, not a guard: a withdrawal landing between it and here
+        # would be overwritten by a blind patch, and the resurrected run then
+        # passes the dispatch claim and deploys the value the withdrawal was
+        # revoking. A run cancelled by that point stays cancelled and this job
+        # ends instead of starting.
+        start = await api_client.start_run(task_id)
+        if not start.started:
+            logger.info(
+                "deploy_job_run_cancelled_before_start",
+                task_id=task_id,
+                project_id=project_id,
+                run_status=start.run_status.value,
+            )
+            return live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
 
         # Publish progress event
         await publish_callback_event(

@@ -1021,11 +1021,20 @@ row lock, so a worker about to dispatch and a caller trying to stop it first can
 
 | Endpoint | Taken by | Answers |
 | --- | --- | --- |
+| `POST /api/runs/{id}/start` | any worker taking a run to `running`, as its first act on the message | `DeployRunStart` — `started=False` for a run that is already terminal, and the worker then does nothing with it |
 | `POST /api/runs/{id}/dispatch-claim` | the deploy worker, immediately before `workflow_dispatch` and before a rerun | `DeployDispatchClaim` — `granted=False` for a run already cancelled, and the worker then dispatches nothing |
 | `POST /api/runs/{id}/dispatch-withdraw` | whoever needs the deploy stopped (the temporary-access sweep) | `DeployDispatchWithdrawal` — `withdrawn` (never left), `already_dispatched` (stop it on Actions instead), `already_terminal` |
 
 The claim stamps `run_metadata.dispatch_claimed_at`; the withdrawal reads it. A withdrawal always
 marks the run cancelled, because the worker polls that to stop its own Actions run.
+
+A terminal run never goes back to a live one: `PATCH /api/runs/{id}` refuses such a move with 409,
+and `start` is the locked form of the same transition. Without it a worker's read-then-write would
+overwrite a cancellation that landed in between, and the resurrected run would pass the claim.
+
+`already_dispatched` is only settled by the claiming worker's own recorded outcome — a terminal run
+carrying a typed result. Elapsed time since the claim is not a substitute: a paused worker, or one
+whose claim answer arrived late, still calls `workflow_dispatch` afterwards.
 
 ### QA handoff plan
 

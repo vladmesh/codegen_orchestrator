@@ -14,7 +14,7 @@ import pytest
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
-from tests.unit.factories import make_project, make_repository, make_run
+from tests.unit.factories import make_project, make_repository, make_run, make_run_start
 
 
 @pytest.fixture
@@ -43,6 +43,7 @@ def mock_api():
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])  # no existing running deploys (dedup)
         api.get_run = AsyncMock(return_value=make_run())
+        api.start_run = AsyncMock(return_value=make_run_start())
         api.get_project = AsyncMock(
             return_value=make_project(
                 name="my-project",

@@ -9,7 +9,7 @@ over, start the QA run, and take the access back.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from _run_routing_factories import _make_run
 import pytest
@@ -914,7 +914,8 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
     The revoke's fence reads GitHub Actions. A worker that has claimed the
     dispatch but not yet reached GitHub is invisible to it, so clearing the value
     on that tick would record the grant revoked while that deploy writes the
-    identity back. The withdrawal reports the crossing, and the revoke waits.
+    identity back. The withdrawal reports the crossing, and the revoke waits for
+    the worker's own account of what it did.
     """
 
     @pytest.mark.asyncio
@@ -935,20 +936,21 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
 
         await supervise_temporary_access(api_client, redis_client)
 
-        # Nothing cleared and nothing failed: the tick ends without a revoke.
+        # Nothing cleared: the tick ends without a revoke.
         assert _published(redis_client, DEPLOY_QUEUE) == []
         assert _grant_updates(api_client) == []
-        api_client.update_run.assert_not_awaited()
+        # The QA run is not left guessing while that plays out.
+        assert api_client.update_run.await_args.args[0] == "qa-1"
+        assert api_client.update_run.await_args.args[1]["status"] == RunStatus.FAILED.value
 
     @pytest.mark.asyncio
-    async def test_the_revoke_goes_out_once_the_dispatch_is_old_enough_to_fence(
-        self, api_client, redis_client
-    ):
-        """The wait is bounded and does not need the worker to still be alive.
+    async def test_an_old_claim_alone_never_releases_the_revoke(self, api_client, redis_client):
+        """Elapsed time is not proof that a claimed deploy reached GitHub.
 
-        After the withdrawal no further dispatch is possible — every dispatch
-        re-claims and a cancelled run is refused — so once the claim is older
-        than the settle window, any Actions run it made is listed by the fence.
+        A worker paused past any wait — or one whose claim answer came back late
+        — still calls workflow_dispatch afterwards. Revoking on a clock would
+        clear the value, find nothing to fence, record the grant revoked, and let
+        that deploy put the identity back. So the claim ageing changes nothing.
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
@@ -956,11 +958,67 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
-            RunStatus.RUNNING, id="deploy-grant-1"
+            RunStatus.CANCELLED, id="deploy-grant-1"
         )
         api_client.withdraw_deploy_dispatch.return_value = _withdrawal(
             DispatchWithdrawal.ALREADY_DISPATCHED,
-            claimed_at=datetime.now(UTC) - timedelta(minutes=10),
+            claimed_at=datetime.now(UTC) - timedelta(hours=4),
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+
+    @pytest.mark.asyncio
+    async def test_a_claim_that_stays_unanswered_is_reported_rather_than_waited_out(
+        self, api_client, redis_client
+    ):
+        """A worker that never says what it did is a visible event, not a silent loop."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.CANCELLED, id="deploy-grant-1"
+        )
+        api_client.withdraw_deploy_dispatch.return_value = _withdrawal(
+            DispatchWithdrawal.ALREADY_DISPATCHED,
+            claimed_at=datetime.now(UTC) - timedelta(minutes=30),
+        )
+
+        with patch("src.tasks.temporary_access.notify_admins_best_effort", AsyncMock()) as notify:
+            await supervise_temporary_access(api_client, redis_client)
+
+        notify.assert_awaited_once()
+        assert "cannot be revoked" in notify.await_args.args[0]
+        assert _grant_updates(api_client)[0].last_error.startswith(
+            "grant deploy dispatch unsettled"
+        )
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+
+    @pytest.mark.asyncio
+    async def test_the_revoke_goes_out_once_the_claimer_records_its_outcome(
+        self, api_client, redis_client
+    ):
+        """The worker's own result is what proves the boundary settled.
+
+        Once it is written, whatever the worker put on GitHub Actions exists to
+        be listed, so the revoke's fence can reach it and the clear is safe.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+        # Live when the sweep looks, terminal with a result once it withdrew.
+        api_client.get_run_if_missing_returns_none.side_effect = [
+            _deploy_run(RunStatus.RUNNING, id="deploy-grant-1"),
+            _deploy_run(RunStatus.CANCELLED, DeployOutcome.CANCELLED, id="deploy-grant-1"),
+        ]
+        api_client.withdraw_deploy_dispatch.return_value = _withdrawal(
+            DispatchWithdrawal.ALREADY_DISPATCHED,
+            claimed_at=datetime.now(UTC),
         )
 
         await supervise_temporary_access(api_client, redis_client)

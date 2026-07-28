@@ -173,9 +173,19 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                         ),
                     ),
                 )
-        # Mark run as running before starting the checks.
+        # Mark run as running before starting the checks. A run that already
+        # ended is not restarted: the temporary access sweep fails a QA run whose
+        # borrowed identity expired, and starting the checks anyway would drive
+        # an agent against a bot that has just stopped answering it.
         if run_id:
-            await api_client.patch(f"runs/{run_id}", json={"status": RunStatus.RUNNING.value})
+            start = await api_client.start_run(run_id)
+            if not start.started:
+                logger.info(
+                    "qa_run_already_terminal",
+                    run_id=run_id,
+                    run_status=start.run_status.value,
+                )
+                return live_work_settled({"status": "skipped", "reason": start.run_status.value})
 
         if health_checks is not None:
             logger.info("qa_health_only_criteria", story_id=story_id, checks=len(health_checks))

@@ -59,8 +59,22 @@
   every `workflow_dispatch` and every rerun, and refuses a cancelled run;
   `POST /api/runs/{id}/dispatch-withdraw` takes the same boundary from the other side and reports
   whether the deploy got out first. A refused claim ends the deploy as cancelled without
-  dispatching. A withdrawal that arrives late holds the revoke back until the dispatch is old
-  enough for GitHub to be listing it (`supervisor.temporary_access_dispatch_settle_seconds`).
+  dispatching.
+
+  Two ways past that boundary remained. A worker read its run, found it live, and then wrote
+  `running` blindly; a withdrawal landing in between was overwritten, and the resurrected run
+  passed the dispatch claim afterwards. Taking a run to `running` is now the locked transition
+  `POST /api/runs/{id}/start`, which refuses a run that is already terminal, and `PATCH
+  /api/runs/{id}` refuses any move from a terminal status back to a live one, so no writer can
+  undo a cancellation. And a withdrawal that arrived after the claim used to hold the revoke back
+  only until the claim was old enough for GitHub to be listing the run. Elapsed time proves
+  nothing about a paused worker or a claim answered late — either still reaches
+  `workflow_dispatch` afterwards — so the revoke now waits for the claiming worker's own recorded
+  outcome, which it writes on every path it can leave a deploy by. A claim that stays unanswered
+  past `supervisor.temporary_access_revoke_stale_minutes` is reported as
+  `temporary_access_grant_deploy_dispatch_stuck` with an admin alert instead of being waited out,
+  and the QA run that borrowed the access is failed with its reason first, whatever the grant
+  deploy turns out to have done. `supervisor.temporary_access_dispatch_settle_seconds` is gone.
 
   A deploy cancelled on GitHub Actions left its run at `running` with no result, which every
   supervisor skips for good — and a revoke's fence cancels ordinary story deploys as a matter of

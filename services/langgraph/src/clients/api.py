@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
-from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
+from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -162,6 +162,11 @@ class LanggraphAPIClient:
     async def get_run(self, run_id: str) -> RunDTO:
         data = await self._get_json(f"runs/{run_id}")
         return RunDTO.model_validate(data)
+
+    async def start_run(self, run_id: str) -> DeployRunStart:
+        """Take the run to RUNNING as one locked decision, or learn it is over."""
+        data = await self._post_json(f"runs/{run_id}/start")
+        return DeployRunStart.model_validate(data)
 
     async def claim_deploy_dispatch(self, run_id: str) -> DeployDispatchClaim:
         """Take the dispatch boundary before starting work outside the system."""

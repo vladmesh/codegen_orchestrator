@@ -16,6 +16,7 @@ import pytest
 import respx
 
 from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.deploy_dispatch import DeployRunStart
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.server import ServerDTO
@@ -102,6 +103,11 @@ def mock_api_client():
             return_value="-----BEGIN RSA KEY-----\nfake\n-----END RSA KEY-----"
         )
         mock.patch = AsyncMock(return_value={})
+        mock.start_run = AsyncMock(
+            return_value=DeployRunStart(
+                run_id="qa-run-1", started=True, run_status=RunStatus.RUNNING
+            )
+        )
         mock.create_task = AsyncMock(return_value={"id": "task-fix-1"})
         yield mock
 
@@ -202,11 +208,11 @@ class TestProcessQAJobPass:
             result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "passed"
-        # Two patch calls: RUNNING status + COMPLETED with result
-        assert mock_api_client.patch.call_count == 2
-        running_call = mock_api_client.patch.call_args_list[0]
-        assert running_call[1]["json"]["status"] == RunStatus.RUNNING.value
-        completed_call = mock_api_client.patch.call_args_list[1]
+        # The run is taken to RUNNING by the locked transition, then patched once
+        # with its outcome.
+        mock_api_client.start_run.assert_awaited_once_with("qa-run-1")
+        assert mock_api_client.patch.call_count == 1
+        completed_call = mock_api_client.patch.call_args_list[0]
         assert completed_call[0][0] == "runs/qa-run-1"
         run_data = completed_call[1]["json"]
         assert run_data["status"] == RunStatus.COMPLETED.value
@@ -222,9 +228,29 @@ class TestProcessQAJobPass:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="All good")
             await process_qa_job(qa_message_data, mock_redis)
 
-        running = mock_api_client.patch.call_args_list[0][1]["json"]
-        assert running["status"] == RunStatus.RUNNING.value
+        mock_api_client.start_run.assert_awaited_once_with("qa-run-1")
         mock_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_already_ended_does_not_start_the_agent(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """The temporary access sweep fails a QA run whose borrowed identity expired.
+
+        Driving the agent anyway would test a bot that has just stopped answering
+        it, and the outcome it wrote would overwrite the named failure.
+        """
+        mock_api_client.start_run.return_value = DeployRunStart(
+            run_id="qa-run-1", started=False, run_status=RunStatus.FAILED
+        )
+
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "skipped"
+        assert result["reason"] == RunStatus.FAILED.value
+        mock_run.assert_not_awaited()
+        mock_api_client.patch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_forbidden_write_trace_is_stored_on_a_blocked_run(
