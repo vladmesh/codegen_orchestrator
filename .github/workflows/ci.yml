@@ -47,10 +47,10 @@ jobs:
       integration-tests: ${{ steps.filter.outputs['integration-tests'] }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check for changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -92,10 +92,10 @@ jobs:
     needs: detect-changes
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -135,10 +135,10 @@ jobs:
     needs: detect-changes
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -240,7 +240,7 @@ jobs:
               }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx with retry
         id: buildx
@@ -355,7 +355,7 @@ jobs:
               }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         if: matrix.should_run == 'true'
 
       - name: Set up Docker Buildx with retry
@@ -367,7 +367,7 @@ jobs:
 
       - name: Set up uv for template smoke
         if: matrix.should_run == 'true' && matrix.suite == 'template'
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
 
       - name: Run integration tests
         id: integration-tests
@@ -418,11 +418,11 @@ jobs:
     steps:
       - name: Checkout code
         if: matrix.candidate == false || inputs.service_template_candidate_ref != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up uv
         if: matrix.candidate == false || inputs.service_template_candidate_ref != ''
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
 
       - name: Run baseline compatibility smoke
         if: matrix.candidate == false
@@ -440,7 +440,7 @@ jobs:
 
       - name: Upload compatibility result
         if: always() && (matrix.candidate == false || inputs.service_template_candidate_ref != '')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: template-compat-${{ matrix.entry }}
           path: ${{ runner.temp }}/template-compat-${{ matrix.entry }}/template-compat-result.json
