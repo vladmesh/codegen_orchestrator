@@ -216,3 +216,116 @@ async def test_released_and_escalated_moments_are_stamped_once(async_client: Asy
     assert escalated.json()["escalated_at"] is not None
     repeated = await async_client.patch(grant_url, json={"escalated": True})
     assert repeated.json()["escalated_at"] == escalated.json()["escalated_at"]
+
+
+def _cleanup_failure(error: str = "revoke deploy deploy-revoke-1 ended failed (give_up)") -> dict:
+    return {
+        "error": error,
+        "run_error_message": f"temporary access {ENV_KEY} is still granted: {error}",
+        "run_result": {
+            "qa_outcome": "blocked",
+            "summary": "temporary test access could not be revoked",
+            "blocker": {
+                "category": "qa_cleanup_failed",
+                "attempted": f"revoke temporary access {ENV_KEY}",
+                "sent": f"deploy of {HEAD_SHA} with {ENV_KEY} cleared",
+                "received": error,
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_escalation_fails_a_qa_run_that_already_passed(async_client: AsyncClient):
+    """The hole this endpoint exists to close.
+
+    The worker inside the QA run finished and recorded `passed` long before the
+    revokes ran out. A run that borrowed a test identity has not finished while
+    the identity is still admitted, so the cleanup failure is that run's outcome
+    — otherwise the story publishes a success with the identity still out.
+    """
+    project_id, run_id = await _project_with_run(async_client)
+    grant = await async_client.post(
+        "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
+    )
+    passed = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"status": "completed", "result": {"qa_outcome": "passed", "summary": "it answered"}},
+    )
+    assert passed.json()["result"]["qa_outcome"] == "passed"
+
+    escalated = await async_client.post(
+        f"/api/temporary-access-grants/{grant.json()['id']}/escalate", json=_cleanup_failure()
+    )
+
+    assert escalated.status_code == status.HTTP_200_OK
+    assert escalated.json()["escalated_at"] is not None
+    assert escalated.json()["status"] == "revoke_failed"
+
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "failed"
+    assert run.json()["result"]["blocker"]["category"] == "qa_cleanup_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_late_worker_verdict_cannot_undo_the_escalation(async_client: AsyncClient):
+    """Both orders end in the same place.
+
+    The sweep superseding a passed run is one direction; a worker reporting
+    after the sweep already failed the run is the other, and the ordinary run
+    patch still refuses it.
+    """
+    project_id, run_id = await _project_with_run(async_client)
+    grant = await async_client.post(
+        "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
+    )
+
+    await async_client.post(
+        f"/api/temporary-access-grants/{grant.json()['id']}/escalate", json=_cleanup_failure()
+    )
+    late = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"status": "completed", "result": {"qa_outcome": "passed", "summary": "it answered"}},
+    )
+
+    assert late.status_code == status.HTTP_409_CONFLICT
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["result"]["blocker"]["category"] == "qa_cleanup_failed"
+
+
+@pytest.mark.asyncio
+async def test_escalating_twice_is_the_same_state(async_client: AsyncClient):
+    """The sweep repeats what it could not confirm; that is not an error."""
+    project_id, run_id = await _project_with_run(async_client)
+    grant = await async_client.post(
+        "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
+    )
+    url = f"/api/temporary-access-grants/{grant.json()['id']}/escalate"
+
+    first = await async_client.post(url, json=_cleanup_failure())
+    second = await async_client.post(url, json=_cleanup_failure())
+
+    assert second.status_code == status.HTTP_200_OK
+    assert second.json()["escalated_at"] == first.json()["escalated_at"]
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_grant_has_nothing_to_escalate(async_client: AsyncClient):
+    """The access went back. Failing the run now would invent a problem."""
+    project_id, run_id = await _project_with_run(async_client)
+    grant = await async_client.post(
+        "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
+    )
+    revoked = await async_client.patch(
+        f"/api/temporary-access-grants/{grant.json()['id']}",
+        json={"status": "revoked", "revoke_reason": "run_terminal"},
+    )
+    assert revoked.status_code == status.HTTP_200_OK
+
+    escalated = await async_client.post(
+        f"/api/temporary-access-grants/{grant.json()['id']}/escalate", json=_cleanup_failure()
+    )
+
+    assert escalated.status_code == status.HTTP_409_CONFLICT
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] != "failed"

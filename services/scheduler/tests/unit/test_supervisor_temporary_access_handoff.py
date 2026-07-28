@@ -351,9 +351,10 @@ class TestStoriesWaitForTheAccessToGoBack:
     ):
         """The stamp landed, the QA run's failure did not — the story still waits.
 
-        This is the crash window between the two writes the sweep makes. Routing
-        on the run as it stands would complete a story whose bot may still admit
-        the test identity, because the run still says the QA passed.
+        The sweep writes both together, so this is a state it cannot produce.
+        The guard stands anyway: routing on a run that still says `passed` would
+        complete a story whose bot may still admit the test identity, and that
+        must not depend on one caller getting its writes right.
         """
         from src.tasks.supervisor import supervise_testing_stories
 

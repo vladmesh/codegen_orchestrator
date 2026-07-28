@@ -24,6 +24,7 @@ import uuid
 
 import structlog
 
+from shared.contracts.dto.deploy_dispatch import DISPATCH_SUPERSEDED_AT_KEY
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
     QABlocker,
@@ -428,16 +429,19 @@ async def _stop_grant_deploy(
     a deploy that has not crossed the boundary never will, and one that has is
     reported as already outside.
 
-    A deploy that did cross keeps the revoke waiting until the worker holding it
-    says what it did. Time cannot stand in for that. Elapsed seconds prove only
-    that a claim is old, not that the GitHub run it was about to make exists to
-    be fenced: a worker paused past the wait, or one whose claim response arrived
-    late, still reaches ``workflow_dispatch`` afterwards, and the value goes back
-    on an application whose grant is already recorded revoked. So the only thing
-    accepted as proof is the claimer's own recorded outcome, which it writes on
-    every path it can leave the deploy by. Until then this grant is not
-    revocable, and a claim that stays unanswered too long is reported rather than
-    waited out.
+    A deploy that did cross is normally waited for: the worker writes a typed
+    result on every path it can leave a deploy by, and that result is proof that
+    whatever it put on GitHub Actions is listable, so a fence reaches it.
+
+    Waiting on a worker that is never coming back is the case this must survive,
+    and elapsed time alone cannot end it: a worker paused past any wait still
+    reaches ``workflow_dispatch`` afterwards, and the value goes back on an
+    application whose grant is recorded revoked. What ends it is the claim's own
+    lease. Holding the boundary is time-limited and the holder promises not to
+    dispatch past its deadline, so once the lease has run out the claim can be
+    taken back rather than waited on — and a claim taken back can neither
+    dispatch nor be renewed. From that point anything the dead worker managed to
+    start exists on Actions, where the revoke's fence stops it.
 
     Returns True when the revoke may proceed, False while the grant deploy is
     still on its way out and has to be waited for.
@@ -460,8 +464,9 @@ async def _stop_grant_deploy(
         )
         return True
 
-    # Claimed. The withdrawal cancelled the run, so the worker will stop, but
-    # only it knows whether it got to GitHub first.
+    # Claimed. The withdrawal cancelled the run, so a worker that is still alive
+    # stops and records what it did. Only it knows whether it got to GitHub, so
+    # the next read is the cheap way out.
     run = await api_client.get_run_if_missing_returns_none(grant.grant_run_id)
     if run is not None and _dispatch_settled(run):
         log.info(
@@ -471,18 +476,38 @@ async def _stop_grant_deploy(
         )
         return True
 
+    supersede = await api_client.supersede_deploy_dispatch(
+        grant.grant_run_id,
+        f"temporary access grant {grant.id} took the dispatch back: {detail}",
+    )
+    if supersede.settled:
+        log.warning(
+            "temporary_access_grant_deploy_dispatch_superseded",
+            grant_run_id=grant.grant_run_id,
+            outcome=supersede.outcome.value,
+            claimed_at=withdrawal.claimed_at.isoformat(),
+        )
+        return True
+
     await _report_unsettled_dispatch(api_client, grant, withdrawal.claimed_at, log)
     return False
 
 
 def _dispatch_settled(run: RunDTO) -> bool:
-    """Whether the worker that owned this deploy has recorded what it did.
+    """Whether this deploy can still put something on GitHub Actions unseen.
 
-    It writes a typed result on every path it can leave a deploy by, cancelled
-    ones included, and only once it is done with it. Until that result is there,
-    a dispatch to GitHub Actions may still be ahead of it; after it, whatever
-    exists on Actions is listable and a fence reaches it.
+    The worker writes a typed result on every path it can leave a deploy by,
+    cancelled ones included, and only once it is done with it. That result is
+    the ordinary proof.
+
+    A claim taken back is the other one. It says the lease ran out and the
+    boundary was closed against the holder, so the holder cannot dispatch and
+    cannot re-claim, whether or not it is alive to be asked. Both mean the same
+    thing to the revoke: whatever exists on Actions is listable, and a fence
+    reaches it.
     """
+    if run.run_metadata.get(DISPATCH_SUPERSEDED_AT_KEY):
+        return True
     return run.status in TERMINAL_RUN_STATUSES and run.result is not None
 
 
@@ -492,13 +517,13 @@ async def _report_unsettled_dispatch(
     claimed_at: datetime,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Say out loud that a claimed grant deploy has gone quiet.
+    """Say out loud that a claimed grant deploy is still holding the boundary.
 
-    Ordinarily this is a tick or two while the worker stops its own Actions run.
-    A claim that stays unanswered past the stale bound is a worker that is not
-    coming back, and the access it may have applied cannot be revoked until
-    something outside this sweep deals with it. That is worth an event and an
-    admin, not a quiet retry loop.
+    Ordinarily this is a tick or two while the worker stops its own Actions run,
+    and a worker that never comes back loses the claim when its lease runs out.
+    So getting here past the stale bound means the lease is being renewed by
+    something that is not finishing — which the sweep cannot resolve on its own,
+    and which is worth an event and an admin rather than a quiet retry loop.
     """
     waited = _age_minutes(claimed_at)
     log.warning(
@@ -769,12 +794,14 @@ async def _record_revoke_failure(
     what lets the story reach a visible outcome instead of waiting on a revoke
     that keeps failing.
 
-    The QA run is failed before the grant is stamped as escalated, and never the
-    other way round. The stamp is what stops the story from waiting on this
-    grant, so writing it first would open that gate with the QA run still saying
-    the run passed — one dead process in between and a story publishes success
-    while the identity is still admitted. In the order below the crash window
-    leaves the story waiting, which the next sweep resolves.
+    The QA run's outcome and the escalation stamp are one write. They have to be:
+    the stamp is what stops the story waiting on this grant, and a run that still
+    reads `passed` behind an opened gate is a story publishing success with the
+    test identity still admitted. It is also why the run's own verdict gives way
+    here — a run that borrowed an identity has not finished while the identity is
+    out, so a worker's pass is provisional until the access is settled. Without
+    that, a run the worker had already passed could never be told, and the story
+    behind it would sit in TESTING for good.
     """
     error = _deploy_failure_detail(run, "revoke")
     exhausted = grant.revoke_attempts >= _max_revoke_attempts() and grant.escalated_at is None
@@ -803,22 +830,27 @@ async def _record_revoke_failure(
         component="temporary_access",
         grant_id=grant.id,
     )
-    await _fail_qa_run(
-        api_client,
-        grant,
-        category=QABlockerCategory.QA_CLEANUP_FAILED,
-        attempted=f"revoke temporary access {grant.env_key} for project {grant.project_id}",
-        sent=f"deploy of {grant.head_sha} with {grant.env_key} cleared",
-        received=error,
-        summary="temporary test access could not be revoked",
-        error_message=f"temporary access {grant.env_key} is still granted: {error}",
-        log=log,
-    )
-    await api_client.update_temporary_access_grant(
+    await api_client.escalate_temporary_access_grant(
         grant.id,
-        TemporaryAccessGrantUpdate(
-            status=TemporaryAccessStatus.REVOKE_FAILED, last_error=error, escalated=True
+        error=error,
+        run_error_message=f"temporary access {grant.env_key} is still granted: {error}",
+        run_result=QARunResult(
+            qa_outcome=QAOutcome.BLOCKED,
+            summary="temporary test access could not be revoked",
+            blocker=QABlocker(
+                category=QABlockerCategory.QA_CLEANUP_FAILED,
+                attempted=(
+                    f"revoke temporary access {grant.env_key} for project {grant.project_id}"
+                ),
+                sent=f"deploy of {grant.head_sha} with {grant.env_key} cleared",
+                received=error,
+            ),
         ),
+    )
+    log.warning(
+        "temporary_access_qa_run_failed",
+        grant_id=grant.id,
+        blocker=QABlockerCategory.QA_CLEANUP_FAILED.value,
     )
 
 

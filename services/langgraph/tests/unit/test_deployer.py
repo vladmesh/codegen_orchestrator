@@ -1,7 +1,7 @@
 """Unit tests for DeployerNode."""
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -82,7 +82,10 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
     mock_api.patch = AsyncMock(return_value={})
     mock_api.claim_deploy_dispatch = AsyncMock(
         side_effect=lambda run_id: DeployDispatchClaim(
-            run_id=run_id, granted=True, run_status=RunStatus.RUNNING
+            run_id=run_id,
+            granted=True,
+            run_status=RunStatus.RUNNING,
+            lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
         )
     )
     return gh
@@ -812,6 +815,68 @@ class TestDispatchBoundary:
         claims = [
             DeployDispatchClaim(run_id="deploy-1", granted=True, run_status=RunStatus.RUNNING),
             DeployDispatchClaim(run_id="deploy-1", granted=False, run_status=RunStatus.CANCELLED),
+        ]
+        mock_api.claim_deploy_dispatch = AsyncMock(side_effect=claims)
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+
+        assert result["deployment_result"] == {"status": "cancelled"}
+        gh.rerun_failed_jobs.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_a_claim_held_past_its_deadline_does_not_dispatch(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """The promise that lets reconciliation stop waiting for a silent worker.
+
+        Once the deadline has gone by, the claim may have been taken back and a
+        revoke may already have cleared the value on the strength of nothing more
+        appearing on Actions. Dispatching now would put the identity back on an
+        application whose grant is recorded revoked, so this stops instead.
+        """
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        mock_api.get = AsyncMock(return_value={"status": "running"})
+        mock_api.claim_deploy_dispatch = AsyncMock(
+            return_value=DeployDispatchClaim(
+                run_id="deploy-1",
+                granted=True,
+                run_status=RunStatus.RUNNING,
+                lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+
+        result = await deployer.run({**base_state, "head_sha": PINNED_SHA, "run_id": "deploy-1"})
+
+        assert result["deployment_result"] == {"status": "cancelled"}
+        gh.trigger_workflow_dispatch.assert_not_called()
+        gh.delete_ref.assert_awaited_once_with("my-org", "my-repo", f"tags/{PIN_TAG}")
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_a_rerun_stops_once_its_renewed_claim_has_expired(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """A rerun restarts the same effect, so the same deadline binds it."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        mock_api.get = AsyncMock(return_value={"status": "running"})
+        gh.wait_for_workflow_completion.side_effect = RuntimeError("Workflow deploy.yml failed")
+        gh.get_latest_workflow_run.return_value = _pinned_run()
+        claims = [
+            DeployDispatchClaim(
+                run_id="deploy-1",
+                granted=True,
+                run_status=RunStatus.RUNNING,
+                lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            ),
+            DeployDispatchClaim(
+                run_id="deploy-1",
+                granted=True,
+                run_status=RunStatus.RUNNING,
+                lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+            ),
         ]
         mock_api.claim_deploy_dispatch = AsyncMock(side_effect=claims)
 

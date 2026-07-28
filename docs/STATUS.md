@@ -41,9 +41,15 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   with it. Cancellation is terminal on both sides of that boundary: a run only reaches `running`
   through the locked `POST /api/runs/{id}/start`, so no worker can write over a cancellation it
   raced, and a withdrawal that arrived after the claim is settled by the claiming worker's own
-  recorded outcome rather than by elapsed time. A run's terminal outcome is the first one
-  written — a supervisor ending a run the worker is still inside is not overwritten by that
-  worker's later answer — while a cancelled run with no result may still have one filled in.
+  recorded outcome — or, when that worker is dead, by its claim's lease running out and the sweep
+  taking the boundary back through `POST /api/runs/{id}/dispatch-supersede`. A run's terminal
+  outcome is the first one written — a supervisor ending a run the worker is still inside is not
+  overwritten by that worker's later answer — while a cancelled run with no result may still have
+  one filled in. The single exception is the access sweep giving up on a revoke: cleanup is part
+  of a QA run that borrowed a test identity, so
+  `POST /api/temporary-access-grants/{id}/escalate` records the `qa_cleanup_failed` outcome and
+  the grant's escalation stamp in one transaction, even over a `passed` the QA worker already
+  wrote. Without that a run the worker had passed could never be told the access was stuck.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

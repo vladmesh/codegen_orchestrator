@@ -14,8 +14,15 @@ from unittest.mock import AsyncMock, patch
 from _run_routing_factories import _make_run
 import pytest
 
-from shared.contracts.dto.deploy_dispatch import DeployDispatchWithdrawal, DispatchWithdrawal
+from shared.contracts.dto.deploy_dispatch import (
+    DISPATCH_SUPERSEDED_AT_KEY,
+    DeployDispatchSupersede,
+    DeployDispatchWithdrawal,
+    DispatchSupersede,
+    DispatchWithdrawal,
+)
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantDTO,
     TemporaryAccessRevokeReason,
@@ -93,6 +100,21 @@ def _withdrawal(
     )
 
 
+def _supersede(
+    outcome: DispatchSupersede,
+    *,
+    run_id: str = "deploy-grant-1",
+    claimed_at: datetime | None = None,
+) -> DeployDispatchSupersede:
+    return DeployDispatchSupersede(
+        run_id=run_id,
+        outcome=outcome,
+        run_status=RunStatus.CANCELLED,
+        claimed_at=claimed_at or datetime.now(UTC),
+        lease_expires_at=datetime.now(UTC),
+    )
+
+
 @pytest.fixture
 def api_client():
     client = AsyncMock()
@@ -104,6 +126,11 @@ def api_client():
     client.record_run_outcome_unless_settled = AsyncMock(return_value=True)
     # Default: the grant deploy never left the system, so a withdrawal settles it.
     client.withdraw_deploy_dispatch = AsyncMock(return_value=_withdrawal())
+    # Default: a claimed deploy is still inside its lease, so it is waited for.
+    client.supersede_deploy_dispatch = AsyncMock(
+        return_value=_supersede(DispatchSupersede.LEASE_LIVE)
+    )
+    client.escalate_temporary_access_grant = AsyncMock()
     return client
 
 
@@ -128,6 +155,13 @@ def _published_deploy(redis_client) -> DeployMessage:
 
 def _grant_updates(api_client) -> list:
     return [call.args[1] for call in api_client.update_temporary_access_grant.call_args_list]
+
+
+def _escalation(api_client) -> tuple[str, dict]:
+    """The single escalation the sweep asked for: (grant id, keyword payload)."""
+    call = api_client.escalate_temporary_access_grant.call_args
+    assert call is not None, "the sweep never escalated"
+    return call.args[0], call.kwargs
 
 
 class TestGrantIssuance:
@@ -795,17 +829,13 @@ class TestRevokeInFlight:
         counts = await module.supervise_temporary_access(api_client, redis_client)
 
         assert counts["revoke_failed"] == 1
-        update = _grant_updates(api_client)[-1]
-        assert update.status is TemporaryAccessStatus.REVOKE_FAILED
-        assert update.escalated is True
-        assert "deploy-revoke-1" in update.last_error
         assert notified, "unrevoked access must be reported"
 
-        run_id, patch = api_client.record_run_outcome_unless_settled.call_args.args
-        assert run_id == "qa-1"
-        assert patch["status"] == RunStatus.FAILED.value
-        assert patch["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
-        assert patch["result"]["blocker"]["category"] == "qa_cleanup_failed"
+        grant_id, escalation = _escalation(api_client)
+        assert grant_id == "tempaccess-1"
+        assert "deploy-revoke-1" in escalation["error"]
+        assert escalation["run_result"].qa_outcome is QAOutcome.BLOCKED
+        assert escalation["run_result"].blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
 
     @pytest.mark.asyncio
     async def test_failed_revoke_is_retried_on_the_next_sweep(self, api_client, redis_client):
@@ -902,25 +932,24 @@ class TestRevokedGrants:
             assert update.status is TemporaryAccessStatus.REVOKED
 
 
-class TestEscalationOrdering:
-    """The story is only let past a live grant after the QA run says why."""
+class TestEscalationIsOneDecision:
+    """Giving up on a revoke is one write: the run's failure and the stamp together."""
 
     @pytest.mark.asyncio
-    async def test_the_qa_run_is_failed_before_the_grant_is_escalated(
+    async def test_a_qa_run_that_already_passed_still_gets_the_cleanup_failure(
         self, api_client, redis_client, monkeypatch
     ):
-        """Order matters: the escalation stamp is what stops the story waiting."""
+        """The reviewed hole: a passed run that can never be told the access is stuck.
+
+        The worker inside the run finished and recorded `passed` long before the
+        revokes ran out. A write that steps aside for the first recorded outcome
+        would leave the run reading `passed` with the identity still admitted,
+        and the story waiting on a grant that has already given up. Cleanup is
+        part of the run, so its failure is the run's, whatever the worker said.
+        """
         from src.tasks import temporary_access as module
 
         monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
-        writes: list[str] = []
-        api_client.record_run_outcome_unless_settled.side_effect = lambda *a, **k: (
-            writes.append("qa_run") or True
-        )
-        api_client.update_temporary_access_grant.side_effect = lambda *a, **k: writes.append(
-            "grant"
-        )
-
         api_client.list_live_temporary_access_grants.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
@@ -929,31 +958,46 @@ class TestEscalationOrdering:
                 revoke_attempts=3,
             )
         ]
-        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
-            RunStatus.FAILED, DeployOutcome.GIVE_UP
-        )
+
+        async def _read_run(run_id):
+            if run_id == "qa-1":
+                # The QA worker's own verdict, already terminal and frozen.
+                return _make_run(
+                    id="qa-1",
+                    type=RunType.QA,
+                    status=RunStatus.COMPLETED,
+                    story_id="story-1",
+                    result={"qa_outcome": QAOutcome.PASSED.value, "summary": "the bot answered"},
+                )
+            return _deploy_run(RunStatus.FAILED, DeployOutcome.GIVE_UP)
+
+        api_client.get_run_if_missing_returns_none.side_effect = _read_run
 
         await module.supervise_temporary_access(api_client, redis_client)
 
-        assert writes == ["qa_run", "grant"]
+        _, escalation = _escalation(api_client)
+        assert escalation["run_result"].qa_outcome is QAOutcome.BLOCKED
+        assert escalation["run_result"].blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
+        assert ENV_KEY in escalation["run_error_message"]
+        # Nothing tried the ordinary run patch, which would have been refused and
+        # left the run reading `passed`.
+        api_client.record_run_outcome_unless_settled.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_qa_run_that_cannot_be_failed_leaves_the_grant_unescalated(
+    async def test_an_escalation_that_does_not_land_leaves_the_grant_holding_the_story(
         self, api_client, redis_client, monkeypatch
     ):
-        """A process that dies between the two writes must not open the bypass.
+        """A dead process must not open the story's gate on its own.
 
-        The grant keeps holding the story back, which is the safe side: the
-        access is still out and the run has not been told. The next sweep
-        repeats both writes.
+        The stamp and the run's failure are one API call precisely so there is no
+        state where one landed and the other did not. If the call never lands,
+        the grant keeps holding the story back — the safe side — and the next
+        sweep repeats it.
         """
         from src.tasks import temporary_access as module
 
         monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
-        api_client.record_run_outcome_unless_settled.side_effect = RuntimeError(
-            "API died mid-write"
-        )
-
+        api_client.escalate_temporary_access_grant.side_effect = RuntimeError("API died mid-write")
         api_client.list_live_temporary_access_grants.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKING,
@@ -969,14 +1013,13 @@ class TestEscalationOrdering:
         await module.supervise_temporary_access(api_client, redis_client)
 
         assert all(update.escalated is not True for update in _grant_updates(api_client)), (
-            "the grant must not be escalated while the QA run still reads as it did"
+            "nothing may stamp the grant outside the call that fails the run"
         )
 
-        api_client.record_run_outcome_unless_settled.side_effect = None
+        api_client.escalate_temporary_access_grant.side_effect = None
         await module.supervise_temporary_access(api_client, redis_client)
 
-        assert api_client.record_run_outcome_unless_settled.call_args.args[0] == "qa-1"
-        assert _grant_updates(api_client)[-1].escalated is True
+        assert _escalation(api_client)[0] == "tempaccess-1"
 
 
 class TestRevokeFencesTheGrantDeploy:
@@ -1077,13 +1120,17 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
         )
 
     @pytest.mark.asyncio
-    async def test_an_old_claim_alone_never_releases_the_revoke(self, api_client, redis_client):
-        """Elapsed time is not proof that a claimed deploy reached GitHub.
+    async def test_a_worker_that_never_returns_loses_the_claim_and_the_revoke_goes_out(
+        self, api_client, redis_client
+    ):
+        """The process-death case: a claimed grant deploy whose worker is gone.
 
-        A worker paused past any wait — or one whose claim answer came back late
-        — still calls workflow_dispatch afterwards. Revoking on a clock would
-        clear the value, find nothing to fence, record the grant revoked, and let
-        that deploy put the identity back. So the claim ageing changes nothing.
+        Waiting for its own account of what it did would be waiting forever, and
+        the identity would stay admitted with an alert as the only trace. The
+        claim it holds is a lease, and once that has run out the boundary is
+        closed against it: it can neither dispatch nor re-claim, so anything it
+        did put on Actions is there to be fenced. The revoke goes out on the same
+        tick, carrying that fence.
         """
         from src.tasks.temporary_access import supervise_temporary_access
 
@@ -1091,16 +1138,46 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
-            RunStatus.CANCELLED, id="deploy-grant-1"
+            RunStatus.RUNNING, id="deploy-grant-1"
         )
         api_client.withdraw_deploy_dispatch.return_value = _withdrawal(
             DispatchWithdrawal.ALREADY_DISPATCHED,
             claimed_at=datetime.now(UTC) - timedelta(hours=4),
         )
+        api_client.supersede_deploy_dispatch.return_value = _supersede(DispatchSupersede.SUPERSEDED)
 
         await supervise_temporary_access(api_client, redis_client)
 
-        assert _published(redis_client, DEPLOY_QUEUE) == []
+        message = _published_deploy(redis_client)
+        assert message.env_overrides == {ENV_KEY: ""}
+        assert message.fence_active_deploys is True
+
+    @pytest.mark.asyncio
+    async def test_a_claim_taken_back_before_the_restart_needs_no_second_supersede(
+        self, api_client, redis_client
+    ):
+        """The stamp survives the sweep that wrote it, so a restart reads it and goes on.
+
+        This is the same grant one process later. Nothing is in memory; the run
+        carries the record that its claim was taken back, and that is enough to
+        revoke against.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.CANCELLED,
+            id="deploy-grant-1",
+            run_metadata={DISPATCH_SUPERSEDED_AT_KEY: datetime.now(UTC).isoformat()},
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        api_client.withdraw_deploy_dispatch.assert_not_awaited()
+        api_client.supersede_deploy_dispatch.assert_not_awaited()
+        assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
 
     @pytest.mark.asyncio
     async def test_a_claim_that_stays_unanswered_is_reported_rather_than_waited_out(

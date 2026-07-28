@@ -1022,19 +1022,28 @@ row lock, so a worker about to dispatch and a caller trying to stop it first can
 | Endpoint | Taken by | Answers |
 | --- | --- | --- |
 | `POST /api/runs/{id}/start` | any worker taking a run to `running`, as its first act on the message | `DeployRunStart` — `started=False` for a run that is already terminal, and the worker then does nothing with it |
-| `POST /api/runs/{id}/dispatch-claim` | the deploy worker, immediately before `workflow_dispatch` and before a rerun | `DeployDispatchClaim` — `granted=False` for a run already cancelled, and the worker then dispatches nothing |
+| `POST /api/runs/{id}/dispatch-claim` | the deploy worker, immediately before `workflow_dispatch` and before a rerun | `DeployDispatchClaim` — `granted=False` for a run already cancelled, and the worker then dispatches nothing; `lease_expires_at` is how long the claim is good for |
 | `POST /api/runs/{id}/dispatch-withdraw` | whoever needs the deploy stopped (the temporary-access sweep) | `DeployDispatchWithdrawal` — `withdrawn` (never left), `already_dispatched` (stop it on Actions instead), `already_terminal` |
+| `POST /api/runs/{id}/dispatch-supersede` | the same caller, once an `already_dispatched` claim has gone quiet | `DeployDispatchSupersede` — `superseded`, `already_settled`, `not_claimed`, or `lease_live` (wait) |
 
-The claim stamps `run_metadata.dispatch_claimed_at`; the withdrawal reads it. A withdrawal always
-marks the run cancelled, because the worker polls that to stop its own Actions run.
+The claim stamps `run_metadata.dispatch_claimed_at` and `run_metadata.dispatch_lease_expires_at`;
+the withdrawal reads the first. A withdrawal always marks the run cancelled, because the worker
+polls that to stop its own Actions run.
 
 A terminal run never goes back to a live one: `PATCH /api/runs/{id}` refuses such a move with 409,
 and `start` is the locked form of the same transition. Without it a worker's read-then-write would
 overwrite a cancellation that landed in between, and the resurrected run would pass the claim.
 
-`already_dispatched` is only settled by the claiming worker's own recorded outcome — a terminal run
-carrying a typed result. Elapsed time since the claim is not a substitute: a paused worker, or one
-whose claim answer arrived late, still calls `workflow_dispatch` afterwards.
+`already_dispatched` is ordinarily settled by the claiming worker's own recorded outcome — a
+terminal run carrying a typed result. A worker that dies after claiming never writes one, so
+holding the boundary is a lease rather than a possession: the claim carries a deadline (renewed
+each time the worker asks), the worker re-reads the clock immediately before dispatching and
+refuses once it has passed, and past the deadline `dispatch-supersede` closes the boundary against
+it — cancelling the run so it can never be re-claimed and stamping
+`run_metadata.dispatch_superseded_at`. That stamp settles the dispatch for any later reader, which
+is what lets a restarted sweep revoke instead of waiting on a process that is gone. Elapsed time
+alone is not a substitute for either: a paused worker still calls `workflow_dispatch` afterwards
+unless it has promised not to.
 
 A run's outcome is the first one written. Once a terminal run carries a result, `PATCH
 /api/runs/{id}` refuses any change to `status`, `result` or `error_message` with 409; an identical

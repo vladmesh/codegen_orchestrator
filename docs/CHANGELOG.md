@@ -25,10 +25,16 @@
   the environment a revoke ships refuses the QA identity rather than that a variable is absent.
 
   Three things the same lifecycle needed to hold under process death:
-  the QA run is failed *before* the grant is stamped as escalated, and a story is only let past a
-  live grant when both the stamp and the run's own `qa_cleanup_failed` blocker are there — a
-  scheduler that dies between the two writes now leaves the story waiting instead of completing
-  it while the bot still admits the test identity. A revoke deploy carries
+  giving up on a revoke is one write. `POST /api/temporary-access-grants/{id}/escalate` stamps the
+  grant and records the `qa_cleanup_failed` outcome on its QA run in one transaction, so there is
+  no state where one landed and the other did not, and a story is only let past a live grant when
+  both are there. That call is also the one writer allowed the last word on a QA run's outcome: a
+  run that borrowed a test identity has not finished while the identity is still admitted, so a
+  worker's `passed` is provisional until the access is settled. Without it, a run the QA worker
+  had already passed could never be told the access was stuck, and its story would sit in TESTING
+  for good. Everything else still meets the ordinary refusal on `PATCH /api/runs/{id}`, so a
+  worker reporting after an escalation is rejected and both orders end in the same place. A revoke
+  deploy carries
   `DeployMessage.fence_active_deploys`: it skips the redundant-deploy shortcut and, through the
   new `GitHubAppClient.fence_workflow`, cancels every unfinished `deploy.yml` run and proves it
   terminal before writing its secrets, so the abandoned grant deploy it replaces cannot land
@@ -67,14 +73,21 @@
   `POST /api/runs/{id}/start`, which refuses a run that is already terminal, and `PATCH
   /api/runs/{id}` refuses any move from a terminal status back to a live one, so no writer can
   undo a cancellation. And a withdrawal that arrived after the claim used to hold the revoke back
-  only until the claim was old enough for GitHub to be listing the run. Elapsed time proves
-  nothing about a paused worker or a claim answered late — either still reaches
-  `workflow_dispatch` afterwards — so the revoke now waits for the claiming worker's own recorded
-  outcome, which it writes on every path it can leave a deploy by. A claim that stays unanswered
-  past `supervisor.temporary_access_revoke_stale_minutes` is reported as
-  `temporary_access_grant_deploy_dispatch_stuck` with an admin alert instead of being waited out,
-  and the QA run that borrowed the access is failed with its reason first, whatever the grant
-  deploy turns out to have done. `supervisor.temporary_access_dispatch_settle_seconds` is gone.
+  until the claiming worker recorded its own outcome, which it writes on every path it can leave a
+  deploy by. That is still the ordinary proof — but a worker that dies after claiming never writes
+  it, and waiting on it left the grant unreconciled for good with an alert as the only trace.
+  Elapsed time cannot replace it either: a paused worker still reaches `workflow_dispatch`
+  afterwards. So holding the boundary is a lease. A claim carries a deadline (`DISPATCH_LEASE`,
+  renewed each time the worker asks), the worker re-reads the clock immediately before dispatching
+  and refuses once it has passed, and `POST /api/runs/{id}/dispatch-supersede` takes an expired
+  claim back under the same row lock the claim was granted under — cancelling the run so it can
+  never be re-claimed and stamping the crossing as superseded, which a restarted sweep reads
+  without asking again. From there anything the dead worker did put on Actions is listable and the
+  revoke's fence reaches it. A claim still inside its lease is waited for, and one that somehow
+  stays live past `supervisor.temporary_access_revoke_stale_minutes` is reported as
+  `temporary_access_grant_deploy_dispatch_stuck` with an admin alert. The QA run that borrowed the
+  access is failed with its reason first, whatever the grant deploy turns out to have done.
+  `supervisor.temporary_access_dispatch_settle_seconds` is gone.
 
   A deploy cancelled on GitHub Actions left its run at `running` with no result, which every
   supervisor skips for good — and a revoke's fence cancels ordinary story deploys as a matter of

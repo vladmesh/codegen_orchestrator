@@ -7,11 +7,15 @@ import os
 import httpx
 
 from shared.contracts.dto.application import ApplicationDTO
-from shared.contracts.dto.deploy_dispatch import DeployDispatchWithdrawal
+from shared.contracts.dto.deploy_dispatch import (
+    DeployDispatchSupersede,
+    DeployDispatchWithdrawal,
+)
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
+from shared.contracts.dto.run_result import QARunResult
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
@@ -201,6 +205,13 @@ class SchedulerAPIClient:
         )
         return DeployDispatchWithdrawal.model_validate(resp.json())
 
+    async def supersede_deploy_dispatch(self, run_id: str, reason: str) -> DeployDispatchSupersede:
+        """Take a silent dispatch claim back once its holder may no longer act."""
+        resp = await self._request(
+            "POST", f"runs/{run_id}/dispatch-supersede", params={"reason": reason}
+        )
+        return DeployDispatchSupersede.model_validate(resp.json())
+
     async def get_latest_run_by_story(
         self, story_id: str, run_type: str | None = None
     ) -> RunDTO | None:
@@ -282,6 +293,35 @@ class SchedulerAPIClient:
             "GET", "temporary-access-grants/", params={"qa_run_id": qa_run_id}
         )
         return bool(resp.json())
+
+    async def escalate_temporary_access_grant(
+        self,
+        grant_id: str,
+        *,
+        error: str,
+        run_error_message: str,
+        run_result: QARunResult,
+    ) -> TemporaryAccessGrantDTO:
+        """Give up on a quiet revoke: the QA run carries the failure, in one write.
+
+        The run's own verdict is superseded here, and deliberately so. A run that
+        borrowed a test identity has not finished while the identity is still
+        out, so a worker's pass is provisional until the access is settled; if
+        the sweep spends its attempts, the named cleanup failure is what the run
+        says. Doing this through the ordinary run patch would be refused, and
+        rightly — that path is where a stale worker verdict would overwrite a
+        supervisor's.
+        """
+        resp = await self._request(
+            "POST",
+            f"temporary-access-grants/{grant_id}/escalate",
+            json={
+                "error": error,
+                "run_error_message": run_error_message,
+                "run_result": run_result.model_dump(mode="json"),
+            },
+        )
+        return TemporaryAccessGrantDTO.model_validate(resp.json())
 
     async def update_temporary_access_grant(
         self, grant_id: str, update: TemporaryAccessGrantUpdate

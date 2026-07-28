@@ -7,15 +7,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.temporary_access import (
     LIVE_TEMPORARY_ACCESS_STATUSES,
     TemporaryAccessStatus,
 )
-from shared.models import TemporaryAccessGrant
+from shared.models import Run, TemporaryAccessGrant
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
 from ..schemas import (
+    TemporaryAccessEscalation,
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantRead,
     TemporaryAccessGrantUpdate,
@@ -120,6 +122,59 @@ async def get_grant(
 ) -> TemporaryAccessGrant:
     """Read one grant."""
     return await _load(grant_id, db)
+
+
+@router.post("/{grant_id}/escalate", response_model=TemporaryAccessGrantRead)
+async def escalate_grant(
+    grant_id: str,
+    escalation: TemporaryAccessEscalation,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> TemporaryAccessGrant:
+    """Record that the access could not be taken back, on the grant and on its run.
+
+    A QA run that borrowed a test identity is not over when the worker inside it
+    has an opinion: the identity it was lent still has to be handed back, and
+    until that is settled the verdict is provisional. So when the sweep runs out
+    of revoke attempts, this writes the named cleanup failure onto the run even
+    if the worker already recorded a pass — the story would otherwise publish a
+    success while the identity is still admitted by the deployed bot, or, if
+    nothing dared write, wait in TESTING for a revoke that keeps failing.
+
+    This is the one writer allowed the last word on a QA run's outcome, and only
+    this one thing. Everything else that reaches ``PATCH /runs/{id}`` is still
+    refused once a terminal run carries a result — that guard exists to stop a
+    worker's late verdict from erasing a supervisor's, and it holds in that
+    direction unchanged. A worker reporting after this escalation is refused, so
+    the two orders end in the same place.
+
+    Both writes commit together. Repeating the call is the same state again: the
+    escalation moment is stamped once and the run's outcome is rewritten to the
+    same values.
+    """
+    grant = await _load(grant_id, db)
+    if grant.status == TemporaryAccessStatus.REVOKED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Temporary access grant {grant_id} is revoked; there is nothing to escalate",
+        )
+
+    run = await db.get(Run, grant.qa_run_id)
+    if run is not None:
+        run.status = RunStatus.FAILED.value
+        run.error_message = escalation.run_error_message
+        run.result = escalation.run_result.model_dump(mode="json")
+        if run.completed_at is None:
+            run.completed_at = datetime.now(UTC)
+
+    grant.status = TemporaryAccessStatus.REVOKE_FAILED.value
+    grant.last_error = escalation.error
+    if grant.escalated_at is None:
+        grant.escalated_at = datetime.now(UTC)
+
+    await db.commit()
+    await db.refresh(grant)
+    return grant
 
 
 @router.patch("/{grant_id}", response_model=TemporaryAccessGrantRead)

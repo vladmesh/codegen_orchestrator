@@ -6,6 +6,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.run_result import QARunResult
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
@@ -47,6 +48,23 @@ class TemporaryAccessGrantUpdate(BaseModel):
     revoke_attempts: int | None = None
     escalated: bool | None = None
     last_error: str | None = None
+
+
+class TemporaryAccessEscalation(BaseModel):
+    """Give up on a quiet revoke and make the QA run say so, in one write.
+
+    The failure to take the access back belongs to the QA run that borrowed it:
+    cleanup is part of that run, not a side effect after it. So the run's
+    outcome and the grant's escalation stamp are one decision, taken in one
+    transaction — a crash between them used to leave a story waiting on a grant
+    that had already given up.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    error: str = Field(min_length=1)
+    run_error_message: str = Field(min_length=1)
+    run_result: QARunResult
 
 
 class TemporaryAccessGrantRead(TimestampedDTO):

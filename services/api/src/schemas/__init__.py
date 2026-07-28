@@ -41,6 +41,7 @@ from .task import (
     TaskUpdate,
 )
 from .temporary_access import (
+    TemporaryAccessEscalation,
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantRead,
     TemporaryAccessGrantUpdate,
@@ -102,6 +103,7 @@ __all__ = [
     "TaskRead",
     "TaskTransition",
     "TaskUpdate",
+    "TemporaryAccessEscalation",
     "TemporaryAccessGrantCreate",
     "TemporaryAccessGrantRead",
     "TemporaryAccessGrantUpdate",

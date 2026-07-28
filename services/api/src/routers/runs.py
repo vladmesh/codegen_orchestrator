@@ -10,9 +10,14 @@ import structlog
 
 from shared.contracts.dto.deploy_dispatch import (
     DISPATCH_CLAIMED_AT_KEY,
+    DISPATCH_LEASE,
+    DISPATCH_LEASE_EXPIRES_AT_KEY,
+    DISPATCH_SUPERSEDED_AT_KEY,
     DeployDispatchClaim,
+    DeployDispatchSupersede,
     DeployDispatchWithdrawal,
     DeployRunStart,
+    DispatchSupersede,
     DispatchWithdrawal,
 )
 from shared.contracts.dto.run import RunStatus
@@ -323,6 +328,11 @@ def _claimed_at(run: Run) -> datetime | None:
     return datetime.fromisoformat(stamp) if stamp else None
 
 
+def _lease_expires_at(run: Run) -> datetime | None:
+    stamp = (run.run_metadata or {}).get(DISPATCH_LEASE_EXPIRES_AT_KEY)
+    return datetime.fromisoformat(stamp) if stamp else None
+
+
 @router.post("/{run_id}/start", response_model=DeployRunStart)
 async def start_run(
     run_id: str,
@@ -364,6 +374,13 @@ async def claim_run_dispatch(
     the worker asks immediately before it dispatches, so a cancellation that
     landed at any point up to here stops the deploy instead of racing it.
     Claiming again is the same answer, so a retry after a lost response is safe.
+
+    The answer carries a deadline. Holding the boundary open indefinitely is
+    what left a dead worker's grant unrevokable: nothing outside could tell a
+    worker that is about to dispatch from one that never will. The lease is the
+    holder's promise not to dispatch after it, renewed each time it asks, and it
+    is what lets reconciliation take a silent claim back rather than wait for a
+    process that is gone.
     """
     run = await _lock_run(run_id, db)
     if run.status in _TERMINAL_RUN_STATUSES:
@@ -374,23 +391,105 @@ async def claim_run_dispatch(
             granted=False,
             run_status=RunStatus(run.status),
             claimed_at=_claimed_at(run),
+            lease_expires_at=_lease_expires_at(run),
         )
 
-    claimed_at = _claimed_at(run)
-    if claimed_at is None:
-        claimed_at = datetime.now(UTC)
-        run.run_metadata = {
-            **(run.run_metadata or {}),
-            DISPATCH_CLAIMED_AT_KEY: claimed_at.isoformat(),
-        }
+    now = datetime.now(UTC)
+    claimed_at = _claimed_at(run) or now
+    lease_expires_at = now + DISPATCH_LEASE
+    run.run_metadata = {
+        **(run.run_metadata or {}),
+        DISPATCH_CLAIMED_AT_KEY: claimed_at.isoformat(),
+        DISPATCH_LEASE_EXPIRES_AT_KEY: lease_expires_at.isoformat(),
+    }
     await db.commit()
-    logger.info("run_dispatch_claimed", run_id=run_id, claimed_at=claimed_at.isoformat())
+    logger.info(
+        "run_dispatch_claimed",
+        run_id=run_id,
+        claimed_at=claimed_at.isoformat(),
+        lease_expires_at=lease_expires_at.isoformat(),
+    )
     return DeployDispatchClaim(
         run_id=run_id,
         granted=True,
         run_status=RunStatus(run.status),
         claimed_at=claimed_at,
+        lease_expires_at=lease_expires_at,
     )
+
+
+@router.post("/{run_id}/dispatch-supersede", response_model=DeployDispatchSupersede)
+async def supersede_run_dispatch(
+    run_id: str,
+    reason: str = Query("", description="Recorded on the run as error_message"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> DeployDispatchSupersede:
+    """Take back a dispatch claim whose holder went quiet, once it may no longer act.
+
+    A worker that claimed the boundary and then died leaves a run that never
+    reaches a terminal result. Whatever is waiting on that run to know what
+    happened outside — a temporary access grant waiting to be revoked, above all
+    — would wait for good, and an alert about it is not a removal.
+
+    So the claim expires. Until the lease runs out the claimer may still be on
+    its way to GitHub and the only honest answer is to wait. After it, the
+    claimer has promised not to dispatch, and this closes the boundary against
+    it under the same lock the claim was taken under: the run is cancelled, so a
+    re-claim is refused, and the crossing is stamped as superseded, which is the
+    caller's proof that nothing more can appear outside without being visible on
+    GitHub Actions where a fence can reach it.
+
+    The claimer's own result is not written here. If it is alive after all it
+    still records what it did, and that is the account of the deploy; this only
+    records that the wait for it is over.
+    """
+    run = await _lock_run(run_id, db)
+    claimed_at = _claimed_at(run)
+    lease_expires_at = _lease_expires_at(run)
+
+    def _answer(outcome: DispatchSupersede) -> DeployDispatchSupersede:
+        return DeployDispatchSupersede(
+            run_id=run_id,
+            outcome=outcome,
+            run_status=RunStatus(run.status),
+            claimed_at=claimed_at,
+            lease_expires_at=lease_expires_at,
+        )
+
+    if run.status in _TERMINAL_RUN_STATUSES and run.result is not None:
+        await db.commit()
+        return _answer(DispatchSupersede.ALREADY_SETTLED)
+    if claimed_at is None:
+        await db.commit()
+        return _answer(DispatchSupersede.NOT_CLAIMED)
+    if (run.run_metadata or {}).get(DISPATCH_SUPERSEDED_AT_KEY):
+        await db.commit()
+        return _answer(DispatchSupersede.SUPERSEDED)
+    if lease_expires_at is not None and lease_expires_at > datetime.now(UTC):
+        await db.commit()
+        logger.info(
+            "run_dispatch_supersede_deferred",
+            run_id=run_id,
+            lease_expires_at=lease_expires_at.isoformat(),
+        )
+        return _answer(DispatchSupersede.LEASE_LIVE)
+
+    run.status = RunStatus.CANCELLED.value
+    if reason:
+        run.error_message = reason
+    run.run_metadata = {
+        **(run.run_metadata or {}),
+        DISPATCH_SUPERSEDED_AT_KEY: datetime.now(UTC).isoformat(),
+    }
+    await db.commit()
+    logger.warning(
+        "run_dispatch_superseded",
+        run_id=run_id,
+        claimed_at=claimed_at.isoformat(),
+        reason=reason,
+    )
+    return _answer(DispatchSupersede.SUPERSEDED)
 
 
 @router.post("/{run_id}/dispatch-withdraw", response_model=DeployDispatchWithdrawal)

@@ -4,13 +4,24 @@ A worker about to reach GitHub and a revoke trying to stop it before it does are
 racing for the same answer. Whoever wins, the loser has to be told which side of
 the boundary the deploy ended up on: a deploy that never dispatched can be
 treated as gone, while one that did has to be stopped on GitHub Actions instead.
+
+Holding the boundary is a lease rather than a possession. A worker that claims
+it and then dies would otherwise leave a run nothing can settle and a revoke
+waiting on it for good, so the claim has a deadline the holder promises not to
+dispatch past, and reconciliation can take it back once that has gone by.
 """
 
+from datetime import UTC, datetime, timedelta
 import uuid
 
 from fastapi import status
 from httpx import AsyncClient
 import pytest
+
+from shared.contracts.dto.deploy_dispatch import (
+    DISPATCH_LEASE_EXPIRES_AT_KEY,
+    DISPATCH_SUPERSEDED_AT_KEY,
+)
 
 
 async def _deploy_run(async_client: AsyncClient, *, run_status: str = "running") -> str:
@@ -167,3 +178,151 @@ async def test_withdrawing_a_finished_run_is_not_an_error(async_client: AsyncCli
     assert withdrawn.json()["outcome"] == "already_terminal"
     run = await async_client.get(f"/api/runs/{run_id}")
     assert run.json()["status"] == "completed"
+
+
+async def _expire_lease(async_client: AsyncClient, run_id: str) -> None:
+    """Move the claim's deadline into the past, the way waiting would."""
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    patched = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"run_metadata": {DISPATCH_LEASE_EXPIRES_AT_KEY: past}},
+    )
+    assert patched.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.asyncio
+async def test_a_claim_carries_a_deadline(async_client: AsyncClient):
+    """Holding the boundary is a lease. Without a deadline nothing outside can
+    ever tell a worker that is about to dispatch from one that never will."""
+    run_id = await _deploy_run(async_client)
+
+    claimed = await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+
+    lease = datetime.fromisoformat(claimed.json()["lease_expires_at"])
+    assert lease > datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_claiming_again_renews_the_deadline_without_moving_the_crossing(
+    async_client: AsyncClient,
+):
+    """A worker that asks again is alive, so it gets more time — but the moment
+    the deploy first crossed is a fact and does not move."""
+    run_id = await _deploy_run(async_client)
+
+    first = await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+    await _expire_lease(async_client, run_id)
+    second = await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+
+    assert second.json()["claimed_at"] == first.json()["claimed_at"]
+    assert datetime.fromisoformat(second.json()["lease_expires_at"]) > datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_a_live_lease_is_waited_for_rather_than_taken_back(async_client: AsyncClient):
+    """The claimer may still be on its way to GitHub, and only it knows."""
+    run_id = await _deploy_run(async_client)
+
+    await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+    superseded = await async_client.post(f"/api/runs/{run_id}/dispatch-supersede")
+
+    assert superseded.json()["outcome"] == "lease_live"
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_an_expired_claim_is_taken_back_and_can_never_dispatch(async_client: AsyncClient):
+    """The process-death case, from the API's side.
+
+    A worker that claimed and never came back leaves a run nothing can settle,
+    and everything waiting on it waits for good. Past the deadline the claim is
+    taken back: the run is cancelled, so the holder cannot re-claim, and the
+    crossing is stamped so a restarted reader sees it without asking again.
+    """
+    run_id = await _deploy_run(async_client)
+
+    await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+    await _expire_lease(async_client, run_id)
+    superseded = await async_client.post(
+        f"/api/runs/{run_id}/dispatch-supersede", params={"reason": "grant abandoned"}
+    )
+
+    assert superseded.json()["outcome"] == "superseded"
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "cancelled"
+    assert run.json()["error_message"] == "grant abandoned"
+    assert run.json()["run_metadata"][DISPATCH_SUPERSEDED_AT_KEY]
+
+    reclaimed = await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+    assert reclaimed.json()["granted"] is False
+
+
+@pytest.mark.asyncio
+async def test_superseding_twice_is_the_same_answer(async_client: AsyncClient):
+    """The sweep repeats after a lost response; that must not be an error."""
+    run_id = await _deploy_run(async_client)
+
+    await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+    await _expire_lease(async_client, run_id)
+    first = await async_client.post(f"/api/runs/{run_id}/dispatch-supersede")
+    second = await async_client.post(f"/api/runs/{run_id}/dispatch-supersede")
+
+    assert first.json()["outcome"] == "superseded"
+    assert second.json()["outcome"] == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_recorded_its_outcome_keeps_it(async_client: AsyncClient):
+    """Its own account of the deploy is the better answer and is not overwritten."""
+    run_id = await _deploy_run(async_client)
+
+    await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+    await _expire_lease(async_client, run_id)
+    recorded = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"status": "cancelled", "result": {"deploy_outcome": "cancelled"}},
+    )
+    assert recorded.status_code == status.HTTP_200_OK
+
+    superseded = await async_client.post(f"/api/runs/{run_id}/dispatch-supersede")
+
+    assert superseded.json()["outcome"] == "already_settled"
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["result"]["deploy_outcome"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_run_nobody_claimed_has_nothing_to_take_back(async_client: AsyncClient):
+    """Nothing crossed, so there is no external effect to account for."""
+    run_id = await _deploy_run(async_client)
+
+    superseded = await async_client.post(f"/api/runs/{run_id}/dispatch-supersede")
+
+    assert superseded.json()["outcome"] == "not_claimed"
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_claim_still_lets_its_worker_say_what_it_did(
+    async_client: AsyncClient,
+):
+    """Taking the wait back is not a verdict on the deploy.
+
+    If the worker turns out to be alive, its own result is still the account of
+    what happened outside, and it has to be able to write it.
+    """
+    run_id = await _deploy_run(async_client)
+
+    await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
+    await _expire_lease(async_client, run_id)
+    await async_client.post(f"/api/runs/{run_id}/dispatch-supersede")
+
+    recorded = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"status": "cancelled", "result": {"deploy_outcome": "cancelled"}},
+    )
+
+    assert recorded.status_code == status.HTTP_200_OK
+    assert recorded.json()["result"]["deploy_outcome"] == "cancelled"

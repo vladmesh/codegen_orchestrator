@@ -9,6 +9,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient, deploy_pin_tag
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim
 from shared.contracts.env_overrides import env_overrides_digest
 from shared.contracts.service_ports import is_http_health_port_service
 
@@ -51,6 +52,32 @@ class DeployDispatchWithdrawnError(RuntimeError):
     Not a DeployRefusedError: nothing failed. The deploy was called off while it
     could still be called off, which is the whole point of asking.
     """
+
+
+def _require_live_lease(claim: DeployDispatchClaim | None, moment: datetime) -> None:
+    """Refuse to dispatch once the claim's deadline has passed.
+
+    Holding the boundary is a lease, not a possession, and this is the promise
+    that makes it one. Reconciliation is entitled to take a claim back after its
+    deadline and revoke on the assumption that nothing more can appear on GitHub
+    unseen; a worker that stalled between claiming and dispatching, then went
+    ahead anyway, would put the value back on an application whose grant is
+    already recorded revoked. So the clock is read once more here, directly
+    before the call that leaves the system, and a stale claim stops instead.
+    """
+    if claim is None or claim.lease_expires_at is None:
+        return
+    if moment < claim.lease_expires_at:
+        return
+    logger.warning(
+        "deploy_dispatch_lease_expired",
+        run_id=claim.run_id,
+        lease_expires_at=claim.lease_expires_at.isoformat(),
+    )
+    raise DeployDispatchWithdrawnError(
+        f"deploy run {claim.run_id} held its dispatch claim past "
+        f"{claim.lease_expires_at.isoformat()} and may no longer dispatch"
+    )
 
 
 async def _create_deployment_record(
@@ -211,7 +238,8 @@ class DeployerNode(FunctionalNode):
 
             # A rerun restarts the same external effect, so it crosses the same
             # boundary and asks the same question first.
-            await self._claim_dispatch(deploy_run_id)
+            claim = await self._claim_dispatch(deploy_run_id)
+            _require_live_lease(claim, datetime.now(UTC))
             await github.rerun_failed_jobs(owner, repo, run_id)
             await asyncio.sleep(3)
 
@@ -319,10 +347,11 @@ class DeployerNode(FunctionalNode):
 
             # Last thing before the deploy leaves the system. After this the run
             # exists on GitHub Actions and can only be stopped there.
-            await self._claim_dispatch(run_id)
+            claim = await self._claim_dispatch(run_id)
 
             # Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
+            _require_live_lease(claim, dispatch_time)
             if pin_tag:
                 await github.trigger_workflow_dispatch(owner, repo, DEPLOY_WORKFLOW, ref=pin_tag)
             else:
@@ -409,7 +438,7 @@ class DeployerNode(FunctionalNode):
         run = await api_client.get(f"runs/{run_id}")
         return run.get("status") == "cancelled"
 
-    async def _claim_dispatch(self, run_id: str | None) -> None:
+    async def _claim_dispatch(self, run_id: str | None) -> DeployDispatchClaim | None:
         """Take the dispatch boundary, or refuse to cross it.
 
         Called immediately before every call that starts work on GitHub Actions.
@@ -424,7 +453,7 @@ class DeployerNode(FunctionalNode):
                 dispatched and nothing needs stopping outside.
         """
         if not run_id:
-            return
+            return None
         claim = await api_client.claim_deploy_dispatch(run_id)
         if not claim.granted:
             logger.info(
@@ -435,6 +464,7 @@ class DeployerNode(FunctionalNode):
             raise DeployDispatchWithdrawnError(
                 f"deploy run {run_id} was {claim.run_status.value} before it was dispatched"
             )
+        return claim
 
     async def run(self, state: DevOpsState) -> dict:  # noqa: PLR0911
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""

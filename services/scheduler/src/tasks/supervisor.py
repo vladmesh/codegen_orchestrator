@@ -1440,10 +1440,11 @@ def _access_failure_is_recorded(grant: TemporaryAccessGrantDTO, result: QARunRes
     """Whether a live grant may stop holding its story back.
 
     Only one thing lets a story past an unrevoked grant: the sweep gave up on
-    the access *and* wrote that up on the QA run itself. Both are required. The
-    escalation stamp alone would let a run that still reads `passed` through if
-    the sweep died between the two writes, and the blocker alone belongs to a
-    revoke that is still being retried.
+    the access *and* wrote that up on the QA run itself. The sweep does both in
+    one call, so the two agreeing is the ordinary case; requiring both here is
+    what keeps a story from being completed on the strength of half of it,
+    whatever writes the record in future. The blocker alone belongs to a revoke
+    that is still being retried.
     """
     if grant.escalated_at is None:
         return False
