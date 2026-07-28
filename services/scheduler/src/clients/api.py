@@ -177,6 +177,23 @@ class SchedulerAPIClient:
         """Patch run fields (status, error_message, result)."""
         await self._request("PATCH", f"runs/{run_id}", json=data)
 
+    async def record_run_outcome_unless_settled(self, run_id: str, data: dict) -> bool:
+        """Write a terminal outcome onto a run, unless it already has one.
+
+        Both the sweep and the worker inside a run can decide it is over, and the
+        API keeps whichever answer landed first. False here means the run had
+        already recorded its own, so the caller's reason is not the one the run
+        carries — which is information, not a failure to be raised: the access
+        this was about still has to be taken back either way.
+        """
+        try:
+            await self._request("PATCH", f"runs/{run_id}", json=data)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != httpx.codes.CONFLICT:
+                raise
+            return False
+        return True
+
     async def withdraw_deploy_dispatch(self, run_id: str, reason: str) -> DeployDispatchWithdrawal:
         """Stop a deploy run, and learn whether it got out before the stop landed."""
         resp = await self._request(

@@ -108,9 +108,21 @@ async def grant_temporary_access(
     The id names the QA run, so asking twice is asking for the same grant: a
     caller repeating a handoff it could not confirm gets the first record back
     rather than a second grant competing for the same contract slot.
+
+    Which deploy carries the access is decided by that record and never by this
+    call. The proposed id is only a proposal: a retry gets the stored one back,
+    and everything after this point uses it. Deploying under the freshly made id
+    instead would put the identity on the application through a run the record
+    does not name — the sweep would watch the first deploy, revoke against it,
+    and the second one would write the value back afterwards with nothing left
+    watching.
+
+    For the same reason the deploy is published only while the record still says
+    the access is being handed out and no run yet carries it. A repeat that finds
+    either otherwise is a handoff the sweep has already taken over, and the sweep
+    is what redispatches, expires and revokes it from there.
     """
     grant_id = f"tempaccess-{qa_message.run_id}"[:255]
-    grant_run_id = _new_deploy_run_id("grant")
     grant = await api_client.create_temporary_access_grant(
         TemporaryAccessGrantCreate(
             id=grant_id,
@@ -119,7 +131,7 @@ async def grant_temporary_access(
             subject=subject,
             head_sha=head_sha,
             qa_run_id=qa_message.run_id,
-            grant_run_id=grant_run_id,
+            grant_run_id=_new_deploy_run_id("grant"),
             qa_message=qa_message,
         )
     )
@@ -130,11 +142,24 @@ async def grant_temporary_access(
         env_key=env_key,
         qa_run_id=grant.qa_run_id,
     )
-    await _publish_grant_deploy(api_client, redis_client, grant, grant_run_id)
+    if grant.status is not TemporaryAccessStatus.GRANTING:
+        log.info(
+            "temporary_access_grant_already_owned_by_sweep",
+            grant_status=grant.status.value,
+            grant_run_id=grant.grant_run_id,
+        )
+        return grant
+    if await api_client.get_run_if_missing_returns_none(grant.grant_run_id) is not None:
+        log.info(
+            "temporary_access_grant_deploy_already_dispatched", grant_run_id=grant.grant_run_id
+        )
+        return grant
+
+    await _publish_grant_deploy(api_client, redis_client, grant, grant.grant_run_id)
     log.info(
         "temporary_access_granting",
-        head_sha=head_sha,
-        grant_run_id=grant_run_id,
+        head_sha=grant.head_sha,
+        grant_run_id=grant.grant_run_id,
     )
     return grant
 
@@ -827,6 +852,13 @@ async def _fail_qa_run(
     line next to a successful run: the QA run that borrowed the identity carries
     the failure, with the grant named, and the grant stays live for the sweep to
     keep working on.
+
+    A run that reached its own outcome first keeps it. The sweep and the QA
+    worker can both be deciding the same run is over — an expiring grant against
+    a run finishing at the same moment — and the first answer is the one that
+    happened. Refused here means the run is settled, not that the sweep failed:
+    the revoke this precedes goes ahead regardless, because the access is out
+    whatever the run ended up saying.
     """
     if grant.revoke_reason is TemporaryAccessRevokeReason.RUN_MISSING:
         # There is no run left to carry the failure; the grant itself is the
@@ -834,7 +866,7 @@ async def _fail_qa_run(
         log.warning("temporary_access_failure_has_no_run", grant_id=grant.id)
         return
 
-    await api_client.update_run(
+    recorded = await api_client.record_run_outcome_unless_settled(
         grant.qa_run_id,
         {
             "status": RunStatus.FAILED.value,
@@ -848,4 +880,11 @@ async def _fail_qa_run(
             ).model_dump(mode="json"),
         },
     )
+    if not recorded:
+        log.warning(
+            "temporary_access_qa_run_already_settled",
+            grant_id=grant.id,
+            blocker=category.value,
+        )
+        return
     log.warning("temporary_access_qa_run_failed", grant_id=grant.id, blocker=category.value)

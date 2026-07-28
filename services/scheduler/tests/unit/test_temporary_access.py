@@ -99,6 +99,9 @@ def api_client():
     client.update_temporary_access_grant = AsyncMock()
     client.update_run = AsyncMock()
     client.create_run = AsyncMock()
+    # Default: nothing has been deployed for any run id yet.
+    client.get_run_if_missing_returns_none = AsyncMock(return_value=None)
+    client.record_run_outcome_unless_settled = AsyncMock(return_value=True)
     # Default: the grant deploy never left the system, so a withdrawal settles it.
     client.withdraw_deploy_dispatch = AsyncMock(return_value=_withdrawal())
     return client
@@ -183,6 +186,97 @@ class TestGrantIssuance:
             qa_message=_qa_message(),
         )
 
+        assert _published(redis_client, QA_QUEUE) == []
+
+    @pytest.mark.asyncio
+    async def test_a_retry_deploys_under_the_recorded_run_not_the_one_it_proposed(
+        self, api_client, redis_client
+    ):
+        """The interleaving a fresh id per call leaves open.
+
+        The first attempt commits the record and its response is lost. The retry
+        proposes a new run id, but the record already names one and comes back
+        holding it. Deploying under the proposed id would put the identity on the
+        application through a run nothing is watching: the sweep follows the
+        recorded id, revokes once its QA run ends, and the untracked deploy then
+        writes the value back onto a grant already marked revoked.
+        """
+        from src.tasks.temporary_access import grant_temporary_access
+
+        proposed: list[str] = []
+
+        def _return_the_stored_record(payload):
+            proposed.append(payload.grant_run_id)
+            return _granting(grant_run_id="deploy-grant-committed")
+
+        api_client.create_temporary_access_grant.side_effect = _return_the_stored_record
+
+        grant = await grant_temporary_access(
+            api_client,
+            redis_client,
+            project_id=PROJECT_ID,
+            env_key=ENV_KEY,
+            subject="424242",
+            head_sha=HEAD_SHA,
+            qa_message=_qa_message(),
+        )
+
+        assert proposed and proposed[0] != "deploy-grant-committed"
+        assert grant.grant_run_id == "deploy-grant-committed"
+        assert _published_deploy(redis_client).task_id == "deploy-grant-committed"
+        assert api_client.create_run.call_args.args[0]["id"] == "deploy-grant-committed"
+
+    @pytest.mark.asyncio
+    async def test_a_retry_does_not_deploy_again_when_the_first_one_already_did(
+        self, api_client, redis_client
+    ):
+        """The recorded run exists, so the access is already on its way out."""
+        from src.tasks.temporary_access import grant_temporary_access
+
+        api_client.create_temporary_access_grant.return_value = _granting(
+            grant_run_id="deploy-grant-committed"
+        )
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.RUNNING, id="deploy-grant-committed"
+        )
+
+        await grant_temporary_access(
+            api_client,
+            redis_client,
+            project_id=PROJECT_ID,
+            env_key=ENV_KEY,
+            subject="424242",
+            head_sha=HEAD_SHA,
+            qa_message=_qa_message(),
+        )
+
+        assert _published(redis_client, DEPLOY_QUEUE) == []
+        api_client.create_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_retry_does_not_reapply_access_the_sweep_is_taking_back(
+        self, api_client, redis_client
+    ):
+        """A handoff repeating late must not undo a revoke already in flight."""
+        from src.tasks.temporary_access import grant_temporary_access
+
+        api_client.create_temporary_access_grant.return_value = _make_grant(
+            status=TemporaryAccessStatus.REVOKING,
+            revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+            revoke_run_id="deploy-revoke-1",
+        )
+
+        await grant_temporary_access(
+            api_client,
+            redis_client,
+            project_id=PROJECT_ID,
+            env_key=ENV_KEY,
+            subject="424242",
+            head_sha=HEAD_SHA,
+            qa_message=_qa_message(),
+        )
+
+        assert _published(redis_client, DEPLOY_QUEUE) == []
         assert _published(redis_client, QA_QUEUE) == []
 
 
@@ -317,7 +411,7 @@ class TestGrantInFlight:
         assert _published(redis_client, QA_QUEUE) == []
         assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
 
-        run_id, patch = api_client.update_run.call_args.args
+        run_id, patch = api_client.record_run_outcome_unless_settled.call_args.args
         assert run_id == "qa-1"
         assert patch["status"] == RunStatus.FAILED.value
         assert patch["result"]["blocker"]["category"] == "qa_access_grant_failed"
@@ -391,7 +485,9 @@ class TestGrantInFlight:
         await supervise_temporary_access(api_client, redis_client)
 
         api_client.withdraw_deploy_dispatch.assert_not_awaited()
-        assert [call.args[0] for call in api_client.update_run.call_args_list] == ["qa-1"]
+        assert [
+            call.args[0] for call in api_client.record_run_outcome_unless_settled.call_args_list
+        ] == ["qa-1"]
 
 
 class TestRevocationTriggers:
@@ -494,8 +590,38 @@ class TestRevocationTriggers:
         assert notified, "expiry must be reported, not handled quietly"
         # The run that outlived its access ends too, instead of continuing
         # against a bot that now refuses it.
-        _, patch = api_client.update_run.call_args.args
+        _, patch = api_client.record_run_outcome_unless_settled.call_args.args
         assert patch["result"]["blocker"]["category"] == "qa_access_expired"
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_finished_first_keeps_its_own_outcome_and_still_revokes(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """The other side of the race the API's outcome rule decides.
+
+        The sweep reads a live QA run, declares the access expired, and by the
+        time it writes, the run has recorded its own answer. The run keeps it —
+        the sweep is not the one who got there first — and the access is taken
+        back regardless, because it is out either way.
+        """
+        from src.tasks import temporary_access as module
+
+        monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _make_run(
+            id="qa-1", type=RunType.QA, status=RunStatus.RUNNING, result=None
+        )
+        api_client.record_run_outcome_unless_settled.return_value = False
+
+        counts = await module.supervise_temporary_access(api_client, redis_client)
+
+        assert counts["expired"] == 1
+        assert counts["dispatched"] == 1
+        assert counts["revoke_failed"] == 0
+        assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
+        assert _grant_updates(api_client)[-1].revoke_reason is TemporaryAccessRevokeReason.EXPIRED
 
 
 class TestRevokeInFlight:
@@ -580,7 +706,7 @@ class TestRevokeInFlight:
 
         assert counts["dispatched"] == 1
         assert counts["revoke_failed"] == 0
-        api_client.update_run.assert_not_called()
+        api_client.record_run_outcome_unless_settled.assert_not_called()
         assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
 
     @pytest.mark.asyncio
@@ -638,7 +764,7 @@ class TestRevokeInFlight:
         update = _grant_updates(api_client)[-1]
         assert update.status is TemporaryAccessStatus.REVOKE_FAILED
         assert update.escalated is None
-        api_client.update_run.assert_not_called()
+        api_client.record_run_outcome_unless_settled.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_exhausted_revokes_fail_the_qa_run_and_are_reported(
@@ -675,7 +801,7 @@ class TestRevokeInFlight:
         assert "deploy-revoke-1" in update.last_error
         assert notified, "unrevoked access must be reported"
 
-        run_id, patch = api_client.update_run.call_args.args
+        run_id, patch = api_client.record_run_outcome_unless_settled.call_args.args
         assert run_id == "qa-1"
         assert patch["status"] == RunStatus.FAILED.value
         assert patch["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
@@ -788,7 +914,9 @@ class TestEscalationOrdering:
 
         monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
         writes: list[str] = []
-        api_client.update_run.side_effect = lambda *a, **k: writes.append("qa_run")
+        api_client.record_run_outcome_unless_settled.side_effect = lambda *a, **k: (
+            writes.append("qa_run") or True
+        )
         api_client.update_temporary_access_grant.side_effect = lambda *a, **k: writes.append(
             "grant"
         )
@@ -822,7 +950,9 @@ class TestEscalationOrdering:
         from src.tasks import temporary_access as module
 
         monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
-        api_client.update_run.side_effect = RuntimeError("API died mid-write")
+        api_client.record_run_outcome_unless_settled.side_effect = RuntimeError(
+            "API died mid-write"
+        )
 
         api_client.list_live_temporary_access_grants.return_value = [
             _make_grant(
@@ -842,10 +972,10 @@ class TestEscalationOrdering:
             "the grant must not be escalated while the QA run still reads as it did"
         )
 
-        api_client.update_run.side_effect = None
+        api_client.record_run_outcome_unless_settled.side_effect = None
         await module.supervise_temporary_access(api_client, redis_client)
 
-        assert api_client.update_run.call_args.args[0] == "qa-1"
+        assert api_client.record_run_outcome_unless_settled.call_args.args[0] == "qa-1"
         assert _grant_updates(api_client)[-1].escalated is True
 
 
@@ -940,8 +1070,11 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
         assert _published(redis_client, DEPLOY_QUEUE) == []
         assert _grant_updates(api_client) == []
         # The QA run is not left guessing while that plays out.
-        assert api_client.update_run.await_args.args[0] == "qa-1"
-        assert api_client.update_run.await_args.args[1]["status"] == RunStatus.FAILED.value
+        assert api_client.record_run_outcome_unless_settled.await_args.args[0] == "qa-1"
+        assert (
+            api_client.record_run_outcome_unless_settled.await_args.args[1]["status"]
+            == RunStatus.FAILED.value
+        )
 
     @pytest.mark.asyncio
     async def test_an_old_claim_alone_never_releases_the_revoke(self, api_client, redis_client):

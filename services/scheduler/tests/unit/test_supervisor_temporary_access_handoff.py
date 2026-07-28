@@ -85,6 +85,8 @@ def api_client():
     client = AsyncMock()
     client.get_primary_repository.return_value = _make_repo(bot_username="palindrome_bot")
     client.get_live_temporary_access_grant_for_run.return_value = None
+    # No deploy has been made for any run id yet, the grant's included.
+    client.get_run_if_missing_returns_none.return_value = None
     client.create_temporary_access_grant.side_effect = _stored_grant
     client.transition_story.return_value = {}
     return client

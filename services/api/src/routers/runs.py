@@ -31,6 +31,10 @@ _TERMINAL_RUN_STATUSES = frozenset(
     {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
 )
 
+# What a run says happened. Once a terminal run carries a result, these are the
+# fields nothing may rewrite.
+_OUTCOME_FIELDS = ("status", "result", "error_message")
+
 
 async def _resolve_user(
     telegram_id: int | None,
@@ -243,6 +247,36 @@ async def update_run(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Run {run_id} is {run.status} and cannot go back to {requested_status}",
         )
+
+    # A terminal run that already carries a result has said what happened, and
+    # that answer is what everything downstream reads. Refusing only the move
+    # back to a live status is not enough: terminal-to-terminal is the same
+    # overwrite. Two writers race for one run whenever a supervisor ends a run
+    # the worker is still inside — a QA run failed for losing its temporary
+    # access, say — and the worker's later "passed" would replace the named
+    # failure with a success the story then publishes.
+    #
+    # The result may still be filled in on a terminal run that has none. That is
+    # not a second outcome, it is the first one: a cancelled deploy is marked
+    # terminal by whoever cancelled it and the worker that owned it records what
+    # it actually did afterwards, which is the only proof its dispatch is over.
+    #
+    # A writer repeating its own answer after a lost response is not racing
+    # anybody, so an identical write is accepted as the no-op it is.
+    if run.status in _TERMINAL_RUN_STATUSES and run.result is not None:
+        rewritten = [
+            field
+            for field in _OUTCOME_FIELDS
+            if field in update_data and update_data[field] != getattr(run, field)
+        ]
+        if rewritten:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Run {run_id} is {run.status} and has recorded its outcome; "
+                    f"cannot rewrite {', '.join(rewritten)}"
+                ),
+            )
 
     for field, value in update_data.items():
         if field == "run_metadata" and value is not None:

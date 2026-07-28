@@ -253,6 +253,53 @@ class TestProcessQAJobPass:
         mock_api_client.patch.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_an_outcome_refused_by_a_settled_run_is_dropped_not_raised(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """The run ended while the agent was still working, which the start check misses.
+
+        A start that succeeded says nothing about the next twenty minutes: the
+        sweep can fail this run for expired access at any point inside them. The
+        API keeps the reason the run already carries, and this worker treats the
+        refusal as its own answer being stale — it does not retry it, and it does
+        not take the consumer down over it.
+        """
+        from src.consumers._qa_runner import QAResult
+
+        mock_api_client.patch.side_effect = httpx.HTTPStatusError(
+            "conflict",
+            request=httpx.Request("PATCH", "http://api/api/runs/qa-run-1"),
+            response=httpx.Response(httpx.codes.CONFLICT, text="run has recorded its outcome"),
+        )
+
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        assert mock_api_client.patch.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_write_refused_for_any_other_reason_still_raises(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """Only the settled-run answer is swallowed; a broken API is not."""
+        from src.consumers._qa_runner import QAResult
+
+        mock_api_client.patch.side_effect = httpx.HTTPStatusError(
+            "server error",
+            request=httpx.Request("PATCH", "http://api/api/runs/qa-run-1"),
+            response=httpx.Response(httpx.codes.INTERNAL_SERVER_ERROR),
+        )
+
+        with (
+            patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+    @pytest.mark.asyncio
     async def test_forbidden_write_trace_is_stored_on_a_blocked_run(
         self, mock_api_client, mock_redis, qa_message_data
     ):

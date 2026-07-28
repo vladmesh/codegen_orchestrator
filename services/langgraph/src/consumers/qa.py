@@ -9,6 +9,7 @@ Run standalone: python -m src.consumers.qa
 
 from __future__ import annotations
 
+import httpx
 import structlog
 
 from shared.contracts.acceptance import parse_health_only_criteria
@@ -357,18 +358,36 @@ async def _update_run(
     qa_outcome: QAOutcome,
     **extra_result: object,
 ) -> None:
-    """Update run status and result with QA outcome."""
+    """Update run status and result with QA outcome.
+
+    A run this worker is still inside can be ended by something outside it —
+    the temporary access it borrowed expiring underneath it, for one. That run
+    already carries the reason it ended and the API refuses to have it rewritten,
+    so the outcome computed here is dropped rather than replacing a named failure
+    with a pass. It is the QA job's answer that is stale, not the run's, and the
+    consumer keeps going.
+    """
     if not run_id:
         logger.warning("qa_no_run_id_skip_update")
         return
     run_result = QARunResult(qa_outcome=qa_outcome, **extra_result)
-    await api_client.patch(
-        f"runs/{run_id}",
-        json={
-            "status": status.value,
-            "result": run_result.model_dump(mode="json"),
-        },
-    )
+    try:
+        await api_client.patch(
+            f"runs/{run_id}",
+            json={
+                "status": status.value,
+                "result": run_result.model_dump(mode="json"),
+            },
+        )
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code != httpx.codes.CONFLICT:
+            raise
+        logger.warning(
+            "qa_run_already_settled",
+            run_id=run_id,
+            dropped_outcome=qa_outcome.value,
+            detail=error.response.text,
+        )
 
 
 def main():

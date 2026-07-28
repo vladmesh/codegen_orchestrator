@@ -1036,6 +1036,16 @@ overwrite a cancellation that landed in between, and the resurrected run would p
 carrying a typed result. Elapsed time since the claim is not a substitute: a paused worker, or one
 whose claim answer arrived late, still calls `workflow_dispatch` afterwards.
 
+A run's outcome is the first one written. Once a terminal run carries a result, `PATCH
+/api/runs/{id}` refuses any change to `status`, `result` or `error_message` with 409; an identical
+repeat is accepted as the no-op it is, and fields that are not the outcome (metadata, token
+accounting) are still writable. Two writers race for one run whenever a supervisor ends a run its
+worker is still inside — the temporary-access sweep failing a QA run whose borrowed identity
+expired — and terminal-to-terminal is the same overwrite as terminal-to-live. Filling the result of
+a terminal run that has none is not a second outcome: a cancelled run is marked terminal by whoever
+cancelled it, and the worker that owned it records what it did afterwards, which is what settles
+`already_dispatched` above.
+
 ### QA handoff plan
 
 `shared/contracts/dto/qa_handoff.py`. What a successful deploy still owes QA, written into the QA

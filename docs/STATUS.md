@@ -41,7 +41,9 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   with it. Cancellation is terminal on both sides of that boundary: a run only reaches `running`
   through the locked `POST /api/runs/{id}/start`, so no worker can write over a cancellation it
   raced, and a withdrawal that arrived after the claim is settled by the claiming worker's own
-  recorded outcome rather than by elapsed time.
+  recorded outcome rather than by elapsed time. A run's terminal outcome is the first one
+  written — a supervisor ending a run the worker is still inside is not overwritten by that
+  worker's later answer — while a cancelled run with no result may still have one filled in.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

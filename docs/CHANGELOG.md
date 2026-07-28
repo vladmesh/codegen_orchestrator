@@ -91,6 +91,27 @@
   same records. `supervise_testing_stories` finishes any queued QA run whose handoff was left
   unfinished for `supervisor.qa_handoff_recovery_minutes`.
 
+  Two more states the lifecycle read from the wrong place. Which deploy carries the access is
+  decided by the grant record and never by the caller: a handoff repeating after a lost response
+  used to propose a fresh run id and deploy under it, while the sweep followed the id the record
+  already held — so the untracked deploy could write the identity back after the grant was
+  recorded revoked. The proposed id is now only a proposal, everything after the record uses
+  `grant.grant_run_id`, and the deploy is published only while the record still says GRANTING and
+  no run carries it yet. And a run's terminal outcome is now the first one written: `PATCH
+  /api/runs/{id}` refused only the move back to a live status, so an expiring grant's
+  `qa_access_expired` failure could be replaced by the QA worker's later `passed` and the story
+  supervisor would publish that. A terminal run that already carries a result refuses any rewrite
+  of its status, result or error, while a cancelled run with no result may still have one filled
+  in — that record is what proves a withdrawn deploy's dispatch is over. Both writers treat the
+  refusal as information: the QA consumer drops its stale outcome and keeps consuming, and the
+  sweep revokes the access regardless of which reason the run ended up carrying.
+
+- The `telegram_bot` service tests bound the whole service directory over `/app`, which made
+  Docker materialise the nested `/app/shared` mount point on the host as an empty
+  `services/telegram_bot/shared`. That directory shadows the repository's `shared` package for
+  anything importing from a service path, so running those tests once left `make test-unit` red
+  until it was deleted by hand. Mounted file by file now, like every other service.
+
 - Deploy can now roll out one named commit instead of whatever main holds at dispatch time.
   `workflow_dispatch` only accepts a branch or a tag in `ref`, so a requested `head_sha` is pinned
   by a temporary tag `codegen-deploy-pin-<sha>`, created before the dispatch and dropped on every
