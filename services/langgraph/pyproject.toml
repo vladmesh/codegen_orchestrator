@@ -11,7 +11,7 @@ dependencies = [
 
     # HTTP client
     "httpx>=0.27.0",
-    "aiohttp>=3.9.0",
+    "aiohttp>=3.14.3",
 
     # Redis (for stream communication)
     "redis[hiredis]>=8.0.0",
