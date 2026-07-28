@@ -1,8 +1,9 @@
-"""Temporary access is revoked by state, not by the tail of a successful run.
+"""Temporary access is granted and revoked by state, not by the tail of a run.
 
 Every test here starts from a stored grant and nothing else: no in-process
 handle, no caller still running. That is the point: whatever produced the grant
-may be dead, and the sweep still has to take the access back.
+may be dead, and the sweep still has to finish the lifecycle — hand the access
+over, start the QA run, and take the access back.
 """
 
 from __future__ import annotations
@@ -20,37 +21,59 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessStatus,
 )
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
-from shared.contracts.queues.qa import QAOutcome
-from shared.queues import DEPLOY_QUEUE
+from shared.contracts.queues.qa import QAMessage, QAOutcome
+from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 HEAD_SHA = "a" * 40
 ENV_KEY = "TG_BOT_TEST_TELEGRAM_ID"
 
 
+def _qa_message(run_id: str = "qa-1") -> QAMessage:
+    return QAMessage(
+        story_id="story-1",
+        project_id=PROJECT_ID,
+        user_id="",
+        deployed_url="https://example.com",
+        application_id=42,
+        acceptance_criteria="the bot answers /start",
+        bot_username="palindrome_bot",
+        run_id=run_id,
+    )
+
+
 def _make_grant(**overrides) -> TemporaryAccessGrantDTO:
+    qa_run_id = overrides.pop("qa_run_id", "qa-1")
     defaults = {
         "id": "tempaccess-1",
         "project_id": PROJECT_ID,
         "env_key": ENV_KEY,
         "subject": "424242",
         "head_sha": HEAD_SHA,
-        "qa_run_id": "qa-1",
+        "qa_run_id": qa_run_id,
+        "grant_run_id": "deploy-grant-1",
+        "qa_message": _qa_message(qa_run_id),
         "status": TemporaryAccessStatus.GRANTED,
         "granted_at": datetime.now(UTC),
+        "qa_dispatched_at": datetime.now(UTC),
         "created_at": datetime.now(UTC),
     }
     defaults.update(overrides)
     return TemporaryAccessGrantDTO(**defaults)
 
 
-def _deploy_run(status: RunStatus, outcome: DeployOutcome, **overrides):
+def _granting(**overrides) -> TemporaryAccessGrantDTO:
+    """A grant whose deploy has not confirmed, so QA has not started."""
+    return _make_grant(status=TemporaryAccessStatus.GRANTING, qa_dispatched_at=None, **overrides)
+
+
+def _deploy_run(status: RunStatus, outcome: DeployOutcome | None = None, **overrides):
     return _make_run(
         id=overrides.pop("id", "deploy-revoke-1"),
         type=RunType.DEPLOY,
         status=status,
         story_id=None,
-        result={"deploy_outcome": outcome.value},
+        result={"deploy_outcome": outcome.value} if outcome is not None else None,
         **overrides,
     )
 
@@ -71,13 +94,236 @@ def redis_client():
     return client
 
 
+def _published(redis_client, queue) -> list:
+    return [c.args[1] for c in redis_client.publish_message.call_args_list if c.args[0] == queue]
+
+
 def _published_deploy(redis_client) -> DeployMessage:
-    """The deploy message the sweep published, validated as a DeployMessage."""
-    assert redis_client.publish_message.call_count == 1
-    queue, message = redis_client.publish_message.call_args.args
-    assert queue == DEPLOY_QUEUE
-    assert isinstance(message, DeployMessage)
-    return message
+    """The single deploy message the sweep published."""
+    messages = _published(redis_client, DEPLOY_QUEUE)
+    assert len(messages) == 1
+    assert isinstance(messages[0], DeployMessage)
+    return messages[0]
+
+
+def _grant_updates(api_client) -> list:
+    return [call.args[1] for call in api_client.update_temporary_access_grant.call_args_list]
+
+
+class TestGrantIssuance:
+    """The record exists before the access does, and QA waits for it."""
+
+    @pytest.mark.asyncio
+    async def test_grant_is_recorded_before_the_deploy_that_applies_it(
+        self, api_client, redis_client
+    ):
+        from src.tasks.temporary_access import grant_temporary_access
+
+        order = []
+        api_client.create_temporary_access_grant.side_effect = lambda payload: (
+            order.append("record")
+            or _granting(
+                id=payload.id,
+                subject=payload.subject,
+                grant_run_id=payload.grant_run_id,
+            )
+        )
+        redis_client.publish_message.side_effect = lambda *a, **k: order.append("deploy")
+
+        grant = await grant_temporary_access(
+            api_client,
+            redis_client,
+            project_id=PROJECT_ID,
+            env_key=ENV_KEY,
+            subject="424242",
+            head_sha=HEAD_SHA,
+            qa_message=_qa_message(),
+        )
+
+        assert order == ["record", "deploy"]
+        assert grant.status is TemporaryAccessStatus.GRANTING
+        message = _published_deploy(redis_client)
+        assert message.env_overrides == {ENV_KEY: "424242"}
+        assert message.head_sha == HEAD_SHA
+        assert message.task_id == grant.grant_run_id
+
+    @pytest.mark.asyncio
+    async def test_qa_does_not_start_until_the_access_is_applied(self, api_client, redis_client):
+        """The handoff is held on the record, not published next to the deploy."""
+        from src.tasks.temporary_access import grant_temporary_access
+
+        api_client.create_temporary_access_grant.side_effect = lambda payload: _granting(
+            grant_run_id=payload.grant_run_id
+        )
+
+        await grant_temporary_access(
+            api_client,
+            redis_client,
+            project_id=PROJECT_ID,
+            env_key=ENV_KEY,
+            subject="424242",
+            head_sha=HEAD_SHA,
+            qa_message=_qa_message(),
+        )
+
+        assert _published(redis_client, QA_QUEUE) == []
+
+
+class TestGrantInFlight:
+    """Nothing happens to the access until the deploy that applies it answers."""
+
+    @pytest.mark.asyncio
+    async def test_confirmed_grant_releases_the_qa_run(self, api_client, redis_client):
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+
+        async def _read_run(run_id):
+            if run_id == "deploy-grant-1":
+                return _deploy_run(RunStatus.COMPLETED, DeployOutcome.SUCCESS, id=run_id)
+            return _make_run(id="qa-1", type=RunType.QA, status=RunStatus.QUEUED, result=None)
+
+        api_client.get_run_if_missing_returns_none.side_effect = _read_run
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["released"] == 1
+        qa_messages = _published(redis_client, QA_QUEUE)
+        assert len(qa_messages) == 1
+        assert qa_messages[0].run_id == "qa-1"
+        updates = _grant_updates(api_client)
+        assert updates[0].status is TemporaryAccessStatus.GRANTED
+        assert updates[1].qa_dispatched is True
+
+    @pytest.mark.asyncio
+    async def test_a_terminal_qa_run_does_not_revoke_before_the_grant_lands(
+        self, api_client, redis_client
+    ):
+        """The reviewer's ordering case: a lagging grant deploy must not be overtaken.
+
+        Revoking while the grant deploy is still in flight would clear a value
+        that deploy then writes back, and the record would read revoked while
+        the identity still has access.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+
+        async def _read_run(run_id):
+            if run_id == "deploy-grant-1":
+                return _deploy_run(RunStatus.RUNNING, id=run_id)
+            return _make_run(id="qa-1", type=RunType.QA, status=RunStatus.CANCELLED, result=None)
+
+        api_client.get_run_if_missing_returns_none.side_effect = _read_run
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == {
+            "dispatched": 0,
+            "released": 0,
+            "revoked": 0,
+            "expired": 0,
+            "revoke_failed": 0,
+        }
+        redis_client.publish_message.assert_not_called()
+        api_client.update_temporary_access_grant.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_grant_confirmed_after_its_run_died_revokes_without_starting_qa(
+        self, api_client, redis_client
+    ):
+        """The access landed late; it is taken back, and QA is not started on it."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+
+        async def _read_run(run_id):
+            if run_id == "deploy-grant-1":
+                return _deploy_run(RunStatus.COMPLETED, DeployOutcome.SUCCESS, id=run_id)
+            return _make_run(id="qa-1", type=RunType.QA, status=RunStatus.CANCELLED, result=None)
+
+        api_client.get_run_if_missing_returns_none.side_effect = _read_run
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["dispatched"] == 1
+        assert counts["released"] == 0
+        assert _published(redis_client, QA_QUEUE) == []
+        assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
+
+    @pytest.mark.asyncio
+    async def test_a_lost_grant_deploy_is_asked_for_again(self, api_client, redis_client):
+        """A process that died before publishing leaves the intent on the record."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.get_run_if_missing_returns_none.return_value = None
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["dispatched"] == 1
+        message = _published_deploy(redis_client)
+        assert message.env_overrides == {ENV_KEY: "424242"}
+        update = _grant_updates(api_client)[0]
+        assert update.grant_run_id == message.task_id
+        assert update.grant_run_id != "deploy-grant-1"
+
+    @pytest.mark.asyncio
+    async def test_superseded_grant_deploy_is_dispatched_again(self, api_client, redis_client):
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.CANCELLED, id="deploy-grant-1"
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["dispatched"] == 1
+        assert _published_deploy(redis_client).env_overrides == {ENV_KEY: "424242"}
+
+    @pytest.mark.asyncio
+    async def test_failed_grant_deploy_fails_the_qa_run_and_clears_the_slot(
+        self, api_client, redis_client
+    ):
+        """Whether the value landed is unknown, so it is cleared and QA fails."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.FAILED, DeployOutcome.GIVE_UP, id="deploy-grant-1"
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["dispatched"] == 1
+        assert _published(redis_client, QA_QUEUE) == []
+        assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
+
+        run_id, patch = api_client.update_run.call_args.args
+        assert run_id == "qa-1"
+        assert patch["status"] == RunStatus.FAILED.value
+        assert patch["result"]["blocker"]["category"] == "qa_access_grant_failed"
+        update = _grant_updates(api_client)[-1]
+        assert update.status is TemporaryAccessStatus.REVOKING
+        assert update.revoke_reason is TemporaryAccessRevokeReason.GRANT_FAILED
+
+    @pytest.mark.asyncio
+    async def test_a_grant_that_never_confirms_is_cleared_by_timeout(
+        self, api_client, redis_client
+    ):
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["dispatched"] == 1
+        assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
+        # The grant deploy is not even read: its lifetime is over either way.
+        api_client.get_run_if_missing_returns_none.assert_not_called()
 
 
 class TestRevocationTriggers:
@@ -106,7 +352,7 @@ class TestRevocationTriggers:
         message = _published_deploy(redis_client)
         assert message.env_overrides == {ENV_KEY: ""}
         assert message.head_sha == HEAD_SHA
-        update = api_client.update_temporary_access_grant.call_args.args[1]
+        update = _grant_updates(api_client)[-1]
         assert update.status is TemporaryAccessStatus.REVOKING
         assert update.revoke_reason is TemporaryAccessRevokeReason.RUN_TERMINAL
         assert update.revoke_run_id == message.task_id
@@ -123,7 +369,7 @@ class TestRevocationTriggers:
 
         assert counts["dispatched"] == 1
         assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
-        update = api_client.update_temporary_access_grant.call_args.args[1]
+        update = _grant_updates(api_client)[-1]
         assert update.revoke_reason is TemporaryAccessRevokeReason.RUN_MISSING
 
     @pytest.mark.asyncio
@@ -138,7 +384,13 @@ class TestRevocationTriggers:
 
         counts = await supervise_temporary_access(api_client, redis_client)
 
-        assert counts == {"dispatched": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
+        assert counts == {
+            "dispatched": 0,
+            "released": 0,
+            "revoked": 0,
+            "expired": 0,
+            "revoke_failed": 0,
+        }
         redis_client.publish_message.assert_not_called()
         api_client.update_temporary_access_grant.assert_not_called()
 
@@ -168,10 +420,14 @@ class TestRevocationTriggers:
         assert counts["expired"] == 1
         assert counts["dispatched"] == 1
         assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
-        update = api_client.update_temporary_access_grant.call_args.args[1]
+        update = _grant_updates(api_client)[-1]
         assert update.revoke_reason is TemporaryAccessRevokeReason.EXPIRED
         # The timeout is its own event, not a silent side effect of the revoke.
         assert notified, "expiry must be reported, not handled quietly"
+        # The run that outlived its access ends too, instead of continuing
+        # against a bot that now refuses it.
+        _, patch = api_client.update_run.call_args.args
+        assert patch["result"]["blocker"]["category"] == "qa_access_expired"
 
 
 class TestRevokeInFlight:
@@ -196,7 +452,7 @@ class TestRevokeInFlight:
         counts = await supervise_temporary_access(api_client, redis_client)
 
         assert counts["revoked"] == 1
-        update = api_client.update_temporary_access_grant.call_args.args[1]
+        update = _grant_updates(api_client)[-1]
         assert update.status is TemporaryAccessStatus.REVOKED
         redis_client.publish_message.assert_not_called()
 
@@ -222,7 +478,13 @@ class TestRevokeInFlight:
 
         counts = await supervise_temporary_access(api_client, redis_client)
 
-        assert counts == {"dispatched": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
+        assert counts == {
+            "dispatched": 0,
+            "released": 0,
+            "revoked": 0,
+            "expired": 0,
+            "revoke_failed": 0,
+        }
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -279,15 +541,15 @@ class TestRevokeInFlight:
 
         assert counts["dispatched"] == 1
         assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
-        update = api_client.update_temporary_access_grant.call_args.args[1]
+        update = _grant_updates(api_client)[-1]
         assert update.revoke_attempts == 2
         assert update.revoke_reason is TemporaryAccessRevokeReason.RUN_TERMINAL
 
     @pytest.mark.asyncio
-    async def test_failed_revoke_deploy_fails_the_qa_run_and_keeps_the_grant(
+    async def test_one_failed_revoke_is_retried_without_failing_the_run(
         self, api_client, redis_client
     ):
-        """Access that could not be taken back is that QA run's failure."""
+        """A single failed deploy is a retry, not yet the QA run's outcome."""
         from src.tasks.temporary_access import supervise_temporary_access
 
         api_client.list_live_temporary_access_grants.return_value = [
@@ -305,9 +567,45 @@ class TestRevokeInFlight:
         counts = await supervise_temporary_access(api_client, redis_client)
 
         assert counts["revoke_failed"] == 1
-        update = api_client.update_temporary_access_grant.call_args.args[1]
+        update = _grant_updates(api_client)[-1]
         assert update.status is TemporaryAccessStatus.REVOKE_FAILED
+        assert update.escalated is None
+        api_client.update_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_exhausted_revokes_fail_the_qa_run_and_are_reported(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """Access that could not be taken back becomes that QA run's failure."""
+        from src.tasks import temporary_access as module
+
+        notified = []
+        monkeypatch.setattr(
+            module,
+            "notify_admins_best_effort",
+            AsyncMock(side_effect=lambda *a, **k: notified.append((a, k))),
+        )
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=3,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.FAILED, DeployOutcome.GIVE_UP
+        )
+
+        counts = await module.supervise_temporary_access(api_client, redis_client)
+
+        assert counts["revoke_failed"] == 1
+        update = _grant_updates(api_client)[-1]
+        assert update.status is TemporaryAccessStatus.REVOKE_FAILED
+        assert update.escalated is True
         assert "deploy-revoke-1" in update.last_error
+        assert notified, "unrevoked access must be reported"
 
         run_id, patch = api_client.update_run.call_args.args
         assert run_id == "qa-1"
@@ -317,39 +615,28 @@ class TestRevokeInFlight:
 
     @pytest.mark.asyncio
     async def test_failed_revoke_is_retried_on_the_next_sweep(self, api_client, redis_client):
-        """A revoke that failed stays live and is attempted again."""
+        """A revoke that failed stays live and is attempted again, same reason."""
         from src.tasks.temporary_access import supervise_temporary_access
 
         api_client.list_live_temporary_access_grants.return_value = [
             _make_grant(
                 status=TemporaryAccessStatus.REVOKE_FAILED,
                 revoke_run_id="deploy-revoke-1",
-                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_reason=TemporaryAccessRevokeReason.GRANT_FAILED,
                 revoke_attempts=1,
                 last_error="revoke deploy deploy-revoke-1 ended failed (give_up)",
             )
         ]
-        api_client.get_run_if_missing_returns_none.return_value = _make_run(
-            id="qa-1",
-            type=RunType.QA,
-            status=RunStatus.FAILED,
-            result={
-                "qa_outcome": QAOutcome.BLOCKED.value,
-                "blocker": {
-                    "category": "qa_cleanup_failed",
-                    "attempted": "revoke temporary access",
-                    "sent": "cleared value",
-                    "received": "deploy failed",
-                },
-            },
-        )
 
         counts = await supervise_temporary_access(api_client, redis_client)
 
         assert counts["dispatched"] == 1
         assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
-        update = api_client.update_temporary_access_grant.call_args.args[1]
+        update = _grant_updates(api_client)[-1]
         assert update.revoke_attempts == 2
+        # The reason a failed grant must be cleared does not become "the run
+        # finished" just because the run has since been failed.
+        assert update.revoke_reason is TemporaryAccessRevokeReason.GRANT_FAILED
 
     @pytest.mark.asyncio
     async def test_one_unsettleable_grant_does_not_stop_the_others(self, api_client, redis_client):
@@ -386,7 +673,13 @@ class TestRevokedGrants:
 
         counts = await supervise_temporary_access(api_client, redis_client)
 
-        assert counts == {"dispatched": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
+        assert counts == {
+            "dispatched": 0,
+            "released": 0,
+            "revoked": 0,
+            "expired": 0,
+            "revoke_failed": 0,
+        }
         api_client.get_run_if_missing_returns_none.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
@@ -411,38 +704,5 @@ class TestRevokedGrants:
 
         assert first["revoked"] == 1
         assert second["revoked"] == 1
-        for call in api_client.update_temporary_access_grant.call_args_list:
-            assert call.args[1].status is TemporaryAccessStatus.REVOKED
-
-
-class TestGrantIssuance:
-    """The record exists before the access does."""
-
-    @pytest.mark.asyncio
-    async def test_grant_is_recorded_before_the_deploy_that_applies_it(
-        self, api_client, redis_client
-    ):
-        from src.tasks.temporary_access import grant_temporary_access
-
-        order = []
-        api_client.create_temporary_access_grant.side_effect = lambda payload: (
-            order.append("record") or _make_grant(id=payload.id, subject=payload.subject)
-        )
-        redis_client.publish_message.side_effect = lambda *a, **k: order.append("deploy")
-
-        grant, deploy_run_id = await grant_temporary_access(
-            api_client,
-            redis_client,
-            project_id=PROJECT_ID,
-            env_key=ENV_KEY,
-            subject="424242",
-            head_sha=HEAD_SHA,
-            qa_run_id="qa-1",
-        )
-
-        assert order == ["record", "deploy"]
-        assert grant.subject == "424242"
-        message = _published_deploy(redis_client)
-        assert message.env_overrides == {ENV_KEY: "424242"}
-        assert message.head_sha == HEAD_SHA
-        assert message.task_id == deploy_run_id
+        for update in _grant_updates(api_client):
+            assert update.status is TemporaryAccessStatus.REVOKED

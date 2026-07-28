@@ -10,9 +10,11 @@ from datetime import UTC, datetime
 
 import structlog
 
+from shared.contracts.bot_access import TEST_IDENTITY_ENV_KEY
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.env_contract import CanonicalEnvContract
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
 from shared.redis_client import RedisStreamClient
 
@@ -21,6 +23,20 @@ from ._events import publish_callback_event
 from ._live_work import live_work_settled, live_work_unsettled
 
 logger = structlog.get_logger(__name__)
+
+
+def _declares_test_identity_slot(result: dict) -> bool:
+    """Whether the commit that was just deployed has a test identity slot.
+
+    Read from the contract this deploy resolved, so the answer describes the
+    running code rather than whatever the branch declares now. A deploy that
+    skipped contract resolution reports no slot: nothing may deploy a value the
+    generated repository has not declared.
+    """
+    contract = result.get("environment_contract")
+    if contract is None:
+        return False
+    return TEST_IDENTITY_ENV_KEY in CanonicalEnvContract.model_validate(contract).entries
 
 
 async def _handle_smoke_failure(
@@ -120,6 +136,7 @@ async def _handle_deploy_success(
         smoke_result=smoke_result,
         application_id=application_id,
         bot_username=result.get("bot_username"),
+        test_identity_slot=_declares_test_identity_slot(result),
     )
     await api_client.patch(
         f"runs/{task_id}",

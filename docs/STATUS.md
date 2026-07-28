@@ -30,9 +30,11 @@ Typed environment/secrets migration proposal: [typed env contract MVP](plans/typ
   `codegen_orchestrator-826`; issuing and revoking the temporary test identity around a QA run is
   `codegen_orchestrator-744`. `codegen_orchestrator-843` landed the mechanism it stands on: a
   grant is a durable `temporary_access_grants` row written before the deploy that applies the
-  value, and the scheduler sweep `supervise_temporary_access` revokes it by redeploying the
-  same commit with the value cleared once the QA run it serves reached any terminal state,
-  vanished, or the grant outlived its TTL.
+  value and carrying the QA handoff itself, so the scheduler sweep `supervise_temporary_access`
+  runs the whole lifecycle — it starts the QA run only once the grant deploy confirmed, and
+  revokes by redeploying the same commit with the value cleared once that run reached any
+  terminal state, vanished, or the grant outlived its TTL. A story stays in TESTING until its
+  access is settled, so no outcome is published while the test identity is still admitted.
 
 - The LLM engineering path was broken from Mega 2.0 until 2026-07-24 while the suite reported
   green. Generated projects ship `.githooks/pre-push`, which falls back to `make lint` when Docker

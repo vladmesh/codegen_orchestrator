@@ -6,12 +6,15 @@ holds the prompt that drives that run, kept here for consistency with the other
 agent prompts (``architect``, ``po``, ``developer_worker``).
 """
 
+from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
+
+__all__ = ["QA_TEST_TELEGRAM_ID", "TELETHON_ENV_FILE", "build_qa_prompt"]
+
 # Written by the qa_runner Ansible role into the QA user's home
 # (services/infra-service/ansible/roles/qa_runner). The runner sources it into
 # the QA command's environment (consumers/_qa_runner), so the agent gets
 # TELETHON_* without doing anything.
 TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
-QA_TEST_TELEGRAM_ID = 8202532144
 
 
 def build_qa_prompt(

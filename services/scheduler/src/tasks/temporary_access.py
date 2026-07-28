@@ -1,14 +1,19 @@
-"""Temporary access reconciliation: revoke by state, not by happy path.
+"""Temporary access reconciliation: grant and revoke by state, not by happy path.
 
-Access handed to a test identity is revoked by a redeploy of the same commit with
-the value cleared. Running that redeploy at the end of a successful QA run makes
+Access handed to a test identity is applied by a deploy of the story's commit
+with the value set, and taken back by a deploy of that same commit with the
+value cleared. Running the second one at the end of a successful QA run makes
 revocation likely, not certain: a killed run, a cancelled one, or a dead process
-between grant and revoke leaves the access standing with nobody left to remove it.
+between grant and revoke leaves the access standing with nobody left to remove
+it.
 
-So the grant is a durable record and this sweep is the only thing that revokes.
-It reads every grant that still holds access, decides from the state of the QA run
-it was made for, and dispatches the revoke deploy. It repeats until the deploy has
-landed, which makes it safe for the sweep itself to be interrupted at any point.
+So the grant is a durable record and this sweep is the only thing that moves it.
+It reads every grant that still holds access and drives the whole lifecycle from
+what it finds: it waits for the deploy that applies the value to confirm, only
+then releases the QA run the access was borrowed for, and revokes as soon as
+that run reaches any terminal state — or as soon as the grant outlives its
+lifetime. Every step repeats until the state says it landed, which makes it safe
+for the sweep itself to be interrupted at any point.
 """
 
 from __future__ import annotations
@@ -38,9 +43,9 @@ from shared.contracts.queues.deploy import (
     DeployOutcome,
     DeployTrigger,
 )
-from shared.contracts.queues.qa import QAOutcome
+from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.notifications import notify_admins_best_effort
-from shared.queues import DEPLOY_QUEUE
+from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
 if TYPE_CHECKING:
@@ -52,6 +57,10 @@ logger = structlog.get_logger(__name__)
 
 # A run in any of these states will never come back to release its grant.
 TERMINAL_RUN_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
+
+
+def _empty_counts() -> dict[str, int]:
+    return {"dispatched": 0, "released": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
 
 
 def _grant_ttl_minutes() -> int:
@@ -79,18 +88,21 @@ async def grant_temporary_access(
     env_key: str,
     subject: str,
     head_sha: str,
-    qa_run_id: str,
-) -> tuple[TemporaryAccessGrantDTO, str]:
-    """Hand the access out, record first.
+    qa_message: QAMessage,
+) -> TemporaryAccessGrantDTO:
+    """Hand the access out, record first, and hold the QA handoff.
 
     The record is written before the deploy that applies the value, so no order
     of crashes can produce access nobody knows about: the worst case is a record
     for access that was never applied, and revoking that is a redeploy of a value
     that is already empty.
 
-    Returns the stored grant and the id of the deploy run that applies it.
+    QA is not published here. The handoff travels on the record and the sweep
+    releases it once the deploy has confirmed, so a lagging grant deploy can
+    never apply the value after the access was already taken back.
     """
     grant_id = f"tempaccess-{uuid.uuid4().hex[:12]}"
+    grant_run_id = _new_deploy_run_id("grant")
     grant = await api_client.create_temporary_access_grant(
         TemporaryAccessGrantCreate(
             id=grant_id,
@@ -98,47 +110,25 @@ async def grant_temporary_access(
             env_key=env_key,
             subject=subject,
             head_sha=head_sha,
-            qa_run_id=qa_run_id,
+            qa_run_id=qa_message.run_id,
+            grant_run_id=grant_run_id,
+            qa_message=qa_message,
         )
     )
 
-    deploy_run_id = f"deploy-grant-{uuid.uuid4().hex[:8]}"
-    await api_client.create_run(
-        {
-            "id": deploy_run_id,
-            "type": RunType.DEPLOY.value,
-            "project_id": project_id,
-            "status": RunStatus.QUEUED.value,
-            "run_metadata": {
-                "triggered_by": "temporary_access_grant",
-                "head_sha": head_sha,
-                "grant_id": grant.id,
-            },
-        }
-    )
-    await redis_client.publish_message(
-        DEPLOY_QUEUE,
-        DeployMessage(
-            task_id=deploy_run_id,
-            project_id=project_id,
-            user_id="",
-            story_id="",
-            triggered_by=DeployTrigger.ADMIN,
-            action=DeployAction.FEATURE,
-            head_sha=head_sha,
-            env_overrides={env_key: subject},
-        ),
-    )
-    logger.info(
-        "temporary_access_granted",
+    log = logger.bind(
         grant_id=grant.id,
         project_id=project_id,
         env_key=env_key,
-        qa_run_id=qa_run_id,
-        head_sha=head_sha,
-        deploy_run_id=deploy_run_id,
+        qa_run_id=grant.qa_run_id,
     )
-    return grant, deploy_run_id
+    await _publish_grant_deploy(api_client, redis_client, grant, grant_run_id)
+    log.info(
+        "temporary_access_granting",
+        head_sha=head_sha,
+        grant_run_id=grant_run_id,
+    )
+    return grant
 
 
 async def supervise_temporary_access(
@@ -150,7 +140,7 @@ async def supervise_temporary_access(
     Returns counts of the actions taken this tick.
     """
     grants = await api_client.list_live_temporary_access_grants()
-    counts = {"dispatched": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
+    counts = _empty_counts()
     if not grants:
         return counts
 
@@ -162,17 +152,12 @@ async def supervise_temporary_access(
             qa_run_id=grant.qa_run_id,
         )
         try:
-            if grant.status is TemporaryAccessStatus.REVOKING:
+            if grant.status is TemporaryAccessStatus.GRANTING:
+                await _settle_grant_in_flight(api_client, redis_client, grant, counts, log)
+            elif grant.status is TemporaryAccessStatus.REVOKING:
                 await _settle_revoke_in_flight(api_client, redis_client, grant, counts, log)
-                continue
-
-            reason = await _revocation_reason(api_client, grant, log)
-            if reason is None:
-                continue
-            if reason is TemporaryAccessRevokeReason.EXPIRED:
-                counts["expired"] += 1
-            await _dispatch_revoke(api_client, redis_client, grant, reason, log)
-            counts["dispatched"] += 1
+            else:
+                await _settle_granted(api_client, redis_client, grant, counts, log)
         except Exception:
             # One grant that cannot be settled is that grant's problem. It stays
             # live and is retried next tick; the other grants still get swept.
@@ -180,6 +165,243 @@ async def supervise_temporary_access(
             counts["revoke_failed"] += 1
 
     return counts
+
+
+def _new_deploy_run_id(kind: str) -> str:
+    return f"deploy-{kind}-{uuid.uuid4().hex[:8]}"
+
+
+async def _publish_deploy(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    *,
+    grant: TemporaryAccessGrantDTO,
+    run_id: str,
+    value: str,
+    run_metadata: dict,
+) -> None:
+    """Deploy the granted commit with *value* in the grant's contract slot.
+
+    Same commit, same bot, one value changed, so the identity gains or loses
+    access on the application it was tested against rather than on whatever the
+    branch has become since.
+    """
+    await api_client.create_run(
+        {
+            "id": run_id,
+            "type": RunType.DEPLOY.value,
+            "project_id": grant.project_id,
+            "status": RunStatus.QUEUED.value,
+            "run_metadata": {"head_sha": grant.head_sha, "grant_id": grant.id, **run_metadata},
+        }
+    )
+    await redis_client.publish_message(
+        DEPLOY_QUEUE,
+        DeployMessage(
+            task_id=run_id,
+            project_id=grant.project_id,
+            user_id="",
+            story_id="",
+            triggered_by=DeployTrigger.ADMIN,
+            action=DeployAction.FEATURE,
+            head_sha=grant.head_sha,
+            env_overrides={grant.env_key: value},
+        ),
+    )
+
+
+async def _publish_grant_deploy(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    grant_run_id: str,
+) -> None:
+    await _publish_deploy(
+        api_client,
+        redis_client,
+        grant=grant,
+        run_id=grant_run_id,
+        value=grant.subject,
+        run_metadata={"triggered_by": "temporary_access_grant"},
+    )
+
+
+async def _settle_grant_in_flight(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    counts: dict[str, int],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Read the deploy that applies the access and confirm, retry, or give up.
+
+    Nothing may revoke while this deploy is still in flight: a revoke that
+    overtook it would clear a value the deploy then writes back, and the record
+    would be settled while the access stands. So a QA run that ended early waits
+    here until the grant deploy has answered.
+    """
+    if _age_minutes(grant.granted_at) >= _grant_ttl_minutes():
+        await _abandon_grant(
+            api_client,
+            redis_client,
+            grant,
+            f"grant deploy {grant.grant_run_id} did not confirm within "
+            f"{_grant_ttl_minutes()} minutes",
+            counts,
+            log,
+        )
+        return
+
+    run = await api_client.get_run_if_missing_returns_none(grant.grant_run_id)
+    if run is None:
+        # The record survived a process that died before (or while) publishing.
+        # The access was intended and may never have been applied, so ask again.
+        log.warning("temporary_access_grant_run_missing", grant_run_id=grant.grant_run_id)
+        await _redispatch_grant(api_client, redis_client, grant, counts, log)
+        return
+
+    if run.status not in TERMINAL_RUN_STATUSES:
+        if _age_minutes(run.created_at) < _revoke_stale_minutes():
+            return
+        await _abandon_grant(
+            api_client,
+            redis_client,
+            grant,
+            f"grant deploy {run.id} is still {run.status.value} after "
+            f"{_revoke_stale_minutes()} minutes",
+            counts,
+            log,
+        )
+        return
+
+    if run.status is RunStatus.CANCELLED:
+        # Losing the project's deploy lock is contention, not refusal.
+        log.info("temporary_access_grant_superseded", grant_run_id=run.id)
+        await _redispatch_grant(api_client, redis_client, grant, counts, log)
+        return
+
+    if not _deploy_succeeded(run):
+        await _abandon_grant(
+            api_client, redis_client, grant, _deploy_failure_detail(run, "grant"), counts, log
+        )
+        return
+
+    await api_client.update_temporary_access_grant(
+        grant.id, TemporaryAccessGrantUpdate(status=TemporaryAccessStatus.GRANTED)
+    )
+    log.info("temporary_access_granted", grant_run_id=run.id, head_sha=grant.head_sha)
+    await _settle_granted(
+        api_client,
+        redis_client,
+        grant.model_copy(update={"status": TemporaryAccessStatus.GRANTED}),
+        counts,
+        log,
+    )
+
+
+async def _redispatch_grant(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    counts: dict[str, int],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask for the grant deploy again under a new run id.
+
+    The record moves to the new id before the message is published, so an
+    interrupted publish is a grant deploy that never started rather than a run
+    id nothing is watching. The grant's own lifetime bounds the repetition.
+    """
+    grant_run_id = _new_deploy_run_id("grant")
+    await api_client.update_temporary_access_grant(
+        grant.id, TemporaryAccessGrantUpdate(grant_run_id=grant_run_id)
+    )
+    await _publish_grant_deploy(api_client, redis_client, grant, grant_run_id)
+    log.info("temporary_access_grant_redispatched", grant_run_id=grant_run_id)
+    counts["dispatched"] += 1
+
+
+async def _abandon_grant(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    detail: str,
+    counts: dict[str, int],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """The deploy that was to hand the access out never confirmed it.
+
+    Whether the value reached the application is exactly what is unknown, so the
+    slot is cleared either way and the QA run that was waiting for the access
+    fails with the reason named instead of starting without it.
+    """
+    log.error("temporary_access_grant_failed", detail=detail)
+    await _fail_qa_run(
+        api_client,
+        grant,
+        category=QABlockerCategory.QA_ACCESS_GRANT_FAILED,
+        attempted=f"grant temporary access {grant.env_key} for project {grant.project_id}",
+        sent=f"deploy of {grant.head_sha} with {grant.env_key} set",
+        received=detail,
+        summary="temporary test access could not be granted",
+        error_message=f"temporary access {grant.env_key} was never confirmed: {detail}",
+        log=log,
+    )
+    await _dispatch_revoke(
+        api_client, redis_client, grant, TemporaryAccessRevokeReason.GRANT_FAILED, log
+    )
+    counts["dispatched"] += 1
+
+
+async def _release_qa(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    counts: dict[str, int],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Start the QA run the access was borrowed for.
+
+    The handoff is published after the access is confirmed and stamped after it
+    is published, so an interruption in between repeats the publish. The run id
+    is fixed on the record, so a repeat lands on the same run rather than
+    creating a second one.
+    """
+    if grant.qa_dispatched_at is not None:
+        return
+    await redis_client.publish_message(QA_QUEUE, grant.qa_message)
+    await api_client.update_temporary_access_grant(
+        grant.id, TemporaryAccessGrantUpdate(qa_dispatched=True)
+    )
+    log.info("temporary_access_qa_released", subject=grant.subject)
+    counts["released"] += 1
+
+
+async def _settle_granted(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    counts: dict[str, int],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Decide a grant that holds confirmed access: release QA, or take it back."""
+    if grant.status is TemporaryAccessStatus.REVOKE_FAILED:
+        # The reason it must go was decided when the first revoke was dispatched;
+        # re-deriving it here would relabel a failed grant as a finished run.
+        if grant.revoke_reason is None:
+            raise ValueError(f"grant {grant.id} failed to revoke without a reason")
+        await _dispatch_revoke(api_client, redis_client, grant, grant.revoke_reason, log)
+        counts["dispatched"] += 1
+        return
+
+    reason = await _revocation_reason(api_client, grant, log)
+    if reason is None:
+        await _release_qa(api_client, redis_client, grant, counts, log)
+        return
+    if reason is TemporaryAccessRevokeReason.EXPIRED:
+        counts["expired"] += 1
+    await _dispatch_revoke(api_client, redis_client, grant, reason, log)
+    counts["dispatched"] += 1
 
 
 async def _revocation_reason(
@@ -220,6 +442,22 @@ async def _revocation_reason(
             component="temporary_access",
             grant_id=grant.id,
         )
+        # The run is still open and the access it was given is going away, so it
+        # ends here rather than continuing against a bot that now refuses it.
+        await _fail_qa_run(
+            api_client,
+            grant,
+            category=QABlockerCategory.QA_ACCESS_EXPIRED,
+            attempted=f"keep temporary access {grant.env_key} for the duration of the QA run",
+            sent=f"grant {grant.id} issued {round(age)} minutes ago",
+            received=f"QA run still {run.status.value} after {_grant_ttl_minutes()} minutes",
+            summary="temporary test access outlived the QA run it was granted for",
+            error_message=(
+                f"temporary access {grant.env_key} expired while the QA run was still "
+                f"{run.status.value}"
+            ),
+            log=log,
+        )
         return TemporaryAccessRevokeReason.EXPIRED
 
     return None
@@ -240,21 +478,7 @@ async def _dispatch_revoke(
     is a stale in-flight revoke the next sweep re-dispatches, not a lost one.
     """
     attempts = grant.revoke_attempts + 1
-    revoke_run_id = f"deploy-revoke-{uuid.uuid4().hex[:8]}"
-    await api_client.create_run(
-        {
-            "id": revoke_run_id,
-            "type": RunType.DEPLOY.value,
-            "project_id": grant.project_id,
-            "status": RunStatus.QUEUED.value,
-            "run_metadata": {
-                "triggered_by": "temporary_access_revoke",
-                "head_sha": grant.head_sha,
-                "grant_id": grant.id,
-                "revoke_reason": reason.value,
-            },
-        }
-    )
+    revoke_run_id = _new_deploy_run_id("revoke")
     await api_client.update_temporary_access_grant(
         grant.id,
         TemporaryAccessGrantUpdate(
@@ -264,18 +488,13 @@ async def _dispatch_revoke(
             revoke_attempts=attempts,
         ),
     )
-    await redis_client.publish_message(
-        DEPLOY_QUEUE,
-        DeployMessage(
-            task_id=revoke_run_id,
-            project_id=grant.project_id,
-            user_id="",
-            story_id="",
-            triggered_by=DeployTrigger.ADMIN,
-            action=DeployAction.FEATURE,
-            head_sha=grant.head_sha,
-            env_overrides={grant.env_key: ""},
-        ),
+    await _publish_deploy(
+        api_client,
+        redis_client,
+        grant=grant,
+        run_id=revoke_run_id,
+        value="",
+        run_metadata={"triggered_by": "temporary_access_revoke", "revoke_reason": reason.value},
     )
     log.info(
         "temporary_access_revoke_dispatched",
@@ -284,15 +503,6 @@ async def _dispatch_revoke(
         attempt=attempts,
         head_sha=grant.head_sha,
     )
-    if attempts >= _max_revoke_attempts():
-        await notify_admins_best_effort(
-            f"Temporary access {grant.env_key} for project {grant.project_id} has survived "
-            f"{attempts} revoke attempts (grant {grant.id}); the test identity may still "
-            "have access",
-            level="error",
-            component="temporary_access",
-            grant_id=grant.id,
-        )
 
 
 async def _settle_revoke_in_flight(
@@ -340,7 +550,7 @@ async def _settle_revoke_in_flight(
         counts["dispatched"] += 1
         return
 
-    if _revoke_deploy_succeeded(run):
+    if _deploy_succeeded(run):
         await api_client.update_temporary_access_grant(
             grant.id, TemporaryAccessGrantUpdate(status=TemporaryAccessStatus.REVOKED)
         )
@@ -353,12 +563,32 @@ async def _settle_revoke_in_flight(
         counts["revoked"] += 1
         return
 
-    error = _revoke_failure_detail(run)
+    await _record_revoke_failure(api_client, grant, run, counts, log)
+
+
+async def _record_revoke_failure(
+    api_client: SchedulerAPIClient,
+    grant: TemporaryAccessGrantDTO,
+    run: RunDTO,
+    counts: dict[str, int],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Keep a failed revoke retryable, and stop hiding it once retries run long.
+
+    A single failed deploy is retried quietly: the access is still marked as held
+    and the next sweep dispatches again. Once the configured attempts are spent,
+    the failure stops being an internal retry and becomes the QA run's, which is
+    what lets the story reach a visible outcome instead of waiting on a revoke
+    that keeps failing.
+    """
+    error = _deploy_failure_detail(run, "revoke")
+    exhausted = grant.revoke_attempts >= _max_revoke_attempts() and grant.escalated_at is None
     await api_client.update_temporary_access_grant(
         grant.id,
         TemporaryAccessGrantUpdate(
             status=TemporaryAccessStatus.REVOKE_FAILED,
             last_error=error,
+            escalated=True if exhausted else None,
         ),
     )
     log.error(
@@ -366,35 +596,63 @@ async def _settle_revoke_in_flight(
         revoke_run_id=run.id,
         attempts=grant.revoke_attempts,
         error=error,
+        escalated=exhausted,
     )
-    await _fail_qa_run_on_unrevoked_access(api_client, grant, error, log)
     counts["revoke_failed"] += 1
+    if not exhausted:
+        return
+
+    await notify_admins_best_effort(
+        f"Temporary access {grant.env_key} for project {grant.project_id} survived "
+        f"{grant.revoke_attempts} revoke attempts (grant {grant.id}); the test identity "
+        "may still have access",
+        level="error",
+        component="temporary_access",
+        grant_id=grant.id,
+    )
+    await _fail_qa_run(
+        api_client,
+        grant,
+        category=QABlockerCategory.QA_CLEANUP_FAILED,
+        attempted=f"revoke temporary access {grant.env_key} for project {grant.project_id}",
+        sent=f"deploy of {grant.head_sha} with {grant.env_key} cleared",
+        received=error,
+        summary="temporary test access could not be revoked",
+        error_message=f"temporary access {grant.env_key} is still granted: {error}",
+        log=log,
+    )
 
 
-def _revoke_deploy_succeeded(run: RunDTO) -> bool:
-    """Only a completed deploy that reported SUCCESS actually cleared the value."""
+def _deploy_succeeded(run: RunDTO) -> bool:
+    """Only a completed deploy that reported SUCCESS actually moved the value."""
     if run.status is not RunStatus.COMPLETED or run.result is None:
         return False
     return run.result.deploy_outcome is DeployOutcome.SUCCESS
 
 
-def _revoke_failure_detail(run: RunDTO) -> str:
+def _deploy_failure_detail(run: RunDTO, kind: str) -> str:
     outcome = run.result.deploy_outcome.value if run.result is not None else "no result"
-    return f"revoke deploy {run.id} ended {run.status.value} ({outcome})"
+    return f"{kind} deploy {run.id} ended {run.status.value} ({outcome})"
 
 
-async def _fail_qa_run_on_unrevoked_access(
+async def _fail_qa_run(
     api_client: SchedulerAPIClient,
     grant: TemporaryAccessGrantDTO,
-    error: str,
+    *,
+    category: QABlockerCategory,
+    attempted: str,
+    sent: str,
+    received: str,
+    summary: str,
+    error_message: str,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Access that could not be taken back is a failure of the run that took it.
+    """Access that could not be handed over or taken back is the run's failure.
 
     It is not a reason to stop the scheduler and not something to leave as a log
     line next to a successful run: the QA run that borrowed the identity carries
-    the failure, with the grant named, and the grant stays live for the next
-    sweep to retry.
+    the failure, with the grant named, and the grant stays live for the sweep to
+    keep working on.
     """
     if grant.revoke_reason is TemporaryAccessRevokeReason.RUN_MISSING:
         # There is no run left to carry the failure; the grant itself is the
@@ -402,22 +660,18 @@ async def _fail_qa_run_on_unrevoked_access(
         log.warning("temporary_access_failure_has_no_run", grant_id=grant.id)
         return
 
-    blocker = QABlocker(
-        category=QABlockerCategory.QA_CLEANUP_FAILED,
-        attempted=f"revoke temporary access {grant.env_key} for project {grant.project_id}",
-        sent=f"deploy of {grant.head_sha} with {grant.env_key} cleared",
-        received=error,
-    )
     await api_client.update_run(
         grant.qa_run_id,
         {
             "status": RunStatus.FAILED.value,
-            "error_message": f"temporary access {grant.env_key} is still granted: {error}",
+            "error_message": error_message,
             "result": QARunResult(
                 qa_outcome=QAOutcome.BLOCKED,
-                summary="temporary test access could not be revoked",
-                blocker=blocker,
+                summary=summary,
+                blocker=QABlocker(
+                    category=category, attempted=attempted, sent=sent, received=received
+                ),
             ).model_dump(mode="json"),
         },
     )
-    log.warning("temporary_access_qa_run_failed", grant_id=grant.id)
+    log.warning("temporary_access_qa_run_failed", grant_id=grant.id, blocker=category.value)

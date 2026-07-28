@@ -154,3 +154,40 @@ async def test_repeating_a_landed_revoke_is_redundant() -> None:
     recorded = _deployment(HEAD, env_overrides_digest(cleared))
     with patch("src.consumers.deploy.api_client", _api([recorded])):
         assert await _already_deployed_application(ALLOCATED, HEAD, cleared) == 7
+
+
+def _contract_with(keys: list[str]) -> dict:
+    return {
+        "entries": {
+            key: {
+                "source": "literal",
+                "value": "",
+                "environments": ["production"],
+                "consumers": ["tg_bot"],
+                "required": False,
+            }
+            for key in keys
+        }
+    }
+
+
+def test_deploy_reports_the_test_identity_slot_it_resolved() -> None:
+    """The scheduler cannot read the generated repository; the deploy can.
+
+    Granting a value the commit never declared would fail the next deploy, so
+    the run that resolved the contract says whether the slot is there.
+    """
+    from src.consumers.deploy_result_handler import _declares_test_identity_slot
+
+    assert _declares_test_identity_slot(
+        {"environment_contract": _contract_with(["TG_BOT_TEST_TELEGRAM_ID"])}
+    )
+    assert not _declares_test_identity_slot(
+        {"environment_contract": _contract_with(["TG_BOT_ALLOWED_TELEGRAM_IDS"])}
+    )
+
+
+def test_a_deploy_that_read_no_contract_reports_no_slot() -> None:
+    from src.consumers.deploy_result_handler import _declares_test_identity_slot
+
+    assert not _declares_test_identity_slot({"environment_contract": None})

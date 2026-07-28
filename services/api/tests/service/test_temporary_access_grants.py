@@ -49,6 +49,16 @@ def _grant_payload(project_id: str, run_id: str, **overrides) -> dict:
         "subject": "424242",
         "head_sha": HEAD_SHA,
         "qa_run_id": run_id,
+        "grant_run_id": f"deploy-grant-{uuid.uuid4().hex[:8]}",
+        "qa_message": {
+            "story_id": "story-1",
+            "project_id": project_id,
+            "user_id": "",
+            "deployed_url": "https://example.com",
+            "application_id": 42,
+            "acceptance_criteria": "the bot answers /start",
+            "run_id": run_id,
+        },
     }
     payload.update(overrides)
     return payload
@@ -147,3 +157,62 @@ async def test_revoked_grant_is_terminal_evidence(async_client: AsyncClient):
 
     reopened = await async_client.patch(grant_url, json={"status": "granted"})
     assert reopened.status_code == status.HTTP_409_CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_the_handoff_a_grant_holds_survives_a_restart(async_client: AsyncClient):
+    """The QA run is started from the record, so it must come back whole."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+
+    stored = await async_client.get(f"/api/temporary-access-grants/{payload['id']}")
+    assert stored.status_code == status.HTTP_200_OK
+    body = stored.json()
+    assert body["status"] == "granting"
+    assert body["grant_run_id"] == payload["grant_run_id"]
+    assert body["qa_message"]["run_id"] == run_id
+    assert body["qa_message"]["deployed_url"] == "https://example.com"
+    assert body["qa_dispatched_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_grant_for_one_qa_run_is_found_by_that_run(async_client: AsyncClient):
+    """The story supervisor asks per run, not per project."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+
+    mine = await async_client.get(
+        "/api/temporary-access-grants/", params={"live": "true", "qa_run_id": run_id}
+    )
+    assert [row["id"] for row in mine.json()] == [payload["id"]]
+
+    other = await async_client.get(
+        "/api/temporary-access-grants/", params={"live": "true", "qa_run_id": "qa-nobody"}
+    )
+    assert other.json() == []
+
+
+@pytest.mark.asyncio
+async def test_released_and_escalated_moments_are_stamped_once(async_client: AsyncClient):
+    """A repeat after a crash must not move a moment that already happened."""
+    project_id, run_id = await _project_with_run(async_client)
+    payload = _grant_payload(project_id, run_id)
+    await async_client.post("/api/temporary-access-grants/", json=payload)
+    grant_url = f"/api/temporary-access-grants/{payload['id']}"
+
+    first = await async_client.patch(grant_url, json={"status": "granted", "qa_dispatched": True})
+    assert first.status_code == status.HTTP_200_OK
+    assert first.json()["qa_dispatched_at"] is not None
+
+    again = await async_client.patch(grant_url, json={"qa_dispatched": True})
+    assert again.json()["qa_dispatched_at"] == first.json()["qa_dispatched_at"]
+
+    escalated = await async_client.patch(
+        grant_url,
+        json={"status": "revoke_failed", "revoke_reason": "run_terminal", "escalated": True},
+    )
+    assert escalated.json()["escalated_at"] is not None
+    repeated = await async_client.patch(grant_url, json={"escalated": True})
+    assert repeated.json()["escalated_at"] == escalated.json()["escalated_at"]

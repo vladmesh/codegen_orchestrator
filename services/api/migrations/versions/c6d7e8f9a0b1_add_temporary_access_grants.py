@@ -27,12 +27,16 @@ def upgrade() -> None:
         sa.Column("subject", sa.String(length=255), nullable=False),
         sa.Column("head_sha", sa.String(length=64), nullable=False),
         sa.Column("qa_run_id", sa.String(length=255), sa.ForeignKey("runs.id"), nullable=False),
-        sa.Column("status", sa.String(length=50), nullable=False, server_default="granted"),
+        sa.Column("grant_run_id", sa.String(length=255), nullable=False),
+        sa.Column("qa_message", sa.JSON(), nullable=False),
+        sa.Column("status", sa.String(length=50), nullable=False, server_default="granting"),
         sa.Column("granted_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("qa_dispatched_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("revoke_reason", sa.String(length=50), nullable=True),
         sa.Column("revoke_run_id", sa.String(length=255), nullable=True),
         sa.Column("revoke_attempts", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("escalated_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False

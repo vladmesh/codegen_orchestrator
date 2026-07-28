@@ -76,7 +76,9 @@ async def create_grant(
         subject=grant_in.subject,
         head_sha=grant_in.head_sha,
         qa_run_id=grant_in.qa_run_id,
-        status=TemporaryAccessStatus.GRANTED.value,
+        grant_run_id=grant_in.grant_run_id,
+        qa_message=grant_in.qa_message.model_dump(mode="json"),
+        status=TemporaryAccessStatus.GRANTING.value,
         granted_at=datetime.now(UTC),
     )
     db.add(grant)
@@ -90,6 +92,7 @@ async def list_grants(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
     project_id: uuid.UUID | None = Query(None),
+    qa_run_id: str | None = Query(None, description="Grants made for one QA run"),
     grant_status: list[TemporaryAccessStatus] | None = Query(None, alias="status"),
     live: bool = Query(False, description="Only grants that still hold access"),
 ) -> list[TemporaryAccessGrant]:
@@ -97,6 +100,8 @@ async def list_grants(
     query = select(TemporaryAccessGrant).order_by(TemporaryAccessGrant.granted_at.desc())
     if project_id is not None:
         query = query.where(TemporaryAccessGrant.project_id == project_id)
+    if qa_run_id is not None:
+        query = query.where(TemporaryAccessGrant.qa_run_id == qa_run_id)
     if grant_status:
         query = query.where(TemporaryAccessGrant.status.in_([item.value for item in grant_status]))
     if live:
@@ -150,6 +155,13 @@ async def update_grant(
                 detail="revoke_reason is required to revoke a grant",
             )
         grant.revoked_at = datetime.now(UTC)
+
+    # Both moments are stamped once. The sweep re-asks after a crash it cannot
+    # remember, and the first answer is the one that happened.
+    if fields.pop("qa_dispatched", None) and grant.qa_dispatched_at is None:
+        grant.qa_dispatched_at = datetime.now(UTC)
+    if fields.pop("escalated", None) and grant.escalated_at is None:
+        grant.escalated_at = datetime.now(UTC)
 
     for key, value in fields.items():
         setattr(grant, key, value.value if hasattr(value, "value") else value)

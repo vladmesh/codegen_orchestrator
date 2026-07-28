@@ -3,7 +3,7 @@
 from datetime import datetime
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, Uuid, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.temporary_access import TemporaryAccessStatus
@@ -44,14 +44,24 @@ class TemporaryAccessGrant(Base):
     # The QA run this grant exists for; its terminal state releases the grant.
     qa_run_id: Mapped[str] = mapped_column(String(255), ForeignKey("runs.id"), index=True)
 
+    # The deploy run that applies the value, and the handoff held until it
+    # confirms. Both are stored so a restart can finish what a dead process
+    # started instead of leaving the access without a reader.
+    grant_run_id: Mapped[str] = mapped_column(String(255))
+    qa_message: Mapped[dict] = mapped_column(JSON)
+
     status: Mapped[str] = mapped_column(
-        String(50), default=TemporaryAccessStatus.GRANTED.value, index=True
+        String(50), default=TemporaryAccessStatus.GRANTING.value, index=True
     )
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    qa_dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoke_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
     revoke_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     revoke_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:

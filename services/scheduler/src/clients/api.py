@@ -212,6 +212,26 @@ class SchedulerAPIClient:
         resp = await self._request("GET", "temporary-access-grants/", params={"live": "true"})
         return [TemporaryAccessGrantDTO.model_validate(row) for row in resp.json()]
 
+    async def get_live_temporary_access_grant_for_run(
+        self, qa_run_id: str
+    ) -> TemporaryAccessGrantDTO | None:
+        """The grant that still holds access for this QA run, if there is one.
+
+        The live slot is unique per (project, env key), so a QA run has at most
+        one. Two would mean the sweep could revoke one and leave the other.
+        """
+        resp = await self._request(
+            "GET",
+            "temporary-access-grants/",
+            params={"live": "true", "qa_run_id": qa_run_id},
+        )
+        rows = resp.json()
+        if not rows:
+            return None
+        if len(rows) > 1:
+            raise RuntimeError(f"QA run {qa_run_id} has {len(rows)} live temporary access grants")
+        return TemporaryAccessGrantDTO.model_validate(rows[0])
+
     async def update_temporary_access_grant(
         self, grant_id: str, update: TemporaryAccessGrantUpdate
     ) -> TemporaryAccessGrantDTO:

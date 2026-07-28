@@ -368,8 +368,11 @@ async def task_dispatcher_loop() -> None:
                 waiting_secret = await supervise_waiting_user_secret_stories(
                     api_client, redis_client
                 )
-                testing = await supervise_testing_stories(api_client, redis_client)
+                # Access is settled before stories are routed on their QA runs:
+                # a story must not reach a terminal outcome in the same cycle
+                # that still has the test identity admitted by its bot.
                 temporary_access = await supervise_temporary_access(api_client, redis_client)
+                testing = await supervise_testing_stories(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -398,6 +401,7 @@ async def task_dispatcher_loop() -> None:
                     + testing.get("redispatched", 0)
                     + testing.get("failed", 0)
                     + temporary_access.get("dispatched", 0)
+                    + temporary_access.get("released", 0)
                     + temporary_access.get("revoked", 0)
                     + temporary_access.get("revoke_failed", 0)
                 )
@@ -419,7 +423,9 @@ async def task_dispatcher_loop() -> None:
                         qa_completed=testing.get("completed", 0),
                         qa_redispatched=testing.get("redispatched", 0),
                         qa_failed=testing.get("failed", 0),
+                        qa_waiting_for_access=testing.get("waiting_for_access", 0),
                         temporary_access_dispatched=temporary_access.get("dispatched", 0),
+                        temporary_access_released=temporary_access.get("released", 0),
                         temporary_access_revoked=temporary_access.get("revoked", 0),
                         temporary_access_expired=temporary_access.get("expired", 0),
                         temporary_access_revoke_failed=temporary_access.get("revoke_failed", 0),

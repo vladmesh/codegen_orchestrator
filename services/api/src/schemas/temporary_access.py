@@ -11,6 +11,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessStatus,
 )
 from shared.contracts.git_ref import CommitSha
+from shared.contracts.queues.qa import QAMessage
 
 
 class TemporaryAccessGrantCreate(BaseModel):
@@ -24,17 +25,27 @@ class TemporaryAccessGrantCreate(BaseModel):
     subject: str = Field(min_length=1)
     head_sha: CommitSha
     qa_run_id: str = Field(min_length=1)
+    grant_run_id: str = Field(min_length=1)
+    qa_message: QAMessage
 
 
 class TemporaryAccessGrantUpdate(BaseModel):
-    """Move a grant along as the reconciler settles it."""
+    """Move a grant along as the reconciler settles it.
+
+    `qa_dispatched` and `escalated` are requests to stamp a moment, not values
+    to write: the record keeps when the handoff was released and when the sweep
+    reported the access as still standing.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     status: TemporaryAccessStatus | None = None
+    grant_run_id: str | None = None
+    qa_dispatched: bool | None = None
     revoke_reason: TemporaryAccessRevokeReason | None = None
     revoke_run_id: str | None = None
     revoke_attempts: int | None = None
+    escalated: bool | None = None
     last_error: str | None = None
 
 
@@ -49,10 +60,14 @@ class TemporaryAccessGrantRead(TimestampedDTO):
     subject: str
     head_sha: str
     qa_run_id: str
+    grant_run_id: str
+    qa_message: QAMessage
     status: TemporaryAccessStatus
     granted_at: datetime
+    qa_dispatched_at: datetime | None = None
     revoked_at: datetime | None = None
     revoke_reason: TemporaryAccessRevokeReason | None = None
     revoke_run_id: str | None = None
     revoke_attempts: int = 0
+    escalated_at: datetime | None = None
     last_error: str | None = None

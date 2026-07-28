@@ -2,19 +2,27 @@
 
 ## 2026-07-28
 
-- Temporary test access to a deployed bot is now revoked by state instead of by the tail of a
-  successful QA run. Handing the access out writes a `temporary_access_grants` row first (what
-  was given, to which project, on which commit, for which QA run) and only then deploys the
-  value. A scheduler sweep reads every live grant and revokes it once the run it was made for
-  reached any terminal state, disappeared, or the grant outlived
-  `supervisor.temporary_access_ttl_minutes` (a separate `temporary_access_grant_expired` event
-  plus an admin alert, not a quiet cleanup). Revocation redeploys the granted commit with the
-  value cleared, using the pinned-commit deploy, so the bot that loses the access is the bot that
-  was given it. The record survives every process involved: a revoke deploy that is abandoned or
-  never finishes is re-dispatched, and repeating a revoke that already landed is a redundant
-  deploy, not an error. Access that cannot be taken back fails that QA run with the grant named
-  (`qa_cleanup_failed`) and stays live for the next sweep; it never crashes the consumer or the
-  scheduler, and never passes as success.
+- Temporary test access to a deployed bot is now a durable state machine instead of two steps at
+  either end of a successful QA run. The whole lifecycle is driven by a `temporary_access_grants`
+  row: the deploy→QA handoff records what was given, to which project, on which commit, for which
+  QA run, plus the deploy run that applies the value and the QA message being held. A scheduler
+  sweep (`supervise_temporary_access`, which runs before stories are routed on their QA runs)
+  moves it from there. QA starts only after the grant deploy has confirmed success, so a lagging
+  grant deploy can no longer apply the value after a revoke already cleared it; a grant deploy
+  that fails, is superseded, or never confirms clears the slot anyway and fails the QA run with
+  `qa_access_grant_failed`. Revocation follows the same rule as before — any terminal state of the
+  QA run, a run that disappeared, or a grant that outlived
+  `supervisor.temporary_access_ttl_minutes` (a separate `temporary_access_grant_expired` event,
+  an admin alert, and `qa_access_expired` on the run it outlived, not a quiet cleanup). Every
+  deploy is of the granted commit through the pinned-commit deploy, so the bot that loses the
+  access is the bot that was given it. Repeating a revoke that already landed is a redundant
+  deploy, not an error. A revoke that keeps failing is retried quietly until
+  `supervisor.temporary_access_max_revoke_attempts`, then reported to admins and turned into that
+  QA run's failure (`qa_cleanup_failed`); the grant stays live and is still retried. Until the
+  access is settled the story does not leave TESTING, so an unrevoked grant can no longer end as
+  a completed story, and an escalated one reaches human review with the bot stopped. The bot's
+  own admission rule now lives in `shared/contracts/bot_access.bot_admits`, so tests check that
+  the environment a revoke ships refuses the QA identity rather than that a variable is absent.
 
 - Deploy can now roll out one named commit instead of whatever main holds at dispatch time.
   `workflow_dispatch` only accepts a branch or a tag in `ref`, so a requested `head_sha` is pinned

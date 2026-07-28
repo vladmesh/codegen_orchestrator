@@ -40,6 +40,8 @@ def api_client():
     client = AsyncMock()
     # QA runs the repository's criteria, so the deploy→QA handoff resolves them.
     client.get_primary_repository.return_value = _make_repo()
+    # Most stories borrow no temporary access; the ones that do say so.
+    client.get_live_temporary_access_grant_for_run.return_value = None
     return client
 
 
@@ -777,7 +779,7 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        assert result == {"completed": 0, "redispatched": 0, "failed": 0, "waiting_for_access": 0}
         api_client.create_task.assert_not_awaited()
         api_client.transition_story.assert_awaited_once_with("story-1", "start")
 
@@ -826,7 +828,7 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 1}
+        assert result == {"completed": 0, "redispatched": 0, "failed": 1, "waiting_for_access": 0}
         api_client.create_task.assert_not_awaited()
         api_client.update_story.assert_awaited_with(
             "story-1",
@@ -1081,7 +1083,7 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        assert result == {"completed": 0, "redispatched": 0, "failed": 0, "waiting_for_access": 0}
 
     @pytest.mark.asyncio
     async def test_no_testing_stories(self, api_client, redis_client):
@@ -1092,7 +1094,7 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        assert result == {"completed": 0, "redispatched": 0, "failed": 0, "waiting_for_access": 0}
 
     @pytest.mark.asyncio
     async def test_no_qa_runs_skips(self, api_client, redis_client):
@@ -1106,7 +1108,7 @@ class TestSuperviseTestingStories:
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+        assert result == {"completed": 0, "redispatched": 0, "failed": 0, "waiting_for_access": 0}
 
     @pytest.mark.asyncio
     async def test_invalid_qa_result_fails_story(self, api_client, redis_client):

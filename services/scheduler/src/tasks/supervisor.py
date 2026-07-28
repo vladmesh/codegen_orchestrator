@@ -11,6 +11,12 @@ import uuid
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.bot_access import (
+    QA_TEST_TELEGRAM_ID,
+    TEST_IDENTITY_ENV_KEY,
+    bot_admits,
+    project_bot_audience,
+)
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunStatus, RunType
@@ -42,6 +48,7 @@ if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
 from .. import startup
+from .temporary_access import grant_temporary_access
 
 logger = structlog.get_logger(__name__)
 
@@ -560,7 +567,7 @@ async def supervise_deploying_stories(
 
         if outcome == DeployOutcome.SUCCESS:
             handed_off = await _handle_deploy_success_story(
-                api_client, redis_client, story_id, project_id, run.result, log
+                api_client, redis_client, story_id, project_id, run, run.result, log
             )
             if handed_off:
                 tested += 1
@@ -615,10 +622,17 @@ async def _handle_deploy_success_story(
     redis_client: RedisStreamClient,
     story_id: str,
     project_id: str,
+    run,
     result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Deploy succeeded — transition story to TESTING, create QA run, publish QA message.
+    """Deploy succeeded — transition story to TESTING and start the QA run.
+
+    A private bot admits QA only through the deploy-time test slot, so the run
+    is started from a temporary access grant instead of directly: the grant is
+    recorded, the value is deployed on the same commit, and the sweep releases
+    the QA message once that deploy confirms. Everything after that, including
+    taking the access back, follows from the record.
 
     Returns True if the story was handed off to QA, False if QA's preconditions
     were not met (handled as a visible failure).
@@ -667,6 +681,27 @@ async def _handle_deploy_success_story(
     # for projects whose token was stored before it was persisted.
     bot_username = repo.bot_username or result.bot_username
 
+    # The access the QA identity needs is decided before anything moves, so a
+    # story that cannot be granted it fails visibly instead of reaching TESTING
+    # with a run that can only be refused by the bot.
+    head_sha = _deploy_run_head_sha(run)
+    grant_needed = await _temporary_access_is_needed(api_client, project_id, result, log)
+    if grant_needed is None:
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            story_id, project_id, "deploy succeeded but the project is gone — cannot run QA"
+        )
+        return False
+    if grant_needed and not head_sha:
+        log.error("deploy_success_head_sha_missing_for_access_grant", run_id=run.id)
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            story_id,
+            project_id,
+            "deploy succeeded but its commit is unknown — QA cannot be granted temporary access",
+        )
+        return False
+
     await api_client.transition_story(story_id, "test")
 
     # Create QA run so the consumer can store its outcome
@@ -682,25 +717,75 @@ async def _handle_deploy_success_story(
         }
     )
 
-    await redis_client.publish_message(
-        QA_QUEUE,
-        QAMessage(
-            story_id=story_id,
-            project_id=project_id,
-            user_id="",
-            deployed_url=deployed_url,
-            application_id=application_id,
-            acceptance_criteria=acceptance_criteria,
-            bot_username=bot_username,
-            run_id=qa_run_id,
-        ),
+    qa_message = QAMessage(
+        story_id=story_id,
+        project_id=project_id,
+        user_id="",
+        deployed_url=deployed_url,
+        application_id=application_id,
+        acceptance_criteria=acceptance_criteria,
+        bot_username=bot_username,
+        run_id=qa_run_id,
     )
+
+    if grant_needed:
+        grant = await grant_temporary_access(
+            api_client,
+            redis_client,
+            project_id=project_id,
+            env_key=TEST_IDENTITY_ENV_KEY,
+            subject=str(QA_TEST_TELEGRAM_ID),
+            head_sha=head_sha,
+            qa_message=qa_message,
+        )
+        log.info(
+            "deploy_supervisor_qa_handoff_awaiting_access",
+            deployed_url=deployed_url,
+            qa_run_id=qa_run_id,
+            bot_username=bot_username,
+            grant_id=grant.id,
+        )
+        return True
+
+    await redis_client.publish_message(QA_QUEUE, qa_message)
     log.info(
         "deploy_supervisor_qa_handoff",
         deployed_url=deployed_url,
         qa_run_id=qa_run_id,
         bot_username=bot_username,
     )
+    return True
+
+
+async def _temporary_access_is_needed(
+    api_client: SchedulerAPIClient,
+    project_id: str,
+    result: DeployRunResult,
+    log: structlog.stdlib.BoundLogger,
+) -> bool | None:
+    """Whether this QA run has to borrow the deployed bot's test identity slot.
+
+    Two deployments do not: one whose audience already admits the QA identity
+    (a public bot, or a project that listed it), and one whose commit declares
+    no test slot at all. The second is reported, because it means QA will be
+    refused by a private bot and the deployed code is why.
+
+    None means the audience could not be read at all, which the caller turns
+    into a visible failure rather than a guess about who the bot admits.
+    """
+    if not result.test_identity_slot:
+        log.warning("qa_handoff_without_test_identity_slot", project_id=project_id)
+        return False
+
+    project = await api_client.get_project(project_id)
+    if project is None:
+        log.error("qa_handoff_project_missing", project_id=project_id)
+        return None
+
+    audience = project_bot_audience(project.config)
+    if bot_admits(audience=audience, test_identity="", telegram_id=QA_TEST_TELEGRAM_ID):
+        log.info("qa_handoff_without_temporary_access", reason="audience_already_admits_qa")
+        return False
     return True
 
 
@@ -1136,15 +1221,21 @@ async def supervise_testing_stories(
     - FAILED → create fix task, story IN_PROGRESS, redispatch to engineering
     - BLOCKED / EXHAUSTED / ERROR → stop the application and wait for human review
 
+    A story whose QA run still holds temporary access is not routed at all yet.
+    Completing it would publish a successful outcome while the test identity is
+    still admitted by the deployed bot, and a revoke that fails afterwards would
+    have nothing left to report against.
+
     Returns dict with counts of actions taken.
     """
     stories = await api_client.get_stories_by_status(StoryStatus.TESTING)
     if not stories:
-        return {"completed": 0, "redispatched": 0, "failed": 0}
+        return {"completed": 0, "redispatched": 0, "failed": 0, "waiting_for_access": 0}
 
     completed = 0
     redispatched = 0
     failed = 0
+    waiting_for_access = 0
 
     for story in stories:
         story_id = story.id
@@ -1169,6 +1260,20 @@ async def supervise_testing_stories(
         # None here only means a superseded/non-terminal run — skip it.
         if run.result is None:
             log.info("qa_run_superseded_skip", run_id=run.id, run_status=run.status.value)
+            continue
+
+        grant = await api_client.get_live_temporary_access_grant_for_run(run.id)
+        if grant is not None and grant.escalated_at is None:
+            # The sweep is still working on the access. Once it either takes it
+            # back or reports that it cannot, this story routes on what the QA
+            # run says then — which for an unrevoked grant is a blocker.
+            log.info(
+                "qa_supervisor_waiting_for_access_revoke",
+                run_id=run.id,
+                grant_id=grant.id,
+                grant_status=grant.status.value,
+            )
+            waiting_for_access += 1
             continue
 
         outcome = run.result.qa_outcome
@@ -1199,7 +1304,12 @@ async def supervise_testing_stories(
             )
             failed += 1
 
-    return {"completed": completed, "redispatched": redispatched, "failed": failed}
+    return {
+        "completed": completed,
+        "redispatched": redispatched,
+        "failed": failed,
+        "waiting_for_access": waiting_for_access,
+    }
 
 
 def _qa_quarantine_reason(result: QARunResult) -> dict:
