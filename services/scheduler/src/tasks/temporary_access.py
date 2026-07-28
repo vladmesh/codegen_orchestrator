@@ -14,6 +14,19 @@ then releases the QA run the access was borrowed for, and revokes as soon as
 that run reaches any terminal state — or as soon as the grant outlives its
 lifetime. Every step repeats until the state says it landed, which makes it safe
 for the sweep itself to be interrupted at any point.
+
+What "it landed" means for the revoke is the one thing that cannot be decided
+from inside this system. Between the decision and the effect stands GitHub
+Actions: it is not ours, it works asynchronously, and no amount of stopping
+writers here proves that none of them will apply the old value afterwards. So
+the grant is not closed on a successful revoke deploy. It is closed on a reading
+of the environment the service is actually running with, taken from the server
+itself. Until that reading has been made, the grant stays live in REVOKING and
+the sweep keeps revoking; a late writer that puts the value back is then simply
+a disagreement between what we want and what we see, and the next cycle sees it
+and corrects it. What the system promises is therefore not "the access can never
+come back" but "the access does not outlive one reconciliation interval after
+the verdict".
 """
 
 from __future__ import annotations
@@ -24,6 +37,7 @@ import uuid
 
 import structlog
 
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.deploy_dispatch import DISPATCH_SUPERSEDED_AT_KEY
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
@@ -44,9 +58,16 @@ from shared.contracts.queues.deploy import (
     DeployOutcome,
     DeployTrigger,
 )
+from shared.contracts.queues.env_observation import (
+    EnvObservationOutcome,
+    EnvObservationRequest,
+    EnvObservationResult,
+    env_observation_pending_key,
+    env_observation_result_key,
+)
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.notifications import notify_admins_best_effort
-from shared.queues import DEPLOY_QUEUE, QA_QUEUE
+from shared.queues import DEPLOY_QUEUE, ENV_OBSERVATION_QUEUE, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
 if TYPE_CHECKING:
@@ -63,6 +84,9 @@ TERMINAL_RUN_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunSta
 # prefix on last_error so the report is made once rather than every tick.
 _UNSETTLED_DISPATCH_ERROR = "grant deploy dispatch unsettled"
 
+# Same idea for a grant whose revoke landed but whose server cannot be read.
+_UNOBSERVABLE_ERROR = "temporary access cannot be observed"
+
 
 def _empty_counts() -> dict[str, int]:
     return {"dispatched": 0, "released": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
@@ -78,6 +102,14 @@ def _revoke_stale_minutes() -> int:
 
 def _max_revoke_attempts() -> int:
     return startup.get_config().get_int("supervisor.temporary_access_max_revoke_attempts")
+
+
+def _observation_window_minutes() -> int:
+    return startup.get_config().get_int("supervisor.temporary_access_observation_window_minutes")
+
+
+def _unrevoked_ttl_minutes() -> int:
+    return startup.get_config().get_int("supervisor.temporary_access_unrevoked_ttl_minutes")
 
 
 def _age_minutes(moment: datetime) -> float:
@@ -434,14 +466,16 @@ async def _stop_grant_deploy(
     whatever it put on GitHub Actions is listable, so a fence reaches it.
 
     Waiting on a worker that is never coming back is the case this must survive,
-    and elapsed time alone cannot end it: a worker paused past any wait still
-    reaches ``workflow_dispatch`` afterwards, and the value goes back on an
-    application whose grant is recorded revoked. What ends it is the claim's own
-    lease. Holding the boundary is time-limited and the holder promises not to
-    dispatch past its deadline, so once the lease has run out the claim can be
-    taken back rather than waited on — and a claim taken back can neither
-    dispatch nor be renewed. From that point anything the dead worker managed to
-    start exists on Actions, where the revoke's fence stops it.
+    and it ends on the claim's lease: the holder promised not to dispatch past
+    its deadline, so once the lease has run out the claim is taken back rather
+    than waited on, and a claim taken back can neither dispatch nor be renewed.
+
+    That promise is a worker's own clock, and none of this is proof. A paused
+    worker still reaches ``workflow_dispatch`` afterwards, and nothing here can
+    rule it out. Withdrawing, superseding and fencing narrow the window in which
+    the old value can be written back; what says it is gone is the reading of the
+    running service, and until that reading is made the grant stays live and the
+    sweep keeps revoking.
 
     Returns True when the revoke may proceed, False while the grant deploy is
     still on its way out and has to be waited for.
@@ -501,10 +535,13 @@ def _dispatch_settled(run: RunDTO) -> bool:
     the ordinary proof.
 
     A claim taken back is the other one. It says the lease ran out and the
-    boundary was closed against the holder, so the holder cannot dispatch and
-    cannot re-claim, whether or not it is alive to be asked. Both mean the same
-    thing to the revoke: whatever exists on Actions is listable, and a fence
-    reaches it.
+    boundary was closed against the holder, so the holder cannot re-claim,
+    whether or not it is alive to be asked. Both mean the same thing to the
+    revoke: it may go out now instead of waiting for a process that may be gone.
+    Neither means nothing can write the old value afterwards — a taken-back
+    holder can still be delivering a dispatch nobody here can see. That is what
+    the reading of the running service is for; this only decides when to stop
+    waiting.
     """
     if run.run_metadata.get(DISPATCH_SUPERSEDED_AT_KEY):
         return True
@@ -704,9 +741,9 @@ async def _dispatch_revoke(
         run_metadata={"triggered_by": "temporary_access_revoke", "revoke_reason": reason.value},
         # The grant deploy this revoke replaces may still be running on GitHub
         # Actions — that is exactly the case where the grant was abandoned
-        # unconfirmed. Clearing the value while it can still be written back
-        # would mark the grant revoked with the identity still admitted, so the
-        # revoke deploy stops it first and fails if it cannot.
+        # unconfirmed. Stopping it shortens the time in which it can write the
+        # identity back; it does not prove nothing will. The grant is closed by
+        # the reading of the running service, not by this.
         fence_active_deploys=True,
     )
     log.info(
@@ -763,36 +800,239 @@ async def _settle_revoke_in_flight(
         counts["dispatched"] += 1
         return
 
-    if _deploy_succeeded(run):
-        await api_client.update_temporary_access_grant(
-            grant.id, TemporaryAccessGrantUpdate(status=TemporaryAccessStatus.REVOKED)
+    if not _deploy_succeeded(run):
+        await _record_revoke_failure(
+            api_client, grant, _deploy_failure_detail(run, "revoke"), counts, log
         )
-        log.info(
-            "temporary_access_revoked",
-            revoke_run_id=run.id,
-            reason=grant.revoke_reason.value,
-            attempts=grant.revoke_attempts,
-        )
-        counts["revoked"] += 1
         return
 
-    await _record_revoke_failure(api_client, grant, run, counts, log)
+    # The deploy is only the request. What settles the grant is the environment
+    # the service is running with, read from the server.
+    cleared = await _slot_observed_clear(api_client, redis_client, grant, log)
+    if cleared is None:
+        # Nothing was read. Not a revocation and not a failure: the grant stays
+        # live in REVOKING and the next tick asks again.
+        return
+    if not cleared:
+        await _record_revoke_failure(
+            api_client,
+            grant,
+            f"the running service still carries {grant.env_key} after revoke deploy {run.id}",
+            counts,
+            log,
+        )
+        return
+
+    await api_client.update_temporary_access_grant(
+        grant.id, TemporaryAccessGrantUpdate(status=TemporaryAccessStatus.REVOKED)
+    )
+    log.info(
+        "temporary_access_revoked",
+        revoke_run_id=run.id,
+        reason=grant.revoke_reason.value,
+        attempts=grant.revoke_attempts,
+    )
+    counts["revoked"] += 1
+
+
+def _observation_request_id(grant: TemporaryAccessGrantDTO) -> str:
+    """One question per revoke attempt, named after the attempt that asked it.
+
+    A new revoke gets a new run id, so it also gets a new question; an answer to
+    the previous attempt can never be mistaken for an answer to this one.
+    """
+    return f"envobs-{grant.revoke_run_id}"
+
+
+async def _slot_observed_clear(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    log: structlog.stdlib.BoundLogger,
+) -> bool | None:
+    """Whether the running service was read and no longer carries the value.
+
+    Returns True when it was read and the slot is empty, False when it was read
+    and the value is still there, and None when there is no reading — the
+    request has only just gone out, or the answer is that the service could not
+    be reached.
+
+    None is deliberately not a third kind of failure. A channel that is down
+    says nothing about the access, so the caller neither closes the grant nor
+    counts an attempt against it; it asks again next tick.
+    """
+    request_id = _observation_request_id(grant)
+    observation = await _read_observation(redis_client, request_id)
+    if observation is None:
+        await _ask_for_observation(api_client, redis_client, grant, request_id, log)
+        return None
+
+    if observation.outcome is EnvObservationOutcome.UNREACHABLE:
+        log.warning(
+            "temporary_access_observation_unreachable",
+            request_id=request_id,
+            detail=observation.detail,
+        )
+        # Drop the answer and the marker so the next tick asks the same question
+        # again rather than re-reading a silence.
+        await redis_client.redis.delete(
+            env_observation_result_key(request_id), env_observation_pending_key(request_id)
+        )
+        await _report_unobservable_grant(api_client, grant, observation.detail, log)
+        return None
+
+    log.info(
+        "temporary_access_observed",
+        request_id=request_id,
+        present=observation.present,
+        containers=observation.containers,
+    )
+    return not observation.present
+
+
+async def _read_observation(
+    redis_client: RedisStreamClient, request_id: str
+) -> EnvObservationResult | None:
+    stored = await redis_client.redis.get(env_observation_result_key(request_id))
+    if stored is None:
+        return None
+    return EnvObservationResult.model_validate_json(stored)
+
+
+async def _ask_for_observation(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    grant: TemporaryAccessGrantDTO,
+    request_id: str,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask the server what the service is running with, once per window.
+
+    The sweep runs far more often than a playbook takes, so the marker is what
+    keeps one question from becoming a queue of them. Losing the marker costs a
+    repeated reading, and a reading changes nothing.
+    """
+    target = await _observation_target(api_client, grant, log)
+    if target is None:
+        return
+    server_handle, service_slug = target
+
+    asked = await redis_client.redis.set(
+        env_observation_pending_key(request_id),
+        request_id,
+        nx=True,
+        ex=_observation_window_minutes() * 60,
+    )
+    if not asked:
+        return
+
+    await redis_client.publish_message(
+        ENV_OBSERVATION_QUEUE,
+        EnvObservationRequest(
+            request_id=request_id,
+            project_id=grant.project_id,
+            server_handle=server_handle,
+            service_slug=service_slug,
+            env_key=grant.env_key,
+        ),
+    )
+    log.info(
+        "temporary_access_observation_requested",
+        request_id=request_id,
+        server_handle=server_handle,
+    )
+
+
+async def _observation_target(
+    api_client: SchedulerAPIClient,
+    grant: TemporaryAccessGrantDTO,
+    log: structlog.stdlib.BoundLogger,
+) -> tuple[str, str] | None:
+    """Which server and which deployed service to read, or None if unknowable.
+
+    An application that is not running is not an environment that can be read,
+    and neither is a project with no application at all. Both are the observation
+    channel being unavailable rather than access that is gone.
+    """
+    applications = await api_client.get_applications_by_project(grant.project_id)
+    running = [app for app in applications if app.status is ApplicationStatus.RUNNING]
+    if not running:
+        log.warning("temporary_access_observation_no_application")
+        return None
+
+    project = await api_client.get_project(grant.project_id)
+    if project is None:
+        log.warning("temporary_access_observation_no_project")
+        return None
+    return running[0].server_handle, project.slug
+
+
+async def _report_unobservable_grant(
+    api_client: SchedulerAPIClient,
+    grant: TemporaryAccessGrantDTO,
+    detail: str,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Say out loud that a grant is being kept live by an unreadable server.
+
+    It is not a failure of the revoke and it does not settle anything, so it
+    stays out of the grant's outcome. But a grant that quietly waits forever for
+    a channel that is never coming back is worse than one that is complained
+    about, so past the same window that bounds everything else here it is said
+    once.
+    """
+    if _age_minutes(grant.granted_at) < _unrevoked_ttl_minutes():
+        return
+    if (grant.last_error or "").startswith(_UNOBSERVABLE_ERROR):
+        return
+
+    error = f"{_UNOBSERVABLE_ERROR}: {detail}"
+    log.error("temporary_access_observation_channel_down", detail=detail)
+    await notify_admins_best_effort(
+        f"Temporary access {grant.env_key} for project {grant.project_id} (grant {grant.id}) "
+        f"cannot be confirmed removed: {detail}",
+        level="error",
+        component="temporary_access",
+        grant_id=grant.id,
+    )
+    await api_client.update_temporary_access_grant(
+        grant.id, TemporaryAccessGrantUpdate(last_error=error)
+    )
+
+
+def _retries_are_spent(grant: TemporaryAccessGrantDTO) -> bool:
+    """Whether this grant has stopped being an internal retry.
+
+    Either bound ends it: the attempts budget, or the grant living past the age
+    at which an unrevoked one stops being a hiccup. The second one matters
+    because a disagreement between what we deployed and what we observe can
+    repeat cheaply and forever, and a story must not wait on it forever.
+    """
+    return (
+        grant.revoke_attempts >= _max_revoke_attempts()
+        or _age_minutes(grant.granted_at) >= _unrevoked_ttl_minutes()
+    )
 
 
 async def _record_revoke_failure(
     api_client: SchedulerAPIClient,
     grant: TemporaryAccessGrantDTO,
-    run: RunDTO,
+    error: str,
     counts: dict[str, int],
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Keep a failed revoke retryable, and stop hiding it once retries run long.
+    """Keep an unfinished revoke retryable, and stop hiding it once retries run long.
 
-    A single failed deploy is retried quietly: the access is still marked as held
-    and the next sweep dispatches again. Once the configured attempts are spent,
-    the failure stops being an internal retry and becomes the QA run's, which is
-    what lets the story reach a visible outcome instead of waiting on a revoke
-    that keeps failing.
+    Two things arrive here: a revoke deploy that failed, and a revoke deploy that
+    succeeded while the server still shows the value. They are the same problem —
+    the access is still out — and they are handled the same way. A single one is
+    retried quietly: the access is still marked as held and the next sweep
+    dispatches again. Once the attempts are spent, or the grant has outlived the
+    age at which an unrevoked one stops being a hiccup, the failure stops being
+    an internal retry and becomes the QA run's, which is what lets the story
+    reach a visible outcome instead of waiting on a revoke that keeps failing.
+    The reason travels with it, so a story handed to a human says whether the
+    deploy failed or whether we are looking at a value that should not be there.
 
     The QA run's outcome and the escalation stamp are one write. They have to be:
     the stamp is what stops the story waiting on this grant, and a run that still
@@ -803,11 +1043,10 @@ async def _record_revoke_failure(
     that, a run the worker had already passed could never be told, and the story
     behind it would sit in TESTING for good.
     """
-    error = _deploy_failure_detail(run, "revoke")
-    exhausted = grant.revoke_attempts >= _max_revoke_attempts() and grant.escalated_at is None
+    exhausted = _retries_are_spent(grant) and grant.escalated_at is None
     log.error(
         "temporary_access_revoke_failed",
-        revoke_run_id=run.id,
+        revoke_run_id=grant.revoke_run_id,
         attempts=grant.revoke_attempts,
         error=error,
         escalated=exhausted,

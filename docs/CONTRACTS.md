@@ -1001,8 +1001,9 @@ class DeployMessage(BaseMessage):
     # keys the contract declares as literals are accepted.
     env_overrides: dict[str, str] = {}
     # This deploy must be the last writer: it skips the redundant-deploy shortcut
-    # and stops every unfinished deploy.yml run before writing. Set by a revoke,
-    # whose whole point is removing a value an older run could put back.
+    # and, once its own payload is in the repository secrets, stops every
+    # unfinished deploy.yml run. Set by a revoke, whose whole point is removing a
+    # value an older run could put back.
     fence_active_deploys: bool = False
 
 
@@ -1041,11 +1042,18 @@ each time the worker asks), the worker re-reads the clock immediately before dis
 refuses once it has passed, and past the deadline `dispatch-supersede` closes the boundary against
 it — cancelling the run so it can never be re-claimed and stamping
 `run_metadata.dispatch_superseded_at`. That stamp settles the dispatch for any later reader, which
-is what lets a restarted sweep revoke instead of waiting on a process that is gone. Elapsed time
-alone is not a substitute for either: a paused worker still calls `workflow_dispatch` afterwards
-unless it has promised not to.
+is what lets a restarted sweep revoke instead of waiting on a process that is gone.
 
-A run's outcome is the first one written. Once a terminal run carries a result, `PATCH
+The lease is not a fence around the GitHub effect and nothing may be revoked on the strength of
+it. It is read on the worker's own clock one HTTP call before the request, so a paused worker, or
+a delayed request, can still be accepted after the deadline. What makes that harmless is on the
+deploy side: a workflow reads its payload from the repository secrets when it runs, and a fencing
+deploy writes its payload before it fences, so a run created after that point carries the new
+value whatever asked for it.
+
+A run's outcome is the first one written, and every writer takes the run's row before it reads it
+— the rule is decided from the run's current state, and a plain read decides it from a state
+another transaction is already replacing. Once a terminal run carries a result, `PATCH
 /api/runs/{id}` refuses any change to `status`, `result` or `error_message` with 409; an identical
 repeat is accepted as the no-op it is, and fields that are not the outcome (metadata, token
 accounting) are still writable. Two writers race for one run whenever a supervisor ends a run its

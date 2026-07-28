@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 from _run_routing_factories import _make_run
 import pytest
 
+from shared.contracts.dto.application import ApplicationDTO, ApplicationStatus
 from shared.contracts.dto.deploy_dispatch import (
     DISPATCH_SUPERSEDED_AT_KEY,
     DeployDispatchSupersede,
@@ -21,6 +22,7 @@ from shared.contracts.dto.deploy_dispatch import (
     DispatchSupersede,
     DispatchWithdrawal,
 )
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.dto.temporary_access import (
@@ -29,8 +31,15 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessStatus,
 )
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
+from shared.contracts.queues.env_observation import (
+    EnvObservationOutcome,
+    EnvObservationRequest,
+    EnvObservationResult,
+    env_observation_pending_key,
+    env_observation_result_key,
+)
 from shared.contracts.queues.qa import QAMessage, QAOutcome
-from shared.queues import DEPLOY_QUEUE, QA_QUEUE
+from shared.queues import DEPLOY_QUEUE, ENV_OBSERVATION_QUEUE, QA_QUEUE
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 HEAD_SHA = "a" * 40
@@ -131,13 +140,86 @@ def api_client():
         return_value=_supersede(DispatchSupersede.LEASE_LIVE)
     )
     client.escalate_temporary_access_grant = AsyncMock()
+    # Default: the project has a running application on a known server, so the
+    # sweep has somewhere to send its reading.
+    client.get_applications_by_project = AsyncMock(return_value=[_application()])
+    client.get_project = AsyncMock(return_value=_project())
     return client
+
+
+def _application(status: ApplicationStatus = ApplicationStatus.RUNNING) -> ApplicationDTO:
+    return ApplicationDTO(
+        id=42,
+        repo_id="repo-1",
+        server_handle="vps-1",
+        service_name="backend",
+        status=status,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
+def _project() -> ProjectDTO:
+    return ProjectDTO(
+        id=PROJECT_ID,
+        title="Palindrome",
+        slug="palindrome-bot",
+        owner_id=1,
+        status=ProjectStatus.ACTIVE,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+
+class _FakeRedis:
+    """The little bit of Redis the sweep uses to carry a question and its answer."""
+
+    def __init__(self):
+        self.values: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str, *, nx: bool = False, ex: int | None = None):
+        if nx and key in self.values:
+            return None
+        self.values[key] = value
+        return True
+
+    async def delete(self, *keys: str) -> int:
+        return sum(self.values.pop(key, None) is not None for key in keys)
+
+    def answer(self, revoke_run_id: str, result: EnvObservationResult) -> None:
+        """Leave the answer the reader would have left for this revoke attempt."""
+        self.values[env_observation_result_key(f"envobs-{revoke_run_id}")] = (
+            result.model_dump_json()
+        )
+
+
+def _observed(present: bool, *, revoke_run_id: str = "deploy-revoke-1") -> EnvObservationResult:
+    return EnvObservationResult(
+        request_id=f"envobs-{revoke_run_id}",
+        outcome=EnvObservationOutcome.OBSERVED,
+        env_key=ENV_KEY,
+        present=present,
+        containers=2,
+    )
+
+
+def _unreachable(*, revoke_run_id: str = "deploy-revoke-1") -> EnvObservationResult:
+    return EnvObservationResult(
+        request_id=f"envobs-{revoke_run_id}",
+        outcome=EnvObservationOutcome.UNREACHABLE,
+        env_key=ENV_KEY,
+        detail="the observation playbook failed: ssh: connect to host timed out",
+    )
 
 
 @pytest.fixture
 def redis_client():
     client = AsyncMock()
     client.publish_message = AsyncMock()
+    client.redis = _FakeRedis()
     return client
 
 
@@ -151,6 +233,11 @@ def _published_deploy(redis_client) -> DeployMessage:
     assert len(messages) == 1
     assert isinstance(messages[0], DeployMessage)
     return messages[0]
+
+
+def _no_action() -> dict[str, int]:
+    """A sweep that decided nothing this tick."""
+    return {"dispatched": 0, "released": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
 
 
 def _grant_updates(api_client) -> list:
@@ -662,7 +749,9 @@ class TestRevokeInFlight:
     """A dispatched revoke is followed to a terminal answer."""
 
     @pytest.mark.asyncio
-    async def test_successful_revoke_deploy_closes_the_grant(self, api_client, redis_client):
+    async def test_a_successful_revoke_deploy_confirmed_by_the_server_closes_the_grant(
+        self, api_client, redis_client
+    ):
         from src.tasks.temporary_access import supervise_temporary_access
 
         api_client.list_live_temporary_access_grants.return_value = [
@@ -676,13 +765,14 @@ class TestRevokeInFlight:
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
+        redis_client.redis.answer("deploy-revoke-1", _observed(present=False))
 
         counts = await supervise_temporary_access(api_client, redis_client)
 
         assert counts["revoked"] == 1
         update = _grant_updates(api_client)[-1]
         assert update.status is TemporaryAccessStatus.REVOKED
-        redis_client.publish_message.assert_not_called()
+        assert _published(redis_client, DEPLOY_QUEUE) == []
 
     @pytest.mark.asyncio
     async def test_running_revoke_deploy_is_left_alone(self, api_client, redis_client):
@@ -922,6 +1012,7 @@ class TestRevokedGrants:
         api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
             RunStatus.COMPLETED, DeployOutcome.SUCCESS
         )
+        redis_client.redis.answer("deploy-revoke-1", _observed(present=False))
 
         first = await supervise_temporary_access(api_client, redis_client)
         second = await supervise_temporary_access(api_client, redis_client)
@@ -1255,3 +1346,226 @@ class TestRevokeWaitsForADeployThatAlreadyLeft:
 
         api_client.withdraw_deploy_dispatch.assert_not_awaited()
         assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
+
+
+class TestRevocationIsObserved:
+    """A grant is closed by what the server shows, not by a deploy that reported success.
+
+    Between the sweep and the deployed service stands GitHub Actions, which is
+    asynchronous and not ours. So "revoked" is a reading of the environment the
+    service is actually running with, and everything short of that reading
+    leaves the grant live and the sweep working.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_deploy_that_reported_success_does_not_close_the_grant_on_its_own(
+        self, api_client, redis_client
+    ):
+        """Nothing has been read yet, so nothing is settled — and the reading is asked for."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=1,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.COMPLETED, DeployOutcome.SUCCESS
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["revoked"] == 0
+        assert _grant_updates(api_client) == []
+
+        asked = _published(redis_client, ENV_OBSERVATION_QUEUE)
+        assert len(asked) == 1
+        assert isinstance(asked[0], EnvObservationRequest)
+        assert asked[0].env_key == ENV_KEY
+        assert asked[0].server_handle == "vps-1"
+        assert asked[0].service_slug == "palindrome-bot"
+
+    @pytest.mark.asyncio
+    async def test_a_slot_that_still_holds_the_value_keeps_the_grant_revoking(
+        self, api_client, redis_client
+    ):
+        """The card's case: the revoke is out, the reading disagrees, so it goes out again.
+
+        This is also what a writer that arrived late looks like from here — a
+        value on the server that should not be there. The sweep does not care
+        which it was; it revokes again either way.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=1,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.COMPLETED, DeployOutcome.SUCCESS
+        )
+        redis_client.redis.answer("deploy-revoke-1", _observed(present=True))
+
+        first = await supervise_temporary_access(api_client, redis_client)
+
+        assert first["revoked"] == 0
+        assert first["revoke_failed"] == 1
+        held = _grant_updates(api_client)[-1]
+        assert held.status is TemporaryAccessStatus.REVOKE_FAILED
+        assert ENV_KEY in held.last_error
+
+        # And the next sweep, reading the grant back, revokes again.
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKE_FAILED,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=1,
+                last_error=held.last_error,
+            )
+        ]
+        second = await supervise_temporary_access(api_client, redis_client)
+
+        assert second["dispatched"] == 1
+        assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_server_is_neither_a_revocation_nor_a_failure(
+        self, api_client, redis_client
+    ):
+        """A channel that is down says nothing about the access, so it settles nothing."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=1,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.COMPLETED, DeployOutcome.SUCCESS
+        )
+        redis_client.redis.answer("deploy-revoke-1", _unreachable())
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == _no_action()
+        assert _grant_updates(api_client) == []
+        # The silence is dropped rather than kept, so the next tick asks again
+        # instead of re-reading it.
+        assert redis_client.redis.values == {}
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_nothing_running_is_not_an_empty_slot(
+        self, api_client, redis_client
+    ):
+        """There is no environment to read, which is not the same as reading an empty one."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.get_applications_by_project.return_value = [
+            _application(ApplicationStatus.STOPPED)
+        ]
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=1,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.COMPLETED, DeployOutcome.SUCCESS
+        )
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts == _no_action()
+        assert _grant_updates(api_client) == []
+        assert _published(redis_client, ENV_OBSERVATION_QUEUE) == []
+
+    @pytest.mark.asyncio
+    async def test_the_same_question_is_asked_once_per_window(self, api_client, redis_client):
+        """The sweep runs far more often than a playbook takes."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=1,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.COMPLETED, DeployOutcome.SUCCESS
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+        await supervise_temporary_access(api_client, redis_client)
+
+        assert len(_published(redis_client, ENV_OBSERVATION_QUEUE)) == 1
+        assert env_observation_pending_key("envobs-deploy-revoke-1") in redis_client.redis.values
+
+    @pytest.mark.asyncio
+    async def test_a_new_revoke_attempt_asks_its_own_question(self, api_client, redis_client):
+        """An answer about the previous attempt cannot settle this one."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-2",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=2,
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.COMPLETED, DeployOutcome.SUCCESS, id="deploy-revoke-2"
+        )
+        # The first attempt's reading, which said the value was gone.
+        redis_client.redis.answer("deploy-revoke-1", _observed(present=False))
+
+        counts = await supervise_temporary_access(api_client, redis_client)
+
+        assert counts["revoked"] == 0
+        asked = _published(redis_client, ENV_OBSERVATION_QUEUE)
+        assert [request.request_id for request in asked] == ["envobs-deploy-revoke-2"]
+
+    @pytest.mark.asyncio
+    async def test_a_disagreement_that_outlives_the_grant_is_handed_to_a_human(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """Retrying forever is not an outcome, so the run says what is being observed."""
+        from src.tasks import temporary_access as module
+
+        monkeypatch.setattr(module, "notify_admins_best_effort", AsyncMock())
+        api_client.list_live_temporary_access_grants.return_value = [
+            _make_grant(
+                status=TemporaryAccessStatus.REVOKING,
+                revoke_run_id="deploy-revoke-1",
+                revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+                revoke_attempts=1,
+                granted_at=datetime.now(UTC) - timedelta(minutes=121),
+            )
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.COMPLETED, DeployOutcome.SUCCESS
+        )
+        redis_client.redis.answer("deploy-revoke-1", _observed(present=True))
+
+        await module.supervise_temporary_access(api_client, redis_client)
+
+        _, escalation = _escalation(api_client)
+        blocker = escalation["run_result"].blocker
+        assert blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
+        assert ENV_KEY in blocker.received
+        assert "still carries" in blocker.received

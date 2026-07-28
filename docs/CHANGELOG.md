@@ -37,9 +37,8 @@
   deploy carries
   `DeployMessage.fence_active_deploys`: it skips the redundant-deploy shortcut and, through the
   new `GitHubAppClient.fence_workflow`, cancels every unfinished `deploy.yml` run and proves it
-  terminal before writing its secrets, so the abandoned grant deploy it replaces cannot land
-  afterwards; a stop that cannot be proven refuses the deploy rather than recording the access as
-  removed. The QA runner's Telegram `/start` probe moved to `shared/telegram_access_probe.py`, and
+  terminal, so the abandoned grant deploy it replaces cannot land afterwards; a stop that cannot
+  be proven refuses the deploy rather than recording the access as removed. The QA runner's Telegram `/start` probe moved to `shared/telegram_access_probe.py`, and
   `tests/live/test_bot_access_revocation.py` drives a real grant on a deployed bot, kills the QA
   run mid-flight, and requires that same probe to observe the bot refusing the QA account after
   the sweep revokes.
@@ -118,6 +117,27 @@
   in — that record is what proves a withdrawn deploy's dispatch is over. Both writers treat the
   refusal as information: the QA consumer drops its stale outcome and keeps consuming, and the
   sweep revokes the access regardless of which reason the run ended up carrying.
+
+  Two things that rule still needed to be true under overlap rather than in sequence.
+
+  An expired dispatch lease was being treated as a fence around the GitHub effect, and it cannot
+  be one: the worker reads its own clock and only then starts the `workflow_dispatch` request, so
+  it can be paused, or its request delayed, after the check and before GitHub accepts it. The
+  sweep would supersede the claim, run a revoke whose fence saw no workflow, and record the grant
+  revoked — and the late dispatch would deploy the identity back with no live grant left to remove
+  it. What the value actually rides on is the repository secrets, which a workflow reads when it
+  runs and not when it is asked for, so a revoke deploy now writes its cleared payload *before* it
+  fences. The two together cover every run there can be: one that already read the granted payload
+  is on Actions and the fence stops it, and one created afterwards — a worker resuming past its
+  lease included — can only read the cleared one. The lease keeps a dead claim from being waited
+  on for good, which is all it was ever able to promise.
+
+  And the run outcome rule was still last-writer-wins: `PATCH /api/runs/{id}` read the row without
+  a lock and decided from that stale copy, as did the cleanup escalation. A QA worker's `passed`
+  and the sweep's `qa_access_expired` or `qa_cleanup_failed` both read a running run, both passed
+  every check, and whichever committed second was what the story read — so a late pass could erase
+  the named access failure. Every writer that decides something from what a run already says now
+  takes the row first, and the escalation takes its grant and its run the same way.
 
 - The `telegram_bot` service tests bound the whole service directory over `/app`, which made
   Docker materialise the nested `/app/shared` mount point on the host as an empty

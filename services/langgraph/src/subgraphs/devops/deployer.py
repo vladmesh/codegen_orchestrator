@@ -58,12 +58,16 @@ def _require_live_lease(claim: DeployDispatchClaim | None, moment: datetime) -> 
     """Refuse to dispatch once the claim's deadline has passed.
 
     Holding the boundary is a lease, not a possession, and this is the promise
-    that makes it one. Reconciliation is entitled to take a claim back after its
-    deadline and revoke on the assumption that nothing more can appear on GitHub
-    unseen; a worker that stalled between claiming and dispatching, then went
-    ahead anyway, would put the value back on an application whose grant is
-    already recorded revoked. So the clock is read once more here, directly
-    before the call that leaves the system, and a stale claim stops instead.
+    that makes it one: reconciliation may take a claim back after its deadline,
+    and a worker that stalled in between should not go on to start work nobody is
+    waiting for.
+
+    This is housekeeping, not a fence. Read on the worker's own clock and one
+    HTTP call before the effect, it cannot rule out a dispatch GitHub accepts
+    after the deadline anyway, so nothing may be recorded as removed on the
+    strength of it. What a caller removing a value relies on instead is reading
+    the deployed service back and repeating itself until what it reads is what
+    it asked for.
     """
     if claim is None or claim.lease_expires_at is None:
         return
@@ -293,13 +297,20 @@ class DeployerNode(FunctionalNode):
     async def _fence_active_deploys(
         self, github: GitHubAppClient, owner: str, repo: str, project_id: str
     ) -> list[int]:
-        """Stop every deploy run that could still write after this one.
+        """Stop every deploy run that could still write the payload this one replaced.
 
         The project deploy lock only serialises consumers, and it expires; the
-        GitHub Actions run it started does not stop when it does. A deploy that
-        exists to remove a value therefore has to prove that no earlier run is
-        about to write it back, before this one writes its secrets. An unproven
-        stop refuses the deploy rather than reporting a removal it cannot claim.
+        GitHub Actions run it started does not stop when it does. So a deploy that
+        exists to remove a value stops the runs that can still write the old one:
+        called after the new payload is in the repository secrets, it covers the
+        runs that already read the old payload, while the write itself covers
+        everything created afterwards.
+
+        Together they make the window small, not empty. GitHub is asynchronous
+        and not ours, so a dispatch already in flight can still be accepted after
+        all of this. Whoever needs the old value gone confirms that by reading
+        the deployed service; this only shortens the wait. An unproven stop
+        refuses the deploy rather than reporting a removal it cannot claim.
         """
         try:
             fenced = await github.fence_workflow(owner, repo, DEPLOY_WORKFLOW)
@@ -520,22 +531,6 @@ class DeployerNode(FunctionalNode):
                     "errors": [f"No SSH key for server {server_handle}"],
                 }
 
-            # 0.5 Fence older runs when this deploy must be the last writer.
-            if state.get("fence_active_deploys"):
-                try:
-                    await self._fence_active_deploys(github, owner, repo, project_id)
-                except DeployRefusedError as e:
-                    logger.error(
-                        "deploy_fence_unproven",
-                        project_id=project_id,
-                        reason=type(e).__name__,
-                        error=str(e),
-                    )
-                    return {
-                        "deployment_result": {"status": "failed", "error": str(e)},
-                        "errors": [f"Deploy refused: {e}"],
-                    }
-
             # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
             all_env = {
                 **non_secret_values,
@@ -574,6 +569,30 @@ class DeployerNode(FunctionalNode):
                     owner=owner,
                     repo=repo,
                 )
+
+            # 2.5 Fence older runs when this deploy must be the last writer, and
+            # only once the payload above is already the repository's. What the
+            # workflow deploys is read from the repository secrets when it runs,
+            # not from whoever asked for it, so ordering it this way leaves the
+            # smallest window: a run that could read the old payload is on
+            # Actions by now and is stopped here, and one created afterwards —
+            # a worker resuming past its dispatch lease, above all — reads what
+            # this just wrote. Smallest, not none; the caller confirms the
+            # removal by reading the deployed service.
+            if state.get("fence_active_deploys"):
+                try:
+                    await self._fence_active_deploys(github, owner, repo, project_id)
+                except DeployRefusedError as e:
+                    logger.error(
+                        "deploy_fence_unproven",
+                        project_id=project_id,
+                        reason=type(e).__name__,
+                        error=str(e),
+                    )
+                    return {
+                        "deployment_result": {"status": "failed", "error": str(e)},
+                        "errors": [f"Deploy refused: {e}"],
+                    }
 
             if await self._run_cancelled(run_id):
                 return {"deployment_result": {"status": "cancelled"}}

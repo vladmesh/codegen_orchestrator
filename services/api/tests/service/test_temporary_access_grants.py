@@ -4,11 +4,16 @@ One live grant per contract slot, a write that survives being repeated, and a
 revoke that is not an error the second time.
 """
 
+import asyncio
 import uuid
 
 from fastapi import status
 from httpx import AsyncClient
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from shared.models import TemporaryAccessGrant
 
 HEAD_SHA = "b" * 40
 ENV_KEY = "TG_BOT_TEST_TELEGRAM_ID"
@@ -290,6 +295,58 @@ async def test_a_late_worker_verdict_cannot_undo_the_escalation(async_client: As
 
     assert late.status_code == status.HTTP_409_CONFLICT
     run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["result"]["blocker"]["category"] == "qa_cleanup_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_worker_verdict_landing_mid_escalation_still_loses(
+    async_client: AsyncClient,
+    db_engine,
+):
+    """The two orders above are sequential; the real one overlaps.
+
+    The escalation and the worker's verdict are decided by different processes at
+    the same moment, so "the escalation gets the last word" only holds if it
+    takes the rows before it reads them. Here the escalation is held at the grant
+    while the worker's pass commits underneath it. Without the lock the two would
+    interleave the other way round and the story would read a success on a run
+    whose test identity is still admitted.
+    """
+    project_id, run_id = await _project_with_run(async_client)
+    grant = await async_client.post(
+        "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
+    )
+    grant_id = grant.json()["id"]
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with sessions() as holder:
+        await holder.execute(
+            select(TemporaryAccessGrant)
+            .where(TemporaryAccessGrant.id == grant_id)
+            .with_for_update()
+        )
+
+        escalation = asyncio.create_task(
+            async_client.post(
+                f"/api/temporary-access-grants/{grant_id}/escalate", json=_cleanup_failure()
+            )
+        )
+        # Long enough for the request to reach the endpoint and stop there.
+        await asyncio.sleep(1)
+        assert not escalation.done(), "the escalation read the grant without taking it"
+
+        passed = await async_client.patch(
+            f"/api/runs/{run_id}",
+            json={"status": "completed", "result": {"qa_outcome": "passed", "summary": "ok"}},
+        )
+        assert passed.status_code == status.HTTP_200_OK
+        await holder.rollback()
+
+    escalated = await escalation
+    assert escalated.status_code == status.HTTP_200_OK
+
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "failed"
     assert run.json()["result"]["blocker"]["category"] == "qa_cleanup_failed"
 
 

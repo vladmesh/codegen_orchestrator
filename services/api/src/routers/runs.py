@@ -202,6 +202,26 @@ async def list_runs(
     return list(runs)
 
 
+async def _lock_run(run_id: str, db: AsyncSession) -> Run:
+    """Read a run with its row locked for the length of this transaction.
+
+    Every writer that decides something from what the run already says takes it
+    this way. Claiming the dispatch boundary and withdrawing it are the same
+    decision seen from two sides, taken by different processes at the same
+    moment; so are a QA worker's verdict and the sweep's named access failure.
+    Read-then-write without the lock lets both sides read the state before either
+    acted, and both act.
+    """
+    result = await db.execute(select(Run).where(Run.id == run_id).with_for_update())
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run {run_id} not found",
+        )
+    return run
+
+
 @router.patch("/{run_id}", response_model=RunRead)
 async def update_run(
     run_id: str,
@@ -210,16 +230,17 @@ async def update_run(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
 ) -> Run:
-    """Update run status and result."""
-    query = select(Run).where(Run.id == run_id)
-    result = await db.execute(query)
-    run = result.scalar_one_or_none()
+    """Update run status and result.
 
-    if not run:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Run {run_id} not found",
-        )
+    The row is locked before it is read. The outcome rules below are decided from
+    what the run says now, and a plain read makes that decision against a value
+    another transaction is already replacing: a QA worker's pass and the sweep's
+    cleanup failure both read a running run, both pass the guard, and whichever
+    commits last is what the story reads. Reading under the lock makes the two
+    writers take turns, so the second one sees the first one's answer and is
+    refused by the same rules that exist to refuse it.
+    """
+    run = await _lock_run(run_id, db)
 
     # Only internal services or admins can update runs
     if not _is_internal:
@@ -302,24 +323,6 @@ async def update_run(
         updated_fields=list(update_data.keys()),
     )
 
-    return run
-
-
-async def _lock_run(run_id: str, db: AsyncSession) -> Run:
-    """Read a run with its row locked for the length of this transaction.
-
-    Claiming the dispatch boundary and withdrawing it are the same decision seen
-    from two sides, and both are taken by different processes at the same moment.
-    Read-then-write without the lock would let both sides read "not claimed yet"
-    and both act.
-    """
-    result = await db.execute(select(Run).where(Run.id == run_id).with_for_update())
-    run = result.scalar_one_or_none()
-    if not run:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Run {run_id} not found",
-        )
     return run
 
 

@@ -137,6 +137,16 @@
   category: supervisor
   description: "Revoke attempts before an unrevoked temporary access is escalated to admins"
 
+- key: supervisor.temporary_access_observation_window_minutes
+  value: 5
+  category: supervisor
+  description: "Minutes one reading of a deployed service's environment is waited for before it is asked for again"
+
+- key: supervisor.temporary_access_unrevoked_ttl_minutes
+  value: 120
+  category: supervisor
+  description: "Minutes a grant may hold access before an unfinished revoke stops being an internal retry and is handed to a human"
+
 # --- deploy ---
 - key: deploy.max_deploy_fix_attempts
   value: 2

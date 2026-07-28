@@ -26,8 +26,14 @@ from ..schemas import (
 router = APIRouter(prefix="/temporary-access-grants", tags=["temporary-access"])
 
 
-async def _load(grant_id: str, db: AsyncSession) -> TemporaryAccessGrant:
-    grant = await db.get(TemporaryAccessGrant, grant_id)
+async def _load(grant_id: str, db: AsyncSession, *, lock: bool = False) -> TemporaryAccessGrant:
+    """Read a grant, optionally with its row locked for the rest of the transaction.
+
+    Every caller that decides something from the grant's current status locks it.
+    Two sweep ticks, or a sweep and a retry, otherwise read the same live grant
+    and both act on a status the other is already replacing.
+    """
+    grant = await db.get(TemporaryAccessGrant, grant_id, with_for_update=lock)
     if grant is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -148,18 +154,22 @@ async def escalate_grant(
     direction unchanged. A worker reporting after this escalation is refused, so
     the two orders end in the same place.
 
-    Both writes commit together. Repeating the call is the same state again: the
-    escalation moment is stamped once and the run's outcome is rewritten to the
-    same values.
+    Both writes commit together, and both rows are locked before either is read.
+    Being allowed the last word is not the same as getting it: a QA worker's
+    ``PATCH`` that read the run as still running would otherwise commit after
+    this one and put its pass back over the named cleanup failure. Under the lock
+    that ``PATCH`` reads the failure this wrote and is refused by the ordinary
+    outcome rule. Repeating this call is the same state again: the escalation
+    moment is stamped once and the run's outcome is rewritten to the same values.
     """
-    grant = await _load(grant_id, db)
+    grant = await _load(grant_id, db, lock=True)
     if grant.status == TemporaryAccessStatus.REVOKED.value:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Temporary access grant {grant_id} is revoked; there is nothing to escalate",
         )
 
-    run = await db.get(Run, grant.qa_run_id)
+    run = await db.get(Run, grant.qa_run_id, with_for_update=True)
     if run is not None:
         run.status = RunStatus.FAILED.value
         run.error_message = escalation.run_error_message
@@ -190,7 +200,7 @@ async def update_grant(
     error: the caller asked for access to be gone and it is gone. Any other write
     to a revoked grant is refused, because the record is terminal evidence.
     """
-    grant = await _load(grant_id, db)
+    grant = await _load(grant_id, db, lock=True)
     fields = update.model_dump(exclude_unset=True)
 
     if grant.status == TemporaryAccessStatus.REVOKED.value:

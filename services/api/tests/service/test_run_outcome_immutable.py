@@ -12,11 +12,16 @@ what it actually did afterwards; that record is the only proof its dispatch is
 over.
 """
 
+import asyncio
 import uuid
 
 from fastapi import status
 from httpx import AsyncClient
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from shared.models import Run
 
 
 async def _run(async_client: AsyncClient, *, run_type: str = "qa") -> str:
@@ -150,6 +155,53 @@ async def test_repeating_an_outcome_after_a_lost_response_is_not_a_conflict(
     assert first.status_code == status.HTTP_200_OK
     assert second.status_code == status.HTTP_200_OK
     assert second.json()["result"]["qa_outcome"] == "passed"
+
+
+@pytest.mark.asyncio
+async def test_a_pass_decided_before_the_failure_landed_cannot_overwrite_it(
+    async_client: AsyncClient,
+    db_engine,
+):
+    """The refusal has to survive the two writers overlapping, not just following.
+
+    Checking the stored outcome and then writing over it are two steps, and the
+    sweep's named access failure commits between them: the QA worker reads a run
+    that is still running, passes every rule, and its pass lands on top. Both
+    writers therefore have to take the run's row before they read it, which is
+    what this drives — the failure is written by a transaction that is still open
+    while the worker's pass is already in the endpoint.
+    """
+    run_id = await _run(async_client)
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with sessions() as sweep:
+        run = (
+            await sweep.execute(select(Run).where(Run.id == run_id).with_for_update())
+        ).scalar_one()
+        run.status = "failed"
+        run.error_message = "temporary access QA_TEST_TELEGRAM_ID expired while QA was running"
+        run.result = _blocked_result()
+
+        worker = asyncio.create_task(
+            async_client.patch(
+                f"/api/runs/{run_id}",
+                json={
+                    "status": "completed",
+                    "result": {"qa_outcome": "passed", "report": "all good"},
+                },
+            )
+        )
+        # Long enough for the request to reach the endpoint and stop there.
+        await asyncio.sleep(1)
+        assert not worker.done(), "the pass decided its answer without waiting for the row"
+        await sweep.commit()
+
+    passed = await worker
+    assert passed.status_code == status.HTTP_409_CONFLICT
+
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "failed"
+    assert run.json()["result"]["blocker"]["category"] == "qa_access_expired"
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,8 @@ def initialized_scheduler_config(monkeypatch):
         "supervisor.temporary_access_revoke_stale_minutes": 15,
         "supervisor.qa_handoff_recovery_minutes": 5,
         "supervisor.temporary_access_max_revoke_attempts": 3,
+        "supervisor.temporary_access_observation_window_minutes": 5,
+        "supervisor.temporary_access_unrevoked_ttl_minutes": 120,
         "health.ram_threshold_pct": 90.0,
         "health.disk_threshold_pct": 90.0,
         "health.consecutive_failure_threshold": 3,

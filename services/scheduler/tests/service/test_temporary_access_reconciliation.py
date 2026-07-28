@@ -41,6 +41,8 @@ _CONFIG = {
     "supervisor.temporary_access_ttl_minutes": 0,
     "supervisor.temporary_access_revoke_stale_minutes": 0,
     "supervisor.temporary_access_max_revoke_attempts": _MAX_REVOKE_ATTEMPTS,
+    "supervisor.temporary_access_observation_window_minutes": 5,
+    "supervisor.temporary_access_unrevoked_ttl_minutes": 0,
 }
 
 
