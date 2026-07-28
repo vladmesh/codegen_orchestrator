@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.contracts.queues.deploy import DeployTrigger
-from tests.unit.factories import make_project, make_repository
+from tests.unit.factories import make_project, make_repository, make_run
 
 
 @pytest.fixture
@@ -32,6 +32,7 @@ def _configure_api_mock(api):
     """Configure common API mock methods."""
     api.patch = AsyncMock()
     api.get = AsyncMock(return_value=[])
+    api.get_run = AsyncMock(return_value=make_run())
     api.post = AsyncMock()
     api.transition_story = AsyncMock()
     api.get_project = AsyncMock(

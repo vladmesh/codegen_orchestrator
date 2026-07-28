@@ -340,9 +340,13 @@ async def _abandon_grant(
 
     The abandoned deploy may still be live on GitHub Actions — that is what
     "unconfirmed" means here. The revoke this dispatches carries the fence, so it
-    stops that run before writing rather than racing it.
+    stops that run before writing rather than racing it. A grant deploy that no
+    consumer has picked up yet is not on Actions and no fence can reach it, so
+    its run is cancelled first: a deploy consumer refuses a run that was
+    cancelled before it started.
     """
     log.error("temporary_access_grant_failed", detail=detail)
+    await _stop_grant_deploy(api_client, grant, detail, log)
     await _fail_qa_run(
         api_client,
         grant,
@@ -358,6 +362,34 @@ async def _abandon_grant(
         api_client, redis_client, grant, TemporaryAccessRevokeReason.GRANT_FAILED, log
     )
     counts["dispatched"] += 1
+
+
+async def _stop_grant_deploy(
+    api_client: SchedulerAPIClient,
+    grant: TemporaryAccessGrantDTO,
+    detail: str,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Withdraw the grant deploy before anything clears the value it would set.
+
+    Cancelling the GitHub Actions run is the revoke deploy's fence, and it only
+    reaches a deploy that already started. The message this grant published can
+    still be sitting in the queue with no consumer on it, and picked up after the
+    revoke landed it would write the identity back onto a grant recorded as
+    revoked. The run is the record a consumer reads before it acts, so marking it
+    cancelled is what withdraws the message.
+    """
+    run = await api_client.get_run_if_missing_returns_none(grant.grant_run_id)
+    if run is None or run.status in TERMINAL_RUN_STATUSES:
+        return
+    await api_client.update_run(
+        grant.grant_run_id,
+        {
+            "status": RunStatus.CANCELLED.value,
+            "error_message": f"temporary access grant {grant.id} was abandoned: {detail}",
+        },
+    )
+    log.info("temporary_access_grant_deploy_cancelled", grant_run_id=grant.grant_run_id)
 
 
 async def _release_qa(

@@ -328,6 +328,17 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
         triggered_by=msg.triggered_by.value,
     )
 
+    # A run cancelled before this message was picked up is a deploy somebody
+    # already gave up on and replaced — the temporary access sweep withdrawing a
+    # grant deploy it could not confirm, for one. Its message can outlive the
+    # decision in the queue, and running it now would apply an effect after the
+    # state that asked for it is gone. Checked before the lock, so refusing does
+    # not touch a lock this job never took.
+    run = await api_client.get_run(task_id)
+    if run.status is RunStatus.CANCELLED:
+        logger.info("deploy_job_run_cancelled", task_id=task_id, project_id=project_id)
+        return live_work_settled({"status": "cancelled", "reason": "run_cancelled"})
+
     lock_key = f"deploy:{project_id}:lock"
 
     try:

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.env_overrides import EMPTY_OVERRIDES_DIGEST, env_overrides_digest
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from src.consumers.deploy import _already_deployed_application, _effective_env_overrides
@@ -33,10 +34,12 @@ class _Running:
     status = "running"
 
 
-def _api(deployments: list[dict]) -> AsyncMock:
+def _api(deployments: list[dict], run_status: RunStatus = RunStatus.QUEUED) -> AsyncMock:
     client = AsyncMock()
     client.get = AsyncMock(return_value=deployments)
     client.get_application = AsyncMock(return_value=_Running())
+    # The consumer reads its own run before acting on the message.
+    client.get_run = AsyncMock(return_value=SimpleNamespace(status=run_status))
     return client
 
 
@@ -257,6 +260,42 @@ async def test_a_fenced_deploy_runs_even_when_it_looks_redundant() -> None:
 
     graph.ainvoke.assert_awaited_once()
     assert graph.ainvoke.await_args.args[0]["fence_active_deploys"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawn_deploy_is_refused_when_its_message_is_picked_up_later() -> None:
+    """A grant deploy the sweep gave up on must not still apply its value.
+
+    The message can sit in the queue past the decision to revoke, and no fence on
+    GitHub Actions reaches a run that never started. Its run is the record the
+    consumer reads first, so a cancelled one ends the job before anything is
+    deployed or any lock is taken.
+    """
+    from src.consumers.deploy import process_deploy_job
+
+    redis = AsyncMock()
+    redis.redis = AsyncMock()
+    redis.redis.set = AsyncMock(return_value=True)
+    redis.redis.exists = AsyncMock(return_value=False)
+
+    api = _api([], run_status=RunStatus.CANCELLED)
+    api.patch = AsyncMock()
+
+    graph = AsyncMock()
+
+    with (
+        patch("src.consumers.deploy.api_client", api),
+        patch("src.consumers.deploy.create_devops_subgraph", return_value=graph),
+    ):
+        result = await process_deploy_job(
+            _fenced_job(task_id="deploy-grant-1", env_overrides={"TG_BOT_TEST_TELEGRAM_ID": "42"}),
+            redis,
+        )
+
+    assert result["reason"] == "run_cancelled"
+    graph.ainvoke.assert_not_called()
+    api.patch.assert_not_awaited()
+    redis.redis.set.assert_not_awaited()
 
 
 @pytest.mark.asyncio

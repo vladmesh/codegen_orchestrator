@@ -38,6 +38,12 @@
   run mid-flight, and requires that same probe to observe the bot refusing the QA account after
   the sweep revokes.
 
+  The fence on GitHub Actions only reaches a deploy that already started. A grant deploy whose
+  message is still queued is stopped by its own run instead: abandoning a grant cancels its deploy
+  run before the clear is published, and the deploy consumer reads its run before it takes the
+  project lock and refuses one that was cancelled. A grant deploy picked up late can no longer
+  write the test identity back after the revoke landed.
+
 - Deploy can now roll out one named commit instead of whatever main holds at dispatch time.
   `workflow_dispatch` only accepts a branch or a tag in `ref`, so a requested `head_sha` is pinned
   by a temporary tag `codegen-deploy-pin-<sha>`, created before the dispatch and dropped on every

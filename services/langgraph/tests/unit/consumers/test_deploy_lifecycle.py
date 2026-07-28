@@ -13,6 +13,7 @@ import pytest
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
+from tests.unit.factories import make_run
 
 
 def _make_job_data(*, action: str, **overrides) -> dict:
@@ -56,6 +57,7 @@ def _lifecycle_patches(mock_api, mock_lifecycle_api, mock_ssh, ssh_conn, *, appl
     """Wire the doubles a lifecycle run touches. `applications` maps id → server handle."""
     applications = applications or {1: "vps-1"}
     mock_api.patch = AsyncMock(return_value={})
+    mock_api.get_run = AsyncMock(return_value=make_run())
     mock_api.get_project = AsyncMock(
         return_value=MagicMock(title="Weather Bot", slug="weather-bot-0000", config={})
     )

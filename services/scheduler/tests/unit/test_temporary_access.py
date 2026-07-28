@@ -317,13 +317,63 @@ class TestGrantInFlight:
         api_client.list_live_temporary_access_grants.return_value = [
             _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
         ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.QUEUED, id="deploy-grant-1"
+        )
 
         counts = await supervise_temporary_access(api_client, redis_client)
 
         assert counts["dispatched"] == 1
         assert _published_deploy(redis_client).env_overrides == {ENV_KEY: ""}
-        # The grant deploy is not even read: its lifetime is over either way.
-        api_client.get_run_if_missing_returns_none.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_abandoned_grant_deploy_cannot_still_be_picked_up(
+        self, api_client, redis_client
+    ):
+        """The queued grant deploy is withdrawn before anything clears the value.
+
+        A fence reaches a deploy that already runs on Actions. This one never
+        started, so the only thing that stops it is its run: cancelled here, and
+        refused by the deploy consumer if the message is picked up afterwards.
+        """
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [
+            _granting(granted_at=datetime.now(UTC) - timedelta(minutes=61))
+        ]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.QUEUED, id="deploy-grant-1"
+        )
+
+        order = []
+        api_client.update_run.side_effect = lambda run_id, patch: order.append(
+            (run_id, patch["status"])
+        )
+        redis_client.publish_message.side_effect = lambda queue, message: order.append(
+            (queue, message.env_overrides[ENV_KEY])
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        # The grant deploy is withdrawn before the clear goes out, not after it landed.
+        assert order[0] == ("deploy-grant-1", RunStatus.CANCELLED.value)
+        assert order[-1] == (DEPLOY_QUEUE, "")
+
+    @pytest.mark.asyncio
+    async def test_a_grant_deploy_that_already_ended_is_not_re_cancelled(
+        self, api_client, redis_client
+    ):
+        """Nothing rewrites the outcome of a deploy that reported one."""
+        from src.tasks.temporary_access import supervise_temporary_access
+
+        api_client.list_live_temporary_access_grants.return_value = [_granting()]
+        api_client.get_run_if_missing_returns_none.return_value = _deploy_run(
+            RunStatus.FAILED, DeployOutcome.GIVE_UP, id="deploy-grant-1"
+        )
+
+        await supervise_temporary_access(api_client, redis_client)
+
+        assert [call.args[0] for call in api_client.update_run.call_args_list] == ["qa-1"]
 
 
 class TestRevocationTriggers:
