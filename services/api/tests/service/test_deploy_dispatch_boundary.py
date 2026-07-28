@@ -33,14 +33,16 @@ async def _deploy_run(async_client: AsyncClient, *, run_status: str = "running")
     run_id = f"deploy-grant-{uuid.uuid4().hex[:8]}"
     run = await async_client.post(
         "/api/runs/",
-        json={
-            "id": run_id,
-            "type": "deploy",
-            "project_id": project_id,
-            "status": run_status,
-        },
+        json={"id": run_id, "type": "deploy", "project_id": project_id},
     )
     assert run.status_code == status.HTTP_201_CREATED
+
+    # A run is born running; RunCreate carries no status, so anything else has
+    # to be reached the way the system reaches it, with a patch.
+    if run.json()["status"] != run_status:
+        patched = await async_client.patch(f"/api/runs/{run_id}", json={"status": run_status})
+        assert patched.status_code == status.HTTP_200_OK
+        assert patched.json()["status"] == run_status
     return run_id
 
 
