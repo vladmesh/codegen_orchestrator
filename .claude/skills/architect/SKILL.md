@@ -13,7 +13,7 @@ argument-hint: "[story-ID]"
 Takes a Story and decomposes it into actionable Tasks via the API.
 
 ## Key References
-- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — task lifecycle, status transitions, decomposition patterns
+- [docs/CONTRACTS.md](docs/CONTRACTS.md) — story and task DTOs, status transitions
 
 ## Input
 
@@ -143,12 +143,7 @@ curl -sf -X POST "$API/api/stories/$STORY_ID/start" \
 
 ### 6. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
-Tasks live in the API; commit any docs you touched by hand.
-
-```bash
-git add docs/backlog.md docs/ROADMAP.md docs/STATUS.md
-git commit -m "architect: decompose story — $(echo "$STORY" | jq -r '.title')"
-```
+Tasks live in the API. Nothing in this repository needs a commit.
 
 ### 8. Report
 
@@ -184,11 +179,12 @@ Print a summary:
 
 **Before generating your final response, review your memory for feedback:**
 Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task? 
-If yes, you **MUST** append an entry to `docs/skill-feedback.md` right now, following the format described in the **Self-Feedback** section below.
+If yes, you **MUST** report it in your final response, following the format described in the **Self-Feedback** section below.
 
 ## Self-Feedback
 
-During your final memory review, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
+During your final memory review, if you encountered any of the following — end your response with a
+`Skill feedback` section holding one entry per issue:
 
 - A command or path in this skill was **wrong or outdated**
 - A step was **missing context** that you had to figure out yourself

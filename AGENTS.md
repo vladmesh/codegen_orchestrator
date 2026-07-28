@@ -6,50 +6,44 @@ Instructions for AI assistants working on this project.
 
 | Document | When to read it |
 |----------|-------------|
-| [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) | **MANDATORY READ** — the feature lifecycle and the data-driven process |
-| [docs/STATUS.md](docs/STATUS.md) | **Always first** — the current task and context |
-| [docs/backlog.md](docs/backlog.md) | The deferred pool of tasks and ideas (maintained by hand) |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | Before changing DTOs, queues, the API |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | To understand the system as a whole |
+| [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md) | The generation pipeline stage by stage |
 | [docs/NODES.md](docs/NODES.md) | A description of the LangGraph agent nodes |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Phases and milestones |
+| [docs/GLOSSARY.md](docs/GLOSSARY.md) | What an entity is called and what it means |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Product arcs and what is deferred |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | What has already been done |
 
 ## Related projects
 
-- **service-template** (`/home/vlad/projects/service-template`) — a framework for generating projects
+- **service-template** (`/home/dev/projects/service-template`) — a framework for generating projects
 
-## Dev Pipeline
+## Where the work comes from
 
-Tasks for developing the orchestrator itself are created and tracked in an external pipeline, not in the local Tasks DB. The local process is sprint-based, its state lives in markdown files that are maintained by hand (there are no generators for them). Full description: [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md).
+Work on the orchestrator itself is scoped, sequenced and tracked outside this repository, on the
+Pipeline board. A task arrives as a card with its own spec; this repository holds no sprint state,
+no backlog and no dispatcher skill. Brainstorms, plans and the history of past sprints live in the
+knowledge store of the installation that drives the work, under
+`state/knowledge/projects/codegen-orchestrator/`.
 
-```
-/go (dispatcher — reads docs/STATUS.md, first match wins)
- ├─ no sprint ─────────────── /new-sprint
- ├─ phase without tasks ───── /plan-phase
- ├─ tasks exist ───────────── /implement (one task at a time, TDD)
- ├─ all tasks done ────────── /close-phase
- └─ all phases done ───────── endgame: /audit + /e2e-run → fixes → /update-docs → /close-sprint
-```
+What stays here is the product: code, contracts, and the documents that describe them.
 
-Skills take their context from `docs/STATUS.md` (the current sprint and phase) and work with the sprint markdown files in `docs/sprints/NNN-slug/` directly.
-
-**Code outside the flow** is allowed for small fixes (< 3 files). Required: a CHANGELOG entry + a commit with the `[hotfix]` prefix. Larger changes go through the flow only.
+**Code outside a card** is allowed for small fixes (< 3 files). Required: a CHANGELOG entry + a commit with the `[hotfix]` prefix.
 
 ## TDD Workflow (MANDATORY)
 
 Red → Green → Refactor. No exceptions.
 
-1. **Context**: read `docs/STATUS.md` and `docs/CONTRACTS.md`
+1. **Context**: read the card spec and `docs/CONTRACTS.md`
 2. **Red**: write a test in `services/<service>/tests/{unit,integration}/`, make sure it fails
 3. **Green**: the minimal code to make the test pass
-4. **Gate**: `make test-unit` + `make lint`. Update STATUS, CHANGELOG, backlog by hand as needed.
+4. **Gate**: `make test-unit` + `make lint`, plus a CHANGELOG entry.
 
 **Review Trigger**: a change to `shared/contracts/` or the DB schema that is not described in the plan → **STOP**, ask the user.
 
 ## Rules
 
-**Documentation language** — project documentation is written in English, including new entries in `docs/CHANGELOG.md` and `docs/STATUS.md`.
+**Documentation language** — project documentation is written in English, including new entries in `docs/CHANGELOG.md`.
 
 **Environment variables** — never use default values:
 ```python
@@ -90,21 +84,13 @@ make test-service SERVICE=api # Per-service integration test
 
 ## Skills (`.claude/skills/`)
 
-Some skills have alternatives for non-Claude agents in `.agents/workflows/`.
+These exercise the running pipeline and maintain the repository. Scoping and sequencing skills are
+not here: that happens on the Pipeline board.
 
 | Skill | Description |
 |-------|----------|
-| `/go` | Dispatcher: reads `docs/STATUS.md`, invokes the right skill |
-| `/new-sprint` | Create a sprint from VISION + ROADMAP + backlog |
-| `/plan-phase` | Generate the task files for the current phase (with an architecture gate) |
-| `/implement` | A TDD cycle for one sprint task, PR + CI + merge |
-| `/close-phase` | Integration tests + moving to the next phase |
-| `/close-sprint` | The final gate: push, CHANGELOG, ROADMAP, STATUS history |
-| `/audit` | A code scan + a check of the VISION invariants; findings → `docs/backlog.md` |
 | `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | An E2E test (engineering → CI → deploy → verify, `--feature` skips scaffolding) |
-| `/test-maintenance` | Running/fixing integration tests locally |
-| `/brainstorm <topic>` | A structured discussion of a topic → `docs/brainstorms/<topic>.md` |
-| `/update-docs` | Synchronizing the living documentation with the code |
-| `/optimize` | Processing skill feedback (`docs/skill-feedback.md`) and auto-improvement |
-| `/architect` | Decomposing a Story → Tasks (for client projects, through the API) |
 | `/escort` | Escorting a real user through the full pipeline |
+| `/architect` | Decomposing a Story → Tasks (for client projects, through the API) |
+| `/test-maintenance` | Running/fixing integration tests locally |
+| `/update-docs` | Synchronizing the living documentation with the code |

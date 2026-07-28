@@ -72,7 +72,7 @@ E2E tests are NOT in CI — they require a running stack + real LLM calls.
 **Skills** (preferred way to run E2E):
 - `/e2e-run <scenario> [--with-po] [--no-cleanup] [--no-nuke] [--feature]` — 7 scenarios (todo_api, echo_bot, landing_page, weather_bot, url_shortener, bot_landing, expense_tracker)
 
-**Reports**: Written to `docs/e2e_results/`.
+**Reports**: Written to `docs/e2e_results/` — a local, gitignored output directory.
 
 **Scripts** (`tests/e2e/`): Lower-level test scripts (mock anthropic, dev env smoke, live smoke). Used for development, not production E2E.
 

@@ -42,7 +42,7 @@ A three-level abstraction for product management:
 
 The Story / Task / Run / `TaskEvent` entities in the API describe work on **client** projects; they are created and maintained by the pipeline itself (PO, Architect, Task Dispatcher, workers).
 
-Development of the orchestrator itself is sprint-based (`/go` → `/new-sprint` → `/plan-phase` → `/implement` → `/close-phase` → `/close-sprint`). Tasks for developing the orchestrator are created and tracked in an external pipeline, not in the local Tasks DB. The files `docs/backlog.md` and `docs/STATUS.md` are maintained by hand; there are no generators for them.
+Work on the orchestrator itself is scoped and tracked outside this repository, on the Pipeline board — not in the local Tasks DB and not in markdown here. Brainstorms, plans and the history of past sprints live in the driving installation's knowledge store under `state/knowledge/projects/codegen-orchestrator/`.
 
 ### Capabilities
 The capabilities of a Developer agent are configured through `WorkerConfig.capabilities`:
@@ -201,7 +201,7 @@ Detailed documentation lives in separate files:
 | **Pipeline V2** | [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md) |
 | **Testing** | [docs/TESTING.md](docs/TESTING.md) |
 | **Deploy** | [docs/DEPLOY.md](docs/DEPLOY.md) |
-| Status & Progress | [docs/STATUS.md](docs/STATUS.md) |
+| Roadmap | [docs/ROADMAP.md](docs/ROADMAP.md) |
 | Resource Management | [docs/resource-management.md](docs/resource-management.md) |
 | Coding Agents (Claude/Droid) | [docs/coding-agents.md](docs/coding-agents.md) |
 | Parallel Workers | [docs/parallel-workers.md](docs/parallel-workers.md) |

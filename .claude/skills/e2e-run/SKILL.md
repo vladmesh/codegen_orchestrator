@@ -790,14 +790,9 @@ Same as Step 6, plus verify the specific feature from Feature Add Matrix:
 Same as Step 7 — fetch worker reports from task events for the feature story.
 Save to `docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-feature-worker.md`.
 
-### Step 8.5: Commit reports
+### Step 8.5: Reports stay local
 
-```bash
-git add docs/e2e_results/
-git commit -m "e2e: $PROJECT_NAME — <pass/fail>"
-```
-
-Do NOT push.
+`docs/e2e_results/` is a gitignored output directory. Do not commit or push the reports.
 
 **Proceed to Step 9 immediately — do NOT stop here.**
 
@@ -960,12 +955,14 @@ If the user asks to stop early:
 ## Self-Feedback (Mandatory)
 
 Before generating your final response, check: did you encounter wrong commands,
-missing info, or unexpected errors? If yes, append to `docs/skill-feedback.md`:
+missing info, or unexpected errors? If yes, end your response with a short
+`Skill feedback` section, one entry per issue:
 
 ```markdown
-## [e2e-run] — <today's date>
 - **Type**: bug | missing-info | optimization
 - **Quote**: "<exact line from this skill>"
 - **Problem**: <what went wrong>
 - **Suggested fix**: <concrete change>
 ```
+
+Otherwise say "Skill feedback: none."

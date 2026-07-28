@@ -18,6 +18,8 @@ uv.lock
 
 # Environment
 .env
+.env.bak*
+.env.*.bak
 !.env.example
 
 # Database
@@ -56,3 +58,7 @@ secretary-data/
 
 # Live harness runtime artifacts
 .live-runs/
+
+# E2E and worker run reports — regenerated artifacts, written by /e2e-run,
+# tests/live and scripts/pull_worker_reports.py
+docs/e2e_results/

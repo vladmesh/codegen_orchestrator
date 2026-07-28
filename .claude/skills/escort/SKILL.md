@@ -605,18 +605,11 @@ Priority-ordered list of improvements discovered during this escort.
 2. ...
 ```
 
-## Step 9: Commit the Report
+## Step 9: Skill Feedback
 
-```bash
-git add docs/e2e_results/<project_name>-escort-<date>.md
-git commit -m "escort: <project_name> — <delivered/not delivered>"
-```
+The report stays local — `docs/e2e_results/` is a gitignored output directory, nothing to commit.
 
-Do NOT push unless the user asks.
-
-## Step 10: Skill Feedback
-
-Write feedback to `docs/skill-feedback.md` or confirm "Skill feedback: none."
+End your response with a `Skill feedback` section, or confirm "Skill feedback: none."
 
 ---
 
