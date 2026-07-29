@@ -3,7 +3,7 @@
 from typing import Any
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
@@ -56,6 +56,8 @@ class TaskRead(TimestampedDTO):
 
 class TaskUpdate(BaseModel):
     """Schema for updating a task (non-status fields only)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     project_id: uuid.UUID | None = None
     title: str | None = None

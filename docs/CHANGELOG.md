@@ -2,6 +2,10 @@
 
 ## 2026-07-28
 
+- `PATCH /api/tasks/{id}` now rejects unknown fields instead of silently dropping them. In
+  particular, sending `status` to the non-status update endpoint returns 422 and leaves the task
+  unchanged, making callers use the explicit task transition endpoints.
+
 - Offline live-harness contract tests now treat the checkout's `.live-manifests/` recovery
   directory as read-only. The fail-closed run-cancellation test writes its synthetic ownership
   manifest under `tmp_path`, and an autouse snapshot guard fails the exact test that creates,
