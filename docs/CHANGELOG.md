@@ -2,6 +2,11 @@
 
 ## 2026-07-28
 
+- Offline live-harness contract tests now treat the checkout's `.live-manifests/` recovery
+  directory as read-only. The fail-closed run-cancellation test writes its synthetic ownership
+  manifest under `tmp_path`, and an autouse snapshot guard fails the exact test that creates,
+  changes, or removes a real recovery manifest.
+
 - Temporary test access to a deployed bot is now a durable state machine instead of two steps at
   either end of a successful QA run. The whole lifecycle is driven by a `temporary_access_grants`
   row: the deploy→QA handoff records what was given, to which project, on which commit, for which
