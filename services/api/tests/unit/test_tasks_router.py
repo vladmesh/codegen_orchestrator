@@ -352,6 +352,20 @@ async def test_update_task():
 
 
 @pytest.mark.asyncio
+async def test_update_task_rejects_status_field():
+    task = _make_task(id="task-abc", status="backlog")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.patch("/api/tasks/task-abc", json={"status": "done"})
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    assert task.status == "backlog"
+
+
+@pytest.mark.asyncio
 async def test_cancel_task():
     task = _make_task(id="task-abc", status="backlog")
     session = _mock_session(scalar_one_or_none=task)

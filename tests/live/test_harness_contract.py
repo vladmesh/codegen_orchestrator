@@ -36,6 +36,26 @@ from shared.contracts.service_ports import (
 )
 
 
+@pytest.fixture(autouse=True)
+def repository_live_manifests_are_read_only():
+    """Offline contract tests must never mutate the live recovery directory."""
+    manifest_dir = Path(__file__).resolve().parents[2] / ".live-manifests"
+    before = {
+        path.relative_to(manifest_dir): path.read_bytes()
+        for path in manifest_dir.rglob("*")
+        if path.is_file()
+    }
+
+    yield
+
+    after = {
+        path.relative_to(manifest_dir): path.read_bytes()
+        for path in manifest_dir.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
 def test_repo_root_is_derived_from_harness_location(monkeypatch, tmp_path):
     root = tmp_path / "repo"
     harness = root / "tests" / "live" / "live_harness.py"
@@ -1275,12 +1295,13 @@ async def test_cleanup_cancels_run_created_after_the_first_runs_snapshot(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_cleanup_fails_closed_when_new_runs_never_go_terminal(monkeypatch):
+async def test_cleanup_fails_closed_when_new_runs_never_go_terminal(monkeypatch, tmp_path):
     """Unprovable quiescence stops teardown before any external or DB deletion."""
     external = []
     manifest = OwnershipManifest("project-1")
     manifest.own("project", "project-1")
     manifest.own("github_repository", "org/repo")
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET" and request.url.path == "/api/runs/":
