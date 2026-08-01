@@ -7,7 +7,9 @@
   `.env` with mode `0600`, validates the merged Compose model before building, and probes API
   health from inside the API container because production intentionally has no host port 8000.
   `.env.example` now also declares the required `INTERNAL_API_KEY` instead of leaving new installs
-  to discover that startup contract from an API validation error.
+  to discover that startup contract from an API validation error. The deploy runbook lists the
+  corresponding internal API, Grafana database, Grafana admin, and Loki push secrets required in
+  the GitHub production environment.
 
 - Production Compose no longer publishes PostgreSQL, the admin frontend, or the user dashboard
   directly on host ports 5432, 3001, and 3003. Public user-dashboard traffic continues through
