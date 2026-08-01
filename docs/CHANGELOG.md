@@ -2,6 +2,11 @@
 
 ## 2026-08-02
 
+- The production deploy now fails before touching the server when critical database, internal API,
+  admin, Grafana, or Loki credentials are absent. It writes those credentials into the generated
+  `.env` with mode `0600`, validates the merged Compose model before building, and probes API
+  health from inside the API container because production intentionally has no host port 8000.
+
 - Production Compose no longer publishes PostgreSQL, the admin frontend, or the user dashboard
   directly on host ports 5432, 3001, and 3003. Public user-dashboard traffic continues through
   Caddy at `/lk`; operator access to the admin frontend is limited to the internal network and an
