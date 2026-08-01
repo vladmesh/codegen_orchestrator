@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-02
+
+- Production Compose no longer publishes PostgreSQL, the admin frontend, or the user dashboard
+  directly on host ports 5432, 3001, and 3003. Public user-dashboard traffic continues through
+  Caddy at `/lk`; operator access to the admin frontend is limited to the internal network and an
+  SSH tunnel until it has its own authenticated TLS route. This closes the direct dashboard API
+  proxy and prevents Basic Auth from being sent over cleartext HTTP.
+
 ## 2026-07-28
 
 - `PATCH /api/tasks/{id}` now rejects unknown fields instead of silently dropping them. In
