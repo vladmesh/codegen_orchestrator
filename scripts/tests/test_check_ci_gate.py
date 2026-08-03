@@ -1,4 +1,4 @@
-"""The gate's tree walk has to see everything pytest collects."""
+"""The gate's tree walks: every test file pytest collects, every image a build pulls."""
 
 import importlib.util
 from pathlib import Path
@@ -108,6 +108,103 @@ def test_makefile_pytest_paths_read_a_host_run_without_its_flag_values(gate):
     paths = gate.makefile_pytest_paths("test-integration-template")
 
     assert paths == ["tests/integration/template/test_stage5_mock_smoke.py"]
+
+
+@pytest.fixture
+def image_tree(gate, tmp_path, monkeypatch):
+    """The gate pointed at an empty tree, with the repository's exclusions dropped."""
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    monkeypatch.setattr(gate, "UNPINNED_IMAGE_DIRS", {})
+    monkeypatch.setattr(gate, "UNPINNED_IMAGE_REFS", {})
+    return tmp_path
+
+
+def _write_dockerfile(root: Path, body: str) -> None:
+    (root / "service").mkdir(parents=True, exist_ok=True)
+    (root / "service/Dockerfile").write_text(body)
+
+
+def test_a_floating_dockerfile_tag_fails_the_gate(gate, image_tree):
+    _write_dockerfile(image_tree, "FROM python:latest\n")
+
+    with pytest.raises(SystemExit, match=r"service/Dockerfile:1 \(python:latest\)"):
+        gate.assert_pinned_base_images()
+
+
+def test_the_same_dockerfile_passes_once_the_tag_is_explicit(gate, image_tree):
+    _write_dockerfile(image_tree, "FROM python:3.12.13-slim\n")
+
+    gate.assert_pinned_base_images()
+
+
+def test_a_missing_tag_counts_as_floating(gate, image_tree):
+    _write_dockerfile(image_tree, "FROM redis\n")
+
+    with pytest.raises(SystemExit, match=r"service/Dockerfile:1 \(redis\)"):
+        gate.assert_pinned_base_images()
+
+
+def test_a_floating_compose_image_fails_the_gate(gate, image_tree):
+    (image_tree / "docker").mkdir()
+    (image_tree / "docker/test.yml").write_text(
+        "services:\n  cache:\n    image: redis:7.4.10-alpine\n  db:\n    image: postgres:latest\n"
+    )
+
+    with pytest.raises(SystemExit, match=r"docker/test.yml:5 \(postgres:latest\)"):
+        gate.assert_pinned_base_images()
+
+
+def test_an_excused_reference_passes_and_a_stale_excuse_fails(gate, image_tree, monkeypatch):
+    _write_dockerfile(image_tree, "FROM python:latest\n")
+    monkeypatch.setattr(
+        gate, "UNPINNED_IMAGE_REFS", {"service/Dockerfile::python:latest": "a reason"}
+    )
+    gate.assert_pinned_base_images()
+
+    _write_dockerfile(image_tree, "FROM python:3.12.13-slim\n")
+    with pytest.raises(SystemExit, match="which is not a floating image in the tree"):
+        gate.assert_pinned_base_images()
+
+
+def test_an_excuse_without_a_reason_fails(gate, image_tree, monkeypatch):
+    _write_dockerfile(image_tree, "FROM python:latest\n")
+    monkeypatch.setattr(gate, "UNPINNED_IMAGE_REFS", {"service/Dockerfile::python:latest": "  "})
+
+    with pytest.raises(SystemExit, match="has no reason"):
+        gate.assert_pinned_base_images()
+
+
+def test_stages_and_caller_supplied_build_args_are_not_image_references(gate, tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "ARG BASE_IMAGE\n"
+        "FROM python:3.12.13-slim AS builder\n"
+        "FROM ${BASE_IMAGE}\n"
+        "COPY --from=builder /install /usr/local\n"
+        "COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /bin/\n"
+    )
+
+    assert gate.dockerfile_image_references(dockerfile) == [
+        (2, "python:3.12.13-slim"),
+        (5, "ghcr.io/astral-sh/uv:0.12.1"),
+    ]
+
+
+def test_a_build_arg_default_is_followed_to_the_image_it_names(gate, tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("ARG BASE_IMAGE=worker-base-common:latest\nFROM ${BASE_IMAGE}\n")
+
+    assert gate.dockerfile_image_references(dockerfile) == [(2, "worker-base-common:latest")]
+    assert not gate.is_pinned_image("worker-base-common:latest")
+
+
+def test_worker_base_children_take_their_base_from_the_builder(gate):
+    """No default means a build that forgets BASE_IMAGE fails, rather than picking :latest."""
+    images = gate.ROOT / "services/worker-manager/images"
+    for child in ["worker-base-claude", "worker-base-codex", "worker-base-factory"]:
+        body = (images / child / "Dockerfile").read_text()
+        assert "ARG BASE_IMAGE\n" in body
+        assert "ARG BASE_IMAGE=" not in body
 
 
 def test_repo_tree_suffix_named_files_are_covered(gate):

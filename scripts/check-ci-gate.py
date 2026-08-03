@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import re
 import shlex
 import tomllib
 from typing import Any
@@ -112,6 +114,36 @@ UNCLAIMED_TEST_FILES = {
         "been on it; issue:081da416652a2b0ad576"
     ),
 }
+
+# --- Base image pins --------------------------------------------------------
+#
+# Every image a Dockerfile or a compose file of this repository builds on has to name
+# what it wants: an explicit tag or a digest. A missing tag and :latest both mean "the
+# registry decides", so the same tree builds differently on two days. The tree is
+# walked the same way as the test files above, never listed by hand, so a Dockerfile
+# added tomorrow is checked on its own.
+#
+# What is not a reference to pin: a stage of the same Dockerfile (FROM builder,
+# COPY --from=builder), and a ${BUILD_ARG} the Dockerfile declares without a default.
+# The second one is the fail-closed shape: the builder has to name the image, and a
+# build that forgets to fails on a blank base name instead of picking up a stray tag.
+FLOATING_IMAGE_TAG = "latest"
+IMAGE_FILE_SKIP_DIRS = TEST_TREE_SKIP_DIRS
+
+# Trees whose image references are not this repository's to pin. Reason per line, same
+# rule as the exclusions above: an unpinned image is a decision on the record.
+UNPINNED_IMAGE_DIRS = {
+    "shared/tests/fixtures/service-template-0.3.6": (
+        "a vendored copy of a service-template release, read by the template "
+        "compatibility tests; its compose files belong to that repository, and "
+        "editing them here would make the fixture stop matching the release it "
+        "fixes. The pins are service-template's to add"
+    ),
+}
+
+# Single image references left floating on purpose, keyed by "<path>::<image>".
+# Same rule again: a reason per line, and a stale entry fails the gate.
+UNPINNED_IMAGE_REFS: dict[str, str] = {}
 
 EXPECTED_GATE_NEEDS = {
     "detect-changes",
@@ -527,6 +559,177 @@ def assert_test_suite_coverage(jobs: dict[str, Any]) -> None:
         )
 
 
+class TolerantLoader(yaml.SafeLoader):
+    """SafeLoader for files carrying tags it has no constructor for.
+
+    docker-compose.prod.yml uses compose's own !reset; without this the walk would
+    stop at the first such file instead of reading the images out of it.
+    """
+
+
+TolerantLoader.add_multi_constructor("", lambda loader, suffix, node: None)
+
+BUILD_ARG_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def is_pinned_image(reference: str) -> bool:
+    """Whether an image reference names one build.
+
+    A digest is one build by definition. A tag is one build as long as it is not
+    latest, which moves. Anything still holding a variable is resolved outside the
+    tree, so the tree does not say what gets pulled.
+    """
+    if "$" in reference:
+        return False
+    if "@" in reference:
+        return True
+    tag = reference.rsplit("/", 1)[-1].partition(":")[2]
+    return bool(tag) and tag != FLOATING_IMAGE_TAG
+
+
+def substitute_build_args(reference: str, build_args: dict[str, str]) -> str | None:
+    """reference with its build args filled in, or None when the builder supplies one."""
+    resolved = reference
+    for match in BUILD_ARG_REFERENCE.finditer(reference):
+        name = match.group(1) or match.group(2)
+        if name not in build_args:
+            return None
+        resolved = resolved.replace(match.group(0), build_args[name])
+    return resolved
+
+
+def dockerfile_image_references(path: Path) -> list[tuple[int, str]]:
+    """(line, image) for every image a Dockerfile builds on.
+
+    Stages of the same file are not images, and neither is a build arg the file
+    declares without a default: that value comes from the builder, not from here.
+    """
+    build_args: dict[str, str] = {}
+    stages: set[str] = set()
+    references: list[tuple[int, str]] = []
+
+    for number, raw in enumerate(path.read_text().splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        keyword, _, rest = line.partition(" ")
+        keyword = keyword.upper()
+        candidates: list[str] = []
+
+        if keyword == "ARG":
+            name, separator, default = rest.strip().partition("=")
+            if separator:
+                build_args[name.strip()] = default.strip().strip("\"'")
+        elif keyword == "FROM":
+            words = [word for word in rest.split() if not word.startswith("--")]
+            if not words:
+                fail(f"{path}:{number} is a FROM without an image")
+            image, *alias = words
+            candidates.append(image)
+            if alias and alias[0].upper() == "AS":
+                stages.add(alias[1])
+        elif keyword == "COPY":
+            candidates.extend(
+                word.partition("=")[2] for word in rest.split() if word.startswith("--from=")
+            )
+
+        for candidate in candidates:
+            if candidate in stages or candidate.isdigit() or candidate == "scratch":
+                continue
+            resolved = substitute_build_args(candidate, build_args)
+            if resolved is None:
+                continue
+            references.append((number, resolved))
+    return references
+
+
+def compose_image_references(path: Path) -> list[tuple[int, str]]:
+    """(line, image) for every image a compose file pulls, empty for other YAML."""
+    text = path.read_text()
+    # TolerantLoader is a SafeLoader; it only adds a constructor for unknown tags.
+    document = yaml.load(text, Loader=TolerantLoader)  # noqa: S506
+    if not isinstance(document, dict):
+        return []
+    services = document.get("services")
+    if not isinstance(services, dict):
+        return []
+    images = {
+        service["image"]
+        for service in services.values()
+        if isinstance(service, dict) and isinstance(service.get("image"), str)
+    }
+
+    references: list[tuple[int, str]] = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        key, separator, value = raw.strip().partition(":")
+        if key != "image" or not separator:
+            continue
+        image = value.strip().strip("\"'")
+        if image in images:
+            references.append((number, image))
+    return references
+
+
+def discover_image_references() -> list[tuple[str, int, str]]:
+    """(repo path, line, image) for every image reference in the tree."""
+    references: list[tuple[str, int, str]] = []
+    for directory, subdirectories, files in os.walk(ROOT):
+        subdirectories[:] = sorted(
+            name for name in subdirectories if name not in IMAGE_FILE_SKIP_DIRS
+        )
+        for name in sorted(files):
+            path = Path(directory) / name
+            relative = path.relative_to(ROOT)
+            if any(
+                excluded in {str(parent) for parent in relative.parents}
+                for excluded in UNPINNED_IMAGE_DIRS
+            ):
+                continue
+            if name == "Dockerfile" or name.startswith("Dockerfile."):
+                found = dockerfile_image_references(path)
+            elif path.suffix in {".yml", ".yaml"}:
+                found = compose_image_references(path)
+            else:
+                continue
+            references.extend((str(relative), number, image) for number, image in found)
+    if not references:
+        fail("no image references found in the tree; the walk is broken")
+    return references
+
+
+def assert_pinned_base_images() -> None:
+    for excluded, reason in UNPINNED_IMAGE_DIRS.items():
+        if not (ROOT / excluded).is_dir():
+            fail(f"UNPINNED_IMAGE_DIRS names {excluded}, which is not in the tree")
+        if not reason.strip():
+            fail(f"UNPINNED_IMAGE_DIRS entry {excluded} has no reason")
+
+    floating: list[str] = []
+    excused: set[str] = set()
+    for path, number, image in discover_image_references():
+        if is_pinned_image(image):
+            continue
+        key = f"{path}::{image}"
+        if key in UNPINNED_IMAGE_REFS:
+            excused.add(key)
+            continue
+        floating.append(f"{path}:{number} ({image})")
+
+    for key, reason in UNPINNED_IMAGE_REFS.items():
+        if not reason.strip():
+            fail(f"UNPINNED_IMAGE_REFS entry {key} has no reason")
+        if key not in excused:
+            fail(f"UNPINNED_IMAGE_REFS names {key}, which is not a floating image in the tree")
+
+    if floating:
+        fail(
+            "images are not pinned to a version: "
+            + ", ".join(floating)
+            + '. Pin an explicit tag or digest, or add "<path>::<image>" to '
+            "UNPINNED_IMAGE_REFS with a reason"
+        )
+
+
 def assert_service_tests(jobs: dict[str, Any]) -> None:
     job = require_job(jobs, "test-service")
     if (
@@ -723,6 +926,7 @@ def main() -> None:
     assert_service_tests(jobs)
     assert_integration_tests(jobs)
     assert_test_suite_coverage(jobs)
+    assert_pinned_base_images()
     assert_manual_backend_integration()
     assert_template_compatibility(jobs)
     assert_gate(jobs)
