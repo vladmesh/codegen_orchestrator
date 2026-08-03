@@ -65,8 +65,9 @@ TEST_TREE_SKIP_DIRS = {
 UNCLAIMED_TEST_DIRS = {
     "scripts": (
         "scripts/test_e2e_flow.py, test_e2e_analyst.py and e2e_scaffold_test.py "
-        "are hand-run drivers against a live stack, not pytest suites; pytest "
-        "collects no tests from them"
+        "are hand-run drivers against a live stack, invoked through their "
+        "__main__ block; the two functions pytest would collect from "
+        "test_e2e_flow.py talk to a running API"
     ),
     "tests/e2e": (
         "full-stack e2e behind docker/test/e2e/e2e.yml, which no workflow and no "
