@@ -188,18 +188,18 @@ async def create_project(
     except HTTPException:
         raise
     except Exception as e:
-        # Log validation or other errors with full request details
+        # The creation body carries project secrets, so it never reaches the log
+        # stream. Its size is enough to tell an empty request from a truncated one.
         try:
-            body = await request.body()
-            body_str = body.decode("utf-8") if body else "empty"
+            body_size = len(await request.body())
         except Exception:
-            body_str = "unable to read"
+            body_size = -1
 
         logger.error(
             "project_creation_failed",
             error=str(e),
             error_type=type(e).__name__,
-            request_body=body_str,
+            request_body_bytes=body_size,
             telegram_id=x_telegram_id,
         )
         raise

@@ -39,22 +39,25 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Log validation errors with full request details for debugging."""
+    """Log validation errors without copying request secrets into the log stream.
+
+    `exc.errors()` already names the offending field and location, which is what
+    debugging needs. The raw body and headers carry X-Internal-Key, LK bearer
+    tokens and project secrets, and these logs are shipped to Loki.
+    """
     logger = structlog.get_logger()
 
     try:
-        body = await request.body()
-        body_str = body.decode("utf-8") if body else "empty"
+        body_size = len(await request.body())
     except Exception:
-        body_str = "unable to read"
+        body_size = -1
 
     logger.error(
         "validation_error",
         path=request.url.path,
         method=request.method,
         errors=exc.errors(),
-        request_body=body_str,
-        headers=dict(request.headers),
+        request_body_bytes=body_size,
     )
 
     # A model_validator raising ValueError puts the exception object itself into
