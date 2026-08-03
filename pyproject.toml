@@ -17,7 +17,7 @@ dev = [
     # real violations there (blind except, typing.Dict, unsorted imports, naive datetimes).
     # Adopting it means fixing those first.
     "ruff>=0.15.5,<0.16",
-    "mypy>=1.13.0",
+    "mypy>=2.3.0",
     "httpx",
     "respx>=0.21.1",
     "fakeredis>=2.34.1",
