@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-08-02
+
+- The production deploy now fails before touching the server when critical database, internal API,
+  admin, Grafana, or Loki credentials are absent. It writes those credentials into the generated
+  `.env` with mode `0600`, validates the merged Compose model before building, and probes API
+  health from inside the API container because production intentionally has no host port 8000.
+  `.env.example` now also declares the required `INTERNAL_API_KEY` instead of leaving new installs
+  to discover that startup contract from an API validation error. The deploy runbook lists the
+  corresponding internal API, Grafana database, Grafana admin, and Loki push secrets required in
+  the GitHub production environment.
+
+- Production Compose no longer publishes PostgreSQL, the admin frontend, or the user dashboard
+  directly on host ports 5432, 3001, and 3003. Public user-dashboard traffic continues through
+  Caddy at `/lk`; operator access to the admin frontend is limited to the internal network and an
+  SSH tunnel until it has its own authenticated TLS route. This closes the direct dashboard API
+  proxy and prevents Basic Auth from being sent over cleartext HTTP.
+
 ## 2026-07-28
 
 - `PATCH /api/tasks/{id}` now rejects unknown fields instead of silently dropping them. In

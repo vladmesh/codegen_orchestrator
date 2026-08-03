@@ -20,6 +20,25 @@ _PORTS_OVERRIDE_FILENAME = ".codegen-ports.yml"
 # Default compose files for service-template projects (under infra/)
 _DEFAULT_COMPOSE_FILES = ["infra/compose.base.yml", "infra/compose.dev.yml"]
 
+# Environment passed to `docker compose`. The compose manifest belongs to the
+# agent and compose interpolates ${VAR} out of this environment into it, with the
+# result handed back to the agent as command output. Inheriting worker-manager's
+# own environment would therefore publish the orchestrator .env, so the subprocess
+# gets an explicit list instead: what Docker itself needs, plus the project's .env.
+_INHERITED_ENV_VARS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "DOCKER_HOST",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_BUILDKIT",
+    "COMPOSE_DOCKER_CLI_BUILD",
+)
+
 
 def _generate_ports_override(compose_files: list[Path]) -> str | None:
     """Generate a compose override that clears published ports for all services.
@@ -209,11 +228,11 @@ class ComposeRunner:
             *command_args,
         ]
 
-        # Build environment: HOST_UID/GID + caller-supplied overrides.
-        # Load the project's .env into the subprocess env so its values override
-        # vars inherited from worker-manager (e.g. POSTGRES_* from the orchestrator).
-        # Docker compose precedence: shell env > --env-file, so we must set them here.
-        run_env = dict(os.environ)
+        # Build environment: allowlisted Docker vars + HOST_UID/GID + caller
+        # overrides. The project's .env is loaded here as well because compose
+        # precedence is shell env > --env-file, so --env-file alone would lose to
+        # anything already set.
+        run_env = {k: v for k in _INHERITED_ENV_VARS if (v := os.environ.get(k)) is not None}
         run_env["HOST_UID"] = "1000"
         run_env["HOST_GID"] = "1000"
         if dot_env.exists():

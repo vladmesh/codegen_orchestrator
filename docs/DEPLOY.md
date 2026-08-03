@@ -88,6 +88,14 @@ All secrets must be configured in the repository's **production** environment.
 | `POSTGRES_DB` | Database name |
 | `POSTGRES_USER` | Database user |
 | `POSTGRES_PASSWORD` | Database password |
+| `GRAFANA_DB_USER` | Dedicated read-only PostgreSQL role used by Grafana |
+| `GRAFANA_DB_PASSWORD` | Password for the Grafana read-only PostgreSQL role |
+
+### Internal Service Authentication
+
+| Secret | Description |
+|--------|-------------|
+| `INTERNAL_API_KEY` | Random shared credential sent by trusted services as `X-Internal-Key` |
 
 ### LLM Providers
 
@@ -153,6 +161,10 @@ All secrets must be configured in the repository's **production** environment.
 | Secret | Description |
 |--------|-------------|
 | `LANGCHAIN_API_KEY` | LangSmith API key (optional, for tracing) |
+| `LOKI_PUSH_USER` | Basic-auth user for remote Promtail writes |
+| `LOKI_PUSH_PASSWORD` | Plaintext password configured on managed Promtail clients |
+| `LOKI_PUSH_PASSWORD_HASH` | Caddy-compatible bcrypt hash of the Loki push password |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana administrator password |
 
 ## QA Node (Prod Server)
 

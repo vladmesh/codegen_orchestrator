@@ -23,6 +23,43 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Validate required production secrets
+        shell: bash
+        env:
+          REQUIRED_POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          REQUIRED_POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          REQUIRED_POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          REQUIRED_INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+          REQUIRED_ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          REQUIRED_GRAFANA_DB_USER: ${{ secrets.GRAFANA_DB_USER }}
+          REQUIRED_GRAFANA_DB_PASSWORD: ${{ secrets.GRAFANA_DB_PASSWORD }}
+          REQUIRED_GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          REQUIRED_LOKI_PUSH_USER: ${{ secrets.LOKI_PUSH_USER }}
+          REQUIRED_LOKI_PUSH_PASSWORD_HASH: ${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            REQUIRED_POSTGRES_DB \
+            REQUIRED_POSTGRES_USER \
+            REQUIRED_POSTGRES_PASSWORD \
+            REQUIRED_INTERNAL_API_KEY \
+            REQUIRED_ADMIN_PASSWORD \
+            REQUIRED_GRAFANA_DB_USER \
+            REQUIRED_GRAFANA_DB_PASSWORD \
+            REQUIRED_GRAFANA_ADMIN_PASSWORD \
+            REQUIRED_LOKI_PUSH_USER \
+            REQUIRED_LOKI_PUSH_PASSWORD_HASH
+          do
+            if [ -z "${!name}" ]; then
+              missing+=("${name#REQUIRED_}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Missing required production secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Write .env to server
         uses: appleboy/ssh-action@v1
         with:
@@ -30,11 +67,16 @@ jobs:
           username: deploy
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            set -euo pipefail
+            umask 077
             cat > ${{ env.DEPLOY_PATH }}/.env << 'ENVEOF'
             # Database
             POSTGRES_DB=${{ secrets.POSTGRES_DB }}
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+
+            # Internal service authentication
+            INTERNAL_API_KEY=${{ secrets.INTERNAL_API_KEY }}
 
             # LLM
             ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
@@ -78,8 +120,18 @@ jobs:
 
             # Observability
             LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }}
+            LOKI_PUSH_USER=${{ secrets.LOKI_PUSH_USER }}
+            LOKI_PUSH_PASSWORD=${{ secrets.LOKI_PUSH_PASSWORD }}
+            LOKI_PUSH_PASSWORD_HASH=${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
+            GRAFANA_DB_USER=${{ secrets.GRAFANA_DB_USER }}
+            GRAFANA_DB_PASSWORD=${{ secrets.GRAFANA_DB_PASSWORD }}
+            GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}
             # Loki read address for the analytics aggregator (internal network name)
             LOKI_URL=http://loki:3100
+
+            # Admin UI
+            ADMIN_USER=${{ secrets.ADMIN_USER }}
+            ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
 
             # LK (user dashboard)
             LK_DOMAIN=${{ secrets.LK_DOMAIN }}
@@ -88,6 +140,7 @@ jobs:
             # Prod secret paths (used by docker-compose.prod.yml)
             GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem
             ENVEOF
+            chmod 600 ${{ env.DEPLOY_PATH }}/.env
 
       - name: Write secrets files to server
         uses: appleboy/ssh-action@v1
@@ -122,6 +175,7 @@ jobs:
           command_timeout: 15m
           script: |
             cd ${{ env.DEPLOY_PATH }}
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
             docker compose -f docker-compose.yml -f docker-compose.prod.yml build
 
       - name: Pull worker base images from GHCR
@@ -165,7 +219,11 @@ jobs:
           script: |
             echo "Waiting for API to be healthy..."
             timeout=60
-            while ! curl -sf http://127.0.0.1:8000/health > /dev/null 2>&1; do
+            while ! docker compose \
+              -f ${{ env.DEPLOY_PATH }}/docker-compose.yml \
+              -f ${{ env.DEPLOY_PATH }}/docker-compose.prod.yml \
+              exec -T api curl -sf http://127.0.0.1:8000/health > /dev/null 2>&1
+            do
               if [ $timeout -le 0 ]; then
                 echo "FATAL: API health check failed after 60s"
                 cd ${{ env.DEPLOY_PATH }}
