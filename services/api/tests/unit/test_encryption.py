@@ -74,6 +74,7 @@ async def test_create_api_key_encrypts_value():
         resp = await client.post(
             "/api/api-keys/",
             json={"service": "openai", "value": "sk-test-secret-key"},
+            headers={"X-Internal-Key": "test-internal-key"},
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
@@ -101,6 +102,7 @@ async def test_create_api_key_updates_existing_encrypted():
         resp = await client.post(
             "/api/api-keys/",
             json={"service": "openai", "value": "sk-new-secret"},
+            headers={"X-Internal-Key": "test-internal-key"},
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
@@ -128,7 +130,10 @@ async def test_get_api_key_decrypts_value():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/api-keys/openai")
+        resp = await client.get(
+            "/api/api-keys/openai",
+            headers={"X-Internal-Key": "test-internal-key"},
+        )
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert resp.json()["value"] == "sk-test-secret-key"
@@ -151,7 +156,10 @@ async def test_get_api_key_rejects_plaintext_value():
     transport = ASGITransport(app=app)
     with pytest.raises(InvalidToken):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            await client.get("/api/api-keys/openai")
+            await client.get(
+                "/api/api-keys/openai",
+                headers={"X-Internal-Key": "test-internal-key"},
+            )
 
 
 # --- Server SSH Key Encryption Tests ---
