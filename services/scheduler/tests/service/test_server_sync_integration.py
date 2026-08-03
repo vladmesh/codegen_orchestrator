@@ -1,3 +1,5 @@
+import os
+
 import httpx
 import pytest
 
@@ -28,6 +30,7 @@ async def test_server_sync_integration_flow(time4vps_mock, api_client):
                 "value": {"username": "test", "password": "test"},
                 "project_id": None,
             },
+            headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
         )
         assert resp.status_code == httpx.codes.CREATED, f"Failed to seed API key: {resp.text}"
 
@@ -94,6 +97,7 @@ async def test_provider_outage_is_one_incident_that_closes_on_recovery(time4vps_
                 "value": {"username": "test", "password": "test"},
                 "project_id": None,
             },
+            headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
         )
         assert resp.status_code == httpx.codes.CREATED, f"Failed to seed API key: {resp.text}"
 
