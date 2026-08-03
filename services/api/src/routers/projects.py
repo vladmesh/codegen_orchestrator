@@ -241,21 +241,27 @@ async def list_projects(
 
     query = select(Project)
 
-    # Direct owner_id filter (from admin panel)
-    if owner_id is not None:
-        query = query.where(Project.owner_id == owner_id)
-
-    # Filter by owner if user provided and not admin, or if owner_only requested
-    elif x_telegram_id is not None:
+    # The caller is resolved before any filter is applied, including the admin
+    # panel's owner_id filter: passing owner_id must not be a way to read another
+    # user's projects and their config.
+    if x_telegram_id is not None:
         user = await _resolve_user(x_telegram_id, db)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"User with telegram_id {x_telegram_id} not found",
             )
-        if not user.is_admin or owner_only:
-            # Regular user or explicit owner_only request: only their projects
+        if user.is_admin:
+            if owner_id is not None:
+                query = query.where(Project.owner_id == owner_id)
+            elif owner_only:
+                query = query.where(Project.owner_id == user.id)
+        else:
+            # A regular user sees only their own projects, whatever owner_id says.
             query = query.where(Project.owner_id == user.id)
+    elif owner_id is not None:
+        # Internal service call: no user to scope against.
+        query = query.where(Project.owner_id == owner_id)
 
     if project_status:
         query = query.where(Project.status == project_status)
