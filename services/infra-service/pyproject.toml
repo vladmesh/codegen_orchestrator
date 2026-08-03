@@ -14,7 +14,7 @@ dependencies = [
     "httpx>=0.27.0",
 
     # Logging
-    "structlog>=25.1.0",
+    "structlog>=26.1.0",
 
     # Settings
     "pydantic-settings>=2.0.0",

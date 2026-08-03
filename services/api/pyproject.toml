@@ -24,7 +24,7 @@ dependencies = [
     "redis[hiredis]>=8.0.0",
     
     # Utils
-    "structlog>=25.1.0",
+    "structlog>=26.1.0",
     "pyjwt[crypto]>=2.13.0",
     "PyYAML>=6.0.2",
     "tiktoken>=0.12.0",

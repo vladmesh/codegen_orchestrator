@@ -7,7 +7,7 @@ dependencies = [
     "redis>=8.0.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.0.0",
-    "structlog>=24.1.0",
+    "structlog>=26.1.0",
 
     # shared/ deps. The worker base image COPY's the whole shared tree and
     # installs nothing for it, so every module under shared/ has to be importable

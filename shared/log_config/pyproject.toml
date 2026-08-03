@@ -8,5 +8,5 @@ version = "0.1.0"
 description = "Shared structured logging configuration"
 requires-python = ">=3.11"
 dependencies = [
-    "structlog>=24.1.0",
+    "structlog>=26.1.0",
 ]
