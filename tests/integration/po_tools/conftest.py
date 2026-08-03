@@ -20,6 +20,7 @@ _LANGGRAPH_DIR = os.path.normpath(_LANGGRAPH_DIR)
 if _LANGGRAPH_DIR not in sys.path:
     sys.path.insert(0, _LANGGRAPH_DIR)
 
+from shared.clients.internal_api import InternalAPIClient  # noqa: E402
 from shared.redis.client import RedisStreamClient  # noqa: E402
 from src.agents.po.tools import init_po_clients  # noqa: E402
 
@@ -56,9 +57,17 @@ async def stream_client():
 
 
 @pytest.fixture
-async def po_clients(api_client, stream_client):
+async def po_api_client():
+    """The internal API client PO tools use in production, pointed at the real API."""
+    client = InternalAPIClient(API_URL)
+    yield client
+    await client.close()
+
+
+@pytest.fixture
+async def po_clients(po_api_client, stream_client):
     """Initialize PO tools with real clients."""
-    init_po_clients(api_client, stream_client)
+    init_po_clients(po_api_client, stream_client)
     yield
     init_po_clients(None, None)
 

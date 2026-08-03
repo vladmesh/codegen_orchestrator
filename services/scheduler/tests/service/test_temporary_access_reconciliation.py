@@ -63,7 +63,7 @@ async def config(api_client):
     from src import startup
 
     for key, value in _CONFIG.items():
-        await api_client._request(
+        await api_client.request(
             "POST",
             "system-configs/",
             json={"key": key, "value": value, "category": "supervisor"},
@@ -131,12 +131,12 @@ def redis_client():
 async def _project(api_client) -> str:
     telegram_id = uuid.uuid4().int % 1_000_000_000
     project_id = str(uuid.uuid4())
-    await api_client._request(
+    await api_client.request(
         "POST",
         "users/",
         json={"telegram_id": telegram_id, "username": f"sweep_{telegram_id}"},
     )
-    await api_client._request(
+    await api_client.request(
         "POST",
         "projects/",
         json={"id": project_id, "title": "Temporary Access Sweep", "config": {}},
@@ -266,7 +266,7 @@ async def test_a_grant_deploy_whose_worker_never_returns_is_revoked_anyway(
     assert dead.status is RunStatus.CANCELLED
     assert dead.run_metadata[DISPATCH_SUPERSEDED_AT_KEY]
     # And the claim is closed: the worker cannot come back and dispatch.
-    reclaim = await api_client._request("POST", f"runs/{grant_run_id}/dispatch-claim")
+    reclaim = await api_client.request("POST", f"runs/{grant_run_id}/dispatch-claim")
     assert reclaim.json()["granted"] is False
 
 
@@ -285,7 +285,7 @@ async def test_a_claim_inside_its_lease_is_waited_for(api_client, redis_client, 
         api_client, project_id, f"deploy-grant-{uuid.uuid4().hex[:8]}", "deploy"
     )
     await _grant(api_client, project_id, qa_run_id, grant_run_id)
-    await api_client._request("POST", f"runs/{grant_run_id}/dispatch-claim")
+    await api_client.request("POST", f"runs/{grant_run_id}/dispatch-claim")
 
     with patch("src.tasks.temporary_access.notify_admins_best_effort", AsyncMock()):
         await supervise_temporary_access(api_client, redis_client)
@@ -432,12 +432,12 @@ async def _deployed_project(api_client) -> tuple[str, int]:
     """A project with something running, which is what can be read back."""
     project_id = await _project(api_client)
     handle = f"vps-{uuid.uuid4().hex[:8]}"
-    await api_client._request(
+    await api_client.request(
         "POST",
         "servers/",
         json={"handle": handle, "host": f"{handle}.example.com", "public_ip": "10.9.9.9"},
     )
-    repo = await api_client._request(
+    repo = await api_client.request(
         "POST",
         "repositories/",
         json={
@@ -446,7 +446,7 @@ async def _deployed_project(api_client) -> tuple[str, int]:
             "git_url": f"https://github.com/test-org/repo-{project_id[:8]}.git",
         },
     )
-    application = await api_client._request(
+    application = await api_client.request(
         "POST",
         "applications/",
         json={
@@ -482,7 +482,7 @@ async def _grant_being_revoked(api_client, project_id: str, application_id: int)
 
 async def _claim_and_expire(api_client, run_id: str) -> dict:
     """Claim the boundary, then let the lease run out the way waiting would."""
-    claimed = await api_client._request("POST", f"runs/{run_id}/dispatch-claim")
+    claimed = await api_client.request("POST", f"runs/{run_id}/dispatch-claim")
     past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     await api_client.update_run(run_id, {"run_metadata": {DISPATCH_LEASE_EXPIRES_AT_KEY: past}})
     return claimed.json()

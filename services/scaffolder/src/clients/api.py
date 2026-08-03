@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import os
-
-import httpx
 import structlog
 
+from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.story import StoryDTO
-from shared.log_config.correlation import get_correlation_id
 from src.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -24,46 +21,22 @@ def get_api_client() -> ScaffolderAPIClient:
     return _client
 
 
-class ScaffolderAPIClient:
+class ScaffolderAPIClient(InternalAPIClient):
     """HTTP client for project/repository updates."""
 
     def __init__(self) -> None:
-        settings = get_settings()
-        self.base_url = settings.api_base_url.rstrip("/")
-        self._internal_api_key = os.environ["INTERNAL_API_KEY"]
-        self._client: httpx.AsyncClient | None = None
-
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                follow_redirects=True,
-                timeout=30.0,
-            )
-        return self._client
-
-    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        client = await self._get_client()
-        headers = kwargs.pop("headers", None) or {}
-        headers["X-Internal-Key"] = self._internal_api_key
-        correlation_id = get_correlation_id()
-        if correlation_id:
-            headers.setdefault("X-Correlation-ID", correlation_id)
-        kwargs["headers"] = headers
-        resp = await client.request(method, f"/api/{path.lstrip('/')}", **kwargs)
-        resp.raise_for_status()
-        return resp
+        super().__init__(get_settings().api_base_url)
 
     async def get_project(self, project_id: str) -> ProjectDTO:
-        resp = await self._request("GET", f"projects/{project_id}")
+        resp = await self.request("GET", f"projects/{project_id}")
         return ProjectDTO.model_validate(resp.json())
 
     async def get_repository(self, repo_id: str) -> dict:
-        resp = await self._request("GET", f"repositories/{repo_id}")
+        resp = await self.request("GET", f"repositories/{repo_id}")
         return resp.json()
 
     async def update_project_status(self, project_id: str, status: str) -> None:
-        await self._request(
+        await self.request(
             "PATCH",
             f"projects/{project_id}",
             json={"status": status},
@@ -71,11 +44,11 @@ class ScaffolderAPIClient:
         logger.info("project_status_updated", project_id=project_id, status=status)
 
     async def update_repository(self, repo_id: str, **fields) -> None:
-        await self._request("PATCH", f"repositories/{repo_id}", json=fields)
+        await self.request("PATCH", f"repositories/{repo_id}", json=fields)
         logger.info("repository_updated", repo_id=repo_id, fields=list(fields.keys()))
 
     async def update_project_config(self, project_id: str, config: dict) -> None:
-        await self._request(
+        await self.request(
             "PATCH",
             f"projects/{project_id}",
             json={"config": config},
@@ -83,17 +56,13 @@ class ScaffolderAPIClient:
         logger.info("project_config_updated", project_id=project_id)
 
     async def get_stories_by_project(self, project_id: str) -> list[StoryDTO]:
-        resp = await self._request("GET", f"stories/?project_id={project_id}")
+        resp = await self.request("GET", f"stories/?project_id={project_id}")
         return [StoryDTO.model_validate(s) for s in resp.json()]
 
     async def fail_story(self, story_id: str) -> None:
-        await self._request(
+        await self.request(
             "POST",
             f"stories/{story_id}/fail",
             json={"actor": "scaffolder"},
         )
         logger.info("story_failed", story_id=story_id)
-
-    async def close(self) -> None:
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()

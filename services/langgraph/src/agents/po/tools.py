@@ -1,7 +1,7 @@
 """PO ReactAgent tools.
 
-Async tools for the Product Owner agent. Uses shared httpx/redis clients
-initialized at consumer startup via init_po_clients().
+Async tools for the Product Owner agent. Uses the shared internal API client and
+the Redis client, both initialized at consumer startup via init_po_clients().
 
 This module re-exports all tools from sub-modules for backward compatibility.
 """
@@ -13,7 +13,6 @@ import json
 import re
 import time
 
-import httpx  # noqa: F401 — re-exported so tests can patch "src.agents.po.tools.httpx.AsyncClient"
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import structlog

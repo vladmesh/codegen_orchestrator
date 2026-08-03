@@ -25,7 +25,7 @@ async def test_client_incident_operations_use_typed_dtos(monkeypatch):
             httpx.Response(200, json=_incident_json(1)),
         ]
     )
-    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(client, "request", request)
 
     created = await client.create_incident(
         IncidentCreate(server_handle="srv-1", incident_type=IncidentType.PROVISIONING_FAILED)

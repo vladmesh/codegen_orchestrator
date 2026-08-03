@@ -72,12 +72,12 @@ async def create_story(
     if story_type == "fix":
         action = "fix"
     else:
-        proj_resp = await api.get(f"/api/projects/{project_id}", headers=headers)
+        proj_resp = await api.get_raw(f"projects/{project_id}", headers=headers)
         proj_resp.raise_for_status()
         project_status = proj_resp.json().get("status", ProjectStatus.DRAFT)
         action = "create" if project_status == ProjectStatus.DRAFT else "feature"
 
-    stories_resp = await api.get(f"/api/stories/?project_id={project_id}", headers=headers)
+    stories_resp = await api.get_raw(f"stories/?project_id={project_id}", headers=headers)
     stories_resp.raise_for_status()
     project_stories = stories_resp.json()
     reminder_story_id = config["configurable"].get("retry_story_id", "")
@@ -124,7 +124,7 @@ async def create_story(
         "type": StoryType.PRODUCT.value,
         "created_by": "po",
     }
-    resp = await api.post("/api/stories/", json=story_payload, headers=headers)
+    resp = await api.post_raw("stories/", json=story_payload, headers=headers)
     resp.raise_for_status()
     story_id = resp.json()["id"]
     logger.info("po_story_created", story_id=story_id, project_id=project_id, title=title)
@@ -134,8 +134,8 @@ async def create_story(
     if action == "create" and description:
         current_config = proj_resp.json().get("config", {})
         current_config["detailed_spec"] = description
-        patch_resp = await api.patch(
-            f"/api/projects/{project_id}",
+        patch_resp = await api.patch_raw(
+            f"projects/{project_id}",
             json={"config": current_config},
             headers=headers,
         )
@@ -183,7 +183,7 @@ async def list_stories(project_id: str, *, config: RunnableConfig) -> str:
     """
     api = _get_api()
     headers = _user_headers(config)
-    resp = await api.get(f"/api/stories/?project_id={project_id}", headers=headers)
+    resp = await api.get_raw(f"stories/?project_id={project_id}", headers=headers)
     resp.raise_for_status()
     stories = resp.json()
 
@@ -213,8 +213,8 @@ async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfi
     headers = _user_headers(config)
     user_id = config["configurable"].get("user_id", "unknown")
 
-    resp = await api.post(
-        f"/api/stories/{story_id}/reopen",
+    resp = await api.post_raw(
+        f"stories/{story_id}/reopen",
         json={"user_report": user_report, "actor": "po"},
         headers=headers,
     )
@@ -254,12 +254,12 @@ async def get_story(story_id: str, *, config: RunnableConfig) -> str:
     headers = _user_headers(config)
 
     # Get story
-    resp = await api.get(f"/api/stories/{story_id}", headers=headers)
+    resp = await api.get_raw(f"stories/{story_id}", headers=headers)
     resp.raise_for_status()
     story = resp.json()
 
     # Get tasks linked to this story
-    tasks_resp = await api.get(f"/api/tasks/?story_id={story_id}", headers=headers)
+    tasks_resp = await api.get_raw(f"tasks/?story_id={story_id}", headers=headers)
     tasks_resp.raise_for_status()
     tasks = tasks_resp.json()
 
@@ -267,7 +267,7 @@ async def get_story(story_id: str, *, config: RunnableConfig) -> str:
     enriched_tasks = []
     for t in tasks:
         task_info = {"id": t["id"], "status": t["status"], "type": t["type"]}
-        runs_resp = await api.get(f"/api/runs/?task_id={t['id']}", headers=headers)
+        runs_resp = await api.get_raw(f"runs/?task_id={t['id']}", headers=headers)
         if runs_resp.is_success:
             runs = runs_resp.json()
             task_info["runs"] = [
@@ -299,7 +299,7 @@ async def get_run_status(run_id: str, *, config: RunnableConfig) -> str:
     """
     api = _get_api()
     headers = _user_headers(config)
-    resp = await api.get(f"/api/runs/{run_id}", headers=headers)
+    resp = await api.get_raw(f"runs/{run_id}", headers=headers)
     resp.raise_for_status()
     run = resp.json()
     return json.dumps(run, indent=2, ensure_ascii=False)

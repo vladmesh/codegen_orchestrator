@@ -21,6 +21,6 @@ def test_telegram_api_client_path_joining():
         mock_settings.return_value.api_base_url = "http://api:8000"
         client = TelegramAPIClient()
 
-        assert client._api_path("projects") == "/api/projects"
+        assert client.api_path("projects") == "/api/projects"
         with pytest.raises(ValueError):
-            client._api_path("/api/projects")
+            client.api_path("/api/projects")

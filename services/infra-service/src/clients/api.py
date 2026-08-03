@@ -14,6 +14,7 @@ import httpx
 from pydantic import BaseModel
 import structlog
 
+from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.deployment import DeploymentResult
 from shared.contracts.dto.incident import (
     IncidentCreate,
@@ -27,7 +28,6 @@ from shared.contracts.dto.server import (
     ProvisioningAttemptResetResult,
     ServerDTO,
 )
-from shared.log_config.correlation import get_correlation_id
 
 logger = structlog.get_logger(__name__)
 
@@ -45,61 +45,24 @@ class DeploymentRecord(BaseModel):
     deployed_at: datetime
 
 
-class InfrastructureAPIClient:
+class InfrastructureAPIClient(InternalAPIClient):
     """HTTP client for infrastructure-worker's required API endpoints."""
 
     def __init__(self) -> None:
         api_base_url = os.getenv("API_BASE_URL")
         if not api_base_url:
             raise RuntimeError("API_BASE_URL is not set")
-        self.base_url = api_base_url.rstrip("/")
-        if self.base_url.endswith("/api"):
-            raise RuntimeError("API_BASE_URL must not include /api")
-        self._internal_api_key = os.environ["INTERNAL_API_KEY"]
-        self._client: httpx.AsyncClient | None = None
-
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                follow_redirects=True,
-                timeout=30.0,
-            )
-        return self._client
-
-    def _api_path(self, path: str) -> str:
-        cleaned = path.lstrip("/")
-        if cleaned.startswith("api/"):
-            raise ValueError("API path should not include /api prefix")
-        return f"/api/{cleaned}"
-
-    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        client = await self._get_client()
-        headers = kwargs.pop("headers", None) or {}
-        headers["X-Internal-Key"] = self._internal_api_key
-        correlation_id = get_correlation_id()
-        if correlation_id:
-            headers.setdefault("X-Correlation-ID", correlation_id)
-        kwargs["headers"] = headers
-        resp = await client.request(method, self._api_path(path), **kwargs)
-        resp.raise_for_status()
-        return resp
-
-    async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        super().__init__(api_base_url)
 
     async def get_server(self, server_handle: str) -> ServerDTO:
         """Get server info by handle."""
-        resp = await self._request("GET", f"servers/{server_handle}")
+        resp = await self.request("GET", f"servers/{server_handle}")
         return ServerDTO.model_validate(resp.json())
 
     async def get_server_ssh_key(self, server_handle: str) -> str | None:
         """Get a server's decrypted SSH private key, if one is stored."""
         try:
-            resp = await self._request("GET", f"servers/{server_handle}/ssh-key")
+            resp = await self.request("GET", f"servers/{server_handle}/ssh-key")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == HTTPStatus.NOT_FOUND:
                 return None
@@ -108,14 +71,14 @@ class InfrastructureAPIClient:
 
     async def update_server(self, server_handle: str, payload: dict) -> dict:
         """Update server fields."""
-        resp = await self._request("PATCH", f"servers/{server_handle}", json=payload)
+        resp = await self.request("PATCH", f"servers/{server_handle}", json=payload)
         return resp.json()
 
     async def reserve_provisioning_attempt(
         self, server_handle: str, max_attempts: int
     ) -> ProvisioningAttemptReservationResult:
         """Reserve one attempt without a read-then-write race."""
-        resp = await self._request(
+        resp = await self.request(
             "POST",
             f"servers/{server_handle}/provisioning-attempts/reserve",
             json={"max_attempts": max_attempts},
@@ -126,7 +89,7 @@ class InfrastructureAPIClient:
         self, server_handle: str, attempt_number: int, episode_id: str
     ) -> ProvisioningAttemptResetResult:
         """Close an episode only if another attempt has not started."""
-        resp = await self._request(
+        resp = await self.request(
             "POST",
             f"servers/{server_handle}/provisioning-attempts/reset",
             json={"attempt_number": attempt_number, "episode_id": episode_id},
@@ -135,14 +98,14 @@ class InfrastructureAPIClient:
 
     async def get_server_services(self, server_handle: str) -> list[DeploymentRecord]:
         """Get typed deployment records for a server."""
-        resp = await self._request(
+        resp = await self.request(
             "GET", "service-deployments/", params={"server_handle": server_handle}
         )
         return [DeploymentRecord.model_validate(item) for item in resp.json()]
 
     async def create_incident(self, incident: IncidentCreate) -> IncidentDTO:
         """Create an incident through the typed incident contract."""
-        resp = await self._request("POST", "incidents/", json=incident.model_dump(mode="json"))
+        resp = await self.request("POST", "incidents/", json=incident.model_dump(mode="json"))
         return IncidentDTO.model_validate(resp.json())
 
     async def list_incidents(
@@ -158,12 +121,12 @@ class InfrastructureAPIClient:
             params["status"] = status.value
         if incident_type is not None:
             params["incident_type"] = incident_type.value
-        resp = await self._request("GET", "incidents/", params=params)
+        resp = await self.request("GET", "incidents/", params=params)
         return [IncidentDTO.model_validate(item) for item in resp.json()]
 
     async def update_incident(self, incident_id: int, incident: IncidentUpdate) -> IncidentDTO:
         """Update an incident through the typed incident contract."""
-        resp = await self._request(
+        resp = await self.request(
             "PATCH",
             f"incidents/{incident_id}",
             json=incident.model_dump(mode="json", exclude_none=True),
@@ -174,7 +137,7 @@ class InfrastructureAPIClient:
         """Atomically record a provisioning failure in its active episode."""
         if incident.incident_type is not IncidentType.PROVISIONING_FAILED:
             raise ValueError("record_provisioning_failure requires provisioning_failed")
-        resp = await self._request(
+        resp = await self.request(
             "POST", "incidents/provisioning-failure", json=incident.model_dump(mode="json")
         )
         return IncidentDTO.model_validate(resp.json())
