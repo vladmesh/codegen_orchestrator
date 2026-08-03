@@ -129,6 +129,7 @@ UNCLAIMED_TEST_FILES = {
 # build that forgets to fails on a blank base name instead of picking up a stray tag.
 FLOATING_IMAGE_TAG = "latest"
 IMAGE_FILE_SKIP_DIRS = TEST_TREE_SKIP_DIRS
+COMPOSE_MERGE_KEY = "<<"
 
 # Trees whose image references are not this repository's to pin. Reason per line, same
 # rule as the exclusions above: an unpinned image is a decision on the record.
@@ -643,25 +644,99 @@ def mapping_entry(node: yaml.Node, key: str) -> yaml.Node | None:
     return None
 
 
+def repo_path(path: Path) -> str:
+    """path relative to the repository, or as given when it sits outside it."""
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def compose_merge_sources(path: Path, service_name: str, service: yaml.Node) -> list[yaml.Node]:
+    """The mappings a service pulls in through the YAML merge key."""
+    merge = mapping_entry(service, COMPOSE_MERGE_KEY)
+    if merge is None:
+        return []
+    if isinstance(merge, yaml.MappingNode):
+        return [merge]
+    if isinstance(merge, yaml.SequenceNode) and all(
+        isinstance(item, yaml.MappingNode) for item in merge.value
+    ):
+        return list(merge.value)
+    fail(
+        f"{repo_path(path)}: service {service_name} merges something that is not a mapping, "
+        "so the image it runs cannot be read"
+    )
+
+
+def compose_service_entry(
+    path: Path, service_name: str, service: yaml.Node, key: str
+) -> yaml.Node | None:
+    """The value node a service has under key, following merge keys.
+
+    A key written on the service wins over one it merges in, which is what a YAML
+    merge means, and merges chain, so a merged mapping is searched the same way.
+    """
+    direct = mapping_entry(service, key)
+    if direct is not None:
+        return direct
+    for merged in compose_merge_sources(path, service_name, service):
+        inherited = compose_service_entry(path, service_name, merged, key)
+        if inherited is not None:
+            return inherited
+    return None
+
+
 def compose_image_references(path: Path) -> list[tuple[int, str]]:
     """(line, image) for every image a compose file pulls, empty for other YAML.
 
-    Both halves come off the same parsed node: the image is the scalar's value and
-    the line is that scalar's own mark. Reading the value from the parse and then
-    hunting for its line in the raw text would miss `image: postgres:latest # why`,
-    where the two do not match and compose still pulls a moving tag. Nodes are
-    composed rather than constructed, so tags with no constructor (compose's own
-    !reset in docker-compose.prod.yml, ansible's !vault) pass through.
+    Whatever this cannot resolve, it fails on. The gate exists to catch a moving tag
+    in a file written tomorrow, and a form it silently walks past is worse than no
+    check: an image Compose resolves and this does not would pass with no entry in
+    UNPINNED_IMAGE_REFS and no reason. So the shapes below are either read exactly or
+    named as unreadable, with the file and the service.
+
+    Both halves of a reference come off the same parsed node: the image is the
+    scalar's value, the line is that scalar's own mark. Reading the value from the
+    parse and then hunting for its line in the raw text missed
+    `image: postgres:latest # why`, where the two do not match. Nodes are composed
+    rather than constructed, so tags with no constructor (compose's own !reset in
+    docker-compose.prod.yml, ansible's !vault) pass through.
+
+    A service with no image is not an unread image: it builds from a Dockerfile,
+    which this walk checks on its own, so there is nothing to pin on the service.
     """
+    try:
+        documents = list(yaml.compose_all(path.read_text(), Loader=yaml.SafeLoader))
+    except yaml.YAMLError as error:
+        fail(f"{repo_path(path)} does not parse as YAML, so its images cannot be read: {error}")
+
     references: list[tuple[int, str]] = []
-    for document in yaml.compose_all(path.read_text(), Loader=yaml.SafeLoader):
+    for document in documents:
         services = mapping_entry(document, "services")
         if not isinstance(services, yaml.MappingNode):
             continue
-        for _, service in services.value:
-            image = mapping_entry(service, "image")
-            if isinstance(image, yaml.ScalarNode):
-                references.append((image.start_mark.line + 1, image.value))
+        for name, service in services.value:
+            service_name = name.value if isinstance(name, yaml.ScalarNode) else "<unnamed>"
+            if not isinstance(service, yaml.MappingNode):
+                fail(
+                    f"{repo_path(path)}: service {service_name} is not a mapping, "
+                    "so the image it runs cannot be read"
+                )
+            if compose_service_entry(path, service_name, service, "extends") is not None:
+                fail(
+                    f"{repo_path(path)}: service {service_name} uses extends, whose image "
+                    "this gate does not follow; name the image on the service itself"
+                )
+            image = compose_service_entry(path, service_name, service, "image")
+            if image is None:
+                continue
+            if not isinstance(image, yaml.ScalarNode):
+                fail(
+                    f"{repo_path(path)}: service {service_name} has an image that is not a "
+                    "single value, so what it pulls cannot be read"
+                )
+            references.append((image.start_mark.line + 1, image.value))
     return references
 
 

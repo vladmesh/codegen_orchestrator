@@ -180,6 +180,113 @@ def test_an_inline_comment_does_not_fail_a_pinned_compose_image(gate, image_tree
     gate.assert_pinned_base_images()
 
 
+def _write_compose(root: Path, body: str) -> None:
+    (root / "docker").mkdir(parents=True, exist_ok=True)
+    (root / "docker/test.yml").write_text(body)
+
+
+def test_a_merged_floating_image_fails_the_gate(gate, image_tree):
+    """Compose resolves `<<` into the service, so an unfollowed merge hides an image."""
+    _write_compose(
+        image_tree, "x-base: &base\n  image: redis:latest\nservices:\n  cache:\n    <<: *base\n"
+    )
+
+    with pytest.raises(SystemExit, match=r"docker/test.yml:2 \(redis:latest\)"):
+        gate.assert_pinned_base_images()
+
+
+def test_a_merged_pinned_image_passes(gate, image_tree):
+    _write_compose(
+        image_tree,
+        "x-base: &base\n  image: redis:7.4.10-alpine\nservices:\n  cache:\n    <<: *base\n",
+    )
+
+    gate.assert_pinned_base_images()
+
+
+def test_a_chain_of_merges_is_followed(gate, image_tree):
+    _write_compose(
+        image_tree,
+        "x-a: &a\n  image: redis:latest\nx-b: &b\n  <<: *a\nservices:\n  cache:\n    <<: *b\n",
+    )
+
+    with pytest.raises(SystemExit, match=r"docker/test.yml:2 \(redis:latest\)"):
+        gate.assert_pinned_base_images()
+
+
+def test_an_image_on_the_service_wins_over_a_merged_one(gate, image_tree):
+    _write_compose(
+        image_tree,
+        "x-base: &base\n  image: redis:latest\n"
+        "services:\n  cache:\n    <<: *base\n    image: redis:7.4.10-alpine\n",
+    )
+
+    gate.assert_pinned_base_images()
+
+
+def test_extends_fails_the_gate_by_name(gate, image_tree):
+    """Not resolved is not passed: extends reaches an image this walk never reads."""
+    _write_compose(
+        image_tree,
+        "services:\n  cache:\n    extends:\n      file: other.yml\n      service: base\n",
+    )
+
+    with pytest.raises(SystemExit, match="service cache uses extends"):
+        gate.assert_pinned_base_images()
+
+
+def test_a_service_that_only_builds_is_not_a_violation(gate, image_tree):
+    """It has no image to pin; the Dockerfile it builds is walked on its own."""
+    _write_dockerfile(image_tree, "FROM python:3.12.13-slim\n")
+    _write_compose(image_tree, "services:\n  app:\n    build:\n      context: ../service\n")
+
+    gate.assert_pinned_base_images()
+
+
+def test_an_interpolated_image_stays_floating(gate, image_tree):
+    _write_compose(image_tree, "services:\n  app:\n    image: ${APP_IMAGE}\n")
+
+    with pytest.raises(SystemExit, match=r"docker/test.yml:3 \(\$\{APP_IMAGE\}\)"):
+        gate.assert_pinned_base_images()
+
+
+def test_an_image_that_is_not_a_single_value_fails_the_gate(gate, image_tree):
+    _write_compose(image_tree, "services:\n  app:\n    image:\n      - redis:7.4.10-alpine\n")
+
+    with pytest.raises(SystemExit, match="service app has an image that is not a single value"):
+        gate.assert_pinned_base_images()
+
+
+def test_a_merge_of_something_that_is_not_a_mapping_fails_the_gate(gate, image_tree):
+    _write_compose(image_tree, 'x-base: &base "text"\nservices:\n  cache:\n    <<: *base\n')
+
+    with pytest.raises(SystemExit, match="service cache merges something that is not a mapping"):
+        gate.assert_pinned_base_images()
+
+
+def test_a_service_that_is_not_a_mapping_fails_the_gate(gate, image_tree):
+    _write_compose(image_tree, "services:\n  cache: redis:latest\n")
+
+    with pytest.raises(SystemExit, match="service cache is not a mapping"):
+        gate.assert_pinned_base_images()
+
+
+def test_an_undefined_anchor_fails_the_gate_instead_of_raising(gate, image_tree):
+    _write_compose(image_tree, "services:\n  cache:\n    <<: *missing\n")
+
+    with pytest.raises(SystemExit, match="does not parse as YAML"):
+        gate.assert_pinned_base_images()
+
+
+def test_yaml_that_is_not_a_compose_file_is_left_alone(gate, image_tree):
+    """A workflow's jobs mapping and an ansible task list are not services."""
+    _write_dockerfile(image_tree, "FROM python:3.12.13-slim\n")
+    (image_tree / "workflow.yml").write_text("jobs:\n  build:\n    steps:\n      - run: make\n")
+    (image_tree / "tasks.yml").write_text("- name: run a container\n  image: redis:latest\n")
+
+    gate.assert_pinned_base_images()
+
+
 @pytest.mark.parametrize("body", ["FROM redis:latest\n", "FROM redis:latest # explanation\n"])
 def test_an_inline_comment_does_not_hide_a_floating_dockerfile_image(gate, image_tree, body):
     _write_dockerfile(image_tree, body)

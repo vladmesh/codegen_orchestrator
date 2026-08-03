@@ -12,7 +12,12 @@
   it. A build that forgets the argument fails on a blank base name. `make ci-contract` now walks
   every Dockerfile and compose file in the tree and fails, with file and line, on an image with
   `:latest` or no tag at all; a reference left floating on purpose needs an entry in
-  `UNPINNED_IMAGE_REFS` or `UNPINNED_IMAGE_DIRS` with a reason.
+  `UNPINNED_IMAGE_REFS` or `UNPINNED_IMAGE_DIRS` with a reason. In a compose file it reads a
+  service's `image` directly or through YAML merge keys, and a service with only a `build` is no
+  violation, since the Dockerfile it builds is walked separately. What it cannot read it does not
+  wave through: `extends`, an unresolvable anchor, an `image` that is not a single value, or a
+  file that does not parse fail the gate by name, so a shape the gate does not follow can never
+  pass as if it had been checked.
 
 - The CI contract gate derives the list of test files from the tree instead of trusting a
   constant in its own head. `scripts/check-ci-gate.py` walks the repository for files pytest
