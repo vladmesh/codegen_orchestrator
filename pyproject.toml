@@ -47,11 +47,11 @@ members = [
 ]
 
 [tool.uv.sources]
-# `shared` is not a package. It reaches consumers as a bind-mount (compose) or a
-# `COPY shared` (images); tests import it from the repo tree via PYTHONPATH.
-codegen-orchestrator-shared-contracts = { path = "shared/contracts", editable = true }
-codegen-orchestrator-shared-redis = { path = "shared/redis", editable = true }
-codegen-orchestrator-shared-log-config = { path = "shared/log_config", editable = true }
+# Only workspace members here. `shared` is not a package and has no entry: it
+# reaches consumers as a bind-mount (compose) or a `COPY shared` (images), and
+# tests import it from the repo tree via PYTHONPATH. See
+# docs/decisions/shared-is-not-a-package.md. Every name below has to be depended
+# on by something, enforced by tests/unit/test_uv_sources_are_used.py.
 api = { workspace = true }
 langgraph-orchestrator = { workspace = true }
 telegram-bot = { workspace = true }

@@ -2,6 +2,17 @@
 
 ## 2026-08-03
 
+- `shared` has one declared form left, and it is the tree. The three editable entries in the root
+  `[tool.uv.sources]` (`codegen-orchestrator-shared-contracts`, `-redis`, `-log-config`) and the
+  three `pyproject.toml` files behind them are gone: nothing depended on those names, they were
+  absent from `uv.lock`, and they installed nothing while reading like a package boundary. Why that
+  route and not making `shared` a workspace member or cutting it into real packages is written down
+  in `docs/decisions/shared-is-not-a-package.md`, linked from `docs/REBUILD.md`, which now names all
+  three delivery channels including the import from the tree over `PYTHONPATH`.
+  `tests/unit/test_uv_sources_are_used.py` fails if a source entry that nothing depends on comes
+  back. `shared/pyproject.toml` is untouched and stays the single declaration of `shared`'s
+  third-party dependencies; no Dockerfile and no compose service changed, and `uv.lock` did not move.
+
 - The last floating base image tags are gone, and the gate keeps them gone. Both
   `COPY --from=ghcr.io/astral-sh/uv:latest` lines name `0.12.1`, the version the built worker
   image and the registry tag both report today. The three derived worker images

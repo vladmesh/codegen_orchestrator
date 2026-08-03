@@ -52,7 +52,7 @@ Full pipeline: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes: [docs/NO
 **Key non-obvious details:**
 - `engineering-worker` and `deploy-worker` share the `langgraph` Docker image (different entrypoints)
 - `shared/` is never installed as a package. Compose services bind-mount it (`./shared:/app/shared`), images `COPY` it, tests import it from the tree via `PYTHONPATH`. Editing `shared/` needs no sync and no rebuild for bind-mounted services — see [docs/REBUILD.md](docs/REBUILD.md).
-- `shared/pyproject.toml` declares shared's third-party deps but installs nothing; every consumer repeats them in its own `pyproject.toml`, enforced by `shared/tests/unit/test_shared_dependency_parity.py`.
+- `shared/pyproject.toml` is the only pyproject under `shared/`: it declares shared's third-party deps but installs nothing, and every consumer repeats them in its own `pyproject.toml`, enforced by `shared/tests/unit/test_shared_dependency_parity.py`. `shared` has no `[tool.uv.sources]` entry — see [docs/decisions/shared-is-not-a-package.md](docs/decisions/shared-is-not-a-package.md).
 - External coding agents (Claude Code, Factory.ai Droid) run inside worker containers managed by `worker-manager`
 
 **Related Projects**: `/home/dev/projects/service-template` — spec-first framework for generating microservices

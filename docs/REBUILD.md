@@ -17,7 +17,11 @@ first. This is the main source of "I rebuilt it and the changes did not get pick
 ## How shared gets delivered
 
 `shared` is not an installable package: it is not installed into the venv, and there is no installed
-copy anymore. The only source is the repository tree, and it reaches its consumers through two channels.
+copy anymore. It also declares no package boundary of its own — the root `pyproject.toml` has no
+`[tool.uv.sources]` entry for it and there are no per-subpackage `pyproject.toml` files under
+`shared/`; why it is this way and not a workspace member is in
+[decisions/shared-is-not-a-package.md](decisions/shared-is-not-a-package.md). The only source is the
+repository tree, and it reaches its consumers through three channels.
 
 **Bind-mount** `./shared:/app/shared` — ten compose services: `api`, `langgraph`,
 `deploy-worker`, `qa-worker`, `engineering-worker`, `architect`, `infra-service`, `telegram_bot`,
@@ -29,8 +33,9 @@ copy anymore. The only source is the repository tree, and it reaches its consume
 edit to `shared/` requires rebuilding only that one. The worker images live in the second circuit and are
 rebuilt according to `WORKER_SOURCE_HASH`.
 
-Locally and in tests `shared` is imported straight from the tree: `scripts/test-unit-local.sh` and
-`[tool.pytest.ini_options] pythonpath` keep the repository root on `PYTHONPATH`.
+**Import from the tree over `PYTHONPATH`** — locally and in tests. `scripts/test-unit-local.sh` and
+`[tool.pytest.ini_options] pythonpath` keep the repository root importable, so a test run always reads
+`shared/` as it is on disk, with no copy step at all.
 
 Since `shared` is not installed anywhere, its `dependencies` install nothing: every
 consumer has to repeat them in its own `pyproject.toml`. This is watched by
