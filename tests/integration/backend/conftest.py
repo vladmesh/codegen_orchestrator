@@ -12,6 +12,7 @@ import pytest
 import redis.asyncio as redis
 
 import docker
+from scripts.shared_freshness import source_hash
 from shared.contracts.queues.worker import CreateWorkerResponse
 
 # Configure pytest-asyncio
@@ -26,6 +27,10 @@ def pytest_configure(config):
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://172.31.0.20:8000")
+
+# The repository as this container sees it: shared/, packages/ and services/ are mounted
+# under /app, which is what source_hash() hashes.
+TREE_ROOT = "/app"
 
 # Stream constants
 REDIS_STREAM_COMMANDS = "worker:commands"
@@ -359,7 +364,12 @@ _SKIP_DIRS = {
 
 
 def _content_hash(*paths: str) -> str:
-    """SHA256 hash of file/directory contents for cache invalidation."""
+    """SHA256 hash of file/directory contents for cache invalidation.
+
+    Not a producer of `SOURCE_HASH` — that value comes from `source_hash()` in
+    `scripts/shared_freshness.py`, the only place it is computed. What is left here is
+    the cache key of a derived worker image (`_child_image_hash` below).
+    """
     h = hashlib.sha256()
     for path in sorted(paths):
         if os.path.isfile(path):
@@ -474,16 +484,19 @@ def setup_worker_base_images():
     client = docker.DockerClient(base_url=DOCKER_HOST)
 
     # Source paths mapped in integration-test-runner container
-    shared_path = "/app/shared"
-    packages_path = "/app/packages"
-    images_dir = "/app/services/worker-manager/images"
+    shared_path = f"{TREE_ROOT}/shared"
+    packages_path = f"{TREE_ROOT}/packages"
+    images_dir = f"{TREE_ROOT}/services/worker-manager/images"
 
     # Compute content hashes for cache invalidation
     common_dockerfile = f"{images_dir}/worker-base-common/Dockerfile"
     claude_dockerfile = f"{images_dir}/worker-base-claude/Dockerfile"
     factory_dockerfile = f"{images_dir}/worker-base-factory/Dockerfile"
 
-    common_hash = _content_hash(common_dockerfile, shared_path, packages_path)
+    # The hash of the tree, from the only place it is computed: the same function the
+    # Makefile and the freshness check read, so what this fixture stamps on the image is
+    # comparable with what the tree says.
+    common_hash = source_hash(TREE_ROOT)
     # Child images depend on common hash + their own Dockerfile
     claude_hash = _child_image_hash(claude_dockerfile, common_hash)
     factory_hash = _child_image_hash(factory_dockerfile, common_hash)

@@ -45,3 +45,7 @@ COPY secrets.yaml ./secrets.yaml
 
 # Run service
 CMD ["python", "-m", "src"]
+
+# Which tree this image baked shared from; read by scripts/shared_freshness.py.
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH

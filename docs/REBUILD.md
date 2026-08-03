@@ -2,9 +2,9 @@
 
 How to rebuild the whole orchestrator without leaving half the system on old code.
 
-## Two independent circuits
+## Two circuits, one check
 
-The build splits into two parts, and they are not connected to each other:
+The build splits into two parts, and neither one builds the other:
 
 1. **Compose services.** 20 services in `docker-compose.yml`.
 2. **Worker images.** `worker-base-common` and the images derived from it: `worker-base-claude`,
@@ -13,6 +13,10 @@ The build splits into two parts, and they are not connected to each other:
 
 `docker compose build` does not touch the second circuit, and building the workers does not touch the
 first. This is the main source of "I rebuilt it and the changes did not get picked up".
+
+What connects them is a check, not a build: `make check-shared-freshness` answers, across both
+circuits, whether anything built is behind the tree on `shared`. Details in
+[Is anything built behind the tree](#is-anything-built-behind-the-tree) below.
 
 ## How shared gets delivered
 
@@ -29,9 +33,12 @@ repository tree, and it reaches its consumers through three channels.
 (`docker compose restart <service>`), no image rebuild is needed.
 
 **`COPY shared`** in the Dockerfile — the worker images, the test images and `worker-manager`.
-`worker-manager` is the only build service in compose without a mount, so within the compose circuit an
-edit to `shared/` requires rebuilding only that one. The worker images live in the second circuit and are
-rebuilt according to `WORKER_SOURCE_HASH`.
+`worker-manager` is the only service in `docker-compose.yml` without a mount, so in the dev stack an
+edit to `shared/` requires rebuilding only that one. The images the compose files under `docker/test/`
+build have no mount either, and they outlive the run that built them. The worker images live in the
+second circuit and are rebuilt according to `WORKER_SOURCE_HASH`. This is the only channel that can go
+stale, and the only one the freshness check looks at: a bind-mounted container picks up an edit on
+restart, and a test run imports `shared` from the tree.
 
 **Import from the tree over `PYTHONPATH`** — locally and in tests. `scripts/test-unit-local.sh` and
 `[tool.pytest.ini_options] pythonpath` keep the repository root importable, so a test run always reads
@@ -84,9 +91,82 @@ check `docker compose ps api` and `docker compose logs api`.
 `make migrate` (`compose exec api alembic upgrade head`) is needed only to apply the schema without
 restarting the service.
 
+## Is anything built behind the tree
+
+```bash
+make check-shared-freshness
+```
+
+Read-only: it inspects local images, builds nothing, starts nothing, goes nowhere near the network or a
+live host. Non-zero exit means something built holds an older `shared` than the tree does, and the
+message names the image and the reason. The fix is a rebuild — the check never rebuilds anything
+itself. Implementation: `scripts/shared_freshness.py`, tests in
+`scripts/tests/test_shared_freshness.py`.
+
+Coverage is derived from the tree, never listed by hand, and nothing it cannot read is allowed to
+pass:
+
+- **Every Dockerfile in the repository is parsed.** One that copies `shared` has to declare
+  `ARG SOURCE_HASH` and the `org.codegen.worker_source_hash` label; one that does not fails the check
+  by name. Every form of `COPY` that docker accepts is read — shell form, JSON array, line
+  continuation — and a `COPY` whose sources cannot be resolved (built out of a variable, a glob where
+  the top directory should be, JSON that does not parse) fails the check naming the file. "We did not
+  find `shared` in it" is not a synonym for "it does not bake `shared`".
+- **Every Dockerfile that bakes `shared` has to reach a declared image name.** A route is what turns a
+  Dockerfile into a name something can look up afterwards, and there are two of them:
+
+  | Route | What it has to declare |
+  |---|---|
+  | a compose service | an explicit literal `image:` and `SOURCE_HASH` in `build.args` |
+  | a Makefile recipe | an explicit `-t` tag and `--build-arg SOURCE_HASH` |
+
+  `image: ${SOMETHING}` is not a declared name: compose resolves it outside the tree, so the check
+  cannot say which image gets built and would never inspect the one that does. It fails naming the
+  compose file, the service and the Dockerfile — the same rule `is_pinned_image()` in
+  `scripts/check-ci-gate.py` applies to a pulled reference.
+
+  A Dockerfile no route reaches fails the check by name. It is the same hole as an unreadable one: an
+  image nobody names is compared with nothing, and a comparison nobody runs cannot report staleness. The
+  answer is to connect the file to a route or to delete it — the check has no list of exceptions, on
+  purpose, because an exception by category is exactly what let nine files out of the comparison before.
+  A `docker build` in a recipe that does not say which Dockerfile it builds (no `-f`, or a path assembled
+  out of a make variable) fails the check as well: not knowing what it builds is not the same as knowing
+  it does not bake `shared`.
+- **Every compose file in the repository is parsed**, `docker/test/**` included. Neither compose rule
+  asks docker anything, so both hold on a clean machine. A compose file that has `services:` and cannot
+  be parsed fails the check too.
+- **The images it compares** are the ones whose baked copy is what actually runs: every route that does
+  not mount `./shared` over the baked copy. That is the four worker base images, read off the
+  `rebuild-worker-images` recipe, `worker-manager` in the dev stack, and the `:test` images the compose
+  files under `docker/test/` build. A build that stamps `SOURCE_HASH` without copying `shared` itself is
+  compared too — `worker-base-claude` and its siblings are `FROM ${BASE_IMAGE}` over the common image, so
+  they carry the `shared` it baked and say which one by stamping the label. An image that is compared and
+  cannot say what it baked (no label, an empty label, a value that is not a hash) fails by name and
+  reason. There is no third answer where the check shrugs and passes.
+- **A mount is not staleness.** A compose service with `./shared:/app/shared` runs the tree, not the
+  copy in its image, so its image is not compared. It still has to be nameable and to stamp its hash,
+  so the day the mount goes away the check works without being taught anything.
+- **Not built is not behind.** An image absent from the local docker holds no copy of `shared`, so it
+  is reported as not built and does not fail the check. That is what makes the check green on a clean
+  machine and in CI, where nothing is built, and it is why it can run in `fast-checks`. A machine with
+  no docker at all, or with no daemon to ask, reads the same way for every image, so which Dockerfile
+  reaches which name — the whole static half — answers identically with docker and without it.
+- **The label is written at build time** from `--build-arg SOURCE_HASH`. The Makefile exports
+  `WORKER_SOURCE_HASH`, so a build through any make target stamps the truth; `docker compose build`
+  run by hand does not, and the resulting image fails the check with an empty label rather than
+  passing with an unknown one.
+
+`WORKER_SOURCE_HASH` itself is computed by `source_hash()` in `scripts/shared_freshness.py` and nowhere
+else. `make`, the check and the two fixtures that build worker base images
+(`tests/integration/backend/conftest.py`, `tests/e2e/conftest.py`) all call that one function, so what
+a build stamps on an image and what the check expects cannot drift apart. The only other hash in that
+area is `_child_image_hash` in the backend fixture, which is a cache key for a derived worker image and
+is never written as `SOURCE_HASH`.
+
 ## Worker images: why a separate mechanism
 
-**The freshness hash.** `WORKER_SOURCE_HASH` in the Makefile is the sha256 of:
+**The freshness hash.** `WORKER_SOURCE_HASH`, computed by `scripts/shared_freshness.py` and read from
+there by the Makefile, is the sha256 of:
 
 - all of `shared/`
 - all of `packages/worker-wrapper/`
@@ -103,8 +183,8 @@ rebuild. The price is accepted deliberately: an extra rebuild is cheaper than a 
 `FROM ${BASE_IMAGE}`, and `BASE_IMAGE` has no default: each producer names the common image it
 just produced. `make rebuild-worker-images` tags common as `worker-base-common:$(WORKER_SOURCE_HASH)`
 alongside `:latest` and passes the hash tag; the backend integration fixture
-(`tests/integration/backend/conftest.py`) passes its own content-hash tag; the e2e fixture passes
-the tag it builds one step earlier. A build that forgets the argument fails on a blank base name
+(`tests/integration/backend/conftest.py`) passes the tree hash from `source_hash()` as its common tag;
+the e2e fixture passes the tag it builds one step earlier. A build that forgets the argument fails on a blank base name
 rather than layering on whatever `:latest` happens to be on the host.
 
 The backend integration fixture skips a build when the tag already exists in its persistent DinD
@@ -132,8 +212,12 @@ worker-manager fails with a `RuntimeError` instead of caching unknown code.
 | `make check-worker-images` | read-only: compares `WORKER_SOURCE_HASH` with the label of each of the four images, prints the mismatch and exits with a non-zero code. Builds nothing. |
 | `make ensure-worker-images` | the same check, but on a mismatch it calls `rebuild-worker-images`. |
 
-Other targets (`make build`, `nuke`) call `ensure-worker-images`. `check-worker-images`
-is suitable for CI and for manual diagnostics: you can rely on it, it does not mutate the system.
+Other targets (`make build`, `nuke`) call `ensure-worker-images`. `check-worker-images` does not mutate
+the system either, so it is fine for manual diagnostics, but it treats a missing image as something to
+build — which is what `ensure-worker-images` needs and what makes it useless on a machine where nothing
+is built. The check that runs in CI is `make check-shared-freshness`; it covers these four images too,
+plus `worker-manager` and the images the test compose files build, and it passes when an image is
+absent.
 
 ## A clean rebuild after a merge
 
@@ -151,13 +235,13 @@ docker compose exec -T db psql -U postgres -d orchestrator -tAc \
 docker compose ps api
 docker compose logs --tail=30 api
 
-# the worker images match the sources
-make check-worker-images
+# nothing built is behind the tree on shared
+make check-shared-freshness
 ```
 
 Expected: `alembic_version` equals the latest revision in
-`services/api/migrations/versions/`, `api` is healthy, `check-worker-images` prints
-`up to date`.
+`services/api/migrations/versions/`, `api` is healthy, and `check-shared-freshness` prints
+`nothing built is behind the tree on shared`.
 
 ## Small things that cause confusion
 

@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-08-04
+
+- The freshness check now answers for the whole tree, not for the part it happened to be able to
+  compare. Every Dockerfile that bakes `shared` has to reach a declared image name through a build
+  route — a compose service with an explicit `image:`, or a Makefile recipe that builds it under an
+  explicit `-t` tag — and one that no route reaches fails `make check-shared-freshness` by name. A
+  compose `image:` counts as declared only when it is a literal: `image: ${SOMETHING}` is resolved
+  outside the tree, so it names nothing the check can inspect and it fails as an unreadable route,
+  the same rule `is_pinned_image()` in `scripts/check-ci-gate.py` applies to a pulled reference.
+  Before this, a Dockerfile that copied `shared` and stamped its label correctly but hung off no
+  compose service and no recipe was compared with nothing and the check said nothing; that was true of
+  nine of the seventeen files that bake `shared`, `services/scaffolder/Dockerfile` among them. Eight
+  of the nine already had a route and were merely outside the label comparison because their service
+  mounts `./shared:/app/shared` and runs the tree; the ninth,
+  `packages/worker-wrapper/Dockerfile.test`, is deleted — nothing has built it since `2621eb42`
+  dropped its make target in March, and the suite it would have run
+  (`tests/integration/worker_wrapper`) is red and already tracked in `scripts/check-ci-gate.py`. The
+  Makefile side is read the same way as compose from now on: every recipe is parsed, a `docker build`
+  of a Dockerfile that bakes `shared` owes `--build-arg SOURCE_HASH` and a tag, and a build that does
+  not say which Dockerfile it builds fails the check instead of being skipped. There is no list of
+  exceptions, deliberately. A machine without docker, or without a reachable daemon, now reads as
+  "nothing built" for every image rather than crashing, so the static half of the check gives the same
+  answer with docker and without it. Tests: `scripts/tests/test_shared_freshness.py`; docs:
+  `docs/REBUILD.md`.
+
+- A built stand can no longer be quietly behind the tree on `shared`. `make check-shared-freshness`
+  (`scripts/shared_freshness.py`) compares the source hash baked into every reused image with the hash
+  of the tree and exits non-zero on a difference, naming the image. It reuses what the worker circuit
+  already had — `--build-arg SOURCE_HASH` and the `org.codegen.worker_source_hash` label — instead of
+  adding a second mechanism, and the hash itself is now computed in that script and read from there by
+  the Makefile and by the two fixtures that build worker base images, so there is one counter rather
+  than several that can drift. Coverage is derived from the tree, not listed: every Dockerfile in the
+  repository is parsed in every `COPY` form docker accepts, and every compose file is parsed,
+  `docker/test/**` included. A service built from a Dockerfile that bakes `shared` has to pass
+  `SOURCE_HASH` in `build.args` and to declare an explicit `image:` name, so the images the test
+  compose files leave behind are checked like any other; the services that mount
+  `./shared:/app/shared` run the tree and are not compared. Nothing that cannot be read is allowed to
+  pass: an unreadable `COPY`, an unparsable compose file, a Dockerfile without `ARG SOURCE_HASH` and
+  the label, or a compared image whose label is missing, empty or not a hash all fail the check by
+  name. An image that is not built is not behind anything and does not fail the check — that is what
+  keeps it green in CI, where it now runs in `fast-checks`. It builds nothing, starts nothing and uses
+  no network. Tests: `scripts/tests/test_shared_freshness.py`; docs: `docs/REBUILD.md`.
+
 ## 2026-08-03
 
 - `shared` has one declared form left, and it is the tree. The three editable entries in the root

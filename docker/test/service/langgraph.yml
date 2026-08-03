@@ -1,9 +1,12 @@
 services:
   # The service under test
   langgraph:
+    image: codegen-orchestrator/langgraph:test
     build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
@@ -34,9 +37,12 @@ services:
 
   # Test Runner
   langgraph-test-runner:
+    image: codegen-orchestrator/langgraph-test-runner:test
     build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile.test
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/service/", "-v"]
     environment:
       - REDIS_URL=redis://redis:6379/0

@@ -10,9 +10,12 @@ services:
       - test-net
 
   telegram-bot:
+    image: codegen-orchestrator/telegram_bot:test
     build: 
         context: ../../..
         dockerfile: services/telegram_bot/Dockerfile
+        args:
+          SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["sh", "-c", "trap 'exit 0' TERM INT; python -c 'import src.main'; sleep infinity & wait"]
     environment:
       TELEGRAM_BOT_TOKEN: "123:test"
@@ -28,9 +31,12 @@ services:
       - test-net
 
   telegram_bot-test-runner:
+    image: codegen-orchestrator/telegram_bot-test-runner:test
     build: 
         context: ../../..
         dockerfile: services/telegram_bot/Dockerfile.test
+        args:
+          SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       REDIS_URL: redis://redis:6379/0
       TELEGRAM_BOT_TOKEN: "123:test"
