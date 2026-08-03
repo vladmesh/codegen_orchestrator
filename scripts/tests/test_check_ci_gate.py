@@ -77,6 +77,39 @@ def test_empty_walk_is_a_failure_not_a_pass(gate, tmp_path, monkeypatch):
         gate.discover_test_dirs()
 
 
+def test_a_file_claim_stops_at_that_file(gate):
+    """pytest does not walk from a file argument to its siblings, so nor does a claim."""
+    claims = {"suite/tests/test_claimed.py": "make test-integration-suite"}
+
+    assert gate.claiming_target(claims, "suite/tests/test_claimed.py") == (
+        "make test-integration-suite"
+    )
+    assert gate.claiming_target(claims, "suite/tests/test_sibling.py") is None
+
+
+def test_a_directory_claim_reaches_every_descendant(gate):
+    claims = {"suite/tests": "make test-unit suite suite"}
+
+    assert gate.claiming_target(claims, "suite/tests/test_top.py") == "make test-unit suite suite"
+    assert gate.claiming_target(claims, "suite/tests/deep/test_nested.py") == (
+        "make test-unit suite suite"
+    )
+
+
+def test_a_file_argument_resolves_to_the_file_not_its_directory(gate):
+    resolved = gate.resolve_test_path(
+        gate.MAKEFILE, "tests/integration/template/test_stage5_mock_smoke.py", None
+    )
+
+    assert resolved == "tests/integration/template/test_stage5_mock_smoke.py"
+
+
+def test_makefile_pytest_paths_read_a_host_run_without_its_flag_values(gate):
+    paths = gate.makefile_pytest_paths("test-integration-template")
+
+    assert paths == ["tests/integration/template/test_stage5_mock_smoke.py"]
+
+
 def test_repo_tree_suffix_named_files_are_covered(gate):
     """The real tree, globbed independently of the gate's own walk."""
     suffix_dirs = {

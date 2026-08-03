@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 import tomllib
 from typing import Any
 
@@ -37,18 +38,25 @@ MANUAL_ONLY_INTEGRATION_SUITES = {
 
 # --- Test suite coverage ----------------------------------------------------
 #
-# A test directory is any directory in the tree holding at least one file whose
-# name matches python_files of the root [tool.pytest.ini_options]; with no such
-# setting the patterns are pytest's own defaults, test_*.py and *_test.py. The
-# set is walked, never listed by hand, so a directory added tomorrow shows up
-# here on its own. It counts as covered when it, or a directory above it (pytest
-# recurses into subdirectories), is claimed by a CI target, or when it is named
-# exactly in UNCLAIMED_TEST_DIRS.
+# A test file is any file in the tree whose name matches python_files of the root
+# [tool.pytest.ini_options]; with no such setting the patterns are pytest's own
+# defaults, test_*.py and *_test.py. The set is walked, never listed by hand, so a
+# file added tomorrow shows up here on its own.
 #
 # Claims are read off the targets themselves: the ALL_SUITES table in
-# scripts/test-unit-local.sh, and the pytest commands in the compose files behind
-# the test-service and test-integration matrices.
+# scripts/test-unit-local.sh, the pytest commands in the compose files behind the
+# test-service and test-integration matrices, and the pytest commands of an
+# explicit Makefile target behind an integration suite.
+#
+# A claim covers exactly what the target it was read from executes: a directory
+# argument covers that directory recursively, because pytest recurses into
+# subdirectories, and a file argument covers that one file, because pytest does
+# not walk from a file to its siblings. Nothing else widens a claim. A test file
+# no claim covers has to be named in UNCLAIMED_TEST_FILES, or sit directly in a
+# directory named in UNCLAIMED_TEST_DIRS.
 PYTEST_DEFAULT_PYTHON_FILES = ("test_*.py", "*_test.py")
+# Separated pytest flags whose value would otherwise be read as a path argument.
+PYTEST_FLAGS_WITH_VALUE = {"-k", "-m", "-n", "-p", "--deselect", "--ignore", "--rootdir"}
 TEST_TREE_SKIP_DIRS = {
     ".git",
     ".mypy_cache",
@@ -60,8 +68,9 @@ TEST_TREE_SKIP_DIRS = {
     "venv",
 }
 
-# Test directories no CI target runs. Every line needs a reason; the point of the
-# list is that skipping a suite is a decision on the record, not a default.
+# Test directories no CI target runs, holding for the files directly in them and
+# not for their subdirectories. Every line needs a reason; the point of the list
+# is that skipping a suite is a decision on the record, not a default.
 UNCLAIMED_TEST_DIRS = {
     "scripts": (
         "scripts/test_e2e_flow.py, test_e2e_analyst.py and e2e_scaffold_test.py "
@@ -88,6 +97,19 @@ UNCLAIMED_TEST_DIRS = {
     "tests/integration/worker_wrapper": (
         "red: test_worker_wrapper_lifecycle expects a /workspace git checkout that "
         "exists only inside a worker container; issue:576dccd5bbc42c48a794"
+    ),
+}
+
+# Single test files no CI target runs, for directories where the rest of the files
+# do run. Same rule as UNCLAIMED_TEST_DIRS: a reason per line.
+UNCLAIMED_TEST_FILES = {
+    "tests/integration/template/test_secrets_injection.py": (
+        "the template suite runs an explicit file list, and this file has never "
+        "been on it; issue:081da416652a2b0ad576"
+    ),
+    "tests/integration/template/test_workflow_validation.py": (
+        "the template suite runs an explicit file list, and this file has never "
+        "been on it; issue:081da416652a2b0ad576"
     ),
 }
 
@@ -322,16 +344,46 @@ def pytest_paths(compose_file: Path) -> list[str]:
     return paths
 
 
-def resolve_test_path(compose_file: Path, path: str, service_root: str | None) -> str:
-    """Map a container-relative pytest argument back onto a repo path."""
+def resolve_test_path(source: Path, path: str, service_root: str | None) -> str:
+    """Map a container-relative pytest argument back onto a repo path.
+
+    A file argument stays a file. Folding it up to its parent directory would
+    hand the target a claim on every sibling, which pytest does not run.
+    """
     candidates = [path] if service_root is None else [path, f"{service_root}/{path}"]
     found = [candidate for candidate in candidates if (ROOT / candidate).exists()]
     if len(found) != 1:
-        fail(f"{compose_file} runs pytest on {path}, which does not resolve to one repo path")
-    resolved = found[0].rstrip("/")
-    if (ROOT / resolved).is_file():
-        resolved = str(Path(resolved).parent)
-    return resolved
+        fail(f"{source} runs pytest on {path}, which does not resolve to one repo path")
+    return found[0].rstrip("/")
+
+
+def makefile_pytest_paths(target: str) -> list[str]:
+    """Path arguments of the pytest commands written out in a Makefile target.
+
+    Most integration suites are served by the test-integration-% pattern rule and
+    only start their compose file, so they have nothing here. A suite with a rule
+    of its own can run pytest on the host as well, and that run is a claim like
+    any other. A nested $(MAKE) is not followed: the target it calls starts a
+    compose file, which pytest_paths already reads.
+    """
+    if f"{target}:\n" not in MAKEFILE.read_text():
+        return []
+    paths: list[str] = []
+    for command in make_target_commands(target):
+        words = shlex.split(command)
+        if "pytest" not in words:
+            continue
+        arguments = words[words.index("pytest") + 1 :]
+        skip_next = False
+        for argument in arguments:
+            if skip_next:
+                skip_next = False
+                continue
+            if argument.startswith("-"):
+                skip_next = argument in PYTEST_FLAGS_WITH_VALUE
+                continue
+            paths.append(argument)
+    return paths
 
 
 def unit_local_suites() -> list[tuple[str, str]]:
@@ -370,22 +422,41 @@ def test_file_patterns() -> tuple[str, ...]:
     return tuple(configured)
 
 
-def discover_test_dirs() -> set[str]:
-    """Repo-relative directories holding at least one file pytest would collect."""
+def discover_test_files() -> set[str]:
+    """Repo-relative files pytest would collect."""
     found: set[str] = set()
     for pattern in test_file_patterns():
         for path in ROOT.rglob(pattern):
             relative = path.relative_to(ROOT)
             if TEST_TREE_SKIP_DIRS.intersection(relative.parts):
                 continue
-            found.add(str(relative.parent))
+            found.add(str(relative))
     if not found:
         fail("no test directories found in the tree; the walk is broken")
     return found
 
 
-def claimed_test_dirs(jobs: dict[str, Any]) -> dict[str, str]:
-    """Directory -> the CI target that runs it, read off the targets themselves."""
+def discover_test_dirs() -> set[str]:
+    """Repo-relative directories holding at least one file pytest would collect."""
+    return {str(Path(path).parent) for path in discover_test_files()}
+
+
+def claiming_target(claims: dict[str, str], test_file: str) -> str | None:
+    """The target that runs test_file, or None.
+
+    A directory claim reaches everything under it. A file claim reaches that file
+    and stops there.
+    """
+    if test_file in claims:
+        return claims[test_file]
+    for parent in Path(test_file).parents:
+        if str(parent) in claims:
+            return claims[str(parent)]
+    return None
+
+
+def claimed_test_paths(jobs: dict[str, Any]) -> dict[str, str]:
+    """Repo path -> the CI target that runs it, read off the targets themselves."""
     claims: dict[str, str] = {}
     for label, test_dir in unit_local_suites():
         if not (ROOT / test_dir).is_dir():
@@ -403,38 +474,56 @@ def claimed_test_dirs(jobs: dict[str, Any]) -> dict[str, str]:
 
     integration_suites = matrix_values(require_job(jobs, "test-integration"), "suite")
     for suite in integration_suites | set(MANUAL_ONLY_INTEGRATION_SUITES):
+        target = f"make test-integration-{suite}"
         compose_file = INTEGRATION_COMPOSE_DIR / f"{suite}.yml"
         for path in pytest_paths(compose_file):
             resolved = resolve_test_path(compose_file, path, None)
-            claims.setdefault(resolved, f"make test-integration-{suite}")
+            claims.setdefault(resolved, target)
+        for path in makefile_pytest_paths(f"test-integration-{suite}"):
+            resolved = resolve_test_path(MAKEFILE, path, None)
+            claims.setdefault(resolved, target)
     return claims
 
 
 def assert_test_suite_coverage(jobs: dict[str, Any]) -> None:
-    claims = claimed_test_dirs(jobs)
+    claims = claimed_test_paths(jobs)
+    test_files = discover_test_files()
+
     for excluded, reason in UNCLAIMED_TEST_DIRS.items():
         if not (ROOT / excluded).is_dir():
             fail(f"UNCLAIMED_TEST_DIRS names {excluded}, which is not in the tree")
         if not reason.strip():
             fail(f"UNCLAIMED_TEST_DIRS entry {excluded} has no reason")
-        if excluded in claims:
-            fail(f"{excluded} is both excluded and claimed by {claims[excluded]}")
+        target = claiming_target(claims, excluded)
+        if target:
+            fail(f"{excluded} is both excluded and claimed by {target}")
+
+    for excluded, reason in UNCLAIMED_TEST_FILES.items():
+        if excluded not in test_files:
+            fail(f"UNCLAIMED_TEST_FILES names {excluded}, which pytest would not collect")
+        if not reason.strip():
+            fail(f"UNCLAIMED_TEST_FILES entry {excluded} has no reason")
+        target = claiming_target(claims, excluded)
+        if target:
+            fail(f"{excluded} is both excluded and claimed by {target}")
 
     orphans = []
-    for test_dir in sorted(discover_test_dirs()):
-        if test_dir in UNCLAIMED_TEST_DIRS:
+    for test_file in sorted(test_files):
+        if test_file in UNCLAIMED_TEST_FILES:
             continue
-        # A claim on a directory carries to what is under it: pytest recurses.
-        # An exclusion does not, so a new subdirectory of a skipped suite still
-        # has to be argued for.
-        parents = {str(parent) for parent in Path(test_dir).parents}
-        if not ({test_dir} | parents) & set(claims):
-            orphans.append(test_dir)
+        # An exclusion of a directory holds for the files in it, not for its
+        # subdirectories, so a new subdirectory of a skipped suite still has to be
+        # argued for.
+        if str(Path(test_file).parent) in UNCLAIMED_TEST_DIRS:
+            continue
+        if claiming_target(claims, test_file) is None:
+            orphans.append(test_file)
     if orphans:
         fail(
-            "test directories are claimed by no CI target: "
+            "test files are run by no CI target: "
             + ", ".join(orphans)
-            + ". Add them to a CI target, or to UNCLAIMED_TEST_DIRS with a reason"
+            + ". Add them to a CI target, or to UNCLAIMED_TEST_FILES "
+            "(or their directory to UNCLAIMED_TEST_DIRS) with a reason"
         )
 
 

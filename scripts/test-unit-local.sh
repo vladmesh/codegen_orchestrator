@@ -109,9 +109,9 @@ run_tests_parallel() {
 
 OFFLINE_LIVE_IGNORE_ARGS="--ignore=tests/live/test_api_crud.py --ignore=tests/live/test_capability_cleanup_redis.py --ignore=tests/live/test_ci_prompt.py --ignore=tests/live/test_deploy_infra.py --ignore=tests/live/test_full_pipeline.py --ignore=tests/live/test_health.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_scaffold.py --ignore=tests/live/test_scaffold_result.py --ignore=tests/live/test_streams.py --ignore=tests/live/test_supervisor.py"
 
-# Every entry here is a CI claim on a test directory: scripts/check-ci-gate.py walks
-# the tree and fails when a directory holding files pytest collects is claimed by
-# nothing.
+# Every entry here is a CI claim on a test directory, and it covers that directory
+# recursively: scripts/check-ci-gate.py walks the tree and fails when a file pytest
+# would collect is run by no target.
 ALL_SUITES=(
     "api|services/api/tests/unit|$ROOT/services/api"
     "langgraph|services/langgraph/tests/unit|$ROOT/services/langgraph"

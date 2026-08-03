@@ -2,14 +2,17 @@
 
 ## 2026-08-03
 
-- The CI contract gate derives the list of test suites from the tree instead of trusting a
-  constant in its own head. `scripts/check-ci-gate.py` walks the repository for directories
-  holding `test_*.py` and fails when one is claimed by no CI target, so a new test directory can
-  no longer be invisible. Claims are read off the targets themselves: the `ALL_SUITES` table in
-  `scripts/test-unit-local.sh` and the pytest commands in the `docker/test/{service,integration}`
-  compose files behind the two CI matrices. The service and integration matrices are likewise
-  checked against those compose directories rather than against hardcoded sets. A suite that is
-  deliberately not run has to be listed in `UNCLAIMED_TEST_DIRS` with a reason.
+- The CI contract gate derives the list of test files from the tree instead of trusting a
+  constant in its own head. `scripts/check-ci-gate.py` walks the repository for files pytest
+  would collect and fails when one is run by no CI target, so a new test can no longer be
+  invisible. Claims are read off the targets themselves: the `ALL_SUITES` table in
+  `scripts/test-unit-local.sh`, the pytest commands in the `docker/test/{service,integration}`
+  compose files behind the two CI matrices, and the pytest commands of an explicit
+  `test-integration-<suite>` Makefile target. A claim covers what its target runs and nothing
+  more: a directory argument covers the directory recursively, a file argument covers that one
+  file. The service and integration matrices are likewise checked against those compose
+  directories rather than against hardcoded sets. A test that is deliberately not run has to be
+  listed in `UNCLAIMED_TEST_FILES`, or its directory in `UNCLAIMED_TEST_DIRS`, with a reason.
 
 - `services/scaffolder` joins the uv workspace, and its unit tests, along with `scripts/tests`,
   `packages/worker-wrapper/tests/{component,integration}` and
