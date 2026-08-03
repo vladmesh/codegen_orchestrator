@@ -1,9 +1,12 @@
 services:
   # Real API with DB — PO tools call this
   api:
+    image: codegen-orchestrator/api:test
     build:
       context: ../../..
       dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["/entrypoint.sh"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
@@ -47,9 +50,12 @@ services:
 
   # Test Runner
   integration-test-runner:
+    image: codegen-orchestrator/integration-test-runner:test
     build:
       context: ../../..
       dockerfile: docker/test/integration/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/integration/po_tools/", "-v"]
     environment:
       - API_URL=http://api:8000

@@ -1,9 +1,12 @@
 services:
   # The service under test
   worker-manager:
+    image: codegen-orchestrator/worker-manager:test
     build: 
       context: ../../..
       dockerfile: services/worker-manager/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     user: root
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
@@ -35,9 +38,12 @@ services:
 
   # Test Runner
   worker-manager-test-runner:
+    image: codegen-orchestrator/worker-manager-test-runner:test
     build:
       context: ../../..
       dockerfile: services/worker-manager/Dockerfile.test
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/service/", "-v", "-s"]
     environment:
       - WORKER_MANAGER_URL=http://worker-manager:8000

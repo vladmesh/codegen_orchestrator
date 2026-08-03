@@ -16,7 +16,9 @@ COPY services ./services
 
 # Copy tests (usually mounted, but good for caching deps)
 COPY tests/integration /app/tests/integration
-COPY scripts/seed_system_configs.py scripts/system_configs.yaml /app/scripts/
+# shared_freshness.py comes along because the worker-base fixture stamps SOURCE_HASH from
+# it: the hash has one producer for the whole repository.
+COPY scripts/seed_system_configs.py scripts/system_configs.yaml scripts/shared_freshness.py /app/scripts/
 
 ENV PYTHONPATH=/app
 

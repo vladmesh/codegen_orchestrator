@@ -33,9 +33,12 @@ services:
 
   # API Service
   api:
+    image: codegen-orchestrator/api:test
     build:
       context: ../../..
       dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["/entrypoint.sh"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
@@ -58,9 +61,12 @@ services:
 
   # Scheduler Service (with consumer loop)
   system-config-seed:
+    image: codegen-orchestrator/integration-test-runner:test
     build:
       context: ../../..
       dockerfile: docker/test/integration/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command:
       [
         "sh",
@@ -79,9 +85,12 @@ services:
       - infra-test
 
   scheduler:
+    image: codegen-orchestrator/scheduler:test
     build:
       context: ../../..
       dockerfile: services/scheduler/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
@@ -104,9 +113,12 @@ services:
 
   # Integration Test Runner
   integration-test-runner:
+    image: codegen-orchestrator/integration-test-runner:test
     build:
       context: ../../..
       dockerfile: docker/test/integration/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/integration/infra/", "-v", "-x"]
     environment:
       - PYTHONUNBUFFERED=1

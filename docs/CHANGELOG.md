@@ -7,15 +7,16 @@
   of the tree and exits non-zero on a difference, naming the image. It reuses what the worker circuit
   already had — `--build-arg SOURCE_HASH` and the `org.codegen.worker_source_hash` label — instead of
   adding a second mechanism, and the hash itself is now computed in that script and read from there by
-  the Makefile, so there is one counter rather than two that can drift. The images it compares are
-  derived, not listed: the four worker bases come off the `rebuild-worker-images` recipe, and the
-  compose services that bake `shared` without mounting `./shared` over it come off
-  `docker-compose.yml` — today only `worker-manager`, which now carries the label, gets the build arg
-  from compose and is named `codegen-orchestrator/worker-manager:local` so the check can find it
-  regardless of the compose project name. Coverage is a static rule, so it holds where nothing is
-  built: every Dockerfile with a `COPY shared` has to declare `ARG SOURCE_HASH` and the label, and a
-  new one that does not fails the check; so does a compared image whose label is missing, empty or not
-  a hash. An image that is not built is not behind anything and does not fail the check — that is what
+  the Makefile and by the two fixtures that build worker base images, so there is one counter rather
+  than several that can drift. Coverage is derived from the tree, not listed: every Dockerfile in the
+  repository is parsed in every `COPY` form docker accepts, and every compose file is parsed,
+  `docker/test/**` included. A service built from a Dockerfile that bakes `shared` has to pass
+  `SOURCE_HASH` in `build.args` and to declare an explicit `image:` name, so the images the test
+  compose files leave behind are checked like any other; the services that mount
+  `./shared:/app/shared` run the tree and are not compared. Nothing that cannot be read is allowed to
+  pass: an unreadable `COPY`, an unparsable compose file, a Dockerfile without `ARG SOURCE_HASH` and
+  the label, or a compared image whose label is missing, empty or not a hash all fail the check by
+  name. An image that is not built is not behind anything and does not fail the check — that is what
   keeps it green in CI, where it now runs in `fast-checks`. It builds nothing, starts nothing and uses
   no network. Tests: `scripts/tests/test_shared_freshness.py`; docs: `docs/REBUILD.md`.
 

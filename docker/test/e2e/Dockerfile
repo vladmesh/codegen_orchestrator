@@ -28,6 +28,10 @@ COPY services ./services
 # Copy tests
 COPY tests/e2e /app/tests/e2e
 
+# shared_freshness.py comes along because the worker-base fixture stamps SOURCE_HASH from
+# it: the hash has one producer for the whole repository.
+COPY scripts/shared_freshness.py /app/scripts/
+
 ENV PYTHONPATH=/app
 
 CMD ["pytest", "tests/e2e/", "-v", "-m", "e2e"]

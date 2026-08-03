@@ -23,9 +23,12 @@ services:
 
   # Real API Service
   api:
+    image: codegen-orchestrator/api:test
     build: 
       context: ../../..
       dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["/entrypoint.sh"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
@@ -65,9 +68,12 @@ services:
 
   # Scheduler Test Runner
   scheduler-test-runner:
+    image: codegen-orchestrator/scheduler-test-runner:test
     build:
       context: ../../..
       dockerfile: services/scheduler/Dockerfile.test
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/service/", "-v"]
     environment:
       - API_BASE_URL=http://api:8000

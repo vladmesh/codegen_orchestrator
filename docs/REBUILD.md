@@ -33,11 +33,12 @@ repository tree, and it reaches its consumers through three channels.
 (`docker compose restart <service>`), no image rebuild is needed.
 
 **`COPY shared`** in the Dockerfile — the worker images, the test images and `worker-manager`.
-`worker-manager` is the only build service in compose without a mount, so within the compose circuit an
-edit to `shared/` requires rebuilding only that one. The worker images live in the second circuit and are
-rebuilt according to `WORKER_SOURCE_HASH`. This is the only channel that can go stale, and the only one
-the freshness check looks at: a bind-mounted container picks up an edit on restart, and a test run
-imports `shared` from the tree.
+`worker-manager` is the only service in `docker-compose.yml` without a mount, so in the dev stack an
+edit to `shared/` requires rebuilding only that one. The images the compose files under `docker/test/`
+build have no mount either, and they outlive the run that built them. The worker images live in the
+second circuit and are rebuilt according to `WORKER_SOURCE_HASH`. This is the only channel that can go
+stale, and the only one the freshness check looks at: a bind-mounted container picks up an edit on
+restart, and a test run imports `shared` from the tree.
 
 **Import from the tree over `PYTHONPATH`** — locally and in tests. `scripts/test-unit-local.sh` and
 `[tool.pytest.ini_options] pythonpath` keep the repository root importable, so a test run always reads
@@ -102,30 +103,43 @@ message names the image and the reason. The fix is a rebuild — the check never
 itself. Implementation: `scripts/shared_freshness.py`, tests in
 `scripts/tests/test_shared_freshness.py`.
 
-What it covers:
+Coverage is derived from the tree, never listed by hand, and nothing it cannot read is allowed to
+pass:
 
-- **The images it compares** are the ones that bake `shared` and are then reused: the four worker base
-  images, read off the `rebuild-worker-images` recipe, and the compose services that bake `shared`
-  without mounting `./shared` over it — today only `worker-manager`. A compose service like that has to
-  declare an explicit `image:` name, otherwise its image name would depend on the compose project name
-  and the check would not find it; one without a name fails the check.
+- **Every Dockerfile in the repository is parsed.** One that copies `shared` has to declare
+  `ARG SOURCE_HASH` and the `org.codegen.worker_source_hash` label; one that does not fails the check
+  by name. Every form of `COPY` that docker accepts is read — shell form, JSON array, line
+  continuation — and a `COPY` whose sources cannot be resolved (built out of a variable, a glob where
+  the top directory should be, JSON that does not parse) fails the check naming the file. "We did not
+  find `shared` in it" is not a synonym for "it does not bake `shared`".
+- **Every compose file in the repository is parsed**, `docker/test/**` included. A service built from a
+  Dockerfile that bakes `shared` has to pass `SOURCE_HASH` in `build.args` and to declare an explicit
+  `image:` name — without a name of its own the image is called after the compose project and cannot be
+  found again. Neither rule asks docker anything, so both hold on a clean machine. A compose file that
+  has `services:` and cannot be parsed fails the check too.
+- **The images it compares** are the ones whose baked copy is what actually runs: the four worker base
+  images, read off the `rebuild-worker-images` recipe, and every compose service that bakes `shared`
+  without mounting `./shared` over it — `worker-manager` in the dev stack and the `:test` images the
+  compose files under `docker/test/` build. An image that is compared and cannot say what it baked (no
+  label, an empty label, a value that is not a hash) fails by name and reason. There is no third answer
+  where the check shrugs and passes.
+- **A mount is not staleness.** A compose service with `./shared:/app/shared` runs the tree, not the
+  copy in its image, so its image is not compared. It still has to be nameable and to stamp its hash,
+  so the day the mount goes away the check works without being taught anything.
 - **Not built is not behind.** An image absent from the local docker holds no copy of `shared`, so it
   is reported as not built and does not fail the check. That is what makes the check green on a clean
   machine and in CI, where nothing is built, and it is why it can run in `fast-checks`.
-- **Every Dockerfile with `COPY shared`** has to declare `ARG SOURCE_HASH` and the
-  `org.codegen.worker_source_hash` label, including the test images, which are not compared because
-  every make target behind them builds with `--build`. This part is static — it reads Dockerfiles, not
-  docker — so a new Dockerfile that bakes `shared` without saying which `shared` it baked fails the
-  check on any machine. An image that is compared and cannot say what it baked (no label, an empty
-  label, a value that is not a hash) fails too, by name and reason. There is no third answer where the
-  check shrugs and passes.
 - **The label is written at build time** from `--build-arg SOURCE_HASH`. The Makefile exports
   `WORKER_SOURCE_HASH`, so a build through any make target stamps the truth; `docker compose build`
   run by hand does not, and the resulting image fails the check with an empty label rather than
   passing with an unknown one.
 
-`WORKER_SOURCE_HASH` itself is computed in `scripts/shared_freshness.py` and nowhere else — `make` and
-the check read the same function, so there is one counter that cannot drift into two.
+`WORKER_SOURCE_HASH` itself is computed by `source_hash()` in `scripts/shared_freshness.py` and nowhere
+else. `make`, the check and the two fixtures that build worker base images
+(`tests/integration/backend/conftest.py`, `tests/e2e/conftest.py`) all call that one function, so what
+a build stamps on an image and what the check expects cannot drift apart. The only other hash in that
+area is `_child_image_hash` in the backend fixture, which is a cache key for a derived worker image and
+is never written as `SOURCE_HASH`.
 
 ## Worker images: why a separate mechanism
 
@@ -147,8 +161,8 @@ rebuild. The price is accepted deliberately: an extra rebuild is cheaper than a 
 `FROM ${BASE_IMAGE}`, and `BASE_IMAGE` has no default: each producer names the common image it
 just produced. `make rebuild-worker-images` tags common as `worker-base-common:$(WORKER_SOURCE_HASH)`
 alongside `:latest` and passes the hash tag; the backend integration fixture
-(`tests/integration/backend/conftest.py`) passes its own content-hash tag; the e2e fixture passes
-the tag it builds one step earlier. A build that forgets the argument fails on a blank base name
+(`tests/integration/backend/conftest.py`) passes the tree hash from `source_hash()` as its common tag;
+the e2e fixture passes the tag it builds one step earlier. A build that forgets the argument fails on a blank base name
 rather than layering on whatever `:latest` happens to be on the host.
 
 The backend integration fixture skips a build when the tag already exists in its persistent DinD
@@ -180,7 +194,8 @@ Other targets (`make build`, `nuke`) call `ensure-worker-images`. `check-worker-
 the system either, so it is fine for manual diagnostics, but it treats a missing image as something to
 build — which is what `ensure-worker-images` needs and what makes it useless on a machine where nothing
 is built. The check that runs in CI is `make check-shared-freshness`; it covers these four images too,
-plus `worker-manager`, and it passes when an image is absent.
+plus `worker-manager` and the images the test compose files build, and it passes when an image is
+absent.
 
 ## A clean rebuild after a merge
 
