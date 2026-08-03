@@ -5,7 +5,10 @@
 - The freshness check now answers for the whole tree, not for the part it happened to be able to
   compare. Every Dockerfile that bakes `shared` has to reach a declared image name through a build
   route — a compose service with an explicit `image:`, or a Makefile recipe that builds it under an
-  explicit `-t` tag — and one that no route reaches fails `make check-shared-freshness` by name.
+  explicit `-t` tag — and one that no route reaches fails `make check-shared-freshness` by name. A
+  compose `image:` counts as declared only when it is a literal: `image: ${SOMETHING}` is resolved
+  outside the tree, so it names nothing the check can inspect and it fails as an unreadable route,
+  the same rule `is_pinned_image()` in `scripts/check-ci-gate.py` applies to a pulled reference.
   Before this, a Dockerfile that copied `shared` and stamped its label correctly but hung off no
   compose service and no recipe was compared with nothing and the check said nothing; that was true of
   nine of the seventeen files that bake `shared`, `services/scaffolder/Dockerfile` among them. Eight

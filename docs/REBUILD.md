@@ -117,8 +117,13 @@ pass:
 
   | Route | What it has to declare |
   |---|---|
-  | a compose service | an explicit `image:` and `SOURCE_HASH` in `build.args` |
+  | a compose service | an explicit literal `image:` and `SOURCE_HASH` in `build.args` |
   | a Makefile recipe | an explicit `-t` tag and `--build-arg SOURCE_HASH` |
+
+  `image: ${SOMETHING}` is not a declared name: compose resolves it outside the tree, so the check
+  cannot say which image gets built and would never inspect the one that does. It fails naming the
+  compose file, the service and the Dockerfile — the same rule `is_pinned_image()` in
+  `scripts/check-ci-gate.py` applies to a pulled reference.
 
   A Dockerfile no route reaches fails the check by name. It is the same hole as an unreadable one: an
   image nobody names is compared with nothing, and a comparison nobody runs cannot report staleness. The

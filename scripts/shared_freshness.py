@@ -30,8 +30,10 @@ cannot read reliably fails the check instead of passing quietly:
 * Every compose file in the repository is parsed, `docker/test/**` included. A service
   built from a Dockerfile that bakes `shared` has to pass `SOURCE_HASH` in `build.args`
   and to declare an explicit `image:` — without a name of its own the image is called
-  after the compose project and nothing can find it again. A Makefile recipe owes the same
-  two things: `--build-arg SOURCE_HASH` and a tag. Neither rule needs docker.
+  after the compose project and nothing can find it again. The name has to be a literal:
+  `image: ${SOMETHING}` is resolved outside the tree, so it is an unreadable route and
+  fails the check. A Makefile recipe owes the same two things: `--build-arg SOURCE_HASH`
+  and a tag. Neither rule needs docker.
 * For every tracked image the label is compared with the hash of the tree. A missing,
   empty or unparsable label fails the check naming the image and the reason: an image that
   bakes `shared` and cannot say which `shared` it baked is exactly the silent pass this
@@ -335,6 +337,18 @@ def _with_tag(reference: str) -> str:
     return reference if ":" in reference.rsplit("/", 1)[-1] else f"{reference}:latest"
 
 
+def _is_literal(reference) -> bool:
+    """Does the tree say this name, or does something outside it?
+
+    The same rule `is_pinned_image()` in `scripts/check-ci-gate.py` applies to a pulled
+    image: a value still holding a variable is resolved outside the tree, so the tree does
+    not say what it names. Here that makes the route unreadable rather than declared —
+    `${SOMETHING}` is a name nothing can look up, and the real image built under the
+    resolved tag would never be inspected.
+    """
+    return isinstance(reference, str) and "$" not in reference
+
+
 def compose_routes(root: Path = REPO_ROOT) -> tuple[list[str], list[BuildRoute]]:
     """What every compose service that bakes `shared` owes, and the routes it declares.
 
@@ -365,6 +379,12 @@ def compose_routes(root: Path = REPO_ROOT) -> tuple[list[str], list[BuildRoute]]
                     "named after the compose project and cannot be found again"
                 )
                 continue
+            if not _is_literal(reference):
+                raise Unreadable(
+                    f"{where} under a name that is not a literal: image: {reference!r}. "
+                    "Compose resolves it outside the tree, so which image is built cannot be "
+                    "read here — same rule as is_pinned_image() in scripts/check-ci-gate.py"
+                )
             routes.append(
                 BuildRoute(
                     _with_tag(reference),

@@ -345,6 +345,34 @@ def test_a_compose_service_that_does_not_pass_the_hash_fails_the_check(tree: Pat
     ]
 
 
+def test_an_interpolated_image_name_is_an_unreadable_route(tree: Path):
+    """`${VAR}` is resolved outside the tree, so it names nothing this check can inspect.
+
+    The image compose really builds — say `verified/newcomer:real` — would never be looked
+    at, and the check would pass while it held an old `shared`. The same service under a
+    literal name is `test_the_same_dockerfile_on_a_compose_route_passes`, which uses this
+    very compose file unmodified.
+    """
+    _write(tree, "services/newcomer/Dockerfile", LABELLED)
+    _write(
+        tree,
+        "docker/test/newcomer.yml",
+        ROUTED_COMPOSE.replace(
+            "    image: codegen-orchestrator/newcomer:local\n", "    image: ${NEWCOMER_IMAGE}\n"
+        ),
+    )
+    images = _built(tree)
+    images["verified/newcomer:real"] = {SOURCE_HASH_LABEL: "0000000000000000"}
+
+    problems = check(tree, inspect=_inspector(images), report=lambda _: None)
+
+    assert len(problems) == 1
+    assert problems[0].startswith(
+        "docker/test/newcomer.yml: service newcomer builds services/newcomer/Dockerfile"
+    )
+    assert "not a literal" in problems[0]
+
+
 def test_a_compose_file_that_cannot_be_parsed_fails_the_check(tree: Path):
     _write(tree, "docker/test/broken.yml", "services:\n  api:\n   - build: [\n")
 
