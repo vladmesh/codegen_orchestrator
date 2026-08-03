@@ -112,23 +112,40 @@ pass:
   continuation — and a `COPY` whose sources cannot be resolved (built out of a variable, a glob where
   the top directory should be, JSON that does not parse) fails the check naming the file. "We did not
   find `shared` in it" is not a synonym for "it does not bake `shared`".
-- **Every compose file in the repository is parsed**, `docker/test/**` included. A service built from a
-  Dockerfile that bakes `shared` has to pass `SOURCE_HASH` in `build.args` and to declare an explicit
-  `image:` name — without a name of its own the image is called after the compose project and cannot be
-  found again. Neither rule asks docker anything, so both hold on a clean machine. A compose file that
-  has `services:` and cannot be parsed fails the check too.
-- **The images it compares** are the ones whose baked copy is what actually runs: the four worker base
-  images, read off the `rebuild-worker-images` recipe, and every compose service that bakes `shared`
-  without mounting `./shared` over it — `worker-manager` in the dev stack and the `:test` images the
-  compose files under `docker/test/` build. An image that is compared and cannot say what it baked (no
-  label, an empty label, a value that is not a hash) fails by name and reason. There is no third answer
-  where the check shrugs and passes.
+- **Every Dockerfile that bakes `shared` has to reach a declared image name.** A route is what turns a
+  Dockerfile into a name something can look up afterwards, and there are two of them:
+
+  | Route | What it has to declare |
+  |---|---|
+  | a compose service | an explicit `image:` and `SOURCE_HASH` in `build.args` |
+  | a Makefile recipe | an explicit `-t` tag and `--build-arg SOURCE_HASH` |
+
+  A Dockerfile no route reaches fails the check by name. It is the same hole as an unreadable one: an
+  image nobody names is compared with nothing, and a comparison nobody runs cannot report staleness. The
+  answer is to connect the file to a route or to delete it — the check has no list of exceptions, on
+  purpose, because an exception by category is exactly what let nine files out of the comparison before.
+  A `docker build` in a recipe that does not say which Dockerfile it builds (no `-f`, or a path assembled
+  out of a make variable) fails the check as well: not knowing what it builds is not the same as knowing
+  it does not bake `shared`.
+- **Every compose file in the repository is parsed**, `docker/test/**` included. Neither compose rule
+  asks docker anything, so both hold on a clean machine. A compose file that has `services:` and cannot
+  be parsed fails the check too.
+- **The images it compares** are the ones whose baked copy is what actually runs: every route that does
+  not mount `./shared` over the baked copy. That is the four worker base images, read off the
+  `rebuild-worker-images` recipe, `worker-manager` in the dev stack, and the `:test` images the compose
+  files under `docker/test/` build. A build that stamps `SOURCE_HASH` without copying `shared` itself is
+  compared too — `worker-base-claude` and its siblings are `FROM ${BASE_IMAGE}` over the common image, so
+  they carry the `shared` it baked and say which one by stamping the label. An image that is compared and
+  cannot say what it baked (no label, an empty label, a value that is not a hash) fails by name and
+  reason. There is no third answer where the check shrugs and passes.
 - **A mount is not staleness.** A compose service with `./shared:/app/shared` runs the tree, not the
   copy in its image, so its image is not compared. It still has to be nameable and to stamp its hash,
   so the day the mount goes away the check works without being taught anything.
 - **Not built is not behind.** An image absent from the local docker holds no copy of `shared`, so it
   is reported as not built and does not fail the check. That is what makes the check green on a clean
-  machine and in CI, where nothing is built, and it is why it can run in `fast-checks`.
+  machine and in CI, where nothing is built, and it is why it can run in `fast-checks`. A machine with
+  no docker at all, or with no daemon to ask, reads the same way for every image, so which Dockerfile
+  reaches which name — the whole static half — answers identically with docker and without it.
 - **The label is written at build time** from `--build-arg SOURCE_HASH`. The Makefile exports
   `WORKER_SOURCE_HASH`, so a build through any make target stamps the truth; `docker compose build`
   run by hand does not, and the resulting image fails the check with an empty label rather than

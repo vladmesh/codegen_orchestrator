@@ -22,10 +22,16 @@ cannot read reliably fails the check instead of passing quietly:
   does not parse, a source built out of a variable, a glob in place of the top directory —
   fails the check naming the file, because "we could not find `shared` in it" is not the
   same statement as "it does not bake `shared`".
+* Every Dockerfile that bakes `shared` has to reach a declared image name through a build
+  route. There are two routes, and both are read out of the tree: a compose service with an
+  explicit `image:`, and a Makefile recipe that builds it under an explicit `-t` tag. A
+  Dockerfile no route reaches is a hole of the same shape as an unreadable one — nothing
+  can compare an image nobody names — so it fails the check naming the file.
 * Every compose file in the repository is parsed, `docker/test/**` included. A service
   built from a Dockerfile that bakes `shared` has to pass `SOURCE_HASH` in `build.args`
   and to declare an explicit `image:` — without a name of its own the image is called
-  after the compose project and nothing can find it again. Neither rule needs docker.
+  after the compose project and nothing can find it again. A Makefile recipe owes the same
+  two things: `--build-arg SOURCE_HASH` and a tag. Neither rule needs docker.
 * For every tracked image the label is compared with the hash of the tree. A missing,
   empty or unparsable label fails the check naming the image and the reason: an image that
   bakes `shared` and cannot say which `shared` it baked is exactly the silent pass this
@@ -81,7 +87,6 @@ DECLARES_LABEL = re.compile(
 WALK_SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__"}
 SHARED_TREE = "shared"
 SHARED_MOUNT_TARGET = "/app/shared"
-WORKER_IMAGES_RECIPE = "rebuild-worker-images"
 GLOB_CHARS = set("*?[")
 SOURCE_AND_DESTINATION = 2  # the shortest COPY and the shortest volume mapping
 
@@ -313,48 +318,32 @@ def _passes_source_hash(build) -> bool:
     return False
 
 
-# --- the tracked images -----------------------------------------------------
+# --- the build routes -------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class TrackedImage:
+class BuildRoute:
+    """One way the tree builds one Dockerfile under one declared image name."""
+
     reference: str
     dockerfile: str
     origin: str
+    runs_the_tree: bool = False  # ./shared is mounted over the baked copy at run time
 
 
-def _recipe_commands(makefile: str, target: str) -> list[str]:
-    """The shell commands of one Makefile recipe, with continuations joined."""
-    body = re.search(rf"^{re.escape(target)}:.*?\n((?:\t.*\n|\n)*)", makefile, re.MULTILINE)
-    if body is None:
-        raise Unreadable(f"Makefile has no {target} recipe to read image names from")
-    joined = body.group(1).replace("\\\n", " ")
-    return [line.strip() for line in joined.splitlines() if line.strip()]
+def _with_tag(reference: str) -> str:
+    return reference if ":" in reference.rsplit("/", 1)[-1] else f"{reference}:latest"
 
 
-def worker_base_images(root: Path = REPO_ROOT) -> list[TrackedImage]:
-    """The images `make rebuild-worker-images` produces, read off the recipe itself."""
-    images = []
-    for command in _recipe_commands((root / "Makefile").read_text(), WORKER_IMAGES_RECIPE):
-        if "docker build" not in command:
-            continue
-        dockerfile = re.search(r"-f\s+(\S+)", command)
-        tags = [tag for tag in re.findall(r"-t\s+(\S+)", command) if tag.endswith(":latest")]
-        if dockerfile is None or not tags:
-            raise Unreadable(f"cannot read image name out of: {command}")
-        images.append(TrackedImage(tags[0], dockerfile.group(1), f"make {WORKER_IMAGES_RECIPE}"))
-    return images
+def compose_routes(root: Path = REPO_ROOT) -> tuple[list[str], list[BuildRoute]]:
+    """What every compose service that bakes `shared` owes, and the routes it declares.
 
-
-def compose_plan(root: Path = REPO_ROOT) -> tuple[list[str], list[TrackedImage]]:
-    """What every compose service that bakes `shared` owes, and the images to compare.
-
-    The two rules are static — no docker is asked anything here. A service that breaks one
-    of them lands in the problems; one that keeps them and does not mount the tree over
-    its baked copy lands in the tracked images.
+    The rules are static — no docker is asked anything here. A service that breaks one of
+    them lands in the problems; one that keeps them is a route to a declared name, whether
+    or not its image ends up being compared.
     """
     problems: list[str] = []
-    images: dict[str, TrackedImage] = {}
+    routes: list[BuildRoute] = []
     bakers = set(dockerfiles_baking_shared(root))
 
     for path, data in _compose_documents(root):
@@ -376,19 +365,140 @@ def compose_plan(root: Path = REPO_ROOT) -> tuple[list[str], list[TrackedImage]]
                     "named after the compose project and cannot be found again"
                 )
                 continue
-            if _mounts_the_tree_over_the_baked_copy(path, service, root):
-                continue  # the mount covers the baked copy: what runs is the tree, always
-            if ":" not in reference.rsplit("/", 1)[-1]:
-                reference = f"{reference}:latest"
-            images.setdefault(
-                reference, TrackedImage(reference, dockerfile, f"{where_file} service {name}")
+            routes.append(
+                BuildRoute(
+                    _with_tag(reference),
+                    dockerfile,
+                    f"{where_file} service {name}",
+                    runs_the_tree=_mounts_the_tree_over_the_baked_copy(path, service, root),
+                )
             )
-    return problems, sorted(images.values(), key=lambda image: image.reference)
+    return problems, routes
 
 
-def tracked_images(root: Path = REPO_ROOT) -> list[TrackedImage]:
+def _recipe_commands(makefile: str) -> list[tuple[str, str]]:
+    """Every Makefile recipe command with its target, continuations joined."""
+    logical: list[str] = []
+    carried = ""
+    for raw in makefile.splitlines():
+        carried = raw if not carried else f"{carried} {raw.strip()}"
+        if carried.rstrip().endswith("\\"):
+            carried = carried.rstrip()[:-1].rstrip()
+            continue
+        logical.append(carried)
+        carried = ""
+    if carried:
+        logical.append(carried)
+
+    commands: list[tuple[str, str]] = []
+    target: str | None = None
+    for line in logical:
+        if line.startswith("\t"):
+            if target is not None and line.strip():
+                commands.append((target, line.strip()))
+            continue
+        head = re.match(r"^([A-Za-z0-9_.%/-]+)\s*:(?!=)", line)
+        target = head.group(1) if head else None
+    return commands
+
+
+def _flag_value(tokens: list[str], *names: str) -> list[str]:
+    """Values of one flag in a command line, in both `-f x` and `--file=x` spellings."""
+    values = []
+    for index, token in enumerate(tokens):
+        if token in names and index + 1 < len(tokens):
+            values.append(tokens[index + 1])
+        else:
+            for name in names:
+                if token.startswith(f"{name}="):
+                    values.append(token[len(name) + 1 :])
+    return values
+
+
+def makefile_routes(root: Path = REPO_ROOT) -> tuple[list[str], list[BuildRoute]]:
+    """The images the Makefile builds by hand, read off its recipes.
+
+    Only `docker build` is read; compose builds are covered by the compose files. A build
+    whose Dockerfile cannot be named — no `-f`, or one assembled out of a make variable —
+    raises, for the same reason an unreadable `COPY` does: not knowing what it builds is
+    not the same as knowing it does not bake `shared`.
+
+    A build is a route when its Dockerfile bakes `shared` or when it stamps `SOURCE_HASH`
+    on the image. The second case is how the worker base children come in: each of them is
+    `FROM ${BASE_IMAGE}` over the common image, so it carries the `shared` the common one
+    baked and says which one by stamping the label itself. An image that stamps that label
+    is an image claiming to carry a copy of `shared`, and a claim is compared like any
+    other.
+    """
+    problems: list[str] = []
+    routes: list[BuildRoute] = []
+    bakers = set(dockerfiles_baking_shared(root))
+
+    for target, command in _recipe_commands((root / "Makefile").read_text()):
+        if not re.search(r"\bdocker\s+build\b", command):
+            continue
+        where_recipe = f"Makefile recipe {target}"
+        try:
+            tokens = shlex.split(command)
+        except ValueError as error:
+            raise Unreadable(
+                f"{where_recipe}: docker build that does not tokenize: {command}"
+            ) from error
+        files = _flag_value(tokens, "-f", "--file")
+        if len(files) != 1 or "$" in files[0]:
+            raise Unreadable(
+                f"{where_recipe}: cannot tell which Dockerfile this builds, so whether it "
+                f"bakes shared cannot be read from the tree: {command}"
+            )
+        dockerfile = files[0]
+        passed = _flag_value(tokens, "--build-arg")
+        stamps = any(value.split("=")[0] == BUILD_ARG for value in passed)
+        if dockerfile not in bakers and not stamps:
+            continue
+        carries = "which bakes shared" if dockerfile in bakers else f"which stamps {BUILD_ARG}"
+        where = f"{where_recipe} builds {dockerfile}, {carries},"
+        if not stamps:
+            problems.append(f"{where} without passing --build-arg {BUILD_ARG}")
+        tags = [tag for tag in _flag_value(tokens, "-t", "--tag") if "$" not in tag]
+        if not tags:
+            problems.append(
+                f"{where} without an explicit -t name that can be found again afterwards"
+            )
+            continue
+        routes.extend(BuildRoute(_with_tag(tag), dockerfile, f"make {target}") for tag in tags)
+    return problems, routes
+
+
+def build_routes(root: Path = REPO_ROOT) -> tuple[list[str], list[BuildRoute]]:
+    """Every route from a Dockerfile that bakes `shared` to a declared image name.
+
+    Totality is the point: a Dockerfile that bakes `shared` and is reached by no route is
+    compared with nothing, and a comparison nobody runs is the silent pass this check
+    exists to remove. So it is a problem, named by file.
+    """
+    problems, routes = compose_routes(root)
+    make_problems, make_routes = makefile_routes(root)
+    problems += make_problems
+    routes += make_routes
+
+    routed = {route.dockerfile for route in routes}
+    for name in dockerfiles_baking_shared(root):
+        if name not in routed:
+            problems.append(
+                f"{name}: bakes shared but no build route gives it an image name — connect it "
+                "to a compose service with an explicit image:, or to a Makefile recipe that "
+                "builds it under an explicit tag, or delete it if nothing builds it"
+            )
+    return problems, sorted(routes, key=lambda route: (route.reference, route.origin))
+
+
+def tracked_images(root: Path = REPO_ROOT) -> list[BuildRoute]:
     """Every built image whose baked `shared` is what actually runs."""
-    return worker_base_images(root) + compose_plan(root)[1]
+    images: dict[str, BuildRoute] = {}
+    for route in build_routes(root)[1]:
+        if not route.runs_the_tree:  # a mount would cover the baked copy with the tree
+            images.setdefault(route.reference, route)
+    return sorted(images.values(), key=lambda image: image.reference)
 
 
 # --- the check --------------------------------------------------------------
@@ -397,28 +507,38 @@ NOT_BUILT = None  # nothing built holds no copy of `shared`, so nothing to be be
 
 
 def docker_image_labels(reference: str) -> dict[str, str] | None:
-    """Labels of a local image, or NOT_BUILT. Reads the local daemon, builds nothing."""
-    result = subprocess.run(
-        [  # noqa: S607
-            "docker",
-            "image",
-            "inspect",
-            reference,
-            "--format",
-            "{{json .Config.Labels}}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Labels of a local image, or NOT_BUILT. Reads the local daemon, builds nothing.
+
+    No docker on the machine, or no daemon to ask, is NOT_BUILT for every image and not an
+    error: nothing is built there, so nothing holds an old `shared`. That is what makes the
+    static half of the check — which Dockerfile reaches which name — answer the same with
+    docker and without it.
+    """
+    try:
+        result = subprocess.run(
+            [  # noqa: S607
+                "docker",
+                "image",
+                "inspect",
+                reference,
+                "--format",
+                "{{json .Config.Labels}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return NOT_BUILT
     if result.returncode != 0:
-        if "No such image" in result.stderr:
+        nothing_to_ask = ("No such image", "Cannot connect to the Docker daemon")
+        if any(reason in result.stderr for reason in nothing_to_ask):
             return NOT_BUILT
         raise RuntimeError(f"docker image inspect {reference} failed: {result.stderr.strip()}")
     return json.loads(result.stdout) or {}
 
 
-def _image_problem(image: TrackedImage, labels: dict[str, str], expected: str) -> str | None:
+def _image_problem(image: BuildRoute, labels: dict[str, str], expected: str) -> str | None:
     stored = labels.get(SOURCE_HASH_LABEL)
     if stored is None:
         return f"{image.reference} ({image.origin}) is built without a {SOURCE_HASH_LABEL} label"
@@ -434,11 +554,11 @@ def _image_problem(image: TrackedImage, labels: dict[str, str], expected: str) -
     return None
 
 
-def static_problems(root: Path = REPO_ROOT) -> tuple[list[str], list[TrackedImage]]:
+def static_problems(root: Path = REPO_ROOT) -> tuple[list[str], list[BuildRoute]]:
     """Coverage, before any image is inspected: what the tree itself already says."""
     problems = [f"{name}: {reason}" for name, reason in uncovered_dockerfiles(root)]
-    compose_broken, images = compose_plan(root)
-    return problems + compose_broken, worker_base_images(root) + images
+    unrouted, _routes = build_routes(root)
+    return problems + unrouted, tracked_images(root)
 
 
 def check(

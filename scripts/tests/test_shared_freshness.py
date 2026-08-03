@@ -16,10 +16,12 @@ import pytest
 from scripts.shared_freshness import (
     SOURCE_HASH_LABEL,
     Unreadable,
+    build_routes,
     check,
-    compose_plan,
+    compose_routes,
     dockerfile_bakes_shared,
     dockerfiles_baking_shared,
+    makefile_routes,
     source_hash,
     tracked_images,
     uncovered_dockerfiles,
@@ -39,12 +41,25 @@ FROM python:3.12-slim
 COPY shared ./shared
 """
 
+# A child of the worker base: it inherits the baked `shared` instead of copying it, and
+# stamps which one it inherited.
+CHILD = """\
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH
+"""
+
 MAKEFILE = """\
 rebuild-worker-images:
 \tdocker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \\
 \t\t-t worker-base-common:latest \\
 \t\t-t worker-base-common:$(WORKER_SOURCE_HASH) \\
 \t\t-f services/worker-manager/images/worker-base-common/Dockerfile .
+\tdocker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \\
+\t\t--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \\
+\t\t-t worker-base-claude:latest \\
+\t\t-f services/worker-manager/images/worker-base-claude/Dockerfile .
 
 other-target:
 \t@echo not a build
@@ -94,6 +109,7 @@ def tree(tmp_path: Path) -> Path:
     _write(tmp_path, "shared/log_config.py", "SETTING = 1\n")
     _write(tmp_path, "packages/worker-wrapper/src/wrapper.py", "RUN = 1\n")
     _write(tmp_path, "services/worker-manager/images/worker-base-common/Dockerfile", LABELLED)
+    _write(tmp_path, "services/worker-manager/images/worker-base-claude/Dockerfile", CHILD)
     _write(tmp_path, "services/worker-manager/Dockerfile", LABELLED)
     _write(tmp_path, "services/api/Dockerfile", LABELLED)
     _write(tmp_path, "Makefile", MAKEFILE)
@@ -178,6 +194,52 @@ def test_an_image_that_is_not_built_is_not_behind(tree: Path):
     assert [line for line in reported if "not built" in line]
 
 
+def test_a_tree_without_docker_answers_the_same_as_one_with_it(tree: Path, monkeypatch):
+    """No docker binary: every image reads as not built, and the static rules still hold."""
+
+    def no_docker(*_args, **_kwargs):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(subprocess, "run", no_docker)
+
+    assert check(tree, report=lambda _: None) == []
+
+    _write(tree, "services/newcomer/Dockerfile", LABELLED)
+
+    problems = check(tree, report=lambda _: None)
+
+    assert len(problems) == 1
+    assert problems[0].startswith("services/newcomer/Dockerfile: bakes shared but no build route")
+
+
+def test_a_daemon_that_cannot_be_reached_is_not_staleness(tree: Path, monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Cannot connect to the Docker daemon at unix://",
+        ),
+    )
+
+    assert check(tree, report=lambda _: None) == []
+
+
+def test_an_inspect_that_fails_for_another_reason_is_not_swallowed(tree: Path, monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="permission denied while trying to connect"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="docker image inspect"):
+        check(tree, report=lambda _: None)
+
+
 # --- reading Dockerfiles: the forms docker accepts -----------------------------
 
 
@@ -186,9 +248,7 @@ def test_a_dockerfile_baking_shared_without_the_label_is_uncovered(tree: Path):
 
     problems = check(tree, inspect=_inspector(_built(tree)), report=lambda _: None)
 
-    assert problems == [
-        "services/newcomer/Dockerfile: bakes shared but declares no ARG SOURCE_HASH"
-    ]
+    assert "services/newcomer/Dockerfile: bakes shared but declares no ARG SOURCE_HASH" in problems
 
 
 def test_a_dockerfile_that_stamps_nothing_with_its_arg_is_uncovered(tree: Path):
@@ -254,6 +314,7 @@ def test_a_mounted_compose_service_is_not_tracked(tree: Path):
 
     assert references == {
         "worker-base-common:latest",
+        "worker-base-claude:latest",
         "codegen-orchestrator/worker-manager:local",
         "codegen-orchestrator/api:test",
     }
@@ -264,7 +325,7 @@ def test_a_compose_service_without_an_image_name_fails_the_check(tree: Path):
         TEST_COMPOSE.replace("    image: codegen-orchestrator/api:test\n", "")
     )
 
-    problems, _ = compose_plan(tree)
+    problems, _ = compose_routes(tree)
 
     assert len(problems) == 1
     assert problems[0].startswith("docker/test/api.yml: service api builds services/api/Dockerfile")
@@ -299,6 +360,101 @@ def test_a_yaml_that_is_not_compose_is_left_alone(tree: Path):
     assert check(tree, inspect=_inspector(_built(tree)), report=lambda _: None) == []
 
 
+# --- every Dockerfile reaches a name: the routes -------------------------------
+
+ROUTED_COMPOSE = """\
+services:
+  newcomer:
+    image: codegen-orchestrator/newcomer:local
+    build:
+      context: ../..
+      dockerfile: services/newcomer/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+"""
+
+ROUTED_RECIPE = """\
+
+build-newcomer:
+\tdocker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \\
+\t\t-t codegen-orchestrator/newcomer:local \\
+\t\t-f services/newcomer/Dockerfile .
+"""
+
+
+def test_a_dockerfile_no_route_builds_fails_the_check_by_name(tree: Path):
+    """Correctly labelled and still uncomparable: nothing gives the image a name."""
+    _write(tree, "services/newcomer/Dockerfile", LABELLED)
+
+    problems = check(tree, inspect=_inspector(_built(tree)), report=lambda _: None)
+
+    assert len(problems) == 1
+    assert problems[0].startswith(
+        "services/newcomer/Dockerfile: bakes shared but no build route gives it an image name"
+    )
+
+
+def test_the_same_dockerfile_on_a_compose_route_passes(tree: Path):
+    _write(tree, "services/newcomer/Dockerfile", LABELLED)
+    _write(tree, "docker/test/newcomer.yml", ROUTED_COMPOSE)
+
+    assert check(tree, inspect=_inspector(_built(tree)), report=lambda _: None) == []
+    assert "codegen-orchestrator/newcomer:local" in {
+        image.reference for image in tracked_images(tree)
+    }
+
+
+def test_the_same_dockerfile_on_a_makefile_route_passes(tree: Path):
+    _write(tree, "services/newcomer/Dockerfile", LABELLED)
+    (tree / "Makefile").write_text(MAKEFILE + ROUTED_RECIPE)
+
+    assert check(tree, inspect=_inspector(_built(tree)), report=lambda _: None) == []
+    origins = {image.reference: image.origin for image in tracked_images(tree)}
+    assert origins["codegen-orchestrator/newcomer:local"] == "make build-newcomer"
+
+
+def test_a_recipe_that_builds_a_baker_under_no_tag_fails_the_check(tree: Path):
+    (tree / "Makefile").write_text(
+        MAKEFILE + ROUTED_RECIPE.replace("\t\t-t codegen-orchestrator/newcomer:local \\\n", "")
+    )
+    _write(tree, "services/newcomer/Dockerfile", LABELLED)
+
+    problems, _ = makefile_routes(tree)
+
+    assert problems == [
+        "Makefile recipe build-newcomer builds services/newcomer/Dockerfile, which bakes "
+        "shared, without an explicit -t name that can be found again afterwards"
+    ]
+
+
+def test_a_recipe_that_builds_a_baker_without_the_hash_fails_the_check(tree: Path):
+    (tree / "Makefile").write_text(
+        MAKEFILE + ROUTED_RECIPE.replace("--build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) ", "")
+    )
+    _write(tree, "services/newcomer/Dockerfile", LABELLED)
+
+    problems, _ = makefile_routes(tree)
+
+    assert problems == [
+        "Makefile recipe build-newcomer builds services/newcomer/Dockerfile, which bakes "
+        "shared, without passing --build-arg SOURCE_HASH"
+    ]
+
+
+def test_a_recipe_that_does_not_say_what_it_builds_fails_the_check(tree: Path):
+    (tree / "Makefile").write_text(MAKEFILE + "\nbuild-mystery:\n\tdocker build -t mystery .\n")
+
+    with pytest.raises(Unreadable, match="cannot tell which Dockerfile"):
+        makefile_routes(tree)
+
+
+def test_a_child_image_that_stamps_the_hash_is_compared_even_without_baking(tree: Path):
+    """`FROM ${BASE_IMAGE}` inherits the baked copy, and says which one by the label."""
+    references = {image.reference for image in tracked_images(tree)}
+
+    assert "worker-base-claude:latest" in references
+
+
 # --- the repository itself ---------------------------------------------------
 
 
@@ -306,9 +462,16 @@ def test_every_dockerfile_in_this_repository_is_covered():
     assert uncovered_dockerfiles(REPO_ROOT) == []
 
 
+def test_every_dockerfile_in_this_repository_reaches_an_image_name():
+    """Totality on the real tree: a Dockerfile no route builds fails this."""
+    problems, _routes = build_routes(REPO_ROOT)
+
+    assert problems == []
+
+
 def test_every_compose_service_in_this_repository_can_be_checked():
     """Including docker/test/**: a built test image is an image like any other."""
-    problems, _ = compose_plan(REPO_ROOT)
+    problems, _ = compose_routes(REPO_ROOT)
 
     assert problems == []
 

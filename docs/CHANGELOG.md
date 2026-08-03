@@ -2,6 +2,26 @@
 
 ## 2026-08-04
 
+- The freshness check now answers for the whole tree, not for the part it happened to be able to
+  compare. Every Dockerfile that bakes `shared` has to reach a declared image name through a build
+  route — a compose service with an explicit `image:`, or a Makefile recipe that builds it under an
+  explicit `-t` tag — and one that no route reaches fails `make check-shared-freshness` by name.
+  Before this, a Dockerfile that copied `shared` and stamped its label correctly but hung off no
+  compose service and no recipe was compared with nothing and the check said nothing; that was true of
+  nine of the seventeen files that bake `shared`, `services/scaffolder/Dockerfile` among them. Eight
+  of the nine already had a route and were merely outside the label comparison because their service
+  mounts `./shared:/app/shared` and runs the tree; the ninth,
+  `packages/worker-wrapper/Dockerfile.test`, is deleted — nothing has built it since `2621eb42`
+  dropped its make target in March, and the suite it would have run
+  (`tests/integration/worker_wrapper`) is red and already tracked in `scripts/check-ci-gate.py`. The
+  Makefile side is read the same way as compose from now on: every recipe is parsed, a `docker build`
+  of a Dockerfile that bakes `shared` owes `--build-arg SOURCE_HASH` and a tag, and a build that does
+  not say which Dockerfile it builds fails the check instead of being skipped. There is no list of
+  exceptions, deliberately. A machine without docker, or without a reachable daemon, now reads as
+  "nothing built" for every image rather than crashing, so the static half of the check gives the same
+  answer with docker and without it. Tests: `scripts/tests/test_shared_freshness.py`; docs:
+  `docs/REBUILD.md`.
+
 - A built stand can no longer be quietly behind the tree on `shared`. `make check-shared-freshness`
   (`scripts/shared_freshness.py`) compares the source hash baked into every reused image with the hash
   of the tree and exits non-zero on a difference, naming the image. It reuses what the worker circuit
