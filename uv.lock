@@ -14,6 +14,7 @@ members = [
     "codegen-orchestrator",
     "infra-service",
     "langgraph-orchestrator",
+    "scaffolder",
     "scheduler",
     "telegram-bot",
     "worker-manager",
@@ -618,6 +619,7 @@ dev = [
     { name = "pytest-mock" },
     { name = "respx" },
     { name = "ruff" },
+    { name = "scaffolder" },
     { name = "scheduler" },
     { name = "telegram-bot" },
     { name = "worker-manager" },
@@ -643,6 +645,7 @@ dev = [
     { name = "pytest-mock", specifier = ">=3.15.1" },
     { name = "respx", specifier = ">=0.21.1" },
     { name = "ruff", specifier = ">=0.15.5,<0.16" },
+    { name = "scaffolder", editable = "services/scaffolder" },
     { name = "scheduler", editable = "services/scheduler" },
     { name = "telegram-bot", editable = "services/telegram_bot" },
     { name = "worker-manager", editable = "services/worker-manager" },
@@ -3044,6 +3047,37 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4d/76/3f72d8fc38c1cb77b38c56a70da9d0c17700cc1cc50f9649c9d3c8f5ba71/ruff-0.15.22-py3-none-win32.whl", hash = "sha256:e5ba0e4a13fd14abbed2a77b517a3911290c6c6c59ef67784328d1668fab76cf", size = 10789165, upload-time = "2026-07-16T15:14:04.16Z" },
     { url = "https://files.pythonhosted.org/packages/cb/46/4965251734c2b6fcdca1b1b187d20bcac3af0ee5b083b89c910bb961ce3a/ruff-0.15.22-py3-none-win_amd64.whl", hash = "sha256:9be63ba1eb936acd2d1342fb8337c356353706fce233b2a15a09a97037e6acde", size = 11938297, upload-time = "2026-07-16T15:14:07.316Z" },
     { url = "https://files.pythonhosted.org/packages/57/c9/e69b1ff4c8b69093ef08b8919ab767af0569666865b39c30a8795d88d3c6/ruff-0.15.22-py3-none-win_arm64.whl", hash = "sha256:e1168075b72158510839f250027659cdd78476f40507dd517892304c41318661", size = 11298172, upload-time = "2026-07-16T15:14:10.51Z" },
+]
+
+[[package]]
+name = "scaffolder"
+version = "0.1.0"
+source = { editable = "services/scaffolder" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "pgvector" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt" },
+    { name = "pynacl" },
+    { name = "pyyaml" },
+    { name = "redis", extra = ["hiredis"] },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=42.0.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pgvector", specifier = ">=0.2.5" },
+    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pyjwt", specifier = ">=2.13.0" },
+    { name = "pynacl", specifier = ">=1.5.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=8.0.0" },
+    { name = "structlog", specifier = ">=25.1.0" },
 ]
 
 [[package]]

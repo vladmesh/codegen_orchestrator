@@ -16,15 +16,75 @@ TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
 MAKEFILE = ROOT / "Makefile"
 LINT_PATH_EXPR = "$(if $(LINT_PATH),$(LINT_PATH),.)"
 
-EXPECTED_SERVICE_MATRIX = {
-    "api",
-    "langgraph",
-    "scheduler",
-    "telegram_bot",
-    "worker-manager",
-    "infra",
+SERVICE_COMPOSE_DIR = ROOT / "docker" / "test" / "service"
+INTEGRATION_COMPOSE_DIR = ROOT / "docker" / "test" / "integration"
+
+# Where /app points for each docker/test/service compose file. The pytest paths in
+# those commands are container-relative, so they only resolve with this.
+SERVICE_COMPOSE_ROOTS = {
+    "api": "services/api",
+    "infra": "services/infra-service",
+    "langgraph": "services/langgraph",
+    "scheduler": "services/scheduler",
+    "telegram_bot": "services/telegram_bot",
+    "worker-manager": "services/worker-manager",
 }
-EXPECTED_INTEGRATION_MATRIX = {"backend", "template", "frontend", "infra", "po-tools"}
+# Integration compose files that deliberately stay out of the PR matrix.
+MANUAL_ONLY_INTEGRATION_SUITES = {
+    "backend-dind": "Docker-in-Docker suite, dispatched by hand via backend-integration.yml",
+}
+
+# --- Test suite coverage ----------------------------------------------------
+#
+# A test directory is any directory in the tree holding at least one file named
+# test_*.py, which is what pytest collects. The set is walked, never listed by
+# hand, so a directory added tomorrow shows up here on its own. It counts as
+# covered when it, or a directory above it (pytest recurses into subdirectories),
+# is claimed by a CI target, or when it is named exactly in UNCLAIMED_TEST_DIRS.
+#
+# Claims are read off the targets themselves: the ALL_SUITES table in
+# scripts/test-unit-local.sh, and the pytest commands in the compose files behind
+# the test-service and test-integration matrices.
+TEST_TREE_SKIP_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "venv",
+}
+
+# Test directories no CI target runs. Every line needs a reason; the point of the
+# list is that skipping a suite is a decision on the record, not a default.
+UNCLAIMED_TEST_DIRS = {
+    "scripts": (
+        "scripts/test_e2e_flow.py and test_e2e_analyst.py are hand-run drivers "
+        "against a live stack, not pytest suites; they define no test functions"
+    ),
+    "tests/e2e": (
+        "full-stack e2e behind docker/test/e2e/e2e.yml, which no workflow and no "
+        "make target invokes; issue:8a41b0e8a3148a68d6e5"
+    ),
+    "tests/e2e/mock_anthropic": (
+        "the mock LLM server that backs tests/e2e; unreachable for the same reason, "
+        "issue:8a41b0e8a3148a68d6e5"
+    ),
+    "services/langgraph/tests/e2e": (
+        "needs a real LLM API key (PO_LLM_API_KEY) and skips without one, so running "
+        "it on a PR would only ever report a skip"
+    ),
+    "services/infra-service/tests/integration": (
+        "red: test_provisioning_flow mocks neither the API client nor httpx, so "
+        "process_provisioner_job opens a real connection; issue:39be2178e3658691977d"
+    ),
+    "tests/integration/worker_wrapper": (
+        "red: test_worker_wrapper_lifecycle expects a /workspace git checkout that "
+        "exists only inside a worker container; issue:576dccd5bbc42c48a794"
+    ),
+}
+
 EXPECTED_GATE_NEEDS = {
     "detect-changes",
     "fast-checks",
@@ -236,6 +296,123 @@ def assert_offline_live_make_target() -> None:
             fail(f"make test-live is missing ignore {ignored}")
 
 
+def compose_suites(directory: Path) -> set[str]:
+    return {path.stem for path in directory.glob("*.yml")}
+
+
+def pytest_paths(compose_file: Path) -> list[str]:
+    """Every non-flag argument of the pytest commands in a compose file."""
+    compose = yaml.safe_load(compose_file.read_text())
+    if not isinstance(compose, dict):
+        fail(f"{compose_file} is not a mapping")
+    paths: list[str] = []
+    for service in compose.get("services", {}).values():
+        command = service.get("command") if isinstance(service, dict) else None
+        if not isinstance(command, list) or not command or command[0] != "pytest":
+            continue
+        paths.extend(arg for arg in command[1:] if not arg.startswith("-"))
+    if not paths:
+        fail(f"{compose_file} runs no pytest command")
+    return paths
+
+
+def resolve_test_path(compose_file: Path, path: str, service_root: str | None) -> str:
+    """Map a container-relative pytest argument back onto a repo path."""
+    candidates = [path] if service_root is None else [path, f"{service_root}/{path}"]
+    found = [candidate for candidate in candidates if (ROOT / candidate).exists()]
+    if len(found) != 1:
+        fail(f"{compose_file} runs pytest on {path}, which does not resolve to one repo path")
+    resolved = found[0].rstrip("/")
+    if (ROOT / resolved).is_file():
+        resolved = str(Path(resolved).parent)
+    return resolved
+
+
+def unit_local_suites() -> list[tuple[str, str]]:
+    """The (label, directory) pairs of the ALL_SUITES table in test-unit-local.sh."""
+    script = TEST_UNIT_LOCAL.read_text()
+    body = script.partition("ALL_SUITES=(")[2].partition("\n)")[0]
+    if not body:
+        fail("test-unit-local.sh has no ALL_SUITES table")
+    suites: list[tuple[str, str]] = []
+    for line in body.splitlines():
+        entry = line.strip()
+        if not entry.startswith('"'):
+            continue
+        label, _, rest = entry.strip('"').partition("|")
+        suites.append((label, rest.partition("|")[0]))
+    if not suites:
+        fail("test-unit-local.sh ALL_SUITES table is empty")
+    return suites
+
+
+def discover_test_dirs() -> set[str]:
+    """Repo-relative directories holding at least one test_*.py file."""
+    found: set[str] = set()
+    for path in ROOT.rglob("test_*.py"):
+        relative = path.relative_to(ROOT)
+        if TEST_TREE_SKIP_DIRS.intersection(relative.parts):
+            continue
+        found.add(str(relative.parent))
+    if not found:
+        fail("no test directories found in the tree; the walk is broken")
+    return found
+
+
+def claimed_test_dirs(jobs: dict[str, Any]) -> dict[str, str]:
+    """Directory -> the CI target that runs it, read off the targets themselves."""
+    claims: dict[str, str] = {}
+    for label, test_dir in unit_local_suites():
+        if not (ROOT / test_dir).is_dir():
+            fail(f"make test-unit suite {label} points at missing directory {test_dir}")
+        claims.setdefault(test_dir, f"make test-unit suite {label}")
+
+    for service in matrix_values(require_job(jobs, "test-service"), "service"):
+        compose_file = SERVICE_COMPOSE_DIR / f"{service}.yml"
+        service_root = SERVICE_COMPOSE_ROOTS.get(service)
+        if service_root is None:
+            fail(f"service {service} has no /app root declared in SERVICE_COMPOSE_ROOTS")
+        for path in pytest_paths(compose_file):
+            resolved = resolve_test_path(compose_file, path, service_root)
+            claims.setdefault(resolved, f"make test-service SERVICE={service}")
+
+    integration_suites = matrix_values(require_job(jobs, "test-integration"), "suite")
+    for suite in integration_suites | set(MANUAL_ONLY_INTEGRATION_SUITES):
+        compose_file = INTEGRATION_COMPOSE_DIR / f"{suite}.yml"
+        for path in pytest_paths(compose_file):
+            resolved = resolve_test_path(compose_file, path, None)
+            claims.setdefault(resolved, f"make test-integration-{suite}")
+    return claims
+
+
+def assert_test_suite_coverage(jobs: dict[str, Any]) -> None:
+    claims = claimed_test_dirs(jobs)
+    for excluded, reason in UNCLAIMED_TEST_DIRS.items():
+        if not (ROOT / excluded).is_dir():
+            fail(f"UNCLAIMED_TEST_DIRS names {excluded}, which is not in the tree")
+        if not reason.strip():
+            fail(f"UNCLAIMED_TEST_DIRS entry {excluded} has no reason")
+        if excluded in claims:
+            fail(f"{excluded} is both excluded and claimed by {claims[excluded]}")
+
+    orphans = []
+    for test_dir in sorted(discover_test_dirs()):
+        if test_dir in UNCLAIMED_TEST_DIRS:
+            continue
+        # A claim on a directory carries to what is under it: pytest recurses.
+        # An exclusion does not, so a new subdirectory of a skipped suite still
+        # has to be argued for.
+        parents = {str(parent) for parent in Path(test_dir).parents}
+        if not ({test_dir} | parents) & set(claims):
+            orphans.append(test_dir)
+    if orphans:
+        fail(
+            "test directories are claimed by no CI target: "
+            + ", ".join(orphans)
+            + ". Add them to a CI target, or to UNCLAIMED_TEST_DIRS with a reason"
+        )
+
+
 def assert_service_tests(jobs: dict[str, Any]) -> None:
     job = require_job(jobs, "test-service")
     if (
@@ -243,8 +420,10 @@ def assert_service_tests(jobs: dict[str, Any]) -> None:
         != "needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'"
     ):
         fail("service tests must require fast-checks and ci-contract")
-    if matrix_values(job, "service") != EXPECTED_SERVICE_MATRIX:
+    if matrix_values(job, "service") != compose_suites(SERVICE_COMPOSE_DIR):
         fail("service test matrix does not match docker/test/service")
+    if set(SERVICE_COMPOSE_ROOTS) != compose_suites(SERVICE_COMPOSE_DIR):
+        fail("SERVICE_COMPOSE_ROOTS does not match docker/test/service")
     run_step = step_by_id(job, "service-tests")
     if run_step.get("run") != "make test-service SERVICE=${{ matrix.service }}":
         fail("service tests must call make test-service")
@@ -269,8 +448,14 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
         != "needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'"
     ):
         fail("integration tests must require fast-checks and ci-contract")
-    if matrix_values(job, "suite") != EXPECTED_INTEGRATION_MATRIX:
+    expected_suites = compose_suites(INTEGRATION_COMPOSE_DIR) - set(MANUAL_ONLY_INTEGRATION_SUITES)
+    if matrix_values(job, "suite") != expected_suites:
         fail("integration matrix does not match docker/test/integration")
+    for suite, reason in MANUAL_ONLY_INTEGRATION_SUITES.items():
+        if not (INTEGRATION_COMPOSE_DIR / f"{suite}.yml").is_file():
+            fail(f"MANUAL_ONLY_INTEGRATION_SUITES names {suite}, which has no compose file")
+        if not reason.strip():
+            fail(f"MANUAL_ONLY_INTEGRATION_SUITES entry {suite} has no reason")
     job_if = job.get("if", "")
     if "run-integration-tests" in job_if:
         fail("integration tests must not depend on a PR label")
@@ -423,6 +608,7 @@ def main() -> None:
     assert_offline_live_unit_runner()
     assert_service_tests(jobs)
     assert_integration_tests(jobs)
+    assert_test_suite_coverage(jobs)
     assert_manual_backend_integration()
     assert_template_compatibility(jobs)
     assert_gate(jobs)

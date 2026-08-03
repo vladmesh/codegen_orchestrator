@@ -109,15 +109,24 @@ run_tests_parallel() {
 
 OFFLINE_LIVE_IGNORE_ARGS="--ignore=tests/live/test_api_crud.py --ignore=tests/live/test_capability_cleanup_redis.py --ignore=tests/live/test_ci_prompt.py --ignore=tests/live/test_deploy_infra.py --ignore=tests/live/test_full_pipeline.py --ignore=tests/live/test_health.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_scaffold.py --ignore=tests/live/test_scaffold_result.py --ignore=tests/live/test_streams.py --ignore=tests/live/test_supervisor.py"
 
+# Every entry here is a CI claim on a test directory: scripts/check-ci-gate.py walks
+# the tree and fails when a directory holding test_*.py is claimed by nothing.
 ALL_SUITES=(
     "api|services/api/tests/unit|$ROOT/services/api"
     "langgraph|services/langgraph/tests/unit|$ROOT/services/langgraph"
     "telegram_bot|services/telegram_bot/tests/unit|$ROOT/services/telegram_bot"
+    "telegram_bot-legacy|services/telegram_bot/tests_legacy/unit|$ROOT/services/telegram_bot"
     "scheduler|services/scheduler/tests/unit|$ROOT/services/scheduler"
     "worker-manager|services/worker-manager/tests/unit|$ROOT/services/worker-manager"
     "infra-service|services/infra-service/tests/unit|$ROOT/services/infra-service"
+    "scaffolder|services/scaffolder/tests/unit|$ROOT/services/scaffolder"
     "worker-wrapper|packages/worker-wrapper/tests/unit|"
+    # component and integration despite the name: both run offline in a tmpdir and
+    # finish in under a second, so they belong in the pre-push sweep.
+    "worker-wrapper-component|packages/worker-wrapper/tests/component|"
+    "worker-wrapper-integration|packages/worker-wrapper/tests/integration|"
     "shared|shared/tests|"
+    "scripts|scripts/tests|"
     "repo|tests/unit|"
     "live-offline|tests/live||$OFFLINE_LIVE_IGNORE_ARGS"
 )

@@ -25,7 +25,10 @@ class TestSettings:
         assert settings.api_base_url == "http://api:8000"
         assert settings.workspace_base_path == "/data/workspaces"
 
-    def test_missing_redis_url(self):
+    def test_missing_redis_url(self, monkeypatch):
+        # The unit runner exports REDIS_URL for services that validate env at import;
+        # pydantic-settings would satisfy the field from there and hide the failure.
+        monkeypatch.delenv("REDIS_URL", raising=False)
         with pytest.raises(ValidationError):
             Settings(_env_file=None, API_BASE_URL="x", workspace_base_path="x")
 
