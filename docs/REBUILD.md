@@ -95,11 +95,19 @@ This is exactly what the worker Dockerfiles put into the image: `COPY shared /ap
 rebuild. The price is accepted deliberately: an extra rebuild is cheaper than a silently outdated image.
 
 **The build order is mandatory.** `worker-base-claude`, `-factory`, `-codex` are declared as
-`FROM ${BASE_IMAGE}`, and `BASE_IMAGE` has no default: the builder names the common image it
+`FROM ${BASE_IMAGE}`, and `BASE_IMAGE` has no default: each producer names the common image it
 just produced. `make rebuild-worker-images` tags common as `worker-base-common:$(WORKER_SOURCE_HASH)`
-alongside `:latest` and passes the hash tag; the backend integration conftest passes its own
-content-hash tag. A build that forgets the argument fails on a blank base name rather than
-layering on whatever `:latest` happens to be on the host. All four images get
+alongside `:latest` and passes the hash tag; the backend integration fixture
+(`tests/integration/backend/conftest.py`) passes its own content-hash tag; the e2e fixture passes
+the tag it builds one step earlier. A build that forgets the argument fails on a blank base name
+rather than layering on whatever `:latest` happens to be on the host.
+
+The backend integration fixture skips a build when the tag already exists in its persistent DinD
+volume, so there the tag is the cache key. A child tag is therefore hashed from the child
+Dockerfile **and the common image's hash** (`_child_image_hash`): a rebuilt common gives every
+child a new tag and a real rebuild. Hashing only the child Dockerfile would leave the old child in
+place and retag it `:latest`, and the `BASE_IMAGE` passed to it would never be used. The e2e
+fixture builds with `nocache=True` and skips nothing, so it has no such key. All four images get
 `--build-arg SOURCE_HASH` and set their own `org.codegen.worker_source_hash` label themselves, rather than
 inheriting it from the base. Building a derived image without rebuilding common means getting old code
 under the current hash. `make rebuild-worker-images` respects the order; when building by hand, respect it

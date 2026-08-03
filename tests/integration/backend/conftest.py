@@ -376,6 +376,20 @@ def _content_hash(*paths: str) -> str:
     return h.hexdigest()[:12]
 
 
+def _child_image_hash(dockerfile: str, common_hash: str) -> str:
+    """Cache key of a worker image derived from worker-base-common.
+
+    The common image's hash goes in as bytes of its own. Handing it to
+    _content_hash as if it were a path hashed nothing at all: that function reads
+    files and directories, so a rebuilt common left every child tag unchanged and
+    the cache-hit branch below kept retagging the stale child as :latest.
+    """
+    h = hashlib.sha256()
+    h.update(_content_hash(dockerfile).encode())
+    h.update(common_hash.encode())
+    return h.hexdigest()[:12]
+
+
 def _build_base_image(
     client,
     dockerfile_path: str,
@@ -471,8 +485,8 @@ def setup_worker_base_images():
 
     common_hash = _content_hash(common_dockerfile, shared_path, packages_path)
     # Child images depend on common hash + their own Dockerfile
-    claude_hash = _content_hash(claude_dockerfile, common_hash)
-    factory_hash = _content_hash(factory_dockerfile, common_hash)
+    claude_hash = _child_image_hash(claude_dockerfile, common_hash)
+    factory_hash = _child_image_hash(factory_dockerfile, common_hash)
 
     common_tag = f"worker-base-common:{common_hash}"
     claude_tag = f"worker-base-claude:{claude_hash}"

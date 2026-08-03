@@ -124,9 +124,12 @@ cleanup-agents:
 # Build the worker image chain: common -> claude/factory/codex
 # Use rebuild-worker-images after changing worker-wrapper or worker-base Dockerfiles
 #
-# common is tagged with the source hash as well as :latest, and the children are built
-# against the hash tag. Their Dockerfiles declare BASE_IMAGE without a default, so a
-# child can only ever be layered on the common this target just produced.
+# common is tagged with the source hash as well as :latest, and the children here are
+# built against that hash tag, so they are layered on the common this target just built.
+# Their Dockerfiles declare BASE_IMAGE without a default, so a build that forgets to name
+# a base fails instead of picking up a stray :latest. The other producer of these images,
+# the DinD fixture in tests/integration/backend/conftest.py, names its own tag the same
+# way; it skips a build when the tag exists, so its child tags carry the common hash.
 
 rebuild-worker-images:
 	@echo "🔨 Building worker-base-common..."

@@ -154,6 +154,40 @@ def test_a_floating_compose_image_fails_the_gate(gate, image_tree):
         gate.assert_pinned_base_images()
 
 
+@pytest.mark.parametrize(
+    "image_line",
+    [
+        "    image: postgres:latest\n",
+        "    image: postgres:latest # explanation\n",
+        '    image: "postgres:latest"  # explanation\n',
+    ],
+)
+def test_an_inline_comment_does_not_hide_a_floating_compose_image(gate, image_tree, image_line):
+    """The value and its line come off one parse, so a comment cannot split them."""
+    (image_tree / "docker").mkdir()
+    (image_tree / "docker/test.yml").write_text(f"services:\n  database:\n{image_line}")
+
+    with pytest.raises(SystemExit, match=r"docker/test.yml:3 \(postgres:latest\)"):
+        gate.assert_pinned_base_images()
+
+
+def test_an_inline_comment_does_not_fail_a_pinned_compose_image(gate, image_tree):
+    (image_tree / "docker").mkdir()
+    (image_tree / "docker/test.yml").write_text(
+        "services:\n  database:\n    image: postgres:16-alpine # pinned on purpose\n"
+    )
+
+    gate.assert_pinned_base_images()
+
+
+@pytest.mark.parametrize("body", ["FROM redis:latest\n", "FROM redis:latest # explanation\n"])
+def test_an_inline_comment_does_not_hide_a_floating_dockerfile_image(gate, image_tree, body):
+    _write_dockerfile(image_tree, body)
+
+    with pytest.raises(SystemExit, match=r"service/Dockerfile:1 \(redis:latest\)"):
+        gate.assert_pinned_base_images()
+
+
 def test_an_excused_reference_passes_and_a_stale_excuse_fails(gate, image_tree, monkeypatch):
     _write_dockerfile(image_tree, "FROM python:latest\n")
     monkeypatch.setattr(

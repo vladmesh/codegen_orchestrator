@@ -559,16 +559,6 @@ def assert_test_suite_coverage(jobs: dict[str, Any]) -> None:
         )
 
 
-class TolerantLoader(yaml.SafeLoader):
-    """SafeLoader for files carrying tags it has no constructor for.
-
-    docker-compose.prod.yml uses compose's own !reset; without this the walk would
-    stop at the first such file instead of reading the images out of it.
-    """
-
-
-TolerantLoader.add_multi_constructor("", lambda loader, suffix, node: None)
-
 BUILD_ARG_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -643,30 +633,35 @@ def dockerfile_image_references(path: Path) -> list[tuple[int, str]]:
     return references
 
 
-def compose_image_references(path: Path) -> list[tuple[int, str]]:
-    """(line, image) for every image a compose file pulls, empty for other YAML."""
-    text = path.read_text()
-    # TolerantLoader is a SafeLoader; it only adds a constructor for unknown tags.
-    document = yaml.load(text, Loader=TolerantLoader)  # noqa: S506
-    if not isinstance(document, dict):
-        return []
-    services = document.get("services")
-    if not isinstance(services, dict):
-        return []
-    images = {
-        service["image"]
-        for service in services.values()
-        if isinstance(service, dict) and isinstance(service.get("image"), str)
-    }
+def mapping_entry(node: yaml.Node, key: str) -> yaml.Node | None:
+    """The value node under key, or None when the node is not a mapping with it."""
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    for name, value in node.value:
+        if isinstance(name, yaml.ScalarNode) and name.value == key:
+            return value
+    return None
 
+
+def compose_image_references(path: Path) -> list[tuple[int, str]]:
+    """(line, image) for every image a compose file pulls, empty for other YAML.
+
+    Both halves come off the same parsed node: the image is the scalar's value and
+    the line is that scalar's own mark. Reading the value from the parse and then
+    hunting for its line in the raw text would miss `image: postgres:latest # why`,
+    where the two do not match and compose still pulls a moving tag. Nodes are
+    composed rather than constructed, so tags with no constructor (compose's own
+    !reset in docker-compose.prod.yml, ansible's !vault) pass through.
+    """
     references: list[tuple[int, str]] = []
-    for number, raw in enumerate(text.splitlines(), start=1):
-        key, separator, value = raw.strip().partition(":")
-        if key != "image" or not separator:
+    for document in yaml.compose_all(path.read_text(), Loader=yaml.SafeLoader):
+        services = mapping_entry(document, "services")
+        if not isinstance(services, yaml.MappingNode):
             continue
-        image = value.strip().strip("\"'")
-        if image in images:
-            references.append((number, image))
+        for _, service in services.value:
+            image = mapping_entry(service, "image")
+            if isinstance(image, yaml.ScalarNode):
+                references.append((image.start_mark.line + 1, image.value))
     return references
 
 
