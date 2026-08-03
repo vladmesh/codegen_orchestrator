@@ -1,7 +1,10 @@
 # Worker base image with a pinned OpenAI Codex CLI.
 # Inherits the shared wrapper, workspace, and non-root worker user.
 
-ARG BASE_IMAGE=worker-base-common:latest
+# No default: the builder names the worker-base-common tag it just produced, so this
+# image can never be layered on top of whatever :latest happens to be lying around.
+# A build without --build-arg BASE_IMAGE fails on a blank base name.
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG CODEX_CLI_VERSION=0.144.6

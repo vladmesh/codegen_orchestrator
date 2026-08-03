@@ -1,7 +1,10 @@
 # Worker base image with Factory CLI pre-installed
 # Inherits from worker-base-common
 
-ARG BASE_IMAGE=worker-base-common:latest
+# No default: the builder names the worker-base-common tag it just produced, so this
+# image can never be layered on top of whatever :latest happens to be lying around.
+# A build without --build-arg BASE_IMAGE fails on a blank base name.
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 USER root

@@ -123,22 +123,33 @@ cleanup-agents:
 # === Worker Base Images ===
 # Build the worker image chain: common -> claude/factory/codex
 # Use rebuild-worker-images after changing worker-wrapper or worker-base Dockerfiles
+#
+# common is tagged with the source hash as well as :latest, and the children here are
+# built against that hash tag, so they are layered on the common this target just built.
+# Their Dockerfiles declare BASE_IMAGE without a default, so a build that forgets to name
+# a base fails instead of picking up a stray :latest. The other producer of these images,
+# the DinD fixture in tests/integration/backend/conftest.py, names its own tag the same
+# way; it skips a build when the tag exists, so its child tags carry the common hash.
 
 rebuild-worker-images:
 	@echo "🔨 Building worker-base-common..."
 	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
 		-t worker-base-common:latest \
+		-t worker-base-common:$(WORKER_SOURCE_HASH) \
 		-f services/worker-manager/images/worker-base-common/Dockerfile .
 	@echo "🔨 Building worker-base-claude..."
 	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-claude:latest \
 		-f services/worker-manager/images/worker-base-claude/Dockerfile .
 	@echo "🔨 Building worker-base-factory..."
 	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-factory:latest \
 		-f services/worker-manager/images/worker-base-factory/Dockerfile .
 	@echo "🔨 Building worker-base-codex..."
 	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-codex:latest \
 		-f services/worker-manager/images/worker-base-codex/Dockerfile .
 	@echo "✅ Worker images rebuilt!"
@@ -148,17 +159,21 @@ rebuild-worker-images-hard:
 	@echo "🔨 Building worker-base-common (no-cache)..."
 	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
 		-t worker-base-common:latest \
+		-t worker-base-common:$(WORKER_SOURCE_HASH) \
 		-f services/worker-manager/images/worker-base-common/Dockerfile .
 	@echo "🔨 Building worker-base-claude (no-cache)..."
 	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-claude:latest \
 		-f services/worker-manager/images/worker-base-claude/Dockerfile .
 	@echo "🔨 Building worker-base-factory (no-cache)..."
 	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-factory:latest \
 		-f services/worker-manager/images/worker-base-factory/Dockerfile .
 	@echo "🔨 Building worker-base-codex (no-cache)..."
 	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-codex:latest \
 		-f services/worker-manager/images/worker-base-codex/Dockerfile .
 	@echo "✅ Worker images rebuilt (no-cache)!"

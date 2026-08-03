@@ -2,6 +2,23 @@
 
 ## 2026-08-03
 
+- The last floating base image tags are gone, and the gate keeps them gone. Both
+  `COPY --from=ghcr.io/astral-sh/uv:latest` lines name `0.12.1`, the version the built worker
+  image and the registry tag both report today. The three derived worker images
+  (`worker-base-claude`, `-codex`, `-factory`) declare `ARG BASE_IMAGE` without a default, so
+  the builder has to name the common image it just produced: `make rebuild-worker-images` tags
+  common with `WORKER_SOURCE_HASH` as well as `:latest` and passes the hash tag, and the backend
+  integration conftest passes its own content-hash tag instead of hanging a `:latest` alias on
+  it. A build that forgets the argument fails on a blank base name. `make ci-contract` now walks
+  every Dockerfile and compose file in the tree and fails, with file and line, on an image with
+  `:latest` or no tag at all; a reference left floating on purpose needs an entry in
+  `UNPINNED_IMAGE_REFS` or `UNPINNED_IMAGE_DIRS` with a reason. In a compose file it reads a
+  service's `image` directly or through YAML merge keys, and a service with only a `build` is no
+  violation, since the Dockerfile it builds is walked separately. What it cannot read it does not
+  wave through: `extends`, an unresolvable anchor, an `image` that is not a single value, or a
+  file that does not parse fail the gate by name, so a shape the gate does not follow can never
+  pass as if it had been checked.
+
 - The CI contract gate derives the list of test files from the tree instead of trusting a
   constant in its own head. `scripts/check-ci-gate.py` walks the repository for files pytest
   would collect and fails when one is run by no CI target, so a new test can no longer be

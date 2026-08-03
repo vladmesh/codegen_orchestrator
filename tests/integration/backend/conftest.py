@@ -376,6 +376,20 @@ def _content_hash(*paths: str) -> str:
     return h.hexdigest()[:12]
 
 
+def _child_image_hash(dockerfile: str, common_hash: str) -> str:
+    """Cache key of a worker image derived from worker-base-common.
+
+    The common image's hash goes in as bytes of its own. Handing it to
+    _content_hash as if it were a path hashed nothing at all: that function reads
+    files and directories, so a rebuilt common left every child tag unchanged and
+    the cache-hit branch below kept retagging the stale child as :latest.
+    """
+    h = hashlib.sha256()
+    h.update(_content_hash(dockerfile).encode())
+    h.update(common_hash.encode())
+    return h.hexdigest()[:12]
+
+
 def _build_base_image(
     client,
     dockerfile_path: str,
@@ -383,8 +397,13 @@ def _build_base_image(
     shared_path: str,
     packages_path: str,
     source_hash: str,
+    base_image: str | None = None,
 ):
-    """Build a worker base image, skipping if a cached version exists."""
+    """Build a worker base image, skipping if a cached version exists.
+
+    base_image is the BASE_IMAGE build arg the derived Dockerfiles require; common
+    has no base of its own and passes None.
+    """
     import shutil
     import tempfile
 
@@ -407,13 +426,17 @@ def _build_base_image(
         shutil.copytree(shared_path, os.path.join(tmp_dir, "shared"), ignore=_ignore)
         shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"), ignore=_ignore)
 
+        buildargs = {"SOURCE_HASH": source_hash}
+        if base_image is not None:
+            buildargs["BASE_IMAGE"] = base_image
+
         try:
             image, build_logs = client.images.build(
                 path=tmp_dir,
                 tag=tag,
                 rm=True,
                 nocache=False,  # Allow cache for faster rebuilds
-                buildargs={"SOURCE_HASH": source_hash},
+                buildargs=buildargs,
             )
             for chunk in build_logs:
                 if "stream" in chunk:
@@ -462,8 +485,8 @@ def setup_worker_base_images():
 
     common_hash = _content_hash(common_dockerfile, shared_path, packages_path)
     # Child images depend on common hash + their own Dockerfile
-    claude_hash = _content_hash(claude_dockerfile, common_hash)
-    factory_hash = _content_hash(factory_dockerfile, common_hash)
+    claude_hash = _child_image_hash(claude_dockerfile, common_hash)
+    factory_hash = _child_image_hash(factory_dockerfile, common_hash)
 
     common_tag = f"worker-base-common:{common_hash}"
     claude_tag = f"worker-base-claude:{claude_hash}"
@@ -477,10 +500,8 @@ def setup_worker_base_images():
         _build_base_image(
             client, common_dockerfile, common_tag, shared_path, packages_path, common_hash
         )
-        # Also tag as :latest so child Dockerfiles (FROM worker-base-common:latest) work
-        client.images.get(common_tag).tag("worker-base-common", "latest")
-
-        # Build claude + factory in parallel (independent of each other)
+        # Build claude + factory in parallel (independent of each other).
+        # Both are layered on the content-hash tag built above, not on a :latest alias.
         with ThreadPoolExecutor(max_workers=2) as executor:
             f_claude = executor.submit(
                 _build_base_image,
@@ -490,6 +511,7 @@ def setup_worker_base_images():
                 shared_path,
                 packages_path,
                 common_hash,
+                common_tag,
             )
             f_factory = executor.submit(
                 _build_base_image,
@@ -499,6 +521,7 @@ def setup_worker_base_images():
                 shared_path,
                 packages_path,
                 common_hash,
+                common_tag,
             )
             f_claude.result()
             f_factory.result()

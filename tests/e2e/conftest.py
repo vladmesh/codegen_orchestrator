@@ -56,8 +56,13 @@ def _build_base_image(
     shared_path: str,
     packages_path: str,
     source_hash: str,
+    base_image: str | None = None,
 ):
-    """Build a worker base image with given Dockerfile."""
+    """Build a worker base image with given Dockerfile.
+
+    base_image is the BASE_IMAGE build arg the derived Dockerfiles require; common
+    has no base of its own and passes None.
+    """
     import os
     import shutil
     import tempfile
@@ -73,6 +78,10 @@ def _build_base_image(
         shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"))
 
         print(f"Building {tag}...")
+        buildargs = {"SOURCE_HASH": source_hash}
+        if base_image is not None:
+            buildargs["BASE_IMAGE"] = base_image
+
         try:
             image, build_logs = client.images.build(
                 path=tmp_dir,
@@ -80,7 +89,7 @@ def _build_base_image(
                 rm=True,
                 nocache=True,  # Force rebuild to pick up wrapper.py changes
                 pull=False,  # Don't pull base images - use local ones (e.g. worker-base-common)
-                buildargs={"SOURCE_HASH": source_hash},
+                buildargs=buildargs,
             )
             for chunk in build_logs:
                 if "stream" in chunk:
@@ -131,19 +140,24 @@ def setup_worker_base_images():
     shared_path = "/app/shared"
     packages_path = "/app/packages"
 
-    # Agent-specific Dockerfiles
+    # Agent-specific Dockerfiles. The common image is built first; the derived ones
+    # name it through BASE_IMAGE, which their Dockerfiles declare without a default.
+    common_tag = "worker-base-common:latest"
     images_to_build = [
         (
             "/app/services/worker-manager/images/worker-base-common/Dockerfile",
-            "worker-base-common:latest",
+            common_tag,
+            None,
         ),
         (
             "/app/services/worker-manager/images/worker-base-claude/Dockerfile",
             "worker-base-claude:latest",
+            common_tag,
         ),
         (
             "/app/services/worker-manager/images/worker-base-factory/Dockerfile",
             "worker-base-factory:latest",
+            common_tag,
         ),
     ]
 
@@ -152,8 +166,10 @@ def setup_worker_base_images():
     source_hash = _content_hash(shared_path, packages_path)
 
     try:
-        for dockerfile_path, tag in images_to_build:
-            _build_base_image(client, dockerfile_path, tag, shared_path, packages_path, source_hash)
+        for dockerfile_path, tag, base_image in images_to_build:
+            _build_base_image(
+                client, dockerfile_path, tag, shared_path, packages_path, source_hash, base_image
+            )
     finally:
         client.close()
 
