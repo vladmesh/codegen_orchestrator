@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 from typing import Any
 
 import yaml
@@ -36,15 +37,18 @@ MANUAL_ONLY_INTEGRATION_SUITES = {
 
 # --- Test suite coverage ----------------------------------------------------
 #
-# A test directory is any directory in the tree holding at least one file named
-# test_*.py, which is what pytest collects. The set is walked, never listed by
-# hand, so a directory added tomorrow shows up here on its own. It counts as
-# covered when it, or a directory above it (pytest recurses into subdirectories),
-# is claimed by a CI target, or when it is named exactly in UNCLAIMED_TEST_DIRS.
+# A test directory is any directory in the tree holding at least one file whose
+# name matches python_files of the root [tool.pytest.ini_options]; with no such
+# setting the patterns are pytest's own defaults, test_*.py and *_test.py. The
+# set is walked, never listed by hand, so a directory added tomorrow shows up
+# here on its own. It counts as covered when it, or a directory above it (pytest
+# recurses into subdirectories), is claimed by a CI target, or when it is named
+# exactly in UNCLAIMED_TEST_DIRS.
 #
 # Claims are read off the targets themselves: the ALL_SUITES table in
 # scripts/test-unit-local.sh, and the pytest commands in the compose files behind
 # the test-service and test-integration matrices.
+PYTEST_DEFAULT_PYTHON_FILES = ("test_*.py", "*_test.py")
 TEST_TREE_SKIP_DIRS = {
     ".git",
     ".mypy_cache",
@@ -60,8 +64,9 @@ TEST_TREE_SKIP_DIRS = {
 # list is that skipping a suite is a decision on the record, not a default.
 UNCLAIMED_TEST_DIRS = {
     "scripts": (
-        "scripts/test_e2e_flow.py and test_e2e_analyst.py are hand-run drivers "
-        "against a live stack, not pytest suites; they define no test functions"
+        "scripts/test_e2e_flow.py, test_e2e_analyst.py and e2e_scaffold_test.py "
+        "are hand-run drivers against a live stack, not pytest suites; pytest "
+        "collects no tests from them"
     ),
     "tests/e2e": (
         "full-stack e2e behind docker/test/e2e/e2e.yml, which no workflow and no "
@@ -346,14 +351,33 @@ def unit_local_suites() -> list[tuple[str, str]]:
     return suites
 
 
+def test_file_patterns() -> tuple[str, ...]:
+    """The file-name patterns pytest collects under the root configuration.
+
+    python_files is optional, and pytest falls back to its own defaults when it
+    is unset, so the walk has to fall back the same way or it goes blind to half
+    the names pytest picks up.
+    """
+    with (ROOT / "pyproject.toml").open("rb") as f:
+        config = tomllib.load(f)
+    ini_options = config["tool"]["pytest"]["ini_options"]
+    if "python_files" not in ini_options:
+        return PYTEST_DEFAULT_PYTHON_FILES
+    configured = ini_options["python_files"]
+    if isinstance(configured, str):
+        return tuple(configured.split())
+    return tuple(configured)
+
+
 def discover_test_dirs() -> set[str]:
-    """Repo-relative directories holding at least one test_*.py file."""
+    """Repo-relative directories holding at least one file pytest would collect."""
     found: set[str] = set()
-    for path in ROOT.rglob("test_*.py"):
-        relative = path.relative_to(ROOT)
-        if TEST_TREE_SKIP_DIRS.intersection(relative.parts):
-            continue
-        found.add(str(relative.parent))
+    for pattern in test_file_patterns():
+        for path in ROOT.rglob(pattern):
+            relative = path.relative_to(ROOT)
+            if TEST_TREE_SKIP_DIRS.intersection(relative.parts):
+                continue
+            found.add(str(relative.parent))
     if not found:
         fail("no test directories found in the tree; the walk is broken")
     return found
