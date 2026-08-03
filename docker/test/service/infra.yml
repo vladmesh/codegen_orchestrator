@@ -16,7 +16,7 @@ services:
 
   # Infrastructure
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.10-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

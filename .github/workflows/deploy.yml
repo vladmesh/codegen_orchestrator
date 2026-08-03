@@ -155,15 +155,19 @@ jobs:
             echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
             chmod 600 /opt/secrets/github_app.pem
 
-      - name: Pull latest code
+      # Deploys the exact commit this workflow run was dispatched on, not whatever
+      # origin/main points at by the time the step runs.
+      - name: Check out deployed revision
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
           username: deploy
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            set -euo pipefail
             cd ${{ env.DEPLOY_PATH }}
-            git pull origin main
+            git fetch --no-tags origin ${{ github.sha }}
+            git reset --hard ${{ github.sha }}
 
       - name: Build service images
         uses: appleboy/ssh-action@v1

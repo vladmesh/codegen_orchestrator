@@ -4,7 +4,7 @@
 # -----------------
 # Builder Stage
 # -----------------
-FROM python:3.12-slim AS builder
+FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
@@ -31,7 +31,7 @@ RUN pip wheel --no-cache-dir --no-deps --wheel-dir=/build/wheels /build/packages
 # -----------------
 # Runtime Stage
 # -----------------
-FROM python:3.12-slim
+FROM python:3.12.13-slim
 
 WORKDIR /app
 

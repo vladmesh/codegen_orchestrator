@@ -107,7 +107,7 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
 
       - name: Check formatting with Ruff
         run: uv run ruff format --check .
@@ -123,7 +123,7 @@ jobs:
 
       - name: Run Redis capability cleanup regression
         run: |
-          docker run --detach --rm --name redis-cleanup-contract redis:7-alpine
+          docker run --detach --rm --name redis-cleanup-contract redis:7.4.10-alpine
           trap 'docker rm --force redis-cleanup-contract' EXIT
           for _ in {1..10}; do
             docker exec redis-cleanup-contract redis-cli --raw ping | grep -qx PONG && break
@@ -150,7 +150,7 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
 
       - name: Validate CI gate contract
         run: make ci-contract

@@ -1,11 +1,11 @@
-FROM node:22-alpine AS build
+FROM node:22.23.2-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --legacy-peer-deps
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginx:1.31.3-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY entrypoint.sh /entrypoint.sh

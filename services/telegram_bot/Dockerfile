@@ -5,7 +5,7 @@
 
 # === Stage 1: Builder ===
 # Install dependencies in a separate stage for caching
-FROM python:3.12-slim AS builder
+FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # === Stage 2: Production ===
 # Create minimal runtime image
-FROM python:3.12-slim AS production
+FROM python:3.12.13-slim AS production
 
 WORKDIR /app
 

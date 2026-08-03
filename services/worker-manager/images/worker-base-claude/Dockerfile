@@ -8,7 +8,7 @@
 ARG BASE_IMAGE=worker-base-common:latest
 
 # --- Stage 1: Install Claude CLI (cached unless install.sh changes) ---
-FROM python:3.12-slim AS claude-installer
+FROM python:3.12.13-slim AS claude-installer
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

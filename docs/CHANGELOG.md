@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-08-03
+
+- The tree now fixes what actually gets installed and run. `uv.lock` is committed instead of
+  ignored, and both CI dependency steps install from it with `uv sync --locked`, which both
+  refuses to re-resolve and fails the run when the lock has drifted from the `pyproject.toml`
+  files. The integration, template, and E2E test requirement files pin
+  exact versions, and every base image in the repository's Dockerfiles and Compose files carries
+  an explicit tag instead of a moving one (`python:3.12.13-slim`, `redis:7.4.10-alpine`,
+  `pgvector/pgvector:0.8.6-pg16`, and the rest). A red or green CI run now describes the tree, not
+  the state of an upstream index.
+
+- The production deploy brings the server to the commit the workflow run was dispatched on
+  (`git fetch` of that SHA plus `git reset --hard`) instead of `git pull origin main`, which could
+  deploy a newer branch tip than the one that was validated. A unit test reads `deploy.yml` and
+  fails if the revision step goes back to `git pull` or to `origin/main`.
+
 ## 2026-08-02
 
 - The production deploy now fails before touching the server when critical database, internal API,

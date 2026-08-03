@@ -364,7 +364,7 @@ services:
   # === Reverse Proxy + Registry ===
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.4-alpine
     ports:
       - "80:80"
       - "443:443"
@@ -390,7 +390,7 @@ services:
     restart: unless-stopped
 
   registry:
-    image: registry:2
+    image: registry:2.8.3
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
@@ -402,7 +402,7 @@ services:
   # === Observability ===
 
   loki:
-    image: grafana/loki:3.4
+    image: grafana/loki:3.4.3
     command: -config.file=/etc/loki/loki.yml -log.format=json
     volumes:
       - ./infra/loki.yml:/etc/loki/loki.yml:ro
@@ -418,7 +418,7 @@ services:
     restart: unless-stopped
 
   promtail:
-    image: grafana/promtail:3.4
+    image: grafana/promtail:3.4.3
     command: -config.file=/etc/promtail/promtail.yml -log.format=json
     volumes:
       - ./infra/promtail.yml:/etc/promtail/promtail.yml:ro
@@ -497,7 +497,7 @@ services:
   # === Infrastructure ===
 
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.6-pg16
     ports:
       - "5432:5432"
     environment:
@@ -520,7 +520,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.10-alpine
     volumes:
       - redis_data:/data
     healthcheck:
