@@ -2,6 +2,25 @@
 
 ## 2026-08-03
 
+- The CI contract gate derives the list of test files from the tree instead of trusting a
+  constant in its own head. `scripts/check-ci-gate.py` walks the repository for files pytest
+  would collect and fails when one is run by no CI target, so a new test can no longer be
+  invisible. Claims are read off the targets themselves: the `ALL_SUITES` table in
+  `scripts/test-unit-local.sh`, the pytest commands in the `docker/test/{service,integration}`
+  compose files behind the two CI matrices, and the pytest commands of an explicit
+  `test-integration-<suite>` Makefile target. A claim covers what its target runs and nothing
+  more: a directory argument covers the directory recursively, a file argument covers that one
+  file. The service and integration matrices are likewise checked against those compose
+  directories rather than against hardcoded sets. A test that is deliberately not run has to be
+  listed in `UNCLAIMED_TEST_FILES`, or its directory in `UNCLAIMED_TEST_DIRS`, with a reason.
+
+- `services/scaffolder` joins the uv workspace, and its unit tests, along with `scripts/tests`,
+  `packages/worker-wrapper/tests/{component,integration}` and
+  `services/telegram_bot/tests_legacy/unit`, now run on every PR through `make test-unit`. None of
+  those five directories was executed anywhere before.
+
+## 2026-08-03
+
 - The tree now fixes what actually gets installed and run. `uv.lock` is committed instead of
   ignored, and both CI dependency steps install from it with `uv sync --locked`, which both
   refuses to re-resolve and fails the run when the lock has drifted from the `pyproject.toml`
