@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-08-04
+
+- A built stand can no longer be quietly behind the tree on `shared`. `make check-shared-freshness`
+  (`scripts/shared_freshness.py`) compares the source hash baked into every reused image with the hash
+  of the tree and exits non-zero on a difference, naming the image. It reuses what the worker circuit
+  already had — `--build-arg SOURCE_HASH` and the `org.codegen.worker_source_hash` label — instead of
+  adding a second mechanism, and the hash itself is now computed in that script and read from there by
+  the Makefile, so there is one counter rather than two that can drift. The images it compares are
+  derived, not listed: the four worker bases come off the `rebuild-worker-images` recipe, and the
+  compose services that bake `shared` without mounting `./shared` over it come off
+  `docker-compose.yml` — today only `worker-manager`, which now carries the label, gets the build arg
+  from compose and is named `codegen-orchestrator/worker-manager:local` so the check can find it
+  regardless of the compose project name. Coverage is a static rule, so it holds where nothing is
+  built: every Dockerfile with a `COPY shared` has to declare `ARG SOURCE_HASH` and the label, and a
+  new one that does not fails the check; so does a compared image whose label is missing, empty or not
+  a hash. An image that is not built is not behind anything and does not fail the check — that is what
+  keeps it green in CI, where it now runs in `fast-checks`. It builds nothing, starts nothing and uses
+  no network. Tests: `scripts/tests/test_shared_freshness.py`; docs: `docs/REBUILD.md`.
+
 ## 2026-08-03
 
 - `shared` has one declared form left, and it is the tree. The three editable entries in the root

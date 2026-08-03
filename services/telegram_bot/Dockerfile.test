@@ -18,3 +18,7 @@ COPY services/telegram_bot/src ./src
 COPY services/telegram_bot/tests ./tests
 
 CMD ["pytest", "-v"]
+
+# Which tree this image baked shared from; read by scripts/shared_freshness.py.
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH

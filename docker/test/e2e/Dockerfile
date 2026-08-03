@@ -31,3 +31,7 @@ COPY tests/e2e /app/tests/e2e
 ENV PYTHONPATH=/app
 
 CMD ["pytest", "tests/e2e/", "-v", "-m", "e2e"]
+
+# Which tree this image baked shared from; read by scripts/shared_freshness.py.
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH

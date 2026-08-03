@@ -21,3 +21,7 @@ COPY scripts/seed_system_configs.py scripts/system_configs.yaml /app/scripts/
 ENV PYTHONPATH=/app
 
 CMD ["pytest"]
+
+# Which tree this image baked shared from; read by scripts/shared_freshness.py.
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH

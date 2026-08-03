@@ -43,3 +43,7 @@ import from the tree via `PYTHONPATH`). `shared/pyproject.toml` stays as the sin
 
 `tests/unit/test_uv_sources_are_used.py` fails if a `[tool.uv.sources]` entry that nothing depends on
 comes back.
+
+D landed after this: `make check-shared-freshness` (`scripts/shared_freshness.py`) compares the source
+hash baked into every reused image with the tree, so the channels are tied together by a check instead
+of by a rebuild. See [../REBUILD.md](../REBUILD.md).

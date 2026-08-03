@@ -246,9 +246,16 @@ services:
     restart: unless-stopped
 
   worker-manager:
+    # The only build service here without a ./shared mount, so what runs is the copy baked
+    # into the image. It is named explicitly and stamped with the source hash so that
+    # `make check-shared-freshness` can find the image and tell whether it is behind the
+    # tree; built outside make the arg is empty and the check says so.
+    image: codegen-orchestrator/worker-manager:local
     build:
       context: .
       dockerfile: services/worker-manager/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     user: root # Required for Docker daemon access (manages worker containers and networks on host)
     env_file:
       - .env

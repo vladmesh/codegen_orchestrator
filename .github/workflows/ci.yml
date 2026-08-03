@@ -118,6 +118,9 @@ jobs:
       - name: Run unit tests
         run: make test-unit
 
+      - name: Check nothing built is behind the tree on shared
+        run: make check-shared-freshness
+
       - name: Run offline live regressions
         run: make test-live
 

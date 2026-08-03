@@ -2,7 +2,8 @@
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
-	check-worker-images ensure-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
+	check-worker-images ensure-worker-images check-shared-freshness print-source-hash \
+	.nuke-common .nuke-hard-prune pull-worker-reports
 
 # Load .env file
 -include .env
@@ -10,16 +11,12 @@ export
 
 DOCKER_COMPOSE ?= docker compose
 
-# Hash of source files baked into worker images.
-# Covers exactly what the worker Dockerfiles copy in: all of shared/ (COPY shared ./shared),
-# all of packages/worker-wrapper, and the image definitions themselves.
-# Any edit under shared/ therefore makes the worker bases stale and triggers a rebuild.
-WORKER_SOURCE_HASH = $(shell find \
-  shared \
-  packages/worker-wrapper \
-  services/worker-manager/images -type f \
-  -not -path '*/__pycache__/*' -not -name '*.pyc' \
-  | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
+# Hash of source files baked into images: all of shared/ (COPY shared ./shared), all of
+# packages/worker-wrapper, and the worker image definitions themselves. Any edit under
+# shared/ therefore makes every image that bakes it stale.
+# Computed by scripts/shared_freshness.py and nowhere else — the freshness check reads the
+# same function, so the two cannot drift apart.
+WORKER_SOURCE_HASH := $(shell python3 scripts/shared_freshness.py hash)
 
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
 
@@ -65,6 +62,8 @@ help:
 	@echo "  make rebuild-worker-images-hard - Rebuild with --no-cache (when cache is stale)"
 	@echo "  make check-worker-images        - Read-only staleness check (non-zero exit on drift)"
 	@echo "  make ensure-worker-images       - Check and rebuild if stale"
+	@echo ""
+	@echo "  make check-shared-freshness     - Is anything built behind the tree on shared?"
 
 # === Dependency Lock Files ===
 
@@ -193,6 +192,16 @@ check-worker-images:
 	  exit 1; \
 	fi; \
 	echo "✅ Worker base images up to date (hash: $$CURRENT)"
+
+# Is anything built behind the tree on shared? Covers every image that bakes shared,
+# the worker bases included; unlike check-worker-images an image that is not built is
+# not a failure, so this is the one that runs in CI. Builds nothing, needs no network.
+check-shared-freshness:
+	@uv run python scripts/shared_freshness.py check
+
+# The tree hash, for anything that needs to compare against a built image.
+print-source-hash:
+	@echo $(WORKER_SOURCE_HASH)
 
 # Check and rebuild on drift. This is what other targets call.
 ensure-worker-images:

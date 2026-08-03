@@ -49,3 +49,7 @@ EXPOSE 8000
 
 # Run application (migrations first)
 CMD ["/entrypoint.sh"]
+
+# Which tree this image baked shared from; read by scripts/shared_freshness.py.
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH
