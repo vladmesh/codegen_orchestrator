@@ -78,14 +78,5 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
-
-[tool.ruff]
-target-version = "py312"
-line-length = 100
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "C4"]
-ignore = []
-
-[tool.ruff.lint.isort]
-known-first-party = ["shared", "src"]
+# Ruff is configured in the root ruff.toml. A [tool.ruff] section here would be
+# ignored whenever that file exists, so it lives in one place only.
