@@ -1,106 +1,17 @@
-"""API endpoints for OpenRouter model management."""
+"""OpenRouter model lookup used by the agent-config router to validate identifiers."""
 
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import HTTPException
 import httpx
 import structlog
 
 logger = structlog.get_logger()
 
-router = APIRouter()
-
 # In-memory cache
 _models_cache = None
 _cache_timestamp = None
 CACHE_TTL = timedelta(hours=1)
-
-
-@router.get("/available-models")
-async def list_available_models(
-    provider: str | None = Query(
-        None, description="Filter by provider (e.g., openai, anthropic, google)"
-    ),
-    sort_by: str = Query("name", description="Sort by: name, price, or context"),
-):
-    """List available models from OpenRouter.
-
-    Args:
-        provider: Optional provider filter (openai, anthropic, google, etc.)
-        sort_by: Sort criterion (name, price, or context)
-
-    Returns:
-        Dict with models list and count
-
-    Example:
-        GET /api/available-models?provider=anthropic&sort_by=price
-    """
-    try:
-        models = await _fetch_openrouter_models()
-
-        # Filter by provider if specified
-        if provider:
-            models = [m for m in models if provider.lower() in m["id"].lower()]
-
-        # Sort models
-        if sort_by == "price":
-            # Sort by prompt price (cheapest first)
-            models.sort(key=lambda m: m.get("pricing", {}).get("prompt", 0))
-        elif sort_by == "context":
-            # Sort by context length (largest first)
-            models.sort(key=lambda m: m.get("context_length", 0), reverse=True)
-        else:  # name (default)
-            models.sort(key=lambda m: m.get("name", "").lower())
-
-        return {
-            "models": models,
-            "count": len(models),
-            "cached": _is_cache_valid(),
-        }
-
-    except httpx.HTTPError as e:
-        logger.error("openrouter_fetch_failed", error=str(e), error_type=type(e).__name__)
-        raise HTTPException(
-            status_code=503,
-            detail="Failed to fetch models from OpenRouter API",
-        ) from e
-
-
-@router.get("/available-models/{model_id:path}")
-async def get_model_details(model_id: str):
-    """Get details for a specific model.
-
-    Args:
-        model_id: Full model identifier (e.g., openai/gpt-4o, anthropic/claude-3.5-sonnet)
-
-    Returns:
-        Model details dict
-
-    Raises:
-        HTTPException: If model not found
-    """
-    try:
-        models = await _fetch_openrouter_models()
-
-        # Find model by ID
-        model = next((m for m in models if m["id"] == model_id), None)
-
-        if not model:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Model '{model_id}' not found in OpenRouter",
-            )
-
-        return model
-
-    except HTTPException:
-        raise
-    except httpx.HTTPError as e:
-        logger.error("openrouter_fetch_failed", error=str(e), error_type=type(e).__name__)
-        raise HTTPException(
-            status_code=503,
-            detail="Failed to fetch models from OpenRouter API",
-        ) from e
 
 
 async def _fetch_openrouter_models() -> list[dict]:

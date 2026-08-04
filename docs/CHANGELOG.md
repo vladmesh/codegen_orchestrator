@@ -2,6 +2,28 @@
 
 ## 2026-08-04
 
+- The dead layer is out of the tree. `LLMNode` (`services/langgraph/src/nodes/base.py`) and the
+  three modules only it used are deleted: `nodes/tool_executor.py` (`ToolExecutor`), `llm/`
+  (`LLMFactory`) and `config/agent_config.py` (`get_agent_config`, `invalidate_cache`, the TTL
+  cache), along with the `llm/` and `config/` re-exports. The subgraphs take only `FunctionalNode`,
+  `RetryPolicy` and `log_node_execution` from `nodes.base`, and those stay; the PO and architect
+  agents build their own `ChatOpenAI`, so `langchain-openai` stays a dependency.
+  `services/langgraph/src/redis_publisher.py` had no reference anywhere and is deleted too.
+  `services/langgraph/tests/unit/test_dead_layer_removed.py` fails if any of them comes back.
+
+  **External HTTP contract**: two routers are no longer mounted, so five paths are gone from the
+  API. `services/api/src/routers/resources.py` is deleted, taking `GET /api/resources`,
+  `POST /api/resources` and `GET /api/resources/{handle}`; the `Resource` model and its table are
+  untouched. The two OpenRouter catalogue endpoints, `GET /api/available-models` and
+  `GET /api/available-models/{model_id}`, are gone with the router object in
+  `routers/available_models.py`; the module itself stays, because `routers/agent_configs.py` calls
+  its `validate_model_identifier` when a config's `model_identifier` is written. No caller was found
+  for any of the five paths in any service or in either web client.
+
+  Two alias blocks are gone as well: the thirteen `_`-prefixed re-exports in `routers/rag.py` and
+  the seven in `routers/tasks.py`. Neither block had a consumer; the public names they aliased are
+  unchanged.
+
 - `ProjectCreate` and `ProjectUpdate` have one definition each. `shared/contracts/dto/project.py`
   and `services/api/src/schemas/project.py` each declared a class of that name, and the two field
   sets had drifted apart in both directions: the contract carried `description` and `modules`, for

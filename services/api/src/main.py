@@ -121,7 +121,6 @@ async def root():
 
 app.include_router(routers.health.router)
 app.include_router(routers.debug.router)
-app.include_router(routers.resources.router, prefix="/api")
 app.include_router(routers.users.router, prefix="/api")
 app.include_router(routers.projects.router, prefix="/api")
 app.include_router(routers.servers.router, prefix="/api")
@@ -135,8 +134,6 @@ app.include_router(routers.service_deployments.router, prefix="/api")
 app.include_router(routers.applications.router, prefix="/api")
 app.include_router(routers.agent_configs.router, prefix="/api")
 app.include_router(routers.system_configs.router, prefix="/api")
-
-app.include_router(routers.available_models.router, prefix="/api")
 app.include_router(routers.rag.router, prefix="/api")
 app.include_router(routers.runs.router, prefix="/api")
 app.include_router(routers.tasks.router, prefix="/api")

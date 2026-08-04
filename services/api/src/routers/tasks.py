@@ -47,24 +47,8 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 # Include action endpoints (start, complete, fail, reopen, resume, transition)
 router.include_router(action_router)
 
-# Backward-compatible aliases (underscore-prefixed names used internally)
-_commit_or_raise_fk = commit_or_raise_fk
-_generate_id = generate_id
-_to_read = to_read
-_get_task = get_task
-_get_last_event_summary = get_last_event_summary
-_create_status_event = create_status_event
-_validate_transition = validate_transition
-
 __all__ = [
     "_COMPLETE_PATH",
-    "_commit_or_raise_fk",
-    "_create_status_event",
-    "_generate_id",
-    "_get_last_event_summary",
-    "_get_task",
-    "_to_read",
-    "_validate_transition",
     "commit_or_raise_fk",
     "complete_task",
     "create_status_event",

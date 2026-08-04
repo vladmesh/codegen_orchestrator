@@ -1,8 +1,6 @@
 """Base node classes for LangGraph agents.
 
 Provides:
-- Dynamic prompt loading from database (no fallbacks - fail fast)
-- Common tool execution logic via ToolExecutor
 - Error handling and logging
 - Node execution decorator for structured logging
 """
@@ -13,12 +11,7 @@ from functools import wraps
 import time
 from typing import Any, TypeVar
 
-from langchain_core.tools import BaseTool
 import structlog
-
-from ..config.agent_config import get_agent_config
-from ..llm.factory import LLMFactory
-from .tool_executor import ToolExecutor
 
 logger = structlog.get_logger()
 
@@ -39,123 +32,6 @@ class BaseNode:
     def __init__(self, node_id: str | None = None, timeout_seconds: int | None = None):
         self.node_id = node_id
         self.timeout_seconds = timeout_seconds
-
-
-class LLMNode(BaseNode):
-    """Base class for LLM-backed nodes.
-
-    Responsibilities:
-    - Managing LLM configuration (model, prompts, temperature)
-    - Tool execution delegation via ToolExecutor
-    - Providing hooks for subclass customization (handle_tool_result)
-    """
-
-    def __init__(self, agent_id: str, tools: list[BaseTool]):
-        super().__init__(node_id=agent_id)
-        self.agent_id = agent_id
-        self.tools = tools
-        self.tools_map = {tool.name: tool for tool in tools}
-        # Delegate tool execution to ToolExecutor
-        self.tool_executor = ToolExecutor(self.tools_map, self.handle_tool_result)
-
-    async def get_config(self) -> dict[str, Any]:
-        """Get agent configuration from API.
-
-        Returns:
-            Config dict with keys: system_prompt, model_name, temperature
-
-        Raises:
-            AgentConfigError: If config cannot be fetched
-        """
-        return await get_agent_config(self.agent_id)
-
-    async def get_llm(self):
-        """Get LLM instance configured from API."""
-        config = await self.get_config()
-        # Log config for debugging
-        logger.debug(
-            "get_llm_config_check",
-            agent_id=self.agent_id,
-            has_llm_provider="llm_provider" in config,
-            has_model_identifier="model_identifier" in config,
-            config_keys=list(config.keys()),
-        )
-        # Validate required fields before creating LLM
-        if not config.get("llm_provider"):
-            logger.error(
-                "missing_llm_provider",
-                agent_id=self.agent_id,
-                config_keys=list(config.keys()),
-                config_sample={k: str(v)[:50] for k, v in list(config.items())[:5]},
-            )
-            raise KeyError(
-                f"Agent config '{self.agent_id}' missing llm_provider. "
-                f"Config keys: {list(config.keys())}"
-            )
-        if not config.get("model_identifier"):
-            logger.error(
-                "missing_model_identifier",
-                agent_id=self.agent_id,
-                config_keys=list(config.keys()),
-                config_sample={k: str(v)[:50] for k, v in list(config.items())[:5]},
-            )
-            raise KeyError(
-                f"Agent config '{self.agent_id}' missing model_identifier. "
-                f"Config keys: {list(config.keys())}"
-            )
-        return LLMFactory.create_llm(config)
-
-    async def get_llm_with_tools(self):
-        """Get LLM with bound tools, configured from API."""
-        llm = await self.get_llm()
-        return llm.bind_tools(self.tools)
-
-    async def get_system_prompt(self) -> str:
-        """Get system prompt from config."""
-        config = await self.get_config()
-        return config["system_prompt"]
-
-    async def execute_tools(self, state: dict) -> dict:
-        """Execute tool calls from the last message.
-
-        Delegates to ToolExecutor which handles:
-        - Extracting tool calls from message
-        - Executing each tool
-        - Collecting results into ToolMessage objects
-        - Calling handle_tool_result for custom state updates
-
-        Args:
-            state: Current graph state
-
-        Returns:
-            State update dict with messages and any custom updates
-        """
-        messages = state.get("messages", [])
-        if not messages:
-            return {"messages": []}
-
-        last_message = messages[-1]
-
-        if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
-            return {"messages": []}
-
-        # Delegate to ToolExecutor
-        return await self.tool_executor.execute_tools(last_message.tool_calls, state)
-
-    def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
-        """Handle tool result and return state updates.
-
-        Override in subclasses to add custom logic for specific tools.
-
-        Args:
-            tool_name: Name of the executed tool
-            result: Tool execution result
-            state: Current graph state
-
-        Returns:
-            Dict of state updates to apply
-        """
-        return {}
 
 
 class FunctionalNode(BaseNode):
