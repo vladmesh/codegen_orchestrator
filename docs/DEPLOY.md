@@ -97,6 +97,11 @@ All secrets must be configured in the repository's **production** environment.
 |--------|-------------|
 | `INTERNAL_API_KEY` | Random shared credential sent by trusted services as `X-Internal-Key` |
 
+The key says which caller this is, not whose behalf it acts on. A request that also
+carries `X-Telegram-ID` — the PO agent's and the bot's do — is judged as that user, so
+holding the key does not open a stranger's project. A service call that names no user is
+unrestricted, as before.
+
 ### LLM Providers
 
 | Secret | Description |

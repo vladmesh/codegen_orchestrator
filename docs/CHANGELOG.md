@@ -2,6 +2,15 @@
 
 ## 2026-08-04
 
+- A valid `X-Internal-Key` authenticates a service; it no longer makes that service anyone's
+  deputy. `_check_project_access` in `services/api/src/routers/projects.py` used to return on the
+  key alone, so once every caller sent it — the PO agent and the bot included, and they name the end
+  user in `X-Telegram-ID` — a Telegram user could have asked the agent for a stranger's project and
+  got it: `get_project`, the secret endpoints, `teardown`. A request that names a user is now judged
+  as that user, key or no key; a service call that names none is unchanged, and an admin still
+  reaches everything. The rule lives in one function, so all ten owner-checked project endpoints
+  follow it. Test: `services/api/tests/service/test_internal_key_is_not_impersonation.py`.
+
 - The transport to the internal API is written once, in `shared/clients/internal_api.py`. Five
   services carried a near-identical `_get_client` / `_api_path` / `_request` — 1384 lines of client
   code between them — and the copies had drifted: `services/telegram_bot` sent no `X-Internal-Key`

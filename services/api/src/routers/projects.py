@@ -86,8 +86,15 @@ async def _check_project_access(
     *,
     is_internal: bool = False,
 ) -> None:
-    """Check if user has access to project. Raises 401/403 if denied."""
-    if is_internal:
+    """Check if user has access to project. Raises 401/403 if denied.
+
+    A valid X-Internal-Key authenticates the caller as one of our services. It does
+    not make that service anyone's deputy: when the request also names a user, that
+    user's rights decide, so a Telegram user cannot reach a stranger's project by
+    asking an agent that happens to hold the key. A service call with no
+    X-Telegram-ID has no user to scope against and goes through.
+    """
+    if is_internal and telegram_id is None:
         return
     if telegram_id is None:
         raise HTTPException(
