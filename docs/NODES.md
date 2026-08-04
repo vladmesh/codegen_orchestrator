@@ -179,6 +179,8 @@ Deploy worker writes `DeployOutcome` to `run.result`. The supervisor (`supervise
    - A password reset through the Time4VPS API
    - An OS reinstall only after an explicit force-rebuild request and only when the provider ID is
      present in `TIME4VPS_MANAGED_SERVER_IDS`; SSH failure alone is non-destructive
+   - The legacy queue field `force_reinstall` is accepted for wire compatibility but ignored; only
+     the API-controlled `force_rebuild` server status authorizes reinstall
    - Ansible playbooks for server setup
    - Redeploying the services after recovery
 2. **Environment observation** (`env-observation:queue`):

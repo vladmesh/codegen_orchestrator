@@ -35,7 +35,7 @@ section below for the operation. The `/opt/services` ownership contract is appli
 
 Time4VPS discovery is default-deny. `TIME4VPS_MANAGED_SERVER_IDS` must contain the comma-separated
 provider IDs of the servers this installation is allowed to provision. An absent or empty value
-means that no Time4VPS server is managed. Every other discovered server is stored as
+means that no Time4VPS server is managed. Every other newly discovered server is stored as
 `is_managed=false` with status `reserved`; it is visible to inventory reads but never enters a
 provisioning trigger.
 
@@ -47,10 +47,13 @@ by itself authorize provisioning.
 To adopt a new blank target:
 
 1. Read its immutable provider ID from the Time4VPS account and verify the target by both ID and IP.
-2. Set the production GitHub secret `TIME4VPS_MANAGED_SERVER_IDS` to the complete allowlist and run
-   the deploy workflow. The workflow rewrites the server `.env`; do not edit it by hand.
+2. Set the production GitHub secrets `TIME4VPS_MANAGED_SERVER_IDS`, `TIME4VPS_LOGIN`,
+   `TIME4VPS_PASSWORD`, and `ORCHESTRATOR_PUBLIC_IP`, then run the deploy workflow. The workflow owns
+   and rewrites the server `.env`; all four values are preserved from those secrets.
 3. A brand-new allowlisted provider server enters `pending_setup`. Adding an existing inventory row
-   to the allowlist only marks it managed and sends an alert; it does not schedule work.
+   to the allowlist only marks it managed and sends an alert; it does not schedule work. Restoring
+   an accidentally removed ID preserves the server's prior operational status. For a verified blank
+   existing row, explicitly PATCH its status to `pending_setup` to use the non-destructive SSH path.
 4. If a verified blank server has no working orchestrator SSH access, request `force-rebuild`
    explicitly through the admin API and watch the provisioning logs.
 
@@ -169,7 +172,10 @@ the key's verdict; every access guard asks it.
 |--------|-------------|
 | `SECRETS_ENCRYPTION_KEY` | Fernet key for encrypting project secrets |
 | `ORCHESTRATOR_HOSTNAME` | Public hostname (for Caddy TLS, registry) |
+| `ORCHESTRATOR_PUBLIC_IP` | Public egress IP allowed to reach node monitoring ports |
 | `TIME4VPS_MANAGED_SERVER_IDS` | Required allowlist of provider IDs the orchestrator may provision or reinstall; empty denies all |
+| `TIME4VPS_LOGIN` | Time4VPS login used by infra-service provider verification |
+| `TIME4VPS_PASSWORD` | Time4VPS password used by infra-service provider verification |
 | `REGISTRY_USER` | Docker registry basic auth user |
 | `REGISTRY_PASSWORD` | Docker registry password |
 | `REGISTRY_PASSWORD_HASH` | Bcrypt hash of registry password (for Caddy) |

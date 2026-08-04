@@ -126,7 +126,7 @@ async def test_patch_server_identity_fields_roundtrip(async_client, test_server)
         json={
             "host": "renamed.example.com",
             "public_ip": "10.0.0.100",
-            "labels": {"provider_id": "1001"},
+            "provider_id": "1001",
             "is_managed": False,
         },
     )

@@ -29,7 +29,7 @@ async def publish_provisioner_trigger(
 ) -> bool:
     """Publish a provisioning trigger event to Redis.
 
-    This is called by health_checker and server_sync workers.
+    This is called by scheduler provisioning and startup-retry paths.
     LangGraph's provisioner worker listens for these events.
 
     Args:

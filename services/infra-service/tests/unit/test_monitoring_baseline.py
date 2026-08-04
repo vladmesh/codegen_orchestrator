@@ -14,13 +14,15 @@ from src.provisioner.operations import provision_monitoring_baseline
 
 
 @pytest.mark.asyncio
-async def test_monitoring_baseline_runs_only_monitoring_tag_and_marks_server():
+async def test_monitoring_baseline_runs_only_monitoring_tag_and_marks_server(monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
     server = ServerDTO(
         handle="adopted-vps",
         host="203.0.113.10",
         public_ip="203.0.113.10",
         ssh_user="dev",
         status="ready",
+        provider_id="1001",
         is_managed=True,
         created_at=datetime.now(UTC),
     )
@@ -50,13 +52,15 @@ async def test_monitoring_baseline_runs_only_monitoring_tag_and_marks_server():
 
 
 @pytest.mark.asyncio
-async def test_monitoring_baseline_rejects_unmanaged_server():
+async def test_monitoring_baseline_rejects_unmanaged_server(monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
     server = ServerDTO(
         handle="unmanaged-vps",
         host="203.0.113.11",
         public_ip="203.0.113.11",
         ssh_user="root",
         status="ready",
+        provider_id="1001",
         is_managed=False,
         created_at=datetime.now(UTC),
     )
@@ -65,17 +69,40 @@ async def test_monitoring_baseline_rejects_unmanaged_server():
         success, message = await provision_monitoring_baseline("unmanaged-vps", MagicMock())
 
     assert success is False
-    assert message == "Server is not managed"
+    assert message == "Server is not authorized for provisioning"
 
 
 @pytest.mark.asyncio
-async def test_monitoring_baseline_rejects_server_without_stored_ssh_key():
+async def test_monitoring_baseline_rejects_stale_managed_server_outside_allowlist(monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "2002")
+    server = ServerDTO(
+        handle="stale-vps",
+        host="203.0.113.11",
+        public_ip="203.0.113.11",
+        ssh_user="root",
+        status="ready",
+        provider_id="1001",
+        is_managed=True,
+        created_at=datetime.now(UTC),
+    )
+
+    with patch("src.provisioner.operations.get_server_info", new=AsyncMock(return_value=server)):
+        success, message = await provision_monitoring_baseline("stale-vps", MagicMock())
+
+    assert success is False
+    assert message == "Server is not authorized for provisioning"
+
+
+@pytest.mark.asyncio
+async def test_monitoring_baseline_rejects_server_without_stored_ssh_key(monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
     server = ServerDTO(
         handle="keyless-vps",
         host="203.0.113.12",
         public_ip="203.0.113.12",
         ssh_user="dev",
         status="ready",
+        provider_id="1001",
         is_managed=True,
         created_at=datetime.now(UTC),
     )

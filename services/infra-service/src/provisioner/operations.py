@@ -7,7 +7,11 @@ import structlog
 
 from shared.clients.time4vps import Time4VPSClient
 from shared.notifications import notify_admins_best_effort
-from shared.provisioning_policy import time4vps_server_is_allowed
+from shared.provisioning_policy import (
+    provider_ip_matches,
+    server_is_provisioning_allowed,
+    time4vps_server_is_allowed,
+)
 
 from ..config.constants import Provisioning, Timeouts
 from .ansible_runner import AnsibleRunner
@@ -30,8 +34,8 @@ async def provision_monitoring_baseline(
 ) -> tuple[bool, str]:
     """Apply and verify the monitoring role on an already managed server."""
     server = await get_server_info(server_handle)
-    if not server.is_managed:
-        return False, "Server is not managed"
+    if not server_is_provisioning_allowed(server):
+        return False, "Server is not authorized for provisioning"
 
     server_ip = server.public_ip or server.host
     if not server_ip:
@@ -156,7 +160,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
     # Close the time-of-check/time-of-use gap immediately before the destructive call.
     # Provider ID is authoritative, while the IP proves it is still the DB target.
     details = await time4vps_client.get_server_details(server_id)
-    if details.ip and details.ip != server_ip:
+    if not provider_ip_matches(expected_ip=server_ip, provider_ip=details.ip):
         message = (
             f"Provider identity mismatch for server {server_id}: "
             f"expected {server_ip}, provider reports {details.ip}; refusing OS reinstall"

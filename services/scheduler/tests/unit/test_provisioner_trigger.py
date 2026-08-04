@@ -19,6 +19,7 @@ from shared.contracts.dto.server import ServerDTO, ServerStatus
 
 API_BASE_URL = "http://127.0.0.1:9"
 SERVERS_URL = f"{API_BASE_URL}/api/servers/"
+SERVER_URL = f"{API_BASE_URL}/api/servers/vps-pending"
 
 
 def _server_row(handle: str = "vps-pending", *, is_managed: bool = True) -> dict:
@@ -79,23 +80,28 @@ async def test_pending_server_gets_a_trigger(internal_api):
     publish.assert_awaited_once_with("vps-pending", is_incident_recovery=False)
 
 
-async def test_pending_rows_are_rechecked_by_safe_publisher(api_client_reset):
-    def handler(request: httpx.Request) -> httpx.Response:
+async def test_startup_replay_rechecks_row_and_never_opens_redis(api_client_reset, monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+
+    def list_handler(request: httpx.Request) -> httpx.Response:
         assert _authorized(request)
         return httpx.Response(200, json=[_server_row(is_managed=False)])
 
+    def server_handler(request: httpx.Request) -> httpx.Response:
+        assert _authorized(request)
+        return httpx.Response(200, json=_server_row(is_managed=False))
+
     with (
         respx.mock(assert_all_called=False) as mock,
-        patch(
-            "src.tasks.provisioner_trigger.publish_provisioner_trigger", new_callable=AsyncMock
-        ) as publish,
+        patch("src.tasks.provisioner_trigger.redis.from_url") as redis_factory,
     ):
-        mock.get(SERVERS_URL).mock(side_effect=handler)
+        mock.get(SERVERS_URL).mock(side_effect=list_handler)
+        mock.get(SERVER_URL).mock(side_effect=server_handler)
         from src.tasks import provisioner_trigger
 
         await provisioner_trigger.retry_pending_servers()
 
-    publish.assert_awaited_once_with("vps-pending", is_incident_recovery=False)
+    redis_factory.assert_not_called()
 
 
 async def test_wrong_internal_key_fails_loudly(internal_api, monkeypatch):
