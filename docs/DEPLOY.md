@@ -99,8 +99,10 @@ All secrets must be configured in the repository's **production** environment.
 
 The key says which caller this is, not whose behalf it acts on. A request that also
 carries `X-Telegram-ID` — the PO agent's and the bot's do — is judged as that user, so
-holding the key does not open a stranger's project. A service call that names no user is
-unrestricted, as before.
+holding the key does not open a stranger's project, run or admin endpoint. A service call
+that names no user is unrestricted, as before. `resolve_actor` in
+`services/api/src/dependencies.py` is where that is decided, and the only place that reads
+the key's verdict; every access guard asks it.
 
 ### LLM Providers
 

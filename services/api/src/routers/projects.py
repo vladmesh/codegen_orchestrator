@@ -46,7 +46,7 @@ from shared.redis.client import RedisStreamClient
 
 from ..config import get_settings
 from ..database import get_async_session
-from ..dependencies import get_redis_client, is_internal_service
+from ..dependencies import get_redis_client, is_internal_service, resolve_actor
 from ..schemas import (
     BotAccessRequest,
     MergeSecretsRequest,
@@ -86,35 +86,19 @@ async def _check_project_access(
     *,
     is_internal: bool = False,
 ) -> None:
-    """Check if user has access to project. Raises 401/403 if denied.
+    """Check if the request may reach this project. Raises 401/403/404 if denied.
 
-    A valid X-Internal-Key authenticates the caller as one of our services. It does
-    not make that service anyone's deputy: when the request also names a user, that
-    user's rights decide, so a Telegram user cannot reach a stranger's project by
-    asking an agent that happens to hold the key. A service call with no
-    X-Telegram-ID has no user to scope against and goes through.
+    Who is acting is `resolve_actor`'s decision, not this function's: a service
+    acting for itself passes, a named user is judged as that user however the
+    request was authenticated.
     """
-    if is_internal and telegram_id is None:
-        return
-    if telegram_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
+    actor = await resolve_actor(is_internal=is_internal, telegram_id=telegram_id, db=db)
 
-    user = await _resolve_user(telegram_id, db)
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with telegram_id {telegram_id} not found",
-        )
-
-    if user.is_admin:
+    if actor is None or actor.is_admin:
         return
 
     # Regular user: must be owner; unowned projects are admin-only
-    if project.owner_id != user.id:
+    if project.owner_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: not project owner",
@@ -240,35 +224,25 @@ async def list_projects(
     _is_internal: bool = Depends(is_internal_service),
 ) -> list[Project]:
     """List projects, optionally filtered by status or owner_id."""
-    if not _is_internal and x_telegram_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
-
-    query = select(Project)
-
     # The caller is resolved before any filter is applied, including the admin
     # panel's owner_id filter: passing owner_id must not be a way to read another
     # user's projects and their config.
-    if x_telegram_id is not None:
-        user = await _resolve_user(x_telegram_id, db)
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User with telegram_id {x_telegram_id} not found",
-            )
-        if user.is_admin:
-            if owner_id is not None:
-                query = query.where(Project.owner_id == owner_id)
-            elif owner_only:
-                query = query.where(Project.owner_id == user.id)
-        else:
-            # A regular user sees only their own projects, whatever owner_id says.
-            query = query.where(Project.owner_id == user.id)
-    elif owner_id is not None:
-        # Internal service call: no user to scope against.
-        query = query.where(Project.owner_id == owner_id)
+    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+
+    query = select(Project)
+
+    if actor is None:
+        # Service call: no user to scope against.
+        if owner_id is not None:
+            query = query.where(Project.owner_id == owner_id)
+    elif actor.is_admin:
+        if owner_id is not None:
+            query = query.where(Project.owner_id == owner_id)
+        elif owner_only:
+            query = query.where(Project.owner_id == actor.id)
+    else:
+        # A regular user sees only their own projects, whatever owner_id says.
+        query = query.where(Project.owner_id == actor.id)
 
     if project_status:
         query = query.where(Project.status == project_status)

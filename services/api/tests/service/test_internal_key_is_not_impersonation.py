@@ -154,3 +154,65 @@ async def test_an_admin_is_still_an_admin(agent_client, owned_project):
         f"/api/projects/{owned_project}", headers={"X-Telegram-ID": ADMIN}
     )
     assert read.status_code == HTTPStatus.OK, read.text
+
+
+# ---------------------------------------------------------------------------
+# Runs, the same rule from the other side
+#
+# A run id reaches the PO agent inside a user's message, so `get_run_status` is
+# the same shape of request as `get_project`: untrusted id, named user, and a
+# transport that adds the key underneath.
+# ---------------------------------------------------------------------------
+
+
+async def _user_id(client: AsyncClient, telegram_id: str) -> int:
+    resp = await client.get(f"/api/users/by-telegram/{telegram_id}")
+    assert resp.status_code == HTTPStatus.OK, resp.text
+    return resp.json()["id"]
+
+
+@pytest.fixture
+async def owned_run(service_client, owned_project) -> str:
+    """A run belonging to OWNER."""
+    run_id = f"deploy-{uuid.uuid4().hex[:8]}"
+    resp = await service_client.post(
+        "/api/runs/",
+        json={
+            "id": run_id,
+            "type": "deploy",
+            "project_id": owned_project,
+            "user_id": await _user_id(service_client, OWNER),
+        },
+    )
+    assert resp.status_code == HTTPStatus.CREATED, resp.text
+    return run_id
+
+
+@pytest.mark.asyncio
+async def test_the_key_does_not_open_a_strangers_run(agent_client, owned_run):
+    """`get_run_status` with a foreign run id is refused, key or no key."""
+    headers = {"X-Telegram-ID": INTRUDER}
+
+    read = await agent_client.get(f"/api/runs/{owned_run}", headers=headers)
+    assert read.status_code == HTTPStatus.FORBIDDEN, read.text
+
+    listed = await agent_client.get("/api/runs/", headers=headers)
+    assert listed.status_code == HTTPStatus.OK, listed.text
+    assert owned_run not in [run["id"] for run in listed.json()]
+
+
+@pytest.mark.asyncio
+async def test_the_owner_still_reads_their_own_run_through_the_agent(agent_client, owned_run):
+    read = await agent_client.get(f"/api/runs/{owned_run}", headers={"X-Telegram-ID": OWNER})
+    assert read.status_code == HTTPStatus.OK, read.text
+    assert read.json()["id"] == owned_run
+
+
+@pytest.mark.asyncio
+async def test_a_service_call_naming_no_user_still_reads_and_writes_runs(service_client, owned_run):
+    """The consumers that drive runs name no user; they must keep working."""
+    read = await service_client.get(f"/api/runs/{owned_run}")
+    assert read.status_code == HTTPStatus.OK, read.text
+
+    patched = await service_client.patch(f"/api/runs/{owned_run}", json={"status": "running"})
+    assert patched.status_code == HTTPStatus.OK, patched.text

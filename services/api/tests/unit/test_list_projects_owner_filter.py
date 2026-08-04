@@ -102,10 +102,10 @@ async def test_owner_id_does_not_widen_a_regular_user(monkeypatch):
     """A non-admin passing someone else's owner_id still gets only their own."""
     from src.routers import projects as projects_router
 
-    async def _resolve_user(telegram_id, db):
+    async def _resolve_actor(*, is_internal, telegram_id, db):
         return _user(7, is_admin=False)
 
-    monkeypatch.setattr(projects_router, "_resolve_user", _resolve_user)
+    monkeypatch.setattr(projects_router, "resolve_actor", _resolve_actor)
 
     captured: list[str] = []
     session = _capture_session(captured, [_make_project("proj-a", owner_id=7)])
@@ -134,10 +134,10 @@ async def test_owner_id_still_works_for_an_admin(monkeypatch):
     """The admin panel keeps its cross-owner filter."""
     from src.routers import projects as projects_router
 
-    async def _resolve_user(telegram_id, db):
+    async def _resolve_actor(*, is_internal, telegram_id, db):
         return _user(1, is_admin=True)
 
-    monkeypatch.setattr(projects_router, "_resolve_user", _resolve_user)
+    monkeypatch.setattr(projects_router, "resolve_actor", _resolve_actor)
 
     captured: list[str] = []
     session = _capture_session(captured, [_make_project("proj-b", owner_id=2)])

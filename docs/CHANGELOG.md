@@ -3,13 +3,25 @@
 ## 2026-08-04
 
 - A valid `X-Internal-Key` authenticates a service; it no longer makes that service anyone's
-  deputy. `_check_project_access` in `services/api/src/routers/projects.py` used to return on the
-  key alone, so once every caller sent it — the PO agent and the bot included, and they name the end
-  user in `X-Telegram-ID` — a Telegram user could have asked the agent for a stranger's project and
-  got it: `get_project`, the secret endpoints, `teardown`. A request that names a user is now judged
-  as that user, key or no key; a service call that names none is unchanged, and an admin still
-  reaches everything. The rule lives in one function, so all ten owner-checked project endpoints
-  follow it. Test: `services/api/tests/service/test_internal_key_is_not_impersonation.py`.
+  deputy. The guards used to return on the key alone, so once every caller sent it — the PO agent
+  and the bot included, and they name the end user in `X-Telegram-ID` — a Telegram user could have
+  asked the agent for a stranger's project or run and got it: `get_project`, the secret endpoints,
+  `teardown`, `get_run_status`. A request that names a user is now judged as that user, key or no
+  key; a service call that names none is unchanged, and an admin still reaches everything.
+  `resolve_actor` in `services/api/src/dependencies.py` is the single place that decides who is
+  acting, and the only place allowed to read the internal flag: `_check_project_access`,
+  `_check_run_access`, `require_internal_or_admin` and the two list endpoints ask it instead of
+  deciding for themselves. Writing the rule out by hand per guard is what let it be applied in
+  `projects.py` and missed in `runs.py`, so a test now fails when any other function reads the flag
+  — a guard nobody has written yet included. `GET /api/servers` requires an admin on the server
+  again, as it did before the transport work. Tests:
+  `services/api/tests/unit/test_internal_flag_has_one_reader.py`,
+  `services/api/tests/service/test_internal_key_is_not_impersonation.py`.
+
+- `docker/test/service/telegram_bot.yml` gives the bot `INTERNAL_API_KEY`, which the shared
+  transport reads at import: without it the container died on a `KeyError` while the suite still
+  reported a green smoke test from its runner. The bot's import is a healthcheck the runner waits
+  on now, so a bot that cannot start is a red suite instead of a green one with a dead service.
 
 - The transport to the internal API is written once, in `shared/clients/internal_api.py`. Five
   services carried a near-identical `_get_client` / `_api_path` / `_request` — 1384 lines of client
