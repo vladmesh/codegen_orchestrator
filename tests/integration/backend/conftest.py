@@ -12,6 +12,7 @@ import pytest
 import redis.asyncio as redis
 
 import docker
+from scripts.shared_freshness import source_hash
 from shared.contracts.queues.worker import CreateWorkerResponse
 
 # Configure pytest-asyncio
@@ -26,6 +27,10 @@ def pytest_configure(config):
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://172.31.0.20:8000")
+
+# The repository as this container sees it: shared/, packages/ and services/ are mounted
+# under /app, which is what source_hash() hashes.
+TREE_ROOT = "/app"
 
 # Stream constants
 REDIS_STREAM_COMMANDS = "worker:commands"
@@ -359,7 +364,12 @@ _SKIP_DIRS = {
 
 
 def _content_hash(*paths: str) -> str:
-    """SHA256 hash of file/directory contents for cache invalidation."""
+    """SHA256 hash of file/directory contents for cache invalidation.
+
+    Not a producer of `SOURCE_HASH` — that value comes from `source_hash()` in
+    `scripts/shared_freshness.py`, the only place it is computed. What is left here is
+    the cache key of a derived worker image (`_child_image_hash` below).
+    """
     h = hashlib.sha256()
     for path in sorted(paths):
         if os.path.isfile(path):
@@ -376,6 +386,20 @@ def _content_hash(*paths: str) -> str:
     return h.hexdigest()[:12]
 
 
+def _child_image_hash(dockerfile: str, common_hash: str) -> str:
+    """Cache key of a worker image derived from worker-base-common.
+
+    The common image's hash goes in as bytes of its own. Handing it to
+    _content_hash as if it were a path hashed nothing at all: that function reads
+    files and directories, so a rebuilt common left every child tag unchanged and
+    the cache-hit branch below kept retagging the stale child as :latest.
+    """
+    h = hashlib.sha256()
+    h.update(_content_hash(dockerfile).encode())
+    h.update(common_hash.encode())
+    return h.hexdigest()[:12]
+
+
 def _build_base_image(
     client,
     dockerfile_path: str,
@@ -383,8 +407,13 @@ def _build_base_image(
     shared_path: str,
     packages_path: str,
     source_hash: str,
+    base_image: str | None = None,
 ):
-    """Build a worker base image, skipping if a cached version exists."""
+    """Build a worker base image, skipping if a cached version exists.
+
+    base_image is the BASE_IMAGE build arg the derived Dockerfiles require; common
+    has no base of its own and passes None.
+    """
     import shutil
     import tempfile
 
@@ -407,13 +436,17 @@ def _build_base_image(
         shutil.copytree(shared_path, os.path.join(tmp_dir, "shared"), ignore=_ignore)
         shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"), ignore=_ignore)
 
+        buildargs = {"SOURCE_HASH": source_hash}
+        if base_image is not None:
+            buildargs["BASE_IMAGE"] = base_image
+
         try:
             image, build_logs = client.images.build(
                 path=tmp_dir,
                 tag=tag,
                 rm=True,
                 nocache=False,  # Allow cache for faster rebuilds
-                buildargs={"SOURCE_HASH": source_hash},
+                buildargs=buildargs,
             )
             for chunk in build_logs:
                 if "stream" in chunk:
@@ -451,19 +484,22 @@ def setup_worker_base_images():
     client = docker.DockerClient(base_url=DOCKER_HOST)
 
     # Source paths mapped in integration-test-runner container
-    shared_path = "/app/shared"
-    packages_path = "/app/packages"
-    images_dir = "/app/services/worker-manager/images"
+    shared_path = f"{TREE_ROOT}/shared"
+    packages_path = f"{TREE_ROOT}/packages"
+    images_dir = f"{TREE_ROOT}/services/worker-manager/images"
 
     # Compute content hashes for cache invalidation
     common_dockerfile = f"{images_dir}/worker-base-common/Dockerfile"
     claude_dockerfile = f"{images_dir}/worker-base-claude/Dockerfile"
     factory_dockerfile = f"{images_dir}/worker-base-factory/Dockerfile"
 
-    common_hash = _content_hash(common_dockerfile, shared_path, packages_path)
+    # The hash of the tree, from the only place it is computed: the same function the
+    # Makefile and the freshness check read, so what this fixture stamps on the image is
+    # comparable with what the tree says.
+    common_hash = source_hash(TREE_ROOT)
     # Child images depend on common hash + their own Dockerfile
-    claude_hash = _content_hash(claude_dockerfile, common_hash)
-    factory_hash = _content_hash(factory_dockerfile, common_hash)
+    claude_hash = _child_image_hash(claude_dockerfile, common_hash)
+    factory_hash = _child_image_hash(factory_dockerfile, common_hash)
 
     common_tag = f"worker-base-common:{common_hash}"
     claude_tag = f"worker-base-claude:{claude_hash}"
@@ -477,10 +513,8 @@ def setup_worker_base_images():
         _build_base_image(
             client, common_dockerfile, common_tag, shared_path, packages_path, common_hash
         )
-        # Also tag as :latest so child Dockerfiles (FROM worker-base-common:latest) work
-        client.images.get(common_tag).tag("worker-base-common", "latest")
-
-        # Build claude + factory in parallel (independent of each other)
+        # Build claude + factory in parallel (independent of each other).
+        # Both are layered on the content-hash tag built above, not on a :latest alias.
         with ThreadPoolExecutor(max_workers=2) as executor:
             f_claude = executor.submit(
                 _build_base_image,
@@ -490,6 +524,7 @@ def setup_worker_base_images():
                 shared_path,
                 packages_path,
                 common_hash,
+                common_tag,
             )
             f_factory = executor.submit(
                 _build_base_image,
@@ -499,6 +534,7 @@ def setup_worker_base_images():
                 shared_path,
                 packages_path,
                 common_hash,
+                common_tag,
             )
             f_claude.result()
             f_factory.result()

@@ -300,3 +300,45 @@ class TestComposeRunner:
         assert "ports: !reset []" in text
         # backend has no ports, should not be in override
         assert "backend:" not in text
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_env_is_not_passed_to_compose(self, workspace, monkeypatch):
+        """The agent owns the compose file, and compose interpolates ${VAR} from
+        this environment into it, so worker-manager's own secrets must not be in it."""
+        monkeypatch.setenv("SECRETS_ENCRYPTION_KEY", "orchestrator-platform-key")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "orchestrator-db-password")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        runner = ComposeRunner(str(workspace))
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            await runner.run("worker-123", ["ps"])
+
+        env = mock_run.call_args[1]["env"]
+        assert "SECRETS_ENCRYPTION_KEY" not in env
+        assert "POSTGRES_PASSWORD" not in env
+        assert env["PATH"] == "/usr/bin:/bin"
+        assert env["HOST_UID"] == "1000"
+
+    @pytest.mark.asyncio
+    async def test_project_dot_env_still_reaches_compose(self, workspace, monkeypatch):
+        """The project's own .env is what compose is supposed to interpolate."""
+        (workspace / "worker-123" / "workspace" / ".env").write_text("# project settings\nAPP_SECRET=project-value\n")
+        monkeypatch.setenv("SECRETS_ENCRYPTION_KEY", "orchestrator-platform-key")
+        runner = ComposeRunner(str(workspace))
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            await runner.run("worker-123", ["ps"])
+
+        env = mock_run.call_args[1]["env"]
+        assert env["APP_SECRET"] == "project-value"
+        assert "SECRETS_ENCRYPTION_KEY" not in env

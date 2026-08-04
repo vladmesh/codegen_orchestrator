@@ -559,22 +559,21 @@ class TestWorkspaceGC:
         mock_response.status_code = 200
 
         mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.request_raw = AsyncMock(return_value=mock_response)
 
         with (
             patch("src.garbage_collector.settings") as mock_settings,
-            patch("src.garbage_collector.httpx.AsyncClient", return_value=mock_client),
+            patch("src.garbage_collector.InternalAPIClient", return_value=mock_client),
         ):
             mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
             mock_settings.WORKER_API_URL = "http://worker-api:8000"
             await _notify_workspace_deleted("repo-xyz")
 
-        mock_client.post.assert_awaited_once()
-        call_url = mock_client.post.call_args[0][0]
-        assert "repo-xyz" in call_url
-        assert "notify-workspace-deleted" in call_url
+        mock_client.request_raw.assert_awaited_once()
+        method, path = mock_client.request_raw.call_args[0]
+        assert method == "POST"
+        assert path == "repositories/repo-xyz/notify-workspace-deleted"
+        mock_client.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_notify_workspace_deleted_handles_errors(self, mock_docker):
@@ -584,7 +583,7 @@ class TestWorkspaceGC:
         with (
             patch("src.garbage_collector.settings") as mock_settings,
             patch(
-                "src.garbage_collector.httpx.AsyncClient",
+                "src.garbage_collector.InternalAPIClient",
                 side_effect=httpx.ConnectError("connection refused"),
             ),
         ):

@@ -4,11 +4,14 @@
 # Uses a separate stage to install Claude CLI so that the expensive
 # curl | bash download is cached independently of base image changes.
 
-# Global ARG must be before any FROM to be usable in FROM instructions
-ARG BASE_IMAGE=worker-base-common:latest
+# Global ARG must be before any FROM to be usable in FROM instructions.
+# No default: the builder names the worker-base-common tag it just produced, so this
+# image can never be layered on top of whatever :latest happens to be lying around.
+# A build without --build-arg BASE_IMAGE fails on a blank base name.
+ARG BASE_IMAGE
 
 # --- Stage 1: Install Claude CLI (cached unless install.sh changes) ---
-FROM python:3.12-slim AS claude-installer
+FROM python:3.12.13-slim AS claude-installer
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

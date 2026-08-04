@@ -1,7 +1,7 @@
 services:
   # Infrastructure
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.6-pg16
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -14,7 +14,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.10-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -23,9 +23,12 @@ services:
 
   # Real API Service
   api:
+    image: codegen-orchestrator/api:test
     build: 
       context: ../../..
       dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["/entrypoint.sh"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
@@ -47,7 +50,7 @@ services:
 
   # Real Loki — the analytics aggregator reads its logs from here
   loki:
-    image: grafana/loki:3.4
+    image: grafana/loki:3.4.3
     command: -config.file=/etc/loki/loki.yml
     volumes:
       - ../../../infra/loki.yml:/etc/loki/loki.yml:ro
@@ -65,9 +68,12 @@ services:
 
   # Scheduler Test Runner
   scheduler-test-runner:
+    image: codegen-orchestrator/scheduler-test-runner:test
     build:
       context: ../../..
       dockerfile: services/scheduler/Dockerfile.test
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/service/", "-v"]
     environment:
       - API_BASE_URL=http://api:8000

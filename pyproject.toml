@@ -30,6 +30,7 @@ dev = [
     "scheduler",
     "worker-manager",
     "infra-service",
+    "scaffolder",
     "worker-wrapper",
 ]
 
@@ -41,21 +42,23 @@ members = [
     "services/scheduler",
     "services/worker-manager",
     "services/infra-service",
+    "services/scaffolder",
     "packages/worker-wrapper",
 ]
 
 [tool.uv.sources]
-# `shared` is not a package. It reaches consumers as a bind-mount (compose) or a
-# `COPY shared` (images); tests import it from the repo tree via PYTHONPATH.
-codegen-orchestrator-shared-contracts = { path = "shared/contracts", editable = true }
-codegen-orchestrator-shared-redis = { path = "shared/redis", editable = true }
-codegen-orchestrator-shared-log-config = { path = "shared/log_config", editable = true }
+# Only workspace members here. `shared` is not a package and has no entry: it
+# reaches consumers as a bind-mount (compose) or a `COPY shared` (images), and
+# tests import it from the repo tree via PYTHONPATH. See
+# docs/decisions/shared-is-not-a-package.md. Every name below has to be depended
+# on by something, enforced by tests/unit/test_uv_sources_are_used.py.
 api = { workspace = true }
 langgraph-orchestrator = { workspace = true }
 telegram-bot = { workspace = true }
 scheduler = { workspace = true }
 worker-manager = { workspace = true }
 infra-service = { workspace = true }
+scaffolder = { workspace = true }
 worker-wrapper = { workspace = true }
 
 # No build-system — this is a virtual workspace root (not a distributable package)
@@ -78,14 +81,5 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
-
-[tool.ruff]
-target-version = "py312"
-line-length = 100
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "C4"]
-ignore = []
-
-[tool.ruff.lint.isort]
-known-first-party = ["shared", "src"]
+# Ruff is configured in the root ruff.toml. A [tool.ruff] section here would be
+# ignored whenever that file exists, so it lives in one place only.

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from enum import StrEnum
+import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -84,7 +85,7 @@ class TemporaryAccessGrantCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1)
-    project_id: str = Field(min_length=1)
+    project_id: uuid.UUID
     env_key: str = Field(min_length=1)
     subject: str = Field(min_length=1)
     # The commit the access was deployed on. Revoking redeploys that same commit
@@ -127,7 +128,8 @@ class TemporaryAccessGrantUpdate(BaseModel):
     def _revoked_is_not_a_field_to_set(self) -> TemporaryAccessGrantUpdate:
         if self.status is TemporaryAccessStatus.REVOKED:
             raise ValueError(
-                "a grant is revoked by an observation of the running service, not by an update"
+                "a grant is revoked by an observation of the running service, not by an update; "
+                "post the reading to /temporary-access-grants/{id}/observation"
             )
         return self
 

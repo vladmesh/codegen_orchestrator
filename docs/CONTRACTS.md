@@ -8,6 +8,17 @@ Typed schemas for the REST API and the Redis queues.
 2. **1:1 Queues** — one queue = one Writer → one Consumer (+ optional observers)
 3. **Logical Actors** — we name the role (PO ReactAgent, Developer-Worker, langgraph), not the technical layer
 4. **Traceable** — a `correlation_id` for end-to-end tracing
+5. **One definition per request schema** — a request body is defined once, in
+   `shared/contracts/dto/`, and `services/api/src/schemas/` re-exports that object.
+   The API validates against the same class its callers import, so a field the
+   caller sets cannot be one the server forbids.
+
+The last one used to be false: the two trees held 21 same-named pairs whose fields
+and types had drifted apart, and `PATCH /api/projects/{id}` answered 422 to every
+`github_sync` call because the caller's `ProjectUpdate` carried a field the server's
+`ProjectUpdate` did not have. `tests/unit/test_request_schemas_are_not_duplicated.py`
+now fails on any name defined under both trees; its `KNOWN_DUPLICATES` backlog is
+empty and may not grow.
 
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 
@@ -388,21 +399,22 @@ class ServiceModule(StrEnum):
     FRONTEND = "frontend"
 
 
+# The API validates requests against these two, imported from the contract.
+# Fields are the Project columns a caller may set; module choice and free-text
+# description live inside config.
 class ProjectCreate(BaseModel):
     """Create project request."""
     id: uuid.UUID | None = None
-    name: str
-    description: str | None = None
-    modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
-    status: ProjectStatus | None = None
+    title: str
+    status: ProjectStatus = ProjectStatus.DRAFT
+    config: dict[str, Any] = {}
 
 
 class ProjectUpdate(BaseModel):
-    """Update project request."""
-    name: str | None = None
-    description: str | None = None
+    """Update project request, for both PUT and PATCH."""
+    title: str | None = None
     status: ProjectStatus | None = None
-    modules: list[ServiceModule] | None = None
+    config: dict[str, Any] | None = None
     project_spec: dict | None = None
 
 
@@ -411,7 +423,8 @@ class ProjectDTO(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    name: str
+    title: str
+    slug: str
     description: str | None = None
     status: ProjectStatus
     modules: list[ServiceModule] = []
@@ -423,7 +436,7 @@ class ProjectDTO(BaseModel):
 ## TaskDTO
 
 ```python
-# services/api/src/schemas/task.py & shared/contracts/dto/task.py
+# shared/contracts/dto/task.py, re-exported by services/api/src/schemas/task.py
 
 class TaskStatus(StrEnum):
     BACKLOG = "backlog"
@@ -469,7 +482,7 @@ class TaskRead(BaseModel):
 ## TaskEventDTO
 
 ```python
-# services/api/src/schemas/task.py & shared/contracts/dto/task.py
+# shared/contracts/dto/task.py, re-exported by services/api/src/schemas/task.py
 
 class TaskEventType(StrEnum):
     STATUS_CHANGE = "status_change"

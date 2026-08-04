@@ -18,6 +18,7 @@ def _make_project(name: str, owner_id: int):
     p.slug = f"{name}-0000"
     p.status = "draft"
     p.config = {}
+    p.project_spec = None
     p.owner_id = owner_id
     return p
 
@@ -72,6 +73,91 @@ async def test_list_projects_with_owner_id_filter():
     data = resp.json()
     assert len(data) == 1
     assert data[0]["title"] == "proj-a"
+
+
+def _capture_session(captured: list[str], returned: list):
+    """Session mock that records each query as SQL with literal values."""
+    session = AsyncMock()
+
+    async def _execute(query):
+        captured.append(str(query.compile(compile_kwargs={"literal_binds": True})))
+        result = MagicMock()
+        scalars = MagicMock()
+        scalars.all.return_value = returned
+        result.scalars.return_value = scalars
+        return result
+
+    session.execute = _execute
+    return session
+
+
+def _user(user_id: int, *, is_admin: bool):
+    user = MagicMock()
+    user.id = user_id
+    user.is_admin = is_admin
+    return user
+
+
+@pytest.mark.asyncio
+async def test_owner_id_does_not_widen_a_regular_user(monkeypatch):
+    """A non-admin passing someone else's owner_id still gets only their own."""
+    from src.routers import projects as projects_router
+
+    async def _resolve_actor(*, is_internal, telegram_id, db):
+        return _user(7, is_admin=False)
+
+    monkeypatch.setattr(projects_router, "resolve_actor", _resolve_actor)
+
+    captured: list[str] = []
+    session = _capture_session(captured, [_make_project("proj-a", owner_id=7)])
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/projects/",
+            params={"owner_id": 2},
+            headers={"X-Telegram-ID": "999"},
+        )
+
+    assert resp.status_code == HTTPStatus.OK
+    assert len(captured) == 1
+    assert "owner_id = 7" in captured[0]
+    assert "owner_id = 2" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_owner_id_still_works_for_an_admin(monkeypatch):
+    """The admin panel keeps its cross-owner filter."""
+    from src.routers import projects as projects_router
+
+    async def _resolve_actor(*, is_internal, telegram_id, db):
+        return _user(1, is_admin=True)
+
+    monkeypatch.setattr(projects_router, "resolve_actor", _resolve_actor)
+
+    captured: list[str] = []
+    session = _capture_session(captured, [_make_project("proj-b", owner_id=2)])
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/projects/",
+            params={"owner_id": 2},
+            headers={"X-Telegram-ID": "1"},
+        )
+
+    assert resp.status_code == HTTPStatus.OK
+    assert "owner_id = 2" in captured[0]
 
 
 @pytest.mark.asyncio

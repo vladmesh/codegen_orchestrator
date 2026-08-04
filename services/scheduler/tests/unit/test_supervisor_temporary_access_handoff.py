@@ -67,7 +67,9 @@ def _deploy_success_run(*, test_identity_slot: bool, head_sha: str | None = HEAD
 def _stored_grant(payload) -> TemporaryAccessGrantDTO:
     return TemporaryAccessGrantDTO(
         id=payload.id,
-        project_id=payload.project_id,
+        # The request carries the project as a UUID (the column's type), the
+        # stored record as the string the API answers with.
+        project_id=str(payload.project_id),
         env_key=payload.env_key,
         subject=payload.subject,
         head_sha=payload.head_sha,

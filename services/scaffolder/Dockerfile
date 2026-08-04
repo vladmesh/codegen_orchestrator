@@ -4,7 +4,7 @@
 # ===================================
 
 # === Stage 1: Builder ===
-FROM python:3.12-slim AS builder
+FROM python:3.12.13-slim AS builder
 
 WORKDIR /build
 
@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefix=/install -r requirements.lock
 
 # === Stage 2: Production ===
-FROM python:3.12-slim AS production
+FROM python:3.12.13-slim AS production
 
 WORKDIR /app
 
@@ -43,3 +43,7 @@ ENV PYTHONPATH=/app
 COPY services/scaffolder/src ./src
 
 CMD ["python", "-m", "src.main"]
+
+# Which tree this image baked shared from; read by scripts/shared_freshness.py.
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH

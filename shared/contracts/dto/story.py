@@ -125,3 +125,4 @@ class StoryUpdate(BaseModel):
     priority: int | None = None
     blocked_by_story_id: str | None = None
     quarantine_reason: dict[str, Any] | None = None
+    pr_number: int | None = None

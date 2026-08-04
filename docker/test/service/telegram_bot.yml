@@ -1,6 +1,6 @@
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.10-alpine
     healthcheck:
       test: redis-cli ping
       interval: 1s
@@ -10,15 +10,29 @@ services:
       - test-net
 
   telegram-bot:
+    image: codegen-orchestrator/telegram_bot:test
     build: 
         context: ../../..
         dockerfile: services/telegram_bot/Dockerfile
+        args:
+          SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["sh", "-c", "trap 'exit 0' TERM INT; python -c 'import src.main'; sleep infinity & wait"]
     environment:
       TELEGRAM_BOT_TOKEN: "123:test"
       REDIS_URL: redis://redis:6379/0
       API_BASE_URL: http://api:8000
+      # The bot reaches the API through the shared internal transport, which reads
+      # this at import time. Without it the container dies on a KeyError.
+      INTERNAL_API_KEY: test-internal-api-key-for-service-tests
       LK_DOMAIN: https://lk.test.example.com
+    # The runner's own tests cannot tell a live bot from a crashed one, so the
+    # import that starts this container is a health condition the runner waits on.
+    # A bot that cannot import is a red suite, not a green one with a dead service.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import src.main'"]
+      interval: 2s
+      timeout: 20s
+      retries: 15
     depends_on:
       - redis
     volumes:
@@ -28,13 +42,17 @@ services:
       - test-net
 
   telegram_bot-test-runner:
+    image: codegen-orchestrator/telegram_bot-test-runner:test
     build: 
         context: ../../..
         dockerfile: services/telegram_bot/Dockerfile.test
+        args:
+          SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       REDIS_URL: redis://redis:6379/0
       TELEGRAM_BOT_TOKEN: "123:test"
       API_BASE_URL: http://api:8000
+      INTERNAL_API_KEY: test-internal-api-key-for-service-tests
       LK_DOMAIN: https://lk.test.example.com
       PYTHONPATH: /app
     volumes:
@@ -52,6 +70,8 @@ services:
     command: ["pytest", "tests/service", "-v", "-s", "--asyncio-mode=auto"]
     depends_on:
       redis:
+        condition: service_healthy
+      telegram-bot:
         condition: service_healthy
     networks:
       - test-net

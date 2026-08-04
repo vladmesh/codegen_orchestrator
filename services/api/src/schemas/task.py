@@ -3,30 +3,23 @@
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
 
+# The request schemas are the contract every client already imports; the API
+# validates against that same object rather than a look-alike of its own.
+from shared.contracts.dto.task import TaskCreate, TaskEventCreate, TaskUpdate
 
-class TaskCreate(BaseModel):
-    """Schema for creating a task."""
-
-    project_id: uuid.UUID
-    type: TaskType = TaskType.FEATURE
-    title: str
-    status: TaskStatus = TaskStatus.BACKLOG
-    description: str | None = None
-    acceptance_criteria: str | None = None
-    priority: int = 0
-    max_iterations: int = 3
-    need_e2e: bool = False
-    created_by: str = "system"
-    source_brainstorm_id: str | None = None
-    repository_id: str | None = None
-    story_id: str | None = None
-    blocked_by_task_id: str | None = None
-    failure_metadata: dict[str, Any] | None = None
+__all__ = [
+    "TaskCreate",
+    "TaskEventCreate",
+    "TaskEventRead",
+    "TaskRead",
+    "TaskResume",
+    "TaskTransition",
+    "TaskUpdate",
+]
 
 
 class TaskRead(TimestampedDTO):
@@ -54,26 +47,6 @@ class TaskRead(TimestampedDTO):
     elapsed_minutes: float | None = None
 
 
-class TaskUpdate(BaseModel):
-    """Schema for updating a task (non-status fields only)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    project_id: uuid.UUID | None = None
-    title: str | None = None
-    description: str | None = None
-    plan: str | None = None
-    acceptance_criteria: str | None = None
-    priority: int | None = None
-    need_e2e: bool | None = None
-    repository_id: str | None = None
-    story_id: str | None = None
-    blocked_by_task_id: str | None = None
-    source_brainstorm_id: str | None = None
-    current_iteration: int | None = None
-    failure_metadata: dict[str, Any] | None = None
-
-
 class TaskTransition(BaseModel):
     """Schema for action endpoints (start, complete, fail, reopen, transition)."""
 
@@ -87,15 +60,6 @@ class TaskResume(BaseModel):
 
     guidance: str
     actor: str = "admin"
-
-
-class TaskEventCreate(BaseModel):
-    """Schema for creating a task event (iteration_start, iteration_end, note)."""
-
-    event_type: TaskEventType
-    iteration: int | None = None
-    details: dict[str, Any] = {}
-    actor: str = "system"
 
 
 class TaskEventRead(TimestampedDTO):

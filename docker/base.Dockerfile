@@ -5,7 +5,7 @@
 # This base image provides common dependencies to reduce build times
 # and ensure consistency across all services.
 
-FROM python:3.12-slim AS base
+FROM python:3.12.13-slim AS base
 
 # Common system dependencies used by multiple services
 RUN apt-get update && apt-get install -y --no-install-recommends \

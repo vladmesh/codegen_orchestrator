@@ -46,7 +46,7 @@ from shared.redis.client import RedisStreamClient
 
 from ..config import get_settings
 from ..database import get_async_session
-from ..dependencies import get_redis_client, is_internal_service
+from ..dependencies import get_redis_client, is_internal_service, resolve_actor
 from ..schemas import (
     BotAccessRequest,
     MergeSecretsRequest,
@@ -86,28 +86,19 @@ async def _check_project_access(
     *,
     is_internal: bool = False,
 ) -> None:
-    """Check if user has access to project. Raises 401/403 if denied."""
-    if is_internal:
-        return
-    if telegram_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
+    """Check if the request may reach this project. Raises 401/403/404 if denied.
 
-    user = await _resolve_user(telegram_id, db)
+    Who is acting is `resolve_actor`'s decision, not this function's: a service
+    acting for itself passes, a named user is judged as that user however the
+    request was authenticated.
+    """
+    actor = await resolve_actor(is_internal=is_internal, telegram_id=telegram_id, db=db)
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with telegram_id {telegram_id} not found",
-        )
-
-    if user.is_admin:
+    if actor is None or actor.is_admin:
         return
 
     # Regular user: must be owner; unowned projects are admin-only
-    if project.owner_id != user.id:
+    if project.owner_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: not project owner",
@@ -168,7 +159,7 @@ async def create_project(
             id=project_id,
             title=project_in.title,
             slug=generate_project_slug(project_in.title, project_id),
-            status=project_in.status or ProjectStatus.DRAFT.value,
+            status=project_in.status.value,
             config=_vet_config_write(project_in.config, None),
             owner_id=owner_id,
         )
@@ -188,18 +179,18 @@ async def create_project(
     except HTTPException:
         raise
     except Exception as e:
-        # Log validation or other errors with full request details
+        # The creation body carries project secrets, so it never reaches the log
+        # stream. Its size is enough to tell an empty request from a truncated one.
         try:
-            body = await request.body()
-            body_str = body.decode("utf-8") if body else "empty"
+            body_size = len(await request.body())
         except Exception:
-            body_str = "unable to read"
+            body_size = -1
 
         logger.error(
             "project_creation_failed",
             error=str(e),
             error_type=type(e).__name__,
-            request_body=body_str,
+            request_body_bytes=body_size,
             telegram_id=x_telegram_id,
         )
         raise
@@ -233,29 +224,25 @@ async def list_projects(
     _is_internal: bool = Depends(is_internal_service),
 ) -> list[Project]:
     """List projects, optionally filtered by status or owner_id."""
-    if not _is_internal and x_telegram_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
+    # The caller is resolved before any filter is applied, including the admin
+    # panel's owner_id filter: passing owner_id must not be a way to read another
+    # user's projects and their config.
+    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
 
     query = select(Project)
 
-    # Direct owner_id filter (from admin panel)
-    if owner_id is not None:
-        query = query.where(Project.owner_id == owner_id)
-
-    # Filter by owner if user provided and not admin, or if owner_only requested
-    elif x_telegram_id is not None:
-        user = await _resolve_user(x_telegram_id, db)
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User with telegram_id {x_telegram_id} not found",
-            )
-        if not user.is_admin or owner_only:
-            # Regular user or explicit owner_only request: only their projects
-            query = query.where(Project.owner_id == user.id)
+    if actor is None:
+        # Service call: no user to scope against.
+        if owner_id is not None:
+            query = query.where(Project.owner_id == owner_id)
+    elif actor.is_admin:
+        if owner_id is not None:
+            query = query.where(Project.owner_id == owner_id)
+        elif owner_only:
+            query = query.where(Project.owner_id == actor.id)
+    else:
+        # A regular user sees only their own projects, whatever owner_id says.
+        query = query.where(Project.owner_id == actor.id)
 
     if project_status:
         query = query.where(Project.status == project_status)
@@ -292,9 +279,11 @@ async def update_project(
     if project_in.title is not None:
         project.title = project_in.title
     if project_in.status is not None:
-        project.status = project_in.status
+        project.status = project_in.status.value
     if project_in.config is not None:
         project.config = _vet_config_write(project_in.config, project)
+    if project_in.project_spec is not None:
+        project.project_spec = project_in.project_spec
 
     await _release_bot_if_archived(db, project)
 
@@ -322,9 +311,11 @@ async def patch_project(
     if project_in.title is not None:
         project.title = project_in.title
     if project_in.status is not None:
-        project.status = project_in.status
+        project.status = project_in.status.value
     if project_in.config is not None:
         project.config = _vet_config_write(project_in.config, project)
+    if project_in.project_spec is not None:
+        project.project_spec = project_in.project_spec
 
     await _release_bot_if_archived(db, project)
 

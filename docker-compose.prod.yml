@@ -2,7 +2,7 @@
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
 # What this changes from dev:
-#   - No direct API port exposure (Caddy handles all traffic)
+#   - Only Caddy publishes host ports; API, dashboards and PostgreSQL stay internal
 #   - restart: unless-stopped on stateless services (already set on workers/caddy/registry)
 #   - DB credentials have no defaults (fail-fast if .env is misconfigured)
 #   - Redis AOF persistence enabled
@@ -15,6 +15,16 @@ services:
     restart: unless-stopped
     ports: !reset []
 
+  admin-frontend:
+    # Operator access goes through an SSH tunnel until the admin UI has an
+    # authenticated TLS route in Caddy. Never publish Basic Auth over HTTP.
+    ports: !reset []
+
+  user-dashboard:
+    # Public access is served by Caddy at /lk; a direct port would bypass TLS
+    # and expose nginx's unrestricted /api proxy.
+    ports: !reset []
+
   langgraph:
     restart: unless-stopped
 
@@ -25,6 +35,8 @@ services:
     restart: unless-stopped
 
   db:
+    # PostgreSQL is an internal control-plane dependency, not a host service.
+    ports: !reset []
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}

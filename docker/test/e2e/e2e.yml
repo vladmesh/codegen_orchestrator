@@ -9,7 +9,7 @@ networks:
 services:
   # === Infrastructure ===
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.6-pg16
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -24,7 +24,7 @@ services:
       - e2e-test
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.10-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -35,7 +35,7 @@ services:
         ipv4_address: 172.30.0.10
 
   docker:
-    image: docker:dind
+    image: docker:29.7.0-dind
     privileged: true
     environment:
       DOCKER_TLS_CERTDIR: ""
@@ -70,9 +70,12 @@ services:
 
   # === Services ===
   api:
+    image: codegen-orchestrator/api:test
     build:
       context: ../../..
       dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0"]
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/postgres
@@ -93,9 +96,12 @@ services:
         ipv4_address: 172.30.0.20
 
   langgraph:
+    image: codegen-orchestrator/langgraph:test
     build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     volumes:
       - ${GITHUB_APP_PEM_PATH:-../../../secrets/github_app.pem}:/app/keys/github_app.pem:ro
     environment:
@@ -120,9 +126,12 @@ services:
       - e2e-test
 
   worker-manager:
+    image: codegen-orchestrator/worker-manager:test
     build:
       context: ../../..
       dockerfile: services/worker-manager/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       REDIS_URL: redis://172.30.0.10:6379/0
       DOCKER_HOST: tcp://docker:2375
@@ -139,9 +148,12 @@ services:
 
   # === Test Runner ===
   e2e-test-runner:
+    image: codegen-orchestrator/e2e-test-runner:test
     build:
       context: ../../..
       dockerfile: docker/test/e2e/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "tests/e2e/", "-v", "-m", "e2e", "--tb=short"]
     depends_on:
       langgraph:

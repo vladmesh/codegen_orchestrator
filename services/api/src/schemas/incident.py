@@ -2,45 +2,33 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.incident import IncidentStatus, IncidentType, require_server_handle
+
+# The request schemas are the contract every client already imports; the API
+# validates against those same objects rather than look-alikes of its own.
+from shared.contracts.dto.incident import (
+    IncidentCreate,
+    IncidentStatus,
+    IncidentType,
+    IncidentUpdate,
+)
+
+__all__ = [
+    "IncidentCreate",
+    "IncidentRead",
+    "IncidentUpdate",
+]
 
 
-class IncidentBase(BaseModel):
-    """Base incident schema."""
-
-    server_handle: str | None = Field(
-        default=None,
-        description="Server handle; None only for provider_api_unavailable incidents",
-    )
-    incident_type: IncidentType = Field(description="Type of incident")
-    details: dict = Field(default_factory=dict, description="Additional details")
-    affected_services: list = Field(default_factory=list, description="List of affected services")
-
-
-class IncidentCreate(IncidentBase):
-    """Schema for creating an incident."""
-
-    @model_validator(mode="after")
-    def _require_server_handle(self) -> "IncidentCreate":
-        require_server_handle(self.incident_type, self.server_handle)
-        return self
-
-
-class IncidentUpdate(BaseModel):
-    """Schema for updating an incident."""
-
-    status: IncidentStatus | None = None
-    resolved_at: datetime | None = None
-    details: dict | None = None
-    recovery_attempts: int | None = None
-
-
-class IncidentRead(IncidentBase, TimestampedDTO):
+class IncidentRead(TimestampedDTO):
     """Schema for reading an incident."""
 
+    server_handle: str | None = None
+    incident_type: IncidentType
+    details: dict = Field(default_factory=dict)
+    affected_services: list[str] = Field(default_factory=list)
     id: int
     status: IncidentStatus
     detected_at: datetime

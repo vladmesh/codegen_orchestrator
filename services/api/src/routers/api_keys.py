@@ -11,9 +11,16 @@ from shared.crypto import SecretsCipher
 from shared.models import APIKey
 
 from ..database import get_async_session
+from ..dependencies import require_internal_or_admin
 from ..schemas import APIKeyCreate, APIKeyRead
 
-router = APIRouter(prefix="/api-keys", tags=["api-keys"])
+# Every route here reads or writes platform credentials in clear text, so the
+# whole router is closed to anything but internal services and admins.
+router = APIRouter(
+    prefix="/api-keys",
+    tags=["api-keys"],
+    dependencies=[Depends(require_internal_or_admin)],
+)
 
 
 @router.post("/", response_model=APIKeyRead, status_code=status.HTTP_201_CREATED)

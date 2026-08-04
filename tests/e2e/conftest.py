@@ -1,4 +1,3 @@
-import hashlib
 import os
 
 import pytest
@@ -6,12 +5,17 @@ import pytest_asyncio
 import redis.asyncio as aioredis
 
 import docker
+from scripts.shared_freshness import source_hash
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
+
+# The repository as this container sees it: shared/, packages/ and services/ are mounted
+# under /app, which is what source_hash() hashes.
+TREE_ROOT = "/app"
 
 
 def pytest_addoption(parser):
@@ -30,25 +34,6 @@ async def redis_client():
     await client.close()
 
 
-_SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules", ".venv"}
-
-
-def _content_hash(*paths: str) -> str:
-    """SHA256 of the sources copied into the worker build context."""
-    h = hashlib.sha256()
-    for path in sorted(paths):
-        for root, dirs, files in os.walk(path):
-            dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
-            for name in sorted(files):
-                if name.endswith(".pyc"):
-                    continue
-                fp = os.path.join(root, name)
-                h.update(os.path.relpath(fp, path).encode())
-                with open(fp, "rb") as fh:
-                    h.update(fh.read())
-    return h.hexdigest()[:16]
-
-
 def _build_base_image(
     client,
     dockerfile_path: str,
@@ -56,8 +41,13 @@ def _build_base_image(
     shared_path: str,
     packages_path: str,
     source_hash: str,
+    base_image: str | None = None,
 ):
-    """Build a worker base image with given Dockerfile."""
+    """Build a worker base image with given Dockerfile.
+
+    base_image is the BASE_IMAGE build arg the derived Dockerfiles require; common
+    has no base of its own and passes None.
+    """
     import os
     import shutil
     import tempfile
@@ -73,6 +63,10 @@ def _build_base_image(
         shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"))
 
         print(f"Building {tag}...")
+        buildargs = {"SOURCE_HASH": source_hash}
+        if base_image is not None:
+            buildargs["BASE_IMAGE"] = base_image
+
         try:
             image, build_logs = client.images.build(
                 path=tmp_dir,
@@ -80,7 +74,7 @@ def _build_base_image(
                 rm=True,
                 nocache=True,  # Force rebuild to pick up wrapper.py changes
                 pull=False,  # Don't pull base images - use local ones (e.g. worker-base-common)
-                buildargs={"SOURCE_HASH": source_hash},
+                buildargs=buildargs,
             )
             for chunk in build_logs:
                 if "stream" in chunk:
@@ -131,29 +125,38 @@ def setup_worker_base_images():
     shared_path = "/app/shared"
     packages_path = "/app/packages"
 
-    # Agent-specific Dockerfiles
+    # Agent-specific Dockerfiles. The common image is built first; the derived ones
+    # name it through BASE_IMAGE, which their Dockerfiles declare without a default.
+    common_tag = "worker-base-common:latest"
     images_to_build = [
         (
             "/app/services/worker-manager/images/worker-base-common/Dockerfile",
-            "worker-base-common:latest",
+            common_tag,
+            None,
         ),
         (
             "/app/services/worker-manager/images/worker-base-claude/Dockerfile",
             "worker-base-claude:latest",
+            common_tag,
         ),
         (
             "/app/services/worker-manager/images/worker-base-factory/Dockerfile",
             "worker-base-factory:latest",
+            common_tag,
         ),
     ]
 
     # One hash for all three images: worker-manager reads the label off the base image to
     # build the runtime worker tag, so common and its derivatives must agree within a run.
-    source_hash = _content_hash(shared_path, packages_path)
+    # It comes from scripts/shared_freshness.py, the only producer of the value written as
+    # SOURCE_HASH, so what this fixture stamps is comparable with what the tree says.
+    tree_hash = source_hash(TREE_ROOT)
 
     try:
-        for dockerfile_path, tag in images_to_build:
-            _build_base_image(client, dockerfile_path, tag, shared_path, packages_path, source_hash)
+        for dockerfile_path, tag, base_image in images_to_build:
+            _build_base_image(
+                client, dockerfile_path, tag, shared_path, packages_path, tree_hash, base_image
+            )
     finally:
         client.close()
 

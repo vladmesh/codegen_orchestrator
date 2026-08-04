@@ -1,13 +1,20 @@
-pytest
-pytest-asyncio
-httpx
-redis
-sqlalchemy
-asyncpg
-faker
-docker
-pydantic
-pydantic-settings
-tenacity
-structlog
-langchain-core
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
+redis==8.1.0
+sqlalchemy==2.0.51
+asyncpg==0.31.0
+faker==40.36.0
+docker==7.2.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+tenacity==9.1.4
+structlog==26.1.0
+langchain-core==1.5.3
+# shared/ deps: this image COPYs shared, and importing shared.clients (the internal
+# API transport lives there) pulls in the GitHub and embedding clients with it.
+pyjwt[crypto]==2.13.0
+cryptography==50.0.0
+pynacl==1.6.2
+pyyaml==6.0.3
+pgvector==0.5.0

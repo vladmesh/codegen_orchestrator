@@ -38,15 +38,23 @@ class ServerStatus(StrEnum):
 
 
 class ServerCreate(BaseModel):
-    """Create server request."""
+    """Create server request.
+
+    The fields are the columns of the `servers` row, except `ssh_key`: the raw
+    key is never stored, the API encrypts it into `ssh_key_enc`.
+    """
 
     handle: str
     host: str
     public_ip: str
     ssh_user: SSHUser = "root"
-    ssh_key: str | None = None
+    ssh_key: str | None = Field(default=None, description="Raw SSH private key to be encrypted")
+    capacity_cpu: int = 1
+    capacity_ram_mb: int = 1024
+    capacity_disk_mb: int = 10240
     is_managed: bool = True
     status: ServerStatus = ServerStatus.DISCOVERED
+    notes: str | None = None
     labels: dict = {}
 
 

@@ -1,32 +1,28 @@
 """PO tools — shared clients and helpers.
 
-Module-level httpx/Redis clients initialized at consumer startup via init_po_clients().
+Module-level clients initialized at consumer startup via init_po_clients().
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from langchain_core.runnables import RunnableConfig
 
+from shared.clients.internal_api import InternalAPIClient
 from shared.redis_client import RedisStreamClient
 
-if TYPE_CHECKING:
-    import httpx
-
 # Module-level clients — set by init_po_clients()
-_api_client: httpx.AsyncClient | None = None
+_api_client: InternalAPIClient | None = None
 _stream_client: RedisStreamClient | None = None
 
 
-def init_po_clients(api_client: httpx.AsyncClient, stream_client: RedisStreamClient) -> None:
+def init_po_clients(api_client: InternalAPIClient, stream_client: RedisStreamClient) -> None:
     """Initialize shared clients for PO tools. Called once at consumer startup."""
     global _api_client, _stream_client
     _api_client = api_client
     _stream_client = stream_client
 
 
-def _get_api() -> httpx.AsyncClient:
+def _get_api() -> InternalAPIClient:
     if _api_client is None:
         raise RuntimeError("PO tools not initialized — call init_po_clients() first")
     return _api_client

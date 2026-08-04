@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 # Multi-stage Dockerfile optimized for testing with caching
 
-FROM python:3.12-slim AS base
+FROM python:3.12.13-slim AS base
 
 WORKDIR /app
 ENV PYTHONPATH=/app
@@ -34,3 +34,7 @@ COPY services/worker-manager/tests ./tests
 
 # Run tests
 CMD ["pytest", "-v"]
+
+# Which tree this image baked shared from; read by scripts/shared_freshness.py.
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH

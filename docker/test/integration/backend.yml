@@ -8,9 +8,12 @@ networks:
 
 services:
   langgraph:
+    image: codegen-orchestrator/langgraph:test
     build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_URL=http://api:8000
@@ -25,9 +28,12 @@ services:
       - backend-test
 
   engineering-worker:
+    image: codegen-orchestrator/langgraph:test
     build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["python", "-m", "src.consumers.engineering"]
     environment:
       - REDIS_URL=redis://redis:6379/0
@@ -42,7 +48,7 @@ services:
       - backend-test
 
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.6-pg16
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -57,7 +63,7 @@ services:
       - backend-test
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.10-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -68,9 +74,12 @@ services:
         ipv4_address: 172.31.0.10
 
   api:
+    image: codegen-orchestrator/api:test
     build:
       context: ../../..
       dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
@@ -85,9 +94,12 @@ services:
         ipv4_address: 172.31.0.20
 
   integration-test-runner:
+    image: codegen-orchestrator/integration-test-runner:test
     build:
       context: ../../..
       dockerfile: docker/test/integration/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command:
       [
         "pytest",

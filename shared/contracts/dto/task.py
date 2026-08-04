@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -152,6 +152,8 @@ class TaskCreate(BaseModel):
 
 class TaskUpdate(BaseModel):
     """Update task request (non-status fields only)."""
+
+    model_config = ConfigDict(extra="forbid")
 
     project_id: uuid.UUID | None = None
     title: str | None = None

@@ -104,8 +104,10 @@ class TestEngineeringFlow:
             "/api/projects",
             json={
                 "title": unique_project_name,
-                "description": "E2E test project",
-                "modules": [ServiceModule.BACKEND.value],
+                "config": {
+                    "description": "E2E test project",
+                    "modules": [ServiceModule.BACKEND.value],
+                },
             },
         )
         assert project_resp.status_code == 201, f"Failed to create project: {project_resp.text}"

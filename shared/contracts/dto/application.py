@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -52,7 +52,7 @@ class ApplicationCreate(BaseModel):
     repo_id: str
     server_handle: str
     service_name: str
-    reserved_ram_mb: int = DEFAULT_APPLICATION_RESERVED_RAM_MB
+    reserved_ram_mb: int = Field(default=DEFAULT_APPLICATION_RESERVED_RAM_MB, ge=1)
     status: ApplicationStatus = ApplicationStatus.NOT_DEPLOYED
 
 

@@ -1,15 +1,18 @@
 """Tests for shared.notifications module — lazy config validation."""
 
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
 from pydantic import ValidationError
 import pytest
 
+from shared.log_config.correlation import clear_context, set_correlation_id
 import shared.notifications as notifications_mod
 
 TEST_TOKEN = "test-token-123"  # noqa: S105
 TEST_API_URL = "http://api:8000"
+TEST_INTERNAL_KEY = "notifications-test-key"
 DEFAULT_RATE_LIMIT = 10
 
 
@@ -17,8 +20,10 @@ DEFAULT_RATE_LIMIT = 10
 def _reset_config():
     """Reset lazy config cache between tests."""
     notifications_mod._config = None
+    clear_context()
     yield
     notifications_mod._config = None
+    clear_context()
 
 
 class TestNotificationConfig:
@@ -96,40 +101,79 @@ class TestNotificationConfig:
 
 
 class TestNotifyAdmins:
-    @staticmethod
-    def _session_with_users(users, status=200):
-        response = AsyncMock()
-        response.status = status
-        response.json = AsyncMock(return_value=users)
-        response.__aenter__ = AsyncMock(return_value=response)
-        response.__aexit__ = AsyncMock(return_value=False)
+    """The users read is an internal API call and goes through the shared transport."""
 
-        session = AsyncMock()
-        session.get = MagicMock(return_value=response)
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=False)
-        return session
+    @staticmethod
+    def _users_env():
+        return {
+            "TELEGRAM_BOT_TOKEN": TEST_TOKEN,
+            "API_BASE_URL": TEST_API_URL,
+            "INTERNAL_API_KEY": TEST_INTERNAL_KEY,
+        }
+
+    @staticmethod
+    def _recording_transport(users, status=200):
+        """Answer the users read and keep the request that asked for it."""
+        sent: list[httpx.Request] = []
+        real_client = httpx.AsyncClient
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return httpx.Response(status, json=users)
+
+        def factory(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        return sent, patch("shared.clients.internal_api.httpx.AsyncClient", factory)
+
+    @pytest.mark.asyncio
+    async def test_the_users_read_carries_both_internal_api_headers(self):
+        sent, transport = self._recording_transport([])
+
+        with patch.dict(os.environ, self._users_env(), clear=True), transport:
+            set_correlation_id("corr-77")
+            await notifications_mod.notify_admins("test")
+
+        assert sent[0].url.path == "/api/users"
+        assert sent[0].headers["X-Internal-Key"] == TEST_INTERNAL_KEY
+        assert sent[0].headers["X-Correlation-ID"] == "corr-77"
+
+    @pytest.mark.asyncio
+    async def test_an_alert_from_an_unbound_loop_is_still_labelled(self):
+        """Scheduler loops raise alerts without binding a context of their own."""
+        sent, transport = self._recording_transport([])
+
+        with patch.dict(os.environ, self._users_env(), clear=True), transport:
+            await notifications_mod.notify_admins("test")
+
+        assert sent[0].headers["X-Correlation-ID"]
 
     @pytest.mark.asyncio
     async def test_empty_valid_user_list_returns_zero(self):
-        session = self._session_with_users([])
-        env = {"TELEGRAM_BOT_TOKEN": TEST_TOKEN, "API_BASE_URL": TEST_API_URL}
+        _, transport = self._recording_transport([])
 
-        with (
-            patch.dict(os.environ, env, clear=True),
-            patch("shared.notifications.aiohttp.ClientSession", return_value=session),
-        ):
+        with patch.dict(os.environ, self._users_env(), clear=True), transport:
             assert await notifications_mod.notify_admins("test") == 0
 
     @pytest.mark.asyncio
     async def test_invalid_users_response_propagates_validation_error(self):
-        session = self._session_with_users([{"telegram_id": "not-an-int"}])
-        env = {"TELEGRAM_BOT_TOKEN": TEST_TOKEN, "API_BASE_URL": TEST_API_URL}
+        _, transport = self._recording_transport([{"telegram_id": "not-an-int"}])
 
         with (
-            patch.dict(os.environ, env, clear=True),
-            patch("shared.notifications.aiohttp.ClientSession", return_value=session),
+            patch.dict(os.environ, self._users_env(), clear=True),
+            transport,
             pytest.raises(ValidationError),
+        ):
+            await notifications_mod.notify_admins("test")
+
+    @pytest.mark.asyncio
+    async def test_a_non_200_from_the_users_api_raises(self):
+        _, transport = self._recording_transport([], status=503)
+
+        with (
+            patch.dict(os.environ, self._users_env(), clear=True),
+            transport,
+            pytest.raises(RuntimeError, match="HTTP 503"),
         ):
             await notifications_mod.notify_admins("test")
 

@@ -4,23 +4,23 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+# The request schemas are the contract every client already imports; the API
+# validates against those same objects rather than look-alikes of its own.
 from shared.contracts.dto.application import (
-    DEFAULT_APPLICATION_RESERVED_RAM_MB,
-    ApplicationStatus,
+    ApplicationCreate,
+    ApplicationUpdate,
 )
 from shared.contracts.dto.base import TimestampedDTO
 
 from .port_allocation import PortAllocationRead
 
-
-class ApplicationCreate(BaseModel):
-    """Schema for creating an application."""
-
-    repo_id: str
-    server_handle: str
-    service_name: str
-    reserved_ram_mb: int = Field(default=DEFAULT_APPLICATION_RESERVED_RAM_MB, ge=1)
-    status: str = ApplicationStatus.NOT_DEPLOYED.value
+__all__ = [
+    "ApplicationCreate",
+    "ApplicationHealthHistoryCreate",
+    "ApplicationHealthHistoryRead",
+    "ApplicationRead",
+    "ApplicationUpdate",
+]
 
 
 class ApplicationRead(TimestampedDTO):
@@ -37,16 +37,6 @@ class ApplicationRead(TimestampedDTO):
     ssl_expires_at: datetime | None = None
     uptime_pct_24h: float | None = None
     ports: list[PortAllocationRead] = Field(default=[], validation_alias="port_allocations")
-
-
-class ApplicationUpdate(BaseModel):
-    """Schema for updating an application."""
-
-    status: str | None = None
-    last_health_check: datetime | None = None
-    response_time_ms: int | None = None
-    ssl_expires_at: datetime | None = None
-    uptime_pct_24h: float | None = None
 
 
 class ApplicationHealthHistoryCreate(BaseModel):

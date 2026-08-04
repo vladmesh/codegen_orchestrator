@@ -2,7 +2,8 @@
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
-	check-worker-images ensure-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
+	check-worker-images ensure-worker-images check-shared-freshness print-source-hash \
+	.nuke-common .nuke-hard-prune pull-worker-reports
 
 # Load .env file
 -include .env
@@ -10,16 +11,12 @@ export
 
 DOCKER_COMPOSE ?= docker compose
 
-# Hash of source files baked into worker images.
-# Covers exactly what the worker Dockerfiles copy in: all of shared/ (COPY shared ./shared),
-# all of packages/worker-wrapper, and the image definitions themselves.
-# Any edit under shared/ therefore makes the worker bases stale and triggers a rebuild.
-WORKER_SOURCE_HASH = $(shell find \
-  shared \
-  packages/worker-wrapper \
-  services/worker-manager/images -type f \
-  -not -path '*/__pycache__/*' -not -name '*.pyc' \
-  | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
+# Hash of source files baked into images: all of shared/ (COPY shared ./shared), all of
+# packages/worker-wrapper, and the worker image definitions themselves. Any edit under
+# shared/ therefore makes every image that bakes it stale.
+# Computed by scripts/shared_freshness.py and nowhere else — the freshness check reads the
+# same function, so the two cannot drift apart.
+WORKER_SOURCE_HASH := $(shell python3 scripts/shared_freshness.py hash)
 
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
 
@@ -65,6 +62,8 @@ help:
 	@echo "  make rebuild-worker-images-hard - Rebuild with --no-cache (when cache is stale)"
 	@echo "  make check-worker-images        - Read-only staleness check (non-zero exit on drift)"
 	@echo "  make ensure-worker-images       - Check and rebuild if stale"
+	@echo ""
+	@echo "  make check-shared-freshness     - Is anything built behind the tree on shared?"
 
 # === Dependency Lock Files ===
 
@@ -123,22 +122,33 @@ cleanup-agents:
 # === Worker Base Images ===
 # Build the worker image chain: common -> claude/factory/codex
 # Use rebuild-worker-images after changing worker-wrapper or worker-base Dockerfiles
+#
+# common is tagged with the source hash as well as :latest, and the children here are
+# built against that hash tag, so they are layered on the common this target just built.
+# Their Dockerfiles declare BASE_IMAGE without a default, so a build that forgets to name
+# a base fails instead of picking up a stray :latest. The other producer of these images,
+# the DinD fixture in tests/integration/backend/conftest.py, names its own tag the same
+# way; it skips a build when the tag exists, so its child tags carry the common hash.
 
 rebuild-worker-images:
 	@echo "🔨 Building worker-base-common..."
 	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
 		-t worker-base-common:latest \
+		-t worker-base-common:$(WORKER_SOURCE_HASH) \
 		-f services/worker-manager/images/worker-base-common/Dockerfile .
 	@echo "🔨 Building worker-base-claude..."
 	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-claude:latest \
 		-f services/worker-manager/images/worker-base-claude/Dockerfile .
 	@echo "🔨 Building worker-base-factory..."
 	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-factory:latest \
 		-f services/worker-manager/images/worker-base-factory/Dockerfile .
 	@echo "🔨 Building worker-base-codex..."
 	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-codex:latest \
 		-f services/worker-manager/images/worker-base-codex/Dockerfile .
 	@echo "✅ Worker images rebuilt!"
@@ -148,17 +158,21 @@ rebuild-worker-images-hard:
 	@echo "🔨 Building worker-base-common (no-cache)..."
 	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
 		-t worker-base-common:latest \
+		-t worker-base-common:$(WORKER_SOURCE_HASH) \
 		-f services/worker-manager/images/worker-base-common/Dockerfile .
 	@echo "🔨 Building worker-base-claude (no-cache)..."
 	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-claude:latest \
 		-f services/worker-manager/images/worker-base-claude/Dockerfile .
 	@echo "🔨 Building worker-base-factory (no-cache)..."
 	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-factory:latest \
 		-f services/worker-manager/images/worker-base-factory/Dockerfile .
 	@echo "🔨 Building worker-base-codex (no-cache)..."
 	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		--build-arg BASE_IMAGE=worker-base-common:$(WORKER_SOURCE_HASH) \
 		-t worker-base-codex:latest \
 		-f services/worker-manager/images/worker-base-codex/Dockerfile .
 	@echo "✅ Worker images rebuilt (no-cache)!"
@@ -178,6 +192,16 @@ check-worker-images:
 	  exit 1; \
 	fi; \
 	echo "✅ Worker base images up to date (hash: $$CURRENT)"
+
+# Is anything built behind the tree on shared? Covers every image that bakes shared,
+# the worker bases included; unlike check-worker-images an image that is not built is
+# not a failure, so this is the one that runs in CI. Builds nothing, needs no network.
+check-shared-freshness:
+	@uv run python scripts/shared_freshness.py check
+
+# The tree hash, for anything that needs to compare against a built image.
+print-source-hash:
+	@echo $(WORKER_SOURCE_HASH)
 
 # Check and rebuild on drift. This is what other targets call.
 ensure-worker-images:

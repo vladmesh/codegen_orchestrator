@@ -2,9 +2,12 @@ services:
   # === Application Services ===
 
   api:
+    image: codegen-orchestrator/api:local
     build:
       context: .
       dockerfile: services/api/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     env_file:
       - .env
@@ -42,9 +45,12 @@ services:
     restart: unless-stopped
 
   langgraph:
+    image: codegen-orchestrator/langgraph:local
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     env_file:
       - .env
     environment:
@@ -82,9 +88,12 @@ services:
 
   # Phase 4 Workers
   deploy-worker:
+    image: codegen-orchestrator/langgraph:local
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: python -m src.consumers.deploy
     env_file:
       - .env
@@ -112,9 +121,12 @@ services:
       replicas: 1
 
   qa-worker:
+    image: codegen-orchestrator/langgraph:local
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: python -m src.consumers.qa
     env_file:
       - .env
@@ -139,9 +151,12 @@ services:
       replicas: 1
 
   engineering-worker:
+    image: codegen-orchestrator/langgraph:local
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: python -m src.consumers.engineering
     env_file:
       - .env
@@ -170,9 +185,12 @@ services:
       replicas: 1
 
   architect:
+    image: codegen-orchestrator/langgraph:local
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: python -m src.consumers.architect
     env_file:
       - .env
@@ -198,9 +216,12 @@ services:
       replicas: 1
 
   infra-service:
+    image: codegen-orchestrator/infra-service:local
     build:
       context: .
       dockerfile: services/infra-service/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     env_file:
       - .env
     environment:
@@ -222,9 +243,12 @@ services:
     restart: unless-stopped
 
   telegram_bot:
+    image: codegen-orchestrator/telegram_bot:local
     build:
       context: .
       dockerfile: services/telegram_bot/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     env_file:
       - .env
     environment:
@@ -246,9 +270,16 @@ services:
     restart: unless-stopped
 
   worker-manager:
+    # The only build service here without a ./shared mount, so what runs is the copy baked
+    # into the image. It is named explicitly and stamped with the source hash so that
+    # `make check-shared-freshness` can find the image and tell whether it is behind the
+    # tree; built outside make the arg is empty and the check says so.
+    image: codegen-orchestrator/worker-manager:local
     build:
       context: .
       dockerfile: services/worker-manager/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     user: root # Required for Docker daemon access (manages worker containers and networks on host)
     env_file:
       - .env
@@ -296,9 +327,12 @@ services:
     restart: unless-stopped
 
   scheduler:
+    image: codegen-orchestrator/scheduler:local
     build:
       context: .
       dockerfile: services/scheduler/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     env_file:
       - .env
     environment:
@@ -331,9 +365,12 @@ services:
     restart: unless-stopped
 
   scaffolder:
+    image: codegen-orchestrator/scaffolder:local
     build:
       context: .
       dockerfile: services/scaffolder/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     env_file:
       - .env
     environment:
@@ -364,7 +401,7 @@ services:
   # === Reverse Proxy + Registry ===
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.4-alpine
     ports:
       - "80:80"
       - "443:443"
@@ -390,7 +427,7 @@ services:
     restart: unless-stopped
 
   registry:
-    image: registry:2
+    image: registry:2.8.3
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
@@ -402,7 +439,7 @@ services:
   # === Observability ===
 
   loki:
-    image: grafana/loki:3.4
+    image: grafana/loki:3.4.3
     command: -config.file=/etc/loki/loki.yml -log.format=json
     volumes:
       - ./infra/loki.yml:/etc/loki/loki.yml:ro
@@ -418,7 +455,7 @@ services:
     restart: unless-stopped
 
   promtail:
-    image: grafana/promtail:3.4
+    image: grafana/promtail:3.4.3
     command: -config.file=/etc/promtail/promtail.yml -log.format=json
     volumes:
       - ./infra/promtail.yml:/etc/promtail/promtail.yml:ro
@@ -497,7 +534,7 @@ services:
   # === Infrastructure ===
 
   db:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.6-pg16
     ports:
       - "5432:5432"
     environment:
@@ -520,7 +557,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.10-alpine
     volumes:
       - redis_data:/data
     healthcheck:

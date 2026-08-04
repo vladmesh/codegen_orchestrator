@@ -1,9 +1,12 @@
 services:
   # The service under test
   infra-service:
+    image: codegen-orchestrator/infra-service:test
     build:
       context: ../../..
       dockerfile: services/infra-service/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["sh", "-c", "trap 'exit 0' TERM INT; python -c 'import src.main'; sleep infinity & wait"]
     environment:
       - REDIS_URL=redis://redis:6379/0
@@ -16,7 +19,7 @@ services:
 
   # Infrastructure
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.10-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -25,9 +28,12 @@ services:
 
   # Test Runner
   infra-test-runner:
+    image: codegen-orchestrator/infra-service-test-runner:test
     build:
       context: ../../..
       dockerfile: services/infra-service/Dockerfile.test
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["pytest", "services/infra-service/tests/service", "-v"]
     environment:
       - REDIS_URL=redis://redis:6379/0

@@ -1,5 +1,269 @@
 # Changelog
 
+## 2026-08-04
+
+- The last eight duplicated request schemas have one definition each, and no class name is now
+  defined in both `services/api/src/schemas/*` and `shared/contracts/dto/*`. `ApplicationCreate`,
+  `ApplicationUpdate`, `IncidentCreate`, `ServerCreate`, `StoryCreate`, `StoryUpdate` and
+  `TemporaryAccessGrantCreate` live in the contract and the API re-exports them; field sets follow
+  the model columns. `RunCreate` was closed by deletion instead: the contract copy carried
+  `project_id`/`type`/`spec`, `Run` has no `spec` column and nothing imported that class, so it is
+  gone and the live server definition (every field a `runs` column) moved into the contract.
+
+  **Wire behaviour**: three request fields become stricter, none looser. `ApplicationCreate.status`
+  and `ApplicationUpdate.status` are `ApplicationStatus` rather than free `str`, `IncidentCreate`
+  takes `affected_services: list[str]` rather than `list`, and `TemporaryAccessGrantCreate.project_id`
+  is a UUID rather than any non-empty string — each matching what its column stores. `ServerCreate`
+  keeps the contract's `status: ServerStatus` and its `DISCOVERED` default, which is also the
+  column default; the server copy's `str` field defaulting to `active` is gone. `ServerCreate` also
+  loses `provider_id`, which `Server` has no column for (it is read from `labels`) and no handler
+  ever read; `scheduler`'s discovery already sent it inside `labels` and no longer passes it
+  separately.
+
+- Eleven more request schemas have one definition each. `AnalyticsDailyCreate`,
+  `AnalyticsHourlyCreate`, `AnalyticsKnownUserUpsert`, `AnalyticsKnownUsersBatchUpsert`,
+  `IncidentUpdate`, `RepositoryCreate`, `RepositoryUpdate`, `TaskCreate`, `TaskEventCreate`,
+  `TaskUpdate` and `TemporaryAccessGrantUpdate` were declared identically in
+  `shared/contracts/dto/*` and in `services/api/src/schemas/*`; the server copies are deleted and
+  the schema modules re-export the contract classes, so the API validates against the object its
+  clients send. Field sets and types are unchanged. Two non-field differences were carried over to
+  the contract rather than dropped: `TaskUpdate` keeps `extra="forbid"`, which only the server copy
+  had, and `TemporaryAccessGrantUpdate`'s refusal of `REVOKED` keeps the server's longer message
+  naming the observation endpoint. `tests/unit/test_request_schemas_are_not_duplicated.py` now
+  asserts object identity for all thirteen merged names and lists the eight still duplicated.
+
+- The dead layer is out of the tree. `LLMNode` (`services/langgraph/src/nodes/base.py`) and the
+  three modules only it used are deleted: `nodes/tool_executor.py` (`ToolExecutor`), `llm/`
+  (`LLMFactory`) and `config/agent_config.py` (`get_agent_config`, `invalidate_cache`, the TTL
+  cache), along with the `llm/` and `config/` re-exports. The subgraphs take only `FunctionalNode`,
+  `RetryPolicy` and `log_node_execution` from `nodes.base`, and those stay; the PO and architect
+  agents build their own `ChatOpenAI`, so `langchain-openai` stays a dependency.
+  `services/langgraph/src/redis_publisher.py` had no reference anywhere and is deleted too.
+  `services/langgraph/tests/unit/test_dead_layer_removed.py` fails if any of them comes back.
+
+  **External HTTP contract**: two routers are no longer mounted, so five paths are gone from the
+  API. `services/api/src/routers/resources.py` is deleted, taking `GET /api/resources`,
+  `POST /api/resources` and `GET /api/resources/{handle}`; the `Resource` model and its table are
+  untouched. The two OpenRouter catalogue endpoints, `GET /api/available-models` and
+  `GET /api/available-models/{model_id}`, are gone with the router object in
+  `routers/available_models.py`; the module itself stays, because `routers/agent_configs.py` calls
+  its `validate_model_identifier` when a config's `model_identifier` is written. No caller was found
+  for any of the five paths in any service or in either web client.
+
+  Two alias blocks are gone as well: the thirteen `_`-prefixed re-exports in `routers/rag.py` and
+  the seven in `routers/tasks.py`. Neither block had a consumer; the public names they aliased are
+  unchanged.
+
+- `ProjectCreate` and `ProjectUpdate` have one definition each. `shared/contracts/dto/project.py`
+  and `services/api/src/schemas/project.py` each declared a class of that name, and the two field
+  sets had drifted apart in both directions: the contract carried `description` and `modules`, for
+  which the model has no column, and lacked `config`, which it has; the server's `ProjectUpdate` had
+  no `project_spec` and forbade extras, so `github_sync` PATCHing a spec read out of
+  `.project-spec.yaml` got a 422 and the spec never reached the database. The API now validates
+  against the contract classes it imports, `patch_project` and `update_project` carry `project_spec`
+  onto the row like any other field, and `ProjectRead` returns it, so the architect's
+  `get_project_spec` reads back what the sync wrote. `description` and `modules` are gone from both
+  request schemas: the PO agent, the scaffolder and the developer node all read them out of
+  `config`, where they are actually stored, and a top-level one was being dropped in silence.
+  `status` is typed `ProjectStatus` on both, so a status the enum does not define is now a 422 —
+  three service tests were creating projects with `"created"`, a `StoryStatus` value that projects
+  never had, and one integration test with `"scaffold_failed"`, which migration `b3c4d5e6f7a8` took
+  out of the enum. `tests/unit/test_request_schemas_are_not_duplicated.py` fails on any new class name
+  defined in both trees; the 19 names still duplicated are listed there, and the list is checked for
+  stale entries so it can only shrink. Tests:
+  `services/api/tests/service/test_project_spec_sync.py`.
+
+- Every internal API call carries `X-Internal-Key` and `X-Correlation-ID`, and none of them is
+  written by hand any more. The transport used to send the correlation header only when something
+  had already bound one, so the bot (which binds nothing) and the scheduler's background loops went
+  out unlabelled; `ensure_correlation_id()` now creates the identifier and binds it to the current
+  context, so the rest of that flow reuses it instead of taking a fresh one per call. Two callers in
+  `shared/` skipped the transport entirely and sent neither header: `shared/config_store.py` read
+  `/api/system-configs/...` with two bare `httpx.get` calls at scheduler and PO startup, and
+  `shared/notifications.py` read `/api/users` with bare `aiohttp` on every admin alert. Both go
+  through the shared transport now — the store through `InternalAPISyncClient`, the synchronous form
+  of it, since it is read from synchronous startup code. `notify_admins` raises
+  `httpx.RequestError` instead of `aiohttp.ClientError` when that read fails; its aiohttp use for
+  Telegram itself is unchanged. The static guard was the reason both survived card 1139: it read
+  only `services/`, so `shared/` was never checked. It reads both trees now and matches on a rule,
+  not a file list — a module that builds its own HTTP client aimed at the internal API, or any
+  request whose URL comes from that base URL, including through a local variable and including
+  libraries other than httpx. Which client class a module built is resolved through its imports, so
+  `from httpx import AsyncClient`, `import httpx as h` and the same forms of `aiohttp` are one
+  finding rather than one matched spelling. Both mandatory headers are set canonically and once:
+  every case variant of the two names is taken out of the caller's headers first, since
+  `x-internal-key: forged` used to be copied through and left ahead of the transport's own field,
+  and the API reads the first field of a name. A caller-named correlation ID is read in any spelling
+  and becomes the identifier of the flow. `shared/live_harness_cleanup.py` stays out (live-stand
+  path, out of the card's scope; the exemption is recorded in the sprint entry and is to be filed as
+  an issue at closing) and is the guard's only exemption besides the transport module itself.
+  `test_no_correlation_id_bound_means_no_header` asserted the old rule — no binding, no header — and
+  is replaced by `test_an_unbound_context_gets_an_id_from_the_transport`. Tests:
+  `shared/tests/unit/test_internal_api_transport.py`, `shared/tests/unit/test_config_store.py`,
+  `shared/tests/test_notifications.py`.
+
+- A valid `X-Internal-Key` authenticates a service; it no longer makes that service anyone's
+  deputy. The guards used to return on the key alone, so once every caller sent it — the PO agent
+  and the bot included, and they name the end user in `X-Telegram-ID` — a Telegram user could have
+  asked the agent for a stranger's project or run and got it: `get_project`, the secret endpoints,
+  `teardown`, `get_run_status`. A request that names a user is now judged as that user, key or no
+  key; a service call that names none is unchanged, and an admin still reaches everything.
+  `resolve_actor` in `services/api/src/dependencies.py` is the single place that decides who is
+  acting, and the only place allowed to read the internal flag: `_check_project_access`,
+  `_check_run_access`, `require_internal_or_admin` and the two list endpoints ask it instead of
+  deciding for themselves. Writing the rule out by hand per guard is what let it be applied in
+  `projects.py` and missed in `runs.py`, so a test now fails when any other function reads the flag
+  — a guard nobody has written yet included. `GET /api/servers` requires an admin on the server
+  again, as it did before the transport work. Tests:
+  `services/api/tests/unit/test_internal_flag_has_one_reader.py`,
+  `services/api/tests/service/test_internal_key_is_not_impersonation.py`.
+
+- `docker/test/service/telegram_bot.yml` gives the bot `INTERNAL_API_KEY`, which the shared
+  transport reads at import: without it the container died on a `KeyError` while the suite still
+  reported a green smoke test from its runner. The bot's import is a healthcheck the runner waits
+  on now, so a bot that cannot start is a red suite instead of a green one with a dead service.
+
+- The transport to the internal API is written once, in `shared/clients/internal_api.py`. Five
+  services carried a near-identical `_get_client` / `_api_path` / `_request` — 1384 lines of client
+  code between them — and the copies had drifted: `services/telegram_bot` sent no `X-Internal-Key`
+  at all, and the PO tools bypassed their client entirely, holding a module-level `httpx.AsyncClient`
+  handed out by `init_po_clients()`. `SchedulerAPIClient`, `LanggraphAPIClient`,
+  `InfrastructureAPIClient`, `ScaffolderAPIClient` and `TelegramAPIClient` keep their names and their
+  application methods and now subclass `InternalAPIClient`; the only difference that survives, the
+  bot's 10-second timeout, is a constructor argument. `X-Internal-Key` and, when one is bound,
+  `X-Correlation-ID` go on every request from inside that module, so no caller can forget them:
+  `_get_api()` hands the PO tools the same client the rest of `langgraph` uses, and
+  `worker-manager`'s workspace-GC notification, the last raw `httpx` call to the internal API, goes
+  through it too. On the wire nothing else changed — same `/api` prefix, same refusal of an `api/`
+  path or an `API_BASE_URL` ending in `/api`, same `raise_for_status()`. Callers that read a status
+  code themselves (a 422 verdict, a 404 that means "not yet") use `request_raw` and its
+  `get_raw` / `post_raw` / `patch_raw` shorthands. Tests:
+  `shared/tests/unit/test_internal_api_transport.py` fails if a service grows its own `_request` or
+  its own `httpx.AsyncClient` aimed at the internal API, and
+  `services/telegram_bot/tests/unit/test_api_client_headers.py` fails if the bot's calls lose either
+  header.
+
+- The freshness check now answers for the whole tree, not for the part it happened to be able to
+  compare. Every Dockerfile that bakes `shared` has to reach a declared image name through a build
+  route — a compose service with an explicit `image:`, or a Makefile recipe that builds it under an
+  explicit `-t` tag — and one that no route reaches fails `make check-shared-freshness` by name. A
+  compose `image:` counts as declared only when it is a literal: `image: ${SOMETHING}` is resolved
+  outside the tree, so it names nothing the check can inspect and it fails as an unreadable route,
+  the same rule `is_pinned_image()` in `scripts/check-ci-gate.py` applies to a pulled reference.
+  Before this, a Dockerfile that copied `shared` and stamped its label correctly but hung off no
+  compose service and no recipe was compared with nothing and the check said nothing; that was true of
+  nine of the seventeen files that bake `shared`, `services/scaffolder/Dockerfile` among them. Eight
+  of the nine already had a route and were merely outside the label comparison because their service
+  mounts `./shared:/app/shared` and runs the tree; the ninth,
+  `packages/worker-wrapper/Dockerfile.test`, is deleted — nothing has built it since `2621eb42`
+  dropped its make target in March, and the suite it would have run
+  (`tests/integration/worker_wrapper`) is red and already tracked in `scripts/check-ci-gate.py`. The
+  Makefile side is read the same way as compose from now on: every recipe is parsed, a `docker build`
+  of a Dockerfile that bakes `shared` owes `--build-arg SOURCE_HASH` and a tag, and a build that does
+  not say which Dockerfile it builds fails the check instead of being skipped. There is no list of
+  exceptions, deliberately. A machine without docker, or without a reachable daemon, now reads as
+  "nothing built" for every image rather than crashing, so the static half of the check gives the same
+  answer with docker and without it. Tests: `scripts/tests/test_shared_freshness.py`; docs:
+  `docs/REBUILD.md`.
+
+- A built stand can no longer be quietly behind the tree on `shared`. `make check-shared-freshness`
+  (`scripts/shared_freshness.py`) compares the source hash baked into every reused image with the hash
+  of the tree and exits non-zero on a difference, naming the image. It reuses what the worker circuit
+  already had — `--build-arg SOURCE_HASH` and the `org.codegen.worker_source_hash` label — instead of
+  adding a second mechanism, and the hash itself is now computed in that script and read from there by
+  the Makefile and by the two fixtures that build worker base images, so there is one counter rather
+  than several that can drift. Coverage is derived from the tree, not listed: every Dockerfile in the
+  repository is parsed in every `COPY` form docker accepts, and every compose file is parsed,
+  `docker/test/**` included. A service built from a Dockerfile that bakes `shared` has to pass
+  `SOURCE_HASH` in `build.args` and to declare an explicit `image:` name, so the images the test
+  compose files leave behind are checked like any other; the services that mount
+  `./shared:/app/shared` run the tree and are not compared. Nothing that cannot be read is allowed to
+  pass: an unreadable `COPY`, an unparsable compose file, a Dockerfile without `ARG SOURCE_HASH` and
+  the label, or a compared image whose label is missing, empty or not a hash all fail the check by
+  name. An image that is not built is not behind anything and does not fail the check — that is what
+  keeps it green in CI, where it now runs in `fast-checks`. It builds nothing, starts nothing and uses
+  no network. Tests: `scripts/tests/test_shared_freshness.py`; docs: `docs/REBUILD.md`.
+
+## 2026-08-03
+
+- `shared` has one declared form left, and it is the tree. The three editable entries in the root
+  `[tool.uv.sources]` (`codegen-orchestrator-shared-contracts`, `-redis`, `-log-config`) and the
+  three `pyproject.toml` files behind them are gone: nothing depended on those names, they were
+  absent from `uv.lock`, and they installed nothing while reading like a package boundary. Why that
+  route and not making `shared` a workspace member or cutting it into real packages is written down
+  in `docs/decisions/shared-is-not-a-package.md`, linked from `docs/REBUILD.md`, which now names all
+  three delivery channels including the import from the tree over `PYTHONPATH`.
+  `tests/unit/test_uv_sources_are_used.py` fails if a source entry that nothing depends on comes
+  back. `shared/pyproject.toml` is untouched and stays the single declaration of `shared`'s
+  third-party dependencies; no Dockerfile and no compose service changed, and `uv.lock` did not move.
+
+- The last floating base image tags are gone, and the gate keeps them gone. Both
+  `COPY --from=ghcr.io/astral-sh/uv:latest` lines name `0.12.1`, the version the built worker
+  image and the registry tag both report today. The three derived worker images
+  (`worker-base-claude`, `-codex`, `-factory`) declare `ARG BASE_IMAGE` without a default, so
+  the builder has to name the common image it just produced: `make rebuild-worker-images` tags
+  common with `WORKER_SOURCE_HASH` as well as `:latest` and passes the hash tag, and the backend
+  integration conftest passes its own content-hash tag instead of hanging a `:latest` alias on
+  it. A build that forgets the argument fails on a blank base name. `make ci-contract` now walks
+  every Dockerfile and compose file in the tree and fails, with file and line, on an image with
+  `:latest` or no tag at all; a reference left floating on purpose needs an entry in
+  `UNPINNED_IMAGE_REFS` or `UNPINNED_IMAGE_DIRS` with a reason. In a compose file it reads a
+  service's `image` directly or through YAML merge keys, and a service with only a `build` is no
+  violation, since the Dockerfile it builds is walked separately. What it cannot read it does not
+  wave through: `extends`, an unresolvable anchor, an `image` that is not a single value, or a
+  file that does not parse fail the gate by name, so a shape the gate does not follow can never
+  pass as if it had been checked.
+
+- The CI contract gate derives the list of test files from the tree instead of trusting a
+  constant in its own head. `scripts/check-ci-gate.py` walks the repository for files pytest
+  would collect and fails when one is run by no CI target, so a new test can no longer be
+  invisible. Claims are read off the targets themselves: the `ALL_SUITES` table in
+  `scripts/test-unit-local.sh`, the pytest commands in the `docker/test/{service,integration}`
+  compose files behind the two CI matrices, and the pytest commands of an explicit
+  `test-integration-<suite>` Makefile target. A claim covers what its target runs and nothing
+  more: a directory argument covers the directory recursively, a file argument covers that one
+  file. The service and integration matrices are likewise checked against those compose
+  directories rather than against hardcoded sets. A test that is deliberately not run has to be
+  listed in `UNCLAIMED_TEST_FILES`, or its directory in `UNCLAIMED_TEST_DIRS`, with a reason.
+
+- `services/scaffolder` joins the uv workspace, and its unit tests, along with `scripts/tests`,
+  `packages/worker-wrapper/tests/{component,integration}` and
+  `services/telegram_bot/tests_legacy/unit`, now run on every PR through `make test-unit`. None of
+  those five directories was executed anywhere before.
+
+## 2026-08-03
+
+- The tree now fixes what actually gets installed and run. `uv.lock` is committed instead of
+  ignored, and both CI dependency steps install from it with `uv sync --locked`, which both
+  refuses to re-resolve and fails the run when the lock has drifted from the `pyproject.toml`
+  files. The integration, template, and E2E test requirement files pin
+  exact versions, and every base image in the repository's Dockerfiles and Compose files carries
+  an explicit tag instead of a moving one (`python:3.12.13-slim`, `redis:7.4.10-alpine`,
+  `pgvector/pgvector:0.8.6-pg16`, and the rest). A red or green CI run now describes the tree, not
+  the state of an upstream index.
+
+- The production deploy brings the server to the commit the workflow run was dispatched on
+  (`git fetch` of that SHA plus `git reset --hard`) instead of `git pull origin main`, which could
+  deploy a newer branch tip than the one that was validated. A unit test reads `deploy.yml` and
+  fails if the revision step goes back to `git pull` or to `origin/main`.
+
+## 2026-08-02
+
+- The production deploy now fails before touching the server when critical database, internal API,
+  admin, Grafana, or Loki credentials are absent. It writes those credentials into the generated
+  `.env` with mode `0600`, validates the merged Compose model before building, and probes API
+  health from inside the API container because production intentionally has no host port 8000.
+  `.env.example` now also declares the required `INTERNAL_API_KEY` instead of leaving new installs
+  to discover that startup contract from an API validation error. The deploy runbook lists the
+  corresponding internal API, Grafana database, Grafana admin, and Loki push secrets required in
+  the GitHub production environment.
+
+- Production Compose no longer publishes PostgreSQL, the admin frontend, or the user dashboard
+  directly on host ports 5432, 3001, and 3003. Public user-dashboard traffic continues through
+  Caddy at `/lk`; operator access to the admin frontend is limited to the internal network and an
+  SSH tunnel until it has its own authenticated TLS route. This closes the direct dashboard API
+  proxy and prevents Basic Auth from being sent over cleartext HTTP.
+
 ## 2026-07-28
 
 - `PATCH /api/tasks/{id}` now rejects unknown fields instead of silently dropping them. In
