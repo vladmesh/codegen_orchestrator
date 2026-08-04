@@ -23,9 +23,8 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
     payload = {
         "id": PROJECT_UUID,
         "title": "New Project 001",
-        "status": "created",
+        "status": "draft",
         "config": {"modules": ["backend"]},
-        "modules": ["backend"],
     }
 
     response = await async_client.post(

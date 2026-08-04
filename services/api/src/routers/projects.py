@@ -159,7 +159,7 @@ async def create_project(
             id=project_id,
             title=project_in.title,
             slug=generate_project_slug(project_in.title, project_id),
-            status=project_in.status or ProjectStatus.DRAFT.value,
+            status=project_in.status.value,
             config=_vet_config_write(project_in.config, None),
             owner_id=owner_id,
         )
@@ -279,9 +279,11 @@ async def update_project(
     if project_in.title is not None:
         project.title = project_in.title
     if project_in.status is not None:
-        project.status = project_in.status
+        project.status = project_in.status.value
     if project_in.config is not None:
         project.config = _vet_config_write(project_in.config, project)
+    if project_in.project_spec is not None:
+        project.project_spec = project_in.project_spec
 
     await _release_bot_if_archived(db, project)
 
@@ -309,9 +311,11 @@ async def patch_project(
     if project_in.title is not None:
         project.title = project_in.title
     if project_in.status is not None:
-        project.status = project_in.status
+        project.status = project_in.status.value
     if project_in.config is not None:
         project.config = _vet_config_write(project_in.config, project)
+    if project_in.project_spec is not None:
+        project.project_spec = project_in.project_spec
 
     await _release_bot_if_archived(db, project)
 

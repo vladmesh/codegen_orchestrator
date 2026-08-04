@@ -18,6 +18,7 @@ def _make_project(name: str, owner_id: int):
     p.slug = f"{name}-0000"
     p.status = "draft"
     p.config = {}
+    p.project_spec = None
     p.owner_id = owner_id
     return p
 

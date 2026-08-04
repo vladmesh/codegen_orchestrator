@@ -388,21 +388,22 @@ class ServiceModule(StrEnum):
     FRONTEND = "frontend"
 
 
+# The API validates requests against these two, imported from the contract.
+# Fields are the Project columns a caller may set; module choice and free-text
+# description live inside config.
 class ProjectCreate(BaseModel):
     """Create project request."""
     id: uuid.UUID | None = None
-    name: str
-    description: str | None = None
-    modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
-    status: ProjectStatus | None = None
+    title: str
+    status: ProjectStatus = ProjectStatus.DRAFT
+    config: dict[str, Any] = {}
 
 
 class ProjectUpdate(BaseModel):
-    """Update project request."""
-    name: str | None = None
-    description: str | None = None
+    """Update project request, for both PUT and PATCH."""
+    title: str | None = None
     status: ProjectStatus | None = None
-    modules: list[ServiceModule] | None = None
+    config: dict[str, Any] | None = None
     project_spec: dict | None = None
 
 
@@ -411,7 +412,8 @@ class ProjectDTO(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    name: str
+    title: str
+    slug: str
     description: str | None = None
     status: ProjectStatus
     modules: list[ServiceModule] = []
