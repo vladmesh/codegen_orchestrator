@@ -2,6 +2,24 @@
 
 ## 2026-08-04
 
+- `ProjectCreate` and `ProjectUpdate` have one definition each. `shared/contracts/dto/project.py`
+  and `services/api/src/schemas/project.py` each declared a class of that name, and the two field
+  sets had drifted apart in both directions: the contract carried `description` and `modules`, for
+  which the model has no column, and lacked `config`, which it has; the server's `ProjectUpdate` had
+  no `project_spec` and forbade extras, so `github_sync` PATCHing a spec read out of
+  `.project-spec.yaml` got a 422 and the spec never reached the database. The API now validates
+  against the contract classes it imports, `patch_project` and `update_project` carry `project_spec`
+  onto the row like any other field, and `ProjectRead` returns it, so the architect's
+  `get_project_spec` reads back what the sync wrote. `description` and `modules` are gone from both
+  request schemas: the PO agent, the scaffolder and the developer node all read them out of
+  `config`, where they are actually stored, and a top-level one was being dropped in silence.
+  `status` is typed `ProjectStatus` on both, so a status the enum does not define is now a 422 —
+  three service tests were creating projects with `"created"`, a `StoryStatus` value that projects
+  never had. `tests/unit/test_request_schemas_are_not_duplicated.py` fails on any new class name
+  defined in both trees; the 19 names still duplicated are listed there, and the list is checked for
+  stale entries so it can only shrink. Tests:
+  `services/api/tests/service/test_project_spec_sync.py`.
+
 - Every internal API call carries `X-Internal-Key` and `X-Correlation-ID`, and none of them is
   written by hand any more. The transport used to send the correlation header only when something
   had already bound one, so the bot (which binds nothing) and the scheduler's background loops went

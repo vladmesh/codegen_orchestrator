@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Any
 import uuid
 
 from pydantic import BaseModel, ConfigDict
@@ -33,26 +34,29 @@ class ServiceModule(StrEnum):
 
 
 class ProjectCreate(BaseModel):
-    """Create project request."""
+    """Create project request. The API validates incoming bodies against this.
+
+    Fields are the columns of `shared.models.project.Project` a caller may set.
+    Module choice and free-text description live inside `config`, where the
+    scaffolder and the developer node read them from.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     id: uuid.UUID | None = None
     title: str
-    description: str | None = None
-    modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
-    status: ProjectStatus | None = None
+    status: ProjectStatus = ProjectStatus.DRAFT
+    config: dict[str, Any] = {}
 
 
 class ProjectUpdate(BaseModel):
-    """Update project request."""
+    """Update project request, for both PUT and PATCH."""
 
     model_config = ConfigDict(extra="forbid")
 
     title: str | None = None
-    description: str | None = None
     status: ProjectStatus | None = None
-    modules: list[ServiceModule] | None = None
+    config: dict[str, Any] | None = None
     project_spec: dict | None = None
 
 

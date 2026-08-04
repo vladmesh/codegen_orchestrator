@@ -7,7 +7,19 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from shared.contracts.bot_access import parse_allowed_telegram_ids
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.project import ProjectStatus, ServiceModule
+
+# The request schemas are the contract every client already imports; the API
+# validates against that same object rather than a look-alike of its own.
+from shared.contracts.dto.project import ProjectCreate, ProjectStatus, ProjectUpdate
+
+__all__ = [
+    "BotAccessRequest",
+    "MergeSecretsRequest",
+    "ProjectBase",
+    "ProjectCreate",
+    "ProjectRead",
+    "ProjectUpdate",
+]
 
 
 class ProjectBase(BaseModel):
@@ -20,34 +32,13 @@ class ProjectBase(BaseModel):
     config: dict[str, Any] = {}
 
 
-class ProjectCreate(BaseModel):
-    """Schema for creating a project."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: uuid.UUID | None = None  # Auto-generated if not provided
-    title: str
-    status: str = ProjectStatus.DRAFT.value
-    config: dict[str, Any] = {}
-    modules: list[ServiceModule] = [ServiceModule.BACKEND]
-
-
 class ProjectRead(ProjectBase, TimestampedDTO):
     """Schema for reading a project."""
 
     model_config = ConfigDict(from_attributes=True)
 
     owner_id: int
-
-
-class ProjectUpdate(BaseModel):
-    """Schema for updating a project."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    title: str | None = None
-    status: str | None = None
-    config: dict[str, Any] | None = None
+    project_spec: dict | None = None
 
 
 class MergeSecretsRequest(BaseModel):
