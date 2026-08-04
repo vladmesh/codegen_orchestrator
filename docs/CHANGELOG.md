@@ -2,6 +2,35 @@
 
 ## 2026-08-04
 
+- Every internal API call carries `X-Internal-Key` and `X-Correlation-ID`, and none of them is
+  written by hand any more. The transport used to send the correlation header only when something
+  had already bound one, so the bot (which binds nothing) and the scheduler's background loops went
+  out unlabelled; `ensure_correlation_id()` now creates the identifier and binds it to the current
+  context, so the rest of that flow reuses it instead of taking a fresh one per call. Two callers in
+  `shared/` skipped the transport entirely and sent neither header: `shared/config_store.py` read
+  `/api/system-configs/...` with two bare `httpx.get` calls at scheduler and PO startup, and
+  `shared/notifications.py` read `/api/users` with bare `aiohttp` on every admin alert. Both go
+  through the shared transport now — the store through `InternalAPISyncClient`, the synchronous form
+  of it, since it is read from synchronous startup code. `notify_admins` raises
+  `httpx.RequestError` instead of `aiohttp.ClientError` when that read fails; its aiohttp use for
+  Telegram itself is unchanged. The static guard was the reason both survived card 1139: it read
+  only `services/`, so `shared/` was never checked. It reads both trees now and matches on a rule,
+  not a file list — a module that builds its own HTTP client aimed at the internal API, or any
+  request whose URL comes from that base URL, including through a local variable and including
+  libraries other than httpx. Which client class a module built is resolved through its imports, so
+  `from httpx import AsyncClient`, `import httpx as h` and the same forms of `aiohttp` are one
+  finding rather than one matched spelling. Both mandatory headers are set canonically and once:
+  every case variant of the two names is taken out of the caller's headers first, since
+  `x-internal-key: forged` used to be copied through and left ahead of the transport's own field,
+  and the API reads the first field of a name. A caller-named correlation ID is read in any spelling
+  and becomes the identifier of the flow. `shared/live_harness_cleanup.py` stays out (live-stand
+  path, out of the card's scope; the exemption is recorded in the sprint entry and is to be filed as
+  an issue at closing) and is the guard's only exemption besides the transport module itself.
+  `test_no_correlation_id_bound_means_no_header` asserted the old rule — no binding, no header — and
+  is replaced by `test_an_unbound_context_gets_an_id_from_the_transport`. Tests:
+  `shared/tests/unit/test_internal_api_transport.py`, `shared/tests/unit/test_config_store.py`,
+  `shared/tests/test_notifications.py`.
+
 - A valid `X-Internal-Key` authenticates a service; it no longer makes that service anyone's
   deputy. The guards used to return on the key alone, so once every caller sent it — the PO agent
   and the bot included, and they name the end user in `X-Telegram-ID` — a Telegram user could have
