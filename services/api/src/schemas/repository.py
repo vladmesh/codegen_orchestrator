@@ -2,22 +2,19 @@
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.repository import RepositoryRole, RepositoryVisibility
 
+# The request schemas are the contract every client already imports; the API
+# validates against that same object rather than a look-alike of its own.
+from shared.contracts.dto.repository import RepositoryCreate, RepositoryUpdate
 
-class RepositoryCreate(BaseModel):
-    """Schema for creating a repository."""
-
-    project_id: uuid.UUID
-    name: str
-    git_url: str
-    provider_repo_id: int | None = None
-    role: RepositoryRole = RepositoryRole.PRIMARY
-    visibility: RepositoryVisibility = RepositoryVisibility.PRIVATE
-    is_managed: bool = True
+__all__ = [
+    "RepositoryCreate",
+    "RepositoryRead",
+    "RepositoryUpdate",
+]
 
 
 class RepositoryRead(TimestampedDTO):
@@ -35,16 +32,3 @@ class RepositoryRead(TimestampedDTO):
     bot_username: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class RepositoryUpdate(BaseModel):
-    """Schema for updating a repository."""
-
-    name: str | None = None
-    git_url: str | None = None
-    provider_repo_id: int | None = None
-    role: RepositoryRole | None = None
-    visibility: RepositoryVisibility | None = None
-    is_managed: bool | None = None
-    acceptance_criteria: str | None = None
-    bot_username: str | None = None

@@ -2,6 +2,18 @@
 
 ## 2026-08-04
 
+- Eleven more request schemas have one definition each. `AnalyticsDailyCreate`,
+  `AnalyticsHourlyCreate`, `AnalyticsKnownUserUpsert`, `AnalyticsKnownUsersBatchUpsert`,
+  `IncidentUpdate`, `RepositoryCreate`, `RepositoryUpdate`, `TaskCreate`, `TaskEventCreate`,
+  `TaskUpdate` and `TemporaryAccessGrantUpdate` were declared identically in
+  `shared/contracts/dto/*` and in `services/api/src/schemas/*`; the server copies are deleted and
+  the schema modules re-export the contract classes, so the API validates against the object its
+  clients send. Field sets and types are unchanged. Two non-field differences were carried over to
+  the contract rather than dropped: `TaskUpdate` keeps `extra="forbid"`, which only the server copy
+  had, and `TemporaryAccessGrantUpdate`'s refusal of `REVOKED` keeps the server's longer message
+  naming the observation endpoint. `tests/unit/test_request_schemas_are_not_duplicated.py` now
+  asserts object identity for all thirteen merged names and lists the eight still duplicated.
+
 - The dead layer is out of the tree. `LLMNode` (`services/langgraph/src/nodes/base.py`) and the
   three modules only it used are deleted: `nodes/tool_executor.py` (`ToolExecutor`), `llm/`
   (`LLMFactory`) and `config/agent_config.py` (`get_agent_config`, `invalidate_cache`, the TTL

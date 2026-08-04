@@ -17,7 +17,25 @@ import importlib
 from pathlib import Path
 import sys
 
-from shared.contracts.dto import project as contract
+import pytest
+
+# Names already merged, as (module under both trees, class name). The API module
+# must hand back the contract's object, not a copy of its fields.
+MERGED = [
+    ("analytics", "AnalyticsDailyCreate"),
+    ("analytics", "AnalyticsHourlyCreate"),
+    ("analytics", "AnalyticsKnownUserUpsert"),
+    ("analytics", "AnalyticsKnownUsersBatchUpsert"),
+    ("incident", "IncidentUpdate"),
+    ("project", "ProjectCreate"),
+    ("project", "ProjectUpdate"),
+    ("repository", "RepositoryCreate"),
+    ("repository", "RepositoryUpdate"),
+    ("task", "TaskCreate"),
+    ("task", "TaskEventCreate"),
+    ("task", "TaskUpdate"),
+    ("temporary_access", "TemporaryAccessGrantUpdate"),
+]
 
 ROOT = Path(__file__).resolve().parents[2]
 API_SCHEMAS = ROOT / "services" / "api" / "src" / "schemas"
@@ -25,25 +43,14 @@ CONTRACT_DTOS = ROOT / "shared" / "contracts" / "dto"
 
 # Names still defined twice, each pending its own merge. Do not add to this list.
 KNOWN_DUPLICATES = {
-    "AnalyticsDailyCreate",
-    "AnalyticsHourlyCreate",
-    "AnalyticsKnownUserUpsert",
-    "AnalyticsKnownUsersBatchUpsert",
     "ApplicationCreate",
     "ApplicationUpdate",
     "IncidentCreate",
-    "IncidentUpdate",
-    "RepositoryCreate",
-    "RepositoryUpdate",
     "RunCreate",
     "ServerCreate",
     "StoryCreate",
     "StoryUpdate",
-    "TaskCreate",
-    "TaskEventCreate",
-    "TaskUpdate",
     "TemporaryAccessGrantCreate",
-    "TemporaryAccessGrantUpdate",
 }
 
 
@@ -70,17 +77,22 @@ def test_project_request_schemas_have_one_definition():
     assert not {"ProjectCreate", "ProjectUpdate"} & _duplicated_names()
 
 
-def test_the_api_serves_the_contract_classes():
-    """The API's re-export and the contract must be the same object, not a copy."""
+def _api_schema_module(name: str):
     api_src = str(ROOT / "services" / "api" / "src")
     sys.path.insert(0, api_src)
     try:
-        served = importlib.import_module("schemas.project")
+        return importlib.import_module(f"schemas.{name}")
     finally:
         sys.path.remove(api_src)
 
-    assert served.ProjectCreate is contract.ProjectCreate
-    assert served.ProjectUpdate is contract.ProjectUpdate
+
+@pytest.mark.parametrize(("module", "class_name"), MERGED)
+def test_the_api_serves_the_contract_classes(module: str, class_name: str):
+    """The API's re-export and the contract must be the same object, not a copy."""
+    served = getattr(_api_schema_module(module), class_name)
+    defined = getattr(importlib.import_module(f"shared.contracts.dto.{module}"), class_name)
+
+    assert served is defined
 
 
 def test_no_new_duplicated_schema_names():

@@ -127,7 +127,8 @@ class TemporaryAccessGrantUpdate(BaseModel):
     def _revoked_is_not_a_field_to_set(self) -> TemporaryAccessGrantUpdate:
         if self.status is TemporaryAccessStatus.REVOKED:
             raise ValueError(
-                "a grant is revoked by an observation of the running service, not by an update"
+                "a grant is revoked by an observation of the running service, not by an update; "
+                "post the reading to /temporary-access-grants/{id}/observation"
             )
         return self
 
