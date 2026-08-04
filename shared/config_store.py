@@ -3,6 +3,10 @@
 Reads operational constants from the API. No business logic — just
 HTTP GET + in-memory caching with TTL.
 
+It is read at service startup, from synchronous code, so it takes the
+synchronous form of the shared transport rather than raw `httpx`: these reads are
+internal API calls and carry the same two headers as every other one.
+
 Usage:
     store = ConfigStore(api_base_url="http://api:8000")
     interval = store.get_int("scheduler.dispatch_interval_seconds")
@@ -15,6 +19,8 @@ from typing import Any
 
 import httpx
 import structlog
+
+from shared.clients.internal_api import InternalAPISyncClient
 
 logger = structlog.get_logger()
 
@@ -29,13 +35,10 @@ class ConfigStore:
     """Read system configs from API with in-memory TTL cache."""
 
     def __init__(self, api_base_url: str, cache_ttl: int = 30):
-        self._api_base_url = api_base_url.rstrip("/")
+        self._client = InternalAPISyncClient(api_base_url, timeout=10.0)
         self._cache_ttl = cache_ttl
         self._cache: dict[str, tuple[Any, float]] = {}  # key -> (value, expires_at)
         self._lock = threading.Lock()
-
-    def _api_url(self, path: str) -> str:
-        return f"{self._api_base_url}/api/{path.lstrip('/')}"
 
     def _source_unavailable(self, key: str, reason: str, cause: Exception | None) -> Any:
         """Return the last known value for `key`, or raise if there is none.
@@ -68,7 +71,7 @@ class ConfigStore:
                 return cached[0]
 
         try:
-            resp = httpx.get(self._api_url(f"system-configs/{key}"), timeout=10.0)
+            resp = self._client.get_raw(f"system-configs/{key}")
         except httpx.RequestError as exc:
             return self._source_unavailable(key, f"request failed: {exc}", exc)
 
@@ -102,11 +105,7 @@ class ConfigStore:
     def get_category(self, category: str) -> dict[str, Any]:
         """Get all configs in a category as {key: value} dict."""
         try:
-            resp = httpx.get(
-                self._api_url("system-configs/"),
-                params={"category": category},
-                timeout=10.0,
-            )
+            resp = self._client.get_raw("system-configs/", params={"category": category})
             if resp.status_code == httpx.codes.OK:
                 result = {}
                 for item in resp.json():

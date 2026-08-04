@@ -1,4 +1,5 @@
 from typing import Any
+import uuid
 
 import structlog
 
@@ -11,6 +12,22 @@ def set_correlation_id(correlation_id: str) -> None:
 def get_correlation_id() -> str | None:
     """Get correlation ID from current context."""
     return structlog.contextvars.get_contextvars().get("correlation_id")
+
+
+def ensure_correlation_id() -> str:
+    """Return the bound correlation ID, creating and binding one if there is none.
+
+    Flows that start outside a queue message — a bot update, a scheduler loop —
+    never bound an identifier, so their calls used to go out unlabelled. Binding
+    the generated one means the rest of that flow keeps the same identifier
+    instead of a fresh one per call.
+    """
+    correlation_id = get_correlation_id()
+    if correlation_id:
+        return correlation_id
+    correlation_id = str(uuid.uuid4())
+    set_correlation_id(correlation_id)
+    return correlation_id
 
 
 def clear_context() -> None:

@@ -6,8 +6,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.log_config.correlation import clear_context, set_correlation_id
+
 _INTERNAL_KEY = "test-internal-key"
-_INTERNAL_HEADERS = {"X-Internal-Key": _INTERNAL_KEY}
+_CORRELATION_ID = "corr-scheduler-test"
+# Both headers ride on every call: the transport creates the correlation id when
+# the caller bound none, so there is no request shape without it.
+_INTERNAL_HEADERS = {"X-Internal-Key": _INTERNAL_KEY, "X-Correlation-ID": _CORRELATION_ID}
+
+
+@pytest.fixture(autouse=True)
+def _correlation_context():
+    clear_context()
+    set_correlation_id(_CORRELATION_ID)
+    yield
+    clear_context()
 
 
 @pytest.fixture

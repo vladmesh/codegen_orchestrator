@@ -19,7 +19,9 @@ non-destructively (`docker logs` still works).
 ### Correlation ID propagation
 - `BaseMessage` (shared/contracts/base.py) auto-generates `correlation_id` per message
 - All consumers bind it via `bind_message_context()` on message receipt
-- All API clients inject `X-Correlation-ID` header in outgoing requests
+- The shared transport (`shared/clients/internal_api.py`) puts `X-Correlation-ID` on every internal
+  API request; a flow that bound none — a bot update, a scheduler loop — gets one created and bound
+  there, so the rest of that flow reuses it
 - API middleware binds it on receipt
 - Result: filter by `correlation_id` in Grafana → see full request flow across all services
 

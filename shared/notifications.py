@@ -12,9 +12,10 @@ from http import HTTPStatus
 import os
 
 import aiohttp
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 import structlog
 
+from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.user import UserDTO
 
 logger = structlog.get_logger(__name__)
@@ -167,24 +168,21 @@ async def notify_admins(message: str, level: str = "info") -> int:
     Raises:
         RuntimeError: If required configuration is missing or the users API
             returns a non-200 response.
-        aiohttp.ClientError: If the users API request fails.
-        TimeoutError: If the users API request times out.
+        httpx.RequestError: If the users API request fails or times out.
         ValidationError: If the users API response is not a valid user list.
     """
     config = _ensure_config()
 
-    # Get all users from API
+    # Get all users through the shared transport, so this read carries
+    # X-Internal-Key and X-Correlation-ID like every other internal API call.
+    client = InternalAPIClient(config["api_url"], timeout=5.0)
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{config['api_url']}/api/users", timeout=aiohttp.ClientTimeout(total=5)
-            ) as resp:
-                if resp.status != HTTPStatus.OK:
-                    raise RuntimeError(f"users API returned HTTP {resp.status}")
-
-                users = TypeAdapter(list[UserDTO]).validate_python(await resp.json())
-    except (aiohttp.ClientError, TimeoutError, ValidationError, RuntimeError):
-        raise
+        resp = await client.get_raw("users")
+        if resp.status_code != HTTPStatus.OK:
+            raise RuntimeError(f"users API returned HTTP {resp.status_code}")
+        users = TypeAdapter(list[UserDTO]).validate_python(resp.json())
+    finally:
+        await client.close()
 
     if not users:
         logger.warning("no_users_found", action="skip_notifications")
