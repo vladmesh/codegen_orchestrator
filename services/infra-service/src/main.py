@@ -21,6 +21,7 @@ from shared.contracts.queues.env_observation import (
 from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.log_config import setup_logging
+from shared.provisioning_policy import managed_time4vps_server_ids
 from shared.queues import ENV_OBSERVATION_QUEUE, INFRA_GROUP, PROVISIONER_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -283,6 +284,8 @@ async def run_env_observation_loop(client: RedisStreamClient) -> None:
 async def run_worker():
     """Main worker loop handling provisioning queue."""
     setup_logging(service_name="infra-service")
+    managed_ids = managed_time4vps_server_ids()
+    logger.info("time4vps_provisioning_policy_validated", managed_server_count=len(managed_ids))
 
     client = RedisStreamClient()
     await client.connect()

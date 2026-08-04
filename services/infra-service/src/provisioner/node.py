@@ -1,11 +1,11 @@
 """Provisioner node - main orchestration logic.
 
 Handles automated server provisioning:
-1. Checks SSH access
-2. Resets root password via Time4VPS API (if needed)
-3. Runs Ansible provisioning playbooks
-4. Updates server status
-5. Handles incident recovery with service redeployment
+1. Verifies managed status, provider allowlist, and provider ID/IP binding
+2. Checks SSH access without treating failure as reinstall authorization
+3. Reinstalls only after an explicit force-rebuild request
+4. Runs Ansible provisioning playbooks
+5. Updates server status and handles incident recovery
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import structlog
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerDTO
 from shared.notifications import notify_admins_best_effort
-from shared.provisioning_policy import time4vps_server_is_allowed
+from shared.provisioning_policy import server_is_provisioning_allowed
 
 if TYPE_CHECKING:
     from shared.clients.time4vps import Time4VPSClient
@@ -100,13 +100,13 @@ class ProvisionerNode(FunctionalNode):
     async def _init_time4vps_client(
         self,
         server_handle: str,
-        server_info: dict,
+        server_info: ServerDTO,
         state: dict,
-    ) -> tuple[Time4VPSClient | None, int | None, dict | None]:
-        """Initialize Time4VPS client and get server ID.
+    ) -> tuple[Time4VPSClient | None, dict | None]:
+        """Initialize Time4VPS and prove that provider ID and IP identify one server.
 
         Returns:
-            Tuple of (client, server_id, error_response).
+            Tuple of (client, error_response).
         """
         from shared.clients.time4vps import Time4VPSClient
 
@@ -118,7 +118,6 @@ class ProvisionerNode(FunctionalNode):
             await update_server_status(server_handle, "error")
             return (
                 None,
-                None,
                 {
                     "messages": [{"message": "❌ TIME4VPS credentials not configured"}],
                     "errors": state.get("errors", []) + ["Missing TIME4VPS credentials"],
@@ -126,27 +125,27 @@ class ProvisionerNode(FunctionalNode):
             )
 
         time4vps_client = Time4VPSClient(time4vps_username, time4vps_password)
+        server_id = int(server_info.provider_id)
+        details = await time4vps_client.get_server_details(server_id)
+        server_ip = server_info.public_ip or server_info.host
+        if details.ip and details.ip != server_ip:
+            logger.error(
+                "provisioning_provider_identity_mismatch",
+                server_handle=server_handle,
+                server_id=server_id,
+                database_ip=server_ip,
+                provider_ip=details.ip,
+            )
+            return None, {
+                "messages": [{"message": f"❌ Provider identity mismatch for {server_handle}."}],
+                "errors": state.get("errors", []) + ["Provider identity mismatch"],
+                "provisioning_result": {
+                    "status": "failed",
+                    "reason": "provider_identity_mismatch",
+                },
+            }
 
-        # Get Time4VPS server ID
-        server_id = (server_info.labels or {}).get("time4vps_id")
-        if server_id:
-            server_id = int(server_id)
-        else:
-            server_id = await time4vps_client.get_server_id_by_handle(server_handle)
-            if not server_id:
-                await update_server_status(server_handle, "error")
-                return (
-                    None,
-                    None,
-                    {
-                        "messages": [
-                            {"message": f"❌ Server {server_handle} not found in Time4VPS"}
-                        ],
-                        "errors": state.get("errors", []) + ["Server not found in Time4VPS"],
-                    },
-                )
-
-        return time4vps_client, server_id, None
+        return time4vps_client, None
 
     def _should_reinstall(
         self,
@@ -156,17 +155,14 @@ class ProvisionerNode(FunctionalNode):
         force_reinstall: bool,
     ) -> bool:
         """Determine if server needs OS reinstall."""
-        use_reinstall = False
-
         if self.ssh_manager.check_ssh_access(server_ip):
             logger.info("ssh_access_ok", server_handle=server_handle)
         else:
             logger.info("ssh_access_failed", server_handle=server_handle)
-            use_reinstall = True
 
-        if force_reinstall or server_status == "force_rebuild":
+        use_reinstall = force_reinstall or server_status == "force_rebuild"
+        if use_reinstall:
             logger.info("force_reinstall_requested", server_handle=server_handle)
-            use_reinstall = True
 
         return use_reinstall
 
@@ -309,12 +305,11 @@ class ProvisionerNode(FunctionalNode):
         """Run provisioner node.
 
         Orchestrates server provisioning:
-        1. Get server info
-        2. Check SSH access
-        3. Reset password or reinstall if needed
-        4. Run Ansible playbooks
-        5. Update server status
-        6. Handle incident recovery
+        1. Get and authorize server identity
+        2. Verify the provider still binds that ID to the stored IP
+        3. Reserve an attempt and update status
+        4. Run Ansible, reinstalling only after explicit force-rebuild
+        5. Handle incident recovery
         """
         server_handle = state.get("server_to_provision")
         is_recovery = state.get("is_incident_recovery", False)
@@ -334,7 +329,28 @@ class ProvisionerNode(FunctionalNode):
         server_ip = server_info.public_ip or server_info.host
         server_status = server_info.status or ""
         os_template = server_info.os_template or Provisioning.DEFAULT_OS_TEMPLATE
-        # Step 2: Atomically reserve an attempt before any external provisioning work.
+
+        if not server_is_provisioning_allowed(server_info):
+            logger.error(
+                "provisioning_server_not_allowed",
+                server_handle=server_handle,
+                server_id=server_info.provider_id,
+            )
+            return {
+                "messages": [{"message": f"❌ Server {server_handle} is not allowlisted."}],
+                "errors": state.get("errors", []) + ["Server is not allowlisted"],
+                "provisioning_result": {
+                    "status": "failed",
+                    "reason": "server_not_allowlisted",
+                },
+            }
+
+        # Step 2: Verify provider identity before reserving or writing any state.
+        time4vps_client, error = await self._init_time4vps_client(server_handle, server_info, state)
+        if error:
+            return error
+
+        # Step 3: Atomically reserve an attempt before provisioning work.
         try:
             reservation = await reserve_provisioning_attempt(
                 server_handle, PROVISIONING_MAX_RETRIES
@@ -376,31 +392,8 @@ class ProvisionerNode(FunctionalNode):
 
         provisioning_attempts, provisioning_episode_id = reservation
 
-        # Step 3: Update status
+        # Step 4: Update status
         await update_server_status(server_handle, "provisioning")
-
-        # Step 4: Initialize Time4VPS client
-        time4vps_client, server_id, error = await self._init_time4vps_client(
-            server_handle, server_info, state
-        )
-        if error:
-            return error
-
-        if not time4vps_server_is_allowed(server_id):
-            logger.error(
-                "provisioning_server_not_allowed",
-                server_handle=server_handle,
-                server_id=server_id,
-            )
-            await update_server_status(server_handle, "error")
-            return {
-                "messages": [{"message": f"❌ Server {server_handle} is not allowlisted."}],
-                "errors": state.get("errors", []) + ["Server is not allowlisted"],
-                "provisioning_result": {
-                    "status": "failed",
-                    "reason": "server_not_allowlisted",
-                },
-            }
 
         logger.info(
             "provisioning_start",
@@ -417,7 +410,7 @@ class ProvisionerNode(FunctionalNode):
             return await self._run_reinstall_path(
                 time4vps_client=time4vps_client,
                 server_handle=server_handle,
-                server_id=server_id,
+                server_id=int(server_info.provider_id),
                 server_ip=server_ip,
                 deploy_user=server_info.ssh_user,
                 os_template=os_template,

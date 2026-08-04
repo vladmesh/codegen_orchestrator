@@ -3,26 +3,24 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 import json
-import os
 import time
 
 import structlog
 
 from shared.clients.time4vps import Time4VPSAPIError, Time4VPSClient
 from shared.contracts.dto.incident import IncidentType
-from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
+from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
 from shared.notifications import notify_admins_best_effort
-from shared.provisioning_policy import managed_time4vps_server_ids
+from shared.provisioning_policy import (
+    managed_time4vps_server_ids,
+    server_is_provisioning_allowed,
+)
 from src.clients.api import api_client
 
 from .. import startup
 from .provisioner_trigger import publish_provisioner_trigger
 
 logger = structlog.get_logger()
-
-# Config
-GHOST_SERVERS = os.getenv("GHOST_SERVERS", "").split(",")
-GHOST_SERVERS = [ip.strip() for ip in GHOST_SERVERS if ip.strip()]
 
 # Label for the external dependency this worker depends on, stored in incident details.
 PROVIDER_DEPENDENCY = "time4vps_api"
@@ -132,6 +130,46 @@ async def sync_servers_worker():
         await asyncio.sleep(_sync_interval())
 
 
+async def _reconcile_existing_server(
+    existing: ServerDTO,
+    *,
+    server_id: int,
+    ip: str,
+    hostname: str,
+    should_manage: bool,
+) -> tuple[bool, tuple[str, int, bool, bool] | None]:
+    """Persist identity/policy drift without scheduling an existing server."""
+    update = ServerUpdate()
+    if existing.labels.get("provider_id") != str(server_id):
+        update.labels = {**existing.labels, "provider_id": str(server_id)}
+    if existing.public_ip != ip:
+        update.public_ip = ip
+    if existing.host != hostname:
+        update.host = hostname
+    if existing.status == ServerStatus.UNREACHABLE:
+        update.status = ServerStatus.ACTIVE if should_manage else ServerStatus.RESERVED
+        logger.info("server_reappeared", server_handle=existing.handle, server_ip=ip)
+
+    management_change = None
+    if existing.is_managed != should_manage:
+        update.is_managed = should_manage
+        management_change = (existing.handle, server_id, existing.is_managed, should_manage)
+        # Promotion grants eligibility but never schedules existing infrastructure.
+        if not should_manage:
+            update.status = ServerStatus.RESERVED
+    elif not should_manage and existing.status in {
+        ServerStatus.PENDING_SETUP,
+        ServerStatus.PROVISIONING,
+        ServerStatus.FORCE_REBUILD,
+    }:
+        update.status = ServerStatus.RESERVED
+
+    if not update.model_fields_set:
+        return False, management_change
+    await api_client.update_server(existing.handle, update)
+    return True, management_change
+
+
 async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
     """Sync basic server list - discover new, mark missing.
 
@@ -155,12 +193,19 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
     # An absent or empty allowlist intentionally means that no provider server is managed.
     managed_server_ids = managed_time4vps_server_ids()
 
-    # Fetch existing servers from API
+    # Provider ID is the stable identity. IP is only a fallback for legacy rows.
     db_servers_list = await api_client.get_servers()
-    db_servers = {s.public_ip: s for s in db_servers_list}
+    db_servers_by_provider_id = {
+        int(server.provider_id): server
+        for server in db_servers_list
+        if server.provider_id and server.provider_id.isascii() and server.provider_id.isdecimal()
+    }
+    legacy_servers_by_ip = {
+        server.public_ip: server for server in db_servers_list if server.provider_id is None
+    }
 
-    # Track new managed servers for notification
     new_managed_servers = []
+    management_changes: list[tuple[str, int, bool, bool]] = []
     discovered_count = 0
     updated_count = 0
     missing_count = 0
@@ -175,48 +220,23 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
             logger.warning(f"Server with IP {ip} has no server_id, skipping")
             continue
 
-        hostname = srv.domain
-        is_ghost = ip in GHOST_SERVERS
-        should_manage = server_id in managed_server_ids and not is_ghost
+        hostname = srv.domain or ip
+        should_manage = server_id in managed_server_ids
 
-        existing = db_servers.get(ip)
+        existing = db_servers_by_provider_id.get(server_id) or legacy_servers_by_ip.get(ip)
 
         if existing:
-            # Server exists - update if was missing
-            if (
-                existing.status == ServerStatus.UNREACHABLE
-            ):  # Assuming missing mapped to unreachable or needs status update
-                # Wait, original code checked status == "missing".
-                # ServerStatus has NEW, PENDING_SETUP, ACTIVE, UNREACHABLE, MAINTENANCE.
-                # It does NOT have MISSING.
-                # Original code used strings.
-                # Let's assume UNREACHABLE is used for missing? Or maybe add MISSING to enum?
-                # The contracts/dto/server.py does NOT have MISSING.
-                # Let's use UNREACHABLE for now or just check if it was marked as such.
-                pass
-
-            # Correction: Original code set status="missing". I should probably add
-            # MISSING to ServerStatus or use UNREACHABLE.
-            # Choosing UNREACHABLE for now as closest semantic match for "not found in provider".
-            if existing.status == ServerStatus.UNREACHABLE:
-                await api_client.update_server(
-                    existing.handle, ServerUpdate(status=ServerStatus.ACTIVE)
-                )
+            was_updated, management_change = await _reconcile_existing_server(
+                existing,
+                server_id=server_id,
+                ip=ip,
+                hostname=hostname,
+                should_manage=should_manage,
+            )
+            if was_updated:
                 updated_count += 1
-                logger.info("server_reappeared", server_ip=ip)
-            update = ServerUpdate()
-            if existing.labels.get("provider_id") != str(server_id):
-                update.labels = {**existing.labels, "provider_id": str(server_id)}
-
-            if existing.is_managed != should_manage:
-                update.is_managed = should_manage
-                update.status = (
-                    ServerStatus.PENDING_SETUP if should_manage else ServerStatus.RESERVED
-                )
-
-            if update.model_dump(exclude_none=True):
-                await api_client.update_server(existing.handle, update)
-                updated_count += 1
+            if management_change:
+                management_changes.append(management_change)
         else:
             # New Server Discovered
             is_managed = should_manage
@@ -233,7 +253,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
             else:
                 status = ServerStatus.RESERVED
                 logger.info(
-                    "ghost_server_discovered",
+                    "unmanaged_server_discovered",
                     server_ip=ip,
                     server_handle=f"vps-{server_id}",
                 )
@@ -252,7 +272,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
                 "server_discovered",
                 server_ip=ip,
                 server_handle=f"vps-{server_id}",
-                is_ghost=is_ghost,
+                is_managed=is_managed,
             )
             discovered_count += 1
 
@@ -260,15 +280,53 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
             if is_managed:
                 new_managed_servers.append(new_server)
 
-    # Check for missing servers
-    api_ips = {s.ip for s in api_servers if s.ip}
-    for ip, srv in db_servers.items():
-        if ip not in api_ips and srv.status != ServerStatus.UNREACHABLE:
+    api_server_ids = {server.id for server in api_servers}
+    api_ips = {server.ip for server in api_servers if server.ip}
+    for server in db_servers_list:
+        is_missing = (
+            int(server.provider_id) not in api_server_ids
+            if server.provider_id
+            and server.provider_id.isascii()
+            and server.provider_id.isdecimal()
+            else server.public_ip not in api_ips
+        )
+        if is_missing and server.status != ServerStatus.UNREACHABLE:
             await api_client.update_server(
-                srv.handle, ServerUpdate(status=ServerStatus.UNREACHABLE)
+                server.handle, ServerUpdate(status=ServerStatus.UNREACHABLE)
             )
             missing_count += 1
-            logger.warning("server_missing_from_time4vps", server_ip=ip)
+            logger.warning(
+                "server_missing_from_time4vps",
+                server_handle=server.handle,
+                server_ip=server.public_ip,
+            )
+
+    for handle, provider_id, was_managed, is_managed in management_changes:
+        logger.warning(
+            "server_management_changed",
+            server_handle=handle,
+            provider_id=provider_id,
+            was_managed=was_managed,
+            is_managed=is_managed,
+            reason="provider_id_allowlist",
+        )
+        await notify_admins_best_effort(
+            f"Server management changed for *{handle}* (provider ID {provider_id}): "
+            f"managed={was_managed} → managed={is_managed}. "
+            "Existing servers are never auto-provisioned by this change.",
+            level="warning",
+            component="server_sync",
+            server_handle=handle,
+        )
+
+    demoted = [change for change in management_changes if change[2] and not change[3]]
+    if len(demoted) > 1:
+        await notify_admins_best_effort(
+            f"Critical provisioning policy change: {len(demoted)} servers were demoted in one "
+            "sync cycle. Check TIME4VPS_MANAGED_SERVER_IDS before continuing operations.",
+            level="critical",
+            component="server_sync",
+        )
 
     # Send notifications for new managed servers
     for server in new_managed_servers:
@@ -409,11 +467,12 @@ async def _check_provisioning_triggers() -> int:
     all_servers = await api_client.get_servers()
 
     # 1. FORCE_REBUILD
-    force_rebuild_servers = [
-        s for s in all_servers if s.is_managed and s.status == ServerStatus.FORCE_REBUILD
-    ]
+    force_rebuild_servers = [s for s in all_servers if s.status == ServerStatus.FORCE_REBUILD]
 
     for server in force_rebuild_servers:
+        if not server_is_provisioning_allowed(server):
+            logger.warning("provisioning_trigger_not_authorized", server_handle=server.handle)
+            continue
         if (
             server.provisioning_started_at
             and (now - server.provisioning_started_at) < trigger_cooldown
@@ -439,8 +498,8 @@ async def _check_provisioning_triggers() -> int:
         )
 
         # Trigger provisioner
-        await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
-        triggers_published += 1
+        if await publish_provisioner_trigger(server.handle, is_incident_recovery=False):
+            triggers_published += 1
 
         # Notify admins
         await notify_admins_best_effort(
@@ -451,11 +510,12 @@ async def _check_provisioning_triggers() -> int:
         )
 
     # 2. PENDING_SETUP
-    pending_servers = [
-        s for s in all_servers if s.is_managed and s.status == ServerStatus.PENDING_SETUP
-    ]
+    pending_servers = [s for s in all_servers if s.status == ServerStatus.PENDING_SETUP]
 
     for server in pending_servers:
+        if not server_is_provisioning_allowed(server):
+            logger.warning("provisioning_trigger_not_authorized", server_handle=server.handle)
+            continue
         if (
             server.provisioning_started_at
             and (now - server.provisioning_started_at) < trigger_cooldown
@@ -478,15 +538,16 @@ async def _check_provisioning_triggers() -> int:
         )
 
         # Trigger provisioner
-        await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
-        triggers_published += 1
+        if await publish_provisioner_trigger(server.handle, is_incident_recovery=False):
+            triggers_published += 1
 
     # 3. Stuck Provisioning (PROVISIONING status)
-    provisioning_servers = [
-        s for s in all_servers if s.is_managed and s.status == ServerStatus.PROVISIONING
-    ]
+    provisioning_servers = [s for s in all_servers if s.status == ServerStatus.PROVISIONING]
 
     for server in provisioning_servers:
+        if not server_is_provisioning_allowed(server):
+            logger.warning("provisioning_trigger_not_authorized", server_handle=server.handle)
+            continue
         if server.provisioning_started_at is None:
             # Should have started_at if status is provisioning, but fix if missing
             await api_client.update_server(server.handle, ServerUpdate(provisioning_started_at=now))
@@ -507,8 +568,8 @@ async def _check_provisioning_triggers() -> int:
         # Reset started_at to now for retry
         await api_client.update_server(server.handle, ServerUpdate(provisioning_started_at=now))
 
-        await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
-        triggers_published += 1
+        if await publish_provisioner_trigger(server.handle, is_incident_recovery=False):
+            triggers_published += 1
 
     return triggers_published
 

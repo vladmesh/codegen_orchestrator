@@ -6,12 +6,12 @@
   provider discovery no longer treats every VPS in the account as an orchestrator target. Only IDs
   explicitly listed in `TIME4VPS_MANAGED_SERVER_IDS` become managed and enter `pending_setup`;
   absent configuration denies all, and every other server is recorded as unmanaged/reserved.
-  Existing records are reconciled against the allowlist, all scheduler trigger paths now require
-  `is_managed=true`, and infra-service rejects unmanaged records before reserving an attempt. The
-  infra-service verifies the provider ID before any provisioning path, and the destructive operation
-  repeats that check immediately before calling the Time4VPS OS reinstall API, so a stale status or
-  manually queued message cannot bypass the policy. The legacy
-  IP-based `GHOST_SERVERS` list remains an additional deny rule, not an authorization source.
+  Existing records are reconciled by immutable provider ID rather than IP, management changes alert
+  admins, and promotion of an existing row never schedules work. Every scheduler publication path,
+  infra-service and the destructive operation boundary enforce the same policy before state writes.
+  A failed SSH probe no longer selects reinstall: only an explicit force-rebuild request can do so.
+  `GHOST_SERVERS` is removed, the production workflow preserves the required allowlist secret, and
+  provider ID/IP binding is revalidated immediately before provisioning.
 
 - The last eight duplicated request schemas have one definition each, and no class name is now
   defined in both `services/api/src/schemas/*` and `shared/contracts/dto/*`. `ApplicationCreate`,

@@ -68,21 +68,18 @@ async def provision_monitoring_baseline(
 async def reset_server_password(
     time4vps_client: Time4VPSClient,
     server_handle: str,
+    server_id: int,
 ) -> str | None:
     """Reset server root password and wait for new password.
 
     Args:
         time4vps_client: Time4VPS API client
-        server_handle: Server handle to reset
+        server_handle: Server handle used only for logs
+        server_id: Immutable Time4VPS provider ID already authorized by the caller
 
     Returns:
         New root password if successful, None otherwise
     """
-    server_id = await time4vps_client.get_server_id_by_handle(server_handle)
-    if not server_id:
-        logger.error("password_reset_server_not_found", server_handle=server_handle)
-        return None
-
     try:
         logger.info("password_reset_triggered", server_handle=server_handle, server_id=server_id)
         task_id = await time4vps_client.reset_password(server_id)
@@ -156,6 +153,23 @@ async def reinstall_and_provision(  # noqa: PLR0913
         )
         return False, message
 
+    # Close the time-of-check/time-of-use gap immediately before the destructive call.
+    # Provider ID is authoritative, while the IP proves it is still the DB target.
+    details = await time4vps_client.get_server_details(server_id)
+    if details.ip and details.ip != server_ip:
+        message = (
+            f"Provider identity mismatch for server {server_id}: "
+            f"expected {server_ip}, provider reports {details.ip}; refusing OS reinstall"
+        )
+        logger.error(
+            "os_reinstall_provider_identity_mismatch",
+            server_handle=server_handle,
+            server_id=server_id,
+            database_ip=server_ip,
+            provider_ip=details.ip,
+        )
+        return False, message
+
     logger.info("os_reinstall_start", server_handle=server_handle, server_id=server_id)
 
     try:
@@ -188,7 +202,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
 
         if not password:
             logger.warning("Could not extract password from reinstall. Trying explicit reset...")
-            password = await reset_server_password(time4vps_client, server_handle)
+            password = await reset_server_password(time4vps_client, server_handle, server_id)
 
         if not password:
             return False, "Could not obtain root password after reinstall"

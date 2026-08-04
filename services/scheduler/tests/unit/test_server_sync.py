@@ -135,6 +135,69 @@ async def test_sync_server_list_demotes_existing_unlisted_pending_server(
     update = mock_api_client.update_server.call_args.args[1]
     assert update.is_managed is False
     assert update.status == ServerStatus.RESERVED
+    mock_notify_admins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_server_list_promotes_existing_server_without_scheduling_it(
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
+):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    api_server = MagicMock(ip="1.2.3.4", id=1001, domain="personal.example")
+    existing = ServerDTO(
+        handle="vps-1001",
+        host="personal.example",
+        public_ip="1.2.3.4",
+        ssh_user="root",
+        status=ServerStatus.RESERVED,
+        provider_id="1001",
+        is_managed=False,
+        labels={"provider_id": "1001"},
+        created_at=datetime.now(UTC),
+    )
+    mock_time4vps_client.get_servers.return_value = [api_server]
+    mock_api_client.get_servers = AsyncMock(return_value=[existing])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.update_server = AsyncMock()
+
+    await server_sync._sync_server_list(mock_time4vps_client)
+
+    update = mock_api_client.update_server.call_args.args[1]
+    assert update.is_managed is True
+    assert "status" not in update.model_fields_set
+    mock_notify_admins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_server_list_tracks_existing_server_by_provider_id_when_ip_changes(
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
+):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    api_server = MagicMock(ip="1.2.3.99", id=1001, domain="renamed.example")
+    existing = ServerDTO(
+        handle="vps-1001",
+        host="old.example",
+        public_ip="1.2.3.4",
+        ssh_user="root",
+        status=ServerStatus.READY,
+        provider_id="1001",
+        is_managed=True,
+        labels={"provider_id": "1001"},
+        created_at=datetime.now(UTC),
+    )
+    mock_time4vps_client.get_servers.return_value = [api_server]
+    mock_api_client.get_servers = AsyncMock(return_value=[existing])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.update_server = AsyncMock()
+    mock_api_client.create_server = AsyncMock()
+
+    discovered, updated, missing = await server_sync._sync_server_list(mock_time4vps_client)
+
+    assert (discovered, updated, missing) == (0, 1, 0)
+    update = mock_api_client.update_server.call_args.args[1]
+    assert update.public_ip == "1.2.3.99"
+    assert update.host == "renamed.example"
+    mock_api_client.create_server.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -178,8 +241,9 @@ async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_
 
 @pytest.mark.asyncio
 async def test_check_provisioning_triggers_detects_force_rebuild(
-    mock_api_client, mock_notify_admins
+    mock_api_client, mock_notify_admins, monkeypatch
 ):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "100")
     # Setup
     server = ServerDTO(
         handle="vps-1",
@@ -197,6 +261,7 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
     with patch(
         "src.tasks.server_sync.publish_provisioner_trigger", new_callable=AsyncMock
     ) as mock_trigger:
+        mock_trigger.return_value = True
         await server_sync._check_provisioning_triggers()
 
         # Verification
@@ -230,7 +295,31 @@ async def test_check_provisioning_triggers_skips_unmanaged_server(
 
 
 @pytest.mark.asyncio
-async def test_force_rebuild_sweep_continues_after_first_notification_failure(mock_api_client):
+async def test_check_provisioning_triggers_skips_stale_managed_row_outside_allowlist(
+    mock_api_client, mock_notify_admins, monkeypatch
+):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "200")
+    server = _ready_server("stale").model_copy(
+        update={"status": ServerStatus.FORCE_REBUILD, "provisioning_started_at": None}
+    )
+    mock_api_client.get_servers = AsyncMock(return_value=[server])
+    mock_api_client.update_server = AsyncMock()
+
+    with patch(
+        "src.tasks.server_sync.publish_provisioner_trigger", new_callable=AsyncMock
+    ) as trigger:
+        published = await server_sync._check_provisioning_triggers()
+
+    assert published == 0
+    trigger.assert_not_awaited()
+    mock_api_client.update_server.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_force_rebuild_sweep_continues_after_first_notification_failure(
+    mock_api_client, monkeypatch
+):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "100")
     first = _ready_server("first").model_copy(update={"status": ServerStatus.FORCE_REBUILD})
     second = _ready_server("second").model_copy(update={"status": ServerStatus.FORCE_REBUILD})
     mock_api_client.get_servers = AsyncMock(return_value=[first, second])
@@ -242,6 +331,7 @@ async def test_force_rebuild_sweep_continues_after_first_notification_failure(mo
         ) as trigger,
         patch("shared.notifications.notify_admins", new_callable=AsyncMock) as notify,
     ):
+        trigger.return_value = True
         notify.side_effect = RuntimeError("users API unavailable")
         published = await server_sync._check_provisioning_triggers()
 
@@ -269,7 +359,9 @@ def _ready_server(handle: str) -> ServerDTO:
         public_ip="1.1.1.1",
         ssh_user="root",
         status=ServerStatus.READY,
+        provider_id="100",
         is_managed=True,
+        labels={"provider_id": "100"},
         created_at=datetime.now(UTC),
     )
 

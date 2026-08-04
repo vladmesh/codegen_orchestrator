@@ -7,6 +7,7 @@ exactly like it fails on the live stack.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -14,7 +15,7 @@ import httpx
 import pytest
 import respx
 
-from shared.contracts.dto.server import ServerStatus
+from shared.contracts.dto.server import ServerDTO, ServerStatus
 
 API_BASE_URL = "http://127.0.0.1:9"
 SERVERS_URL = f"{API_BASE_URL}/api/servers/"
@@ -29,7 +30,8 @@ def _server_row(handle: str = "vps-pending", *, is_managed: bool = True) -> dict
         "ssh_user": "root",
         "status": ServerStatus.PENDING_SETUP.value,
         "is_managed": is_managed,
-        "labels": {},
+        "provider_id": "1001",
+        "labels": {"provider_id": "1001"},
         "provisioning_attempts": 0,
         "created_at": "2026-07-28T00:00:00Z",
         "updated_at": "2026-07-28T00:00:00Z",
@@ -77,7 +79,7 @@ async def test_pending_server_gets_a_trigger(internal_api):
     publish.assert_awaited_once_with("vps-pending", is_incident_recovery=False)
 
 
-async def test_pending_unmanaged_server_does_not_get_startup_trigger(api_client_reset):
+async def test_pending_rows_are_rechecked_by_safe_publisher(api_client_reset):
     def handler(request: httpx.Request) -> httpx.Response:
         assert _authorized(request)
         return httpx.Response(200, json=[_server_row(is_managed=False)])
@@ -93,7 +95,7 @@ async def test_pending_unmanaged_server_does_not_get_startup_trigger(api_client_
 
         await provisioner_trigger.retry_pending_servers()
 
-    publish.assert_not_awaited()
+    publish.assert_awaited_once_with("vps-pending", is_incident_recovery=False)
 
 
 async def test_wrong_internal_key_fails_loudly(internal_api, monkeypatch):
@@ -121,14 +123,72 @@ def test_missing_internal_key_fails_at_construction(monkeypatch):
         SchedulerAPIClient()
 
 
-async def test_publish_failure_propagates():
+def _server(*, is_managed: bool = True, provider_id: str = "1001") -> ServerDTO:
+    return ServerDTO(
+        handle="vps-pending",
+        host="pending.example.com",
+        public_ip="203.0.113.7",
+        ssh_user="root",
+        status=ServerStatus.PENDING_SETUP,
+        is_managed=is_managed,
+        provider_id=provider_id,
+        labels={"provider_id": provider_id},
+        created_at=datetime.now(UTC),
+    )
+
+
+async def test_publish_rejects_unmanaged_before_opening_redis(monkeypatch):
+    from src.tasks import provisioner_trigger
+
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    with (
+        patch.object(
+            provisioner_trigger.api_client,
+            "get_server",
+            AsyncMock(return_value=_server(is_managed=False)),
+        ),
+        patch.object(provisioner_trigger.redis, "from_url") as redis_factory,
+    ):
+        published = await provisioner_trigger.publish_provisioner_trigger("vps-pending")
+
+    assert published is False
+    redis_factory.assert_not_called()
+
+
+async def test_publish_rejects_stale_managed_row_outside_allowlist(monkeypatch):
+    from src.tasks import provisioner_trigger
+
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "2002")
+    with (
+        patch.object(
+            provisioner_trigger.api_client,
+            "get_server",
+            AsyncMock(return_value=_server()),
+        ),
+        patch.object(provisioner_trigger.redis, "from_url") as redis_factory,
+    ):
+        published = await provisioner_trigger.publish_provisioner_trigger("vps-pending")
+
+    assert published is False
+    redis_factory.assert_not_called()
+
+
+async def test_publish_failure_propagates(monkeypatch):
     """A trigger that was not published must not be reported as published."""
     from src.tasks import provisioner_trigger
 
     broken_redis = AsyncMock()
     broken_redis.publish.side_effect = ConnectionError("redis is down")
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
-    with patch.object(provisioner_trigger.redis, "from_url", return_value=broken_redis):
+    with (
+        patch.object(
+            provisioner_trigger.api_client,
+            "get_server",
+            AsyncMock(return_value=_server()),
+        ),
+        patch.object(provisioner_trigger.redis, "from_url", return_value=broken_redis),
+    ):
         with pytest.raises(ConnectionError):
             await provisioner_trigger.publish_provisioner_trigger("vps-pending")
 

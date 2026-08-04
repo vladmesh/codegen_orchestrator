@@ -47,12 +47,15 @@ by itself authorize provisioning.
 To adopt a new blank target:
 
 1. Read its immutable provider ID from the Time4VPS account and verify the target by both ID and IP.
-2. Add only that ID to `TIME4VPS_MANAGED_SERVER_IDS` in the orchestrator `.env`.
-3. Recreate `scheduler` and `infra-service`, then watch the first server-sync and provisioning logs.
+2. Set the production GitHub secret `TIME4VPS_MANAGED_SERVER_IDS` to the complete allowlist and run
+   the deploy workflow. The workflow rewrites the server `.env`; do not edit it by hand.
+3. A brand-new allowlisted provider server enters `pending_setup`. Adding an existing inventory row
+   to the allowlist only marks it managed and sends an alert; it does not schedule work.
+4. If a verified blank server has no working orchestrator SSH access, request `force-rebuild`
+   explicitly through the admin API and watch the provisioning logs.
 
-Adding an ID authorizes automatic provisioning on the next sync. Never put a personal, development,
-or already populated server in this list. `GHOST_SERVERS` remains a legacy IP denylist for defense
-in depth, but it is not the authorization mechanism: IPs can change after a reinstall.
+Never put a personal, development, or already populated server in this list. A failed SSH probe alone
+never authorizes reinstall; only an explicit `force-rebuild` request does.
 
 ## Monitoring baseline for adopted servers
 
@@ -167,7 +170,6 @@ the key's verdict; every access guard asks it.
 | `SECRETS_ENCRYPTION_KEY` | Fernet key for encrypting project secrets |
 | `ORCHESTRATOR_HOSTNAME` | Public hostname (for Caddy TLS, registry) |
 | `TIME4VPS_MANAGED_SERVER_IDS` | Required allowlist of provider IDs the orchestrator may provision or reinstall; empty denies all |
-| `GHOST_SERVERS` | Legacy IP denylist applied in addition to the provider-ID allowlist |
 | `REGISTRY_USER` | Docker registry basic auth user |
 | `REGISTRY_PASSWORD` | Docker registry password |
 | `REGISTRY_PASSWORD_HASH` | Bcrypt hash of registry password (for Caddy) |

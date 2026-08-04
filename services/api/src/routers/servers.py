@@ -19,6 +19,7 @@ from shared.contracts.dto.server import (
 )
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
+from shared.provisioning_policy import time4vps_server_is_allowed
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
@@ -348,6 +349,8 @@ async def update_server(
             raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
 
     allowed_fields = {
+        "host",
+        "public_ip",
         "status",
         "notes",
         "is_managed",
@@ -401,6 +404,12 @@ async def force_rebuild_server(
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
+
+    if not server.is_managed or not time4vps_server_is_allowed(server.provider_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Server is not authorized for provisioning",
+        )
 
     server.status = ServerStatus.FORCE_REBUILD.value
     await db.commit()

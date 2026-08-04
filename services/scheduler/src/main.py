@@ -15,6 +15,7 @@ import structlog
 
 from shared.config_store import ConfigStoreUnavailableError
 from shared.log_config import setup_logging
+from shared.provisioning_policy import managed_time4vps_server_ids
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from shared.redis_client import RedisStreamClient
 
@@ -100,7 +101,9 @@ async def provisioner_results_worker():
 async def main():
     """Run all background workers concurrently."""
     setup_logging(service_name="scheduler")
+    managed_ids = managed_time4vps_server_ids()
     logger.info("scheduler_started")
+    logger.info("time4vps_provisioning_policy_validated", managed_server_count=len(managed_ids))
 
     # Validate all required system configs before starting workers.
     # The API can briefly be unavailable while a compose restart is in progress.

@@ -10,6 +10,7 @@ import redis.asyncio as redis
 import structlog
 
 from shared.contracts.dto.server import ServerStatus
+from shared.provisioning_policy import server_is_provisioning_allowed
 from src.clients.api import api_client
 from src.config import get_settings
 
@@ -23,7 +24,9 @@ REDIS_URL = _settings.redis_url
 PROVISIONER_TRIGGER_CHANNEL = "provisioner:trigger"
 
 
-async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: bool = False):
+async def publish_provisioner_trigger(
+    server_handle: str, is_incident_recovery: bool = False
+) -> bool:
     """Publish a provisioning trigger event to Redis.
 
     This is called by health_checker and server_sync workers.
@@ -33,6 +36,16 @@ async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: 
         server_handle: Server handle to provision
         is_incident_recovery: True if this is incident recovery
     """
+    server = await api_client.get_server(server_handle)
+    if not server_is_provisioning_allowed(server):
+        logger.warning(
+            "provisioner_trigger_not_authorized",
+            server_handle=server_handle,
+            provider_id=server.provider_id,
+            is_managed=server.is_managed,
+        )
+        return False
+
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
     try:
@@ -50,6 +63,7 @@ async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: 
             server_handle=server_handle,
             is_incident_recovery=is_incident_recovery,
         )
+        return True
     except Exception as e:
         logger.error(
             "provisioner_trigger_publish_failed",
@@ -82,10 +96,10 @@ async def retry_pending_servers():
 
     logger.info("retry_pending_servers_found", count=len(servers))
 
-    managed_servers = [server for server in servers if server.is_managed]
+    triggered = 0
+    for server in servers:
+        if await publish_provisioner_trigger(server.handle, is_incident_recovery=False):
+            triggered += 1
+            logger.info("retry_pending_server_triggered", server_handle=server.handle)
 
-    for server in managed_servers:
-        await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
-        logger.info("retry_pending_server_triggered", server_handle=server.handle)
-
-    logger.info("retry_pending_servers_complete", triggered=len(managed_servers))
+    logger.info("retry_pending_servers_complete", triggered=triggered)

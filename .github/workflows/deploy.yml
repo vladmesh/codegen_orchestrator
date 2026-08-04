@@ -36,6 +36,7 @@ jobs:
           REQUIRED_GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           REQUIRED_LOKI_PUSH_USER: ${{ secrets.LOKI_PUSH_USER }}
           REQUIRED_LOKI_PUSH_PASSWORD_HASH: ${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
+          REQUIRED_TIME4VPS_MANAGED_SERVER_IDS: ${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
         run: |
           set -euo pipefail
           missing=()
@@ -49,7 +50,8 @@ jobs:
             REQUIRED_GRAFANA_DB_PASSWORD \
             REQUIRED_GRAFANA_ADMIN_PASSWORD \
             REQUIRED_LOKI_PUSH_USER \
-            REQUIRED_LOKI_PUSH_PASSWORD_HASH
+            REQUIRED_LOKI_PUSH_PASSWORD_HASH \
+            REQUIRED_TIME4VPS_MANAGED_SERVER_IDS
           do
             if [ -z "${!name}" ]; then
               missing+=("${name#REQUIRED_}")
@@ -106,7 +108,7 @@ jobs:
 
             # Infrastructure
             ORCHESTRATOR_HOSTNAME=${{ secrets.ORCHESTRATOR_HOSTNAME }}
-            GHOST_SERVERS=${{ secrets.GHOST_SERVERS }}
+            TIME4VPS_MANAGED_SERVER_IDS=${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
 
             # Registry
             REGISTRY_USER=${{ secrets.REGISTRY_USER }}
