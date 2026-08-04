@@ -39,9 +39,16 @@ INTERNAL_API_MARKERS = (
     "api_url",
 )
 
-# httpx clients are how the internal API is reached; a module that names the
-# internal API base URL and still builds one is a second transport.
-HTTPX_CLIENT_NAMES = frozenset({"AsyncClient", "Client"})
+# The client classes of every HTTP library in the tree. A module that builds one
+# of these aimed at the internal API is a second transport. Which library a name
+# came from is resolved from the module's imports, so `import httpx as h`,
+# `from httpx import AsyncClient` and `from aiohttp import ClientSession as S`
+# are the same finding as `httpx.AsyncClient` — the rule is about what the code
+# does, not about how it spelled its import.
+HTTP_CLIENT_CLASSES = {
+    "httpx": frozenset({"AsyncClient", "Client"}),
+    "aiohttp": frozenset({"ClientSession"}),
+}
 
 # Anything that puts a request on the wire. Flagged when its URL argument comes
 # from the internal API base URL, whatever library it belongs to.
@@ -53,8 +60,9 @@ HTTP_VERBS = frozenset(
 TRANSPORT_MODULE = SHARED / "clients" / "internal_api.py"
 
 # The live-stand cleanup path sends only X-Internal-Key. It reaches a live host,
-# which card 1144 left out of scope; it is filed as its own issue rather than
-# hidden, and this is the only entry here.
+# which card 1144 left out of scope; the exemption is recorded in the sprint
+# entry and is to be filed as an issue at closing, and this is the only entry
+# here.
 DEFERRED_OFFENDERS = (SHARED / "live_harness_cleanup.py",)
 
 CLIENT_CLASSES = {
@@ -101,31 +109,97 @@ def _internal_api_url_names(tree: ast.AST) -> set[str]:
     return tainted
 
 
+def _http_library_imports(tree: ast.AST) -> tuple[dict[str, str], dict[str, str]]:
+    """What the module's own names refer to, for the HTTP libraries it imported.
+
+    Returns the local names bound to a library module (`import httpx as h` gives
+    `h -> httpx`) and the local names bound to one of its client classes
+    (`from aiohttp import ClientSession as S` gives `S -> aiohttp.ClientSession`).
+    """
+    module_aliases: dict[str, str] = {}
+    class_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in HTTP_CLIENT_CLASSES:
+                    module_aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module in HTTP_CLIENT_CLASSES:
+            for alias in node.names:
+                if alias.name in HTTP_CLIENT_CLASSES[node.module]:
+                    class_aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return module_aliases, class_aliases
+
+
+def _client_class_built(call: ast.Call, module_aliases: dict, class_aliases: dict) -> str | None:
+    """The HTTP client class this call constructs, whatever name it was given."""
+    func = call.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        library = module_aliases.get(func.value.id)
+        if library and func.attr in HTTP_CLIENT_CLASSES[library]:
+            return f"{library}.{func.attr}"
+        return None
+    if isinstance(func, ast.Name):
+        return class_aliases.get(func.id)
+    return None
+
+
+def _argument_names_the_internal_api(call: ast.Call, tainted: set[str]) -> bool:
+    for argument in [*call.args, *(kw.value for kw in call.keywords)]:
+        if _names_a_marker(ast.unparse(argument)):
+            return True
+        if isinstance(argument, ast.Name) and argument.id in tainted:
+            return True
+    return False
+
+
+def _sends_an_internal_api_path(tree: ast.AST) -> bool:
+    """Whether some request in the module asks for a path of the internal API.
+
+    A client built without a target takes one per request, so `/api/...` on a
+    request is what says the client it was built from is aimed at the internal
+    API rather than at some external service.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in HTTP_VERBS:
+            continue
+        for argument in [*node.args, *(kw.value for kw in node.keywords)]:
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                if argument.value.lstrip("/").startswith("api/"):
+                    return True
+    return False
+
+
 def find_raw_internal_api_calls(source: str, label: str) -> list[str]:
     """Report every raw HTTP call to the internal API in one module.
 
-    Two shapes count: a module that names the internal API base URL and builds
-    its own httpx client, and any request whose URL argument comes from that
+    Two shapes count: a module that builds its own HTTP client aimed at the
+    internal API, and any request whose URL argument comes from the internal API
     base URL — including through a local variable, and including libraries other
-    than httpx.
+    than httpx. Both are read off what the code does: the client class is
+    resolved through the module's imports, so no spelling of the import hides
+    the first shape.
     """
     tree = ast.parse(source)
     module_talks_to_internal_api = _names_a_marker(source)
     tainted = _internal_api_url_names(tree)
+    module_aliases, class_aliases = _http_library_imports(tree)
+    asks_for_internal_paths = module_talks_to_internal_api and _sends_an_internal_api_path(tree)
     offenders = []
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
+
+        built = _client_class_built(node, module_aliases, class_aliases)
+        if built is not None:
+            if _argument_names_the_internal_api(node, tainted) or asks_for_internal_paths:
+                offenders.append(f"{label}:{node.lineno} builds {built}")
+            continue
+
         func = node.func
-        if not isinstance(func, ast.Attribute):
-            continue
-
-        if func.attr in HTTPX_CLIENT_NAMES and module_talks_to_internal_api:
-            offenders.append(f"{label}:{node.lineno} builds httpx.{func.attr}")
-            continue
-
-        if func.attr not in HTTP_VERBS:
+        if not isinstance(func, ast.Attribute) or func.attr not in HTTP_VERBS:
             continue
         arguments = [*node.args, *(kw.value for kw in node.keywords)]
         for argument in arguments:
@@ -209,6 +283,92 @@ def test_the_guard_is_a_rule_and_not_a_list_of_known_files(tmp_path):
         "        return await client.get('/api/v1/orders', headers={'X-Token': token})\n"
     )
     assert not find_raw_internal_api_calls(external, "shared/clients/billing.py")
+
+
+@pytest.mark.parametrize(
+    ("form", "module"),
+    [
+        (
+            "from-import",
+            "from httpx import AsyncClient\n"
+            "\n"
+            "async def read_users(api_base_url: str):\n"
+            "    async with AsyncClient(base_url=api_base_url) as client:\n"
+            "        return await client.get('/api/users')\n",
+        ),
+        (
+            "from-import aliased",
+            "from httpx import Client as HTTP\n"
+            "\n"
+            "def read_users(api_base_url: str):\n"
+            "    with HTTP(base_url=api_base_url) as client:\n"
+            "        return client.get('/api/users')\n",
+        ),
+        (
+            "module alias",
+            "import httpx as h\n"
+            "\n"
+            "async def read_users(api_base_url: str):\n"
+            "    async with h.AsyncClient(base_url=api_base_url) as client:\n"
+            "        return await client.get('/api/users')\n",
+        ),
+        (
+            "aiohttp session with a base url",
+            "from aiohttp import ClientSession\n"
+            "\n"
+            "async def read_users(api_url: str):\n"
+            "    async with ClientSession(base_url=api_url) as session:\n"
+            "        async with session.get('/api/users') as resp:\n"
+            "            return await resp.json()\n",
+        ),
+        (
+            "aiohttp module alias",
+            "import aiohttp as web\n"
+            "\n"
+            "async def read_users(api_url: str):\n"
+            "    async with web.ClientSession(base_url=api_url) as session:\n"
+            "        async with session.get('/api/users') as resp:\n"
+            "            return await resp.json()\n",
+        ),
+        (
+            "base url through a local name",
+            "import httpx\n"
+            "import os\n"
+            "\n"
+            "async def read_users():\n"
+            "    base = os.environ['API_BASE_URL']\n"
+            "    async with httpx.AsyncClient(base_url=base) as client:\n"
+            "        return await client.get('/api/users')\n",
+        ),
+    ],
+)
+def test_the_guard_does_not_depend_on_the_shape_of_the_import(form: str, module: str):
+    """Importing the client class by name is the same bypass as reaching for it.
+
+    The guard used to match `<something>.AsyncClient`, so `from httpx import
+    AsyncClient` walked past it, and `aiohttp` was only ever caught through the
+    URL of a request. What the module does is the rule; how it spelled the import
+    is not part of it.
+    """
+    assert find_raw_internal_api_calls(module, "shared/newcomer.py"), form
+
+
+def test_a_session_aimed_at_another_service_is_not_a_finding():
+    """`shared/notifications.py`: reads the internal API, posts to Telegram."""
+    telegram = (
+        "import aiohttp\n"
+        "\n"
+        "from shared.clients.internal_api import InternalAPIClient\n"
+        "\n"
+        "async def notify(api_url: str, token: str, text: str):\n"
+        "    client = InternalAPIClient(api_url)\n"
+        "    users = await client.get_raw('users')\n"
+        "    async with aiohttp.ClientSession() as session:\n"
+        "        url = f'https://api.telegram.org/bot{token}/sendMessage'\n"
+        "        await session.post(url, json={'text': text})\n"
+        "    return users\n"
+    )
+    assert not find_raw_internal_api_calls(telegram, "shared/notifications.py")
 
 
 def test_the_guard_reads_both_trees():
@@ -318,14 +478,46 @@ async def test_every_call_carries_the_bound_correlation_id(client, recorder):
     assert recorder.last.headers["X-Correlation-ID"] == "corr-42"
 
 
+def _fields_named(request: httpx.Request, name: str) -> list[str]:
+    """Every field on the wire with that name, HTTP's case-insensitive way."""
+    return [
+        value.decode() for key, value in request.headers.raw if key.decode().lower() == name.lower()
+    ]
+
+
 @pytest.mark.asyncio
-async def test_caller_headers_cannot_drop_the_internal_key(client, recorder):
+@pytest.mark.parametrize(
+    "spelling",
+    ["X-Internal-Key", "x-internal-key", "X-INTERNAL-KEY", "x-Internal-key"],
+)
+async def test_caller_headers_cannot_drop_the_internal_key(client, recorder, spelling):
+    """Header names are case-insensitive, so another spelling is the same field.
+
+    `x-internal-key: forged` used to be copied through and left ahead of the
+    transport's own field: two fields with one name on the wire, and the API
+    reads the first, which is how a forged key reached it and came back a 401.
+    """
     set_correlation_id("corr-42")
-    await client.request("GET", "projects/", headers={"X-Telegram-ID": "7", "X-Internal-Key": "no"})
-    sent = recorder.last.headers
-    assert sent["X-Internal-Key"] == INTERNAL_KEY
-    assert sent["X-Correlation-ID"] == "corr-42"
-    assert sent["X-Telegram-ID"] == "7"
+    await client.request("GET", "projects/", headers={"X-Telegram-ID": "7", spelling: "forged"})
+
+    sent = recorder.last
+    assert _fields_named(sent, "X-Internal-Key") == [INTERNAL_KEY]
+    assert _fields_named(sent, "X-Correlation-ID") == ["corr-42"]
+    assert sent.headers["X-Telegram-ID"] == "7"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spelling", ["x-correlation-id", "X-CORRELATION-ID", "x-Correlation-Id"])
+async def test_a_caller_named_id_in_any_spelling_is_sent_once_canonically(
+    client, recorder, spelling
+):
+    """One field, canonically named, holding the identifier the flow will carry."""
+    await client.request("GET", "projects/", headers={spelling: "caller-cid"})
+
+    sent = recorder.last
+    assert _fields_named(sent, "X-Correlation-ID") == ["caller-cid"]
+    assert "X-Correlation-ID" in [key.decode() for key, _ in sent.headers.raw]
+    assert get_correlation_id() == "caller-cid"
 
 
 @pytest.mark.asyncio

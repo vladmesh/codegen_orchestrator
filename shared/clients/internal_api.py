@@ -26,6 +26,16 @@ from shared.log_config.correlation import ensure_correlation_id, set_correlation
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
+INTERNAL_KEY_HEADER = "X-Internal-Key"
+CORRELATION_ID_HEADER = "X-Correlation-ID"
+
+# HTTP header names are case-insensitive, so `x-internal-key` from a caller is
+# the same field as the one the transport sets. Both spellings on one request
+# means two fields with one name on the wire, and the API reads the first.
+_MANDATORY_HEADERS_LOWERCASED = frozenset(
+    {INTERNAL_KEY_HEADER.lower(), CORRELATION_ID_HEADER.lower()}
+)
+
 
 class InternalAPITransport:
     """URL shape and headers of the internal API. Subclasses do the sending."""
@@ -44,23 +54,36 @@ class InternalAPITransport:
         return f"/api/{cleaned}"
 
     def request_headers(self, caller_headers: dict | None) -> dict:
-        """Both headers, on every request.
+        """Both headers, once each, in their canonical spelling.
 
-        A caller cannot drop `X-Internal-Key`, and an unbound correlation context
-        no longer means an unlabelled call. The identifier of the flow is decided
-        first — the one the caller named, otherwise the bound one, otherwise a
-        fresh one — and only then is it both bound and sent, so what goes on the
-        wire and what the rest of the flow will carry are never two different
-        identifiers.
+        A caller cannot drop `X-Internal-Key` and cannot shadow it with another
+        spelling: whatever case it used, the field is taken out of its headers
+        before the transport sets its own, so the request carries exactly one of
+        each name. Reading the caller's names case-insensitively is why a
+        `x-internal-key: forged` no longer arrives ahead of the real key.
+
+        An unbound correlation context no longer means an unlabelled call. The
+        identifier of the flow is decided first — the one the caller named, in
+        any spelling, otherwise the bound one, otherwise a fresh one — and only
+        then is it both bound and sent, so what goes on the wire and what the
+        rest of the flow will carry are never two different identifiers.
         """
-        headers = dict(caller_headers or {})
-        headers["X-Internal-Key"] = self._internal_api_key
-        named = headers.get("X-Correlation-ID")
+        headers = {}
+        named = None
+        for name, value in (caller_headers or {}).items():
+            lowered = name.lower()
+            if lowered not in _MANDATORY_HEADERS_LOWERCASED:
+                headers[name] = value
+                continue
+            if lowered == CORRELATION_ID_HEADER.lower() and named is None and value:
+                named = value
+
+        headers[INTERNAL_KEY_HEADER] = self._internal_api_key
         if named:
             set_correlation_id(named)
-            headers["X-Correlation-ID"] = named
+            headers[CORRELATION_ID_HEADER] = named
         else:
-            headers["X-Correlation-ID"] = ensure_correlation_id()
+            headers[CORRELATION_ID_HEADER] = ensure_correlation_id()
         return headers
 
 
