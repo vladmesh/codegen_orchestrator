@@ -170,7 +170,10 @@ async def _reconcile_existing_server(
     if existing.is_managed != should_manage:
         update.is_managed = should_manage
         management_change = ManagementChange(
-            existing.handle, server_id, existing.is_managed, should_manage
+            handle=existing.handle,
+            provider_id=server_id,
+            was_managed=existing.is_managed,
+            is_managed=should_manage,
         )
 
     # Preserve operational states on demotion. Neutralize only queued/in-flight work,
@@ -447,12 +450,12 @@ async def _sync_server_details(client: Time4VPSClient) -> int:
     updated_count = 0
 
     for server in servers:
-        provider_id = server.labels.get("provider_id")
-        if not provider_id:
+        provider_id = parse_time4vps_server_id(server.provider_id)
+        if provider_id is None:
             continue
 
         try:
-            details_model = await client.get_server_details(int(provider_id))
+            details_model = await client.get_server_details(provider_id)
             details = details_model.model_dump()
 
             # Prepare update
@@ -493,6 +496,34 @@ async def _sync_server_details(client: Time4VPSClient) -> int:
     return updated_count
 
 
+def _in_trigger_cooldown(server: ServerDTO, now: datetime, trigger_cooldown: timedelta) -> bool:
+    """Return whether a scheduled server was published too recently."""
+    return bool(
+        server.provisioning_started_at and (now - server.provisioning_started_at) < trigger_cooldown
+    )
+
+
+async def _neutralize_unauthorized_trigger(server: ServerDTO) -> None:
+    """Cancel stale scheduled work that no longer passes provisioning policy."""
+    await api_client.update_server(
+        server.handle,
+        ServerUpdate(status=ServerStatus.RESERVED, provisioning_started_at=None),
+    )
+    logger.warning(
+        "provisioning_trigger_neutralized",
+        server_handle=server.handle,
+        previous_status=server.status,
+        reason="server_not_authorized",
+    )
+    await notify_admins_best_effort(
+        f"Provisioning for *{server.handle}* was cancelled because the server is no longer "
+        "authorized. It was moved to reserved.",
+        level="warning",
+        component="server_sync",
+        server_handle=server.handle,
+    )
+
+
 async def _check_provisioning_triggers() -> int:
     """Check for servers that need provisioning.
 
@@ -511,18 +542,20 @@ async def _check_provisioning_triggers() -> int:
     # We fetch all servers and filter in memory.
     # In a larger system, API should support filtering by status list.
     all_servers = await api_client.get_servers()
+    actionable: list[ServerDTO] = []
+    for server in all_servers:
+        if server.status not in _SCHEDULED_STATUSES:
+            continue
+        if server_is_provisioning_allowed(server):
+            actionable.append(server)
+        else:
+            await _neutralize_unauthorized_trigger(server)
 
     # 1. FORCE_REBUILD
-    force_rebuild_servers = [s for s in all_servers if s.status == ServerStatus.FORCE_REBUILD]
+    force_rebuild_servers = [s for s in actionable if s.status == ServerStatus.FORCE_REBUILD]
 
     for server in force_rebuild_servers:
-        if not server_is_provisioning_allowed(server):
-            logger.warning("provisioning_trigger_not_authorized", server_handle=server.handle)
-            continue
-        if (
-            server.provisioning_started_at
-            and (now - server.provisioning_started_at) < trigger_cooldown
-        ):
+        if _in_trigger_cooldown(server, now, trigger_cooldown):
             logger.info(
                 "provisioning_trigger_cooldown_skipped",
                 server_handle=server.handle,
@@ -539,7 +572,8 @@ async def _check_provisioning_triggers() -> int:
 
         if await _transition_and_publish(
             server,
-            ServerUpdate(status=ServerStatus.PROVISIONING, provisioning_started_at=now),
+            # Keep FORCE_REBUILD until infra-service consumes the explicit reinstall intent.
+            ServerUpdate(provisioning_started_at=now),
         ):
             triggers_published += 1
             await notify_admins_best_effort(
@@ -550,16 +584,10 @@ async def _check_provisioning_triggers() -> int:
             )
 
     # 2. PENDING_SETUP
-    pending_servers = [s for s in all_servers if s.status == ServerStatus.PENDING_SETUP]
+    pending_servers = [s for s in actionable if s.status == ServerStatus.PENDING_SETUP]
 
     for server in pending_servers:
-        if not server_is_provisioning_allowed(server):
-            logger.warning("provisioning_trigger_not_authorized", server_handle=server.handle)
-            continue
-        if (
-            server.provisioning_started_at
-            and (now - server.provisioning_started_at) < trigger_cooldown
-        ):
+        if _in_trigger_cooldown(server, now, trigger_cooldown):
             logger.info(
                 "provisioning_trigger_cooldown_skipped",
                 server_handle=server.handle,
@@ -578,12 +606,9 @@ async def _check_provisioning_triggers() -> int:
             triggers_published += 1
 
     # 3. Stuck Provisioning (PROVISIONING status)
-    provisioning_servers = [s for s in all_servers if s.status == ServerStatus.PROVISIONING]
+    provisioning_servers = [s for s in actionable if s.status == ServerStatus.PROVISIONING]
 
     for server in provisioning_servers:
-        if not server_is_provisioning_allowed(server):
-            logger.warning("provisioning_trigger_not_authorized", server_handle=server.handle)
-            continue
         if server.provisioning_started_at is None:
             # Should have started_at if status is provisioning, but fix if missing
             await api_client.update_server(server.handle, ServerUpdate(provisioning_started_at=now))

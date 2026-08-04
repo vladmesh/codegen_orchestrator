@@ -179,8 +179,6 @@ Deploy worker writes `DeployOutcome` to `run.result`. The supervisor (`supervise
    - A password reset through the Time4VPS API
    - An OS reinstall only after an explicit force-rebuild request and only when the provider ID is
      present in `TIME4VPS_MANAGED_SERVER_IDS`; SSH failure alone is non-destructive
-   - The legacy queue field `force_reinstall` is accepted for wire compatibility but ignored; only
-     the API-controlled `force_rebuild` server status authorizes reinstall
    - Ansible playbooks for server setup
    - Redeploying the services after recovery
 2. **Environment observation** (`env-observation:queue`):
@@ -206,7 +204,10 @@ Server discovery is fail-closed: unknown provider servers are recorded as reserv
 The scheduler publishes provisioning triggers only for managed records, including its startup retry
 path. The infra-service repeats both the managed-record check and the provider-ID allowlist check
 before any provisioning path, then repeats the allowlist at the destructive operation boundary, so
-direct or stale queue messages cannot bypass the discovery policy.
+direct or stale queue messages cannot bypass the discovery policy. Unauthorized scheduled rows are
+neutralized to `reserved` with an admin alert. For an authorized `force-rebuild`, the scheduler keeps
+that explicit status until infra-service reads it and changes the status to `provisioning` before
+entering the guarded reinstall path.
 
 ---
 

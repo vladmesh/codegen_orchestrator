@@ -17,7 +17,6 @@ logger = structlog.get_logger(__name__)
 
 async def trigger_provisioning(
     server_handle: str,
-    force_reinstall: bool = False,
     is_recovery: bool = False,
     correlation_id: str | None = None,
 ) -> str:
@@ -25,7 +24,6 @@ async def trigger_provisioning(
 
     Args:
         server_handle: Server handle to provision
-        force_reinstall: Force OS reinstall
         is_recovery: Whether this is incident recovery
         correlation_id: Optional correlation ID for tracing
 
@@ -34,7 +32,6 @@ async def trigger_provisioning(
     """
     msg = ProvisionerMessage(
         server_handle=server_handle,
-        force_reinstall=force_reinstall,
         is_recovery=is_recovery,
     )
     if correlation_id:

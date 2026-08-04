@@ -361,7 +361,9 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
         # Verification
         mock_trigger.assert_called_with("vps-1", is_incident_recovery=False)
         mock_api_client.update_server.assert_called()
-        assert mock_api_client.update_server.call_args[0][1].status == ServerStatus.PROVISIONING
+        transition = mock_api_client.update_server.call_args[0][1]
+        assert "status" not in transition.model_fields_set
+        assert transition.provisioning_started_at is not None
 
 
 @pytest.mark.asyncio
@@ -369,7 +371,7 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
     "status",
     [ServerStatus.FORCE_REBUILD, ServerStatus.PENDING_SETUP, ServerStatus.PROVISIONING],
 )
-async def test_check_provisioning_triggers_skips_unmanaged_server(
+async def test_check_provisioning_triggers_neutralizes_unmanaged_server(
     mock_api_client, mock_notify_admins, status, monkeypatch
 ):
     monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "100")
@@ -386,11 +388,14 @@ async def test_check_provisioning_triggers_skips_unmanaged_server(
 
     assert published == 0
     trigger.assert_not_awaited()
-    mock_api_client.update_server.assert_not_awaited()
+    neutralized = mock_api_client.update_server.await_args.args[1]
+    assert neutralized.status == ServerStatus.RESERVED
+    assert neutralized.provisioning_started_at is None
+    mock_notify_admins.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_check_provisioning_triggers_skips_stale_managed_row_outside_allowlist(
+async def test_check_provisioning_triggers_neutralizes_stale_managed_row_outside_allowlist(
     mock_api_client, mock_notify_admins, monkeypatch
 ):
     monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "200")
@@ -407,7 +412,10 @@ async def test_check_provisioning_triggers_skips_stale_managed_row_outside_allow
 
     assert published == 0
     trigger.assert_not_awaited()
-    mock_api_client.update_server.assert_not_awaited()
+    neutralized = mock_api_client.update_server.await_args.args[1]
+    assert neutralized.status == ServerStatus.RESERVED
+    assert neutralized.provisioning_started_at is None
+    mock_notify_admins.assert_awaited_once()
 
 
 @pytest.mark.asyncio

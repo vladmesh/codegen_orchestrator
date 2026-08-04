@@ -6,11 +6,11 @@ import pytest
 from src.provisioner.node import ProvisionerNode
 
 
-def _server(attempts: int = 0):
+def _server(attempts: int = 0, status: str = "pending_setup"):
     return SimpleNamespace(
         public_ip="203.0.113.10",
         host="203.0.113.10",
-        status="pending_setup",
+        status=status,
         ssh_user="dev",
         os_template=None,
         provisioning_attempts=attempts,
@@ -30,7 +30,7 @@ async def test_exhausted_reservation_prevents_ansible_and_returns_terminal_resul
     update_status = AsyncMock()
     monkeypatch.setattr("src.provisioner.node.update_server_status", update_status)
     monkeypatch.setattr("src.provisioner.node.create_incident", AsyncMock())
-    init_client = AsyncMock(return_value=(MagicMock(), None))
+    init_client = AsyncMock(return_value=MagicMock())
     monkeypatch.setattr(node, "_init_time4vps_client", init_client)
 
     result = await node.run({"server_to_provision": "srv-1", "errors": []})
@@ -43,7 +43,7 @@ async def test_exhausted_reservation_prevents_ansible_and_returns_terminal_resul
 
 
 @pytest.mark.asyncio
-async def test_first_attempt_ignores_legacy_force_flag_and_uses_status_authority(monkeypatch):
+async def test_first_attempt_uses_existing_access_without_force_rebuild_status(monkeypatch):
     monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server()))
@@ -53,18 +53,45 @@ async def test_first_attempt_ignores_legacy_force_flag_and_uses_status_authority
     monkeypatch.setattr(
         node,
         "_init_time4vps_client",
-        AsyncMock(return_value=(MagicMock(), None)),
+        AsyncMock(return_value=MagicMock()),
     )
     existing_path = AsyncMock(return_value={"provisioning_result": {"status": "success"}})
     monkeypatch.setattr(node, "_run_existing_access_path", existing_path)
 
-    result = await node.run({"server_to_provision": "srv-1", "force_reinstall": True, "errors": []})
+    result = await node.run({"server_to_provision": "srv-1", "errors": []})
 
     assert result["provisioning_result"]["status"] == "success"
     reserve_attempt.assert_awaited_once_with("srv-1", 3)
     assert existing_path.await_args.kwargs["provisioning_attempts"] == 1
     assert existing_path.await_args.kwargs["provisioning_episode_id"] == "episode-1"
     assert existing_path.await_args.kwargs["deploy_user"] == "dev"
+
+
+@pytest.mark.asyncio
+async def test_force_rebuild_status_selects_reinstall_path(monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
+    server = _server(status="force_rebuild")
+    monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=server))
+    monkeypatch.setattr(
+        "src.provisioner.node.reserve_provisioning_attempt",
+        AsyncMock(return_value=(1, "episode-1")),
+    )
+    update_status = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.update_server_status", update_status)
+    monkeypatch.setattr(node, "_init_time4vps_client", AsyncMock(return_value=MagicMock()))
+    reinstall_path = AsyncMock(return_value={"provisioning_result": {"status": "success"}})
+    existing_path = AsyncMock()
+    monkeypatch.setattr(node, "_run_reinstall_path", reinstall_path)
+    monkeypatch.setattr(node, "_run_existing_access_path", existing_path)
+
+    result = await node.run({"server_to_provision": "srv-1", "errors": []})
+
+    assert result["provisioning_result"]["status"] == "success"
+    update_status.assert_awaited_once_with("srv-1", "provisioning")
+    reinstall_path.assert_awaited_once()
+    assert reinstall_path.await_args.kwargs["server_id"] == 1001
+    existing_path.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -76,7 +103,7 @@ async def test_reservation_api_error_prevents_ansible_without_fallback(monkeypat
     monkeypatch.setattr("src.provisioner.node.reserve_provisioning_attempt", reserve_attempt)
     update_status = AsyncMock()
     monkeypatch.setattr("src.provisioner.node.update_server_status", update_status)
-    init_client = AsyncMock(return_value=(MagicMock(), None))
+    init_client = AsyncMock(return_value=MagicMock())
     monkeypatch.setattr(node, "_init_time4vps_client", init_client)
 
     result = await node.run({"server_to_provision": "srv-1", "errors": []})
@@ -137,6 +164,29 @@ async def test_unmanaged_server_is_rejected_before_attempt_reservation(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_missing_server_ip_is_rejected_and_marked_error_before_reservation(monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
+    missing_ip = _server()
+    missing_ip.public_ip = None
+    missing_ip.host = ""
+    monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=missing_ip))
+    reserve_attempt = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.reserve_provisioning_attempt", reserve_attempt)
+    update_status = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.update_server_status", update_status)
+
+    result = await node.run({"server_to_provision": "srv-1", "errors": []})
+
+    assert result["provisioning_result"] == {
+        "status": "failed",
+        "reason": "server_ip_missing",
+    }
+    reserve_attempt.assert_not_awaited()
+    update_status.assert_awaited_once_with("srv-1", "error")
+
+
+@pytest.mark.asyncio
 async def test_unlisted_server_is_rejected_before_any_state_write(monkeypatch):
     monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "2002")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
@@ -151,7 +201,7 @@ async def test_unlisted_server_is_rejected_before_any_state_write(monkeypatch):
     monkeypatch.setattr(
         node,
         "_init_time4vps_client",
-        AsyncMock(return_value=(MagicMock(), None)),
+        AsyncMock(return_value=MagicMock()),
     )
     existing_path = AsyncMock()
     reinstall_path = AsyncMock()

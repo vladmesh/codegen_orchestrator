@@ -13,8 +13,9 @@
   `GHOST_SERVERS` is removed, the production workflow preserves the required allowlist secret, and
   provider ID/IP binding (including a required non-empty provider IP) is revalidated immediately
   before provisioning. Demotion preserves operational status while neutralizing queued work, the
-  legacy `force_reinstall` queue flag is ignored, and production deploys now preserve the provider
-  credentials and orchestrator public IP required by the guarded path.
+  legacy `force_reinstall` queue flag was removed end to end, and production deploys now preserve
+  the provider credentials and orchestrator public IP required by the guarded path. Unauthorized
+  stale scheduled rows are moved to `reserved` with an admin alert instead of retrying forever.
 
 - The last eight duplicated request schemas have one definition each, and no class name is now
   defined in both `services/api/src/schemas/*` and `shared/contracts/dto/*`. `ApplicationCreate`,

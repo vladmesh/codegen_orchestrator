@@ -2,16 +2,15 @@
 
 Handles automated server provisioning:
 1. Verifies managed status, provider allowlist, and provider ID/IP binding
-2. Checks SSH access without treating failure as reinstall authorization
-3. Reinstalls only after an explicit force-rebuild request
-4. Runs Ansible provisioning playbooks
-5. Updates server status and handles incident recovery
+2. Reinstalls only after an explicit force-rebuild request
+3. Runs Ansible provisioning playbooks
+4. Updates server status and handles incident recovery
 """
 
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import structlog
 
@@ -43,6 +42,35 @@ logger = structlog.get_logger()
 PROVISIONING_MAX_RETRIES = Provisioning.MAX_RETRIES
 
 
+class AuthorizedServer(NamedTuple):
+    """Server identity proven against the database provisioning policy."""
+
+    server: ServerDTO
+    provider_id: int
+    ip: str
+
+
+class ProvisioningDenied(Exception):
+    """Typed fail-closed rejection returned as a provisioning result."""
+
+    def __init__(
+        self, *, reason: str, error: str, message: str, mark_server_error: bool = False
+    ) -> None:
+        super().__init__(error)
+        self.reason = reason
+        self.error = error
+        self.message = message
+        self.mark_server_error = mark_server_error
+
+    def as_result(self, state: dict) -> dict:
+        """Convert the rejection to the queue node's result shape."""
+        return {
+            "messages": [{"message": self.message}],
+            "errors": state.get("errors", []) + [self.error],
+            "provisioning_result": {"status": "failed", "reason": self.reason},
+        }
+
+
 # Re-export extracted names for backward compatibility
 __all__ = [
     "ProvisionerNode",
@@ -69,14 +97,8 @@ class ProvisionerNode(FunctionalNode):
     async def _get_and_validate_server_info(
         self,
         server_handle: str,
-        state: dict,
-    ) -> tuple[ServerDTO | None, int | None, dict | None]:
-        """Get server info and validate it has required fields.
-
-        Returns:
-            Tuple of (server_info, provider_id, error_response). If error_response is not None,
-            return it from run() immediately.
-        """
+    ) -> AuthorizedServer:
+        """Get a server and return its complete authorized provider identity."""
         server_info = await get_server_info(server_handle)
 
         server_id = authorized_time4vps_server_id(server_info)
@@ -87,47 +109,29 @@ class ProvisionerNode(FunctionalNode):
                 server_id=server_info.provider_id,
                 is_managed=server_info.is_managed,
             )
-            return (
-                None,
-                None,
-                {
-                    "messages": [{"message": f"❌ Server {server_handle} is not authorized."}],
-                    "errors": state.get("errors", []) + ["Server is not authorized"],
-                    "provisioning_result": {
-                        "status": "failed",
-                        "reason": "server_not_authorized",
-                    },
-                },
+            raise ProvisioningDenied(
+                reason="server_not_authorized",
+                error="Server is not authorized",
+                message=f"❌ Server {server_handle} is not authorized.",
             )
 
         server_ip = server_info.public_ip or server_info.host
         if not server_ip:
-            await update_server_status(server_handle, "error")
-            return (
-                None,
-                None,
-                {
-                    "messages": [
-                        {"message": f"❌ Server {server_handle} has no public IP address."}
-                    ],
-                    "errors": state.get("errors", []) + [f"Missing IP for {server_handle}"],
-                },
+            raise ProvisioningDenied(
+                reason="server_ip_missing",
+                error=f"Missing IP for {server_handle}",
+                message=f"❌ Server {server_handle} has no public IP address.",
+                mark_server_error=True,
             )
 
-        return server_info, server_id, None
+        return AuthorizedServer(server=server_info, provider_id=server_id, ip=server_ip)
 
     async def _init_time4vps_client(
         self,
         server_handle: str,
-        server_info: ServerDTO,
-        server_id: int,
-        state: dict,
-    ) -> tuple[Time4VPSClient | None, dict | None]:
-        """Initialize Time4VPS and prove that provider ID and IP identify one server.
-
-        Returns:
-            Tuple of (client, error_response).
-        """
+        target: AuthorizedServer,
+    ) -> Time4VPSClient:
+        """Initialize Time4VPS and prove that provider ID and IP identify one server."""
         from shared.clients.time4vps import Time4VPSClient
 
         time4vps_username = os.getenv("TIME4VPS_LOGIN") or os.getenv("TIME4VPS_USERNAME")
@@ -135,39 +139,29 @@ class ProvisionerNode(FunctionalNode):
 
         if not time4vps_username or not time4vps_password:
             logger.error("TIME4VPS credentials not configured")
-            return (
-                None,
-                {
-                    "messages": [{"message": "❌ TIME4VPS credentials not configured"}],
-                    "errors": state.get("errors", []) + ["Missing TIME4VPS credentials"],
-                    "provisioning_result": {
-                        "status": "failed",
-                        "reason": "time4vps_credentials_missing",
-                    },
-                },
+            raise ProvisioningDenied(
+                reason="time4vps_credentials_missing",
+                error="Missing TIME4VPS credentials",
+                message="❌ TIME4VPS credentials not configured",
             )
 
         time4vps_client = Time4VPSClient(time4vps_username, time4vps_password)
-        details = await time4vps_client.get_server_details(server_id)
-        server_ip = server_info.public_ip or server_info.host
-        if not provider_ip_matches(expected_ip=server_ip, provider_ip=details.ip):
+        details = await time4vps_client.get_server_details(target.provider_id)
+        if not provider_ip_matches(expected_ip=target.ip, provider_ip=details.ip):
             logger.error(
                 "provisioning_provider_identity_mismatch",
                 server_handle=server_handle,
-                server_id=server_id,
-                database_ip=server_ip,
+                server_id=target.provider_id,
+                database_ip=target.ip,
                 provider_ip=details.ip,
             )
-            return None, {
-                "messages": [{"message": f"❌ Provider identity mismatch for {server_handle}."}],
-                "errors": state.get("errors", []) + ["Provider identity mismatch"],
-                "provisioning_result": {
-                    "status": "failed",
-                    "reason": "provider_identity_mismatch",
-                },
-            }
+            raise ProvisioningDenied(
+                reason="provider_identity_mismatch",
+                error="Provider identity mismatch",
+                message=f"❌ Provider identity mismatch for {server_handle}.",
+            )
 
-        return time4vps_client, None
+        return time4vps_client
 
     async def _run_reinstall_path(
         self,
@@ -316,11 +310,6 @@ class ProvisionerNode(FunctionalNode):
         """
         server_handle = state.get("server_to_provision")
         is_recovery = state.get("is_incident_recovery", False)
-        if state.get("force_reinstall"):
-            logger.warning(
-                "legacy_force_reinstall_ignored",
-                reason="force_rebuild_status_is_the_only_reinstall_authority",
-            )
 
         if not server_handle:
             return {
@@ -329,14 +318,16 @@ class ProvisionerNode(FunctionalNode):
             }
 
         # Step 1: Get and validate server info
-        server_info, server_id, error = await self._get_and_validate_server_info(
-            server_handle, state
-        )
-        if error:
-            return error
-        assert server_info is not None and server_id is not None
+        try:
+            target = await self._get_and_validate_server_info(server_handle)
+        except ProvisioningDenied as denial:
+            if denial.mark_server_error:
+                await update_server_status(server_handle, "error")
+            return denial.as_result(state)
 
-        server_ip = server_info.public_ip or server_info.host
+        server_info = target.server
+        server_id = target.provider_id
+        server_ip = target.ip
         os_template = server_info.os_template or Provisioning.DEFAULT_OS_TEMPLATE
 
         # Step 2: Atomically reserve an attempt after authorization but before provider I/O.
@@ -382,12 +373,11 @@ class ProvisionerNode(FunctionalNode):
         provisioning_attempts, provisioning_episode_id = reservation
 
         # Step 3: Verify provider identity. The destructive boundary repeats this check.
-        time4vps_client, error = await self._init_time4vps_client(
-            server_handle, server_info, server_id, state
-        )
-        if error:
+        try:
+            time4vps_client = await self._init_time4vps_client(server_handle, target)
+        except ProvisioningDenied as denial:
             await update_server_status(server_handle, "error")
-            return error
+            return denial.as_result(state)
 
         # Step 4: Update status
         await update_server_status(server_handle, "provisioning")

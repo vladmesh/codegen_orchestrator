@@ -104,6 +104,8 @@ The system supports a hybrid infrastructure synchronized with the provider (Time
         also requires an explicit `force-rebuild` request.
     *   The scheduler and infra-service both enforce the same policy, and the reinstall operation
         repeats it at the provider API boundary.
+    *   A stale scheduled row that no longer passes policy is moved to `reserved` and produces one
+        administrator alert instead of being retried indefinitely.
 
 ## GitHub App & Secrets
 

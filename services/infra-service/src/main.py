@@ -160,7 +160,6 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
         state = {
             "server_to_provision": server_handle,
             "is_incident_recovery": job_data.get("is_recovery", False),
-            "force_reinstall": job_data.get("force_reinstall", False),
             "errors": [],
         }
 

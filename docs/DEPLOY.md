@@ -55,15 +55,22 @@ To adopt a new blank target:
    an accidentally removed ID preserves the server's prior operational status. For a verified blank
    existing row, explicitly PATCH its status to `pending_setup` to use the non-destructive SSH path.
 4. If a verified blank server has no working orchestrator SSH access, request `force-rebuild`
-   explicitly through the admin API and watch the provisioning logs.
+   explicitly through the admin API and watch the provisioning logs. The scheduler keeps that
+   persisted intent until infra-service claims it, then infra-service changes the lifecycle status
+   to `provisioning` immediately before the guarded reinstall path.
 
-Never put a personal, development, or already populated server in this list. A failed SSH probe alone
-never authorizes reinstall; only an explicit `force-rebuild` request does.
+The allowlist authorizes both non-destructive Ansible maintenance and an explicit admin-requested
+reinstall; it does not schedule or reinstall an existing server merely because its ID was added.
+Never list personal or development servers. A populated production server may be listed for adopted
+maintenance only after its identity and backups are verified; protect admin/internal API credentials
+because an explicit `force-rebuild` request is the remaining reinstall authority. A failed SSH probe
+alone never authorizes reinstall.
 
 ## Monitoring baseline for adopted servers
 
 To install monitoring without reinstalling or running the full provisioning path,
-run the supported operation from the infra-service container:
+first ensure the adopted server is managed and its provider ID is in
+`TIME4VPS_MANAGED_SERVER_IDS`, then run the supported operation from the infra-service container:
 
 ```bash
 docker compose exec infra-service python -m src.provisioner.monitoring_baseline SERVER_HANDLE
