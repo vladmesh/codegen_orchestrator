@@ -82,8 +82,10 @@ async def retry_pending_servers():
 
     logger.info("retry_pending_servers_found", count=len(servers))
 
-    for server in servers:
+    managed_servers = [server for server in servers if server.is_managed]
+
+    for server in managed_servers:
         await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
         logger.info("retry_pending_server_triggered", server_handle=server.handle)
 
-    logger.info("retry_pending_servers_complete", triggered=len(servers))
+    logger.info("retry_pending_servers_complete", triggered=len(managed_servers))

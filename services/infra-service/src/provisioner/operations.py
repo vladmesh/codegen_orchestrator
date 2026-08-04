@@ -7,6 +7,7 @@ import structlog
 
 from shared.clients.time4vps import Time4VPSClient
 from shared.notifications import notify_admins_best_effort
+from shared.provisioning_policy import time4vps_server_is_allowed
 
 from ..config.constants import Provisioning, Timeouts
 from .ansible_runner import AnsibleRunner
@@ -143,6 +144,18 @@ async def reinstall_and_provision(  # noqa: PLR0913
     Returns:
         Tuple of (success: bool, message: str)
     """
+    if not time4vps_server_is_allowed(server_id):
+        message = (
+            f"Server {server_id} is not present in TIME4VPS_MANAGED_SERVER_IDS; "
+            "refusing OS reinstall"
+        )
+        logger.error(
+            "os_reinstall_not_allowed",
+            server_handle=server_handle,
+            server_id=server_id,
+        )
+        return False, message
+
     logger.info("os_reinstall_start", server_handle=server_handle, server_id=server_id)
 
     try:

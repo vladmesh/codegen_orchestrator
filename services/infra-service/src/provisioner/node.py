@@ -18,6 +18,7 @@ import structlog
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerDTO
 from shared.notifications import notify_admins_best_effort
+from shared.provisioning_policy import time4vps_server_is_allowed
 
 if TYPE_CHECKING:
     from shared.clients.time4vps import Time4VPSClient
@@ -77,6 +78,14 @@ class ProvisionerNode(FunctionalNode):
             return it from run() immediately.
         """
         server_info = await get_server_info(server_handle)
+
+        if not server_info.is_managed:
+            logger.error("provisioning_unmanaged_server_rejected", server_handle=server_handle)
+            return None, {
+                "messages": [{"message": f"❌ Server {server_handle} is not managed."}],
+                "errors": state.get("errors", []) + ["Server is not managed"],
+                "provisioning_result": {"status": "failed", "reason": "server_not_managed"},
+            }
 
         server_ip = server_info.public_ip or server_info.host
         if not server_ip:
@@ -376,6 +385,22 @@ class ProvisionerNode(FunctionalNode):
         )
         if error:
             return error
+
+        if not time4vps_server_is_allowed(server_id):
+            logger.error(
+                "provisioning_server_not_allowed",
+                server_handle=server_handle,
+                server_id=server_id,
+            )
+            await update_server_status(server_handle, "error")
+            return {
+                "messages": [{"message": f"❌ Server {server_handle} is not allowlisted."}],
+                "errors": state.get("errors", []) + ["Server is not allowlisted"],
+                "provisioning_result": {
+                    "status": "failed",
+                    "reason": "server_not_allowlisted",
+                },
+            }
 
         logger.info(
             "provisioning_start",

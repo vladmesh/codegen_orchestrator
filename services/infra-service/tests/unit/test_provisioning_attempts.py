@@ -6,6 +6,11 @@ import pytest
 from src.provisioner.node import ProvisionerNode
 
 
+@pytest.fixture(autouse=True)
+def allow_test_server(monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1,1001")
+
+
 def _server(attempts: int = 0):
     return SimpleNamespace(
         public_ip="203.0.113.10",
@@ -14,6 +19,8 @@ def _server(attempts: int = 0):
         ssh_user="dev",
         os_template=None,
         provisioning_attempts=attempts,
+        is_managed=True,
+        labels={"provider_id": "1001"},
     )
 
 
@@ -78,6 +85,59 @@ async def test_reservation_api_error_prevents_ansible_without_fallback(monkeypat
     reserve_attempt.assert_awaited_once_with("srv-1", 3)
     update_status.assert_awaited_once_with("srv-1", "error")
     node.ansible_runner.run_playbook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_server_is_rejected_before_attempt_reservation(monkeypatch):
+    node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
+    unmanaged = _server()
+    unmanaged.is_managed = False
+    monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=unmanaged))
+    reserve_attempt = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.reserve_provisioning_attempt", reserve_attempt)
+    update_status = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.update_server_status", update_status)
+
+    result = await node.run({"server_to_provision": "srv-1", "errors": []})
+
+    assert result["provisioning_result"] == {
+        "status": "failed",
+        "reason": "server_not_managed",
+    }
+    reserve_attempt.assert_not_awaited()
+    update_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unlisted_server_is_rejected_before_any_provisioning_path(monkeypatch):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "2002")
+    node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
+    monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server()))
+    monkeypatch.setattr(
+        "src.provisioner.node.reserve_provisioning_attempt",
+        AsyncMock(return_value=(1, "episode-1")),
+    )
+    update_status = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.update_server_status", update_status)
+    monkeypatch.setattr(
+        node,
+        "_init_time4vps_client",
+        AsyncMock(return_value=(MagicMock(), 1001, None)),
+    )
+    existing_path = AsyncMock()
+    reinstall_path = AsyncMock()
+    monkeypatch.setattr(node, "_run_existing_access_path", existing_path)
+    monkeypatch.setattr(node, "_run_reinstall_path", reinstall_path)
+
+    result = await node.run({"server_to_provision": "srv-1", "errors": []})
+
+    assert result["provisioning_result"] == {
+        "status": "failed",
+        "reason": "server_not_allowlisted",
+    }
+    assert update_status.await_args_list[-1].args == ("srv-1", "error")
+    existing_path.assert_not_awaited()
+    reinstall_path.assert_not_awaited()
 
 
 @pytest.mark.asyncio

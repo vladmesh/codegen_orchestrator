@@ -20,7 +20,7 @@ API_BASE_URL = "http://127.0.0.1:9"
 SERVERS_URL = f"{API_BASE_URL}/api/servers/"
 
 
-def _server_row(handle: str = "vps-pending") -> dict:
+def _server_row(handle: str = "vps-pending", *, is_managed: bool = True) -> dict:
     return {
         "id": 1,
         "handle": handle,
@@ -28,7 +28,7 @@ def _server_row(handle: str = "vps-pending") -> dict:
         "public_ip": "203.0.113.7",
         "ssh_user": "root",
         "status": ServerStatus.PENDING_SETUP.value,
-        "is_managed": True,
+        "is_managed": is_managed,
         "labels": {},
         "provisioning_attempts": 0,
         "created_at": "2026-07-28T00:00:00Z",
@@ -75,6 +75,25 @@ async def test_pending_server_gets_a_trigger(internal_api):
         await provisioner_trigger.retry_pending_servers()
 
     publish.assert_awaited_once_with("vps-pending", is_incident_recovery=False)
+
+
+async def test_pending_unmanaged_server_does_not_get_startup_trigger(api_client_reset):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert _authorized(request)
+        return httpx.Response(200, json=[_server_row(is_managed=False)])
+
+    with (
+        respx.mock(assert_all_called=False) as mock,
+        patch(
+            "src.tasks.provisioner_trigger.publish_provisioner_trigger", new_callable=AsyncMock
+        ) as publish,
+    ):
+        mock.get(SERVERS_URL).mock(side_effect=handler)
+        from src.tasks import provisioner_trigger
+
+        await provisioner_trigger.retry_pending_servers()
+
+    publish.assert_not_awaited()
 
 
 async def test_wrong_internal_key_fails_loudly(internal_api, monkeypatch):

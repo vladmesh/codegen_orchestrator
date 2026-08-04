@@ -31,6 +31,29 @@ section below for the operation. The `/opt/services` ownership contract is appli
 `deploy_target` role, which the baseline run does not cover — it applies only the
 `monitoring` tag.
 
+### Destructive provisioning safety
+
+Time4VPS discovery is default-deny. `TIME4VPS_MANAGED_SERVER_IDS` must contain the comma-separated
+provider IDs of the servers this installation is allowed to provision. An absent or empty value
+means that no Time4VPS server is managed. Every other discovered server is stored as
+`is_managed=false` with status `reserved`; it is visible to inventory reads but never enters a
+provisioning trigger.
+
+The same allowlist is checked again by `infra-service` before either Ansible or reinstall work and
+once more immediately before an OS reinstall. The `is_managed` database flag and the scheduler
+trigger filters are separate guards, so a stale status or a manually published queue message cannot
+by itself authorize provisioning.
+
+To adopt a new blank target:
+
+1. Read its immutable provider ID from the Time4VPS account and verify the target by both ID and IP.
+2. Add only that ID to `TIME4VPS_MANAGED_SERVER_IDS` in the orchestrator `.env`.
+3. Recreate `scheduler` and `infra-service`, then watch the first server-sync and provisioning logs.
+
+Adding an ID authorizes automatic provisioning on the next sync. Never put a personal, development,
+or already populated server in this list. `GHOST_SERVERS` remains a legacy IP denylist for defense
+in depth, but it is not the authorization mechanism: IPs can change after a reinstall.
+
 ## Monitoring baseline for adopted servers
 
 To install monitoring without reinstalling or running the full provisioning path,
@@ -143,7 +166,8 @@ the key's verdict; every access guard asks it.
 |--------|-------------|
 | `SECRETS_ENCRYPTION_KEY` | Fernet key for encrypting project secrets |
 | `ORCHESTRATOR_HOSTNAME` | Public hostname (for Caddy TLS, registry) |
-| `GHOST_SERVERS` | Comma-separated IPs of managed servers |
+| `TIME4VPS_MANAGED_SERVER_IDS` | Required allowlist of provider IDs the orchestrator may provision or reinstall; empty denies all |
+| `GHOST_SERVERS` | Legacy IP denylist applied in addition to the provider-ID allowlist |
 | `REGISTRY_USER` | Docker registry basic auth user |
 | `REGISTRY_PASSWORD` | Docker registry password |
 | `REGISTRY_PASSWORD_HASH` | Bcrypt hash of registry password (for Caddy) |

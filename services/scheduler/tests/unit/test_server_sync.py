@@ -45,8 +45,9 @@ async def test_get_time4vps_client_returns_client(mock_api_client):
 
 @pytest.mark.asyncio
 async def test_sync_server_list_discovers_new_managed(
-    mock_api_client, mock_time4vps_client, mock_notify_admins
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
     # Setup
     api_server = MagicMock(ip="1.2.3.4", id=1001, domain="test.com")
     mock_time4vps_client.get_servers.return_value = [api_server]
@@ -75,6 +76,65 @@ async def test_sync_server_list_discovers_new_managed(
     create_payload = mock_api_client.create_server.call_args[0][0]
     assert create_payload.public_ip == "1.2.3.4"
     assert create_payload.status == ServerStatus.PENDING_SETUP
+
+
+@pytest.mark.asyncio
+async def test_sync_server_list_discovers_unlisted_server_as_reserved(
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
+):
+    monkeypatch.delenv("TIME4VPS_MANAGED_SERVER_IDS", raising=False)
+    api_server = MagicMock(ip="1.2.3.4", id=1001, domain="personal.example")
+    mock_time4vps_client.get_servers.return_value = [api_server]
+    mock_api_client.get_servers = AsyncMock(return_value=[])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.create_server = AsyncMock(
+        return_value=ServerDTO(
+            handle="vps-1001",
+            host="personal.example",
+            public_ip="1.2.3.4",
+            ssh_user="root",
+            status=ServerStatus.RESERVED,
+            provider_id="1001",
+            is_managed=False,
+            created_at=datetime.now(UTC),
+        )
+    )
+
+    await server_sync._sync_server_list(mock_time4vps_client)
+
+    create_payload = mock_api_client.create_server.call_args.args[0]
+    assert create_payload.is_managed is False
+    assert create_payload.status == ServerStatus.RESERVED
+    mock_notify_admins.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_server_list_demotes_existing_unlisted_pending_server(
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
+):
+    monkeypatch.delenv("TIME4VPS_MANAGED_SERVER_IDS", raising=False)
+    api_server = MagicMock(ip="1.2.3.4", id=1001, domain="personal.example")
+    existing = ServerDTO(
+        handle="vps-1001",
+        host="personal.example",
+        public_ip="1.2.3.4",
+        ssh_user="root",
+        status=ServerStatus.PENDING_SETUP,
+        provider_id="1001",
+        is_managed=True,
+        labels={"provider_id": "1001"},
+        created_at=datetime.now(UTC),
+    )
+    mock_time4vps_client.get_servers.return_value = [api_server]
+    mock_api_client.get_servers = AsyncMock(return_value=[existing])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.update_server = AsyncMock()
+
+    await server_sync._sync_server_list(mock_time4vps_client)
+
+    update = mock_api_client.update_server.call_args.args[1]
+    assert update.is_managed is False
+    assert update.status == ServerStatus.RESERVED
 
 
 @pytest.mark.asyncio
@@ -143,6 +203,30 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
         mock_trigger.assert_called_with("vps-1", is_incident_recovery=False)
         mock_api_client.update_server.assert_called()
         assert mock_api_client.update_server.call_args[0][1].status == ServerStatus.PROVISIONING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [ServerStatus.FORCE_REBUILD, ServerStatus.PENDING_SETUP, ServerStatus.PROVISIONING],
+)
+async def test_check_provisioning_triggers_skips_unmanaged_server(
+    mock_api_client, mock_notify_admins, status
+):
+    server = _ready_server("personal").model_copy(
+        update={"status": status, "is_managed": False, "provisioning_started_at": None}
+    )
+    mock_api_client.get_servers = AsyncMock(return_value=[server])
+    mock_api_client.update_server = AsyncMock()
+
+    with patch(
+        "src.tasks.server_sync.publish_provisioner_trigger", new_callable=AsyncMock
+    ) as trigger:
+        published = await server_sync._check_provisioning_triggers()
+
+    assert published == 0
+    trigger.assert_not_awaited()
+    mock_api_client.update_server.assert_not_awaited()
 
 
 @pytest.mark.asyncio

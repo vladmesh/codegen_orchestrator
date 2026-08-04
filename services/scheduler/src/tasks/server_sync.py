@@ -12,6 +12,7 @@ from shared.clients.time4vps import Time4VPSAPIError, Time4VPSClient
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
 from shared.notifications import notify_admins_best_effort
+from shared.provisioning_policy import managed_time4vps_server_ids
 from src.clients.api import api_client
 
 from .. import startup
@@ -151,6 +152,9 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
 
     await _resolve_provider_outage()
 
+    # An absent or empty allowlist intentionally means that no provider server is managed.
+    managed_server_ids = managed_time4vps_server_ids()
+
     # Fetch existing servers from API
     db_servers_list = await api_client.get_servers()
     db_servers = {s.public_ip: s for s in db_servers_list}
@@ -173,6 +177,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
 
         hostname = srv.domain
         is_ghost = ip in GHOST_SERVERS
+        should_manage = server_id in managed_server_ids and not is_ghost
 
         existing = db_servers.get(ip)
 
@@ -199,15 +204,22 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
                 )
                 updated_count += 1
                 logger.info("server_reappeared", server_ip=ip)
-            # Update provider_id if changed
+            update = ServerUpdate()
             if existing.labels.get("provider_id") != str(server_id):
-                new_labels = {**existing.labels, "provider_id": str(server_id)}
-                await api_client.update_server(existing.handle, ServerUpdate(labels=new_labels))
+                update.labels = {**existing.labels, "provider_id": str(server_id)}
+
+            if existing.is_managed != should_manage:
+                update.is_managed = should_manage
+                update.status = (
+                    ServerStatus.PENDING_SETUP if should_manage else ServerStatus.RESERVED
+                )
+
+            if update.model_dump(exclude_none=True):
+                await api_client.update_server(existing.handle, update)
                 updated_count += 1
         else:
             # New Server Discovered
-            # Check if it's a ghost server or managed
-            is_managed = not is_ghost
+            is_managed = should_manage
 
             # Managed servers need provisioning by default
             if is_managed:
@@ -219,9 +231,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
                     status=status,
                 )
             else:
-                status = ServerStatus.ACTIVE  # Ghost servers are reserved/active
-                # Original code used "reserved", which is not in ServerStatus enum.
-                # Using ACTIVE for now.
+                status = ServerStatus.RESERVED
                 logger.info(
                     "ghost_server_discovered",
                     server_ip=ip,
@@ -399,7 +409,9 @@ async def _check_provisioning_triggers() -> int:
     all_servers = await api_client.get_servers()
 
     # 1. FORCE_REBUILD
-    force_rebuild_servers = [s for s in all_servers if s.status == ServerStatus.FORCE_REBUILD]
+    force_rebuild_servers = [
+        s for s in all_servers if s.is_managed and s.status == ServerStatus.FORCE_REBUILD
+    ]
 
     for server in force_rebuild_servers:
         if (
@@ -439,7 +451,9 @@ async def _check_provisioning_triggers() -> int:
         )
 
     # 2. PENDING_SETUP
-    pending_servers = [s for s in all_servers if s.status == ServerStatus.PENDING_SETUP]
+    pending_servers = [
+        s for s in all_servers if s.is_managed and s.status == ServerStatus.PENDING_SETUP
+    ]
 
     for server in pending_servers:
         if (
@@ -468,7 +482,9 @@ async def _check_provisioning_triggers() -> int:
         triggers_published += 1
 
     # 3. Stuck Provisioning (PROVISIONING status)
-    provisioning_servers = [s for s in all_servers if s.status == ServerStatus.PROVISIONING]
+    provisioning_servers = [
+        s for s in all_servers if s.is_managed and s.status == ServerStatus.PROVISIONING
+    ]
 
     for server in provisioning_servers:
         if server.provisioning_started_at is None:
