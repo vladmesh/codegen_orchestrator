@@ -3,14 +3,25 @@
 from datetime import datetime
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.run_result import QARunResult
+
+# The update schema is the contract every client already imports; the API
+# validates against that same object rather than a look-alike of its own.
 from shared.contracts.dto.temporary_access import (
+    TemporaryAccessGrantUpdate,
     TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
 )
+
+__all__ = [
+    "TemporaryAccessEscalation",
+    "TemporaryAccessGrantCreate",
+    "TemporaryAccessGrantRead",
+    "TemporaryAccessGrantUpdate",
+]
 from shared.contracts.git_ref import CommitSha
 from shared.contracts.queues.qa import QAMessage
 
@@ -28,41 +39,6 @@ class TemporaryAccessGrantCreate(BaseModel):
     qa_run_id: str = Field(min_length=1)
     grant_run_id: str = Field(min_length=1)
     qa_message: QAMessage
-
-
-class TemporaryAccessGrantUpdate(BaseModel):
-    """Move a grant along as the reconciler settles it.
-
-    `qa_dispatched` and `escalated` are requests to stamp a moment, not values
-    to write: the record keeps when the handoff was released and when the sweep
-    reported the access as still standing.
-
-    REVOKED is not one of the statuses this can ask for. A caller asking for it
-    would be asserting that the deployed service no longer holds the value, which
-    nothing inside this system can know: the deploy that clears it is handed to
-    GitHub Actions and applied whenever that gets to it. The record is closed by
-    ``POST /{grant_id}/observation`` instead, against a reading of the server.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: TemporaryAccessStatus | None = None
-    grant_run_id: str | None = None
-    qa_dispatched: bool | None = None
-    revoke_reason: TemporaryAccessRevokeReason | None = None
-    revoke_run_id: str | None = None
-    revoke_attempts: int | None = None
-    escalated: bool | None = None
-    last_error: str | None = None
-
-    @model_validator(mode="after")
-    def _revoked_is_not_a_field_to_set(self) -> "TemporaryAccessGrantUpdate":
-        if self.status is TemporaryAccessStatus.REVOKED:
-            raise ValueError(
-                "a grant is revoked by an observation of the running service, not by an update; "
-                "post the reading to /temporary-access-grants/{id}/observation"
-            )
-        return self
 
 
 class TemporaryAccessEscalation(BaseModel):

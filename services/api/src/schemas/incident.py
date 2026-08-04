@@ -5,7 +5,22 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.incident import IncidentStatus, IncidentType, require_server_handle
+
+# The update schema is the contract every client already imports; the API
+# validates against that same object rather than a look-alike of its own.
+from shared.contracts.dto.incident import (
+    IncidentStatus,
+    IncidentType,
+    IncidentUpdate,
+    require_server_handle,
+)
+
+__all__ = [
+    "IncidentBase",
+    "IncidentCreate",
+    "IncidentRead",
+    "IncidentUpdate",
+]
 
 
 class IncidentBase(BaseModel):
@@ -27,15 +42,6 @@ class IncidentCreate(IncidentBase):
     def _require_server_handle(self) -> "IncidentCreate":
         require_server_handle(self.incident_type, self.server_handle)
         return self
-
-
-class IncidentUpdate(BaseModel):
-    """Schema for updating an incident."""
-
-    status: IncidentStatus | None = None
-    resolved_at: datetime | None = None
-    details: dict | None = None
-    recovery_attempts: int | None = None
 
 
 class IncidentRead(IncidentBase, TimestampedDTO):
