@@ -1,5 +1,6 @@
 from enum import StrEnum
 from typing import Any
+import uuid
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -41,11 +42,21 @@ _TERMINAL_STATUSES_REQUIRING_RESULT: frozenset[RunStatus] = frozenset(
 
 
 class RunCreate(BaseModel):
-    """Create run request."""
+    """Create run request.
 
-    project_id: str
-    type: RunType
-    spec: str | None = None
+    Every field is a column of the `runs` row this creates: the API builds the
+    row straight from it, so a field with no column would fail on write rather
+    than at validation.
+    """
+
+    id: str
+    type: str
+    project_id: uuid.UUID | None = None
+    user_id: int | None = None
+    story_id: str | None = None
+    task_id: str | None = None
+    run_metadata: dict[str, Any] = {}
+    callback_stream: str | None = None
 
 
 class RunDTO(TimestampedDTO):

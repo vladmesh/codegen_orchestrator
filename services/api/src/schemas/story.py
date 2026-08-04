@@ -1,26 +1,23 @@
 """Story API schemas."""
 
-from typing import Any, Literal
+from typing import Any
 import uuid
 
 from pydantic import BaseModel, ConfigDict
 
 from shared.contracts.dto.base import TimestampedDTO
-from shared.contracts.dto.story import StoryType
 
+# The request schemas are the contract every client already imports; the API
+# validates against those same objects rather than look-alikes of its own.
+from shared.contracts.dto.story import StoryCreate, StoryUpdate
 
-class StoryCreate(BaseModel):
-    """Schema for creating a story."""
-
-    project_id: uuid.UUID
-    title: str
-    description: str | None = None
-    acceptance_criteria: str | None = None
-    parent_story_id: str | None = None
-    type: Literal[StoryType.PRODUCT, StoryType.TECHNICAL] = StoryType.PRODUCT
-    priority: int = 0
-    blocked_by_story_id: str | None = None
-    created_by: str = "system"
+__all__ = [
+    "StoryCreate",
+    "StoryRead",
+    "StoryReopen",
+    "StoryTransition",
+    "StoryUpdate",
+]
 
 
 class StoryRead(TimestampedDTO):
@@ -42,20 +39,6 @@ class StoryRead(TimestampedDTO):
     pr_number: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class StoryUpdate(BaseModel):
-    """Schema for updating a story."""
-
-    title: str | None = None
-    description: str | None = None
-    acceptance_criteria: str | None = None
-    parent_story_id: str | None = None
-    type: Literal[StoryType.PRODUCT, StoryType.TECHNICAL] | None = None
-    priority: int | None = None
-    blocked_by_story_id: str | None = None
-    quarantine_reason: dict[str, Any] | None = None
-    pr_number: int | None = None
 
 
 class StoryReopen(BaseModel):

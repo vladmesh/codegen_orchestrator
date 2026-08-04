@@ -8,6 +8,17 @@ from pydantic import BaseModel
 
 from shared.contracts.dto.base import TimestampedDTO
 
+# The create schema is the contract; the API validates against that same object
+# rather than a look-alike of its own.
+from shared.contracts.dto.run import RunCreate
+
+__all__ = [
+    "RunBase",
+    "RunCreate",
+    "RunRead",
+    "RunUpdate",
+]
+
 
 class RunBase(BaseModel):
     """Base run schema."""
@@ -33,19 +44,6 @@ class RunBase(BaseModel):
     agent_profile: dict[str, Any] | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
-
-
-class RunCreate(BaseModel):
-    """Schema for creating a run."""
-
-    id: str
-    type: str
-    project_id: uuid.UUID | None = None
-    user_id: int | None = None
-    story_id: str | None = None
-    task_id: str | None = None
-    run_metadata: dict[str, Any] = {}
-    callback_stream: str | None = None
 
 
 class RunRead(RunBase, TimestampedDTO):

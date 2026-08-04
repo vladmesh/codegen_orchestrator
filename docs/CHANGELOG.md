@@ -2,6 +2,24 @@
 
 ## 2026-08-04
 
+- The last eight duplicated request schemas have one definition each, and no class name is now
+  defined in both `services/api/src/schemas/*` and `shared/contracts/dto/*`. `ApplicationCreate`,
+  `ApplicationUpdate`, `IncidentCreate`, `ServerCreate`, `StoryCreate`, `StoryUpdate` and
+  `TemporaryAccessGrantCreate` live in the contract and the API re-exports them; field sets follow
+  the model columns. `RunCreate` was closed by deletion instead: the contract copy carried
+  `project_id`/`type`/`spec`, `Run` has no `spec` column and nothing imported that class, so it is
+  gone and the live server definition (every field a `runs` column) moved into the contract.
+
+  **Wire behaviour**: three request fields become stricter, none looser. `ApplicationCreate.status`
+  and `ApplicationUpdate.status` are `ApplicationStatus` rather than free `str`, `IncidentCreate`
+  takes `affected_services: list[str]` rather than `list`, and `TemporaryAccessGrantCreate.project_id`
+  is a UUID rather than any non-empty string — each matching what its column stores. `ServerCreate`
+  keeps the contract's `status: ServerStatus` and its `DISCOVERED` default, which is also the
+  column default; the server copy's `str` field defaulting to `active` is gone. `ServerCreate` also
+  loses `provider_id`, which `Server` has no column for (it is read from `labels`) and no handler
+  ever read; `scheduler`'s discovery already sent it inside `labels` and no longer passes it
+  separately.
+
 - Eleven more request schemas have one definition each. `AnalyticsDailyCreate`,
   `AnalyticsHourlyCreate`, `AnalyticsKnownUserUpsert`, `AnalyticsKnownUsersBatchUpsert`,
   `IncidentUpdate`, `RepositoryCreate`, `RepositoryUpdate`, `TaskCreate`, `TaskEventCreate`,

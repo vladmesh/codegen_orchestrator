@@ -3,10 +3,21 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from shared.contracts.dto.base import BaseDTO, TimestampedDTO
-from shared.contracts.dto.server import ServerStatus, SSHUser
+
+# The create schema is the contract every client already imports; the API
+# validates against that same object rather than a look-alike of its own.
+from shared.contracts.dto.server import ServerCreate, ServerStatus, SSHUser
+
+__all__ = [
+    "MetricsHistoryCreate",
+    "MetricsHistoryRead",
+    "ServerBase",
+    "ServerCreate",
+    "ServerRead",
+]
 
 
 class ServerBase(BaseModel):
@@ -24,13 +35,6 @@ class ServerBase(BaseModel):
     status: str = ServerStatus.ACTIVE.value
     provider_id: str | None = None
     notes: str | None = None
-
-
-class ServerCreate(ServerBase):
-    """Schema for creating a server."""
-
-    ssh_key: str | None = Field(None, description="Raw SSH private key to be encrypted")
-    provider_id: str | None = None
 
 
 class ServerRead(ServerBase, TimestampedDTO):
