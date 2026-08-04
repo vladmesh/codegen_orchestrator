@@ -180,7 +180,7 @@ the key's verdict; every access guard asks it.
 | `SECRETS_ENCRYPTION_KEY` | Fernet key for encrypting project secrets |
 | `ORCHESTRATOR_HOSTNAME` | Public hostname (for Caddy TLS, registry) |
 | `ORCHESTRATOR_PUBLIC_IP` | Public egress IP allowed to reach node monitoring ports |
-| `TIME4VPS_MANAGED_SERVER_IDS` | Required allowlist of provider IDs the orchestrator may provision or reinstall; empty denies all |
+| `TIME4VPS_MANAGED_SERVER_IDS` | Required non-empty production allowlist of provider IDs the orchestrator may provision or reinstall; empty is supported only as a default-deny local mode |
 | `TIME4VPS_LOGIN` | Time4VPS login used by infra-service provider verification |
 | `TIME4VPS_PASSWORD` | Time4VPS password used by infra-service provider verification |
 | `REGISTRY_USER` | Docker registry basic auth user |

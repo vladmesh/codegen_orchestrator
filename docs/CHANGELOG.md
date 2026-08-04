@@ -16,6 +16,8 @@
   legacy `force_reinstall` queue flag was removed end to end, and production deploys now preserve
   the provider credentials and orchestrator public IP required by the guarded path. Unauthorized
   stale scheduled rows are moved to `reserved` with an admin alert instead of retrying forever.
+  Force-rebuild publications use the full stuck timeout, preventing duplicate queued provisioning
+  while the single infra-service worker is busy.
 
 - The last eight duplicated request schemas have one definition each, and no class name is now
   defined in both `services/api/src/schemas/*` and `shared/contracts/dto/*`. `ApplicationCreate`,

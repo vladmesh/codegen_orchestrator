@@ -629,6 +629,7 @@ class ServerStatus(StrEnum):
     UNREACHABLE = "unreachable"
     MAINTENANCE = "maintenance"
     FORCE_REBUILD = "force_rebuild"
+    RESERVED = "reserved"
     DISCOVERED = "discovered"
 
 

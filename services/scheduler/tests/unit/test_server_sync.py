@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -132,10 +132,13 @@ async def test_sync_server_list_demotes_existing_unlisted_pending_server(
 
     await server_sync._sync_server_list(mock_time4vps_client)
 
-    update = mock_api_client.update_server.call_args.args[1]
-    assert update.is_managed is False
-    assert update.status == ServerStatus.RESERVED
-    mock_notify_admins.assert_awaited_once()
+    assert mock_api_client.update_server.await_count == 2
+    demotion = mock_api_client.update_server.await_args_list[0].args[1]
+    neutralization = mock_api_client.update_server.await_args_list[1].args[1]
+    assert demotion.is_managed is False
+    assert "status" not in demotion.model_fields_set
+    assert neutralization.status == ServerStatus.RESERVED
+    assert mock_notify_admins.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -364,6 +367,31 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
         transition = mock_api_client.update_server.call_args[0][1]
         assert "status" not in transition.model_fields_set
         assert transition.provisioning_started_at is not None
+
+
+@pytest.mark.asyncio
+async def test_force_rebuild_in_flight_waits_for_stuck_timeout(
+    mock_api_client, mock_notify_admins, monkeypatch
+):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "100")
+    five_minutes_ago = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=5)
+    server = _ready_server("rebuild-in-flight").model_copy(
+        update={
+            "status": ServerStatus.FORCE_REBUILD,
+            "provisioning_started_at": five_minutes_ago,
+        }
+    )
+    mock_api_client.get_servers = AsyncMock(return_value=[server])
+    mock_api_client.update_server = AsyncMock()
+
+    with patch(
+        "src.tasks.server_sync.publish_provisioner_trigger", new_callable=AsyncMock
+    ) as trigger:
+        published = await server_sync._check_provisioning_triggers()
+
+    assert published == 0
+    trigger.assert_not_awaited()
+    mock_api_client.update_server.assert_not_awaited()
 
 
 @pytest.mark.asyncio

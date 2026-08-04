@@ -94,6 +94,14 @@ class ProvisionerNode(FunctionalNode):
         self.orchestrator_ip = os.getenv("ORCHESTRATOR_PUBLIC_IP")
         self.orchestrator_hostname = os.getenv("ORCHESTRATOR_HOSTNAME")
 
+    async def _handle_denial(
+        self, server_handle: str, state: dict, denial: ProvisioningDenied
+    ) -> dict:
+        """Apply the denial's single state-write policy and return its result."""
+        if denial.mark_server_error:
+            await update_server_status(server_handle, "error")
+        return denial.as_result(state)
+
     async def _get_and_validate_server_info(
         self,
         server_handle: str,
@@ -143,6 +151,7 @@ class ProvisionerNode(FunctionalNode):
                 reason="time4vps_credentials_missing",
                 error="Missing TIME4VPS credentials",
                 message="❌ TIME4VPS credentials not configured",
+                mark_server_error=True,
             )
 
         time4vps_client = Time4VPSClient(time4vps_username, time4vps_password)
@@ -159,6 +168,7 @@ class ProvisionerNode(FunctionalNode):
                 reason="provider_identity_mismatch",
                 error="Provider identity mismatch",
                 message=f"❌ Provider identity mismatch for {server_handle}.",
+                mark_server_error=True,
             )
 
         return time4vps_client
@@ -321,9 +331,7 @@ class ProvisionerNode(FunctionalNode):
         try:
             target = await self._get_and_validate_server_info(server_handle)
         except ProvisioningDenied as denial:
-            if denial.mark_server_error:
-                await update_server_status(server_handle, "error")
-            return denial.as_result(state)
+            return await self._handle_denial(server_handle, state, denial)
 
         server_info = target.server
         server_id = target.provider_id
@@ -376,8 +384,7 @@ class ProvisionerNode(FunctionalNode):
         try:
             time4vps_client = await self._init_time4vps_client(server_handle, target)
         except ProvisioningDenied as denial:
-            await update_server_status(server_handle, "error")
-            return denial.as_result(state)
+            return await self._handle_denial(server_handle, state, denial)
 
         # Step 4: Update status
         await update_server_status(server_handle, "provisioning")

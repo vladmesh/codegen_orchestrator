@@ -42,6 +42,16 @@ class ManagementChange(NamedTuple):
     is_managed: bool
 
 
+class TriggerRule(NamedTuple):
+    """Status-specific scheduling behavior for one provisioning publication."""
+
+    wait: timedelta
+    transition: ServerUpdate
+    log_event: str
+    warning: bool = False
+    notification: str | None = None
+
+
 def _sync_interval() -> int:
     return startup.get_config().get_int("scheduler.server_sync_interval")
 
@@ -156,8 +166,8 @@ async def _reconcile_existing_server(
 ) -> tuple[bool, ManagementChange | None]:
     """Persist identity/policy drift without scheduling an existing server."""
     update = ServerUpdate()
-    if existing.labels.get("provider_id") != str(server_id):
-        update.labels = {**existing.labels, "provider_id": str(server_id)}
+    if parse_time4vps_server_id(existing.provider_id) != server_id:
+        update.provider_id = str(server_id)
     if existing.public_ip != ip:
         update.public_ip = ip
     if existing.host != hostname:
@@ -176,11 +186,9 @@ async def _reconcile_existing_server(
             is_managed=should_manage,
         )
 
-    # Preserve operational states on demotion. Neutralize only queued/in-flight work,
-    # including a stale scheduled status on promotion.
-    if existing.status in _SCHEDULED_STATUSES and (
-        management_change is not None or not should_manage
-    ):
+    # Promotion grants eligibility but must never preserve stale scheduled work. Demoted
+    # scheduled rows are neutralized by the canonical trigger-policy boundary below.
+    if management_change is not None and should_manage and existing.status in _SCHEDULED_STATUSES:
         update.status = ServerStatus.RESERVED
 
     if not update.model_fields_set:
@@ -215,6 +223,42 @@ async def _transition_and_publish(server: ServerDTO, transition: ServerUpdate) -
     return False
 
 
+async def _report_management_changes(
+    changes: list[ManagementChange], previous_by_handle: dict[str, ServerDTO]
+) -> None:
+    """Neutralize scheduled demotions and report allowlist-driven changes."""
+    for change in changes:
+        previous = previous_by_handle[change.handle]
+        if change.was_managed and not change.is_managed and previous.status in _SCHEDULED_STATUSES:
+            await _neutralize_unauthorized_trigger(previous)
+        logger.warning(
+            "server_management_changed",
+            server_handle=change.handle,
+            provider_id=change.provider_id,
+            was_managed=change.was_managed,
+            is_managed=change.is_managed,
+            reason="provider_id_allowlist",
+        )
+        await notify_admins_best_effort(
+            f"Server management changed for *{change.handle}* "
+            f"(provider ID {change.provider_id}): managed={change.was_managed} "
+            f"→ managed={change.is_managed}. "
+            "Existing servers are never auto-provisioned by this change.",
+            level="warning",
+            component="server_sync",
+            server_handle=change.handle,
+        )
+
+    demoted = [change for change in changes if change.was_managed and not change.is_managed]
+    if len(demoted) > 1:
+        await notify_admins_best_effort(
+            f"Critical provisioning policy change: {len(demoted)} servers were demoted in one "
+            "sync cycle. Check TIME4VPS_MANAGED_SERVER_IDS before continuing operations.",
+            level="critical",
+            component="server_sync",
+        )
+
+
 async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
     """Sync basic server list - discover new, mark missing.
 
@@ -240,6 +284,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
 
     # Provider ID is the stable identity. IP is only a fallback for legacy rows.
     db_servers_list = await api_client.get_servers()
+    db_servers_by_handle = {server.handle: server for server in db_servers_list}
     db_servers_by_provider_id = {}
     for server in db_servers_list:
         provider_id = parse_time4vps_server_id(server.provider_id)
@@ -347,35 +392,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
                 server_ip=server.public_ip,
             )
 
-    for change in management_changes:
-        logger.warning(
-            "server_management_changed",
-            server_handle=change.handle,
-            provider_id=change.provider_id,
-            was_managed=change.was_managed,
-            is_managed=change.is_managed,
-            reason="provider_id_allowlist",
-        )
-        await notify_admins_best_effort(
-            f"Server management changed for *{change.handle}* "
-            f"(provider ID {change.provider_id}): managed={change.was_managed} "
-            f"→ managed={change.is_managed}. "
-            "Existing servers are never auto-provisioned by this change.",
-            level="warning",
-            component="server_sync",
-            server_handle=change.handle,
-        )
-
-    demoted = [
-        change for change in management_changes if change.was_managed and not change.is_managed
-    ]
-    if len(demoted) > 1:
-        await notify_admins_best_effort(
-            f"Critical provisioning policy change: {len(demoted)} servers were demoted in one "
-            "sync cycle. Check TIME4VPS_MANAGED_SERVER_IDS before continuing operations.",
-            level="critical",
-            component="server_sync",
-        )
+    await _report_management_changes(management_changes, db_servers_by_handle)
 
     # Send notifications for new managed servers
     for server in new_managed_servers:
@@ -496,13 +513,6 @@ async def _sync_server_details(client: Time4VPSClient) -> int:
     return updated_count
 
 
-def _in_trigger_cooldown(server: ServerDTO, now: datetime, trigger_cooldown: timedelta) -> bool:
-    """Return whether a scheduled server was published too recently."""
-    return bool(
-        server.provisioning_started_at and (now - server.provisioning_started_at) < trigger_cooldown
-    )
-
-
 async def _neutralize_unauthorized_trigger(server: ServerDTO) -> None:
     """Cancel stale scheduled work that no longer passes provisioning policy."""
     await api_client.update_server(
@@ -551,83 +561,67 @@ async def _check_provisioning_triggers() -> int:
         else:
             await _neutralize_unauthorized_trigger(server)
 
-    # 1. FORCE_REBUILD
-    force_rebuild_servers = [s for s in actionable if s.status == ServerStatus.FORCE_REBUILD]
-
-    for server in force_rebuild_servers:
-        if _in_trigger_cooldown(server, now, trigger_cooldown):
-            logger.info(
-                "provisioning_trigger_cooldown_skipped",
-                server_handle=server.handle,
-                status=server.status,
-                started_at=server.provisioning_started_at.isoformat(),
-                cooldown_seconds=_provisioning_cooldown(),
-            )
-            continue
-
-        logger.warning(
-            "server_force_rebuild_trigger",
-            server_handle=server.handle,
-        )
-
-        if await _transition_and_publish(
-            server,
+    rules = {
+        ServerStatus.FORCE_REBUILD: TriggerRule(
+            wait=stuck_timeout,
             # Keep FORCE_REBUILD until infra-service consumes the explicit reinstall intent.
-            ServerUpdate(provisioning_started_at=now),
-        ):
-            triggers_published += 1
-            await notify_admins_best_effort(
-                f"Force rebuild triggered for server *{server.handle}*. Provisioning started.",
-                level="warning",
-                component="server_sync",
-                server_handle=server.handle,
-            )
+            transition=ServerUpdate(provisioning_started_at=now),
+            log_event="server_force_rebuild_trigger",
+            warning=True,
+            notification="Force rebuild triggered",
+        ),
+        ServerStatus.PENDING_SETUP: TriggerRule(
+            wait=trigger_cooldown,
+            transition=ServerUpdate(
+                status=ServerStatus.PROVISIONING,
+                provisioning_started_at=now,
+            ),
+            log_event="server_pending_setup_trigger",
+        ),
+        ServerStatus.PROVISIONING: TriggerRule(
+            wait=stuck_timeout,
+            transition=ServerUpdate(provisioning_started_at=now),
+            log_event="provisioning_timeout_trigger",
+            warning=True,
+        ),
+    }
 
-    # 2. PENDING_SETUP
-    pending_servers = [s for s in actionable if s.status == ServerStatus.PENDING_SETUP]
-
-    for server in pending_servers:
-        if _in_trigger_cooldown(server, now, trigger_cooldown):
+    for server in actionable:
+        rule = rules[server.status]
+        if server.provisioning_started_at is None:
+            if server.status == ServerStatus.PROVISIONING:
+                # A legacy/incomplete transition has no publication timestamp. Mark it now
+                # and wait one full stuck window rather than publishing an immediate duplicate.
+                await api_client.update_server(
+                    server.handle, ServerUpdate(provisioning_started_at=now)
+                )
+                logger.info("provisioning_start_marked", server_handle=server.handle)
+                continue
+        elif now - server.provisioning_started_at < rule.wait:
             logger.info(
-                "provisioning_trigger_cooldown_skipped",
+                "provisioning_trigger_wait_skipped",
                 server_handle=server.handle,
                 status=server.status,
                 started_at=server.provisioning_started_at.isoformat(),
-                cooldown_seconds=_provisioning_cooldown(),
+                wait_seconds=int(rule.wait.total_seconds()),
             )
             continue
 
-        logger.info("server_pending_setup_trigger", server_handle=server.handle)
-
-        if await _transition_and_publish(
-            server,
-            ServerUpdate(status=ServerStatus.PROVISIONING, provisioning_started_at=now),
-        ):
-            triggers_published += 1
-
-    # 3. Stuck Provisioning (PROVISIONING status)
-    provisioning_servers = [s for s in actionable if s.status == ServerStatus.PROVISIONING]
-
-    for server in provisioning_servers:
-        if server.provisioning_started_at is None:
-            # Should have started_at if status is provisioning, but fix if missing
-            await api_client.update_server(server.handle, ServerUpdate(provisioning_started_at=now))
-            logger.info("provisioning_start_marked", server_handle=server.handle)
-            continue
-
-        if now - server.provisioning_started_at < stuck_timeout:
-            continue
-
-        logger.warning(
-            "provisioning_timeout_trigger",
+        log = logger.warning if rule.warning else logger.info
+        log(
+            rule.log_event,
             server_handle=server.handle,
-            started_at=server.provisioning_started_at.isoformat(),
-            timeout_seconds=_provisioning_stuck_timeout(),
             attempts=server.provisioning_attempts,
         )
-
-        if await _transition_and_publish(server, ServerUpdate(provisioning_started_at=now)):
+        if await _transition_and_publish(server, rule.transition):
             triggers_published += 1
+            if rule.notification:
+                await notify_admins_best_effort(
+                    f"{rule.notification} for server *{server.handle}*. Provisioning started.",
+                    level="warning",
+                    component="server_sync",
+                    server_handle=server.handle,
+                )
 
     return triggers_published
 
