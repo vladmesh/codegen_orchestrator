@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.engineering import EngineeringMessage
 
 
@@ -174,17 +175,17 @@ class TestLangGraphIntegration:
     ):
         """Engineering worker fails at resource/GitHub boundary for non-draft projects.
 
-        scaffold_failed projects are not explicitly rejected — the worker proceeds
-        but fails at a later boundary (resource allocation, GitHub, etc.).
+        A project past draft is not explicitly rejected — the worker skips repo
+        creation and fails at a later boundary (resource allocation, GitHub, etc.).
         """
         suffix = uuid4().hex[:6]
         run_id = f"eng-{uuid4().hex[:12]}"
 
-        # Seed project with scaffold_failed status
+        # Seed a project past draft: the consumer branches on draft only.
         project = await seed_project(
-            name="Scaffold Failed Project",
-            status="scaffold_failed",
-            config={"description": "Previously failed scaffold"},
+            name="Non Draft Project",
+            status=ProjectStatus.ACTIVE.value,
+            config={"description": "Already scaffolded"},
         )
         project_id = project["id"]
         task = await seed_task(

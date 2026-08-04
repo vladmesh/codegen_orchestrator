@@ -15,7 +15,8 @@
   `config`, where they are actually stored, and a top-level one was being dropped in silence.
   `status` is typed `ProjectStatus` on both, so a status the enum does not define is now a 422 —
   three service tests were creating projects with `"created"`, a `StoryStatus` value that projects
-  never had. `tests/unit/test_request_schemas_are_not_duplicated.py` fails on any new class name
+  never had, and one integration test with `"scaffold_failed"`, which migration `b3c4d5e6f7a8` took
+  out of the enum. `tests/unit/test_request_schemas_are_not_duplicated.py` fails on any new class name
   defined in both trees; the 19 names still duplicated are listed there, and the list is checked for
   stale entries so it can only shrink. Tests:
   `services/api/tests/service/test_project_spec_sync.py`.
