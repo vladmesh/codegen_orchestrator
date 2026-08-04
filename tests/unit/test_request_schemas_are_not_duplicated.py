@@ -26,14 +26,22 @@ MERGED = [
     ("analytics", "AnalyticsHourlyCreate"),
     ("analytics", "AnalyticsKnownUserUpsert"),
     ("analytics", "AnalyticsKnownUsersBatchUpsert"),
+    ("application", "ApplicationCreate"),
+    ("application", "ApplicationUpdate"),
+    ("incident", "IncidentCreate"),
     ("incident", "IncidentUpdate"),
     ("project", "ProjectCreate"),
     ("project", "ProjectUpdate"),
     ("repository", "RepositoryCreate"),
     ("repository", "RepositoryUpdate"),
+    ("run", "RunCreate"),
+    ("server", "ServerCreate"),
+    ("story", "StoryCreate"),
+    ("story", "StoryUpdate"),
     ("task", "TaskCreate"),
     ("task", "TaskEventCreate"),
     ("task", "TaskUpdate"),
+    ("temporary_access", "TemporaryAccessGrantCreate"),
     ("temporary_access", "TemporaryAccessGrantUpdate"),
 ]
 
@@ -41,17 +49,9 @@ ROOT = Path(__file__).resolve().parents[2]
 API_SCHEMAS = ROOT / "services" / "api" / "src" / "schemas"
 CONTRACT_DTOS = ROOT / "shared" / "contracts" / "dto"
 
-# Names still defined twice, each pending its own merge. Do not add to this list.
-KNOWN_DUPLICATES = {
-    "ApplicationCreate",
-    "ApplicationUpdate",
-    "IncidentCreate",
-    "RunCreate",
-    "ServerCreate",
-    "StoryCreate",
-    "StoryUpdate",
-    "TemporaryAccessGrantCreate",
-}
+# Names still defined twice, each pending its own merge. Empty: every request
+# schema now has one definition. Do not add to this list.
+KNOWN_DUPLICATES: set[str] = set()
 
 
 def _defined_class_names(package: Path) -> dict[str, str]:

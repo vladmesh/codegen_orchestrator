@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from enum import StrEnum
+import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -84,7 +85,7 @@ class TemporaryAccessGrantCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1)
-    project_id: str = Field(min_length=1)
+    project_id: uuid.UUID
     env_key: str = Field(min_length=1)
     subject: str = Field(min_length=1)
     # The commit the access was deployed on. Revoking redeploys that same commit

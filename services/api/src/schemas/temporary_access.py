@@ -8,13 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.run_result import QARunResult
 
-# The update schema is the contract every client already imports; the API
-# validates against that same object rather than a look-alike of its own.
+# The request schemas are the contract every client already imports; the API
+# validates against those same objects rather than look-alikes of its own.
 from shared.contracts.dto.temporary_access import (
+    TemporaryAccessGrantCreate,
     TemporaryAccessGrantUpdate,
     TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
 )
+from shared.contracts.queues.qa import QAMessage
 
 __all__ = [
     "TemporaryAccessEscalation",
@@ -22,23 +24,6 @@ __all__ = [
     "TemporaryAccessGrantRead",
     "TemporaryAccessGrantUpdate",
 ]
-from shared.contracts.git_ref import CommitSha
-from shared.contracts.queues.qa import QAMessage
-
-
-class TemporaryAccessGrantCreate(BaseModel):
-    """Register a grant before the deploy that hands the access out."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(min_length=1)
-    project_id: uuid.UUID
-    env_key: str = Field(min_length=1)
-    subject: str = Field(min_length=1)
-    head_sha: CommitSha
-    qa_run_id: str = Field(min_length=1)
-    grant_run_id: str = Field(min_length=1)
-    qa_message: QAMessage
 
 
 class TemporaryAccessEscalation(BaseModel):

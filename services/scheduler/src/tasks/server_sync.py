@@ -234,7 +234,6 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
                 public_ip=ip,
                 is_managed=is_managed,
                 status=status,
-                provider_id=str(server_id),
                 labels={"provider_id": str(server_id)},
             )
             new_server = await api_client.create_server(server_create)
