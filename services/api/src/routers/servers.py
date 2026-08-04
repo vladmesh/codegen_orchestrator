@@ -19,6 +19,7 @@ from shared.contracts.dto.server import (
 )
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
+from shared.provisioning_policy import server_is_provisioning_allowed
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
@@ -347,7 +348,19 @@ async def update_server(
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
 
+    # provider_id is a computed property backed by labels, not a database column.
+    if "provider_id" in updates:
+        provider_id = updates.pop("provider_id")
+        labels = dict(updates.get("labels", server.labels))
+        if provider_id is None:
+            labels.pop("provider_id", None)
+        else:
+            labels["provider_id"] = str(provider_id)
+        updates["labels"] = labels
+
     allowed_fields = {
+        "host",
+        "public_ip",
         "status",
         "notes",
         "is_managed",
@@ -401,6 +414,12 @@ async def force_rebuild_server(
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
+
+    if not server_is_provisioning_allowed(server):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Server is not authorized for provisioning",
+        )
 
     server.status = ServerStatus.FORCE_REBUILD.value
     await db.commit()

@@ -629,6 +629,7 @@ class ServerStatus(StrEnum):
     UNREACHABLE = "unreachable"
     MAINTENANCE = "maintenance"
     FORCE_REBUILD = "force_rebuild"
+    RESERVED = "reserved"
     DISCOVERED = "discovered"
 
 
@@ -1514,7 +1515,6 @@ class DeveloperWorkerOutput(BaseResult):
 class ProvisionerMessage(BaseMessage):
     """Provision server."""
     server_handle: str       # Cloud provider ID (Droplet ID) or unique identifier
-    force_reinstall: bool = False
     is_recovery: bool = False
 
 

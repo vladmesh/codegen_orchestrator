@@ -262,40 +262,6 @@ class Time4VPSClient:
         logger.info("time4vps_reinstall_task_created", task_id=task_id, server_id=server_id)
         return task_id
 
-    async def get_server_id_by_handle(self, server_handle: str) -> int | None:
-        """Get Time4VPS server_id from handle.
-
-        Args:
-            server_handle: Server handle (e.g., 'vps-267179')
-
-        Returns:
-            server_id if found, None otherwise
-        """
-        try:
-            servers = await self.get_servers()
-            logger.info("time4vps_servers_listed", count=len(servers))
-
-            for server in servers:
-                # server is now Time4VPSServer model
-                srv_id = server.id
-                if not srv_id:
-                    logger.warning("time4vps_server_missing_id", server=server.model_dump())
-                    continue
-
-                # Match by handle (vps-{id})
-                if f"vps-{srv_id}" == server_handle:
-                    return srv_id
-
-            logger.error(
-                "time4vps_server_handle_not_found",
-                server_handle=server_handle,
-                scanned=len(servers),
-            )
-            return None
-        except Exception:
-            logger.exception("time4vps_server_lookup_failed", server_handle=server_handle)
-            return None
-
     async def wait_for_task(
         self, server_id: int, task_id: int, timeout: int = 600, poll_interval: int = 10
     ) -> Time4VPSTask:

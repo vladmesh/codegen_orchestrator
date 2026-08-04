@@ -77,8 +77,9 @@ The system supports a hybrid infrastructure synchronized with the provider (Time
 
 1.  **Source of Truth**: the database (the `api` service).
     *   A background worker (`server_sync.py`) polls the Time4VPS API every minute.
-    *   New servers are added automatically with the `discovered` status.
-    *   Removed servers are marked as `missing`.
+    *   New allowlisted servers are added as `pending_setup`; every other new server is added as
+        inventory-only `reserved`.
+    *   Servers absent from the provider response are marked as `unreachable`.
 
 2.  **Access to the Time4VPS API is restricted by an address list** on the provider's side (the personal
     account, API access). The login can be correct, but a request from a disallowed address gets a `401` with the body
@@ -93,10 +94,18 @@ The system supports a hybrid infrastructure synchronized with the provider (Time
     automatically once the provider responds again. A cycle that failed to read the provider writes
     `server_sync_incomplete` at the error level and does not report zero counters as a successful synchronization.
 
-3.  **Ghost Servers & Filtering**:
-    *   Servers that have to be ignored (developers' personal machines) are listed in `GHOST_SERVERS`.
-    *   In the database they are marked as `is_managed=False`.
-    *   The `ResourceAllocator` uses the `list_managed_servers` function, which returns only `is_managed=True`.
+3.  **Explicit management allowlist**:
+    *   `TIME4VPS_MANAGED_SERVER_IDS` contains the immutable provider IDs this installation may
+        provision. Missing or malformed configuration fails closed.
+    *   Every other newly discovered provider server is inventory-only
+        (`is_managed=False`, `status=reserved`). Demotion preserves operational status but stops
+        health/allocation/provisioning consumers through `is_managed=False`.
+    *   Existing rows are never auto-provisioned when added to the allowlist; destructive reinstall
+        also requires an explicit `force-rebuild` request.
+    *   The scheduler and infra-service both enforce the same policy, and the reinstall operation
+        repeats it at the provider API boundary.
+    *   A stale scheduled row that no longer passes policy is moved to `reserved` and produces one
+        administrator alert instead of being retried indefinitely.
 
 ## GitHub App & Secrets
 

@@ -31,14 +31,12 @@ class ProvisionerProxyNode(FunctionalNode):
             state: Graph state containing:
                 - server_to_provision: Server handle to provision
                 - is_incident_recovery: Whether this is incident recovery
-                - force_reinstall: Force OS reinstall flag
 
         Returns:
             Updated state with queued status
         """
         server_handle = state.get("server_to_provision")
         is_recovery = state.get("is_incident_recovery", False)
-        force_reinstall = state.get("force_reinstall", False)
         correlation_id = state.get("correlation_id")
 
         if not server_handle:
@@ -50,7 +48,6 @@ class ProvisionerProxyNode(FunctionalNode):
         try:
             request_id = await provisioner_client.trigger_provisioning(
                 server_handle=server_handle,
-                force_reinstall=force_reinstall,
                 is_recovery=is_recovery,
                 correlation_id=correlation_id,
             )

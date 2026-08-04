@@ -39,7 +39,7 @@ make test-clean            # Cleanup test containers
 
 # Server access
 ./infra/scripts/ssh-to-server.sh <server_ip> [command...]  # SSH via API-stored key
-# Example: ./infra/scripts/ssh-to-server.sh 80.209.235.229 'docker ps'
+# Example: ./infra/scripts/ssh-to-server.sh 203.0.113.10 'docker ps'
 # Fetches SSH key from API, writes to tempfile, connects. No local key needed.
 ```
 
@@ -213,4 +213,3 @@ def deploy_to_server(server_handle: str):
 - [VISION.md](docs/VISION.md) — what the product is, who it is for, architectural invariants
 - [ROADMAP.md](docs/ROADMAP.md) — product arcs and what is deferred
 - [CHANGELOG.md](docs/CHANGELOG.md) — release history
-

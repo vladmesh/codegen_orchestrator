@@ -31,10 +31,46 @@ section below for the operation. The `/opt/services` ownership contract is appli
 `deploy_target` role, which the baseline run does not cover — it applies only the
 `monitoring` tag.
 
+### Destructive provisioning safety
+
+Time4VPS discovery is default-deny. `TIME4VPS_MANAGED_SERVER_IDS` must contain the comma-separated
+provider IDs of the servers this installation is allowed to provision. An absent or empty value
+means that no Time4VPS server is managed. Every other newly discovered server is stored as
+`is_managed=false` with status `reserved`; it is visible to inventory reads but never enters a
+provisioning trigger.
+
+The same allowlist is checked again by `infra-service` before either Ansible or reinstall work and
+once more immediately before an OS reinstall. The `is_managed` database flag and the scheduler
+trigger filters are separate guards, so a stale status or a manually published queue message cannot
+by itself authorize provisioning.
+
+To adopt a new blank target:
+
+1. Read its immutable provider ID from the Time4VPS account and verify the target by both ID and IP.
+2. Set the production GitHub secrets `TIME4VPS_MANAGED_SERVER_IDS`, `TIME4VPS_LOGIN`,
+   `TIME4VPS_PASSWORD`, and `ORCHESTRATOR_PUBLIC_IP`, then run the deploy workflow. The workflow owns
+   and rewrites the server `.env`; all four values are preserved from those secrets.
+3. A brand-new allowlisted provider server enters `pending_setup`. Adding an existing inventory row
+   to the allowlist only marks it managed and sends an alert; it does not schedule work. Restoring
+   an accidentally removed ID preserves the server's prior operational status. For a verified blank
+   existing row, explicitly PATCH its status to `pending_setup` to use the non-destructive SSH path.
+4. If a verified blank server has no working orchestrator SSH access, request `force-rebuild`
+   explicitly through the admin API and watch the provisioning logs. The scheduler keeps that
+   persisted intent until infra-service claims it, then infra-service changes the lifecycle status
+   to `provisioning` immediately before the guarded reinstall path.
+
+The allowlist authorizes both non-destructive Ansible maintenance and an explicit admin-requested
+reinstall; it does not schedule or reinstall an existing server merely because its ID was added.
+Never list personal or development servers. A populated production server may be listed for adopted
+maintenance only after its identity and backups are verified; protect admin/internal API credentials
+because an explicit `force-rebuild` request is the remaining reinstall authority. A failed SSH probe
+alone never authorizes reinstall.
+
 ## Monitoring baseline for adopted servers
 
 To install monitoring without reinstalling or running the full provisioning path,
-run the supported operation from the infra-service container:
+first ensure the adopted server is managed and its provider ID is in
+`TIME4VPS_MANAGED_SERVER_IDS`, then run the supported operation from the infra-service container:
 
 ```bash
 docker compose exec infra-service python -m src.provisioner.monitoring_baseline SERVER_HANDLE
@@ -143,7 +179,10 @@ the key's verdict; every access guard asks it.
 |--------|-------------|
 | `SECRETS_ENCRYPTION_KEY` | Fernet key for encrypting project secrets |
 | `ORCHESTRATOR_HOSTNAME` | Public hostname (for Caddy TLS, registry) |
-| `GHOST_SERVERS` | Comma-separated IPs of managed servers |
+| `ORCHESTRATOR_PUBLIC_IP` | Public egress IP allowed to reach node monitoring ports |
+| `TIME4VPS_MANAGED_SERVER_IDS` | Required non-empty production allowlist of provider IDs the orchestrator may provision or reinstall; empty is supported only as a default-deny local mode |
+| `TIME4VPS_LOGIN` | Time4VPS login used by infra-service provider verification |
+| `TIME4VPS_PASSWORD` | Time4VPS password used by infra-service provider verification |
 | `REGISTRY_USER` | Docker registry basic auth user |
 | `REGISTRY_PASSWORD` | Docker registry password |
 | `REGISTRY_PASSWORD_HASH` | Bcrypt hash of registry password (for Caddy) |

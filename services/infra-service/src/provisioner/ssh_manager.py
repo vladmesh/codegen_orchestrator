@@ -2,7 +2,6 @@
 
 import os
 import subprocess
-import time
 
 import structlog
 
@@ -66,56 +65,3 @@ class SSHManager:
             with open(self.pub_key_path) as f:
                 return f.read().strip()
         return None
-
-    def check_ssh_access(self, server_ip: str, timeout: int = 10) -> bool:
-        """Check if server is accessible via SSH key.
-
-        Args:
-            server_ip: Server IP address
-            timeout: Check timeout in seconds
-
-        Returns:
-            True if accessible via SSH key
-        """
-        self.ensure_keys_exist()
-
-        cmd = [
-            "ssh",
-            "-i",
-            self.key_path,
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=5",
-            f"root@{server_ip}",
-            "echo success",
-        ]
-
-        start = time.time()
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            success = result.returncode == 0 and "success" in result.stdout
-            duration_ms = (time.time() - start) * 1000
-
-            log_method = logger.info if success else logger.info
-            log_method(
-                "ssh_connection_test",
-                host=server_ip,
-                success=success,
-                duration_ms=round(duration_ms, 2),
-            )
-            return success
-        except Exception as e:
-            duration_ms = (time.time() - start) * 1000
-            logger.warning(
-                "ssh_connection_test_failed",
-                host=server_ip,
-                duration_ms=round(duration_ms, 2),
-                error=str(e),
-                error_type=type(e).__name__,
-            )
-            return False

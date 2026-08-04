@@ -36,6 +36,10 @@ jobs:
           REQUIRED_GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           REQUIRED_LOKI_PUSH_USER: ${{ secrets.LOKI_PUSH_USER }}
           REQUIRED_LOKI_PUSH_PASSWORD_HASH: ${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
+          REQUIRED_TIME4VPS_MANAGED_SERVER_IDS: ${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
+          REQUIRED_TIME4VPS_LOGIN: ${{ secrets.TIME4VPS_LOGIN }}
+          REQUIRED_TIME4VPS_PASSWORD: ${{ secrets.TIME4VPS_PASSWORD }}
+          REQUIRED_ORCHESTRATOR_PUBLIC_IP: ${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
         run: |
           set -euo pipefail
           missing=()
@@ -49,7 +53,11 @@ jobs:
             REQUIRED_GRAFANA_DB_PASSWORD \
             REQUIRED_GRAFANA_ADMIN_PASSWORD \
             REQUIRED_LOKI_PUSH_USER \
-            REQUIRED_LOKI_PUSH_PASSWORD_HASH
+            REQUIRED_LOKI_PUSH_PASSWORD_HASH \
+            REQUIRED_TIME4VPS_MANAGED_SERVER_IDS \
+            REQUIRED_TIME4VPS_LOGIN \
+            REQUIRED_TIME4VPS_PASSWORD \
+            REQUIRED_ORCHESTRATOR_PUBLIC_IP
           do
             if [ -z "${!name}" ]; then
               missing+=("${name#REQUIRED_}")
@@ -106,7 +114,10 @@ jobs:
 
             # Infrastructure
             ORCHESTRATOR_HOSTNAME=${{ secrets.ORCHESTRATOR_HOSTNAME }}
-            GHOST_SERVERS=${{ secrets.GHOST_SERVERS }}
+            ORCHESTRATOR_PUBLIC_IP=${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
+            TIME4VPS_MANAGED_SERVER_IDS=${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
+            TIME4VPS_LOGIN=${{ secrets.TIME4VPS_LOGIN }}
+            TIME4VPS_PASSWORD=${{ secrets.TIME4VPS_PASSWORD }}
 
             # Registry
             REGISTRY_USER=${{ secrets.REGISTRY_USER }}

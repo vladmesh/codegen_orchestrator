@@ -116,3 +116,46 @@ async def test_manual_provision_is_explicitly_unimplemented(async_client, test_s
     assert response.status_code == HTTPStatus.NOT_IMPLEMENTED
     after = await async_client.get(f"/api/servers/{test_server}")
     assert after.json()["status"] == before.json()["status"]
+
+
+@pytest.mark.asyncio
+async def test_patch_server_identity_fields_roundtrip(async_client, test_server):
+    """Sync can persist provider identity drift through the real API/DB boundary."""
+    response = await async_client.patch(
+        f"/api/servers/{test_server}",
+        json={
+            "host": "renamed.example.com",
+            "public_ip": "10.0.0.100",
+            "provider_id": "1001",
+            "is_managed": False,
+        },
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    persisted = (await async_client.get(f"/api/servers/{test_server}")).json()
+    assert persisted["host"] == "renamed.example.com"
+    assert persisted["public_ip"] == "10.0.0.100"
+    assert persisted["provider_id"] == "1001"
+    assert persisted["is_managed"] is False
+
+
+@pytest.mark.asyncio
+async def test_force_rebuild_requires_managed_allowlisted_provider_id(
+    async_client, test_server, monkeypatch
+):
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    await async_client.patch(
+        f"/api/servers/{test_server}",
+        json={"labels": {"provider_id": "1001"}, "is_managed": False},
+    )
+
+    denied = await async_client.post(f"/api/servers/{test_server}/force-rebuild")
+    assert denied.status_code == HTTPStatus.CONFLICT
+
+    await async_client.patch(
+        f"/api/servers/{test_server}",
+        json={"is_managed": True},
+    )
+    allowed = await async_client.post(f"/api/servers/{test_server}/force-rebuild")
+    assert allowed.status_code == HTTPStatus.OK
+    assert allowed.json()["status"] == "force_rebuild"

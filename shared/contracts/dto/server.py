@@ -32,7 +32,7 @@ class ServerStatus(StrEnum):
     MAINTENANCE = "maintenance"  # Плановое обслуживание
 
     # Archive
-    RESERVED = "reserved"  # Ghost server (личный)
+    RESERVED = "reserved"  # Inventory-only; no provisioning is scheduled
     MISSING = "missing"  # Пропал из Time4VPS API
     DECOMMISSIONED = "decommissioned"  # Выведен из эксплуатации
 

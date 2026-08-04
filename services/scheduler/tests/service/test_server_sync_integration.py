@@ -1,16 +1,17 @@
 import os
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from shared.clients.time4vps import Time4VPSAPIError
 from shared.contracts.dto.incident import IncidentType
-from shared.contracts.dto.server import ServerStatus
+from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from src.tasks import server_sync
 
 
 @pytest.mark.asyncio
-async def test_server_sync_integration_flow(time4vps_mock, api_client):
+async def test_server_sync_integration_flow(time4vps_mock, api_client, monkeypatch):
     """
     Integration Test: Server Sync Flow
 
@@ -35,17 +36,18 @@ async def test_server_sync_integration_flow(time4vps_mock, api_client):
         assert resp.status_code == httpx.codes.CREATED, f"Failed to seed API key: {resp.text}"
 
     # 2. Mock Time4VPS Response
-    time4vps_mock.get("/api/server").respond(
+    provider_servers = [
+        {
+            "id": 999,
+            "domain": "integration-vps.com",
+            "ip": "10.0.0.1",
+            "price": "9.99",
+            "status": "Active",
+        }
+    ]
+    server_list_route = time4vps_mock.get("/api/server").respond(
         status_code=200,
-        json=[
-            {
-                "id": 999,
-                "domain": "integration-vps.com",
-                "ip": "10.0.0.1",
-                "price": "9.99",
-                "status": "Active",  # Time4VPS returns capitalized
-            }
-        ],
+        json=provider_servers,
     )
     # Mock Details call (sync fetches details too)
     time4vps_mock.get("/api/server/999").respond(
@@ -81,8 +83,45 @@ async def test_server_sync_integration_flow(time4vps_mock, api_client):
 
     assert target is not None
     assert target.handle == "vps-999"
-    assert target.status == ServerStatus.PENDING_SETUP  # New managed servers are pending setup
-    assert target.is_managed is True
+    assert target.status == ServerStatus.RESERVED
+    assert target.is_managed is False
+
+    # Adding an existing inventory row to the allowlist promotes it without scheduling it.
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "999")
+    discovered, updated, _ = await server_sync._sync_server_list(time4vps_client)
+    assert discovered == 0
+    assert updated == 1
+    promoted = await api_client.get_server("vps-999")
+    assert promoted.is_managed is True
+    assert promoted.status == ServerStatus.RESERVED
+
+    # A genuinely new allowlisted server is the only discovery that enters pending_setup.
+    provider_servers.append(
+        {
+            "id": 1000,
+            "domain": "blank-vps.com",
+            "ip": "10.0.0.2",
+            "price": "9.99",
+            "status": "Active",
+        }
+    )
+    server_list_route.respond(status_code=200, json=provider_servers)
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "999,1000")
+    discovered, _, _ = await server_sync._sync_server_list(time4vps_client)
+    assert discovered == 1
+    blank = await api_client.get_server("vps-1000")
+    assert blank.is_managed is True
+    assert blank.status == ServerStatus.PENDING_SETUP
+
+    # A stale scheduled row outside policy is neutralized at the real API/DB boundary.
+    await api_client.update_server("vps-1000", ServerUpdate(status=ServerStatus.RESERVED))
+    await api_client.update_server("vps-999", ServerUpdate(status=ServerStatus.PENDING_SETUP))
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1000")
+    monkeypatch.setattr(server_sync, "notify_admins_best_effort", AsyncMock())
+    assert await server_sync._check_provisioning_triggers() == 0
+    neutralized = await api_client.get_server("vps-999")
+    assert neutralized.status == ServerStatus.RESERVED
+    assert neutralized.provisioning_started_at is None
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,23 @@
 
 ## 2026-08-04
 
+- **Fail-closed Time4VPS provisioning guard** (`issue:a6e238c69a60b84a1745`, hotfix):
+  provider discovery no longer treats every VPS in the account as an orchestrator target. Only IDs
+  explicitly listed in `TIME4VPS_MANAGED_SERVER_IDS` become managed and enter `pending_setup`;
+  absent configuration denies all, and every other server is recorded as unmanaged/reserved.
+  Existing records are reconciled by immutable provider ID rather than IP, management changes alert
+  admins, and promotion of an existing row never schedules work. Every scheduler publication path,
+  infra-service and the destructive operation boundary enforce the same policy before state writes.
+  A failed SSH probe no longer selects reinstall: only an explicit force-rebuild request can do so.
+  `GHOST_SERVERS` is removed, the production workflow preserves the required allowlist secret, and
+  provider ID/IP binding (including a required non-empty provider IP) is revalidated immediately
+  before provisioning. Demotion preserves operational status while neutralizing queued work, the
+  legacy `force_reinstall` queue flag was removed end to end, and production deploys now preserve
+  the provider credentials and orchestrator public IP required by the guarded path. Unauthorized
+  stale scheduled rows are moved to `reserved` with an admin alert instead of retrying forever.
+  Force-rebuild publications use the full stuck timeout, preventing duplicate queued provisioning
+  while the single infra-service worker is busy.
+
 - The last eight duplicated request schemas have one definition each, and no class name is now
   defined in both `services/api/src/schemas/*` and `shared/contracts/dto/*`. `ApplicationCreate`,
   `ApplicationUpdate`, `IncidentCreate`, `ServerCreate`, `StoryCreate`, `StoryUpdate` and

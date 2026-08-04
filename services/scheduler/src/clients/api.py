@@ -103,6 +103,10 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("GET", "servers/", params=params)
         return [ServerDTO.model_validate(s) for s in resp.json()]
 
+    async def get_server(self, server_handle: str) -> ServerDTO:
+        resp = await self.request("GET", f"servers/{server_handle}")
+        return ServerDTO.model_validate(resp.json())
+
     async def create_server(self, server: ServerCreate) -> ServerDTO:
         resp = await self.request("POST", "servers", json=server.model_dump())
         return ServerDTO.model_validate(resp.json())
