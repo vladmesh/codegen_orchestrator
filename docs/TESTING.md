@@ -1,6 +1,6 @@
 # Test Infrastructure
 
-> **Up to date as of**: 2026-03-18
+> **Up to date as of**: 2026-08-04
 
 ## Test Layers
 
@@ -62,8 +62,38 @@ Both must pass.
 | scheduler | 2 files | 2 files | — | — |
 | telegram_bot | 3 files | — | via frontend suite | — |
 | infra-service | — | — | 1 file (Ansible) | — |
+| scaffolder | 67 tests | — | — | — |
 | shared | 9 files | — | — | — |
 | packages (worker-wrapper) | 9 files | — | 3 files | — |
+
+`make test-unit` runs the 15 suites listed in `ALL_SUITES` (`scripts/test-unit-local.sh`).
+`scaffolder` joined them in August 2026: the service had unit tests and a `pyproject.toml`
+but was absent from `[tool.uv.workspace] members` and from every CI target, so its 67 tests
+ran nowhere.
+
+## The CI gate covers the tree, not a list
+
+`scripts/check-ci-gate.py` (`make ci-contract`, and the `CI Contract` job) derives the set of
+test directories by walking the tree for both default pytest file patterns, then compares it
+with what the CI targets actually claim: the `ALL_SUITES` table, and the pytest arguments in
+`docker/test/service/*.yml` and `docker/test/integration/*.yml`. A directory nobody runs fails
+the gate.
+
+Two rules keep the claim honest:
+
+- a directory argument claims the directory and everything under it; a **file** argument claims
+  only that file, because pytest does not recurse from one;
+- a target whose image reference is interpolated (`image: ${SOMETHING}`) is an unreadable route
+  and fails the gate rather than passing as declared.
+
+Skipping a suite stays possible, but only as a decision on the record: `UNCLAIMED_TEST_DIRS`
+holds one line per skipped directory, each with a reason, and the gate fails if a listed
+directory no longer exists. It currently holds six entries: `scripts` (hand-run drivers against
+a live stack), `tests/e2e` and `tests/e2e/mock_anthropic` (behind `docker/test/e2e/e2e.yml`,
+which no workflow and no make target invokes), `services/langgraph/tests/e2e` (needs a real LLM
+key and would only ever report a skip), `services/infra-service/tests/integration` (red) and
+`tests/integration/worker_wrapper` (red, needs a checkout that exists only inside a worker
+container).
 
 ## E2E Testing
 

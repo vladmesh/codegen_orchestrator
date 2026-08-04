@@ -84,6 +84,22 @@ taken from the default value.
 | `promtail` | Docker log scraper → Loki |
 | `grafana` | Dashboards + log viewer. Proxied via admin-frontend at `/grafana/` |
 
+### Talking to the internal API
+
+Every service reaches `api` through one module, `shared/clients/internal_api.py`, in an async
+and a synchronous form. It is where the base URL is resolved and where both required headers
+are set: `X-Internal-Key`, which authenticates the call as internal, and `X-Correlation-ID`,
+which keeps a request traceable across services. There is no second way in: a raw `httpx` call
+to the API from service code is a defect, not a shortcut.
+
+The rule exists because the alternative was tried. The transport used to be copied into
+`services/{langgraph,scheduler,infra-service,scaffolder,telegram_bot}/src/clients/api.py`, and
+the copies drifted: `telegram_bot` sent no `X-Internal-Key` at all and used a 10s timeout
+against everyone else's 30s, `scaffolder` had lost both URL guards, and the PO tools bypassed
+the typed client with 19 raw `httpx` calls carrying no correlation id. Authentication that one
+caller silently omits is not authentication, so the copies had to go before the API could
+require the header.
+
 ## Graph
 
 ```mermaid
