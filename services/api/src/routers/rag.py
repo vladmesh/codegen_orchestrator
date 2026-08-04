@@ -49,21 +49,6 @@ logger = structlog.get_logger()
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
-# Backward-compatible aliases (old private names → new public names)
-_verify_ingest_signature = verify_ingest_signature
-_build_signature = build_signature
-_get_encoding = get_encoding
-_generate_chunk_embeddings = generate_chunk_embeddings
-_search_chunks = search_chunks
-_apply_token_budget = apply_token_budget
-_upsert_document = upsert_document
-_apply_document_fields = apply_document_fields
-_parse_scope = parse_scope
-_resolve_scope_ids = resolve_scope_ids
-_validate_payload_targets = validate_payload_targets
-_hash_text = hash_text
-_chunk_document = chunk_document
-
 __all__ = [
     # Router
     "router",
