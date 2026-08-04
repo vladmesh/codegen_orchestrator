@@ -2,6 +2,47 @@
 
 ## 2026-08-04
 
+- A valid `X-Internal-Key` authenticates a service; it no longer makes that service anyone's
+  deputy. The guards used to return on the key alone, so once every caller sent it — the PO agent
+  and the bot included, and they name the end user in `X-Telegram-ID` — a Telegram user could have
+  asked the agent for a stranger's project or run and got it: `get_project`, the secret endpoints,
+  `teardown`, `get_run_status`. A request that names a user is now judged as that user, key or no
+  key; a service call that names none is unchanged, and an admin still reaches everything.
+  `resolve_actor` in `services/api/src/dependencies.py` is the single place that decides who is
+  acting, and the only place allowed to read the internal flag: `_check_project_access`,
+  `_check_run_access`, `require_internal_or_admin` and the two list endpoints ask it instead of
+  deciding for themselves. Writing the rule out by hand per guard is what let it be applied in
+  `projects.py` and missed in `runs.py`, so a test now fails when any other function reads the flag
+  — a guard nobody has written yet included. `GET /api/servers` requires an admin on the server
+  again, as it did before the transport work. Tests:
+  `services/api/tests/unit/test_internal_flag_has_one_reader.py`,
+  `services/api/tests/service/test_internal_key_is_not_impersonation.py`.
+
+- `docker/test/service/telegram_bot.yml` gives the bot `INTERNAL_API_KEY`, which the shared
+  transport reads at import: without it the container died on a `KeyError` while the suite still
+  reported a green smoke test from its runner. The bot's import is a healthcheck the runner waits
+  on now, so a bot that cannot start is a red suite instead of a green one with a dead service.
+
+- The transport to the internal API is written once, in `shared/clients/internal_api.py`. Five
+  services carried a near-identical `_get_client` / `_api_path` / `_request` — 1384 lines of client
+  code between them — and the copies had drifted: `services/telegram_bot` sent no `X-Internal-Key`
+  at all, and the PO tools bypassed their client entirely, holding a module-level `httpx.AsyncClient`
+  handed out by `init_po_clients()`. `SchedulerAPIClient`, `LanggraphAPIClient`,
+  `InfrastructureAPIClient`, `ScaffolderAPIClient` and `TelegramAPIClient` keep their names and their
+  application methods and now subclass `InternalAPIClient`; the only difference that survives, the
+  bot's 10-second timeout, is a constructor argument. `X-Internal-Key` and, when one is bound,
+  `X-Correlation-ID` go on every request from inside that module, so no caller can forget them:
+  `_get_api()` hands the PO tools the same client the rest of `langgraph` uses, and
+  `worker-manager`'s workspace-GC notification, the last raw `httpx` call to the internal API, goes
+  through it too. On the wire nothing else changed — same `/api` prefix, same refusal of an `api/`
+  path or an `API_BASE_URL` ending in `/api`, same `raise_for_status()`. Callers that read a status
+  code themselves (a 422 verdict, a 404 that means "not yet") use `request_raw` and its
+  `get_raw` / `post_raw` / `patch_raw` shorthands. Tests:
+  `shared/tests/unit/test_internal_api_transport.py` fails if a service grows its own `_request` or
+  its own `httpx.AsyncClient` aimed at the internal API, and
+  `services/telegram_bot/tests/unit/test_api_client_headers.py` fails if the bot's calls lose either
+  header.
+
 - The freshness check now answers for the whole tree, not for the part it happened to be able to
   compare. Every Dockerfile that bakes `shared` has to reach a declared image name through a build
   route — a compose service with an explicit `image:`, or a Makefile recipe that builds it under an

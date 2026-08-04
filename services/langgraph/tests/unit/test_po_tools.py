@@ -16,7 +16,7 @@ class TestSetProjectSecretAtomicMerge:
         mock_response.raise_for_status = MagicMock()
 
         mock_api = AsyncMock()
-        mock_api.post = AsyncMock(return_value=mock_response)
+        mock_api.post_raw = AsyncMock(return_value=mock_response)
 
         with patch("src.agents.po.tools_projects._get_api", return_value=mock_api):
             from src.agents.po.tools import set_project_secret
@@ -26,14 +26,14 @@ class TestSetProjectSecretAtomicMerge:
                 config={"configurable": {"thread_id": "po-user-1", "user_id": "1"}},
             )
 
-        mock_api.post.assert_called_once()
-        call_args = mock_api.post.call_args
-        assert "/api/projects/proj-1/config/secrets" in call_args[0][0]
+        mock_api.post_raw.assert_called_once()
+        call_args = mock_api.post_raw.call_args
+        assert "projects/proj-1/config/secrets" in call_args[0][0]
         payload = call_args[1]["json"]
         assert payload["secrets"] == {"NEW_KEY": "new-value"}
         assert "env_hints" not in payload
         assert "Secret 'NEW_KEY' set" in result
 
         # No GET or PATCH calls
-        mock_api.get.assert_not_called()
-        mock_api.patch.assert_not_called()
+        mock_api.get_raw.assert_not_called()
+        mock_api.patch_raw.assert_not_called()

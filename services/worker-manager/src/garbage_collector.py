@@ -3,12 +3,13 @@
 import os
 import time
 from datetime import datetime
+from http import HTTPStatus
 from pathlib import Path
 
-import httpx
 import structlog
 from redis.asyncio import Redis
 
+from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.worker import WorkerStatus
 from shared.redis import decode_redis_fields
 
@@ -154,18 +155,20 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
 async def _notify_workspace_deleted(repo_id: str) -> None:
     """Notify API that a workspace was GC'd so workspace_ready is cleared."""
     _, api_url = worker_urls(settings)
-    url = f"{api_url}/api/repositories/{repo_id}/notify-workspace-deleted"
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url)
-        if resp.status_code == 200:
-            logger.info("workspace_gc_notified_api", repo_id=repo_id)
-        else:
-            logger.warning(
-                "workspace_gc_notify_failed",
-                repo_id=repo_id,
-                status=resp.status_code,
-            )
+        client = InternalAPIClient(api_url, timeout=10)
+        try:
+            resp = await client.request_raw("POST", f"repositories/{repo_id}/notify-workspace-deleted")
+            if resp.status_code == HTTPStatus.OK:
+                logger.info("workspace_gc_notified_api", repo_id=repo_id)
+            else:
+                logger.warning(
+                    "workspace_gc_notify_failed",
+                    repo_id=repo_id,
+                    status=resp.status_code,
+                )
+        finally:
+            await client.close()
     except Exception as exc:
         logger.warning("workspace_gc_notify_error", repo_id=repo_id, error=str(exc))
 

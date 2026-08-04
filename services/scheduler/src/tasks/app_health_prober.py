@@ -241,7 +241,7 @@ async def _update_uptime(app_id: int, client: object) -> None:
     # The API returns history for last N hours
     # We need to fetch and compute: healthy_count / total_count * 100
     try:
-        resp = await client._request(
+        resp = await client.request(
             "GET", f"applications/{app_id}/health-history", params={"hours": 24}
         )
         history = resp.json()

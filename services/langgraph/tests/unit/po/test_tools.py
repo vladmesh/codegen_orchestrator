@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from shared.clients.internal_api import InternalAPIClient
 from shared.queues import PO_REMINDERS_KEY
 from src.agents.po.tools import (
     create_project,
@@ -40,8 +41,8 @@ def _init_clients(mock_api_client, mock_stream_client):
 
 @pytest.fixture
 def mock_api_client():
-    """Mock httpx.AsyncClient with async get/post/patch."""
-    client = AsyncMock(spec=httpx.AsyncClient)
+    """Mock internal API client with async get_raw/post_raw/patch_raw."""
+    client = AsyncMock(spec=InternalAPIClient)
     return client
 
 
@@ -76,7 +77,7 @@ class TestCreateProject:
     @pytest.mark.asyncio
     async def test_creates_project_with_modules(self, mock_api_client):
         project_data = {"id": "abc123", "title": "My Bot", "slug": "my-bot-abc1"}
-        mock_api_client.post.return_value = _make_response(project_data)
+        mock_api_client.post_raw.return_value = _make_response(project_data)
 
         result = await create_project.ainvoke(
             {"title": "My Bot", "modules": "backend,tg_bot", "description": "A test bot"},
@@ -84,9 +85,9 @@ class TestCreateProject:
         )
 
         # create_project makes 2 POST calls: project + repository
-        assert mock_api_client.post.call_count == 2
-        project_call = mock_api_client.post.call_args_list[0]
-        assert project_call[0][0] == "/api/projects/"
+        assert mock_api_client.post_raw.call_count == 2
+        project_call = mock_api_client.post_raw.call_args_list[0]
+        assert project_call[0][0] == "projects/"
         payload = project_call[1]["json"]
         assert payload["title"] == "My Bot"
         assert "backend" in payload["config"]["modules"]
@@ -97,7 +98,7 @@ class TestCreateProject:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("agent_type", ["claude", "factory", "codex"])
     async def test_persists_selected_developer_agent(self, mock_api_client, agent_type):
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {"id": "x", "title": "Project", "slug": "project-1234"}
         )
 
@@ -106,7 +107,7 @@ class TestCreateProject:
             config=_make_config("user-1"),
         )
 
-        project_call = mock_api_client.post.call_args_list[0]
+        project_call = mock_api_client.post_raw.call_args_list[0]
         assert project_call[1]["json"]["config"]["agent_type"] == agent_type
 
     @pytest.mark.asyncio
@@ -117,11 +118,11 @@ class TestCreateProject:
         )
 
         assert result == "Error: invalid agent_type: mystery. Available: claude, codex, factory"
-        mock_api_client.post.assert_not_called()
+        mock_api_client.post_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {"id": "x", "title": "Test", "slug": "test-1234"}
         )
 
@@ -130,13 +131,13 @@ class TestCreateProject:
             config=_make_config("12345"),
         )
 
-        call_args = mock_api_client.post.call_args
+        call_args = mock_api_client.post_raw.call_args
         headers = call_args[1].get("headers", {})
         assert headers.get("X-Telegram-ID") == "12345"
 
     @pytest.mark.asyncio
     async def test_ensures_backend_module(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {"id": "x", "title": "Test", "slug": "test-1234"}
         )
 
@@ -145,7 +146,7 @@ class TestCreateProject:
             config=_make_config("user-1"),
         )
 
-        project_call = mock_api_client.post.call_args_list[0]
+        project_call = mock_api_client.post_raw.call_args_list[0]
         payload = project_call[1]["json"]
         assert "backend" in payload["config"]["modules"]
 
@@ -157,11 +158,11 @@ class TestCreateProject:
         )
         assert "Error" in result
         assert "invalid_mod" in result
-        mock_api_client.post.assert_not_called()
+        mock_api_client.post_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_repository_failure_propagates(self, mock_api_client):
-        mock_api_client.post.side_effect = [
+        mock_api_client.post_raw.side_effect = [
             _make_response({"id": "abc123", "title": "My Bot", "slug": "my-bot-abc1"}),
             httpx.HTTPStatusError(
                 "repository unavailable", request=MagicMock(), response=MagicMock()
@@ -178,7 +179,7 @@ class TestCreateProject:
 class TestListProjects:
     @pytest.mark.asyncio
     async def test_lists_projects(self, mock_api_client):
-        mock_api_client.get.return_value = _make_response(
+        mock_api_client.get_raw.return_value = _make_response(
             [
                 {"id": "1", "title": "Project A", "slug": "proj-a-1111", "status": "active"},
                 {"id": "2", "title": "Project B", "slug": "proj-b-2222", "status": "draft"},
@@ -189,21 +190,21 @@ class TestListProjects:
 
         assert "Project A" in result
         assert "Project B" in result
-        mock_api_client.get.assert_called_once()
+        mock_api_client.get_raw.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
-        mock_api_client.get.return_value = _make_response([])
+        mock_api_client.get_raw.return_value = _make_response([])
 
         await list_projects.ainvoke({}, config=_make_config("99999"))
 
-        call_args = mock_api_client.get.call_args
+        call_args = mock_api_client.get_raw.call_args
         headers = call_args[1].get("headers", {})
         assert headers.get("X-Telegram-ID") == "99999"
 
     @pytest.mark.asyncio
     async def test_empty_list(self, mock_api_client):
-        mock_api_client.get.return_value = _make_response([])
+        mock_api_client.get_raw.return_value = _make_response([])
 
         result = await list_projects.ainvoke({}, config=_make_config("user-1"))
         assert "No projects" in result
@@ -213,29 +214,29 @@ class TestGetProject:
     @pytest.mark.asyncio
     async def test_gets_project(self, mock_api_client):
         project = {"id": "abc", "title": "My Bot", "slug": "my-bot-abc1", "status": "active"}
-        mock_api_client.get.return_value = _make_response(project)
+        mock_api_client.get_raw.return_value = _make_response(project)
 
         result = await get_project.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
         parsed = json.loads(result)
         assert parsed["title"] == "My Bot"
-        mock_api_client.get.assert_called_once()
-        assert "/api/projects/abc" in mock_api_client.get.call_args[0][0]
+        mock_api_client.get_raw.assert_called_once()
+        assert "projects/abc" in mock_api_client.get_raw.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
-        mock_api_client.get.return_value = _make_response({"id": "abc", "name": "x"})
+        mock_api_client.get_raw.return_value = _make_response({"id": "abc", "name": "x"})
 
         await get_project.ainvoke({"project_id": "abc"}, config=_make_config("55555"))
 
-        headers = mock_api_client.get.call_args[1].get("headers", {})
+        headers = mock_api_client.get_raw.call_args[1].get("headers", {})
         assert headers.get("X-Telegram-ID") == "55555"
 
 
 class TestSetProjectSecret:
     @pytest.mark.asyncio
     async def test_sets_secret(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"keys": ["OPENROUTER_API_KEY"]})
+        mock_api_client.post_raw.return_value = _make_response({"keys": ["OPENROUTER_API_KEY"]})
 
         result = await set_project_secret.ainvoke(
             {"project_id": "abc", "key": "OPENROUTER_API_KEY", "value": "sk-or-123"},
@@ -243,15 +244,15 @@ class TestSetProjectSecret:
         )
 
         assert "Secret" in result
-        call_args = mock_api_client.post.call_args
-        assert call_args[0][0] == "/api/projects/abc/config/secrets"
+        call_args = mock_api_client.post_raw.call_args
+        assert call_args[0][0] == "projects/abc/config/secrets"
         payload = call_args[1]["json"]
         assert payload["secrets"]["OPENROUTER_API_KEY"] == "sk-or-123"
 
     @pytest.mark.asyncio
     async def test_server_refusal_comes_back_as_an_error_message(self, mock_api_client):
         """A bot token is refused server-side — the PO must see why, not a traceback."""
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {"detail": "TELEGRAM_BOT_TOKEN cannot be set directly — use /telegram/token"},
             status_code=422,
         )
@@ -266,14 +267,14 @@ class TestSetProjectSecret:
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"keys": ["K"]})
+        mock_api_client.post_raw.return_value = _make_response({"keys": ["K"]})
 
         await set_project_secret.ainvoke(
             {"project_id": "abc", "key": "K", "value": "V"},
             config=_make_config("77777"),
         )
 
-        headers = mock_api_client.post.call_args[1].get("headers", {})
+        headers = mock_api_client.post_raw.call_args[1].get("headers", {})
         assert headers.get("X-Telegram-ID") == "77777"
 
     @pytest.mark.asyncio
@@ -291,66 +292,66 @@ class TestSetProjectSecret:
 
         assert result.startswith("Error:")
         assert "set_bot_access" in result
-        mock_api_client.post.assert_not_called()
+        mock_api_client.post_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_hint_no_env_hints(self, mock_api_client):
         """When no hint is provided, env_hints should not be in payload."""
-        mock_api_client.post.return_value = _make_response({"keys": ["TOKEN"]})
+        mock_api_client.post_raw.return_value = _make_response({"keys": ["TOKEN"]})
 
         await set_project_secret.ainvoke(
             {"project_id": "abc", "key": "TOKEN", "value": "abc123"},
             config=_make_config("user-42"),
         )
 
-        payload = mock_api_client.post.call_args[1]["json"]
+        payload = mock_api_client.post_raw.call_args[1]["json"]
         assert "env_hints" not in payload
 
     @pytest.mark.asyncio
     async def test_no_get_patch_calls(self, mock_api_client):
         """Tool should use single POST, not GET+PATCH (race condition fix)."""
-        mock_api_client.post.return_value = _make_response({"keys": ["K"]})
+        mock_api_client.post_raw.return_value = _make_response({"keys": ["K"]})
 
         await set_project_secret.ainvoke(
             {"project_id": "abc", "key": "K", "value": "V"},
             config=_make_config("user-42"),
         )
 
-        mock_api_client.get.assert_not_called()
-        mock_api_client.patch.assert_not_called()
+        mock_api_client.get_raw.assert_not_called()
+        mock_api_client.patch_raw.assert_not_called()
 
 
 class TestBotAccess:
     @pytest.mark.asyncio
     async def test_only_me_stores_the_callers_contract_audience(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"mode": "only_me"})
+        mock_api_client.post_raw.return_value = _make_response({"mode": "only_me"})
 
         result = await set_bot_access.ainvoke(
             {"project_id": "abc", "mode": "only_me"}, config=_make_config("77777")
         )
 
         assert "only_me" in result
-        assert mock_api_client.post.call_args.args[0] == "/api/projects/abc/config/bot-access"
-        assert mock_api_client.post.call_args.kwargs["json"] == {
+        assert mock_api_client.post_raw.call_args.args[0] == "projects/abc/config/bot-access"
+        assert mock_api_client.post_raw.call_args.kwargs["json"] == {
             "mode": "only_me",
             "allowed_telegram_ids": "77777",
         }
 
     @pytest.mark.asyncio
     async def test_public_stores_an_explicit_empty_audience(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"mode": "public"})
+        mock_api_client.post_raw.return_value = _make_response({"mode": "public"})
 
         await set_bot_access.ainvoke(
             {"project_id": "abc", "mode": "public"}, config=_make_config("77777")
         )
 
-        assert mock_api_client.post.call_args.kwargs["json"] == {
+        assert mock_api_client.post_raw.call_args.kwargs["json"] == {
             "mode": "public",
             "allowed_telegram_ids": "",
         }
 
     async def test_custom_stores_the_selected_contract_audience(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response({"mode": "custom"})
+        mock_api_client.post_raw.return_value = _make_response({"mode": "custom"})
 
         result = await set_bot_access.ainvoke(
             {"project_id": "abc", "mode": "custom", "allowed_telegram_ids": "77777,88888"},
@@ -358,7 +359,7 @@ class TestBotAccess:
         )
 
         assert "custom" in result
-        assert mock_api_client.post.call_args.kwargs["json"] == {
+        assert mock_api_client.post_raw.call_args.kwargs["json"] == {
             "mode": "custom",
             "allowed_telegram_ids": "77777,88888",
         }
@@ -370,7 +371,7 @@ class TestBotAccess:
         )
 
         assert result.startswith("Error:")
-        mock_api_client.post.assert_not_called()
+        mock_api_client.post_raw.assert_not_called()
 
 
 class TestValidateTelegramToken:
@@ -378,7 +379,7 @@ class TestValidateTelegramToken:
 
     @pytest.mark.asyncio
     async def test_posts_token_to_the_validator_endpoint(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {
                 "status": "ok",
                 "reason_code": None,
@@ -393,18 +394,18 @@ class TestValidateTelegramToken:
             config=_make_config("user-42"),
         )
 
-        call_args = mock_api_client.post.call_args
-        assert call_args[0][0] == "/api/projects/abc/telegram/token"
+        call_args = mock_api_client.post_raw.call_args
+        assert call_args[0][0] == "projects/abc/telegram/token"
         assert call_args[1]["json"] == {"token": BOT_TOKEN}
         assert call_args[1]["headers"]["X-Telegram-ID"] == "user-42"
         assert "palindrome_bot" in result
         # No side path: the tool never touches secrets or repositories itself.
-        mock_api_client.patch.assert_not_called()
-        assert mock_api_client.post.call_count == 1
+        mock_api_client.patch_raw.assert_not_called()
+        assert mock_api_client.post_raw.call_count == 1
 
     @pytest.mark.asyncio
     async def test_rejected_verdict_is_relayed_with_reason_code(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {
                 "status": "rejected",
                 "reason_code": "invalid_token",
@@ -426,7 +427,7 @@ class TestValidateTelegramToken:
     @pytest.mark.asyncio
     async def test_own_project_conflict_names_the_holder_and_the_way_out(self, mock_api_client):
         """A dead end for the user unless the tool passes the holder id to the agent."""
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {
                 "status": "rejected",
                 "reason_code": "bound_to_own_project",
@@ -448,7 +449,7 @@ class TestValidateTelegramToken:
     @pytest.mark.asyncio
     async def test_foreign_holder_is_not_offered_a_teardown(self, mock_api_client):
         """Nothing to free: the holding project is not the user's to tear down."""
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {
                 "status": "rejected",
                 "reason_code": "bound_elsewhere",
@@ -494,7 +495,7 @@ class TestTeardownProject:
 
     @pytest.mark.asyncio
     async def test_calls_the_teardown_endpoint_as_the_user(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             _teardown_state("completed", released_bot_username="palindrome_bot")
         )
 
@@ -503,25 +504,25 @@ class TestTeardownProject:
             config=_make_config("user-42"),
         )
 
-        call_args = mock_api_client.post.call_args
-        assert call_args[0][0] == f"/api/projects/{PROJECT_ID}/teardown"
+        call_args = mock_api_client.post_raw.call_args
+        assert call_args[0][0] == f"projects/{PROJECT_ID}/teardown"
         assert call_args[1]["headers"]["X-Telegram-ID"] == "user-42"
         assert "palindrome_bot" in result
         # The API owns the teardown: no direct undeploy or archive from the tool.
-        mock_api_client.patch.assert_not_called()
-        assert mock_api_client.post.call_count == 1
+        mock_api_client.patch_raw.assert_not_called()
+        assert mock_api_client.post_raw.call_count == 1
         # Nothing was pending, so there was nothing to wait for.
-        mock_api_client.get.assert_not_called()
+        mock_api_client.get_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_waits_for_the_application_to_be_down_before_calling_the_bot_free(
         self, mock_api_client
     ):
         """The bot polls its token until the containers stop — rebinding before that fails."""
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             _teardown_state("pending", pending_application_ids=[7])
         )
-        mock_api_client.get.side_effect = [
+        mock_api_client.get_raw.side_effect = [
             _make_response(_teardown_state("pending", pending_application_ids=[7])),
             _make_response(_teardown_state("completed", released_bot_username="palindrome_bot")),
         ]
@@ -531,18 +532,18 @@ class TestTeardownProject:
             config=_make_config("user-42"),
         )
 
-        assert mock_api_client.get.call_count == 2
-        assert mock_api_client.get.call_args[0][0] == f"/api/projects/{PROJECT_ID}/teardown"
+        assert mock_api_client.get_raw.call_count == 2
+        assert mock_api_client.get_raw.call_args[0][0] == f"projects/{PROJECT_ID}/teardown"
         assert "down and archived" in result
         assert "palindrome_bot" in result
 
     @pytest.mark.asyncio
     async def test_a_teardown_that_never_finishes_does_not_free_the_token(self, mock_api_client):
         """Timing out is not permission to rebind: the agent is told to come back later."""
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             _teardown_state("pending", pending_application_ids=[7])
         )
-        mock_api_client.get.return_value = _make_response(
+        mock_api_client.get_raw.return_value = _make_response(
             _teardown_state("pending", pending_application_ids=[7])
         )
 
@@ -557,7 +558,7 @@ class TestTeardownProject:
 
     @pytest.mark.asyncio
     async def test_a_failed_undeploy_is_reported_as_a_failure(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             _teardown_state("failed", pending_application_ids=[7], error="SSH command failed")
         )
 
@@ -573,7 +574,7 @@ class TestTeardownProject:
     @pytest.mark.asyncio
     async def test_someone_elses_project_comes_back_as_a_message(self, mock_api_client):
         """A 403 is an answer for the user, not a crash to retry through."""
-        mock_api_client.post.return_value = _make_response(
+        mock_api_client.post_raw.return_value = _make_response(
             {"detail": "Access denied: not project owner"}, status_code=403
         )
 
@@ -584,11 +585,11 @@ class TestTeardownProject:
 
         assert result.startswith("Error:")
         assert "not project owner" in result
-        mock_api_client.post.return_value.raise_for_status.assert_not_called()
+        mock_api_client.post_raw.return_value.raise_for_status.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_project_with_no_bot_says_so(self, mock_api_client):
-        mock_api_client.post.return_value = _make_response(_teardown_state("completed"))
+        mock_api_client.post_raw.return_value = _make_response(_teardown_state("completed"))
 
         result = await teardown_project.ainvoke(
             {"project_id": PROJECT_ID},
@@ -604,7 +605,7 @@ class TestCreateStory:
         self, mock_api_client, mock_stream_client
     ):
         """Reminder provenance blocks the third story in the same QA failure chain."""
-        mock_api_client.get.side_effect = [
+        mock_api_client.get_raw.side_effect = [
             _make_response({"id": "abc", "status": "active", "config": {}}),
             _make_response(
                 [
@@ -638,7 +639,7 @@ class TestCreateStory:
 
         assert "No story was created" in result
         assert "human review" in result.lower()
-        mock_api_client.post.assert_not_called()
+        mock_api_client.post_raw.assert_not_called()
         mock_stream_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -646,7 +647,7 @@ class TestCreateStory:
         self, mock_api_client, mock_stream_client
     ):
         """A held retry chain must not freeze unrelated project work."""
-        mock_api_client.get.side_effect = [
+        mock_api_client.get_raw.side_effect = [
             _make_response({"id": "abc", "status": "active", "config": {}}),
             _make_response(
                 [
@@ -661,7 +662,7 @@ class TestCreateStory:
                 ]
             ),
         ]
-        mock_api_client.post.return_value = _make_response({"id": "story-export"})
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-export"})
 
         result = await create_story.ainvoke(
             {
@@ -673,7 +674,7 @@ class TestCreateStory:
         )
 
         assert "Story created" in result
-        assert mock_api_client.post.call_args.kwargs["json"]["parent_story_id"] is None
+        assert mock_api_client.post_raw.call_args.kwargs["json"]["parent_story_id"] is None
         mock_stream_client.publish_message.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -681,17 +682,17 @@ class TestCreateStory:
         self, mock_api_client, mock_stream_client
     ):
         """create_story publishes ArchitectMessage to architect:queue."""
-        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
         project_data = {
             "id": "abc",
             "status": "draft",
             "config": {"modules": ["backend"], "name": "my-bot"},
         }
-        mock_api_client.get.side_effect = [
+        mock_api_client.get_raw.side_effect = [
             _make_response(project_data),
             _make_response([]),  # no active stories
         ]
-        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+        mock_api_client.patch_raw.return_value = _make_response({"id": "abc"})
 
         result = await create_story.ainvoke(
             {
@@ -706,9 +707,9 @@ class TestCreateStory:
         assert "architect" in result.lower()
 
         # Should have 1 POST call: create story only (no run, no start)
-        assert mock_api_client.post.call_count == 1
-        story_call = mock_api_client.post.call_args_list[0]
-        assert story_call[0][0] == "/api/stories/"
+        assert mock_api_client.post_raw.call_count == 1
+        story_call = mock_api_client.post_raw.call_args_list[0]
+        assert story_call[0][0] == "stories/"
         story_payload = story_call[1]["json"]
         assert story_payload["title"] == "Create todo bot"
         assert story_payload["type"] == "product"
@@ -729,8 +730,8 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_no_run_created(self, mock_api_client, mock_stream_client):
         """create_story should NOT create a Run (dispatcher does that)."""
-        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.side_effect = [
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get_raw.side_effect = [
             _make_response({"id": "abc", "status": "active", "config": {}}),
             _make_response([]),  # no active stories
         ]
@@ -744,24 +745,24 @@ class TestCreateStory:
             config=_make_config("user-42"),
         )
 
-        # Only 1 POST: story creation. No /api/runs/ call.
-        assert mock_api_client.post.call_count == 1
-        for call in mock_api_client.post.call_args_list:
-            assert "/api/runs/" not in call[0][0]
+        # Only 1 POST: story creation. No runs/ call.
+        assert mock_api_client.post_raw.call_count == 1
+        for call in mock_api_client.post_raw.call_args_list:
+            assert "runs/" not in call[0][0]
 
     @pytest.mark.asyncio
     async def test_persists_description_for_create(self, mock_api_client, mock_stream_client):
         """For action=create, should persist description to project config."""
-        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
         project_resp = _make_response(
             {"id": "abc", "status": "draft", "config": {"modules": ["backend"], "name": "my-bot"}}
         )
-        mock_api_client.get.side_effect = [
+        mock_api_client.get_raw.side_effect = [
             project_resp,  # project status check
             _make_response([]),  # no active stories
             project_resp,  # re-fetch for config persist
         ]
-        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+        mock_api_client.patch_raw.return_value = _make_response({"id": "abc"})
 
         await create_story.ainvoke(
             {
@@ -773,20 +774,20 @@ class TestCreateStory:
         )
 
         # Should PATCH project config with detailed_spec
-        mock_api_client.patch.assert_called_once()
-        patched_config = mock_api_client.patch.call_args[1]["json"]["config"]
+        mock_api_client.patch_raw.assert_called_once()
+        patched_config = mock_api_client.patch_raw.call_args[1]["json"]["config"]
         assert patched_config["detailed_spec"] == "Build a recipe bot"
 
     @pytest.mark.asyncio
     async def test_spec_persistence_failure_does_not_publish_to_architect(
         self, mock_api_client, mock_stream_client
     ):
-        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.side_effect = [
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get_raw.side_effect = [
             _make_response({"id": "abc", "status": "draft", "config": {}}),
             _make_response([]),
         ]
-        mock_api_client.patch.side_effect = httpx.HTTPStatusError(
+        mock_api_client.patch_raw.side_effect = httpx.HTTPStatusError(
             "spec persistence unavailable", request=MagicMock(), response=MagicMock()
         )
 
@@ -805,8 +806,8 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_no_patch_for_feature_on_active(self, mock_api_client, mock_stream_client):
         """For action=feature, should NOT persist description to project config."""
-        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.side_effect = [
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get_raw.side_effect = [
             _make_response({"id": "abc", "status": "active", "config": {}}),
             _make_response([]),  # no active stories
         ]
@@ -820,13 +821,13 @@ class TestCreateStory:
             config=_make_config("user-42"),
         )
 
-        mock_api_client.patch.assert_not_called()
+        mock_api_client.patch_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_patch_for_fix(self, mock_api_client, mock_stream_client):
         """For action=fix, should NOT persist description to project config."""
-        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response([])  # no active stories
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get_raw.return_value = _make_response([])  # no active stories
 
         await create_story.ainvoke(
             {
@@ -838,13 +839,13 @@ class TestCreateStory:
             config=_make_config("user-42"),
         )
 
-        mock_api_client.patch.assert_not_called()
+        mock_api_client.patch_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_passes_user_id_to_architect_message(self, mock_api_client, mock_stream_client):
-        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.patch.return_value = _make_response({"id": "abc"})
-        mock_api_client.get.side_effect = [
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.patch_raw.return_value = _make_response({"id": "abc"})
+        mock_api_client.get_raw.side_effect = [
             _make_response({"id": "abc", "status": "draft", "config": {}}),
             _make_response([]),  # no active stories
         ]
@@ -867,10 +868,10 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_queues_story_when_active_story_exists(self, mock_api_client, mock_stream_client):
         """If project has in_progress story, create story but don't publish to architect."""
-        mock_api_client.post.return_value = _make_response({"id": "story-new"})
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-new"})
         # First GET: project status (active → action=feature)
         # Second GET: stories list (has in_progress story)
-        mock_api_client.get.side_effect = [
+        mock_api_client.get_raw.side_effect = [
             _make_response({"id": "abc", "status": "active", "config": {}}),
             _make_response([{"id": "story-old", "status": "in_progress"}]),
         ]
@@ -885,7 +886,7 @@ class TestCreateStory:
         )
 
         # Story created
-        assert mock_api_client.post.call_count == 1
+        assert mock_api_client.post_raw.call_count == 1
         # But NOT published to architect:queue
         mock_stream_client.publish_message.assert_not_called()
         assert "queued" in result.lower()
@@ -893,8 +894,8 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_publishes_when_no_active_story(self, mock_api_client, mock_stream_client):
         """If project has no in_progress story, publish to architect normally."""
-        mock_api_client.post.return_value = _make_response({"id": "story-new"})
-        mock_api_client.get.side_effect = [
+        mock_api_client.post_raw.return_value = _make_response({"id": "story-new"})
+        mock_api_client.get_raw.side_effect = [
             _make_response({"id": "abc", "status": "active", "config": {}}),
             _make_response([]),  # No active stories
         ]
@@ -915,7 +916,7 @@ class TestCreateStory:
 class TestListStories:
     @pytest.mark.asyncio
     async def test_lists_stories(self, mock_api_client):
-        mock_api_client.get.return_value = _make_response(
+        mock_api_client.get_raw.return_value = _make_response(
             [
                 {"id": "s1", "title": "Create bot", "status": "in_progress", "type": "product"},
                 {"id": "s2", "title": "Fix bug", "status": "completed", "type": "product"},
@@ -930,7 +931,7 @@ class TestListStories:
 
     @pytest.mark.asyncio
     async def test_empty_stories(self, mock_api_client):
-        mock_api_client.get.return_value = _make_response([])
+        mock_api_client.get_raw.return_value = _make_response([])
 
         result = await list_stories.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
@@ -965,7 +966,7 @@ class TestGetStory:
                 "completed_at": None,
             },
         ]
-        mock_api_client.get.side_effect = [
+        mock_api_client.get_raw.side_effect = [
             _make_response(story),
             _make_response(tasks),
             _make_response(runs_for_task1),
@@ -981,8 +982,8 @@ class TestGetStory:
         assert parsed["tasks"][1]["runs"][0]["id"] == "run-2"
 
         # Verify correct API calls
-        calls = mock_api_client.get.call_args_list
-        assert "/api/stories/s1" in calls[0][0][0]
+        calls = mock_api_client.get_raw.call_args_list
+        assert "stories/s1" in calls[0][0][0]
         assert "story_id=s1" in calls[1][0][0]
         assert "task_id=eng-123" in calls[2][0][0]
         assert "task_id=eng-456" in calls[3][0][0]
@@ -992,21 +993,21 @@ class TestGetRunStatus:
     @pytest.mark.asyncio
     async def test_gets_status(self, mock_api_client):
         run = {"id": "eng-123", "status": "completed", "type": "engineering"}
-        mock_api_client.get.return_value = _make_response(run)
+        mock_api_client.get_raw.return_value = _make_response(run)
 
         result = await get_run_status.ainvoke({"run_id": "eng-123"}, config=_make_config("user-42"))
 
         parsed = json.loads(result)
         assert parsed["status"] == "completed"
-        assert "/api/runs/eng-123" in mock_api_client.get.call_args[0][0]
+        assert "runs/eng-123" in mock_api_client.get_raw.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
-        mock_api_client.get.return_value = _make_response({"id": "eng-1", "status": "running"})
+        mock_api_client.get_raw.return_value = _make_response({"id": "eng-1", "status": "running"})
 
         await get_run_status.ainvoke({"run_id": "eng-1"}, config=_make_config("88888"))
 
-        headers = mock_api_client.get.call_args[1].get("headers", {})
+        headers = mock_api_client.get_raw.call_args[1].get("headers", {})
         assert headers.get("X-Telegram-ID") == "88888"
 
 
@@ -1149,7 +1150,7 @@ class TestReopenStory:
             "status": "in_progress",
             "user_report": "Images broken on mobile",
         }
-        mock_api_client.post.return_value = _make_response(story_data)
+        mock_api_client.post_raw.return_value = _make_response(story_data)
 
         result = await reopen_story.ainvoke(
             {"story_id": "story-abc", "user_report": "Images broken on mobile"},
@@ -1160,8 +1161,8 @@ class TestReopenStory:
         assert "story-abc" in result
 
         # Verify API call
-        api_call = mock_api_client.post.call_args
-        assert api_call[0][0] == "/api/stories/story-abc/reopen"
+        api_call = mock_api_client.post_raw.call_args
+        assert api_call[0][0] == "stories/story-abc/reopen"
         assert api_call[1]["json"]["user_report"] == "Images broken on mobile"
 
         # Verify ArchitectMessage

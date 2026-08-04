@@ -54,28 +54,52 @@ async def is_internal_service(
     return secrets.compare_digest(x_internal_key, get_settings().internal_api_key)
 
 
+async def resolve_actor(
+    *,
+    is_internal: bool,
+    telegram_id: int | None,
+    db: AsyncSession,
+) -> User | None:
+    """Who is acting on this request? This is the only place that decides.
+
+    `None` means a service acting for itself: a valid `X-Internal-Key` and no user
+    named. Anything else is the named user, and that user's own rights decide what
+    the request may reach — the key authenticates the caller, it does not make it
+    anyone's deputy. Every guard that takes the internal flag asks this function
+    rather than reading the flag itself, so the rule cannot be half-applied the way
+    it was when `projects.py` enforced it and `runs.py` did not.
+
+    Raises 401 when nobody is identified at all, and 404 when the named user is
+    unknown to us.
+    """
+    if telegram_id is None:
+        if is_internal:
+            return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
+
+    result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with telegram_id {telegram_id} not found",
+        )
+    return user
+
+
 async def require_internal_or_admin(
     _is_internal: bool = Depends(is_internal_service),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> None:
-    """Allow internal services or admin users."""
-    if _is_internal:
+    """Allow internal services acting for themselves, and admin users."""
+    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+    if actor is None:
         return
-    if x_telegram_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
-    query = select(User).where(User.telegram_id == x_telegram_id)
-    result = await db.execute(query)
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with telegram_id {x_telegram_id} not found",
-        )
-    if not user.is_admin:
+    if not actor.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
 

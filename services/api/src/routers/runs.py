@@ -24,7 +24,7 @@ from shared.contracts.dto.run import RunStatus
 from shared.models import Run, User
 
 from ..database import get_async_session
-from ..dependencies import is_internal_service, require_internal_or_admin
+from ..dependencies import is_internal_service, require_internal_or_admin, resolve_actor
 from ..schemas import RunCreate, RunRead, RunUpdate
 
 logger = structlog.get_logger()
@@ -41,18 +41,6 @@ _TERMINAL_RUN_STATUSES = frozenset(
 _OUTCOME_FIELDS = ("status", "result", "error_message")
 
 
-async def _resolve_user(
-    telegram_id: int | None,
-    db: AsyncSession,
-) -> User | None:
-    """Resolve User from telegram_id."""
-    if not telegram_id:
-        return None
-    query = select(User).where(User.telegram_id == telegram_id)
-    result = await db.execute(query)
-    return result.scalar_one_or_none()
-
-
 async def _check_run_access(
     run: Run,
     telegram_id: int | None,
@@ -60,28 +48,20 @@ async def _check_run_access(
     *,
     is_internal: bool = False,
 ) -> None:
-    """Check if user has access to run. Raises 401/403 if denied."""
-    if is_internal:
-        return
-    if telegram_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
+    """Check if the request may reach this run. Raises 401/403/404 if denied.
 
-    user = await _resolve_user(telegram_id, db)
+    Who is acting is `resolve_actor`'s decision, not this function's — the same
+    decision the project guard asks for. A run id travels in a user's message, so
+    a request that names a user is judged as that user however it was
+    authenticated; a service acting for itself passes.
+    """
+    actor = await resolve_actor(is_internal=is_internal, telegram_id=telegram_id, db=db)
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with telegram_id {telegram_id} not found",
-        )
-
-    if user.is_admin:
+    if actor is None or actor.is_admin:
         return
 
     # Regular user: must be owner
-    if run.user_id != user.id:
+    if run.user_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: not run owner",
@@ -161,11 +141,9 @@ async def list_runs(
     _is_internal: bool = Depends(is_internal_service),
 ) -> list[Run]:
     """List runs with optional filters."""
-    if not _is_internal and x_telegram_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-        )
+    # Resolved before any filter is applied: naming a user_id must not be a way to
+    # read another user's runs, and neither must holding the internal key.
+    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
 
     query = select(Run)
 
@@ -180,18 +158,16 @@ async def list_runs(
         query = query.where(Run.type == run_type)
     if run_status:
         query = query.where(Run.status == run_status)
-    if user_id is not None and _is_internal:
+    if user_id is not None and actor is None:
         query = query.where(Run.user_id == user_id)
     if started_after:
         query = query.where(Run.started_at >= started_after)
     if started_before:
         query = query.where(Run.started_at <= started_before)
 
-    # If user provided, filter by ownership
-    if x_telegram_id:
-        user = await _resolve_user(x_telegram_id, db)
-        if user and not user.is_admin:
-            query = query.where(Run.user_id == user.id)
+    # A named user sees only their own runs; an admin sees all of them.
+    if actor is not None and not actor.is_admin:
+        query = query.where(Run.user_id == actor.id)
 
     # Order by creation time (newest first)
     query = query.order_by(Run.created_at.desc())
@@ -242,19 +218,13 @@ async def update_run(
     """
     run = await _lock_run(run_id, db)
 
-    # Only internal services or admins can update runs
-    if not _is_internal:
-        if x_telegram_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required",
-            )
-        user = await _resolve_user(x_telegram_id, db)
-        if not user or not user.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only system and admins can update runs",
-            )
+    # Only services acting for themselves, and admins, can update runs
+    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+    if actor is not None and not actor.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only system and admins can update runs",
+        )
 
     # Update fields
     update_data = run_update.model_dump(exclude_unset=True)

@@ -99,7 +99,7 @@ async def create_project(
 
     api = _get_api()
     headers = _user_headers(config)
-    resp = await api.post("/api/projects/", json=payload, headers=headers)
+    resp = await api.post_raw("projects/", json=payload, headers=headers)
     resp.raise_for_status()
     project = resp.json()
 
@@ -111,7 +111,7 @@ async def create_project(
         # Placeholder until scaffolder creates the GitHub repo.
         "git_url": f"pending://{project['slug']}",
     }
-    repo_resp = await api.post("/api/repositories/", json=repo_payload, headers=headers)
+    repo_resp = await api.post_raw("repositories/", json=repo_payload, headers=headers)
     repo_resp.raise_for_status()
     logger.info("po_repository_created", project_id=project_id, repo_id=repo_resp.json()["id"])
 
@@ -125,7 +125,7 @@ async def list_projects(*, config: RunnableConfig) -> str:
     """List all projects."""
     api = _get_api()
     headers = _user_headers(config)
-    resp = await api.get("/api/projects/", headers=headers)
+    resp = await api.get_raw("projects/", headers=headers)
     resp.raise_for_status()
     projects = resp.json()
 
@@ -149,7 +149,7 @@ async def get_project(project_id: str, *, config: RunnableConfig) -> str:
 
     api = _get_api()
     headers = _user_headers(config)
-    resp = await api.get(f"/api/projects/{project_id}", headers=headers)
+    resp = await api.get_raw(f"projects/{project_id}", headers=headers)
     resp.raise_for_status()
     project = resp.json()
     return json.dumps(project, indent=2, ensure_ascii=False)
@@ -183,8 +183,8 @@ async def set_project_secret(
     if hint:
         payload["env_hints"] = {key: hint}
 
-    resp = await api.post(
-        f"/api/projects/{project_id}/config/secrets", json=payload, headers=headers
+    resp = await api.post_raw(
+        f"projects/{project_id}/config/secrets", json=payload, headers=headers
     )
     if resp.status_code == HTTP_UNPROCESSABLE:
         # Bot tokens land here — the server refuses them outside the validator.
@@ -210,8 +210,8 @@ async def set_bot_access(
         return "Error: a private bot needs at least one Telegram ID in its audience."
 
     api = _get_api()
-    resp = await api.post(
-        f"/api/projects/{project_id}/config/bot-access",
+    resp = await api.post_raw(
+        f"projects/{project_id}/config/bot-access",
         json={"mode": mode, "allowed_telegram_ids": allowed_telegram_ids},
         headers=_user_headers(config),
     )
@@ -240,7 +240,7 @@ async def teardown_project(project_id: str, *, config: RunnableConfig) -> str:
     api = _get_api()
     headers = _user_headers(config)
 
-    resp = await api.post(f"/api/projects/{project_id}/teardown", headers=headers)
+    resp = await api.post_raw(f"projects/{project_id}/teardown", headers=headers)
     if resp.status_code in (HTTP_FORBIDDEN, HTTP_NOT_FOUND):
         # Someone else's project, or none at all — the user gets told, not a stack trace.
         return f"Error: {resp.json()['detail']}"
@@ -252,7 +252,7 @@ async def teardown_project(project_id: str, *, config: RunnableConfig) -> str:
         if asyncio.get_running_loop().time() >= deadline:
             break
         await asyncio.sleep(TEARDOWN_POLL_INTERVAL_SECONDS)
-        poll = await api.get(f"/api/projects/{project_id}/teardown", headers=headers)
+        poll = await api.get_raw(f"projects/{project_id}/teardown", headers=headers)
         poll.raise_for_status()
         result = ProjectTeardownResult.model_validate(poll.json())
 
@@ -302,8 +302,8 @@ async def validate_telegram_token(project_id: str, token: str, *, config: Runnab
     api = _get_api()
     headers = _user_headers(config)
 
-    resp = await api.post(
-        f"/api/projects/{project_id}/telegram/token",
+    resp = await api.post_raw(
+        f"projects/{project_id}/telegram/token",
         json=TelegramTokenValidateRequest(token=token).model_dump(),
         headers=headers,
     )

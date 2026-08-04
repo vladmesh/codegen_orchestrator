@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import os
 
-import httpx
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import TypeAdapter, ValidationError
 import structlog
@@ -31,6 +30,7 @@ from shared.redis_client import RedisStreamClient
 
 from ..agents.po.graph import create_po_graph
 from ..agents.po.tools import init_po_clients
+from ..clients.api import api_client
 from ..config.settings import get_settings
 from ._validation import _safe_validation_errors
 
@@ -86,12 +86,6 @@ async def run_po_consumer() -> None:
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()
     redis = client.redis
-
-    api_client = httpx.AsyncClient(
-        base_url=settings.api_base_url.rstrip("/"),
-        follow_redirects=True,
-        timeout=30.0,
-    )
 
     init_po_clients(api_client, client)
 
@@ -193,7 +187,7 @@ async def run_po_consumer() -> None:
                         )
                     )
     finally:
-        await api_client.aclose()
+        await api_client.close()
         await client.close()
         logger.info("po_consumer_shutdown")
 
