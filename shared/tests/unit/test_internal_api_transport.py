@@ -346,6 +346,23 @@ async def test_an_unbound_context_gets_an_id_from_the_transport(client, recorder
 
 
 @pytest.mark.asyncio
+async def test_a_caller_named_id_on_an_unbound_context_becomes_the_flow_id(client, recorder):
+    """What goes on the wire is what the rest of the flow will carry.
+
+    With nothing bound and the caller naming its own `X-Correlation-ID`, the
+    transport used to generate an identifier, bind that one, and send the
+    caller's — so the first call of a flow was labelled differently from every
+    call after it.
+    """
+    await client.request("GET", "projects/", headers={"X-Correlation-ID": "caller-id"})
+    assert recorder.last.headers["X-Correlation-ID"] == "caller-id"
+    assert get_correlation_id() == "caller-id"
+
+    await client.request("GET", "projects/2")
+    assert recorder.last.headers["X-Correlation-ID"] == "caller-id"
+
+
+@pytest.mark.asyncio
 async def test_paths_are_prefixed_once(client, recorder):
     await client.request("GET", "/projects/1")
     assert recorder.last.url.path == "/api/projects/1"

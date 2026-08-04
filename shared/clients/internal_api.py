@@ -22,7 +22,7 @@ import os
 
 import httpx
 
-from shared.log_config.correlation import ensure_correlation_id
+from shared.log_config.correlation import ensure_correlation_id, set_correlation_id
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -47,12 +47,20 @@ class InternalAPITransport:
         """Both headers, on every request.
 
         A caller cannot drop `X-Internal-Key`, and an unbound correlation context
-        no longer means an unlabelled call: the transport creates the identifier
-        and binds it for the rest of the flow.
+        no longer means an unlabelled call. The identifier of the flow is decided
+        first — the one the caller named, otherwise the bound one, otherwise a
+        fresh one — and only then is it both bound and sent, so what goes on the
+        wire and what the rest of the flow will carry are never two different
+        identifiers.
         """
         headers = dict(caller_headers or {})
         headers["X-Internal-Key"] = self._internal_api_key
-        headers.setdefault("X-Correlation-ID", ensure_correlation_id())
+        named = headers.get("X-Correlation-ID")
+        if named:
+            set_correlation_id(named)
+            headers["X-Correlation-ID"] = named
+        else:
+            headers["X-Correlation-ID"] = ensure_correlation_id()
         return headers
 
 
