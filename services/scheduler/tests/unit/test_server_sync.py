@@ -334,6 +334,48 @@ async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_
     update_payload = mock_api_client.update_server.call_args[0][1]
     assert update_payload.capacity_cpu == 4  # noqa: PLR2004
     assert update_payload.capacity_ram_mb == 8192  # noqa: PLR2004
+    # No health checker report yet, so provider usage numbers are the only signal.
+    assert update_payload.used_ram_mb == 1000  # noqa: PLR2004
+    assert update_payload.used_disk_mb == 5000  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_sync_server_details_keeps_health_checker_usage(
+    mock_api_client, mock_time4vps_client
+):
+    server = ServerDTO(
+        handle="vps-1",
+        host="host",
+        public_ip="1.1.1.1",
+        ssh_user="root",
+        status=ServerStatus.ACTIVE,
+        provider_id="100",
+        is_managed=True,
+        labels={"provider_id": "100"},
+        created_at=datetime.now(UTC),
+        last_health_check=datetime.now(UTC),
+        used_ram_mb=439,
+    )
+    mock_api_client.get_servers = AsyncMock(return_value=[server])
+    mock_api_client.update_server = AsyncMock()
+
+    details_mock = MagicMock()
+    details_mock.model_dump.return_value = {
+        "cpu_cores": 4,
+        "ram_limit": 8192,
+        "disk_limit": 102400,
+        "ram_used": 1503,
+        "disk_usage": 5000,
+        "os": "ubuntu",
+        "status": "active",
+    }
+    mock_time4vps_client.get_server_details.return_value = details_mock
+
+    await server_sync._sync_server_details(mock_time4vps_client)
+
+    update_payload = mock_api_client.update_server.call_args[0][1]
+    assert "used_ram_mb" not in update_payload.model_dump(exclude_unset=True)
+    assert "used_disk_mb" not in update_payload.model_dump(exclude_unset=True)
 
 
 @pytest.mark.asyncio
