@@ -130,12 +130,22 @@ async def api_client():
 async def user_api_client():
     """Async HTTP client for tests that must exercise user-scoped authorization.
 
-    These requests intentionally omit the internal key. A valid internal key
-    bypasses project access checks and would make the isolation assertions vacuous.
+    It carries the internal key and names the user per request, which is how the
+    PO agent and the bot actually reach the API. The key does not make the
+    isolation assertions vacuous: `resolve_actor` judges a request that names a
+    user as that user, and `test_cross_user_access_denied` — a stranger refused
+    with 403 while the key is present — is what proves it. Omitting the key is no
+    longer an option either: since every route requires a credential, a keyless
+    caller is answered 401 before the ownership check is ever reached.
     """
     import httpx
 
-    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=10) as client:
+    internal_api_key = os.environ["INTERNAL_API_KEY"]
+    async with httpx.AsyncClient(
+        base_url=API_BASE_URL,
+        timeout=10,
+        headers={"X-Internal-Key": internal_api_key},
+    ) as client:
         yield client
 
 
