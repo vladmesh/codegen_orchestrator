@@ -40,6 +40,7 @@ jobs:
           REQUIRED_TIME4VPS_LOGIN: ${{ secrets.TIME4VPS_LOGIN }}
           REQUIRED_TIME4VPS_PASSWORD: ${{ secrets.TIME4VPS_PASSWORD }}
           REQUIRED_ORCHESTRATOR_PUBLIC_IP: ${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
+          REQUIRED_GH_ORG: ${{ secrets.GH_ORG }}
         run: |
           set -euo pipefail
           missing=()
@@ -57,7 +58,8 @@ jobs:
             REQUIRED_TIME4VPS_MANAGED_SERVER_IDS \
             REQUIRED_TIME4VPS_LOGIN \
             REQUIRED_TIME4VPS_PASSWORD \
-            REQUIRED_ORCHESTRATOR_PUBLIC_IP
+            REQUIRED_ORCHESTRATOR_PUBLIC_IP \
+            REQUIRED_GH_ORG
           do
             if [ -z "${!name}" ]; then
               missing+=("${name#REQUIRED_}")
@@ -102,7 +104,7 @@ jobs:
 
             # GitHub
             GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
-            GITHUB_ORG=${{ secrets.GITHUB_ORG }}
+            GITHUB_ORG=${{ secrets.GH_ORG }}
 
             # Telegram
             TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
