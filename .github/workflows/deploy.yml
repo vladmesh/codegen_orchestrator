@@ -159,6 +159,8 @@ jobs:
 
             # Prod secret paths (used by docker-compose.prod.yml)
             GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem
+            # In-container path of the same key; services fail fast without it
+            GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem
             ENVEOF
             chmod 600 ${{ env.DEPLOY_PATH }}/.env
 
