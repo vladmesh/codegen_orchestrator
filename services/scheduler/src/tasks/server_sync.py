@@ -480,10 +480,15 @@ async def _sync_server_details(client: Time4VPSClient) -> int:
                 capacity_cpu=details.get("cpu_cores", server.capacity_cpu),
                 capacity_ram_mb=details.get("ram_limit", server.capacity_ram_mb),
                 capacity_disk_mb=details.get("disk_limit", server.capacity_disk_mb),
-                used_ram_mb=details.get("ram_used", 0),
-                used_disk_mb=details.get("disk_usage", 0),
                 os_template=details.get("os"),
             )
+            if server.last_health_check is None:
+                # The hypervisor counts page cache as used, so once the health
+                # checker reports real MemAvailable-based usage, the provider's
+                # inflated numbers must not overwrite it — the allocator reads
+                # used_ram_mb and would starve on a healthy server.
+                update_data.used_ram_mb = details.get("ram_used", 0)
+                update_data.used_disk_mb = details.get("disk_usage", 0)
 
             # Check if status update is needed
             api_status = details.get("status", "").lower()
