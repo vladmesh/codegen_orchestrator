@@ -496,14 +496,17 @@ async def wait_deploy(
 
     # Port allocations belong to an application, not directly to a project.
     # /api/servers/ and its ports need internal-service auth, so authenticate like
-    # the real consumers. raise_for_status keeps a non-200 loud instead of iterating
-    # an error body and crashing with TypeError before the deploy reaches the
-    # ownership manifest.
+    # the real consumers — on a client with no default user header: the internal
+    # key authenticates the caller but does not deputize the named user, so a
+    # request carrying the test user's X-Telegram-ID resolves to that non-admin
+    # user and gets 403. raise_for_status keeps a non-200 loud instead of
+    # iterating an error body and crashing with TypeError before the deploy
+    # reaches the ownership manifest.
     headers = internal_headers()
-    resp = await api.get("/api/servers/", headers=headers)
+    resp = await api_no_auth.get("/api/servers/", headers=headers)
     resp.raise_for_status()
     for srv in resp.json():
-        resp = await api.get(f"/api/servers/{srv['handle']}/ports", headers=headers)
+        resp = await api_no_auth.get(f"/api/servers/{srv['handle']}/ports", headers=headers)
         resp.raise_for_status()
         for alloc in resp.json():
             if alloc.get("application_id") == application["id"]:
