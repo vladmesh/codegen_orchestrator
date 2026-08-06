@@ -96,6 +96,10 @@ jobs:
             PO_LLM_BASE_URL=${{ secrets.PO_LLM_BASE_URL }}
             PO_LLM_API_KEY=${{ secrets.PO_LLM_API_KEY }}
 
+            ARCHITECT_LLM_MODEL=${{ secrets.ARCHITECT_LLM_MODEL }}
+            ARCHITECT_LLM_BASE_URL=${{ secrets.ARCHITECT_LLM_BASE_URL }}
+            ARCHITECT_LLM_API_KEY=${{ secrets.ARCHITECT_LLM_API_KEY }}
+
             # Summarization
             SUMMARIZATION_MODEL=${{ secrets.SUMMARIZATION_MODEL }}
             SUMMARIZATION_MAX_TOKENS=${{ secrets.SUMMARIZATION_MAX_TOKENS }}
