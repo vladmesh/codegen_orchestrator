@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -97,7 +98,9 @@ class TestGetHealthHistory:
         session = _mock_session(get_return=application, scalars_all=entries)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.get("/api/applications/1/health-history?hours=24")
 
         assert resp.status_code == 200
@@ -109,7 +112,9 @@ class TestGetHealthHistory:
         session = _mock_session(get_return=None)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.get("/api/applications/999/health-history")
 
         assert resp.status_code == 404
@@ -122,7 +127,9 @@ class TestCreateHealthHistory:
         session = _mock_session(get_return=application)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.post(
                 "/api/applications/1/health-history",
                 json={"metrics": {"response_time_ms": 120, "status_code": 200, "healthy": True}},
@@ -135,7 +142,9 @@ class TestCreateHealthHistory:
         session = _mock_session(get_return=None)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.post(
                 "/api/applications/999/health-history",
                 json={"metrics": {"response_time_ms": 120}},
@@ -153,7 +162,9 @@ class TestDeleteHealthHistory:
         session.execute = AsyncMock(return_value=mock_result)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.delete("/api/applications/health-history?retention_hours=168")
 
         assert resp.status_code == 200

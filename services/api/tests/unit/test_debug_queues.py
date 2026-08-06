@@ -1,8 +1,9 @@
-"""Unit tests for GET /debug/queues endpoint."""
+"""Unit tests for GET /api/debug/queues endpoint."""
 
 from unittest.mock import AsyncMock, patch
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from shared.queues import QUEUE_TOPOLOGY
@@ -95,8 +96,10 @@ async def test_debug_queues_ok(mock_redis):
         return_value=mock_redis,
     ):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/debug/queues")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.get("/api/debug/queues")
 
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
@@ -121,8 +124,10 @@ async def test_debug_queues_missing_group(mock_redis):
         return_value=mock_redis,
     ):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/debug/queues")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.get("/api/debug/queues")
 
     data = resp.json()
     assert data["status"] == "degraded"
@@ -198,8 +203,10 @@ async def test_debug_queues_high_pending(mock_redis):
         return_value=mock_redis,
     ):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/debug/queues")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.get("/api/debug/queues")
 
     data = resp.json()
     assert data["status"] == "degraded"

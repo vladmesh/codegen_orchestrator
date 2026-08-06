@@ -81,7 +81,7 @@ export interface QueueHealth {
   }
 }
 
-// /debug/queues actual response
+// /api/debug/queues actual response
 export interface QueueBinding {
   stream: string
   group: string

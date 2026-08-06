@@ -26,6 +26,25 @@ DECIDER_MODULE = API_SRC / "dependencies.py"
 FLAG_SOURCE = "is_internal_service"
 FLAG_NAMES = frozenset({"is_internal", "_is_internal"})
 
+# `resolve_actor` answers "who is acting". Two questions are not that one, cannot
+# be asked of it, and are answered from the key alone. Both are listed here by
+# name so that adding a third is a decision somebody makes on purpose.
+#
+# - `require_authenticated_caller` asks "is this caller anybody at all". It runs
+#   before any router, and it must not resolve a user: a bare `X-Telegram-ID` is
+#   exactly the forged identity the gate exists to refuse, and `resolve_actor`
+#   would hand it back as an actor.
+# - `_reject_admin_flag_from_outside` asks "may this caller decide `is_admin`",
+#   and only a service may. `resolve_actor` cannot answer it either: the bot
+#   registers a user while naming that same user in `X-Telegram-ID`, so resolving
+#   the actor would 404 on the very account being created.
+ANSWERED_FROM_THE_KEY_ALONE = frozenset(
+    {
+        ("dependencies.py", "require_authenticated_caller"),
+        ("routers/users.py", "_reject_admin_flag_from_outside"),
+    }
+)
+
 
 def _sources() -> list[Path]:
     return sorted(p for p in API_SRC.rglob("*.py") if p.is_file())
@@ -88,8 +107,11 @@ def test_only_the_decider_reads_the_internal_flag():
     offenders = []
     for path in _sources():
         tree = ast.parse(path.read_text())
+        module = str(path.relative_to(API_SRC))
         for func in _functions(tree):
             if path == DECIDER_MODULE and func.name == DECIDER:
+                continue
+            if (module, func.name) in ANSWERED_FROM_THE_KEY_ALONE:
                 continue
             flags = _flag_parameters(func)
             if not flags:
@@ -113,6 +135,15 @@ def test_the_decider_exists_and_answers_with_the_acting_user():
     assert {"is_internal", "telegram_id"} <= params, (
         f"{DECIDER} decides from the key and the named user together, got {sorted(params)}"
     )
+
+
+def test_the_exempt_readers_still_exist():
+    """An exemption that outlives its function would silently open a hole."""
+    for module, name in ANSWERED_FROM_THE_KEY_ALONE:
+        tree = ast.parse((API_SRC / module).read_text())
+        assert any(f.name == name for f in _functions(tree)), (
+            f"{module} no longer defines {name}: drop it from the exemption list"
+        )
 
 
 @pytest.mark.parametrize(

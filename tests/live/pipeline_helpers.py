@@ -1316,7 +1316,9 @@ async def cleanup_all(
     # 2. Port allocation
     if "allocation_id" in ctx and api_no_auth:
         try:
-            resp = await api_no_auth.delete(f"/api/allocations/{ctx['allocation_id']}")
+            resp = await api_no_auth.delete(
+                f"/api/allocations/{ctx['allocation_id']}", headers=internal_headers()
+            )
             if resp.status_code not in (200, 204, 404):
                 raise RuntimeError(f"delete returned {resp.status_code}")
             # /api/servers/{handle}/ports is gated by require_internal_or_admin, so

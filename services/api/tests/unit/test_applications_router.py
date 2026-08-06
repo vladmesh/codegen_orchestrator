@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -74,7 +75,9 @@ class TestListApplications:
         session = _mock_session(scalars_all=[])
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.get("/api/applications/")
 
         assert resp.status_code == 200
@@ -86,7 +89,9 @@ class TestListApplications:
         session = _mock_session(scalars_all=apps)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.get("/api/applications/")
 
         assert resp.status_code == 200
@@ -104,7 +109,9 @@ class TestGetApplication:
         session = _mock_session(get_return=application)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.get("/api/applications/1")
 
         assert resp.status_code == 200
@@ -118,7 +125,9 @@ class TestGetApplication:
         session = _mock_session(get_return=None)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.get("/api/applications/999")
 
         assert resp.status_code == 404
@@ -131,7 +140,9 @@ class TestCreateApplication:
         session = _mock_session()
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.post(
                 "/api/applications/",
                 json={
@@ -151,7 +162,9 @@ class TestUpdateApplication:
         session = _mock_session(get_return=application)
         app.dependency_overrides[get_async_session] = lambda: session
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.patch("/api/applications/1", json={"status": "stopped"})
 
         assert resp.status_code == 200

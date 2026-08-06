@@ -12,7 +12,11 @@ description: >
 # Escort: User Accompaniment Through the Pipeline
 
 > **⚠️ Requires running orchestrator.** This skill monitors the live pipeline and needs all services up.
-> Before starting, verify: `curl -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
+
+> **⚠️ Requires the internal API key.** Every route under `/api` refuses an
+> anonymous caller. Load the key once per shell before running anything below:
+> `export INTERNAL_API_KEY=$(grep -E '^INTERNAL_API_KEY=' .env | cut -d= -f2-)`
+> Before starting, verify: `curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
 
 You are accompanying a real user's request through the entire orchestrator pipeline.
 Your job is to make sure they get their result — a deployed project or a working feature —
@@ -47,7 +51,7 @@ then widen to 30 min and 60 min if nothing found.
 
 ```bash
 # Get recent stories (newest first)
-curl -s http://localhost:8000/api/stories/?sort=-created_at | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/stories/?sort=-created_at | python3 -c "
 import json, sys
 from datetime import datetime, timedelta, timezone
 stories = json.load(sys.stdin)
@@ -89,10 +93,10 @@ PROJECT_NAME=<from project.name — this is used in container names, repo names,
 Get full context:
 ```bash
 # Story details
-curl -s http://localhost:8000/api/stories/$STORY_ID | python3 -m json.tool
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/stories/$STORY_ID | python3 -m json.tool
 
 # Project details (modules, config, secrets, owner)
-curl -s http://localhost:8000/api/projects/$PROJECT_ID | python3 -m json.tool
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/projects/$PROJECT_ID | python3 -m json.tool
 ```
 
 ## Step 1: Understand the Request
@@ -121,7 +125,7 @@ The architect runs in its **own container** (not scheduler). Check its logs dire
 
 ```bash
 # Check if tasks exist for this story
-curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=-created_at" | python3 -m json.tool
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=-created_at" | python3 -m json.tool
 ```
 
 **What to watch**:
@@ -152,7 +156,7 @@ docker compose logs architect --tail=50 --since=5m 2>/dev/null | tail -30
   ```bash
   docker compose logs scaffolder --tail=30 --since=5m 2>/dev/null
   # Also check what scaffold message was sent
-  curl -s "http://localhost:8000/debug/queues/scaffold:queue/messages?count=10" | python3 -c "
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/scaffold:queue/messages?count=10" | python3 -c "
   import json, sys
   for m in json.load(sys.stdin)['messages']:
       print(f\"{m['id']}  mode={m['data'].get('mode','?')}  project={m['data'].get('project_name','?')}\")
@@ -185,19 +189,19 @@ This is the longest phase. For each task, track its journey through statuses.
 **`waiting_human_review`**: Worker hit a blocker.
 - This is where escort shines. Read the blocker reason:
   ```bash
-  curl -s http://localhost:8000/api/tasks/$TASK_ID | python3 -c "
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/tasks/$TASK_ID | python3 -c "
   import json, sys
   t = json.load(sys.stdin)
   print('Status:', t['status'])
   print('Failure metadata:', json.dumps(t.get('failure_metadata'), indent=2))
   "
   # Also check task events for the block reason
-  curl -s "http://localhost:8000/api/tasks/$TASK_ID/events" | python3 -m json.tool
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/$TASK_ID/events" | python3 -m json.tool
   ```
 - **Diagnose the issue**: Read worker logs, check workspace state, understand what went wrong
 - **If fixable**: Fix it (see Intervention section below), then resume:
   ```bash
-  curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/resume" \
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X POST "http://localhost:8000/api/tasks/$TASK_ID/resume" \
     -H "Content-Type: application/json" \
     -d '{"admin_note": "Fixed: <description of what you did>"}'
   ```
@@ -208,7 +212,7 @@ This is the longest phase. For each task, track its journey through statuses.
   reads `/workspace/REPORT.md` after agent finishes, sends it through Redis, engineering
   consumer saves it as a `worker_report` event). Retrieve it:
   ```bash
-  curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
   import json, sys
   events = json.load(sys.stdin)
   for e in events:
@@ -219,16 +223,16 @@ This is the longest phase. For each task, track its journey through statuses.
   ```
 - Check the commit via iteration_end event:
   ```bash
-  curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=iteration_end" | python3 -m json.tool
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=iteration_end" | python3 -m json.tool
   ```
 
 **`failed`**: Task failed permanently. Check for worker report too — it may contain diagnostics.
 - Check why (failure_metadata, events, worker logs)
 - If retriable: transition back and retry
   ```bash
-  curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=backlog"
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=backlog"
   # Then back to todo to re-trigger dispatch
-  curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=todo"
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=todo"
   ```
 
 ### Polling loop
@@ -265,14 +269,14 @@ transition it manually first:
 
 ```bash
 # Check story status
-curl -s http://localhost:8000/api/stories/$STORY_ID | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/stories/$STORY_ID | python3 -c "
 import json, sys
 s = json.load(sys.stdin)
 print(f\"Story: {s['status']}\")
 "
 
 # If still 'created' and all tasks are done — start it so dispatcher can complete it
-curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
   -H "Content-Type: application/json" \
   -d '{"actor": "escort"}'
 ```
@@ -329,7 +333,7 @@ docker compose logs deploy-worker --tail=50 --since=5m 2>/dev/null | grep -v "HT
 **If deploy fails**: Check the server directly:
 ```bash
 # Find deployed URL from deploy worker logs or service-deployments
-curl -s http://localhost:8000/api/service-deployments/ | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/service-deployments/ | python3 -c "
 import json, sys
 for d in json.load(sys.stdin):
     if '$PROJECT_NAME' in d.get('project_name',''):
@@ -360,10 +364,10 @@ and runs Claude Code CLI to test the deployed project as a real user.
 docker compose logs qa-worker --tail=50 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -20
 
 # Check qa:queue for messages
-curl -s "http://localhost:8000/debug/queues/qa:queue/messages?count=10" | python3 -m json.tool
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/qa:queue/messages?count=10" | python3 -m json.tool
 
 # Check pending (being processed)
-curl -s "http://localhost:8000/debug/queues/qa:queue/qa-consumers/pending" | python3 -m json.tool
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/qa:queue/qa-consumers/pending" | python3 -m json.tool
 ```
 
 **What to watch**:
@@ -410,7 +414,7 @@ later.
 - **Create missing tasks**: If architect failed partway through (e.g. the `blocked_by_task_id="None"`
   bug), create the remaining tasks manually via API:
   ```bash
-  curl -s -X POST http://localhost:8000/api/tasks/ \
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s -X POST http://localhost:8000/api/tasks/ \
     -H "Content-Type: application/json" \
     -d '{
       "title": "...",
@@ -442,7 +446,7 @@ later.
 
 - **Transition story status**: If state machine is stuck:
   ```bash
-  curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
+  curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
     -H "Content-Type: application/json" -d '{"actor": "escort"}'
   ```
 
@@ -505,7 +509,7 @@ docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}\t{{.Stat
 # Compare: if API shows fewer workers than docker ps, worker-manager lost track of some.
 
 # Check deploy port allocations
-curl -s http://localhost:8000/api/service-deployments/ | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/service-deployments/ | python3 -c "
 import json, sys
 deps = json.load(sys.stdin)
 for d in deps:
@@ -621,11 +625,11 @@ End your response with a `Skill feedback` section, or confirm "Skill feedback: n
 
 ```bash
 # Task transitions
-curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=<status>"
-curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/resume" -H "Content-Type: application/json" -d '{"admin_note": "..."}'
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=<status>"
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X POST "http://localhost:8000/api/tasks/$TASK_ID/resume" -H "Content-Type: application/json" -d '{"admin_note": "..."}'
 
 # Create task manually
-curl -s -X POST http://localhost:8000/api/tasks/ -H "Content-Type: application/json" -d '{
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s -X POST http://localhost:8000/api/tasks/ -H "Content-Type: application/json" -d '{
   "title": "...", "description": "...", "type": "create", "status": "todo",
   "story_id": "...", "project_id": "...", "blocked_by_task_id": null, "created_by": "escort"
 }'

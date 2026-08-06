@@ -25,10 +25,18 @@ LK_JWT_SECRET = "test-lk-jwt-secret-for-service-tests"  # noqa: S105
 
 @pytest.fixture(scope="module")
 async def lk_user_and_project():
-    """Create a user and project for LK tests."""
+    """Create a user and project for LK tests.
+
+    Setup, not the behaviour under test: it arrives as the internal service the
+    bot is, because every route under /api now needs a caller with a name.
+    """
     from src.main import app
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
+    ) as client:
         # Create user
         resp = await client.get(f"/api/users/by-telegram/{LK_TEST_TELEGRAM_ID}")
         if resp.status_code == 404:

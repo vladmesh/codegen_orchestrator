@@ -9,17 +9,39 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.models import User
 
 from ..database import get_async_session
+from ..dependencies import is_internal_service
 from ..schemas import UserCreate, UserRead, UserUpsert
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
+def _reject_admin_flag_from_outside(*, decides_admin: bool, is_internal: bool) -> None:
+    """Only a service may decide the admin flag.
+
+    Who is an administrator is settled by `ADMIN_TELEGRAM_IDS` and written by the
+    bot, which reaches the API as an internal service. Anyone else sending
+    `is_admin` over HTTP is either escalating themselves or demoting someone, so
+    the request is refused rather than quietly stripped — a caller that silently
+    got a non-admin user back would think it had worked.
+    """
+    if decides_admin and not is_internal:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="is_admin can only be set by an internal service",
+        )
+
+
 @router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_in: UserCreate,
+    is_internal: bool = Depends(is_internal_service),
     db: AsyncSession = Depends(get_async_session),
 ) -> User:
     """Create a new user."""
+    # `is_admin` is a plain bool here, so "absent" and "false" look the same on
+    # the wire: only an actual grant can be refused.
+    _reject_admin_flag_from_outside(decides_admin=user_in.is_admin, is_internal=is_internal)
+
     # Check if user exists
     query = select(User).where(User.telegram_id == user_in.telegram_id)
     result = await db.execute(query)
@@ -45,9 +67,16 @@ async def create_user(
 @router.post("/upsert", response_model=UserRead)
 async def upsert_user(
     user_in: UserUpsert,
+    is_internal: bool = Depends(is_internal_service),
     db: AsyncSession = Depends(get_async_session),
 ) -> User:
     """Create or update user by telegram_id."""
+    # Upsert can name the flag or leave it alone, and naming it at all is a
+    # decision an outside caller does not get to make — in either direction.
+    _reject_admin_flag_from_outside(
+        decides_admin=user_in.is_admin is not None, is_internal=is_internal
+    )
+
     query = select(User).where(User.telegram_id == user_in.telegram_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()

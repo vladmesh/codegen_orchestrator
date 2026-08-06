@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -62,7 +63,9 @@ async def test_list_projects_with_owner_id_filter():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get(
             "/api/projects/",
             params={"owner_id": 1},
@@ -117,7 +120,9 @@ async def test_owner_id_does_not_widen_a_regular_user(monkeypatch):
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get(
             "/api/projects/",
             params={"owner_id": 2},
@@ -149,7 +154,9 @@ async def test_owner_id_still_works_for_an_admin(monkeypatch):
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get(
             "/api/projects/",
             params={"owner_id": 2},
@@ -183,7 +190,9 @@ async def test_list_projects_without_owner_id_returns_all():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get(
             "/api/projects/",
             headers={"X-Internal-Key": "test-internal-key"},

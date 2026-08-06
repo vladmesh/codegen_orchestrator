@@ -14,14 +14,9 @@ import sys
 import httpx
 import yaml
 
+from shared.clients.internal_api import InternalAPISyncClient
+
 CONFIG_PATH = Path(__file__).resolve().parent / "agent_configs.yaml"
-
-
-def _api_url(base_url: str, path: str) -> str:
-    base = base_url.rstrip("/")
-    if base.endswith("/api"):
-        raise RuntimeError("API_BASE_URL must not include /api")
-    return f"{base}/api/{path.lstrip('/')}"
 
 
 def load_configs(path: Path) -> list[dict] | None:
@@ -56,14 +51,18 @@ def seed_agent_configs(api_base_url: str, configs_path: Path) -> bool:
 
     success = True
 
-    with httpx.Client(timeout=30.0) as client:
+    # Seeding is an internal call like any other, so it goes through the transport
+    # that carries X-Internal-Key: every route under /api requires a caller.
+    client = InternalAPISyncClient(api_base_url)
+    try:
         for config in configs:
             try:
-                resp = client.get(_api_url(api_base_url, f"agent-configs/{config['id']}"))
+                resp = client.get_raw(f"agent-configs/{config['id']}")
                 if resp.status_code == httpx.codes.OK:
                     payload = {k: v for k, v in config.items() if k != "id"}
-                    resp = client.patch(
-                        _api_url(api_base_url, f"agent-configs/{config['id']}"),
+                    resp = client.request_raw(
+                        "PATCH",
+                        f"agent-configs/{config['id']}",
                         json=payload,
                     )
                     if resp.status_code == httpx.codes.OK:
@@ -75,7 +74,7 @@ def seed_agent_configs(api_base_url: str, configs_path: Path) -> bool:
                         success = False
                     continue
 
-                resp = client.post(_api_url(api_base_url, "agent-configs/"), json=config)
+                resp = client.request_raw("POST", "agent-configs/", json=config)
                 if resp.status_code == httpx.codes.CREATED:
                     print(f"  Created agent config: {config['id']}")
                 elif resp.status_code == httpx.codes.CONFLICT:
@@ -87,6 +86,8 @@ def seed_agent_configs(api_base_url: str, configs_path: Path) -> bool:
             except httpx.RequestError as e:
                 print(f"  Request error for '{config['id']}': {e}")
                 success = False
+    finally:
+        client.close()
 
     return success
 

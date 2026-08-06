@@ -3,7 +3,7 @@
 import datetime as dt
 import secrets
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 from sqlalchemy import select
@@ -142,6 +142,10 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
 
 _bearer_scheme = HTTPBearer()
 
+# The gate below has to tell "no token" from "bad token", so it reads the header
+# without turning a missing one into an error of its own.
+_optional_bearer_scheme = HTTPBearer(auto_error=False)
+
 LK_JWT_ALGORITHM = "HS256"
 LK_JWT_TTL = dt.timedelta(hours=24)
 
@@ -193,3 +197,62 @@ async def get_lk_user(
             detail="User not found",
         )
     return user
+
+
+# ---------------------------------------------------------------------------
+# The application-wide gate
+# ---------------------------------------------------------------------------
+
+# The complete list of routes that answer without a credential. Everything the
+# app serves is closed by `require_authenticated_caller`, which is installed once
+# on the FastAPI instance, so a router added tomorrow is shut by default and a new
+# anonymous route can only be opened by adding a line here — deliberately, with a
+# reason. Every entry needs a comment saying why it must be anonymous.
+ANONYMOUS_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Service banner: name and version of the API, no data behind it.
+        ("GET", "/"),
+        # Liveness probe. Compose healthchecks and CI wait on this before any
+        # credential exists in the environment they run in.
+        ("GET", "/health"),
+        # The LK token exchange mints the dashboard's first JWT, so by definition
+        # its caller has nothing to authenticate with yet. The one-time token in
+        # the body is the secret, and the handler verifies it against Redis.
+        ("POST", "/api/lk/auth/token"),
+    }
+)
+
+
+async def require_authenticated_caller(
+    request: Request,
+    _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+    db: AsyncSession = Depends(get_async_session),
+) -> None:
+    """No handler runs for a caller we cannot name. One gate, whole application.
+
+    Two credentials get through: a valid `X-Internal-Key`, which every service
+    sends by construction (`shared/clients/internal_api.py` puts it on every
+    request), and an LK bearer token. What does *not* get through is
+    `X-Telegram-ID`. That header names a user, it never proved one, and anything
+    that can reach the API's port can send it — which is how a worker container
+    could `POST /api/users` itself an administrator. Guards downstream still read
+    the header, but only after this gate has established that the caller is
+    entitled to name a user at all.
+
+    Enforcement lives here and nowhere else on purpose: a router included without
+    a `dependencies=` of its own is still closed, and the test parametrized over
+    `app.routes` fails the moment that stops being true.
+    """
+    if (request.method, request.url.path) in ANONYMOUS_ROUTES:
+        return
+    if _is_internal:
+        return
+    if credentials is not None:
+        # Raises 401 for an invalid, expired or orphaned token.
+        await get_lk_user(credentials=credentials, db=db)
+        return
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+    )

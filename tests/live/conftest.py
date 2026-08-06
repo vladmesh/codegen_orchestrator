@@ -27,8 +27,14 @@ ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 @pytest.fixture
 async def api():
-    """Async httpx client with test user auth header."""
-    headers = {"X-Telegram-ID": str(TEST_TELEGRAM_ID)}
+    """The harness as the bot sees a user: the internal key, and the user named.
+
+    The key is not decoration and not a way past the ownership rules — a request
+    that names a user is judged as that user (`resolve_actor`). It is how every
+    real caller reaches the API, and since every route under /api requires a
+    credential, a client carrying `X-Telegram-ID` alone is now answered 401.
+    """
+    headers = {"X-Telegram-ID": str(TEST_TELEGRAM_ID), **internal_headers()}
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=headers) as client:
         resp = await client.post(
             "/api/users/upsert",

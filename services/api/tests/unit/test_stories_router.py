@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -83,7 +84,9 @@ async def test_create_story():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/stories/",
             json={"title": "User login", "project_id": "00000000-0000-0000-0000-000000000001"},
@@ -104,7 +107,9 @@ async def test_create_story_with_priority():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/stories/",
             json={
@@ -125,7 +130,9 @@ async def test_create_story_with_blocked_by():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/stories/",
             json={
@@ -151,7 +158,9 @@ async def test_create_story_rejects_retry_of_qa_failure_held_parent():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/stories/",
             json={
@@ -173,7 +182,9 @@ async def test_create_story_requires_project_id():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/", json={"title": "No project"})
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -187,7 +198,9 @@ async def test_list_stories():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/stories/")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -202,7 +215,9 @@ async def test_list_stories_filter_by_project():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/stories/?project_id=00000000-0000-0000-0000-000000000001")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -214,7 +229,9 @@ async def test_list_stories_filter_by_status():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/stories/?status=in_progress")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -226,7 +243,9 @@ async def test_list_stories_filter_by_parent():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/stories/?parent_story_id=story-epic")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -239,7 +258,9 @@ async def test_get_story():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/stories/story-abc")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -252,7 +273,9 @@ async def test_get_story_not_found():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/stories/story-nonexistent")
 
     assert resp.status_code == 404  # noqa: PLR2004
@@ -265,7 +288,9 @@ async def test_update_story():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.patch("/api/stories/story-abc", json={"title": "Updated title"})
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -282,7 +307,9 @@ async def test_start_story():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/start")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -296,7 +323,9 @@ async def test_start_story_invalid_transition():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/start")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -309,7 +338,9 @@ async def test_complete_story():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/complete")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -323,7 +354,9 @@ async def test_complete_story_invalid_transition():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/complete")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -336,7 +369,9 @@ async def test_wait_user_secret_story():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/wait-user-secret")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -350,7 +385,9 @@ async def test_wait_user_secret_story_invalid_transition():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/wait-user-secret")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -363,7 +400,9 @@ async def test_archive_story():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/archive")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -378,7 +417,9 @@ async def test_archive_from_created():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/archive")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -394,7 +435,9 @@ async def test_list_stories_filter_by_priority():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/stories/?priority=3")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -406,7 +449,9 @@ async def test_list_stories_with_sort():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/stories/?sort=-created_at")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -423,7 +468,9 @@ async def test_fail_story_from_in_progress():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/fail")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -438,7 +485,9 @@ async def test_fail_story_from_created():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/fail")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -453,7 +502,9 @@ async def test_fail_story_invalid_from_archived():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/fail")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -485,7 +536,9 @@ async def test_start_story_blocked_by_incomplete():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/start")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -524,7 +577,9 @@ async def test_start_story_blocked_by_completed():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/start")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -539,7 +594,9 @@ async def test_start_story_no_blocker():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/start")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -557,7 +614,9 @@ async def test_reopen_story_from_completed():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/stories/story-abc/reopen",
             json={"user_report": "Images still broken on mobile", "actor": "po"},
@@ -576,7 +635,9 @@ async def test_reopen_story_without_user_report():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/reopen")
 
     assert resp.status_code == HTTPStatus.OK
@@ -592,7 +653,9 @@ async def test_reopen_story_invalid_from_in_progress():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/stories/story-abc/reopen",
             json={"user_report": "Something wrong"},
@@ -609,7 +672,9 @@ async def test_test_story_from_deploying():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/test")
 
     assert resp.status_code == HTTPStatus.OK
@@ -624,7 +689,9 @@ async def test_test_story_invalid_from_created():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/stories/story-abc/test")
 
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY

@@ -5,6 +5,10 @@ Read this file when referenced by a skill — don't memorize it.
 
 > **Note**: These recipes require a running orchestrator (`make up`). They are used by the pipeline-testing skills (e2e-run, escort, architect).
 
+> **⚠️ Requires the internal API key.** Every route under `/api` refuses an
+> anonymous caller. Load the key once per shell before running anything below:
+> `export INTERNAL_API_KEY=$(grep -E '^INTERNAL_API_KEY=' .env | cut -d= -f2-)`
+
 ---
 
 ## Queue Health Check
@@ -13,10 +17,10 @@ Cross-check Debug API and raw Redis. Stale messages can clog architect for hours
 
 ```bash
 # Debug API — all queues at once
-curl -s http://localhost:8000/debug/queues | python3 -m json.tool
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/debug/queues | python3 -m json.tool
 
 # Architect queue messages (parsed, with timestamps)
-curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=50" | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/architect:queue/messages?count=50" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 print(f'Total messages: {data[\"total\"]}')
@@ -26,7 +30,7 @@ for m in data['messages']:
 "
 
 # Pending messages (being processed right now)
-curl -s "http://localhost:8000/debug/queues/architect:queue/architect-consumers/pending" | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/architect:queue/architect-consumers/pending" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for p in data['pending']:
@@ -54,7 +58,7 @@ asyncio.run(check())
 
 ```bash
 # List all messages
-curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=200" | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/architect:queue/messages?count=200" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for m in data['messages']:
@@ -64,10 +68,10 @@ print(f'Total: {data[\"total\"]}')
 "
 
 # Delete stale message
-curl -X DELETE "http://localhost:8000/debug/queues/architect:queue/messages/<message_id>"
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X DELETE "http://localhost:8000/api/debug/queues/architect:queue/messages/<message_id>"
 
 # Ack stuck pending message
-curl -X POST "http://localhost:8000/debug/queues/architect:queue/architect-consumers/ack/<message_id>"
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X POST "http://localhost:8000/api/debug/queues/architect:queue/architect-consumers/ack/<message_id>"
 ```
 
 ---
@@ -75,7 +79,7 @@ curl -X POST "http://localhost:8000/debug/queues/architect:queue/architect-consu
 ## Task Status Polling
 
 ```bash
-curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=created_at" | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=created_at" | python3 -c "
 import json, sys
 tasks = json.load(sys.stdin)
 for t in tasks:
@@ -214,12 +218,12 @@ echo "# Worker Reports: ${PROJECT_NAME}" > "$WORKER_REPORT"
 echo "" >> "$WORKER_REPORT"
 
 FOUND_REPORTS=0
-for TASK_ID in $(curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID" | python3 -c "
+for TASK_ID in $(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID" | python3 -c "
 import json, sys
 for t in json.load(sys.stdin):
     print(t['id'])
 "); do
-  REPORT=$(curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
+  REPORT=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
 import json, sys
 events = json.load(sys.stdin)
 for e in events:
@@ -227,7 +231,7 @@ for e in events:
     if report: print(report)
 ")
   if [ -n "$REPORT" ]; then
-    TITLE=$(curl -s "http://localhost:8000/api/tasks/$TASK_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['title'])")
+    TITLE=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/$TASK_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['title'])")
     echo "## Task: $TASK_ID — $TITLE" >> "$WORKER_REPORT"
     echo "" >> "$WORKER_REPORT"
     echo "$REPORT" >> "$WORKER_REPORT"

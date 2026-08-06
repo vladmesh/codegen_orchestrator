@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-08-06
+
+- **The API answers nobody anonymously** (`issue:a625fbca694614214ea5`): one dependency on the
+  FastAPI application, `require_authenticated_caller`, now stands in front of every route. It
+  admits a valid `X-Internal-Key` or an LK bearer token and nothing else; `X-Telegram-ID` on its
+  own is refused with 401, so the header can no longer be used to act as a user. The routes that
+  stay anonymous are listed with a reason each in `ANONYMOUS_ROUTES`: `GET /`, `GET /health` and
+  `POST /api/lk/auth/token`. `routers.debug` moved from beside `/health` to `/api/debug/*` and is
+  closed like everything else. `POST /api/users` and `/api/users/upsert` refuse `is_admin` from a
+  non-internal caller with 403, while the bot's registration of `ADMIN_TELEGRAM_IDS` keeps working:
+  a worker container that can reach the API's port can no longer write itself an administrator and
+  then act as it.
+
+  `services/api/tests/unit/test_global_auth_gate.py` walks `app.routes` rather than a hand-written
+  list, so a router included without going through the gate fails the suite instead of shipping.
+
+  **Callers that were reaching the API without a credential and are fixed here**: the admin
+  frontend's nginx proxy (now stamps `X-Internal-Key` into what it forwards, so the browser never
+  holds it and basic auth remains what decides who may use that origin), `make seed`,
+  `scripts/seed_agent_configs.py` and `scripts/seed_system_configs.py` (now on
+  `InternalAPISyncClient`), `scripts/test_e2e_flow.py` (now on `InternalAPIClient`),
+  `infra/scripts/{ssh-to-server,dump-server-keys,restore-server-keys}.sh`, the `tests/live` harness
+  fixture, `tests/e2e/test_engineering_flow.py`, and the curl recipes in the pipeline skills.
+
 ## 2026-08-04
 
 - **Fail-closed Time4VPS provisioning guard** (`issue:a6e238c69a60b84a1745`, hotfix):

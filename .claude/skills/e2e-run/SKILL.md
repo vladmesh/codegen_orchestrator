@@ -8,7 +8,11 @@ argument-hint: "<test> [--feature] [--no-cleanup] [--no-nuke]"
 # E2E Engineering Test Runner
 
 > **⚠️ Requires running orchestrator.** This skill tests the live pipeline and needs all services up.
-> Before starting, verify: `curl -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
+> Before starting, verify: `curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
+
+> **⚠️ Requires the internal API key.** Every route under `/api` refuses an
+> anonymous caller. Load the key once per shell before running anything below:
+> `export INTERNAL_API_KEY=$(grep -E '^INTERNAL_API_KEY=' .env | cut -d= -f2-)`
 
 Run one or more E2E tests end-to-end: create project via the full pipeline
 (scaffold → architect → engineering → deploy), monitor progress, verify results,
@@ -174,7 +178,7 @@ docker ps -a --format "{{.Names}}" | grep -iE "${REPO_SLUG}|${REPO_UNDER}" | xar
 
 # 2.5. Clean scaffolder workspace (INSIDE the scaffolder container, not just host volume).
 # Stale workspace with local git commits causes "nothing to commit" on re-scaffold.
-REPO_ID_CLEANUP=$(curl -s "http://localhost:8000/api/projects/" \
+REPO_ID_CLEANUP=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/projects/" \
   | jq -r --arg name "$PROJECT_NAME" --arg slug "$REPO_SLUG" \
     '.[] | select(.name == $name or .name == $slug) | .repositories[0].id // empty' 2>/dev/null | head -1)
 if [ -n "$REPO_ID_CLEANUP" ]; then
@@ -185,7 +189,7 @@ fi
 
 # 3. Clean stale deployments on servers (check BOTH underscore and hyphen variants)
 #    After compose down, also force-remove containers by name and verify ports are freed.
-for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" | jq -r '.[].public_ip'); do
+for SERVER_IP in $(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/servers/?is_managed=true" | jq -r '.[].public_ip'); do
   for DIR_NAME in "$REPO_UNDER" "$REPO_SLUG"; do
     HAS_DIR=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
       "[ -d /opt/services/$DIR_NAME ] && echo EXISTS || echo CLEAN" 2>&1 | grep -xE 'EXISTS|CLEAN' || echo "SSH_FAIL")
@@ -227,7 +231,7 @@ runs can clog the architect for hours.
 **1a. Upsert test user**:
 
 ```bash
-curl -s -X POST http://localhost:8000/api/users/upsert \
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s -X POST http://localhost:8000/api/users/upsert \
   -H "Content-Type: application/json" \
   -d '{
     "telegram_id": 999000001,
@@ -312,17 +316,17 @@ Search by both variants:
 ```bash
 REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')
 
-PROJECT_ID=$(curl -s "http://localhost:8000/api/projects/" \
+PROJECT_ID=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/projects/" \
   | jq -r --arg name "$PROJECT_NAME" --arg slug "$REPO_SLUG" \
     '.[] | select(.name == $name or .name == $slug) | .id' | head -1)
 
-STORY_ID=$(curl -s "http://localhost:8000/api/stories/?sort=-created_at" \
+STORY_ID=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/stories/?sort=-created_at" \
   | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .id' | head -1)
 
-REPO_ID=$(curl -s "http://localhost:8000/api/repositories/?project_id=$PROJECT_ID" \
+REPO_ID=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/repositories/?project_id=$PROJECT_ID" \
   | jq -r '.[0].id // empty')
 
-REPO_NAME=$(curl -s "http://localhost:8000/api/repositories/?project_id=$PROJECT_ID" \
+REPO_NAME=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/repositories/?project_id=$PROJECT_ID" \
   | jq -r '.[0].name // empty')
 
 echo "PROJECT_ID=$PROJECT_ID STORY_ID=$STORY_ID REPO_ID=$REPO_ID REPO_NAME=$REPO_NAME"
@@ -346,8 +350,8 @@ It checks for DRAFT projects with stories and repositories.
 # Poll project status — scaffold transitions DRAFT → ACTIVE
 # Timeout: 90s (6 × 15s). If scaffold doesn't complete in 90s, it's a bug — investigate immediately.
 for i in $(seq 1 6); do
-  STATUS=$(curl -s "http://localhost:8000/api/projects/$PROJECT_ID" | jq -r '.status')
-  WORKSPACE=$(curl -s "http://localhost:8000/api/projects/$PROJECT_ID" | jq -r '.config.workspace_ready // false')
+  STATUS=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/projects/$PROJECT_ID" | jq -r '.status')
+  WORKSPACE=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/projects/$PROJECT_ID" | jq -r '.config.workspace_ready // false')
   echo "[$i/6] Project: status=$STATUS workspace_ready=$WORKSPACE"
   if [ "$STATUS" = "active" ] && [ "$WORKSPACE" = "true" ]; then
     echo "Scaffold complete"
@@ -391,7 +395,7 @@ The architect runs in its **own container** (not scheduler!).
 ```bash
 # Poll for tasks created by architect
 for i in $(seq 1 30); do
-  TASKS=$(curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=created_at")
+  TASKS=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=created_at")
   COUNT=$(echo "$TASKS" | jq 'length')
   echo "[$i/30] Tasks: $COUNT"
   if [ "$COUNT" -gt "0" ]; then
@@ -430,7 +434,7 @@ to `in_dev` within 2 minutes. If it stays `todo`:
 docker compose logs scheduler --since=2m 2>/dev/null | grep -i dispatch | tail -10
 
 # Check engineering:queue — was a message published?
-curl -s "http://localhost:8000/debug/queues/engineering:queue/messages?count=10" | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/engineering:queue/messages?count=10" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 print(f'Engineering queue: {data[\"total\"]} messages')
@@ -460,8 +464,8 @@ Track each task through its lifecycle. This is the longest phase.
 
 **`failed`**: Read `failure_metadata` from task API. If retriable:
 ```bash
-curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=backlog"
-curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=todo"
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=backlog"
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=todo"
 ```
 Document the retry in the timeline. If it fails again, record and move on.
 
@@ -498,7 +502,7 @@ but can with race conditions):
 
 ```bash
 # Light intervention: transition story to in_progress
-curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
   -H "Content-Type: application/json" \
   -d '{"actor": "e2e-test"}'
 ```
@@ -511,7 +515,7 @@ curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
 
 ```bash
 # Watch story status
-curl -s http://localhost:8000/api/stories/$STORY_ID | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/stories/$STORY_ID | python3 -c "
 import json, sys
 s = json.load(sys.stdin)
 print(f\"Story: {s['status']}\")
@@ -533,7 +537,7 @@ prod server and runs Claude Code CLI to test the deployed project as a real user
 
 ```bash
 # Check story entered testing
-curl -s http://localhost:8000/api/stories/$STORY_ID | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s http://localhost:8000/api/stories/$STORY_ID | python3 -c "
 import json, sys
 s = json.load(sys.stdin)
 print(f\"Story: {s['status']}\")
@@ -543,7 +547,7 @@ print(f\"Story: {s['status']}\")
 docker compose logs qa-worker --tail=50 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -20
 
 # Check qa:queue
-curl -s "http://localhost:8000/debug/queues/qa:queue/messages?count=10" | python3 -m json.tool
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/qa:queue/messages?count=10" | python3 -m json.tool
 ```
 
 **What to watch**:
@@ -563,7 +567,7 @@ curl -s "http://localhost:8000/debug/queues/qa:queue/messages?count=10" | python
 
 **If QA is stuck**: Check if the qa:queue message was consumed:
 ```bash
-curl -s "http://localhost:8000/debug/queues/qa:queue/qa-consumers/pending" | python3 -m json.tool
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/queues/qa:queue/qa-consumers/pending" | python3 -m json.tool
 ```
 
 ### Step 6: Verify Deployment
@@ -588,7 +592,7 @@ asyncio.run(main())
 
 ```bash
 # Find deployed URL from service-deployments
-curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | python3 -c "
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | python3 -c "
 import json, sys
 deps = json.load(sys.stdin)
 for d in deps:
@@ -763,7 +767,7 @@ Use the same `po:input` / `po:response` mechanism from Step 1b/1c.
 Then extract the new story ID:
 
 ```bash
-FEATURE_STORY_ID=$(curl -s "http://localhost:8000/api/stories/?sort=-created_at" \
+FEATURE_STORY_ID=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/stories/?sort=-created_at" \
   | jq -r --arg pid "$PROJECT_ID" '[.[] | select(.project_id == $pid)] | .[0].id')
 
 echo "FEATURE_STORY_ID=$FEATURE_STORY_ID"
@@ -828,9 +832,9 @@ if [ -n "$SERVER_IP" ]; then
 fi
 
 # 4. Delete deployment records
-curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" \
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" \
   | jq -r '.[].id' | while read ID; do
-    curl -s -X DELETE "http://localhost:8000/api/service-deployments/$ID"
+    curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s -X DELETE "http://localhost:8000/api/service-deployments/$ID"
   done
 
 # 5. Delete project from DB via SQL (single transaction — partial deletes cause FK issues)

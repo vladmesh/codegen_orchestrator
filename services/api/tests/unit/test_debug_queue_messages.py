@@ -4,6 +4,7 @@ from http import HTTPStatus
 from unittest.mock import AsyncMock, patch
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.main import app
@@ -28,8 +29,10 @@ async def test_queue_messages_returns_parsed_messages(mock_redis):
 
     with patch("src.routers.debug.aioredis.from_url", return_value=mock_redis):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/debug/queues/engineering:queue/messages?count=50")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.get("/api/debug/queues/engineering:queue/messages?count=50")
 
     assert resp.status_code == HTTPStatus.OK
     data = resp.json()
@@ -55,8 +58,10 @@ async def test_queue_messages_empty_stream(mock_redis):
 
     with patch("src.routers.debug.aioredis.from_url", return_value=mock_redis):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/debug/queues/nonexistent:queue/messages")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.get("/api/debug/queues/nonexistent:queue/messages")
 
     assert resp.status_code == HTTPStatus.OK
     data = resp.json()
@@ -79,8 +84,12 @@ async def test_queue_pending_returns_entries(mock_redis):
 
     with patch("src.routers.debug.aioredis.from_url", return_value=mock_redis):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/debug/queues/engineering:queue/capability-workers/pending")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.get(
+                "/api/debug/queues/engineering:queue/capability-workers/pending"
+            )
 
     assert resp.status_code == HTTPStatus.OK
     data = resp.json()
@@ -96,8 +105,12 @@ async def test_queue_pending_nogroup(mock_redis):
 
     with patch("src.routers.debug.aioredis.from_url", return_value=mock_redis):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/debug/queues/engineering:queue/capability-workers/pending")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.get(
+                "/api/debug/queues/engineering:queue/capability-workers/pending"
+            )
 
     assert resp.status_code == HTTPStatus.OK
     assert resp.json()["pending"] == []
@@ -109,9 +122,11 @@ async def test_queue_ack_message(mock_redis):
 
     with patch("src.routers.debug.aioredis.from_url", return_value=mock_redis):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.post(
-                "/debug/queues/engineering:queue/capability-workers/ack/1710000000000-0"
+                "/api/debug/queues/engineering:queue/capability-workers/ack/1710000000000-0"
             )
 
     assert resp.status_code == HTTPStatus.OK
@@ -124,9 +139,11 @@ async def test_queue_ack_not_found(mock_redis):
 
     with patch("src.routers.debug.aioredis.from_url", return_value=mock_redis):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
             resp = await client.post(
-                "/debug/queues/engineering:queue/capability-workers/ack/9999-0"
+                "/api/debug/queues/engineering:queue/capability-workers/ack/9999-0"
             )
 
     assert resp.status_code == HTTPStatus.NOT_FOUND
@@ -138,8 +155,12 @@ async def test_queue_delete_message(mock_redis):
 
     with patch("src.routers.debug.aioredis.from_url", return_value=mock_redis):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete("/debug/queues/engineering:queue/messages/1710000000000-0")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.delete(
+                "/api/debug/queues/engineering:queue/messages/1710000000000-0"
+            )
 
     assert resp.status_code == HTTPStatus.OK
     assert resp.json()["deleted"] is True
@@ -151,7 +172,9 @@ async def test_queue_delete_not_found(mock_redis):
 
     with patch("src.routers.debug.aioredis.from_url", return_value=mock_redis):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete("/debug/queues/engineering:queue/messages/9999-0")
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+        ) as client:
+            resp = await client.delete("/api/debug/queues/engineering:queue/messages/9999-0")
 
     assert resp.status_code == HTTPStatus.NOT_FOUND

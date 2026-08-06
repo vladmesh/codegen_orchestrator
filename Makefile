@@ -447,11 +447,19 @@ pull-worker-reports:
 
 # === Seeding ===
 
+# Every route under /api needs a caller, and seeding is an internal one: the key
+# comes from .env, which this Makefile exports. Creating the admin user needs it
+# twice over — `is_admin` is a field only an internal caller may set.
 seed:
 	@echo "🌱 Seeding database..."
+	@if [ -z "$$INTERNAL_API_KEY" ]; then \
+		echo "  ❌ INTERNAL_API_KEY is not set (expected in .env)"; \
+		exit 1; \
+	fi
 	@if [ -n "$$TIME4VPS_LOGIN" ] && [ -n "$$TIME4VPS_PASSWORD" ]; then \
 		curl -fsS -X POST "http://localhost:8000/api/api-keys/" \
 			-H "Content-Type: application/json" \
+			-H "X-Internal-Key: $$INTERNAL_API_KEY" \
 			-d "{\"service\": \"time4vps\", \"type\": \"credentials\", \"value\": {\"username\": \"$$TIME4VPS_LOGIN\", \"password\": \"$$TIME4VPS_PASSWORD\"}}" > /dev/null && \
 		echo "  ✅ Time4VPS credentials added"; \
 	else \
@@ -459,12 +467,14 @@ seed:
 	fi
 	@if [ -n "$$TELEGRAM_ID_ADMIN" ]; then \
 		status=$$(curl -s -o /dev/null -w "%{http_code}" \
+			-H "X-Internal-Key: $$INTERNAL_API_KEY" \
 			"http://localhost:8000/api/users/by-telegram/$$TELEGRAM_ID_ADMIN"); \
 		if [ "$$status" = "200" ]; then \
 			echo "  ⏭️  Admin user ($$TELEGRAM_ID_ADMIN) already exists, skipping"; \
 		else \
 			curl -fsS -X POST "http://localhost:8000/api/users/" \
 				-H "Content-Type: application/json" \
+				-H "X-Internal-Key: $$INTERNAL_API_KEY" \
 				-d "{\"telegram_id\": $$TELEGRAM_ID_ADMIN, \"username\": \"admin\", \"first_name\": \"Admin\", \"is_admin\": true}" > /dev/null && \
 			echo "  ✅ Admin user ($$TELEGRAM_ID_ADMIN) created"; \
 		fi; \

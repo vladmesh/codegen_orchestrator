@@ -6,18 +6,13 @@ import sys
 
 import httpx
 
+from shared.clients.internal_api import InternalAPIClient
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("e2e_test")
 
 API_BASE_URL = "http://localhost:8000"
-
-
-def _api_url(path: str) -> str:
-    base = API_BASE_URL.rstrip("/")
-    if base.endswith("/api"):
-        raise RuntimeError("API_BASE_URL must not include /api")
-    return f"{base}/api/{path.lstrip('/')}"
 
 
 def generate_random_string(length=8):
@@ -45,7 +40,7 @@ async def test_projects(client):
     logger.info("🧪 Testing Projects...")
 
     # List projects (should have synced ones)
-    response = await client.get(_api_url("projects/"))
+    response = await client.get_raw("projects/")
     projects = response.json()
     logger.info(f"Found {len(projects)} synced projects")
 
@@ -58,7 +53,7 @@ async def test_projects(client):
         "config": {"description": "Created by E2E test"},
     }
 
-    response = await client.post(_api_url("projects/"), json=new_project)
+    response = await client.post_raw("projects/", json=new_project)
     if response.status_code != httpx.codes.CREATED:
         logger.error(f"Failed to create project: {response.text}")
         return False
@@ -66,7 +61,7 @@ async def test_projects(client):
     logger.info(f"✅ Created project {project_id}")
 
     # Verify it exists
-    response = await client.get(_api_url(f"projects/{project_id}"))
+    response = await client.get_raw(f"projects/{project_id}")
     if response.status_code != httpx.codes.OK:
         logger.error("Failed to retrieve created project")
         return False
@@ -80,7 +75,7 @@ async def test_servers(client):
     logger.info("🧪 Testing Servers...")
 
     # List servers (should have synced ones)
-    response = await client.get(_api_url("servers/"))
+    response = await client.get_raw("servers/")
     servers = response.json()
     logger.info(f"Found {len(servers)} synced servers")
 
@@ -101,7 +96,7 @@ async def test_servers(client):
         "labels": {"test": "true"},
     }
 
-    response = await client.post(_api_url("servers/"), json=new_server)
+    response = await client.post_raw("servers/", json=new_server)
     if response.status_code != httpx.codes.CREATED:
         logger.error(f"Failed to create server: {response.text}")
         return False
@@ -115,16 +110,20 @@ async def main():
         logger.error("❌ API not available")
         sys.exit(1)
 
-    async with httpx.AsyncClient() as client:
+    # Every route under /api needs a caller: use the transport the services use.
+    client = InternalAPIClient(API_BASE_URL)
+    try:
         success_projects = await test_projects(client)
         success_servers = await test_servers(client)
+    finally:
+        await client.close()
 
-        if success_projects and success_servers:
-            logger.info("🎉 All E2E tests PASSED!")
-            sys.exit(0)
-        else:
-            logger.error("❌ Some E2E tests FAILED")
-            sys.exit(1)
+    if success_projects and success_servers:
+        logger.info("🎉 All E2E tests PASSED!")
+        sys.exit(0)
+    else:
+        logger.error("❌ Some E2E tests FAILED")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

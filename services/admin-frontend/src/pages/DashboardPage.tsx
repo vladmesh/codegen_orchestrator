@@ -19,7 +19,7 @@ export function DashboardPage() {
 
   const queues = useQuery({
     queryKey: ['queues'],
-    queryFn: () => api.raw<QueueHealth>('/debug/queues'),
+    queryFn: () => api.get<QueueHealth>('/debug/queues'),
     refetchInterval: 15_000,
   })
 

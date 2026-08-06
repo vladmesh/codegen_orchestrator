@@ -47,8 +47,12 @@ async def redis():
 
 @pytest.fixture
 def api_client():
-    """HTTP client for API."""
-    return httpx.AsyncClient(base_url=API_URL, timeout=30.0)
+    """HTTP client for API, arriving as the internal service the consumers are."""
+    return httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=30.0,
+        headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
+    )
 
 
 async def wait_for_project_status(
