@@ -67,6 +67,8 @@ services:
       dockerfile: docker/test/integration/Dockerfile
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    environment:
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     command:
       [
         "sh",

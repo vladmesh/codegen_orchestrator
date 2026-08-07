@@ -10,6 +10,10 @@ set -euo pipefail
 API_URL="${1:-http://localhost:8000}"
 DUMP_FILE="secrets/server_keys.json"
 
+# /api/servers/ hands out private keys, so it answers nobody. The key is in .env:
+# `set -a; . .env; set +a`, or run this through make, which exports it.
+: "${INTERNAL_API_KEY:?INTERNAL_API_KEY must be set to reach the API}"
+
 # Check API is reachable
 if ! curl -sf "${API_URL}/health" > /dev/null 2>&1; then
     echo "  API not reachable at ${API_URL}, skipping server key dump"
@@ -17,7 +21,7 @@ if ! curl -sf "${API_URL}/health" > /dev/null 2>&1; then
 fi
 
 # Fetch server list
-servers_json=$(curl -sf "${API_URL}/api/servers/")
+servers_json=$(curl -sf -H "X-Internal-Key: ${INTERNAL_API_KEY}" "${API_URL}/api/servers/")
 server_count=$(echo "$servers_json" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
 
 if [ "$server_count" = "0" ]; then
@@ -32,6 +36,7 @@ python3 -c "
 import json, sys, urllib.request, urllib.error
 
 api = '${API_URL}'
+internal_headers = {'X-Internal-Key': '${INTERNAL_API_KEY}'}
 servers = json.loads('''$(echo "$servers_json")''')
 
 dump = []
@@ -48,7 +53,11 @@ for srv in servers:
     }
     # Fetch SSH key
     try:
-        req = urllib.request.urlopen(f'{api}/api/servers/{handle}/ssh-key')
+        req = urllib.request.urlopen(
+            urllib.request.Request(
+                f'{api}/api/servers/{handle}/ssh-key', headers=internal_headers
+            )
+        )
         key_data = json.loads(req.read())
         entry['ssh_key'] = key_data.get('ssh_key')
     except urllib.error.HTTPError:

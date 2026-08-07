@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -72,7 +73,9 @@ async def test_merge_secrets_adds_new_key(mock_decrypt, mock_encrypt):
 
     app.dependency_overrides[get_async_session] = override
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {"KEY_B": "val-b"}},
@@ -105,7 +108,9 @@ async def test_merge_secrets_with_env_hints(mock_decrypt, mock_encrypt):
 
     app.dependency_overrides[get_async_session] = override
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={
@@ -129,7 +134,9 @@ async def test_merge_secrets_project_not_found():
 
     app.dependency_overrides[get_async_session] = override
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             f"/api/projects/{uuid.UUID('00000000-0000-0000-0000-000000000099')}/config/secrets",
             json={"secrets": {"KEY_A": "val-a"}},
@@ -141,7 +148,9 @@ async def test_merge_secrets_project_not_found():
 @pytest.mark.asyncio
 async def test_merge_secrets_empty_secrets_rejected():
     """POST with empty secrets dict returns 422."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {}},
@@ -170,7 +179,9 @@ async def test_merge_secrets_assigns_new_dict_object(mock_decrypt, mock_encrypt)
 
     app.dependency_overrides[get_async_session] = override
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {"NEW_KEY": "new-val"}},
@@ -199,7 +210,9 @@ async def test_merge_secrets_overwrites_existing_key(mock_decrypt, mock_encrypt)
 
     app.dependency_overrides[get_async_session] = override
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {"KEY_A": "new-val"}},
@@ -234,7 +247,9 @@ async def test_merge_secrets_refuses_bot_tokens(secrets):
 
     app.dependency_overrides[get_async_session] = override
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": secrets},
@@ -258,7 +273,9 @@ async def test_merge_secrets_refuses_the_legacy_bot_access_key():
 
     app.dependency_overrides[get_async_session] = override
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         response = await client.post(
             f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {"ADMIN_TELEGRAM_ID": "42"}},

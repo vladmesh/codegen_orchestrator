@@ -78,11 +78,29 @@ taken from the default value.
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
 | `scheduler` | Background workers: task dispatcher (scaffold trigger, dispatch unblocked tasks), story completion, pr_poller, supervisor, provisioner trigger and result listener, github_sync, fail-closed Time4VPS server sync, health_checker, app_health_prober, ssl_checker, analytics_aggregator, rag_summarizer, queue_cleanup, temporary_access |
 | `infra-service` | An Ansible runner, SSH operations (formerly infrastructure-worker) |
-| `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000, `/wm-api/*` → worker-manager. Basic auth via htpasswd. Grafana is embedded at `/grafana/` |
+| `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000 (stamping `X-Internal-Key` in, so the browser never holds it), `/wm-api/*` → worker-manager. Basic auth via htpasswd decides who reaches that proxy. Grafana is embedded at `/grafana/` |
 | `user-dashboard` | React 19 + Vite SPA. The end user's own view of their projects: auth through Telegram, analytics from Loki |
 | `loki` | Log aggregation (7-day retention) |
 | `promtail` | Docker log scraper → Loki |
 | `grafana` | Dashboards + log viewer. Proxied via admin-frontend at `/grafana/` |
+
+### Who may reach the API at all
+
+One dependency on the FastAPI application, `require_authenticated_caller`, stands in front of
+every route. It admits two credentials: a valid `X-Internal-Key`, and an LK bearer token. It
+admits nothing else — in particular `X-Telegram-ID` on its own is not an identity, because the
+header names a user without proving one and anything that can reach the API's port can send it.
+The routes that answer anonymously are listed, with a reason each, in `ANONYMOUS_ROUTES` in
+`services/api/src/dependencies.py`: `GET /`, `GET /health`, and the LK token exchange
+`POST /api/lk/auth/token`, whose caller has no token yet by definition.
+
+Enforcement lives in that one place so a router included without a guard of its own is still
+closed. `services/api/tests/unit/test_global_auth_gate.py` walks `app.routes` and fails if any
+route outside the allowlist answers an anonymous caller, so a new router cannot arrive open.
+
+Getting through the gate is authentication, not authorization: `resolve_actor` still judges a
+request that names a user as that user, and `is_admin` on `POST /api/users` is refused unless
+the caller is an internal service.
 
 ### Talking to the internal API
 

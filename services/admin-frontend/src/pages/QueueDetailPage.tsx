@@ -68,13 +68,13 @@ function MessagesTab({ stream }: { stream: string }) {
 
   const { data, isLoading } = useQuery({
     queryKey: ['queue-messages', stream, count],
-    queryFn: () => api.raw<QueueMessagesResponse>(`/debug/queues/${encodeURIComponent(stream)}/messages?count=${count}`),
+    queryFn: () => api.get<QueueMessagesResponse>(`/debug/queues/${encodeURIComponent(stream)}/messages?count=${count}`),
     refetchInterval: 10_000,
   })
 
   const deleteMutation = useMutation({
     mutationFn: (messageId: string) =>
-      api.rawDelete<void>(`/debug/queues/${encodeURIComponent(stream)}/messages/${messageId}`),
+      api.delete<void>(`/debug/queues/${encodeURIComponent(stream)}/messages/${messageId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['queue-messages', stream] })
     },
@@ -201,7 +201,7 @@ function PendingTab({ stream, group }: { stream: string; group: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ['queue-pending', stream, group],
     queryFn: () =>
-      api.raw<QueuePendingResponse>(
+      api.get<QueuePendingResponse>(
         `/debug/queues/${encodeURIComponent(stream)}/${encodeURIComponent(group)}/pending`
       ),
     refetchInterval: 10_000,
@@ -209,7 +209,7 @@ function PendingTab({ stream, group }: { stream: string; group: string }) {
 
   const ackMutation = useMutation({
     mutationFn: (messageId: string) =>
-      api.rawPost<void>(
+      api.post<void>(
         `/debug/queues/${encodeURIComponent(stream)}/${encodeURIComponent(group)}/ack/${messageId}`,
         {}
       ),

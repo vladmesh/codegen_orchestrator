@@ -11,6 +11,10 @@ set -euo pipefail
 
 API_URL="${API_URL:-http://localhost:8000}"
 
+# /api/servers/ hands out a private key, so it answers nobody. The key is in .env:
+# `set -a; . .env; set +a`, or run this through make, which exports it.
+: "${INTERNAL_API_KEY:?INTERNAL_API_KEY must be set to reach the API}"
+
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <server_ip> [command...]"
     exit 1
@@ -20,7 +24,7 @@ SERVER_IP="$1"
 shift
 
 # Resolve handle from IP
-HANDLE=$(curl -sf "${API_URL}/api/servers/" \
+HANDLE=$(curl -sf -H "X-Internal-Key: ${INTERNAL_API_KEY}" "${API_URL}/api/servers/" \
     | python3 -c "
 import sys, json
 servers = json.load(sys.stdin)
@@ -36,7 +40,7 @@ if [ -z "$HANDLE" ]; then
 fi
 
 # Fetch SSH key
-SSH_KEY=$(curl -sf "${API_URL}/api/servers/${HANDLE}/ssh-key" \
+SSH_KEY=$(curl -sf -H "X-Internal-Key: ${INTERNAL_API_KEY}" "${API_URL}/api/servers/${HANDLE}/ssh-key" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['ssh_key'])" 2>/dev/null)
 
 if [ -z "$SSH_KEY" ]; then

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -117,7 +118,9 @@ async def test_create_task():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/",
             json={
@@ -143,7 +146,9 @@ async def test_create_task_requires_project_id():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/", json={"title": "Bug fix"})
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -155,7 +160,9 @@ async def test_create_task_invalid_type():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/", json={"title": "Bad", "type": "nonexistent"})
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -169,7 +176,9 @@ async def test_list_tasks():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -186,7 +195,9 @@ async def test_list_tasks_filter_by_source_brainstorm_id():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/?source_brainstorm_id=bs-xxx")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -201,7 +212,9 @@ async def test_list_tasks_with_filters():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get(
             "/api/tasks/?status=todo&type=fix&project_id=00000000-0000-0000-0000-000000000001"
         )
@@ -218,7 +231,9 @@ async def test_list_tasks_with_limit():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/?limit=1")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -233,7 +248,9 @@ async def test_list_tasks_sort_created_at():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/?sort=-created_at")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -246,7 +263,9 @@ async def test_list_tasks_with_since_filter():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/?since=2026-03-01T00:00:00")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -266,7 +285,9 @@ async def test_stats_endpoint():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/stats")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -289,7 +310,9 @@ async def test_next_tag_endpoint():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/next-tag")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -315,7 +338,9 @@ async def test_get_task():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/task-abc")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -328,7 +353,9 @@ async def test_get_task_not_found():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/task-nonexistent")
 
     assert resp.status_code == 404  # noqa: PLR2004
@@ -341,7 +368,9 @@ async def test_update_task():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.patch(
             "/api/tasks/task-abc", json={"title": "Updated title", "priority": 5}
         )
@@ -358,7 +387,9 @@ async def test_update_task_rejects_status_field():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.patch("/api/tasks/task-abc", json={"status": "done"})
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -372,7 +403,9 @@ async def test_cancel_task():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.delete("/api/tasks/task-abc")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -401,7 +434,9 @@ async def test_lookup_by_tag():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/by-tag/53")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -414,7 +449,9 @@ async def test_lookup_by_tag_not_found():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/by-tag/999")
 
     assert resp.status_code == 404  # noqa: PLR2004
@@ -431,7 +468,9 @@ async def test_start_from_backlog():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/start")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -447,7 +486,9 @@ async def test_start_from_todo():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/start")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -462,7 +503,9 @@ async def test_start_from_done_fails():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/start")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -475,7 +518,9 @@ async def test_complete_from_testing():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/complete")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -492,7 +537,9 @@ async def test_complete_from_in_ci():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/complete")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -509,7 +556,9 @@ async def test_complete_from_in_dev():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/complete")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -525,7 +574,9 @@ async def test_complete_from_backlog_fails():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/complete")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -538,7 +589,9 @@ async def test_complete_from_cancelled_fails():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/complete")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -551,7 +604,9 @@ async def test_fail_task():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/task-abc/fail",
             json={"reason": "CI crashed 3 times"},
@@ -568,7 +623,9 @@ async def test_reopen_from_done():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/task-abc/reopen",
             json={"reason": "Bug came back"},
@@ -585,7 +642,9 @@ async def test_reopen_from_in_dev_fails():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/reopen")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -598,7 +657,9 @@ async def test_generic_transition():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/transition?to_status=in_ci")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -612,7 +673,9 @@ async def test_generic_transition_invalid():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-abc/transition?to_status=done")
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -630,7 +693,9 @@ async def test_full_flow_backlog_to_done():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         # Start: backlog → todo → in_dev
         resp = await client.post("/api/tasks/task-flow/start", json={"actor": "claude"})
         assert resp.status_code == 200  # noqa: PLR2004
@@ -668,7 +733,9 @@ async def test_complete_auto_promotes_full_chain():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-auto/complete", json={"actor": "claude"})
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -685,7 +752,9 @@ async def test_ci_red_back_to_dev():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/task-cifix/transition?to_status=in_dev", json={"actor": "claude"}
         )
@@ -714,7 +783,9 @@ async def test_create_event():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/task-abc/events",
             json={
@@ -755,7 +826,9 @@ async def test_list_events():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/task-abc/events")
 
     assert resp.status_code == 200  # noqa: PLR2004
@@ -786,7 +859,9 @@ async def test_push_task_sets_priority_below_min():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/push",
             json={"title": "Urgent fix", "project_id": "00000000-0000-0000-0000-000000000001"},
@@ -817,7 +892,9 @@ async def test_push_task_empty_backlog():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/push",
             json={"title": "First task", "project_id": "00000000-0000-0000-0000-000000000001"},
@@ -849,7 +926,9 @@ async def test_push_twice_decreasing_priority():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         await client.post(
             "/api/tasks/push",
             json={"title": "Task A", "project_id": "00000000-0000-0000-0000-000000000001"},
@@ -871,7 +950,9 @@ async def test_events_for_nonexistent_task():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/tasks/task-nonexistent/events")
 
     assert resp.status_code == 404  # noqa: PLR2004
@@ -888,7 +969,9 @@ async def test_resume_from_whr():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/task-whr/resume",
             json={"guidance": "Use picsum.photos instead of Wikimedia", "actor": "admin"},
@@ -908,7 +991,9 @@ async def test_resume_from_wrong_status_fails():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/tasks/task-dev/resume",
             json={"guidance": "some guidance"},
@@ -927,7 +1012,9 @@ async def test_resume_requires_guidance():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-whr/resume", json={})
 
     assert resp.status_code == 422  # noqa: PLR2004
@@ -941,7 +1028,9 @@ async def test_reopen_from_whr_to_backlog():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/tasks/task-whr/reopen")
 
     assert resp.status_code == 200  # noqa: PLR2004

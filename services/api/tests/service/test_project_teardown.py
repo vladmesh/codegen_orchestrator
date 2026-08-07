@@ -54,11 +54,28 @@ async def client():
 
 @pytest.fixture
 async def user_client(client):
-    """A client with no internal key: authorization is decided by X-Telegram-ID alone.
+    """The PO agent: the internal key underneath, the end user in X-Telegram-ID.
 
-    The PO agent talks to the API exactly like this, so the owner check is only
-    proven by a client that cannot claim to be an internal service.
+    This used to be a keyless client, on the premise that the agent talks to the
+    API that way. It does not — `shared/clients/internal_api.py` puts the key on
+    every request it makes — and since the global gate went in, a keyless caller
+    never reaches the router at all. The owner check is what these tests are
+    about, and it is proven exactly as before: `resolve_actor` judges the request
+    by the user it names, key or no key.
     """
+    from src.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
+    ) as c:
+        yield c
+
+
+@pytest.fixture
+async def anonymous_client():
+    """Nobody: no key, no user. Refused before any handler runs."""
     from src.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -594,10 +611,12 @@ async def test_tearing_down_twice_changes_nothing(
 
 
 @pytest.mark.asyncio
-async def test_teardown_needs_an_identity(client: AsyncClient, user_client: AsyncClient, bot: str):
+async def test_teardown_needs_an_identity(
+    client: AsyncClient, anonymous_client: AsyncClient, bot: str
+):
     project_id, repo_id = await _bound_project(client, "Palindrome", bot)
 
-    anonymous = await user_client.post(f"/api/projects/{project_id}/teardown")
+    anonymous = await anonymous_client.post(f"/api/projects/{project_id}/teardown")
 
     assert anonymous.status_code == HTTPStatus.UNAUTHORIZED, anonymous.text
     assert await _bot_username(client, repo_id) == bot

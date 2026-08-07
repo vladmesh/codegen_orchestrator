@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -69,7 +70,9 @@ async def test_create_project_without_header_returns_400():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/projects/", json=PROJECT_PAYLOAD)
 
     assert resp.status_code == 400  # noqa: PLR2004
@@ -88,7 +91,9 @@ async def test_create_project_with_header_sets_owner():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/projects/",
             json=PROJECT_PAYLOAD,
@@ -114,7 +119,9 @@ async def test_create_project_unknown_user_returns_404():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/projects/",
             json=PROJECT_PAYLOAD,
@@ -142,7 +149,9 @@ async def test_create_project_rejects_legacy_name_alias():
         "config": {"modules": ["backend"]},
     }
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/projects/",
             json=payload,
@@ -166,7 +175,9 @@ async def test_create_project_rejects_client_slug():
 
     payload = PROJECT_PAYLOAD | {"slug": "client-slug"}
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/projects/",
             json=payload,

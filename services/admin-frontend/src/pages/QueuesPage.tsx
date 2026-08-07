@@ -7,7 +7,7 @@ import type { DebugQueuesResponse } from '@/types/api'
 export function QueuesPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['queues'],
-    queryFn: () => api.raw<DebugQueuesResponse>('/debug/queues'),
+    queryFn: () => api.get<DebugQueuesResponse>('/debug/queues'),
     refetchInterval: 10_000,
   })
 

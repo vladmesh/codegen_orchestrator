@@ -33,9 +33,7 @@ export const api = {
   patch: <T>(path: string, body: unknown) =>
     request<T>(`${BASE_URL}${path}`, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(`${BASE_URL}${path}`, { method: 'DELETE' }),
-  /** Fetch a path without the /api prefix (e.g. /debug/queues) */
+  /** Fetch an origin path outside the API proxy (the worker-manager one, /wm-api) */
   raw: <T>(path: string) => request<T>(path),
   rawDelete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
-  rawPost: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
 }

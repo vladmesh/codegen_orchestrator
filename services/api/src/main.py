@@ -6,7 +6,7 @@ from http import HTTPStatus
 import time
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -17,7 +17,7 @@ from shared.provisioning_policy import managed_time4vps_server_ids
 
 from . import routers
 from .database import engine
-from .dependencies import close_redis, init_redis
+from .dependencies import close_redis, init_redis, require_authenticated_caller
 
 
 @asynccontextmanager
@@ -31,11 +31,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await engine.dispose()
 
 
+# Authorization is one dependency on the application, not a decoration each
+# router remembers to carry: an included router is closed whether or not whoever
+# added it thought about it. The exceptions are listed in `ANONYMOUS_ROUTES`.
 app = FastAPI(
     title="Codegen Orchestrator API",
     description="Internal API for database access",
     version="0.1.0",
     lifespan=lifespan,
+    dependencies=[Depends(require_authenticated_caller)],
 )
 
 
@@ -122,7 +126,9 @@ async def root():
 
 
 app.include_router(routers.health.router)
-app.include_router(routers.debug.router)
+# Queue introspection reads message bodies off the streams, so it belongs behind
+# the same gate as the rest of the API rather than beside /health.
+app.include_router(routers.debug.router, prefix="/api")
 app.include_router(routers.users.router, prefix="/api")
 app.include_router(routers.projects.router, prefix="/api")
 app.include_router(routers.servers.router, prefix="/api")

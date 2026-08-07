@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -76,7 +77,9 @@ async def test_create_brainstorm():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/brainstorms/",
             json={
@@ -100,7 +103,9 @@ async def test_create_brainstorm_requires_project_id():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/brainstorms/", json={"title": "No project"})
 
     assert resp.status_code == 422
@@ -114,7 +119,9 @@ async def test_list_brainstorms():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/brainstorms/")
 
     assert resp.status_code == 200
@@ -128,7 +135,9 @@ async def test_list_brainstorms_with_filters():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get(
             "/api/brainstorms/?status=done&project_id=00000000-0000-0000-0000-000000000001"
         )
@@ -143,7 +152,9 @@ async def test_get_brainstorm():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/brainstorms/bs-abc")
 
     assert resp.status_code == 200
@@ -156,7 +167,9 @@ async def test_get_brainstorm_not_found():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/brainstorms/bs-nonexistent")
 
     assert resp.status_code == 404
@@ -169,7 +182,9 @@ async def test_update_brainstorm():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.patch(
             "/api/brainstorms/bs-abc",
             json={"title": "Updated title", "content": "New analysis"},
@@ -187,7 +202,9 @@ async def test_delete_brainstorm():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.delete("/api/brainstorms/bs-abc")
 
     assert resp.status_code == 200
@@ -204,7 +221,9 @@ async def test_done_from_draft():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/brainstorms/bs-abc/done")
 
     assert resp.status_code == 200
@@ -218,7 +237,9 @@ async def test_done_from_done_fails():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/brainstorms/bs-abc/done")
 
     assert resp.status_code == 409
@@ -231,7 +252,9 @@ async def test_triage_from_done():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/brainstorms/bs-abc/triage")
 
     assert resp.status_code == 200
@@ -245,7 +268,9 @@ async def test_triage_from_draft_fails():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/brainstorms/bs-abc/triage")
 
     assert resp.status_code == 409
@@ -258,7 +283,9 @@ async def test_archive_from_triaged():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/brainstorms/bs-abc/archive")
 
     assert resp.status_code == 200
@@ -272,7 +299,9 @@ async def test_archive_from_done():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/brainstorms/bs-abc/archive")
 
     assert resp.status_code == 200
@@ -286,7 +315,9 @@ async def test_archive_from_draft_fails():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/brainstorms/bs-abc/archive")
 
     assert resp.status_code == 409

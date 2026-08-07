@@ -8,7 +8,11 @@ argument-hint: "[story-ID]"
 # Architect — Story Decomposition into Tasks
 
 > **⚠️ Requires running orchestrator.** This skill reads stories and creates tasks via the API.
-> Before starting, verify: `curl -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
+> Before starting, verify: `curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
+
+> **⚠️ Requires the internal API key.** Every route under `/api` refuses an
+> anonymous caller. Load the key once per shell before running anything below:
+> `export INTERNAL_API_KEY=$(grep -E '^INTERNAL_API_KEY=' .env | cut -d= -f2-)`
 
 Takes a Story and decomposes it into actionable Tasks via the API.
 
@@ -26,13 +30,13 @@ Takes a Story and decomposes it into actionable Tasks via the API.
 **If story ID given:**
 ```bash
 API="http://localhost:8000"
-STORY=$(curl -sf "$API/api/stories/$STORY_ID")
+STORY=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf "$API/api/stories/$STORY_ID")
 ```
 
 **If no argument — auto-pick next created story:**
 ```bash
 API="http://localhost:8000"
-STORY=$(curl -sf "$API/api/stories/?status=created" \
+STORY=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf "$API/api/stories/?status=created" \
   | jq 'sort_by(.priority) | .[0]')
 STORY_ID=$(echo "$STORY" | jq -r '.id')
 ```
@@ -49,7 +53,7 @@ Gather information needed to decompose the story:
 
 **Existing tasks for this story** (avoid duplicates):
 ```bash
-EXISTING=$(curl -sf "$API/api/tasks/?story_id=$STORY_ID")
+EXISTING=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf "$API/api/tasks/?story_id=$STORY_ID")
 echo "$EXISTING" | jq -r '.[] | "#\(.title) [\(.status)]"'
 ```
 
@@ -57,18 +61,18 @@ If tasks already exist, print them and ask: "This story already has N tasks. Cre
 
 **Child stories** (if this is a parent story):
 ```bash
-CHILDREN=$(curl -sf "$API/api/stories/" | jq '[.[] | select(.parent_story_id == "'"$STORY_ID"'")]')
+CHILDREN=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf "$API/api/stories/" | jq '[.[] | select(.parent_story_id == "'"$STORY_ID"'")]')
 ```
 
 **All stories** (for cross-story dependency awareness):
 ```bash
-ALL_STORIES=$(curl -sf "$API/api/stories/" | jq -r '.[] | select(.status != "archived") | "\(.id) | \(.title) [\(.status)]"')
+ALL_STORIES=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf "$API/api/stories/" | jq -r '.[] | select(.status != "archived") | "\(.id) | \(.title) [\(.status)]"')
 ```
 
 **Project and repo context**:
 ```bash
-PROJECT_ID=$(curl -sf "$API/api/projects/" | jq -r '.[0].id')
-REPOS=$(curl -sf "$API/api/repositories/?project_id=$PROJECT_ID")
+PROJECT_ID=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf "$API/api/projects/" | jq -r '.[0].id')
+REPOS=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf "$API/api/repositories/?project_id=$PROJECT_ID")
 ```
 
 **Codebase exploration**: read relevant files based on the story description — architecture docs, existing implementations, related services. Use Grep/Glob to find relevant code.
@@ -97,9 +101,9 @@ Guidelines:
 For each task, get the next tag and create:
 
 ```bash
-NEXT_TAG=$(curl -sf "$API/api/tasks/next-tag" | jq -r '.next_tag')
+NEXT_TAG=$(curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf "$API/api/tasks/next-tag" | jq -r '.next_tag')
 
-curl -sf -X POST "$API/api/tasks/" \
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf -X POST "$API/api/tasks/" \
   -H "Content-Type: application/json" \
   -d '{
     "project_id": "'"$PROJECT_ID"'",
@@ -118,7 +122,7 @@ Save the created task ID. If another task depends on this one, use its ID for `b
 
 ```bash
 # For dependent tasks:
-curl -sf -X POST "$API/api/tasks/" \
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf -X POST "$API/api/tasks/" \
   -H "Content-Type: application/json" \
   -d '{
     "project_id": "'"$PROJECT_ID"'",
@@ -136,7 +140,7 @@ curl -sf -X POST "$API/api/tasks/" \
 
 After creating all tasks:
 ```bash
-curl -sf -X POST "$API/api/stories/$STORY_ID/start" \
+curl -H "X-Internal-Key: $INTERNAL_API_KEY" -sf -X POST "$API/api/stories/$STORY_ID/start" \
   -H "Content-Type: application/json" \
   -d '{"actor": "architect"}'
 ```

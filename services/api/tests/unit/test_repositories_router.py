@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -71,7 +72,9 @@ async def test_create_repository():
     session = _mock_session()
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post(
             "/api/repositories/",
             json={
@@ -97,7 +100,9 @@ async def test_list_repositories():
     session = _mock_session(scalars_all=repos)
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/repositories/")
 
     assert resp.status_code == 200
@@ -109,7 +114,9 @@ async def test_list_repositories_filter_by_project():
     session = _mock_session(scalars_all=[])
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get(f"/api/repositories/?project_id={PROJECT_UUID}")
 
     assert resp.status_code == 200
@@ -121,7 +128,9 @@ async def test_get_repository():
     session = _mock_session(scalar_one_or_none=repo)
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/repositories/repo-test1")
 
     assert resp.status_code == 200
@@ -133,7 +142,9 @@ async def test_get_repository_not_found():
     session = _mock_session(scalar_one_or_none=None)
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/repositories/repo-missing")
 
     assert resp.status_code == 404
@@ -145,7 +156,9 @@ async def test_get_by_provider_id():
     session = _mock_session(scalar_one_or_none=repo)
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/repositories/by-provider-id/42")
 
     assert resp.status_code == 200
@@ -157,7 +170,9 @@ async def test_get_by_provider_id_not_found():
     session = _mock_session(scalar_one_or_none=None)
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.get("/api/repositories/by-provider-id/999")
 
     assert resp.status_code == 404
@@ -169,7 +184,9 @@ async def test_update_repository():
     session = _mock_session(scalar_one_or_none=repo)
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.patch(
             "/api/repositories/repo-test1",
             json={"name": "updated-name"},
@@ -185,7 +202,9 @@ async def test_delete_repository():
     session = _mock_session(scalar_one_or_none=repo)
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.delete("/api/repositories/repo-test1")
 
     assert resp.status_code == 200
@@ -228,7 +247,9 @@ async def test_notify_workspace_deleted_clears_flag():
 
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/repositories/repo-test1/notify-workspace-deleted")
 
     assert resp.status_code == 200
@@ -242,7 +263,9 @@ async def test_notify_workspace_deleted_repo_not_found():
     session = _mock_session(scalar_one_or_none=None)
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/repositories/repo-missing/notify-workspace-deleted")
 
     assert resp.status_code == 404
@@ -261,7 +284,9 @@ async def test_notify_workspace_deleted_project_not_found():
 
     app.dependency_overrides[get_async_session] = lambda: session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.post("/api/repositories/repo-test1/notify-workspace-deleted")
 
     assert resp.status_code == 404

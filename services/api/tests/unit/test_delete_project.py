@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from httpx import ASGITransport, AsyncClient
+from internal_caller import INTERNAL_HEADERS
 import pytest
 
 from src.database import get_async_session
@@ -73,7 +74,9 @@ async def test_delete_project_not_found():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.delete(
             f"/api/projects/{uuid.UUID('00000000-0000-0000-0000-000000000099')}"
         )
@@ -94,7 +97,9 @@ async def test_delete_project_success():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.delete(
             f"/api/projects/{PROJECT_UUID}",
             headers={"X-Internal-Key": "test-internal-key"},
@@ -122,7 +127,9 @@ async def test_delete_project_access_denied():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.delete(
             f"/api/projects/{PROJECT_UUID}",
             headers={"X-Telegram-ID": "22222"},
@@ -144,7 +151,9 @@ async def test_delete_project_admin_can_delete():
     app.dependency_overrides[get_async_session] = override
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
         resp = await client.delete(
             f"/api/projects/{PROJECT_UUID}",
             headers={"X-Telegram-ID": "99999"},
@@ -156,7 +165,11 @@ async def test_delete_project_admin_can_delete():
 
 @pytest.mark.asyncio
 async def test_delete_project_no_auth_header_returns_401():
-    """DELETE without any auth header returns 401."""
+    """DELETE without any auth header returns 401.
+
+    No `INTERNAL_HEADERS` here on purpose: this caller is meant to be nobody, and
+    since the global gate went in it is refused before the router is reached.
+    """
     project = _make_project()
     session = _mock_session(project=project)
 

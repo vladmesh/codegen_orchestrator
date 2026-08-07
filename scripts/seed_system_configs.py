@@ -18,14 +18,9 @@ import sys
 import httpx
 import yaml
 
+from shared.clients.internal_api import InternalAPISyncClient
+
 CONFIG_PATH = Path(__file__).resolve().parent / "system_configs.yaml"
-
-
-def _api_url(base_url: str, path: str) -> str:
-    base = base_url.rstrip("/")
-    if base.endswith("/api"):
-        raise RuntimeError("API_BASE_URL must not include /api")
-    return f"{base}/api/{path.lstrip('/')}"
 
 
 def load_configs(path: Path) -> list[dict]:
@@ -48,9 +43,9 @@ def load_configs(path: Path) -> list[dict]:
     return configs
 
 
-def _current_value(client: httpx.Client, api_base_url: str, key: str) -> tuple[bool, object]:
+def _current_value(client: InternalAPISyncClient, key: str) -> tuple[bool, object]:
     """Return (exists, value) for a key already in the database."""
-    resp = client.get(_api_url(api_base_url, f"system-configs/{key}"))
+    resp = client.get_raw(f"system-configs/{key}")
     if resp.status_code == httpx.codes.NOT_FOUND:
         return False, None
     if resp.status_code != httpx.codes.OK:
@@ -76,13 +71,16 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
     updated = 0
     unchanged = 0
 
-    with httpx.Client(timeout=30.0) as client:
+    # Seeding is an internal call like any other, so it goes through the transport
+    # that carries X-Internal-Key: every route under /api requires a caller.
+    client = InternalAPISyncClient(api_base_url)
+    try:
         for config in configs:
             key = config["key"]
             value = config["value"]
 
             try:
-                exists, db_value = _current_value(client, api_base_url, key)
+                exists, db_value = _current_value(client, key)
                 if exists and db_value == value:
                     unchanged += 1
                     continue
@@ -94,10 +92,7 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
                     "description": config["description"],
                     "updated_by": "seed",
                 }
-                resp = client.post(
-                    _api_url(api_base_url, "system-configs/"),
-                    json=payload,
-                )
+                resp = client.request_raw("POST", "system-configs/", json=payload)
                 if resp.status_code != httpx.codes.CREATED:
                     print(f"  Failed to write '{key}': {resp.status_code} - {resp.text}")
                     success = False
@@ -112,6 +107,8 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
             except (httpx.RequestError, RuntimeError) as e:
                 print(f"  Request error for '{key}': {e}")
                 success = False
+    finally:
+        client.close()
 
     print(
         f"  System configs: {created} created, {updated} overwritten, {unchanged} already in sync"
