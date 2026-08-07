@@ -17,6 +17,12 @@
   unconditional `update_server_status(..., "ready")` and the scheduler result listener's
   `ACTIVE` write on success are both gone; neither can overwrite a status the newer episode owns.
 
+  The infra integration test that asserted the old side-write
+  (`test_provisioner_success_flow_updates_server_to_active`) now encodes the new contract as
+  `test_provisioner_success_result_does_not_overwrite_terminal_status`: it waits until the
+  scheduler's consumer group has actually consumed and ACKed the success entry, then asserts the
+  server's status is unchanged.
+
 ## 2026-08-06
 
 - **The API answers nobody anonymously** (`issue:a625fbca694614214ea5`): one dependency on the
