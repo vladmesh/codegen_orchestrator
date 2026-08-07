@@ -2,6 +2,22 @@
 
 ## 2026-08-07
 
+- **Live-harness clients pass the global auth gate, and each kind is built in one place**
+  (`issue:1bb703d5eea4337b143c`): since the gate landed in #233, `X-Telegram-ID` names an actor
+  but authenticates nobody, so the mega's user client — which sent only that header — was answered
+  `401 Unauthorized` on `POST /api/users/upsert` and the run ended in `ensure_test_user` after
+  0.21s. `tests/live/pipeline_helpers.py` now owns the three client kinds as three factories whose
+  names say which is which: `api_client_as_test_user` (internal key + `X-Telegram-ID`, the product
+  path), `api_client_as_internal_service` (internal key, names no user — the endpoints gated by
+  `require_internal_or_admin`), and `api_client_as_unscoped_observer` (internal key and never a
+  user header, so `list_runs` does not narrow away the unowned deploy and QA runs — the defect
+  hotfix #232 repaired, now asserted at construction, not only documented). Every call site in
+  `tests/live/` takes a client from a factory; none composes auth headers of its own, and the
+  helpers no longer re-send the key per call. A missing `INTERNAL_API_KEY` is refused at
+  `pytest_sessionstart` with a sentence naming the variable, instead of a `KeyError` from the
+  first client or a 401 halfway through a 30-minute run. Harness-only change; no product code,
+  no API rule, no contract touched.
+
 - **`docs/DEPLOY.md` lists the secrets the deploy actually reads** (`issue:3c2e590d60545c99de29`):
   the secret tables and `.github/workflows/*.yml` had drifted apart in both directions after the
   #227–231 hotfixes, so an operator configuring a deploy strictly from the document failed the
