@@ -6,7 +6,7 @@ import structlog
 
 from shared.log_config.config import setup_logging
 
-from .config import WorkerWrapperConfig
+from .config import WorkerWrapperConfig, validate_agent_config
 from .wrapper import WorkerWrapper
 
 logger = structlog.get_logger(__name__)
@@ -29,6 +29,7 @@ async def main():
 
     try:
         config = WorkerWrapperConfig()
+        validate_agent_config(config)
     except Exception as e:
         logger.fatal("configuration_error", error=str(e))
         sys.exit(1)

@@ -35,6 +35,33 @@ class TestWorkerContainerConfig:
         assert "/home/user/.claude" in volumes
         assert volumes["/home/user/.claude"]["bind"] == "/home/worker/.claude"
 
+    def test_claude_config_dir_points_at_the_mounted_host_session(self):
+        """The CLI must keep .claude.json inside the mounted host directory.
+
+        Without CLAUDE_CONFIG_DIR the CLI writes ~/.claude.json into the
+        container's ephemeral layer while its backups land in the mount, so the
+        config never survives a restart.
+        """
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=["GIT"],
+            auth_mode="host_session",
+            host_claude_dir="/home/user/.claude-worker",
+        )
+
+        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+        volumes = config.to_volume_mounts()
+
+        assert env["CLAUDE_CONFIG_DIR"] == volumes["/home/user/.claude-worker"]["bind"]
+        assert volumes["/home/user/.claude-worker"]["mode"] == "rw"
+        # The worker validates that mount against the mode it was created with.
+        assert env["WORKER_AUTH_MODE"] == "host_session"
+        # The config file itself is never a separate bind mount: a single-file
+        # mount is inode-bound and the CLI rewrites the file.
+        assert all(not v["bind"].endswith(".claude.json") for v in volumes.values())
+
     def test_codex_host_session_uses_dedicated_rw_mount(self):
         config = WorkerContainerConfig(
             worker_id="test-1",
@@ -67,6 +94,7 @@ class TestWorkerContainerConfig:
 
         assert env["CODEX_HOME"] == "/home/worker/.codex"
         assert "OPENAI_API_KEY" not in env
+        assert "CLAUDE_CONFIG_DIR" not in env
 
     def test_codex_api_key_mode_uses_exec_scoped_variable(self):
         config = WorkerContainerConfig(
@@ -95,6 +123,8 @@ class TestWorkerContainerConfig:
         )
         env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
         assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
+        # api_key mode keeps no session, and the worker must not demand a mount.
+        assert env["WORKER_AUTH_MODE"] == "api_key"
 
     def test_to_docker_run_kwargs_defaults_to_host_network(self):
         """Without network_name, should use host networking."""
