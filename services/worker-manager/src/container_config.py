@@ -3,6 +3,12 @@ from typing import List, Optional, Dict, Any
 
 from shared.contracts.vocab import AgentType
 
+# The host Claude session directory is mounted here, and the Claude CLI is told
+# to keep its whole config there via CLAUDE_CONFIG_DIR. Without that variable the
+# CLI writes ~/.claude.json into the container's ephemeral layer while its backups
+# land in the mounted directory, so every run starts from empty state.
+CLAUDE_CONFIG_DIR = "/home/worker/.claude"
+
 
 @dataclass
 class WorkerContainerConfig:
@@ -49,7 +55,13 @@ class WorkerContainerConfig:
             "WORKER_CONSUMER_NAME": self.worker_id,
             "WORKER_TRANSCRIPT_DIR": "/artifacts/worker-transcripts",
             "WORKER_TRANSCRIPT_MAX_BYTES": str(self.transcript_max_bytes),
+            # The worker validates its own agent state against the mode it was
+            # created with: host_session needs a mounted session, api_key does not.
+            "WORKER_AUTH_MODE": self.auth_mode,
         }
+
+        if self.agent_type == AgentType.CLAUDE:
+            env["CLAUDE_CONFIG_DIR"] = CLAUDE_CONFIG_DIR
 
         if self.agent_type == AgentType.CODEX:
             env["CODEX_HOME"] = "/home/worker/.codex"
@@ -73,8 +85,9 @@ class WorkerContainerConfig:
 
         # Mount host session directory if in host_session mode
         if self.auth_mode == "host_session" and self.agent_type == AgentType.CLAUDE and self.host_claude_dir:
-            # Mount to /home/worker/.claude inside container
-            volumes[self.host_claude_dir] = {"bind": "/home/worker/.claude", "mode": "rw"}
+            # Mount to /home/worker/.claude inside container — the same directory
+            # CLAUDE_CONFIG_DIR points at, so config and session share one owner.
+            volumes[self.host_claude_dir] = {"bind": CLAUDE_CONFIG_DIR, "mode": "rw"}
 
         if self.auth_mode == "host_session" and self.agent_type == AgentType.CODEX and self.host_codex_home:
             volumes[self.host_codex_home] = {

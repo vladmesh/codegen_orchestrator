@@ -58,6 +58,17 @@ non-interactive worker can refresh its session. Unknown agent values fail
 Pydantic validation or explicit
 LangGraph/image-routing checks; there is no fallback to Claude.
 
+`WorkerConfig.host_claude_dir` is the same shape for Claude: for
+`agent_type=claude` and `auth_mode=host_session`, worker-manager mounts that host
+directory read-write at `/home/worker/.claude` and sets `CLAUDE_CONFIG_DIR` to
+the same path, so the CLI keeps `.claude.json`, its backups and its session in
+one host-owned directory instead of the container's ephemeral layer. Every worker
+also receives `WORKER_AUTH_MODE`, and a Claude worker created with
+`auth_mode=host_session` refuses to start unless `CLAUDE_CONFIG_DIR` is set and is
+a mounted, writable host directory — a missing session is a configuration error at
+container start, not an agent failure mid-round. `auth_mode=api_key` keeps no
+session and requires none of this.
+
 `ResultStatus` dropped the old `error` failure synonym: a failed result is
 `failed`, never `error`. The `provisioner:results` consumer treats a message
 that fails validation as terminal (logs it and ACKs) so a stale/invalid entry

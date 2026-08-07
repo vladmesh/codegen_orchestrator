@@ -95,6 +95,9 @@ services:
       - WORKER_REDIS_URL=redis://172.31.0.10:6379/0
       - WORKER_API_URL=http://172.31.0.20:8000
       - SCAFFOLDED_WORKSPACE_PATH=/tmp/codegen/workspaces
+      # Claude host_session workers must get a real bind mount for their config
+      # directory; inside DIND that is the daemon-visible /host-claude.
+      - HOST_CLAUDE_DIR=/host-claude
     volumes:
       - workspaces:/tmp/codegen/workspaces
     depends_on:

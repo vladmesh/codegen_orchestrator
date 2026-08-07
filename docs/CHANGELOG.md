@@ -2,6 +2,28 @@
 
 ## 2026-08-07
 
+- **The Claude worker keeps its CLI config in the mounted host session directory**
+  (`issue:3b54bc1fe7b141dfa0f6`): in `auth_mode=host_session` worker-manager mounted only the
+  directory (`HOST_CLAUDE_DIR` → `/home/worker/.claude`), while the CLI's main config file is
+  `~/.claude.json` — outside that mount. So every run wrote the config into the container's
+  ephemeral layer and its backups into the mount, and the next container started from empty
+  state: on the acceptance run of 2026-08-07 the engineering worker died with `Claude
+  configuration file not found at: /home/worker/.claude.json / A backup file exists at:
+  /home/worker/.claude/backups/…`, and the host directory held nothing but two 50-byte backups,
+  one per run. `WorkerContainerConfig.to_env_vars` now exports `CLAUDE_CONFIG_DIR` pointing at
+  the same path the host directory is bound to, which is where the CLI keeps `.claude.json`,
+  `backups/` and the session together — one host-owned directory, no single-file bind mount
+  (inode-bound, and the CLI rewrites the file) and nothing new in the image. The worker now also
+  learns the mode it was created with (`WORKER_AUTH_MODE`) and, in `host_session`, refuses to
+  start unless that directory is set, mounted from the host and writable — naming what is
+  absent, instead of failing in the middle of an engineering round. The directory baked into
+  `worker-base-claude` is not a mount, so a worker that lost its `HOST_CLAUDE_DIR` can no longer
+  start quietly on empty state; `api_key` mode keeps no session and is unaffected.
+  `.credentials.json` and the Codex branch (`host_codex_home`, `CODEX_HOME`) are untouched, and
+  nothing new crosses the deploy boundary: `CLAUDE_CONFIG_DIR` and `WORKER_AUTH_MODE` are
+  container-internal, `HOST_CLAUDE_DIR` remains the only deploy secret involved, so the list in
+  `docs/DEPLOY.md` is unchanged.
+
 - **Live-harness clients pass the global auth gate, and each kind is built in one place**
   (`issue:1bb703d5eea4337b143c`): since the gate landed in #233, `X-Telegram-ID` names an actor
   but authenticates nobody, so the mega's user client — which sent only that header — was answered
