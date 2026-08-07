@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import os
 import re
 from typing import Any
@@ -16,6 +17,11 @@ logger = get_logger(__name__)
 # Provider error bodies are short JSON like {"error":["ipnotallowed","unauthorized"]}.
 # Cap anyway so an HTML error page can't flood the log or an exception message.
 _ERROR_BODY_LIMIT = 2000
+
+# The billing API throttles consecutive actions on one server and refuses the extra
+# call with 401 — the very status it also uses for a real authorization failure.
+# Only this key inside the error body tells the two apart.
+_RATE_LIMIT_KEY = "wait_x_between_action"
 
 
 class Time4VPSAPIError(Exception):
@@ -32,6 +38,25 @@ class Time4VPSAPIError(Exception):
         self.status_code = status_code
         self.body = body
         super().__init__(f"{method} {url} -> {status_code}: {body}")
+
+    @property
+    def rate_limit_wait_seconds(self) -> int | None:
+        """Seconds the billing API asks us to wait, or None if this is not a rate limit.
+
+        The observed refusal is 401 with
+        ``{"error":[["wait_x_between_action",24],"unauthorized"]}``. The status code
+        carries no information here — a genuine loss of authorization answers 401 with
+        the same shape minus this key — so the body is what classifies the response.
+        Anything else, including a plain 401, returns None and stays fatal.
+        """
+        if _RATE_LIMIT_KEY not in self.body:
+            return None
+        # The key is present, so the body must be the documented rate-limit shape.
+        # If it is not, the provider changed its contract: crash instead of guessing.
+        for entry in json.loads(self.body)["error"]:
+            if isinstance(entry, list) and entry[0] == _RATE_LIMIT_KEY:
+                return int(entry[1])
+        raise ValueError(f"Unrecognized Time4VPS rate-limit body: {self.body}")
 
 
 class Time4VPSClient:
@@ -129,7 +154,7 @@ class Time4VPSClient:
     async def wait_for_password_reset(
         self, server_id: int, task_id: int, timeout: int = 300, poll_interval: int = 5
     ) -> str:
-        """Poll task until complete and extract new password.
+        """Wait for a password reset task and extract the new password from its result.
 
         Args:
             server_id: Server ID
@@ -144,34 +169,22 @@ class Time4VPSClient:
             TimeoutError: If task doesn't complete within timeout
             ValueError: If password not found in results
         """
-        start_time = asyncio.get_running_loop().time()
+        task = await self.wait_for_task(
+            server_id, task_id, timeout=timeout, poll_interval=poll_interval
+        )
 
-        while True:
-            elapsed = asyncio.get_running_loop().time() - start_time
-            if elapsed > timeout:
-                raise TimeoutError(
-                    f"Password reset task {task_id} did not complete within {timeout}s"
-                )
+        results = task.results or ""
+        logger.debug("time4vps_password_reset_results", results=results)
+        password = self.extract_password(results)
+        if not password:
+            raise ValueError(f"Password not found in task results: {results}")
 
-            task = await self.get_task_result(server_id, task_id)
-
-            if task.completed:
-                # Task completed, extract password from results
-                results = task.results or ""
-                logger.debug("time4vps_password_reset_results", results=results)
-                password = self.extract_password(results)
-                if password:
-                    logger.info(
-                        "time4vps_password_reset_completed",
-                        server_id=server_id,
-                        password_length=len(password),
-                    )
-                    return password
-                else:
-                    raise ValueError(f"Password not found in task results: {results}")
-
-            # Not done yet, wait and retry
-            await asyncio.sleep(poll_interval)
+        logger.info(
+            "time4vps_password_reset_completed",
+            server_id=server_id,
+            password_length=len(password),
+        )
+        return password
 
     def extract_password(self, results: str) -> str | None:
         """Extract password from task results string.
@@ -278,15 +291,36 @@ class Time4VPSClient:
 
         Raises:
             TimeoutError: If task doesn't complete within timeout
+            Time4VPSAPIError: For any provider error other than the billing rate limit.
+                The rate limit is the only transient poll answer: the provider states
+                it explicitly, names the interval to wait, and the task it refuses to
+                report on keeps running regardless. Every other error stands for an
+                unknown state and still ends the wait.
         """
         start_time = asyncio.get_running_loop().time()
 
         while True:
-            elapsed = asyncio.get_running_loop().time() - start_time
-            if elapsed > timeout:
+            remaining = timeout - (asyncio.get_running_loop().time() - start_time)
+            if remaining <= 0:
                 raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
 
-            task = await self.get_task_result(server_id, task_id)
+            try:
+                task = await self.get_task_result(server_id, task_id)
+            except Time4VPSAPIError as exc:
+                rate_limit_wait = exc.rate_limit_wait_seconds
+                if rate_limit_wait is None:
+                    raise
+                # Waiting the interval the provider asked for, but never past the
+                # caller's budget: a rate limit extends the poll, it cannot outlive it.
+                logger.warning(
+                    "time4vps_task_poll_rate_limited",
+                    server_id=server_id,
+                    task_id=task_id,
+                    wait_seconds=rate_limit_wait,
+                    remaining_seconds=round(remaining),
+                )
+                await asyncio.sleep(min(rate_limit_wait, remaining))
+                continue
 
             if task.completed:
                 logger.info("time4vps_task_completed", server_id=server_id, task_id=task_id)
