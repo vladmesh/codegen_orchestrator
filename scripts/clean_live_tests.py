@@ -1,7 +1,9 @@
 # ruff: noqa: S608
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -17,9 +19,20 @@ if ORCHESTRATOR_ROOT not in sys.path:
 from shared.live_harness_cleanup import (  # noqa: E402
     REMOTE_CLEANUP_SCRIPT,
     build_remote_cleanup_command,
+    build_remote_residue_command,
 )
+from shared.project_slug import project_slug_prefix  # noqa: E402
 
 GITHUB_ORG = "project-factory-organization"
+# Deployed stacks are named by project slug, which truncates the title before the
+# project UUID, so `live-test-…` projects deploy as `live-te-…` directories and
+# containers. This is the only name an orphan still has once its DB rows are gone.
+DEPLOY_SLUG_PREFIXES = [project_slug_prefix(prefix) for prefix in PROJECT_PREFIXES]
+_STACK_NAME_PATTERN = re.compile(
+    "^("
+    + "|".join(prefix.replace("-", "[-_]") for prefix in DEPLOY_SLUG_PREFIXES)
+    + ")[0-9a-f]{32}"
+)
 
 
 class CleanupFailure(RuntimeError):
@@ -64,8 +77,17 @@ def _query_scalar(sql):
     return int(result.stdout.strip() or "0")
 
 
-def collect_residue_state(project_ids: list[str] | None = None):
-    """Return live-test residue counts using current schema relationships."""
+def collect_residue_state(
+    project_ids: list[str] | None = None,
+    *,
+    remote_residue: dict[str, list[str]],
+):
+    """Return live-test residue counts using current schema relationships.
+
+    ``remote_residue`` is what the targets reported (see ``collect_remote_residue``)
+    and is counted here so a live stack on a deploy target cannot be missing from
+    a residue verdict built only from the database, registry and Redis.
+    """
     conditions = _build_conditions()
     manifests = list((Path(ORCHESTRATOR_ROOT) / ".live-manifests").glob("*.json"))
     projects = _query_scalar(f"SELECT count(*) FROM projects WHERE {conditions};")  # noqa: S608
@@ -97,6 +119,7 @@ def collect_residue_state(project_ids: list[str] | None = None):
         "allocations": allocations,
         "ownership_manifests": len(manifests),
         "workers": workers,
+        "deployed_stacks": sum(len(found) for found in remote_residue.values()),
     }
     if project_ids:
         live_path = str(Path(ORCHESTRATOR_ROOT) / "tests" / "live")
@@ -120,10 +143,18 @@ def collect_residue_state(project_ids: list[str] | None = None):
 
 
 def verify_no_residue(project_ids: list[str] | None = None):
-    residue = collect_residue_state(project_ids)
+    remote_residue = collect_remote_residue()
+    residue = collect_residue_state(project_ids, remote_residue=remote_residue)
     remaining = {kind: count for kind, count in residue.items() if count}
     if remaining:
         details = ", ".join(f"{kind}={count}" for kind, count in sorted(remaining.items()))
+        # Name what is still on the targets: an operator cannot act on a count.
+        found = "; ".join(
+            f"{handle}: {', '.join(sorted(items))}"
+            for handle, items in sorted(remote_residue.items())
+        )
+        if found:
+            details += f" ({found})"
         raise CleanupFailure(f"live-test residue remains: {details}")
 
 
@@ -431,6 +462,96 @@ def _fetch_remote_server_key(handle: str) -> str:
         raise CleanupFailure(f"ssh key fetch failed for {handle}: {exc}") from exc
 
 
+@contextmanager
+def _server_key_file(handle: str):
+    """Materialise one server's SSH key for the duration of a block."""
+    key = _fetch_remote_server_key(handle)
+    if not key.endswith("\n"):
+        key += "\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
+        f.write(key)
+        key_path = f.name
+    os.chmod(key_path, 0o600)
+    try:
+        yield key_path
+    finally:
+        os.unlink(key_path)
+
+
+def _ssh(server: dict, key_path: str, command: str, stdin: str | None = None):
+    return subprocess.run(
+        [  # noqa: S607
+            "ssh",
+            "-i",
+            key_path,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "BatchMode=yes",
+            f"{server['ssh_user']}@{server['public_ip']}",
+            command,
+        ],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def parse_remote_residue(output: str) -> list[str]:
+    """Return the live-test stack artefacts one target reported."""
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def stack_names_from_residue(findings: list[str]) -> set[str]:
+    """Recover cleanable stack names from reported containers and directories.
+
+    A service directory *is* the stack name, so it is taken whole — everything
+    the inventory reports must be something the sweep can then remove, or
+    `make test-live-clean` would fail forever on residue it refuses to name.
+    A container is named `<stack>-<service>-<n>` (Docker may render the stack's
+    dashes as underscores), so its stack is read off the project UUID a slug
+    always ends in rather than guessed at a separator.
+    """
+    names: set[str] = set()
+    for finding in findings:
+        kind, _, artefact = finding.partition(" ")
+        artefact = artefact.rstrip("/").rsplit("/", 1)[-1]
+        if kind == "directory":
+            names.add(artefact)
+            continue
+        match = _STACK_NAME_PATTERN.match(artefact)
+        if match:
+            names.add(match.group(0).replace("_", "-"))
+    return names
+
+
+def collect_remote_residue() -> dict[str, list[str]]:
+    """Inventory live-test stacks on every target, independent of the database.
+
+    The DB-driven sweep can only clean slugs it still has rows for, so a run that
+    died between deploying a stack and recording it — or after its rows were
+    already deleted — leaves an orphan nothing else looks for. This asks each
+    target directly.
+    """
+    residue: dict[str, list[str]] = {}
+    command = build_remote_residue_command(DEPLOY_SLUG_PREFIXES)
+    for server in _fetch_remote_servers():
+        with _server_key_file(server["handle"]) as key_path:
+            result = _ssh(server, key_path, command)
+        if result.returncode != 0:
+            raise CleanupFailure(
+                f"remote residue scan failed for {server['handle']}: "
+                f"{result.returncode} {result.stderr.strip()[:300]}"
+            )
+        findings = parse_remote_residue(result.stdout)
+        if findings:
+            residue[server["handle"]] = findings
+    return residue
+
+
 def clean_remote_servers(project_slugs: list[str] | None = None):
     servers = _fetch_remote_servers()
 
@@ -440,77 +561,46 @@ def clean_remote_servers(project_slugs: list[str] | None = None):
 
     if project_slugs is None:
         project_slugs = [p["slug"] for p in get_test_projects()]
-    if not project_slugs:
-        print("No live-test project slugs found for remote cleanup.")
-        return
 
     remote_script = REMOTE_CLEANUP_SCRIPT.read_text()
+    residue_command = build_remote_residue_command(DEPLOY_SLUG_PREFIXES)
 
     for s in servers:
-        ip = s["public_ip"]
-        ssh_user = s["ssh_user"]
-        key = _fetch_remote_server_key(s["handle"])
-        if not key.endswith("\\n"):
-            key += "\\n"
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
-            f.write(key)
-            key_path = f.name
-        os.chmod(key_path, 0o600)
-
-        print(f"Cleaning remote server {s['handle']} ({ssh_user}@{ip})...")
+        print(f"Cleaning remote server {s['handle']} ({s['ssh_user']}@{s['public_ip']})...")
         try:
-            for project_slug in sorted(set(project_slugs)):
-                r = subprocess.run(
-                    [  # noqa: S607
-                        "ssh",
-                        "-i",
-                        key_path,
-                        "-o",
-                        "StrictHostKeyChecking=no",
-                        "-o",
-                        "ConnectTimeout=10",
-                        "-o",
-                        "BatchMode=yes",
-                        f"{ssh_user}@{ip}",
-                        build_remote_cleanup_command(project_slug),
-                    ],
-                    input=remote_script,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-                print(r.stdout.strip())
-                if r.returncode != 0:
+            with _server_key_file(s["handle"]) as key_path:
+                # The DB knows only the slugs whose rows survived. Ask the target
+                # what it is actually running: a global sweep may name stacks by
+                # prefix, and an orphan has no other name left.
+                scan = _ssh(s, key_path, residue_command)
+                if scan.returncode != 0:
                     raise CleanupFailure(
-                        f"remote cleanup failed for {s['handle']}/{project_slug}: "
-                        f"{r.returncode} {r.stderr.strip()[:300]}"
+                        f"remote residue scan failed for {s['handle']}: "
+                        f"{scan.returncode} {scan.stderr.strip()[:300]}"
                     )
-            prune = subprocess.run(
-                [  # noqa: S607
-                    "ssh",
-                    "-i",
-                    key_path,
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-o",
-                    "BatchMode=yes",
-                    f"{ssh_user}@{ip}",
-                    "docker network prune -f 2>&1 || true",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            print(prune.stdout.strip())
+                orphans = stack_names_from_residue(parse_remote_residue(scan.stdout))
+                if orphans:
+                    print(f"Found unlisted live-test stacks: {', '.join(sorted(orphans))}")
+                targets = sorted(set(project_slugs) | orphans)
+                if not targets:
+                    print("No live-test stacks found on this server.")
+                    continue
+                for project_slug in targets:
+                    r = _ssh(
+                        s, key_path, build_remote_cleanup_command(project_slug), stdin=remote_script
+                    )
+                    print(r.stdout.strip())
+                    if r.returncode != 0:
+                        raise CleanupFailure(
+                            f"remote cleanup failed for {s['handle']}/{project_slug}: "
+                            f"{r.returncode} {r.stderr.strip()[:300]}"
+                        )
+                prune = _ssh(s, key_path, "docker network prune -f 2>&1 || true")
+                print(prune.stdout.strip())
         except CleanupFailure:
             raise
         except Exception as e:
             raise CleanupFailure(f"failed to clean remote server {s['handle']}: {e}") from e
-        finally:
-            os.unlink(key_path)
 
 
 def clean_local_docker():

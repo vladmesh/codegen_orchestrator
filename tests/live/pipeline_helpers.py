@@ -58,6 +58,8 @@ DEPLOY_OUTCOME_POLL_INTERVAL = 3
 # check while the service finishes coming up.
 QA_RUN_TIMEOUT = 300
 QA_RUN_POLL_INTERVAL = 5
+# One owned deploy's teardown: 60s of SSH per target server, plus container start.
+SERVER_CLEANUP_TIMEOUT = 180
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
 RUN_CANCELLATION_TIMEOUT = 30
@@ -221,6 +223,16 @@ async def create_pipeline_project(
 
     manifest = OwnershipManifest(run_id=project_id)
     manifest.own("project", project_id)
+    # Write-ahead deploy intent. The pipeline — not this harness — decides when a
+    # deploy run starts (pr_poller creates one the moment the story PR merges), so
+    # the only way the manifest can never lag the live stack is to own the stack
+    # name before anything can create it. The stack is named by the project slug
+    # on whichever target the allocator picks, and both facts are knowable here:
+    # the slug is this project's, and the targets are whatever /api/servers/ lists
+    # at teardown. wait_deploy later enriches this same record with the resolved
+    # server and port. Without it, any failure between `docker compose up` on the
+    # target and that enrichment orphans a running stack teardown never hears of.
+    manifest.own("server_deployment", project_name)
     ctx = {
         "project_id": project_id,
         "project_title": project_title,
@@ -1222,32 +1234,20 @@ def _build_server_remote_cleanup_command(
     return build_remote_cleanup_command(project_name, service_base)
 
 
-def _server_cleanup_args(project_name: str, server_ip: str, server_handle: str) -> list[str]:
-    return [
-        "server-cleanup",
-        "--project-name",
-        project_name,
-        "--server-ip",
-        server_ip,
-        "--server-handle",
-        server_handle,
-        "--api-url",
-        "http://api:8000",
-    ]
-
-
-def build_server_cleanup_command(
-    project_name: str, server_ip: str, server_handle: str
-) -> list[str]:
-    """Build the container-side teardown command for one deployed stack.
+def _server_cleanup_args(project_name: str, server_handle: str | None) -> list[str]:
+    """Build the container-side teardown command for one owned deploy.
 
     Runs inside langgraph so it can reach the internal API. The server and
     ssh-key fetches authenticate with X-Internal-Key like the real consumers:
     /api/servers/* is gated by require_internal_or_admin and 401s without it.
 
-    SSH runs as the server's configured ``ssh_user`` (read from the server DTO,
-    the same user deploy authorizes), not a hardcoded ``root`` the orchestrator
-    key is not authorized for.
+    SSH runs as the server's configured ``ssh_user`` at the DTO's ``public_ip``
+    (the same user and host deploy authorizes), not a hardcoded ``root`` the
+    orchestrator key is not authorized for.
+
+    ``server_handle`` is the resolved target once wait_deploy has read the
+    allocation. A write-ahead deploy record has no target yet, and then teardown
+    clears this stack name on every server the API lists.
 
     Remote steps mirror how deploy.yml creates resources:
     1. discover actual compose project labels from live containers
@@ -1256,28 +1256,43 @@ def build_server_cleanup_command(
     4. verify no project-owned Docker resource remains
     5. remove and verify `/opt/services/{name}`
     """
-    return [
-        "python",
-        "-m",
-        "shared.live_harness_cleanup",
-        *_server_cleanup_args(project_name, server_ip, server_handle),
+    args = [
+        "server-cleanup",
+        "--project-name",
+        project_name,
+        "--api-url",
+        "http://api:8000",
     ]
+    if server_handle is not None:
+        args += ["--server-handle", server_handle]
+    return args
 
 
 def cleanup_server_container(ctx: dict) -> None:
-    """Stop and remove deployed container on remote server via SSH."""
-    if "server_handle" not in ctx:
-        return
-    result = docker_exec_python_module(
-        "langgraph",
-        "shared.live_harness_cleanup",
-        _server_cleanup_args(
-            ctx["project_name"], ctx.get("server_ip", "127.0.0.1"), ctx["server_handle"]
-        ),
-        timeout=75,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout)
+    """Remove every deployed stack this run owns, reading only its manifest.
+
+    One run's teardown is manifest-driven by contract: it removes the stack names
+    this run wrote ahead, never everything that looks like a live-test stack.
+    (The prefix sweep belongs to the global `make test-live-clean`, which owns no
+    manifest.) A record enriched by wait_deploy names its target; a write-ahead
+    record does not, and the cleanup module then resolves the targets itself.
+    """
+    for resource in ctx["manifest"].resources:
+        if resource.kind != "server_deployment":
+            continue
+        metadata = resource.metadata
+        handle = metadata["server_handle"] if "server_handle" in metadata else None
+        result = docker_exec_python_module(
+            "langgraph",
+            "shared.live_harness_cleanup",
+            _server_cleanup_args(resource.identifier, handle),
+            # A record without a resolved target clears the stack on every listed
+            # server, each with its own 60s SSH budget, so this is not the
+            # single-target 75s any more.
+            timeout=SERVER_CLEANUP_TIMEOUT,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr or result.stdout)
 
 
 async def cleanup_all(

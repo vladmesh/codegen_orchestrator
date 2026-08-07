@@ -14,6 +14,7 @@ import httpx
 from live_harness import (
     LIVE_NO_CLEANUP_ENV,
     CleanupError,
+    OwnedResource,
     OwnershipManifest,
     cleanup_guard,
     resolve_repo_root,
@@ -488,6 +489,53 @@ fi
     assert "name:live_test_2c3e830f:c1" in result.stderr
 
 
+def test_remote_residue_command_reports_stacks_and_only_stacks(tmp_path):
+    """Execute the inventory the global sweep runs on a target.
+
+    It has to see a stack through both names Docker gives it and through its
+    service directory, and stay quiet about anything else on the host — a noisy
+    inventory makes `make test-live-clean` fail on hosts that are in fact clean.
+    """
+    stack = "live-te-" + "c" * 32
+    services = tmp_path / "services"
+    (services / stack).mkdir(parents=True)
+    (services / "live-te-not-a-slug").mkdir()
+    _write_fake_docker(
+        tmp_path,
+        f"""
+if [ "$1" = "ps" ]; then
+  printf '%s\\n' '{stack}-backend-1' '{stack.replace("-", "_")}_postgres_1' \\
+    'live-te-nothing' 'unrelated-backend-1'
+fi
+""",
+    )
+    command = live_harness_cleanup.build_remote_residue_command(
+        ["live-te-"], service_base=str(services)
+    )
+
+    result = subprocess.run(
+        shlex.split(command),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"},
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(result.stdout.split()) == sorted(
+        [
+            "container",
+            f"{stack}-backend-1",
+            "container",
+            f"{stack.replace('-', '_')}_postgres_1",
+            "directory",
+            str(services / stack),
+            "directory",
+            str(services / "live-te-not-a-slug"),
+        ]
+    )
+
+
 def test_db_cleanup_follows_port_allocation_application_relation(monkeypatch):
     executed = []
 
@@ -659,9 +707,15 @@ async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_pa
 @pytest.mark.asyncio
 async def test_wait_deploy_fails_loudly_when_servers_endpoint_rejects(monkeypatch, tmp_path):
     """A non-200 from the auth-gated servers endpoint must surface as a clear
-    HTTP error, not a `TypeError` from iterating an error body, and must leave
-    the manifest empty."""
+    HTTP error, not a `TypeError` from iterating an error body.
+
+    The failure lands in the window this card closes — the stack may already be
+    running on the target — so what teardown is left holding matters: the
+    write-ahead deploy record placed at project creation must survive untouched,
+    and no port allocation may be claimed, since none was ever read.
+    """
     manifest = OwnershipManifest("project-1")
+    manifest.own("server_deployment", "run")
     ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
     responses = {
         "/api/repositories/": [{"id": "repo-1"}],
@@ -681,7 +735,246 @@ async def test_wait_deploy_fails_loudly_when_servers_endpoint_rejects(monkeypatc
     with pytest.raises(httpx.HTTPStatusError):
         await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
 
-    assert manifest.resources == []
+    assert [(r.kind, r.identifier, r.metadata) for r in manifest.resources] == [
+        ("server_deployment", "run", {})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_enriches_the_write_ahead_deploy_record(monkeypatch, tmp_path):
+    """The resolved target completes the written-ahead record, it does not repeat it.
+
+    Two records for one stack would make teardown clean it twice and report the
+    second, empty pass as residue; a replaced record would drop the server the
+    write-ahead already knew about.
+    """
+    manifest = OwnershipManifest("project-1")
+    manifest.own("server_deployment", "run")
+    ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
+    responses = {
+        "/api/repositories/": [{"id": "repo-1"}],
+        "/api/applications/": [{"id": 21, "status": "running"}],
+        "/api/servers/": [{"handle": "server-1", "public_ip": "192.0.2.1"}],
+        "/api/servers/server-1/ports": [
+            {"id": 8, "port": 8010, "application_id": 21, "service_name": "backend"}
+        ],
+    }
+
+    async def get(url, **kwargs):
+        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    api = SimpleNamespace(get=get)
+
+    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
+
+    deploys = [item for item in manifest.resources if item.kind == "server_deployment"]
+    assert len(deploys) == 1
+    assert deploys[0].identifier == "run"
+    assert deploys[0].metadata == {"server_handle": "server-1", "server_ip": "192.0.2.1"}
+    written = json.loads((tmp_path / ".live-manifests" / f"{manifest.run_id}.json").read_text())
+    assert [item for item in written["resources"] if item["kind"] == "server_deployment"] == [
+        {
+            "kind": "server_deployment",
+            "identifier": "run",
+            "server_handle": "server-1",
+            "server_ip": "192.0.2.1",
+        }
+    ]
+
+
+_FAKE_TARGET_DOCKER = """
+state=${FAKE_DOCKER_STATE:?}
+project=${FAKE_DOCKER_PROJECT:?}
+alt=$(printf '%s' "$project" | tr '-' '_')
+matches() {
+  for arg in "$@"; do
+    case "$arg" in
+      *"$project"*|*"$alt"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+command=$1
+shift
+if [ "$command" = "ps" ]; then
+  if matches "$@"; then cat "$state"; fi
+elif [ "$command" = "inspect" ]; then
+  printf '%s\\n' "$alt"
+elif [ "$command" = "compose" ]; then
+  if matches "$@"; then : > "$state"; fi
+elif [ "$command" = "rm" ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      -*) ;;
+      *) grep -vx "$arg" "$state" > "$state.next" || true; mv "$state.next" "$state" ;;
+    esac
+  done
+fi
+exit 0
+"""
+
+
+def _fake_deploy_target(tmp_path: Path, stack_name: str):
+    """A stand-in deploy target running one stack: its dir and its containers."""
+    service_base = tmp_path / "services"
+    (service_base / stack_name / "infra").mkdir(parents=True)
+    (service_base / stack_name / "infra" / "docker-compose.yml").write_text("services: {}\n")
+    containers = tmp_path / "containers"
+    containers.write_text(f"{stack_name}-backend-1\n")
+    _write_fake_docker(tmp_path, _FAKE_TARGET_DOCKER)
+    env = {
+        **os.environ,
+        "FAKE_DOCKER_STATE": str(containers),
+        "FAKE_DOCKER_PROJECT": stack_name,
+        "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
+    }
+    return service_base, containers, env
+
+
+async def _create_project_with_stubbed_api(monkeypatch, tmp_path, *, project_name: str):
+    """Run the real project-creation helper against a stubbed API."""
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/projects/":
+            return httpx.Response(201, json={"slug": project_name})
+        if request.url.path == "/api/repositories/":
+            return httpx.Response(201, json={"id": "repo-1"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        return await pipeline_helpers.create_pipeline_project(
+            api,
+            api,
+            project_prefix="live-test",
+            description="d",
+            agent_type="noop",
+            task_title="t",
+            task_description="td",
+        )
+
+
+@pytest.mark.asyncio
+async def test_project_creation_writes_the_deploy_ahead_of_the_stack(monkeypatch, tmp_path):
+    """The deploy is owned on disk before any target can be running it.
+
+    The pipeline, not the harness, starts the deploy run, so ownership that waits
+    for a RUNNING application is ownership that can arrive after the stack does.
+    A second process must be able to tear the stack down from this file alone.
+    """
+    ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
+
+    written = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
+    assert {"kind": "server_deployment", "identifier": "live-te-abc"} in written["resources"]
+    assert "final_app_status" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_manifest_file_alone_tears_down_a_written_ahead_stack(monkeypatch, tmp_path):
+    """Teardown resumed from the manifest file clears the target it never saw.
+
+    This is what `make test-live-clean` does after a run's process is gone: it
+    rebuilds the manifest from `.live-manifests/<run>.json` and cleans what it
+    lists. The written-ahead record carries no server, so teardown must clear the
+    stack name on every server the API lists rather than skip it.
+    """
+    stack = "live-te-" + "a" * 32
+    ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name=stack)
+    service_base, containers, env = _fake_deploy_target(tmp_path, stack)
+
+    # Rebuild ownership from the file exactly as scripts/clean_live_tests.py does.
+    data = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
+    resumed = OwnershipManifest(
+        run_id=data["run_id"],
+        resources=[
+            OwnedResource(
+                item["kind"],
+                item["identifier"],
+                {k: v for k, v in item.items() if k not in {"kind", "identifier"}},
+            )
+            for item in data["resources"]
+        ],
+    )
+
+    issued = []
+
+    def run_module(service, module, args, timeout=30):
+        issued.append(args)
+        project = args[args.index("--project-name") + 1]
+        return _run_remote_cleanup(project, service_base, env)
+
+    monkeypatch.setattr(pipeline_helpers, "docker_exec_python_module", run_module)
+
+    pipeline_helpers.cleanup_server_container({"manifest": resumed})
+
+    assert issued == [["server-cleanup", "--project-name", stack, "--api-url", "http://api:8000"]]
+    assert containers.read_text().strip() == ""
+    assert not (service_base / stack).exists()
+
+
+@pytest.mark.asyncio
+async def test_failure_between_deploy_and_port_lookup_leaves_no_stack_behind(monkeypatch, tmp_path):
+    """Inject the defect's window: the stack is up, the harness dies before the
+    port is known, and teardown must still leave the target empty.
+
+    Run 7 of the mega died exactly here — RUNNING application, failure before the
+    ownership block — and teardown reported a fully clean run while the stack
+    kept the port that broke run 8.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    stack = "live-te-" + "b" * 32
+    ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name=stack)
+    service_base, containers, env = _fake_deploy_target(tmp_path, stack)
+
+    async def get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        if url == "/api/repositories/":
+            return httpx.Response(200, json=[{"id": "repo-1"}], request=request)
+        if url == "/api/applications/":
+            return httpx.Response(200, json=[{"id": 21, "status": "running"}], request=request)
+        # The stack is live on the target; the harness dies before it can read
+        # which port the allocator gave it.
+        return httpx.Response(500, json={"detail": "boom"}, request=request)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await pipeline_helpers.wait_deploy(SimpleNamespace(get=get), SimpleNamespace(get=get), ctx)
+
+    def run_module(service, module, args, timeout=30):
+        project = args[args.index("--project-name") + 1]
+        return _run_remote_cleanup(project, service_base, env)
+
+    monkeypatch.setattr(pipeline_helpers, "docker_exec_python_module", run_module)
+    for name in (
+        "cancel_owned_scaffold",
+        "cancel_owned_active_work",
+        "cleanup_owned_capability_work",
+    ):
+        monkeypatch.setattr(pipeline_helpers, name, lambda ctx: None)
+
+    async def _noop_async(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_runs", _noop_async)
+    monkeypatch.setattr(pipeline_helpers, "wait_for_owned_runs", _noop_async)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: None)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_registry_resources", lambda ctx, errors: None)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_github_repo", lambda repo: None)
+    monkeypatch.setattr(pipeline_helpers, "_cleanup_db", lambda project_id: None)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == f"/api/projects/{ctx['project_id']}":
+            return httpx.Response(404)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        await pipeline_helpers.cleanup_all(api, None, ctx)
+
+    assert containers.read_text().strip() == ""
+    assert not (service_base / stack).exists()
 
 
 def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
@@ -826,11 +1119,17 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
 
     assert len(cleanup_contexts) == 1
     manifest = cleanup_contexts[0]["manifest"]
+    # The deploy is owned from creation, before anything can deploy the stack,
+    # so a project that dies this early already hands teardown its stack name.
     assert [(resource.kind, resource.identifier) for resource in manifest.resources] == [
-        ("project", cleanup_contexts[0]["project_id"])
+        ("project", cleanup_contexts[0]["project_id"]),
+        ("server_deployment", "live-test-slug"),
     ]
     written = json.loads((tmp_path / ".live-manifests" / f"{manifest.run_id}.json").read_text())
-    assert written["resources"] == [{"identifier": manifest.run_id, "kind": "project"}]
+    assert written["resources"] == [
+        {"identifier": manifest.run_id, "kind": "project"},
+        {"identifier": "live-test-slug", "kind": "server_deployment"},
+    ]
 
 
 @pytest.mark.asyncio

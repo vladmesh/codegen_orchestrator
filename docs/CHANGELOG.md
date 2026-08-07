@@ -2,6 +2,25 @@
 
 ## 2026-08-07
 
+- **The live harness owns a deploy before it exists** (`issue:47affbe42eb8ad5c16ef`): a live run
+  records `server_deployment <slug>` in its ownership manifest at project creation, before any
+  deploy run can start, instead of only after the application reported `RUNNING` and its port
+  allocation had been read. `wait_deploy` now *enriches* that same record with `server_handle`
+  and `server_ip` — `OwnershipManifest.own` merges metadata into an existing `(kind, identifier)`
+  record rather than appending a second one — so a failure anywhere between `docker compose up`
+  on the target and that enrichment still leaves teardown holding the stack name. Teardown of a
+  single run reads the manifest and nothing else; a record with no resolved target is cleared on
+  every server the API lists (`shared.live_harness_cleanup server-cleanup` takes `--server-handle`
+  as optional and reads `ssh_user`/`public_ip` from the same server DTO, so the `127.0.0.1`
+  fallback is gone).
+
+  `make test-live-clean` also stopped reporting a clean host while a foreign stack was running on
+  a deploy target: it inventories the targets themselves (`docker ps` plus `/opt/services/*` by
+  the deployed-slug prefixes derived from `PROJECT_PREFIXES` via `shared.project_slug`), sweeps
+  the stacks it finds even when no database row names them, and counts them in the final residue
+  verdict with the findings listed. Prefix sweeping stays confined to that global cleanup — one
+  run's teardown never uses it.
+
 - **Provisioning success commits its result in one order** (`issue:23593a6a2850ae9c7964`):
   `handle_provisioning_success` now persists the server's private SSH key **first**, then closes
   the episode. A missing `ssh_manager`, an empty private key, or a failing `save_server_ssh_key`
