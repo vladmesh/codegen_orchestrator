@@ -70,7 +70,8 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
                 base_url=API_URL, timeout=10, headers=internal_headers()
             ) as api_internal,
         ):
-            ctx = await create_project(api, api_internal)
+            # This pipeline deploys, so the stack is owned before it can exist.
+            ctx = await create_project(api, api_internal, deploys=True)
             async with cleanup_guard(
                 lambda: cleanup_all(api_internal, api_no_auth, ctx), manifest=ctx["manifest"]
             ):

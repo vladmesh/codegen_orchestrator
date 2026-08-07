@@ -21,6 +21,18 @@
   verdict with the findings listed. Prefix sweeping stays confined to that global cleanup — one
   run's teardown never uses it.
 
+  The write-ahead record is taken only by runs whose pipeline reaches deploy (`create_noop_project`
+  / `create_llm_backend_project` now require `deploys=`): scaffold- and engineering-only runs own
+  no stack and their teardown touches no server, so one unreachable target cannot fail a test that
+  deployed nothing. The target inventory is fail-closed — an unreachable `docker` on a target fails
+  the scan instead of reporting an empty, falsely clean host. `scripts/clean_live_tests.py` also
+  lost its literal `\n`/`\|` escapes: psql answers are split on real newlines (two live-test
+  projects used to collapse into an empty project list, emptying the DB half of both the sweep and
+  the residue verdict, and every active repository workspace looked orphaned), and the local
+  container filter is a real regexp alternation. An unprovable ownership manifest now fails the
+  cleanup at the end rather than aborting it at its first step, so every other sweep still runs.
+  `tests/live/README.md` describes the teardown scope as it now is.
+
 - **Provisioning success commits its result in one order** (`issue:23593a6a2850ae9c7964`):
   `handle_provisioning_success` now persists the server's private SSH key **first**, then closes
   the episode. A missing `ssh_manager`, an empty private key, or a failing `save_server_ssh_key`

@@ -165,7 +165,7 @@ def build_remote_cleanup_command(project_name: str, service_base: str = "/opt/se
     return shlex.join(["sh", "-s", "--", project_name, service_base.rstrip("/")])
 
 
-def _tolerant_prefix_pattern(prefix: str) -> str:
+def tolerant_prefix_pattern(prefix: str) -> str:
     """Match a stack-name prefix whether Docker kept or replaced its dashes."""
     return "".join("[-_]" if char == "-" else char for char in prefix)
 
@@ -179,18 +179,23 @@ def build_remote_residue_command(prefixes: list[str], service_base: str = "/opt/
     is still seen. Reports, never deletes.
     """
     base = service_base.rstrip("/")
-    pattern = "|".join(_tolerant_prefix_pattern(prefix) for prefix in prefixes)
+    pattern = "|".join(tolerant_prefix_pattern(prefix) for prefix in prefixes)
     # The trailing `*` must reach the shell unquoted to glob; the prefixes are
     # slug fragments, so only the base path can need quoting.
     globs = " ".join(f"{shlex.quote(base)}/{prefix}*" for prefix in prefixes)
     # A container is only reported when its name carries the project UUID a slug
     # always ends in, so an unrelated container that merely starts like a test
     # project does not become residue.
+    #
+    # `docker` is read into a variable first because a pipeline's status is its
+    # last command's: piping straight into `grep | sed` would let a dead daemon
+    # exit 0 with no output, and this scan's only job is to never report a false
+    # clean. An unreachable docker must fail the scan, not empty it.
     script = (
-        f"docker ps -a --format '{{{{.Names}}}}' "
-        f"| grep -E {shlex.quote(f'^({pattern})[0-9a-f]{{32}}')} "
-        "| sed 's/^/container /' || true; "
-        f"ls -1d {globs} 2>/dev/null | sed 's/^/directory /' || true"
+        "names=$(docker ps -a --format '{{.Names}}') || exit 1; "
+        f"printf '%s\\n' \"$names\" | grep -E {shlex.quote(f'^({pattern})[0-9a-f]{{32}}')} "
+        "| sed 's/^/container /'; "
+        f"ls -1d {globs} 2>/dev/null | sed 's/^/directory /'"
     )
     return shlex.join(["sh", "-c", script])
 

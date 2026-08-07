@@ -20,6 +20,7 @@ from shared.live_harness_cleanup import (  # noqa: E402
     REMOTE_CLEANUP_SCRIPT,
     build_remote_cleanup_command,
     build_remote_residue_command,
+    tolerant_prefix_pattern,
 )
 from shared.project_slug import project_slug_prefix  # noqa: E402
 
@@ -28,9 +29,11 @@ GITHUB_ORG = "project-factory-organization"
 # project UUID, so `live-test-…` projects deploy as `live-te-…` directories and
 # containers. This is the only name an orphan still has once its DB rows are gone.
 DEPLOY_SLUG_PREFIXES = [project_slug_prefix(prefix) for prefix in PROJECT_PREFIXES]
+# Same dash-or-underscore rule the remote scan matches with: one implementation,
+# so what the target reports and what this recognises cannot drift apart.
 _STACK_NAME_PATTERN = re.compile(
     "^("
-    + "|".join(prefix.replace("-", "[-_]") for prefix in DEPLOY_SLUG_PREFIXES)
+    + "|".join(tolerant_prefix_pattern(prefix) for prefix in DEPLOY_SLUG_PREFIXES)
     + ")[0-9a-f]{32}"
 )
 
@@ -40,7 +43,7 @@ class CleanupFailure(RuntimeError):
 
 
 def print_step(msg):
-    print(f"\\n\\033[1;34m=== {msg} ===\\033[0m")
+    print(f"\n\033[1;34m=== {msg} ===\033[0m")
 
 
 def run_cmd(cmd, **kwargs):
@@ -278,7 +281,10 @@ def get_test_projects():
         return []
 
     projects = []
-    for line in res.stdout.strip().split("\\n"):
+    # psql separates rows with real newlines: splitting on the two-character
+    # string `\n` collapsed every multi-project answer into one unparsable line
+    # and silently returned no projects at all.
+    for line in res.stdout.strip().splitlines():
         if not line:
             continue
         parts = line.split("|")
@@ -604,7 +610,9 @@ def clean_remote_servers(project_slugs: list[str] | None = None):
 
 
 def clean_local_docker():
-    patterns = "\\|".join(PROJECT_PREFIXES)
+    # `docker ps --filter name=` takes a regexp, so the alternation is a bare
+    # `|`; the escaped form matched a literal pipe and therefore nothing.
+    patterns = "|".join(PROJECT_PREFIXES)
     res = run_cmd(["docker", "ps", "-aq", "--filter", f"name={patterns}"])
     containers = res.stdout.strip().split()
     if containers:
@@ -637,7 +645,9 @@ def clean_local_workspaces():
             sql,
         ]
     )
-    active_repos = {line.strip() for line in res.stdout.strip().split("\\n") if line.strip()}
+    # Real newlines again: one collapsed line matched no repository id, so every
+    # live workspace looked orphaned and was removed.
+    active_repos = {line.strip() for line in res.stdout.strip().splitlines() if line.strip()}
 
     script = f"""
 import os
@@ -692,7 +702,18 @@ def main():
     manifest_projects = manifest_project_ids()
 
     print_step("Recovering ownership manifests")
-    recover_ownership_manifests()
+    # Fail-closed, but not fail-first. An unprovable manifest still makes this
+    # run red (below, before any success is printed), yet it must not stop the
+    # sweeps that follow: a manifest naming a deploy cannot be proven clean when
+    # no server is registered, and that used to abort cleanup at its first step
+    # with hand-deleting the manifest as the only way out. Everything the DB,
+    # GitHub, Redis and target sweeps can still remove is now removed anyway.
+    try:
+        recover_ownership_manifests()
+        manifest_recovery_failure = None
+    except CleanupFailure as exc:
+        manifest_recovery_failure = exc
+        print(f"Ownership manifest recovery failed, continuing with the sweeps: {exc}")
 
     print_step("Identifying test projects")
     projects = get_test_projects()
@@ -720,10 +741,13 @@ def main():
     print_step("Cleaning Local Workspaces")
     clean_local_workspaces()
 
+    if manifest_recovery_failure is not None:
+        raise manifest_recovery_failure
+
     print_step("Verifying absence of live-test residue")
     verify_no_residue(project_ids)
 
-    print("\\n\\033[1;32m✅ Live test cleanup fully complete!\\033[0m")
+    print("\n\033[1;32m✅ Live test cleanup fully complete!\033[0m")
 
 
 if __name__ == "__main__":

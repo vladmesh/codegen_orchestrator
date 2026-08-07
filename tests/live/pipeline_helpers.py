@@ -193,9 +193,16 @@ async def create_pipeline_project(
     agent_type: str,
     task_title: str,
     task_description: str,
+    deploys: bool,
     detailed_spec: str | None = None,
 ) -> dict:
-    """Create project + repository for one live pipeline variant. Returns ctx dict."""
+    """Create project + repository for one live pipeline variant. Returns ctx dict.
+
+    ``deploys`` says whether this run's pipeline can reach a deploy at all. It has
+    no default: only the caller knows which phases it will drive, and guessing
+    would either orphan a stack or send teardown to servers no stack of this run
+    can be on.
+    """
     suffix = secrets.token_hex(4)
     project_title = f"{project_prefix}-{suffix}"
     project_id = str(uuid.uuid4())
@@ -223,16 +230,22 @@ async def create_pipeline_project(
 
     manifest = OwnershipManifest(run_id=project_id)
     manifest.own("project", project_id)
-    # Write-ahead deploy intent. The pipeline — not this harness — decides when a
-    # deploy run starts (pr_poller creates one the moment the story PR merges), so
-    # the only way the manifest can never lag the live stack is to own the stack
-    # name before anything can create it. The stack is named by the project slug
-    # on whichever target the allocator picks, and both facts are knowable here:
-    # the slug is this project's, and the targets are whatever /api/servers/ lists
-    # at teardown. wait_deploy later enriches this same record with the resolved
-    # server and port. Without it, any failure between `docker compose up` on the
-    # target and that enrichment orphans a running stack teardown never hears of.
-    manifest.own("server_deployment", project_name)
+    # Write-ahead deploy intent, for runs whose pipeline reaches deploy. The
+    # pipeline — not this harness — decides when a deploy run starts (pr_poller
+    # creates one the moment the story PR merges), so the only way the manifest
+    # can never lag the live stack is to own the stack name before anything can
+    # create it. The stack is named by the project slug on whichever target the
+    # allocator picks, and both facts are knowable here: the slug is this
+    # project's, and the targets are whatever /api/servers/ lists at teardown.
+    # wait_deploy later enriches this same record with the resolved server and
+    # port. Without it, any failure between `docker compose up` on the target and
+    # that enrichment orphans a running stack teardown never hears of.
+    #
+    # A run that never deploys owns no stack, and owning one anyway would send its
+    # teardown SSHing to every registered server — turning one unreachable server
+    # into a red scaffold test that deployed nothing.
+    if deploys:
+        manifest.own("server_deployment", project_name)
     ctx = {
         "project_id": project_id,
         "project_title": project_title,
@@ -262,8 +275,14 @@ async def create_pipeline_project(
     return ctx
 
 
-async def create_noop_project(api: httpx.AsyncClient, api_internal: httpx.AsyncClient) -> dict:
-    """Create project + repository for noop pipeline testing. Returns ctx dict."""
+async def create_noop_project(
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, *, deploys: bool
+) -> dict:
+    """Create project + repository for noop pipeline testing. Returns ctx dict.
+
+    The same project serves the scaffold, engineering and full pipelines, and only
+    the last of those deploys, so the caller states it.
+    """
     return await create_pipeline_project(
         api,
         api_internal,
@@ -272,11 +291,12 @@ async def create_noop_project(api: httpx.AsyncClient, api_internal: httpx.AsyncC
         agent_type="noop",
         task_title=NOOP_TASK_TITLE,
         task_description=NOOP_TASK_DESCRIPTION,
+        deploys=deploys,
     )
 
 
 async def create_llm_backend_project(
-    api: httpx.AsyncClient, api_internal: httpx.AsyncClient
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, *, deploys: bool
 ) -> dict:
     """Create project + repository for the live LLM backend pipeline."""
     return await create_pipeline_project(
@@ -288,6 +308,7 @@ async def create_llm_backend_project(
         agent_type="claude",
         task_title=LLM_BACKEND_TASK_TITLE,
         task_description=LLM_BACKEND_TASK_DESCRIPTION,
+        deploys=deploys,
     )
 
 

@@ -833,7 +833,9 @@ def _fake_deploy_target(tmp_path: Path, stack_name: str):
     return service_base, containers, env
 
 
-async def _create_project_with_stubbed_api(monkeypatch, tmp_path, *, project_name: str):
+async def _create_project_with_stubbed_api(
+    monkeypatch, tmp_path, *, project_name: str, deploys: bool = True
+):
     """Run the real project-creation helper against a stubbed API."""
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
 
@@ -854,6 +856,7 @@ async def _create_project_with_stubbed_api(monkeypatch, tmp_path, *, project_nam
             agent_type="noop",
             task_title="t",
             task_description="td",
+            deploys=deploys,
         )
 
 
@@ -870,6 +873,26 @@ async def test_project_creation_writes_the_deploy_ahead_of_the_stack(monkeypatch
     written = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
     assert {"kind": "server_deployment", "identifier": "live-te-abc"} in written["resources"]
     assert "final_app_status" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_never_deploys_owns_no_stack(monkeypatch, tmp_path):
+    """Only a run whose pipeline reaches deploy writes the deploy ahead.
+
+    A write-ahead record carries no target, so teardown clears its stack name on
+    every server the API lists. For the scaffold and engineering pipelines, which
+    stop long before a deploy run exists, that is an SSH round trip to hosts no
+    stack of theirs can be on — and one unreachable host would fail the teardown
+    of a test that deployed nothing.
+    """
+    ctx = await _create_project_with_stubbed_api(
+        monkeypatch, tmp_path, project_name="live-te-abc", deploys=False
+    )
+
+    kinds = [resource.kind for resource in ctx["manifest"].resources]
+    assert "server_deployment" not in kinds
+    written = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
+    assert [item["kind"] for item in written["resources"]] == ["project"]
 
 
 @pytest.mark.asyncio
@@ -1115,7 +1138,7 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
         with pytest.raises(httpx.HTTPStatusError):
-            await pipeline_helpers.create_noop_project(api, api)
+            await pipeline_helpers.create_noop_project(api, api, deploys=True)
 
     assert len(cleanup_contexts) == 1
     manifest = cleanup_contexts[0]["manifest"]
@@ -1145,7 +1168,7 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        ctx = await pipeline_helpers.create_llm_backend_project(api, api)
+        ctx = await pipeline_helpers.create_llm_backend_project(api, api, deploys=True)
 
     project_payload = requests[0][1]
     config = project_payload["config"]
