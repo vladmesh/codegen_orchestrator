@@ -2,6 +2,27 @@
 
 ## 2026-08-07
 
+- **A throttled poll is no longer a verdict on the reinstall** (`issue:a29c4b89a061cada8ad1`):
+  Time4VPS answers a too-fast second action on one server with `401` and
+  `{"error":[["wait_x_between_action",24],"unauthorized"]}` — the same status it uses for a real
+  loss of authorization. `Time4VPSAPIError.rate_limit_wait_seconds` classifies the two by that key
+  in the body, never by the status code, and returns the interval the provider asked for; a `401`
+  without the key stays fatal. `wait_for_task` treats exactly that one answer as transient: it
+  waits the stated interval, clipped to what is left of the caller's `timeout`, and polls on.
+  Every other provider error still ends the wait. This matters because the completed task's
+  `results` is the only carrier of the new root password — on 2026-08-06 a reinstall of vps-275301
+  really succeeded 11 seconds after such a `401`, and the orchestrator recorded "Reinstall failed"
+  and lost the password. `wait_for_password_reset` is now `wait_for_task` plus `extract_password`
+  instead of a second copy of the polling loop, so the explicit-reset fallback is covered by the
+  same rule. No general retry layer was added: only task polling, only this one stated refusal.
+
+  Relatedly, the SSH-key persistence failure branch of `handle_provisioning_success` now owns its
+  outcome the way every failure branch in `node.py` does — `update_server_status(..., "error")`
+  plus a `PROVISIONING_FAILED` incident. Before, it returned `failed` with a reason and nothing
+  else, so the scheduler's `UNREACHABLE` could later be undone by `server_sync` into `ACTIVE`,
+  leaving a server with no key in the DB and no incident to make it retryable. The success side is
+  unchanged: the reset endpoint remains the single owner of the terminal READY status.
+
 - **The live harness owns a deploy before it exists** (`issue:47affbe42eb8ad5c16ef`): a live run
   records `server_deployment <slug>` in its ownership manifest before any deploy run can start,
   instead of only after the application reported `RUNNING` and its port

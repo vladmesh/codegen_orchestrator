@@ -2,10 +2,11 @@
 
 import structlog
 
+from shared.contracts.dto.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
 
-from .api_client import reset_provisioning_attempts, save_server_ssh_key
-from .incidents import resolve_active_incidents
+from .api_client import reset_provisioning_attempts, save_server_ssh_key, update_server_status
+from .incidents import create_incident, resolve_active_incidents
 from .recovery import redeploy_all_services
 from .ssh_manager import SSHManager
 
@@ -73,6 +74,11 @@ async def handle_provisioning_success(
        the single owner of that status;
     3. resolve incidents and redeploy services.
 
+    Step 1 failing is a terminal provisioning failure and is committed here the same
+    way node.py commits its own: ``update_server_status(..., "error")`` followed by a
+    PROVISIONING_FAILED incident. The success side is unchanged — this function never
+    writes the terminal READY status, which the reset endpoint alone owns.
+
     Args:
         server_handle: Server handle
         server_ip: Server IP
@@ -86,6 +92,17 @@ async def handle_provisioning_success(
     """
     key_failure = await _persist_server_ssh_key(server_handle, ssh_manager)
     if key_failure:
+        # A provisioning failure, so it is owned here exactly as node.py owns its own
+        # failure branches: terminal error status first, then the provisioning incident
+        # that puts the server back into the retry cycle. Without both, a later
+        # server_sync could re-mark this server ACTIVE with no key in the DB and no
+        # incident, leaving it invisible to recovery.
+        await update_server_status(server_handle, "error")
+        await create_incident(
+            server_handle,
+            IncidentType.PROVISIONING_FAILED,
+            {"step": "ssh_key_persistence", "reason": key_failure},
+        )
         await notify_admins_best_effort(
             f"❌ Server *{server_handle}* provisioned, but its SSH key could not be stored "
             f"({key_failure}). The server is NOT ready.",

@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from shared.contracts.dto.incident import IncidentType
 from src.provisioner.node import ProvisionerNode
 
 
@@ -236,6 +237,12 @@ async def test_success_persists_ssh_key_before_closing_episode_and_journal(monke
     atomically by the reset endpoint, together with the attempt-counter reset and
     only while the episode is current, so the handler must not write it a second
     time from the outside.
+
+    That contract used to be checked as ``not hasattr(handlers,
+    "update_server_status")``. The handler does import that name now — it owns the
+    terminal *failure* status of the key-persistence branch — so the proxy is
+    replaced by the behaviour it stood for: on the success path the handler writes
+    no status at all.
     """
     from src.provisioner.handlers import handle_provisioning_success
 
@@ -255,6 +262,8 @@ async def test_success_persists_ssh_key_before_closing_episode_and_journal(monke
     monkeypatch.setattr("src.provisioner.handlers.reset_provisioning_attempts", _reset)
     monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", _resolve)
     monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
+    update_status = AsyncMock()
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", update_status)
 
     result = await handle_provisioning_success(
         "srv-1",
@@ -272,9 +281,7 @@ async def test_success_persists_ssh_key_before_closing_episode_and_journal(monke
     ]
     assert result["provisioning_result"]["status"] == "success"
     # No second, unconditional status writer is left in the success path.
-    from src.provisioner import handlers
-
-    assert not hasattr(handlers, "update_server_status")
+    update_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -397,8 +404,73 @@ async def test_existing_access_success_stores_key_resets_attempts_and_marks_read
 
 
 @pytest.mark.asyncio
+async def test_key_persistence_failure_never_leaves_an_active_server_without_an_incident(
+    monkeypatch,
+):
+    """The whole existing-access path with green playbooks but an unstorable key.
+
+    Fails without the fix: the run returned `failed` while the server was left in
+    `provisioning` with no incident, so the scheduler's UNREACHABLE could later be
+    undone by server_sync into ACTIVE — an active server with no key in the DB and
+    nothing in the journal to make it retryable.
+    """
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    ansible = MagicMock()
+    ansible.run_playbook.return_value = (True, "ok")
+    node = ProvisionerNode(ssh_manager=_ssh_manager(), ansible_runner=ansible)
+    node.ssh_manager.get_public_key.return_value = "PUBLIC-KEY"
+
+    monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server()))
+    monkeypatch.setattr(
+        "src.provisioner.node.reserve_provisioning_attempt",
+        AsyncMock(return_value=(1, "episode-1")),
+    )
+    monkeypatch.setattr("src.provisioner.node.update_server_labels", AsyncMock())
+    monkeypatch.setattr(node, "_init_time4vps_client", AsyncMock(return_value=MagicMock()))
+
+    db = {"ssh_key": None, "attempts": 1, "status": "pending_setup", "incidents": []}
+
+    async def _status(server_handle, status):
+        db["status"] = status
+
+    async def _save_key(server_handle, key):
+        raise RuntimeError("API rejected the key")
+
+    async def _incident(server_handle, incident_type, details):
+        db["incidents"].append((incident_type, details))
+
+    monkeypatch.setattr("src.provisioner.node.update_server_status", _status)
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", _status)
+    monkeypatch.setattr("src.provisioner.handlers.create_incident", _incident)
+    monkeypatch.setattr("src.provisioner.handlers.save_server_ssh_key", _save_key)
+    monkeypatch.setattr(
+        "src.provisioner.handlers.reset_provisioning_attempts", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", AsyncMock())
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
+
+    result = await node.run({"server_to_provision": "srv-1", "errors": []})
+
+    assert result["provisioning_result"]["status"] == "failed"
+    assert db["ssh_key"] is None
+    assert db["status"] == "error"
+    assert db["attempts"] == 1
+    assert db["incidents"] == [
+        (
+            IncidentType.PROVISIONING_FAILED,
+            {"step": "ssh_key_persistence", "reason": "save_server_ssh_key_failed"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_ssh_key_save_failure_is_not_a_success_and_leaves_the_episode_open(monkeypatch):
-    """A rejected key write fails provisioning instead of declaring READY."""
+    """A rejected key write fails provisioning instead of declaring READY.
+
+    It also owns that failure the way node.py owns its own: the server is marked
+    `error` and a PROVISIONING_FAILED incident is journalled, so the server cannot
+    end up ACTIVE-without-a-key and invisible to the recovery cycle.
+    """
     from src.provisioner.handlers import handle_provisioning_success
 
     reset = AsyncMock(return_value=True)
@@ -410,6 +482,10 @@ async def test_ssh_key_save_failure_is_not_a_success_and_leaves_the_episode_open
     resolve_incidents = AsyncMock()
     monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", resolve_incidents)
     monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
+    update_status = AsyncMock()
+    incident = AsyncMock()
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", update_status)
+    monkeypatch.setattr("src.provisioner.handlers.create_incident", incident)
 
     result = await handle_provisioning_success(
         "srv-1", "203.0.113.10", 1, "episode-1", False, ssh_manager=_ssh_manager()
@@ -421,6 +497,13 @@ async def test_ssh_key_save_failure_is_not_a_success_and_leaves_the_episode_open
     # Nothing marks the server READY behind a key that is not in the DB.
     reset.assert_not_awaited()
     resolve_incidents.assert_not_awaited()
+    # The failure is terminal for the server and visible to the retry cycle.
+    update_status.assert_awaited_once_with("srv-1", "error")
+    incident.assert_awaited_once_with(
+        "srv-1",
+        IncidentType.PROVISIONING_FAILED,
+        {"step": "ssh_key_persistence", "reason": "save_server_ssh_key_failed"},
+    )
 
 
 @pytest.mark.asyncio
@@ -438,6 +521,10 @@ async def test_unusable_ssh_manager_is_not_a_success(monkeypatch, ssh_manager, r
     monkeypatch.setattr("src.provisioner.handlers.reset_provisioning_attempts", reset)
     monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", AsyncMock())
     monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
+    update_status = AsyncMock()
+    incident = AsyncMock()
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", update_status)
+    monkeypatch.setattr("src.provisioner.handlers.create_incident", incident)
 
     result = await handle_provisioning_success(
         "srv-1", "203.0.113.10", 1, "episode-1", False, ssh_manager=ssh_manager
@@ -451,6 +538,12 @@ async def test_unusable_ssh_manager_is_not_a_success(monkeypatch, ssh_manager, r
     }
     save_key.assert_not_awaited()
     reset.assert_not_awaited()
+    update_status.assert_awaited_once_with("srv-1", "error")
+    incident.assert_awaited_once_with(
+        "srv-1",
+        IncidentType.PROVISIONING_FAILED,
+        {"step": "ssh_key_persistence", "reason": reason},
+    )
 
 
 @pytest.mark.asyncio
