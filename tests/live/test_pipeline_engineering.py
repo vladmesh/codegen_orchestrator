@@ -41,8 +41,7 @@ async def engineering_ctx():
         httpx.AsyncClient(base_url=API_URL, timeout=10, headers=internal_headers()) as api_internal,
     ):
         await ensure_test_user(api)
-        # Scaffold + engineering only: this run stops before deploy.
-        ctx = await create_noop_project(api, api_internal, deploys=False)
+        ctx = await create_noop_project(api, api_internal)
         async with cleanup_guard(
             lambda: cleanup_all(api_internal, None, ctx), manifest=ctx["manifest"]
         ):

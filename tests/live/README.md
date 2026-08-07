@@ -7,16 +7,23 @@ It never deletes a shared Redis stream and never matches resources by the histor
 prefix — matching by prefix belongs to the global `scripts/clean_live_tests.py` sweep, which owns
 no manifest.
 
-The deploy is the one identifier owned *before* the resource exists. A run that can reach deploy
-records its stack name — the project slug — at project creation, because the pipeline, not the
-harness, starts the deploy run; ownership that waited for a running application would arrive after
-the stack. `wait_deploy` later enriches that same record with the resolved server and port. A
-record no target has been resolved for yet is therefore cleared by its exact stack name on every
-server `/api/servers/` lists: the manifest knows the name but not yet the host, and running that
-removal on the wrong host removes nothing. Only runs whose pipeline deploys own such a record —
-scaffold- and engineering-only runs never touch a server on teardown. An empty server list fails
-the teardown of an owned deploy rather than passing it: it would prove nothing about a stack the
-manifest says may exist.
+The deploy is the one identifier owned *before* the resource exists. The pipeline, not the harness,
+starts the deploy run, so ownership that waited for a running application would arrive after the
+stack. A run records its stack name — the project slug — when it creates its story, in
+`create_story_and_task`: the story is what makes a deploy reachable at all, because the scheduler
+opens a PR from `story/<id>` and `pr_poller` turns that merge into a deploy run without asking the
+harness. Nothing is declared at the call site — a run owns the stack exactly when it does the thing
+that can lead to a deploy, so a new live test that drives engineering owns it without knowing this
+rule. A run that creates no story — scaffold — reaches no deploy and owns no stack, and never
+touches a server on teardown. `wait_deploy` owns the same record again on entry (`own` merges, so
+this never makes a second record) and then enriches it with the resolved server and port; under
+uncertainty the harness owns rather than skips, because an over-owned record costs an SSH round
+trip while an unowned one costs a live stack nobody knows about.
+
+A record no target has been resolved for yet is cleared by its exact stack name on every server
+`/api/servers/` lists: the manifest knows the name but not yet the host, and running that removal on
+the wrong host removes nothing. An empty server list fails the teardown of an owned deploy rather
+than passing it: it would prove nothing about a stack the manifest says may exist.
 
 Cleanup is part of the test result. Every delete command must succeed and each owned resource must
 then be observed as absent. A delete or verification error fails the run, including when the test

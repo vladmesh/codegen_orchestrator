@@ -833,9 +833,7 @@ def _fake_deploy_target(tmp_path: Path, stack_name: str):
     return service_base, containers, env
 
 
-async def _create_project_with_stubbed_api(
-    monkeypatch, tmp_path, *, project_name: str, deploys: bool = True
-):
+async def _create_project_with_stubbed_api(monkeypatch, tmp_path, *, project_name: str):
     """Run the real project-creation helper against a stubbed API."""
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
 
@@ -856,43 +854,114 @@ async def _create_project_with_stubbed_api(
             agent_type="noop",
             task_title="t",
             task_description="td",
-            deploys=deploys,
         )
 
 
+async def _create_story_with_stubbed_api(ctx: dict):
+    """Drive the real story helper — the engineering entry point — against stubs."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/stories/":
+            return httpx.Response(201, json={"id": "story-1"})
+        if request.url.path == "/api/tasks/":
+            return httpx.Response(201, json={"id": "task-1"})
+        return httpx.Response(200, json={})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        await pipeline_helpers.create_story_and_task(api, ctx)
+
+
 @pytest.mark.asyncio
-async def test_project_creation_writes_the_deploy_ahead_of_the_stack(monkeypatch, tmp_path):
+async def test_creating_the_story_writes_the_deploy_ahead_of_the_stack(monkeypatch, tmp_path):
     """The deploy is owned on disk before any target can be running it.
 
-    The pipeline, not the harness, starts the deploy run, so ownership that waits
-    for a RUNNING application is ownership that can arrive after the stack does.
-    A second process must be able to tear the stack down from this file alone.
+    Creating the story is what makes a deploy reachable — the scheduler opens the
+    story PR and pr_poller turns its merge into a deploy run, none of it asking
+    the harness. Ownership that waits for a RUNNING application can therefore
+    arrive after the stack does. A second process must be able to tear the stack
+    down from this file alone, so the record is on disk before the story exists.
     """
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
+    manifest_file = tmp_path / ".live-manifests" / f"{ctx['project_id']}.json"
 
-    written = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
+    # Before the story: no deploy is reachable, nothing is owned.
+    assert [item["kind"] for item in json.loads(manifest_file.read_text())["resources"]] == [
+        "project"
+    ]
+
+    await _create_story_with_stubbed_api(ctx)
+
+    written = json.loads(manifest_file.read_text())
     assert {"kind": "server_deployment", "identifier": "live-te-abc"} in written["resources"]
     assert "final_app_status" not in ctx
 
 
 @pytest.mark.asyncio
-async def test_a_run_that_never_deploys_owns_no_stack(monkeypatch, tmp_path):
-    """Only a run whose pipeline reaches deploy writes the deploy ahead.
+async def test_the_deploy_is_owned_before_the_story_that_leads_to_it_exists(monkeypatch, tmp_path):
+    """Ownership precedes the first request that can start the chain to a deploy.
+
+    Story creation is several API calls; a crash inside them must not be a window
+    where the pipeline can already be moving towards a deploy the manifest does
+    not know about.
+    """
+    ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
+    manifest_file = tmp_path / ".live-manifests" / f"{ctx['project_id']}.json"
+    owned_when_story_posted = None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal owned_when_story_posted
+        if request.url.path == "/api/stories/":
+            owned_when_story_posted = json.loads(manifest_file.read_text())["resources"]
+            return httpx.Response(500, text="stories unavailable")
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        with pytest.raises(httpx.HTTPStatusError):
+            await pipeline_helpers.create_story_and_task(api, ctx)
+
+    assert {"kind": "server_deployment", "identifier": "live-te-abc"} in owned_when_story_posted
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_creates_no_story_owns_no_stack(monkeypatch, tmp_path):
+    """A run that never creates a story can reach no deploy, and owns no stack.
 
     A write-ahead record carries no target, so teardown clears its stack name on
-    every server the API lists. For the scaffold and engineering pipelines, which
-    stop long before a deploy run exists, that is an SSH round trip to hosts no
-    stack of theirs can be on — and one unreachable host would fail the teardown
-    of a test that deployed nothing.
+    every server the API lists. For the scaffold pipeline — no story, so no story
+    PR for poll_merged_prs to turn into a deploy run — that is an SSH round trip
+    to hosts no stack of its can be on, and one unreachable host would fail the
+    teardown of a test that deployed nothing.
     """
-    ctx = await _create_project_with_stubbed_api(
-        monkeypatch, tmp_path, project_name="live-te-abc", deploys=False
-    )
+    ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
 
     kinds = [resource.kind for resource in ctx["manifest"].resources]
     assert "server_deployment" not in kinds
     written = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
     assert [item["kind"] for item in written["resources"]] == ["project"]
+
+
+@pytest.mark.asyncio
+async def test_a_deploy_watched_without_a_story_is_owned_anyway(monkeypatch, tmp_path):
+    """Under uncertainty the harness owns rather than skips.
+
+    A future run that reaches a deploy by some path other than a story would be
+    invisible to teardown. wait_deploy therefore takes the record itself, and the
+    cost of being wrong here is one SSH round trip, not an orphaned stack.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
+
+    async def get(url, **kwargs):
+        return httpx.Response(200, json=[], request=httpx.Request("GET", url))
+
+    await pipeline_helpers.wait_deploy(
+        SimpleNamespace(get=get), SimpleNamespace(get=get), ctx, timeout=0
+    )
+
+    written = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
+    assert {"kind": "server_deployment", "identifier": "live-te-abc"} in written["resources"]
 
 
 @pytest.mark.asyncio
@@ -906,6 +975,7 @@ async def test_manifest_file_alone_tears_down_a_written_ahead_stack(monkeypatch,
     """
     stack = "live-te-" + "a" * 32
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name=stack)
+    await _create_story_with_stubbed_api(ctx)
     service_base, containers, env = _fake_deploy_target(tmp_path, stack)
 
     # Rebuild ownership from the file exactly as scripts/clean_live_tests.py does.
@@ -946,10 +1016,14 @@ async def test_failure_between_deploy_and_port_lookup_leaves_no_stack_behind(mon
     Run 7 of the mega died exactly here — RUNNING application, failure before the
     ownership block — and teardown reported a fully clean run while the stack
     kept the port that broke run 8.
+
+    The context is built the way a real run builds it: project, then story, which
+    is where the stack is owned.
     """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     stack = "live-te-" + "b" * 32
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name=stack)
+    await _create_story_with_stubbed_api(ctx)
     service_base, containers, env = _fake_deploy_target(tmp_path, stack)
 
     async def get(url, **kwargs):
@@ -958,6 +1032,8 @@ async def test_failure_between_deploy_and_port_lookup_leaves_no_stack_behind(mon
             return httpx.Response(200, json=[{"id": "repo-1"}], request=request)
         if url == "/api/applications/":
             return httpx.Response(200, json=[{"id": 21, "status": "running"}], request=request)
+        if url == "/api/tasks/":
+            return httpx.Response(200, json=[], request=request)
         # The stack is live on the target; the harness dies before it can read
         # which port the allocator gave it.
         return httpx.Response(500, json={"detail": "boom"}, request=request)
@@ -1138,21 +1214,17 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
         with pytest.raises(httpx.HTTPStatusError):
-            await pipeline_helpers.create_noop_project(api, api, deploys=True)
+            await pipeline_helpers.create_noop_project(api, api)
 
     assert len(cleanup_contexts) == 1
     manifest = cleanup_contexts[0]["manifest"]
-    # The deploy is owned from creation, before anything can deploy the stack,
-    # so a project that dies this early already hands teardown its stack name.
+    # A project that dies before its repository exists never gets a story, so no
+    # deploy run can be created for it and there is no stack to own.
     assert [(resource.kind, resource.identifier) for resource in manifest.resources] == [
         ("project", cleanup_contexts[0]["project_id"]),
-        ("server_deployment", "live-test-slug"),
     ]
     written = json.loads((tmp_path / ".live-manifests" / f"{manifest.run_id}.json").read_text())
-    assert written["resources"] == [
-        {"identifier": manifest.run_id, "kind": "project"},
-        {"identifier": "live-test-slug", "kind": "server_deployment"},
-    ]
+    assert written["resources"] == [{"identifier": manifest.run_id, "kind": "project"}]
 
 
 @pytest.mark.asyncio
@@ -1168,7 +1240,7 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
-        ctx = await pipeline_helpers.create_llm_backend_project(api, api, deploys=True)
+        ctx = await pipeline_helpers.create_llm_backend_project(api, api)
 
     project_payload = requests[0][1]
     config = project_payload["config"]
@@ -1188,7 +1260,8 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_create_story_and_task_uses_context_task_description():
+async def test_create_story_and_task_uses_context_task_description(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     requests = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -1202,6 +1275,8 @@ async def test_create_story_and_task_uses_context_task_description():
 
     ctx = {
         "project_id": "project-1",
+        "project_name": "live-te-abc",
+        "manifest": OwnershipManifest("project-1"),
         "task_title": "Implement backend health API",
         "task_description": "Create a real backend health endpoint.",
     }

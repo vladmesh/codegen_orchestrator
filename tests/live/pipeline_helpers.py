@@ -193,15 +193,13 @@ async def create_pipeline_project(
     agent_type: str,
     task_title: str,
     task_description: str,
-    deploys: bool,
     detailed_spec: str | None = None,
 ) -> dict:
     """Create project + repository for one live pipeline variant. Returns ctx dict.
 
-    ``deploys`` says whether this run's pipeline can reach a deploy at all. It has
-    no default: only the caller knows which phases it will drive, and guessing
-    would either orphan a stack or send teardown to servers no stack of this run
-    can be on.
+    This factory serves the scaffold, engineering and full pipelines alike, so it
+    cannot tell whether this run will reach a deploy — and it does not guess. The
+    deploy stack is owned by ``own_deploy_ahead``, from the fact that decides it.
     """
     suffix = secrets.token_hex(4)
     project_title = f"{project_prefix}-{suffix}"
@@ -230,22 +228,6 @@ async def create_pipeline_project(
 
     manifest = OwnershipManifest(run_id=project_id)
     manifest.own("project", project_id)
-    # Write-ahead deploy intent, for runs whose pipeline reaches deploy. The
-    # pipeline — not this harness — decides when a deploy run starts (pr_poller
-    # creates one the moment the story PR merges), so the only way the manifest
-    # can never lag the live stack is to own the stack name before anything can
-    # create it. The stack is named by the project slug on whichever target the
-    # allocator picks, and both facts are knowable here: the slug is this
-    # project's, and the targets are whatever /api/servers/ lists at teardown.
-    # wait_deploy later enriches this same record with the resolved server and
-    # port. Without it, any failure between `docker compose up` on the target and
-    # that enrichment orphans a running stack teardown never hears of.
-    #
-    # A run that never deploys owns no stack, and owning one anyway would send its
-    # teardown SSHing to every registered server — turning one unreachable server
-    # into a red scaffold test that deployed nothing.
-    if deploys:
-        manifest.own("server_deployment", project_name)
     ctx = {
         "project_id": project_id,
         "project_title": project_title,
@@ -275,14 +257,8 @@ async def create_pipeline_project(
     return ctx
 
 
-async def create_noop_project(
-    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, *, deploys: bool
-) -> dict:
-    """Create project + repository for noop pipeline testing. Returns ctx dict.
-
-    The same project serves the scaffold, engineering and full pipelines, and only
-    the last of those deploys, so the caller states it.
-    """
+async def create_noop_project(api: httpx.AsyncClient, api_internal: httpx.AsyncClient) -> dict:
+    """Create project + repository for noop pipeline testing. Returns ctx dict."""
     return await create_pipeline_project(
         api,
         api_internal,
@@ -291,12 +267,11 @@ async def create_noop_project(
         agent_type="noop",
         task_title=NOOP_TASK_TITLE,
         task_description=NOOP_TASK_DESCRIPTION,
-        deploys=deploys,
     )
 
 
 async def create_llm_backend_project(
-    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, *, deploys: bool
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient
 ) -> dict:
     """Create project + repository for the live LLM backend pipeline."""
     return await create_pipeline_project(
@@ -308,7 +283,6 @@ async def create_llm_backend_project(
         agent_type="claude",
         task_title=LLM_BACKEND_TASK_TITLE,
         task_description=LLM_BACKEND_TASK_DESCRIPTION,
-        deploys=deploys,
     )
 
 
@@ -366,8 +340,43 @@ async def wait_scaffold(api: httpx.AsyncClient, ctx: dict, timeout: int = SCAFFO
     ctx["scaffold_status"] = status
 
 
+def own_deploy_ahead(ctx: dict) -> None:
+    """Own this run's deploy stack before the pipeline can create it.
+
+    The pipeline — not this harness — decides when a deploy run starts, so the
+    only way the manifest can never lag the live stack is to own the stack name
+    before anything can create it. Both facts that name it are knowable here: the
+    stack is the project slug, and the targets are whatever `/api/servers/` lists
+    at teardown. `wait_deploy` later enriches this same record with the resolved
+    server and port; owning again merges into it rather than adding a second
+    record. Without this, any failure between `docker compose up` on the target
+    and that enrichment orphans a running stack teardown never hears of.
+
+    Writing to disk is part of taking ownership: a run whose process dies is torn
+    down by `scripts/clean_live_tests.py` from the file, not from this object.
+    """
+    ctx["manifest"].own("server_deployment", ctx["project_name"])
+    ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
+
+
 async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
-    """Create story (in_progress) + task (todo) for engineering pipeline."""
+    """Create story (in_progress) + task (todo) for engineering pipeline.
+
+    Creating the story is what makes this run able to deploy, so this is where the
+    deploy stack is owned — derived, not declared at the call site. Once the
+    story's tasks are done the scheduler opens a PR from `story/<id>`, and
+    `pr_poller` turns the merge into a deploy run and a `DeployMessage` without
+    asking the harness. Every live run that can reach a deploy comes through here
+    (a deploy run is created from a merged story PR), and a run that never creates
+    a story — scaffold — never reaches one. A new live test therefore inherits the
+    safe outcome without knowing this rule exists: driving engineering at all
+    means owning the stack.
+
+    Ownership is taken before the story is posted, so even a crash mid-creation
+    leaves teardown able to clear the stack.
+    """
+    own_deploy_ahead(ctx)
+
     resp = await api.post(
         "/api/stories/",
         json={
@@ -481,7 +490,14 @@ async def wait_deploy(
     """Wait for deploy to complete. Updates ctx with deployment info.
 
     Polls Application status (via repositories) instead of project.service_status.
+
+    Owning the stack again on entry costs nothing when the story already did it —
+    `own` merges — and closes the gap for any future run that reaches a deploy
+    without a story. Under uncertainty the harness owns: an over-owned record
+    costs an SSH round trip, an unowned one costs a live stack nobody knows about.
     """
+    own_deploy_ahead(ctx)
+
     terminal = {
         ApplicationStatus.RUNNING,
         ApplicationStatus.DOWN,

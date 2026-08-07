@@ -3,8 +3,8 @@
 ## 2026-08-07
 
 - **The live harness owns a deploy before it exists** (`issue:47affbe42eb8ad5c16ef`): a live run
-  records `server_deployment <slug>` in its ownership manifest at project creation, before any
-  deploy run can start, instead of only after the application reported `RUNNING` and its port
+  records `server_deployment <slug>` in its ownership manifest before any deploy run can start,
+  instead of only after the application reported `RUNNING` and its port
   allocation had been read. `wait_deploy` now *enriches* that same record with `server_handle`
   and `server_ip` — `OwnershipManifest.own` merges metadata into an existing `(kind, identifier)`
   record rather than appending a second one — so a failure anywhere between `docker compose up`
@@ -21,10 +21,15 @@
   verdict with the findings listed. Prefix sweeping stays confined to that global cleanup — one
   run's teardown never uses it.
 
-  The write-ahead record is taken only by runs whose pipeline reaches deploy (`create_noop_project`
-  / `create_llm_backend_project` now require `deploys=`): scaffold- and engineering-only runs own
-  no stack and their teardown touches no server, so one unreachable target cannot fail a test that
-  deployed nothing. The target inventory is fail-closed — an unreachable `docker` on a target fails
+  Which runs take the write-ahead record is derived, not declared: a run owns the stack when it
+  creates its story (`create_story_and_task`), because the story PR's merge is what makes
+  `pr_poller` create a deploy run at all. There is no `deploys=` flag to set at a call site and
+  no flag to forget — a new live test that drives engineering owns its stack without knowing the
+  rule exists, and a scaffold-only run, which creates no story and so can reach no deploy, owns no
+  stack and touches no server on teardown, so one unreachable target cannot fail a test that
+  deployed nothing. `wait_deploy` takes the same record again on entry (owning twice merges), so a
+  run that ever reaches a deploy by some other route is owned rather than orphaned. The target
+  inventory is fail-closed — an unreachable `docker` on a target fails
   the scan instead of reporting an empty, falsely clean host. `scripts/clean_live_tests.py` also
   lost its literal `\n`/`\|` escapes: psql answers are split on real newlines (two live-test
   projects used to collapse into an empty project list, emptying the DB half of both the sweep and
