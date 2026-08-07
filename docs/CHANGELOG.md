@@ -13,10 +13,19 @@
   user header, so `list_runs` does not narrow away the unowned deploy and QA runs — the defect
   hotfix #232 repaired, now asserted at construction, not only documented). Every call site in
   `tests/live/` takes a client from a factory; none composes auth headers of its own, and the
-  helpers no longer re-send the key per call. A missing `INTERNAL_API_KEY` is refused at
-  `pytest_sessionstart` with a sentence naming the variable, instead of a `KeyError` from the
-  first client or a 401 halfway through a 30-minute run. Harness-only change; no product code,
-  no API rule, no contract touched.
+  helpers no longer re-send the key per call. A missing `INTERNAL_API_KEY` is refused after
+  collection and before the first test with a sentence naming the variable, instead of a
+  `KeyError` from the first client or a 401 halfway through a 30-minute run. That refusal is
+  scoped to runs that call the API: `tests/live/` also holds regressions that call it never — the
+  offline group drives these same helpers against fakes, and the Redis cleanup regression talks
+  only to a container — and CI's fast-checks runs both with no key in the environment, so
+  demanding it for the whole session aborted that job with `INTERNALERROR` before a single test
+  was collected. Needing the API is the default and the exception is declared —
+  `pytestmark = pytest.mark.needs_no_api_credential` — so a module that forgets the marker fails
+  loudly rather than quietly losing the guard; a test runs both of CI's keyless selections for
+  real with the variable unset, and another reads the Makefile's offline ignore list so that set
+  and the markers cannot drift apart. Harness-only change; no product code, no API rule, no
+  contract touched.
 
 - **`docs/DEPLOY.md` lists the secrets the deploy actually reads** (`issue:3c2e590d60545c99de29`):
   the secret tables and `.github/workflows/*.yml` had drifted apart in both directions after the

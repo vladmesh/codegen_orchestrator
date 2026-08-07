@@ -22,6 +22,8 @@ import pytest
 
 from shared import live_harness_cleanup
 
+pytestmark = pytest.mark.needs_no_api_credential
+
 
 def _load_clean_live_tests():
     path = Path(__file__).resolve().parents[2] / "scripts" / "clean_live_tests.py"

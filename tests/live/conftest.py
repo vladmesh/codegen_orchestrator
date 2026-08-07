@@ -30,15 +30,36 @@ TEST_TELEGRAM_ID = 999_000_001
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 
-def pytest_sessionstart(session):
-    """Refuse to start a live run that cannot authenticate at all.
+NO_API_CREDENTIAL_MARKER = "needs_no_api_credential"
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        f"{NO_API_CREDENTIAL_MARKER}: builds no client against the live API — it drives the "
+        "harness against fakes, or against Redis alone — so the run needs no INTERNAL_API_KEY",
+    )
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """Refuse to start a run that will call the live API without a credential.
 
     Every harness client carries the internal key, so a missing variable is a
-    certain failure. Said here it names the variable; discovered at the first
-    request it is a KeyError, or — once it silently was not sent — a 401 from
-    somewhere in the middle of a 30-minute mega run.
+    certain failure. Said here — after collection, before the first test — it
+    names the variable; discovered at the first request it is a KeyError, or,
+    once it silently was not sent, a 401 from somewhere in the middle of a
+    30-minute mega run.
+
+    Scoped to runs that reach the API. `tests/live/` also holds regressions that
+    reach it never: the offline group drives these same helpers against fakes,
+    and the Redis cleanup regression talks only to a container. CI's fast-checks
+    runs both with no key in the environment, so demanding it for the whole
+    session aborted that job before collecting a test. Needing the API is the
+    default and the exception is declared, so a module that forgets the marker
+    fails loudly rather than quietly losing the guard.
     """
-    require_internal_api_key()
+    if any(item.get_closest_marker(NO_API_CREDENTIAL_MARKER) is None for item in items):
+        require_internal_api_key()
 
 
 @pytest.fixture

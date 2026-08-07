@@ -2,8 +2,10 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -35,6 +37,10 @@ from shared.contracts.service_ports import (
     SERVICE_MODULE_PORT_ROLES,
     PortServiceRole,
 )
+
+# Every test here drives the harness against fakes, so the run needs no credential
+# to start — see the guard in conftest.pytest_collection_modifyitems.
+pytestmark = pytest.mark.needs_no_api_credential
 
 
 @pytest.fixture(autouse=True)
@@ -2726,12 +2732,20 @@ async def test_run_observer_client_carries_no_user_header(monkeypatch):
     assert run["id"] == "deploy-poll-unowned"
 
 
+def _collected(*, offline: bool):
+    """One collected item, as the guard sees it: marked offline, or not."""
+    marker = getattr(pytest.mark, live_conftest.NO_API_CREDENTIAL_MARKER).mark
+    return SimpleNamespace(get_closest_marker=lambda name: marker if offline else None)
+
+
 def test_missing_internal_api_key_is_a_named_error_before_any_request(monkeypatch):
-    """No KeyError, no mid-run 401: the variable is named, at session start."""
+    """No KeyError, no mid-run 401: the variable is named, before the first test."""
     monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
 
     with pytest.raises(RuntimeError, match="INTERNAL_API_KEY"):
-        live_conftest.pytest_sessionstart(session=None)
+        live_conftest.pytest_collection_modifyitems(
+            session=None, config=None, items=[_collected(offline=False)]
+        )
 
     for build_client in (
         pipeline_helpers.api_client_as_test_user,
@@ -2740,6 +2754,93 @@ def test_missing_internal_api_key_is_a_named_error_before_any_request(monkeypatc
     ):
         with pytest.raises(RuntimeError, match="INTERNAL_API_KEY"):
             build_client(base_url="http://test")
+
+
+def test_the_guard_lets_an_all_offline_run_start_without_the_key(monkeypatch):
+    """A run that calls no API asks nothing of the environment."""
+    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+
+    live_conftest.pytest_collection_modifyitems(
+        session=None, config=None, items=[_collected(offline=True), _collected(offline=True)]
+    )
+
+
+def _offline_live_ignore_flags() -> list[str]:
+    """The --ignore flags CI's `make test-live` uses, read from the Makefile itself.
+
+    Read rather than repeated: a stack-touching module added to that list, or
+    dropped from it, must move this test with it.
+    """
+    makefile = (resolve_repo_root(Path(__file__)) / "Makefile").read_text()
+    assignment = re.search(
+        r"^LIVE_OFFLINE_IGNORE_FLAGS =((?:[^\n]*\\\n)*[^\n]*)$", makefile, re.MULTILINE
+    )
+    flags = assignment.group(1).replace("\\\n", " ").split()
+    assert flags, "LIVE_OFFLINE_IGNORE_FLAGS not found in the Makefile"
+    return flags
+
+
+def _collect_only(*args: str) -> subprocess.CompletedProcess:
+    """Collect a live selection with no INTERNAL_API_KEY, exactly as CI's env has none."""
+    env = {k: v for k, v in os.environ.items() if k != "INTERNAL_API_KEY"}
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", *args],
+        cwd=resolve_repo_root(Path(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+
+# The two live selections CI's fast-checks runs with no key in the environment:
+# `make test-live`, and the Redis cleanup regression on its own.
+CI_KEYLESS_SELECTIONS = (
+    ("tests/live/", *_offline_live_ignore_flags()),
+    ("tests/live/test_capability_cleanup_redis.py",),
+)
+
+
+def test_cis_keyless_live_selections_start_but_a_stack_run_still_does_not():
+    """Regression, CI 2026-08-07: the guard aborted fast-checks' `make test-live`.
+
+    A session-wide demand for the key made the offline group — which drives the
+    harness against fakes and needs no API — die at startup with INTERNALERROR
+    before collecting a single test. Run for real, at the same selections CI
+    runs, with the variable absent just as it is on the runner.
+    """
+    for selection in CI_KEYLESS_SELECTIONS:
+        result = _collect_only(*selection)
+        assert result.returncode == 0, f"{selection}: {result.stdout}{result.stderr}"
+        assert "INTERNAL_API_KEY" not in result.stdout + result.stderr
+
+    # The same absent variable is still a named refusal for a run that reaches
+    # the API — the guard is scoped, not removed.
+    stack_run = _collect_only("tests/live/test_full_pipeline.py")
+    assert stack_run.returncode != 0
+    assert "INTERNAL_API_KEY is not set in the environment" in stack_run.stdout + stack_run.stderr
+
+
+def test_every_module_ci_runs_without_a_key_declares_the_exception():
+    """The marker is the guard's only exception, so those modules must carry it.
+
+    Says which module is missing it. Without this, a module added to `tests/live/`
+    that CI's keyless selections collect silently re-arms the abort that broke
+    fast-checks, and the reader of that failure gets an INTERNALERROR traceback
+    instead of a name.
+    """
+    live_dir = Path(__file__).resolve().parent
+    ignored = {Path(flag.removeprefix("--ignore=")).name for flag in _offline_live_ignore_flags()}
+    keyless = {path.name for path in live_dir.glob("test_*.py") if path.name not in ignored}
+    keyless.add("test_capability_cleanup_redis.py")
+    assert len(keyless) > 1, "the offline group collects no module — the ignore list is wrong"
+
+    for name in sorted(keyless):
+        source = (live_dir / name).read_text()
+        assert f"pytest.mark.{live_conftest.NO_API_CREDENTIAL_MARKER}" in source, (
+            f"{name} runs in CI without INTERNAL_API_KEY but does not declare "
+            f"pytestmark = pytest.mark.{live_conftest.NO_API_CREDENTIAL_MARKER}"
+        )
 
 
 def test_live_modules_do_not_compose_auth_headers_of_their_own():

@@ -10,6 +10,10 @@ import uuid
 from capability_cleanup import cleanup_owned_capability_messages, find_owned_capability_messages
 import pytest
 
+# Talks to a Redis container and never to the API — CI's fast-checks runs this
+# module on its own, with no INTERNAL_API_KEY in the environment.
+pytestmark = pytest.mark.needs_no_api_credential
+
 
 def _command(*args: str) -> str:
     name = _redis_container()
