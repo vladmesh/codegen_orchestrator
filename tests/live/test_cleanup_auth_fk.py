@@ -22,6 +22,8 @@ import pytest
 
 from shared import live_harness_cleanup
 
+pytestmark = pytest.mark.needs_no_api_credential
+
 
 def _load_clean_live_tests():
     path = Path(__file__).resolve().parents[2] / "scripts" / "clean_live_tests.py"
@@ -132,7 +134,11 @@ async def test_port_allocation_lookup_uses_internal_auth(monkeypatch):
     }
 
     transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+    # Built the way the mega builds it: the internal key is a property of the
+    # client kind, so the ports lookup carries it without asking for it.
+    async with pipeline_helpers.api_client_as_unscoped_observer(
+        transport=transport, base_url="http://test"
+    ) as api:
         # No CleanupError: the ports lookup carried the internal key and got 200.
         await pipeline_helpers.cleanup_all(api, api, ctx)
 

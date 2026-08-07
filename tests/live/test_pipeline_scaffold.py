@@ -4,19 +4,17 @@ Exercises: project creation → scaffold:queue → scaffolder → GitHub repo.
 Verifies the scaffolded project exists and has the expected structure.
 """
 
-import httpx
 from live_harness import cleanup_guard
 from pipeline_helpers import (
-    API_URL,
-    AUTH_HEADERS,
     GITHUB_ORG,
     SCAFFOLD_TIMEOUT,
+    api_client_as_internal_service,
+    api_client_as_test_user,
     cleanup_all,
     create_noop_project,
     docker_exec,
     dump_debug,
     ensure_test_user,
-    internal_headers,
     trigger_scaffold,
     wait_scaffold,
 )
@@ -32,8 +30,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 async def scaffold_ctx():
     """Scaffold pipeline: create project + repo, trigger scaffold, wait."""
     async with (
-        httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api,
-        httpx.AsyncClient(base_url=API_URL, timeout=10, headers=internal_headers()) as api_internal,
+        api_client_as_test_user() as api,
+        api_client_as_internal_service() as api_internal,
     ):
         await ensure_test_user(api)
         ctx = await create_noop_project(api, api_internal)

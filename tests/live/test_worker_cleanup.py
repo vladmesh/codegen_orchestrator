@@ -3,6 +3,9 @@ from types import SimpleNamespace
 from live_harness import OwnershipManifest
 import pipeline_helpers
 from pipeline_helpers import capture_owned_workers, cleanup_owned_workers, find_worker_container
+import pytest
+
+pytestmark = pytest.mark.needs_no_api_credential
 
 
 def test_worker_container_discovery_uses_manager_label(monkeypatch):

@@ -6,19 +6,17 @@ Exercises: scaffold → story/task → task_dispatcher → engineering:queue
 No deploy. Verifies the engineering pipeline works end-to-end.
 """
 
-import httpx
 from live_harness import cleanup_guard
 from pipeline_helpers import (
-    API_URL,
-    AUTH_HEADERS,
     ENGINEERING_TIMEOUT,
     SCAFFOLD_TIMEOUT,
+    api_client_as_internal_service,
+    api_client_as_test_user,
     cleanup_all,
     create_noop_project,
     create_story_and_task,
     dump_debug,
     ensure_test_user,
-    internal_headers,
     trigger_scaffold,
     wait_engineering,
     wait_scaffold,
@@ -37,8 +35,8 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 async def engineering_ctx():
     """Engineering pipeline: scaffold → story/task → noop worker → CI → done."""
     async with (
-        httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api,
-        httpx.AsyncClient(base_url=API_URL, timeout=10, headers=internal_headers()) as api_internal,
+        api_client_as_test_user() as api,
+        api_client_as_internal_service() as api_internal,
     ):
         await ensure_test_user(api)
         ctx = await create_noop_project(api, api_internal)

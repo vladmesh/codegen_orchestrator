@@ -35,6 +35,7 @@ API_URL = "http://localhost:8000"
 TEST_TELEGRAM_ID = 999_000_001
 USER_AUTH_HEADER = "X-Telegram-ID"
 AUTH_HEADERS = {USER_AUTH_HEADER: str(TEST_TELEGRAM_ID)}
+INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
@@ -111,6 +112,23 @@ LLM_BACKEND_TASK_DESCRIPTION = (
 # ── Low-level helpers ────────────────────────────────────────────────────
 
 
+def require_internal_api_key() -> str:
+    """The internal key every harness client authenticates with, or a named error.
+
+    Read once at session start (``pytest_sessionstart``) so a missing variable is
+    a sentence naming it, not a ``KeyError`` raised from the first client an hour
+    into a mega run.
+    """
+    if INTERNAL_API_KEY_ENV not in os.environ:
+        raise RuntimeError(
+            f"{INTERNAL_API_KEY_ENV} is not set in the environment. Every live-harness "
+            "client authenticates with it — since the global auth gate landed, a request "
+            f"carrying only {USER_AUTH_HEADER} is answered 401. Export "
+            f"{INTERNAL_API_KEY_ENV} (it is in the stack's .env) before running live tests."
+        )
+    return os.environ[INTERNAL_API_KEY_ENV]
+
+
 def internal_headers() -> dict[str, str]:
     """Auth headers for internal-service endpoints, as the real consumers send them.
 
@@ -122,7 +140,60 @@ def internal_headers() -> dict[str, str]:
     X-Telegram-ID. Unowned runs are only visible to a client that sends no user
     header at all — see ``require_unscoped_run_observer``.
     """
-    return {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
+    return {"X-Internal-Key": require_internal_api_key()}
+
+
+# ── API clients: the three kinds, each built in exactly one place ────────
+#
+# Every live client is one of these three, and the name of the factory says
+# which. Nothing outside this section composes auth headers: a call site that
+# assembles its own is how the mega ended up with a client that authenticated as
+# nobody.
+
+
+def api_client_as_test_user(**kwargs) -> httpx.AsyncClient:
+    """Acts ON BEHALF OF the harness test user.
+
+    Both credentials, and both are needed: the internal key is what gets past the
+    global auth gate (``require_authenticated_caller``), while X-Telegram-ID is
+    what the request is judged as (``resolve_actor``). The key does not deputize
+    the named user — a request naming a non-admin user is still that non-admin
+    user. This is the client for the product path: projects, stories, tasks.
+    """
+    return _api_client({**internal_headers(), **AUTH_HEADERS}, **kwargs)
+
+
+def api_client_as_internal_service(**kwargs) -> httpx.AsyncClient:
+    """Acts as an internal service, naming no user.
+
+    Server, ssh-key and allocation endpoints are gated by require_internal_or_admin
+    and reject the non-admin harness user, so they are reached exactly as the
+    production consumers reach them.
+    """
+    return _api_client(internal_headers(), **kwargs)
+
+
+def api_client_as_unscoped_observer(**kwargs) -> httpx.AsyncClient:
+    """Observes runs and servers that belong to no user. Never carries a user header.
+
+    Same wire credentials as ``api_client_as_internal_service`` today, but a
+    stricter contract, and the difference is load-bearing: list_runs narrows its
+    result to the caller's own runs the moment it sees a non-admin X-Telegram-ID,
+    and a valid internal key does not lift that narrowing. Deploy and QA runs have
+    no user_id, so a user header here makes them invisible — the 2026-07-16
+    blindness that hotfix #232 repaired. The invariant is asserted, not merely
+    documented, so it cannot drift back in.
+    """
+    client = _api_client(internal_headers(), **kwargs)
+    require_unscoped_run_observer(client)
+    return client
+
+
+def _api_client(headers: dict[str, str], **kwargs) -> httpx.AsyncClient:
+    """One httpx client for the live stack; the caller's factory picks the identity."""
+    kwargs.setdefault("base_url", API_URL)
+    kwargs.setdefault("timeout", 10)
+    return httpx.AsyncClient(headers=headers, **kwargs)
 
 
 def docker_exec(service: str, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -483,7 +554,7 @@ async def poll_field(
 
 async def wait_deploy(
     api: httpx.AsyncClient,
-    api_no_auth: httpx.AsyncClient,
+    api_observer: httpx.AsyncClient,
     ctx: dict,
     timeout: int = DEPLOY_TIMEOUT,
 ) -> None:
@@ -544,18 +615,17 @@ async def wait_deploy(
         return
 
     # Port allocations belong to an application, not directly to a project.
-    # /api/servers/ and its ports need internal-service auth, so authenticate like
-    # the real consumers — on a client with no default user header: the internal
-    # key authenticates the caller but does not deputize the named user, so a
-    # request carrying the test user's X-Telegram-ID resolves to that non-admin
-    # user and gets 403. raise_for_status keeps a non-200 loud instead of
-    # iterating an error body and crashing with TypeError before the deploy
-    # reaches the ownership manifest.
-    headers = internal_headers()
-    resp = await api_no_auth.get("/api/servers/", headers=headers)
+    # /api/servers/ and its ports need internal-service auth and no named user:
+    # the internal key authenticates the caller but does not deputize the named
+    # user, so a request carrying the test user's X-Telegram-ID resolves to that
+    # non-admin user and gets 403. That is exactly the unscoped observer, which
+    # carries the key by construction. raise_for_status keeps a non-200 loud
+    # instead of iterating an error body and crashing with TypeError before the
+    # deploy reaches the ownership manifest.
+    resp = await api_observer.get("/api/servers/")
     resp.raise_for_status()
     for srv in resp.json():
-        resp = await api_no_auth.get(f"/api/servers/{srv['handle']}/ports", headers=headers)
+        resp = await api_observer.get(f"/api/servers/{srv['handle']}/ports")
         resp.raise_for_status()
         for alloc in resp.json():
             if alloc.get("application_id") == application["id"]:
@@ -724,7 +794,6 @@ async def wait_deploy_run(
         resp = await api_internal.get(
             "/api/runs/",
             params={"story_id": story_id, "run_type": RunType.DEPLOY.value},
-            headers=internal_headers(),
         )
         resp.raise_for_status()
         # The API orders runs newest first.
@@ -759,7 +828,7 @@ async def wait_deploy_outcome(
     run_id = ctx["deploy_run_id"]
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        resp = await api_internal.get(f"/api/runs/{run_id}", headers=internal_headers())
+        resp = await api_internal.get(f"/api/runs/{run_id}")
         resp.raise_for_status()
         run = resp.json()
         if run["status"] in _TERMINAL_RUN_STATUSES:
@@ -817,7 +886,6 @@ async def run_non_llm_qa(
         resp = await api_internal.get(
             "/api/runs/",
             params={"story_id": story_id, "run_type": RunType.QA.value},
-            headers=internal_headers(),
         )
         resp.raise_for_status()
         # The API orders runs newest first. A project can carry QA runs of other
@@ -1334,7 +1402,7 @@ def cleanup_server_container(ctx: dict) -> None:
 
 async def cleanup_all(
     api_internal: httpx.AsyncClient,
-    api_no_auth: httpx.AsyncClient | None,
+    api_observer: httpx.AsyncClient | None,
     ctx: dict,
 ) -> None:
     """Delete owned resources using an unscoped internal run observer."""
@@ -1366,19 +1434,15 @@ async def cleanup_all(
     cleanup_owned_workers(ctx, errors)
 
     # 2. Port allocation
-    if "allocation_id" in ctx and api_no_auth:
+    if "allocation_id" in ctx and api_observer:
         try:
-            resp = await api_no_auth.delete(
-                f"/api/allocations/{ctx['allocation_id']}", headers=internal_headers()
-            )
+            resp = await api_observer.delete(f"/api/allocations/{ctx['allocation_id']}")
             if resp.status_code not in (200, 204, 404):
                 raise RuntimeError(f"delete returned {resp.status_code}")
             # /api/servers/{handle}/ports is gated by require_internal_or_admin, so
-            # authenticate as an internal service like the real consumers, not the
-            # header-less api_no_auth client which gets 401.
-            ports = await api_no_auth.get(
-                f"/api/servers/{ctx['server_handle']}/ports", headers=internal_headers()
-            )
+            # this too goes through the unscoped observer, which carries the
+            # internal key and names no user.
+            ports = await api_observer.get(f"/api/servers/{ctx['server_handle']}/ports")
             ports.raise_for_status()
             if any(str(item["id"]) == str(ctx["allocation_id"]) for item in ports.json()):
                 raise RuntimeError("allocation still exists")

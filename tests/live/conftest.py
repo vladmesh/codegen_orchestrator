@@ -15,7 +15,12 @@ import uuid
 
 import httpx
 from live_harness import OwnershipManifest, cleanup_guard, resolve_repo_root
-from pipeline_helpers import cleanup_all, internal_headers
+from pipeline_helpers import (
+    api_client_as_internal_service,
+    api_client_as_test_user,
+    cleanup_all,
+    require_internal_api_key,
+)
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
@@ -23,6 +28,38 @@ from shared.contracts.dto.project import ProjectStatus
 API_URL = "http://localhost:8000"
 TEST_TELEGRAM_ID = 999_000_001
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
+
+
+NO_API_CREDENTIAL_MARKER = "needs_no_api_credential"
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        f"{NO_API_CREDENTIAL_MARKER}: builds no client against the live API — it drives the "
+        "harness against fakes, or against Redis alone — so the run needs no INTERNAL_API_KEY",
+    )
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """Refuse to start a run that will call the live API without a credential.
+
+    Every harness client carries the internal key, so a missing variable is a
+    certain failure. Said here — after collection, before the first test — it
+    names the variable; discovered at the first request it is a KeyError, or,
+    once it silently was not sent, a 401 from somewhere in the middle of a
+    30-minute mega run.
+
+    Scoped to runs that reach the API. `tests/live/` also holds regressions that
+    reach it never: the offline group drives these same helpers against fakes,
+    and the Redis cleanup regression talks only to a container. CI's fast-checks
+    runs both with no key in the environment, so demanding it for the whole
+    session aborted that job before collecting a test. Needing the API is the
+    default and the exception is declared, so a module that forgets the marker
+    fails loudly rather than quietly losing the guard.
+    """
+    if any(item.get_closest_marker(NO_API_CREDENTIAL_MARKER) is None for item in items):
+        require_internal_api_key()
 
 
 @pytest.fixture
@@ -34,8 +71,7 @@ async def api():
     real caller reaches the API, and since every route under /api requires a
     credential, a client carrying `X-Telegram-ID` alone is now answered 401.
     """
-    headers = {"X-Telegram-ID": str(TEST_TELEGRAM_ID), **internal_headers()}
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=headers) as client:
+    async with api_client_as_test_user() as client:
         resp = await client.post(
             "/api/users/upsert",
             json={
@@ -51,7 +87,12 @@ async def api():
 
 @pytest.fixture
 async def api_no_auth():
-    """Async httpx client WITHOUT auth header (for health checks etc.)."""
+    """Async httpx client with NO credential at all — for /health, which needs none.
+
+    Not one of the three authenticated kinds: every route under /api answers this
+    client 401. To reach an internal endpoint without naming a user, use
+    `api_internal` or `pipeline_helpers.api_client_as_unscoped_observer`.
+    """
     async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
         yield client
 
@@ -64,9 +105,7 @@ async def api_internal():
     exactly as production consumers reach them. Use this client for those, not
     api_no_auth, which they answer with 401.
     """
-    async with httpx.AsyncClient(
-        base_url=API_URL, timeout=10, headers=internal_headers()
-    ) as client:
+    async with api_client_as_internal_service() as client:
         yield client
 
 

@@ -2,8 +2,10 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -35,6 +37,10 @@ from shared.contracts.service_ports import (
     SERVICE_MODULE_PORT_ROLES,
     PortServiceRole,
 )
+
+# Every test here drives the harness against fakes, so the run needs no credential
+# to start — see the guard in conftest.pytest_collection_modifyitems.
+pytestmark = pytest.mark.needs_no_api_credential
 
 
 @pytest.fixture(autouse=True)
@@ -674,20 +680,31 @@ async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_pa
     }
     server_endpoint_headers = {}
 
-    async def get(url, headers=None, **kwargs):
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = request.url.path
         if url.startswith("/api/servers"):
-            server_endpoint_headers[url] = headers
-        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+            server_endpoint_headers[url] = request.headers
+        return httpx.Response(200, json=responses[url])
 
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
-    api = SimpleNamespace(get=get)
+    # The real clients, so what the assertion sees is what the API would receive.
+    api = pipeline_helpers.api_client_as_test_user(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    )
+    observer = pipeline_helpers.api_client_as_unscoped_observer(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    )
 
-    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
+    async with api, observer:
+        await pipeline_helpers.wait_deploy(api, observer, ctx, timeout=1)
 
     assert set(server_endpoint_headers) == {"/api/servers/", "/api/servers/server-1/ports"}
     for headers in server_endpoint_headers.values():
         assert headers["X-Internal-Key"] == "test-internal-key"
+        # The server endpoints answer 403 to the non-admin harness user, so the
+        # observer must not name one — see hotfix #232.
+        assert pipeline_helpers.USER_AUTH_HEADER not in headers
 
     assert ctx["server_ip"] == "192.0.2.1"
     assert ctx["port"] == 8010
@@ -2283,9 +2300,9 @@ async def test_wait_deploy_outcome_types_the_run_result(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     seen = {}
 
-    async def get(url, headers=None):
-        seen["url"] = url
-        seen["headers"] = headers
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = request.url.path
+        seen["headers"] = request.headers
         return httpx.Response(
             200,
             json={
@@ -2293,11 +2310,13 @@ async def test_wait_deploy_outcome_types_the_run_result(monkeypatch):
                 "status": "completed",
                 "result": {"deploy_outcome": "success", "deployed_url": "http://192.0.2.1:8010"},
             },
-            request=httpx.Request("GET", url),
         )
 
     ctx = {"deploy_run_id": "deploy-poll-1"}
-    result = await pipeline_helpers.wait_deploy_outcome(SimpleNamespace(get=get), ctx, timeout=1)
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as api_internal:
+        result = await pipeline_helpers.wait_deploy_outcome(api_internal, ctx, timeout=1)
 
     assert result.deploy_outcome is DeployOutcome.SUCCESS
     assert ctx["deploy_outcome"] == "success"
@@ -2621,3 +2640,223 @@ def test_debug_dump_retains_probe_exception_without_a_probe(monkeypatch, tmp_pat
     text = next((tmp_path / "docs" / "e2e_results").glob("debug-probe-exception-*.md")).read_text()
     assert "merged FAILED" in text
     assert "502 Bad Gateway" in text
+
+
+# ── The three client kinds and the auth gate (card 1157) ─────────────────
+
+
+def _auth_gate_api(seen: list[httpx.Headers]):
+    """A /api that answers as `require_authenticated_caller` does since PR #233.
+
+    The rule the mega tripped over on 2026-08-07: a credential is required on
+    every /api route, and X-Telegram-ID is not one — it names the actor, it does
+    not authenticate it. Only the internal key (or an LK token) admits a caller.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        if "X-Internal-Key" not in request.headers:
+            return httpx.Response(401, json={"detail": "Not authenticated"})
+        return httpx.Response(200, json={"telegram_id": pipeline_helpers.TEST_TELEGRAM_ID})
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+async def test_user_client_passes_the_auth_gate_and_is_still_judged_as_the_user(monkeypatch):
+    """Regression, 2026-08-07: `ensure_test_user` got 401 on POST /api/users/upsert.
+
+    The pre-fix composition — X-Telegram-ID alone — is rejected by the same fake
+    gate, which is what makes this a test of the header composition and not of a
+    function's existence. The user client must carry both: the key to be let in,
+    the user header to be acted for.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    seen: list[httpx.Headers] = []
+
+    # What the harness sent before this card, against the same gate.
+    async with httpx.AsyncClient(
+        base_url="http://test",
+        transport=_auth_gate_api(seen),
+        headers=pipeline_helpers.AUTH_HEADERS,
+    ) as pre_fix:
+        assert (await pre_fix.post("/api/users/upsert", json={})).status_code == 401
+
+    seen.clear()
+    async with pipeline_helpers.api_client_as_test_user(
+        base_url="http://test", transport=_auth_gate_api(seen)
+    ) as api:
+        await pipeline_helpers.ensure_test_user(api)
+
+    assert seen[-1]["X-Internal-Key"] == "test-internal-key"
+    assert seen[-1][pipeline_helpers.USER_AUTH_HEADER] == str(pipeline_helpers.TEST_TELEGRAM_ID)
+
+
+@pytest.mark.asyncio
+async def test_internal_service_client_passes_the_gate_without_naming_a_user(monkeypatch):
+    """Kind two: admitted by the key, acting as a service rather than as anybody."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    seen: list[httpx.Headers] = []
+
+    async with pipeline_helpers.api_client_as_internal_service(
+        base_url="http://test", transport=_auth_gate_api(seen)
+    ) as api:
+        assert (await api.get("/api/servers/")).status_code == 200
+
+    assert seen[-1]["X-Internal-Key"] == "test-internal-key"
+    assert pipeline_helpers.USER_AUTH_HEADER not in seen[-1]
+
+
+@pytest.mark.asyncio
+async def test_run_observer_client_carries_no_user_header(monkeypatch):
+    """Sentinel against the return of the defect hotfix #232 repaired.
+
+    A user header on this client would re-hide every unowned deploy and QA run
+    behind list_runs' ownership narrowing, and the mega would wait out its full
+    420s for a deploy that already succeeded. Proven end to end against the fake
+    API that reproduces the narrowing: the run has no user_id and is still found.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    runs = [_deploy_run("deploy-poll-unowned", head_sha="ea0bed35c0ffee", user_id=None)]
+
+    observer = pipeline_helpers.api_client_as_unscoped_observer(
+        base_url="http://test", transport=httpx.MockTransport(_runs_api(runs))
+    )
+    assert pipeline_helpers.USER_AUTH_HEADER not in observer.headers
+    assert observer.headers["X-Internal-Key"] == "test-internal-key"
+
+    async with observer:
+        ctx = {"project_id": "project-1", "story_id": "story-1"}
+        run = await pipeline_helpers.wait_deploy_run(observer, ctx, timeout=1)
+
+    assert run["id"] == "deploy-poll-unowned"
+
+
+def _collected(*, offline: bool):
+    """One collected item, as the guard sees it: marked offline, or not."""
+    marker = getattr(pytest.mark, live_conftest.NO_API_CREDENTIAL_MARKER).mark
+    return SimpleNamespace(get_closest_marker=lambda name: marker if offline else None)
+
+
+def test_missing_internal_api_key_is_a_named_error_before_any_request(monkeypatch):
+    """No KeyError, no mid-run 401: the variable is named, before the first test."""
+    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="INTERNAL_API_KEY"):
+        live_conftest.pytest_collection_modifyitems(
+            session=None, config=None, items=[_collected(offline=False)]
+        )
+
+    for build_client in (
+        pipeline_helpers.api_client_as_test_user,
+        pipeline_helpers.api_client_as_internal_service,
+        pipeline_helpers.api_client_as_unscoped_observer,
+    ):
+        with pytest.raises(RuntimeError, match="INTERNAL_API_KEY"):
+            build_client(base_url="http://test")
+
+
+def test_the_guard_lets_an_all_offline_run_start_without_the_key(monkeypatch):
+    """A run that calls no API asks nothing of the environment."""
+    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+
+    live_conftest.pytest_collection_modifyitems(
+        session=None, config=None, items=[_collected(offline=True), _collected(offline=True)]
+    )
+
+
+def _offline_live_ignore_flags() -> list[str]:
+    """The --ignore flags CI's `make test-live` uses, read from the Makefile itself.
+
+    Read rather than repeated: a stack-touching module added to that list, or
+    dropped from it, must move this test with it.
+    """
+    makefile = (resolve_repo_root(Path(__file__)) / "Makefile").read_text()
+    assignment = re.search(
+        r"^LIVE_OFFLINE_IGNORE_FLAGS =((?:[^\n]*\\\n)*[^\n]*)$", makefile, re.MULTILINE
+    )
+    flags = assignment.group(1).replace("\\\n", " ").split()
+    assert flags, "LIVE_OFFLINE_IGNORE_FLAGS not found in the Makefile"
+    return flags
+
+
+def _collect_only(*args: str) -> subprocess.CompletedProcess:
+    """Collect a live selection with no INTERNAL_API_KEY, exactly as CI's env has none."""
+    env = {k: v for k, v in os.environ.items() if k != "INTERNAL_API_KEY"}
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", *args],
+        cwd=resolve_repo_root(Path(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+
+# The two live selections CI's fast-checks runs with no key in the environment:
+# `make test-live`, and the Redis cleanup regression on its own.
+CI_KEYLESS_SELECTIONS = (
+    ("tests/live/", *_offline_live_ignore_flags()),
+    ("tests/live/test_capability_cleanup_redis.py",),
+)
+
+
+def test_cis_keyless_live_selections_start_but_a_stack_run_still_does_not():
+    """Regression, CI 2026-08-07: the guard aborted fast-checks' `make test-live`.
+
+    A session-wide demand for the key made the offline group — which drives the
+    harness against fakes and needs no API — die at startup with INTERNALERROR
+    before collecting a single test. Run for real, at the same selections CI
+    runs, with the variable absent just as it is on the runner.
+    """
+    for selection in CI_KEYLESS_SELECTIONS:
+        result = _collect_only(*selection)
+        assert result.returncode == 0, f"{selection}: {result.stdout}{result.stderr}"
+        assert "INTERNAL_API_KEY" not in result.stdout + result.stderr
+
+    # The same absent variable is still a named refusal for a run that reaches
+    # the API — the guard is scoped, not removed.
+    stack_run = _collect_only("tests/live/test_full_pipeline.py")
+    assert stack_run.returncode != 0
+    assert "INTERNAL_API_KEY is not set in the environment" in stack_run.stdout + stack_run.stderr
+
+
+def test_every_module_ci_runs_without_a_key_declares_the_exception():
+    """The marker is the guard's only exception, so those modules must carry it.
+
+    Says which module is missing it. Without this, a module added to `tests/live/`
+    that CI's keyless selections collect silently re-arms the abort that broke
+    fast-checks, and the reader of that failure gets an INTERNALERROR traceback
+    instead of a name.
+    """
+    live_dir = Path(__file__).resolve().parent
+    ignored = {Path(flag.removeprefix("--ignore=")).name for flag in _offline_live_ignore_flags()}
+    keyless = {path.name for path in live_dir.glob("test_*.py") if path.name not in ignored}
+    keyless.add("test_capability_cleanup_redis.py")
+    assert len(keyless) > 1, "the offline group collects no module — the ignore list is wrong"
+
+    for name in sorted(keyless):
+        source = (live_dir / name).read_text()
+        assert f"pytest.mark.{live_conftest.NO_API_CREDENTIAL_MARKER}" in source, (
+            f"{name} runs in CI without INTERNAL_API_KEY but does not declare "
+            f"pytestmark = pytest.mark.{live_conftest.NO_API_CREDENTIAL_MARKER}"
+        )
+
+
+def test_live_modules_do_not_compose_auth_headers_of_their_own():
+    """One place per kind: the runner modules ask for a client, they do not build one.
+
+    test_harness_contract.py is exempt — it is the module that asserts what the
+    headers are, so it has to name them.
+    """
+    live_dir = Path(__file__).resolve().parent
+    for name in (
+        "conftest.py",
+        "test_full_pipeline.py",
+        "test_pipeline_engineering.py",
+        "test_pipeline_scaffold.py",
+        "test_bot_access_revocation.py",
+    ):
+        source = (live_dir / name).read_text()
+        assert "AUTH_HEADERS" not in source, f"{name} composes the user header itself"
+        assert "internal_headers" not in source, f"{name} composes the internal key itself"

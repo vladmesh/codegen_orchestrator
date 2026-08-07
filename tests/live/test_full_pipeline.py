@@ -20,8 +20,6 @@ import asyncio
 import httpx
 from live_harness import cleanup_guard
 from pipeline_helpers import (
-    API_URL,
-    AUTH_HEADERS,
     DEPLOY_OUTCOME_TIMEOUT,
     DEPLOY_RUN_TIMEOUT,
     DEPLOY_TIMEOUT,
@@ -30,13 +28,15 @@ from pipeline_helpers import (
     LLM_ENGINEERING_TIMEOUT,
     QA_RUN_TIMEOUT,
     SCAFFOLD_TIMEOUT,
+    api_client_as_internal_service,
+    api_client_as_test_user,
+    api_client_as_unscoped_observer,
     cleanup_all,
     create_llm_backend_project,
     create_noop_project,
     create_story_and_task,
     dump_debug,
     ensure_test_user,
-    internal_headers,
     record_env_contract,
     run_non_llm_qa,
     trigger_scaffold,
@@ -59,20 +59,18 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefix: str):
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions."""
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
+    async with api_client_as_test_user() as api:
         await ensure_test_user(api)
         # Deploy runs belong to no user, and list_runs hides unowned runs from the
         # non-admin harness user, so they are observed through a client that
-        # authenticates only as an internal service.
+        # authenticates only as an internal service and names no user.
         async with (
-            httpx.AsyncClient(base_url=API_URL, timeout=10) as api_no_auth,
-            httpx.AsyncClient(
-                base_url=API_URL, timeout=10, headers=internal_headers()
-            ) as api_internal,
+            api_client_as_unscoped_observer() as api_observer,
+            api_client_as_internal_service() as api_internal,
         ):
             ctx = await create_project(api, api_internal)
             async with cleanup_guard(
-                lambda: cleanup_all(api_internal, api_no_auth, ctx), manifest=ctx["manifest"]
+                lambda: cleanup_all(api_internal, api_observer, ctx), manifest=ctx["manifest"]
             ):
                 # Phase 1: Scaffold
                 trigger_scaffold(ctx)
@@ -116,7 +114,7 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
                     dump_debug(ctx, f"{debug_prefix}-env-contract-merged")
                     return
 
-                await wait_deploy(api, api_no_auth, ctx, timeout=DEPLOY_TIMEOUT)
+                await wait_deploy(api, api_observer, ctx, timeout=DEPLOY_TIMEOUT)
                 await wait_deploy_outcome(api_internal, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT)
                 if (
                     ctx.get("final_app_status") == ApplicationStatus.RUNNING.value

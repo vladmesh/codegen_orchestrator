@@ -28,7 +28,7 @@ import uuid
 
 import asyncssh
 import httpx
-from pipeline_helpers import API_URL, internal_headers
+from pipeline_helpers import api_client_as_internal_service
 import pytest
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID, TEST_IDENTITY_ENV_KEY
@@ -205,7 +205,7 @@ async def test_a_killed_qa_run_leaves_the_bot_refusing_the_test_identity():
     is left to notice, which is the whole claim: revocation follows from the
     state, so it happens without the process that granted the access.
     """
-    async with httpx.AsyncClient(base_url=API_URL, timeout=30, headers=internal_headers()) as api:
+    async with api_client_as_internal_service(timeout=30) as api:
         bot = await _resolve_deployed_bot(api)
 
         assert not await bot.admits_qa_identity(), (
