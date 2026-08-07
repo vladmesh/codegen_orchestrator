@@ -157,10 +157,18 @@ can reach the API's port can no longer write itself an administrator.
 | `PO_LLM_MODEL` | PO agent model name |
 | `PO_LLM_BASE_URL` | PO agent LLM base URL |
 | `PO_LLM_API_KEY` | PO agent LLM API key |
+| `ARCHITECT_LLM_MODEL` | Architect agent model name |
+| `ARCHITECT_LLM_BASE_URL` | Architect agent LLM base URL |
+| `ARCHITECT_LLM_API_KEY` | Architect agent LLM API key |
 | `SUMMARIZATION_MODEL` | Summarization model name |
 | `SUMMARIZATION_MAX_TOKENS` | Max tokens for summarization |
 | `SUMMARIZATION_TRIGGER_TOKENS` | Token threshold to trigger summarization |
 | `SUMMARIZATION_MAX_SUMMARY_TOKENS` | Max summary output tokens |
+
+The `PO_LLM_*` and `ARCHITECT_LLM_*` triples are all-or-nothing: an agent starts only when
+every var of its group carries a value, so leaving one of the three empty silently keeps that
+agent out of the pipeline. `services/langgraph/src/config/agent_llm_env.py` is the single source
+of truth for the groups.
 
 ### GitHub Integration
 
@@ -168,9 +176,28 @@ can reach the API's port can no longer write itself an administrator.
 |--------|-------------|
 | `GH_APP_ID` | GitHub App ID |
 | `GH_APP_PRIVATE_KEY` | GitHub App private key PEM (written to `/opt/secrets/github_app.pem`) |
-| `GITHUB_ORG` | GitHub organization name |
-| `GITHUB_WEBHOOK_SECRET` | Webhook signature secret |
+| `GH_ORG` | GitHub organization name |
 | `GHCR_TOKEN` | GitHub token with `packages:read` scope (for pulling worker images) |
+
+`GH_ORG` is the name of the *secret* only. The rename stopped at the secret: the deploy workflow
+writes it into the server `.env` as `GITHUB_ORG=${{ secrets.GH_ORG }}`
+(`.github/workflows/deploy.yml`), and that is still the env var every service reads. So a secret
+named `GITHUB_ORG` is read by nothing — the workflow's required-secret preflight fails the deploy
+before it starts when `GH_ORG` is empty.
+
+**How the GitHub App key reaches a service.** Three names carry one key, and they are not
+interchangeable:
+
+- `GH_APP_PRIVATE_KEY` — the GitHub secret, holding the PEM itself.
+- `GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem` — the host path the deploy writes that PEM to
+  (mode 0600).
+- `GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem` — the in-container path the service
+  reads.
+
+Compose bind-mounts the host path onto the container path read-only
+(`${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro`). Neither path is a
+GitHub secret: the deploy workflow writes both into the server `.env` itself, so do not configure
+them in the repository environment. Services fail fast when the in-container path holds no key.
 
 ### Telegram
 
@@ -179,6 +206,24 @@ can reach the API's port can no longer write itself an administrator.
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `ADMIN_TELEGRAM_IDS` | Comma-separated admin Telegram IDs |
 | `TELEGRAM_ID_ADMIN` | Primary admin Telegram ID (for seeding) |
+| `TELETHON_API_ID` | Telegram API ID for the QA node's Telethon client |
+| `TELETHON_API_HASH` | Telegram API hash for the QA node's Telethon client |
+| `TELETHON_SESSION` | Authorized Telethon session string for the QA node |
+
+All three `TELETHON_*` secrets are required, not optional: the deploy writes them into the server
+`.env`, `infra-service` picks the whole file up through `env_file`, and the `qa_runner` role reads
+them from its own environment into `~/.qa-telethon.env` on the provisioned host — failing the play
+when any of them is empty. See [QA Node](#qa-node-prod-server) below.
+
+### User Dashboard (LK)
+
+| Secret | Description |
+|--------|-------------|
+| `LK_DOMAIN` | Public URL of the user dashboard, used by the bot to build dashboard links |
+| `LK_JWT_SECRET` | Key the API signs and verifies dashboard access tokens with |
+
+Both reject an empty value at service startup — an unset one arrives through compose as `""` and
+would otherwise sign dashboard tokens with a known key.
 
 ### Encryption & Registry
 

@@ -2,6 +2,23 @@
 
 ## 2026-08-07
 
+- **`docs/DEPLOY.md` lists the secrets the deploy actually reads** (`issue:3c2e590d60545c99de29`):
+  the secret tables and `.github/workflows/*.yml` had drifted apart in both directions after the
+  #227–231 hotfixes, so an operator configuring a deploy strictly from the document failed the
+  workflow's required-secret preflight. Now reconciled and checkable in one command:
+  `diff <(grep -rhoE 'secrets\.[A-Z0-9_]+' .github/workflows/*.yml | sed 's/secrets\.//' | sort -u)
+  <(grep -oE '^\| `[A-Z0-9_]+`' docs/DEPLOY.md | tr -d '|` ' | sort -u)` prints nothing.
+  Added: `ARCHITECT_LLM_MODEL|BASE_URL|API_KEY` to LLM Providers (with the all-or-nothing rule that
+  keeps a half-configured agent out of the pipeline), `TELETHON_API_ID|API_HASH|SESSION` to the
+  Telegram table rather than only in QA prose, and a new LK section for `LK_DOMAIN` and
+  `LK_JWT_SECRET`. `GITHUB_ORG` became `GH_ORG`, with the point spelled out that the rename stopped
+  at the secret — services still read the env var `GITHUB_ORG`. `GITHUB_WEBHOOK_SECRET` was dropped:
+  the webhook it signed for was removed in b6b7310f and nothing in the tree reads it. The GitHub App
+  key now documents its whole path — `GH_APP_PRIVATE_KEY` → `/opt/secrets/github_app.pem` on the
+  host → read-only bind mount → `GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem` in the
+  container — since the host and container paths differ and neither is a GitHub secret.
+  No workflow, compose or service behaviour changed.
+
 - **A throttled poll is no longer a verdict on the reinstall** (`issue:a29c4b89a061cada8ad1`):
   Time4VPS answers a too-fast second action on one server with `401` and
   `{"error":[["wait_x_between_action",24],"unauthorized"]}` — the same status it uses for a real

@@ -711,7 +711,7 @@ async def test_wait_deploy_fails_loudly_when_servers_endpoint_rejects(monkeypatc
 
     The failure lands in the window this card closes — the stack may already be
     running on the target — so what teardown is left holding matters: the
-    write-ahead deploy record placed at project creation must survive untouched,
+    write-ahead deploy record placed when the story was created must survive untouched,
     and no port allocation may be claimed, since none was ever read.
     """
     manifest = OwnershipManifest("project-1")
