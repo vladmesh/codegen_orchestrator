@@ -61,7 +61,9 @@ async def test_pipeline_cleanup_ssh_target_uses_server_ssh_user(monkeypatch, tmp
         if request.headers.get("X-Internal-Key") != "test-internal-key":
             return httpx.Response(401, json={"detail": "unauthorized"})
         if request.url.path == "/api/servers/vps-1":
-            return httpx.Response(200, json={"handle": "vps-1", "ssh_user": "dev"})
+            return httpx.Response(
+                200, json={"handle": "vps-1", "ssh_user": "dev", "public_ip": "203.0.113.7"}
+            )
         if request.url.path == "/api/servers/vps-1/ssh-key":
             return httpx.Response(200, json={"ssh_key": "PRIVATE-KEY"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -77,9 +79,10 @@ async def test_pipeline_cleanup_ssh_target_uses_server_ssh_user(monkeypatch, tmp
 
     remote_script = tmp_path / "remote.sh"
     remote_script.write_text("set -eu\n")
+    # The host comes from the same DTO as the user: both are what deploy
+    # authorized, so teardown cannot SSH somewhere the key does not open.
     await live_harness_cleanup.cleanup_server_deployment(
         project_name="live-test-x",
-        server_ip="203.0.113.7",
         server_handle="vps-1",
         api_url="http://test",
         remote_script_path=remote_script,
@@ -89,6 +92,83 @@ async def test_pipeline_cleanup_ssh_target_uses_server_ssh_user(monkeypatch, tmp
     assert "dev@203.0.113.7" in argv
     assert not any(str(a).startswith("root@") for a in argv)
     assert captured["input"] == "set -eu\n"
+
+
+@pytest.mark.asyncio
+async def test_written_ahead_deploy_is_cleaned_on_every_listed_server(monkeypatch, tmp_path):
+    """A deploy owned before its target was picked is cleared on all of them.
+
+    The write-ahead record names only the stack; the allocator had not chosen a
+    server when it was written. Skipping such a record — the old behaviour, which
+    required a resolved ``server_handle`` — is what left run 7's stack live.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    destinations: list[str] = []
+
+    def fake_run(argv, **kwargs):
+        destinations.append(argv[argv.index("BatchMode=yes") + 1])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(live_harness_cleanup.subprocess, "run", fake_run)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/servers/":
+            return httpx.Response(
+                200,
+                json=[
+                    {"handle": "vps-1", "ssh_user": "dev", "public_ip": "203.0.113.7"},
+                    {"handle": "vps-2", "ssh_user": "runner", "public_ip": "203.0.113.8"},
+                ],
+            )
+        if request.url.path.endswith("/ssh-key"):
+            return httpx.Response(200, json={"ssh_key": "PRIVATE-KEY"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        live_harness_cleanup.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: original_client(*args, **{**kwargs, "transport": transport}),
+    )
+
+    remote_script = tmp_path / "remote.sh"
+    remote_script.write_text("set -eu\n")
+    await live_harness_cleanup.cleanup_server_deployment(
+        project_name="live-te-x",
+        api_url="http://test",
+        remote_script_path=remote_script,
+    )
+
+    assert destinations == ["dev@203.0.113.7", "runner@203.0.113.8"]
+
+
+@pytest.mark.asyncio
+async def test_written_ahead_deploy_fails_closed_without_any_target(monkeypatch, tmp_path):
+    """No servers to check is not proof the owned stack is gone."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    def fake_run(argv, **kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("SSH must not run when no target could be resolved")
+
+    monkeypatch.setattr(live_harness_cleanup.subprocess, "run", fake_run)
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        live_harness_cleanup.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: original_client(*args, **{**kwargs, "transport": transport}),
+    )
+
+    remote_script = tmp_path / "remote.sh"
+    remote_script.write_text("set -eu\n")
+    with pytest.raises(RuntimeError, match="no target"):
+        await live_harness_cleanup.cleanup_server_deployment(
+            project_name="live-te-x",
+            api_url="http://test",
+            remote_script_path=remote_script,
+        )
 
 
 @pytest.mark.asyncio
@@ -118,7 +198,6 @@ async def test_pipeline_cleanup_fails_closed_on_missing_server(monkeypatch, tmp_
     with pytest.raises(RuntimeError, match="server fetch failed"):
         await live_harness_cleanup.cleanup_server_deployment(
             project_name="live-test-x",
-            server_ip="203.0.113.7",
             server_handle="vps-1",
             api_url="http://test",
             remote_script_path=remote_script,
@@ -155,20 +234,27 @@ def test_clean_remote_servers_ssh_targets_use_ssh_user(monkeypatch):
 
     module.clean_remote_servers(["live-te-11111111111111111111111111111111"])
 
+    # Each server is now asked what it is running before it is cleaned, so the
+    # sweep sees stacks the database no longer lists.
     assert targets == [
         "dev@203.0.113.7",
         "dev@203.0.113.7",
+        "dev@203.0.113.7",
+        "runner@203.0.113.8",
         "runner@203.0.113.8",
         "runner@203.0.113.8",
     ]
     assert not any(t.startswith("root@") for t in targets)
+    residue_command = module.build_remote_residue_command(module.DEPLOY_SLUG_PREFIXES)
     assert remote_commands == [
+        residue_command,
         "sh -s -- live-te-11111111111111111111111111111111 /opt/services",
         "docker network prune -f 2>&1 || true",
+        residue_command,
         "sh -s -- live-te-11111111111111111111111111111111 /opt/services",
         "docker network prune -f 2>&1 || true",
     ]
-    assert remote_inputs[0] == live_harness_cleanup.REMOTE_CLEANUP_SCRIPT.read_text()
-    assert remote_inputs[2] == live_harness_cleanup.REMOTE_CLEANUP_SCRIPT.read_text()
-    assert remote_inputs[1] is None
-    assert remote_inputs[3] is None
+    assert remote_inputs[1] == live_harness_cleanup.REMOTE_CLEANUP_SCRIPT.read_text()
+    assert remote_inputs[4] == live_harness_cleanup.REMOTE_CLEANUP_SCRIPT.read_text()
+    assert remote_inputs[0] is None
+    assert remote_inputs[2] is None

@@ -56,7 +56,9 @@ async def test_server_cleanup_authenticates_ssh_key_fetch(monkeypatch, tmp_path)
         nonlocal saw_key_fetch
         assert request.headers.get("X-Internal-Key") == "test-internal-key"
         if request.url.path == "/api/servers/vps-1":
-            return httpx.Response(200, json={"handle": "vps-1", "ssh_user": "dev"})
+            return httpx.Response(
+                200, json={"handle": "vps-1", "ssh_user": "dev", "public_ip": "203.0.113.7"}
+            )
         if request.url.path == "/api/servers/vps-1/ssh-key":
             saw_key_fetch = True
             return httpx.Response(200, json={"ssh_key": "PRIVATE-KEY"})
@@ -75,7 +77,6 @@ async def test_server_cleanup_authenticates_ssh_key_fetch(monkeypatch, tmp_path)
     remote_script.write_text("set -eu\n")
     await live_harness_cleanup.cleanup_server_deployment(
         project_name="live-test-x",
-        server_ip="203.0.113.7",
         server_handle="vps-1",
         api_url="http://test",
         remote_script_path=remote_script,

@@ -118,9 +118,24 @@ class OwnershipManifest:
     resources: list[OwnedResource] = field(default_factory=list)
 
     def own(self, kind: str, identifier: str, **metadata: object) -> None:
+        """Record one owned resource, keyed by ``(kind, identifier)``.
+
+        Owning the same resource again enriches the record in place instead of
+        appending a second one: a resource can be written ahead of its creation
+        with only the facts known then (a deploy is owned by stack name before
+        any target runs it) and completed later with the facts the pipeline
+        produced (server, port). Metadata already recorded survives an enrichment
+        that does not mention it.
+        """
         resource = OwnedResource(kind, str(identifier), dict(metadata))
-        if resource not in self.resources:
-            self.resources.append(resource)
+        for index, existing in enumerate(self.resources):
+            if existing.kind != resource.kind or existing.identifier != resource.identifier:
+                continue
+            merged = {**existing.metadata, **resource.metadata}
+            if merged != existing.metadata:
+                self.resources[index] = OwnedResource(resource.kind, resource.identifier, merged)
+            return
+        self.resources.append(resource)
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

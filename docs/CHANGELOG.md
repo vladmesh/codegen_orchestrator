@@ -2,6 +2,42 @@
 
 ## 2026-08-07
 
+- **The live harness owns a deploy before it exists** (`issue:47affbe42eb8ad5c16ef`): a live run
+  records `server_deployment <slug>` in its ownership manifest before any deploy run can start,
+  instead of only after the application reported `RUNNING` and its port
+  allocation had been read. `wait_deploy` now *enriches* that same record with `server_handle`
+  and `server_ip` — `OwnershipManifest.own` merges metadata into an existing `(kind, identifier)`
+  record rather than appending a second one — so a failure anywhere between `docker compose up`
+  on the target and that enrichment still leaves teardown holding the stack name. Teardown of a
+  single run reads the manifest and nothing else; a record with no resolved target is cleared on
+  every server the API lists (`shared.live_harness_cleanup server-cleanup` takes `--server-handle`
+  as optional and reads `ssh_user`/`public_ip` from the same server DTO, so the `127.0.0.1`
+  fallback is gone).
+
+  `make test-live-clean` also stopped reporting a clean host while a foreign stack was running on
+  a deploy target: it inventories the targets themselves (`docker ps` plus `/opt/services/*` by
+  the deployed-slug prefixes derived from `PROJECT_PREFIXES` via `shared.project_slug`), sweeps
+  the stacks it finds even when no database row names them, and counts them in the final residue
+  verdict with the findings listed. Prefix sweeping stays confined to that global cleanup — one
+  run's teardown never uses it.
+
+  Which runs take the write-ahead record is derived, not declared: a run owns the stack when it
+  creates its story (`create_story_and_task`), because the story PR's merge is what makes
+  `pr_poller` create a deploy run at all. There is no `deploys=` flag to set at a call site and
+  no flag to forget — a new live test that drives engineering owns its stack without knowing the
+  rule exists, and a scaffold-only run, which creates no story and so can reach no deploy, owns no
+  stack and touches no server on teardown, so one unreachable target cannot fail a test that
+  deployed nothing. `wait_deploy` takes the same record again on entry (owning twice merges), so a
+  run that ever reaches a deploy by some other route is owned rather than orphaned. The target
+  inventory is fail-closed — an unreachable `docker` on a target fails
+  the scan instead of reporting an empty, falsely clean host. `scripts/clean_live_tests.py` also
+  lost its literal `\n`/`\|` escapes: psql answers are split on real newlines (two live-test
+  projects used to collapse into an empty project list, emptying the DB half of both the sweep and
+  the residue verdict, and every active repository workspace looked orphaned), and the local
+  container filter is a real regexp alternation. An unprovable ownership manifest now fails the
+  cleanup at the end rather than aborting it at its first step, so every other sweep still runs.
+  `tests/live/README.md` describes the teardown scope as it now is.
+
 - **Provisioning success commits its result in one order** (`issue:23593a6a2850ae9c7964`):
   `handle_provisioning_success` now persists the server's private SSH key **first**, then closes
   the episode. A missing `ssh_manager`, an empty private key, or a failing `save_server_ssh_key`

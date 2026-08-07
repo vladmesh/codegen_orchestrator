@@ -165,62 +165,122 @@ def build_remote_cleanup_command(project_name: str, service_base: str = "/opt/se
     return shlex.join(["sh", "-s", "--", project_name, service_base.rstrip("/")])
 
 
+def tolerant_prefix_pattern(prefix: str) -> str:
+    """Match a stack-name prefix whether Docker kept or replaced its dashes."""
+    return "".join("[-_]" if char == "-" else char for char in prefix)
+
+
+def build_remote_residue_command(prefixes: list[str], service_base: str = "/opt/services") -> str:
+    """Build the remote inventory of live-test stacks, whatever the DB knows.
+
+    This is the global sweep's eyes on a target: it answers "what live-test
+    stacks are on this host" from the host itself — containers and service
+    directories — so an orphan whose DB rows a previous cleanup already deleted
+    is still seen. Reports, never deletes.
+    """
+    base = service_base.rstrip("/")
+    pattern = "|".join(tolerant_prefix_pattern(prefix) for prefix in prefixes)
+    # The trailing `*` must reach the shell unquoted to glob; the prefixes are
+    # slug fragments, so only the base path can need quoting.
+    globs = " ".join(f"{shlex.quote(base)}/{prefix}*" for prefix in prefixes)
+    # A container is only reported when its name carries the project UUID a slug
+    # always ends in, so an unrelated container that merely starts like a test
+    # project does not become residue.
+    #
+    # `docker` is read into a variable first because a pipeline's status is its
+    # last command's: piping straight into `grep | sed` would let a dead daemon
+    # exit 0 with no output, and this scan's only job is to never report a false
+    # clean. An unreachable docker must fail the scan, not empty it.
+    script = (
+        "names=$(docker ps -a --format '{{.Names}}') || exit 1; "
+        f"printf '%s\\n' \"$names\" | grep -E {shlex.quote(f'^({pattern})[0-9a-f]{{32}}')} "
+        "| sed 's/^/container /'; "
+        f"ls -1d {globs} 2>/dev/null | sed 's/^/directory /'"
+    )
+    return shlex.join(["sh", "-c", script])
+
+
+async def _resolve_cleanup_targets(
+    client: httpx.AsyncClient, server_handle: str | None
+) -> list[dict[str, Any]]:
+    """Return the server DTOs one deploy's teardown must clear.
+
+    A resolved handle names its one target. A deploy owned write-ahead has no
+    target yet — the allocator had not picked one when the stack name was
+    recorded — so teardown clears that stack name on every server the API lists.
+    An empty list is a failure, not a clean result: it would silently prove
+    nothing about a stack the manifest says may exist.
+    """
+    if server_handle is not None:
+        srv = await client.get(f"/api/servers/{server_handle}")
+        if srv.status_code != HTTP_OK:
+            raise RuntimeError(f"server fetch failed: {srv.status_code}")
+        return [srv.json()]
+
+    listing = await client.get("/api/servers/")
+    if listing.status_code != HTTP_OK:
+        raise RuntimeError(f"server list fetch failed: {listing.status_code}")
+    servers = listing.json()
+    if not servers:
+        raise RuntimeError("server list fetch returned no target for an owned deploy")
+    return servers
+
+
 async def cleanup_server_deployment(
     *,
     project_name: str,
-    server_ip: str,
-    server_handle: str,
     api_url: str,
+    server_handle: str | None = None,
     remote_script_path: Path = REMOTE_CLEANUP_SCRIPT,
 ) -> None:
     logger = structlog.get_logger()
     headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
+    targets: list[tuple[str, str, str]] = []
     async with httpx.AsyncClient(base_url=api_url, timeout=10, headers=headers) as client:
-        srv = await client.get(f"/api/servers/{server_handle}")
-        if srv.status_code != HTTP_OK:
-            raise RuntimeError(f"server fetch failed: {srv.status_code}")
-        ssh_user = srv.json()["ssh_user"]
-        resp = await client.get(f"/api/servers/{server_handle}/ssh-key")
-        if resp.status_code != HTTP_OK:
-            raise RuntimeError(f"ssh key fetch failed: {resp.status_code}")
-        key = resp.json().get("ssh_key", "")
-
-    if not key.endswith("\n"):
-        key += "\n"
+        for srv in await _resolve_cleanup_targets(client, server_handle):
+            handle = srv["handle"]
+            resp = await client.get(f"/api/servers/{handle}/ssh-key")
+            if resp.status_code != HTTP_OK:
+                raise RuntimeError(f"ssh key fetch failed: {resp.status_code}")
+            key = resp.json().get("ssh_key", "")
+            if not key.endswith("\n"):
+                key += "\n"
+            # ssh_user and public_ip come from the same DTO deploy authorizes
+            # against, so teardown cannot target a host the key does not open.
+            targets.append((f"{srv['ssh_user']}@{srv['public_ip']}", key, handle))
 
     remote_script = remote_script_path.read_text()
     remote_cmd = build_remote_cleanup_command(project_name)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
-        f.write(key)
-        key_path = f.name
-    os.chmod(key_path, 0o600)
-    try:
-        result = subprocess.run(
-            [  # noqa: S607
-                "ssh",
-                "-i",
-                key_path,
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "ConnectTimeout=10",
-                "-o",
-                "BatchMode=yes",
-                f"{ssh_user}@{server_ip}",
-                remote_cmd,
-            ],
-            input=remote_script,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"cleanup ssh failed: {result.returncode} {result.stderr[:300]}")
-        logger.info(
-            "cleanup_server_done", project=project_name, server=server_ip, ssh_user=ssh_user
-        )
-    finally:
-        os.unlink(key_path)
+    for destination, key, handle in targets:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
+            f.write(key)
+            key_path = f.name
+        os.chmod(key_path, 0o600)
+        try:
+            result = subprocess.run(
+                [  # noqa: S607
+                    "ssh",
+                    "-i",
+                    key_path,
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "ConnectTimeout=10",
+                    "-o",
+                    "BatchMode=yes",
+                    destination,
+                    remote_cmd,
+                ],
+                input=remote_script,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"cleanup ssh failed: {result.returncode} {result.stderr[:300]}")
+            logger.info("cleanup_server_done", project=project_name, server=handle, ssh=destination)
+        finally:
+            os.unlink(key_path)
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -239,7 +299,6 @@ async def _run(args: argparse.Namespace) -> None:
     elif args.command == "server-cleanup":
         await cleanup_server_deployment(
             project_name=args.project_name,
-            server_ip=args.server_ip,
             server_handle=args.server_handle,
             api_url=args.api_url,
         )
@@ -267,8 +326,9 @@ def _parser() -> argparse.ArgumentParser:
 
     server = sub.add_parser("server-cleanup")
     server.add_argument("--project-name", required=True)
-    server.add_argument("--server-ip", required=True)
-    server.add_argument("--server-handle", required=True)
+    # Optional: a write-ahead deploy record has no resolved target yet, and then
+    # the stack name is cleared on every server the API lists.
+    server.add_argument("--server-handle")
     server.add_argument("--api-url", required=True)
 
     return parser

@@ -58,6 +58,8 @@ DEPLOY_OUTCOME_POLL_INTERVAL = 3
 # check while the service finishes coming up.
 QA_RUN_TIMEOUT = 300
 QA_RUN_POLL_INTERVAL = 5
+# One owned deploy's teardown: 60s of SSH per target server, plus container start.
+SERVER_CLEANUP_TIMEOUT = 180
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
 RUN_CANCELLATION_TIMEOUT = 30
@@ -193,7 +195,12 @@ async def create_pipeline_project(
     task_description: str,
     detailed_spec: str | None = None,
 ) -> dict:
-    """Create project + repository for one live pipeline variant. Returns ctx dict."""
+    """Create project + repository for one live pipeline variant. Returns ctx dict.
+
+    This factory serves the scaffold, engineering and full pipelines alike, so it
+    cannot tell whether this run will reach a deploy — and it does not guess. The
+    deploy stack is owned by ``own_deploy_ahead``, from the fact that decides it.
+    """
     suffix = secrets.token_hex(4)
     project_title = f"{project_prefix}-{suffix}"
     project_id = str(uuid.uuid4())
@@ -333,8 +340,43 @@ async def wait_scaffold(api: httpx.AsyncClient, ctx: dict, timeout: int = SCAFFO
     ctx["scaffold_status"] = status
 
 
+def own_deploy_ahead(ctx: dict) -> None:
+    """Own this run's deploy stack before the pipeline can create it.
+
+    The pipeline — not this harness — decides when a deploy run starts, so the
+    only way the manifest can never lag the live stack is to own the stack name
+    before anything can create it. Both facts that name it are knowable here: the
+    stack is the project slug, and the targets are whatever `/api/servers/` lists
+    at teardown. `wait_deploy` later enriches this same record with the resolved
+    server and port; owning again merges into it rather than adding a second
+    record. Without this, any failure between `docker compose up` on the target
+    and that enrichment orphans a running stack teardown never hears of.
+
+    Writing to disk is part of taking ownership: a run whose process dies is torn
+    down by `scripts/clean_live_tests.py` from the file, not from this object.
+    """
+    ctx["manifest"].own("server_deployment", ctx["project_name"])
+    ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
+
+
 async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
-    """Create story (in_progress) + task (todo) for engineering pipeline."""
+    """Create story (in_progress) + task (todo) for engineering pipeline.
+
+    Creating the story is what makes this run able to deploy, so this is where the
+    deploy stack is owned — derived, not declared at the call site. Once the
+    story's tasks are done the scheduler opens a PR from `story/<id>`, and
+    `pr_poller` turns the merge into a deploy run and a `DeployMessage` without
+    asking the harness. Every live run that can reach a deploy comes through here
+    (a deploy run is created from a merged story PR), and a run that never creates
+    a story — scaffold — never reaches one. A new live test therefore inherits the
+    safe outcome without knowing this rule exists: driving engineering at all
+    means owning the stack.
+
+    Ownership is taken before the story is posted, so even a crash mid-creation
+    leaves teardown able to clear the stack.
+    """
+    own_deploy_ahead(ctx)
+
     resp = await api.post(
         "/api/stories/",
         json={
@@ -448,7 +490,14 @@ async def wait_deploy(
     """Wait for deploy to complete. Updates ctx with deployment info.
 
     Polls Application status (via repositories) instead of project.service_status.
+
+    Owning the stack again on entry costs nothing when the story already did it —
+    `own` merges — and closes the gap for any future run that reaches a deploy
+    without a story. Under uncertainty the harness owns: an over-owned record
+    costs an SSH round trip, an unowned one costs a live stack nobody knows about.
     """
+    own_deploy_ahead(ctx)
+
     terminal = {
         ApplicationStatus.RUNNING,
         ApplicationStatus.DOWN,
@@ -1222,32 +1271,20 @@ def _build_server_remote_cleanup_command(
     return build_remote_cleanup_command(project_name, service_base)
 
 
-def _server_cleanup_args(project_name: str, server_ip: str, server_handle: str) -> list[str]:
-    return [
-        "server-cleanup",
-        "--project-name",
-        project_name,
-        "--server-ip",
-        server_ip,
-        "--server-handle",
-        server_handle,
-        "--api-url",
-        "http://api:8000",
-    ]
-
-
-def build_server_cleanup_command(
-    project_name: str, server_ip: str, server_handle: str
-) -> list[str]:
-    """Build the container-side teardown command for one deployed stack.
+def _server_cleanup_args(project_name: str, server_handle: str | None) -> list[str]:
+    """Build the container-side teardown command for one owned deploy.
 
     Runs inside langgraph so it can reach the internal API. The server and
     ssh-key fetches authenticate with X-Internal-Key like the real consumers:
     /api/servers/* is gated by require_internal_or_admin and 401s without it.
 
-    SSH runs as the server's configured ``ssh_user`` (read from the server DTO,
-    the same user deploy authorizes), not a hardcoded ``root`` the orchestrator
-    key is not authorized for.
+    SSH runs as the server's configured ``ssh_user`` at the DTO's ``public_ip``
+    (the same user and host deploy authorizes), not a hardcoded ``root`` the
+    orchestrator key is not authorized for.
+
+    ``server_handle`` is the resolved target once wait_deploy has read the
+    allocation. A write-ahead deploy record has no target yet, and then teardown
+    clears this stack name on every server the API lists.
 
     Remote steps mirror how deploy.yml creates resources:
     1. discover actual compose project labels from live containers
@@ -1256,28 +1293,43 @@ def build_server_cleanup_command(
     4. verify no project-owned Docker resource remains
     5. remove and verify `/opt/services/{name}`
     """
-    return [
-        "python",
-        "-m",
-        "shared.live_harness_cleanup",
-        *_server_cleanup_args(project_name, server_ip, server_handle),
+    args = [
+        "server-cleanup",
+        "--project-name",
+        project_name,
+        "--api-url",
+        "http://api:8000",
     ]
+    if server_handle is not None:
+        args += ["--server-handle", server_handle]
+    return args
 
 
 def cleanup_server_container(ctx: dict) -> None:
-    """Stop and remove deployed container on remote server via SSH."""
-    if "server_handle" not in ctx:
-        return
-    result = docker_exec_python_module(
-        "langgraph",
-        "shared.live_harness_cleanup",
-        _server_cleanup_args(
-            ctx["project_name"], ctx.get("server_ip", "127.0.0.1"), ctx["server_handle"]
-        ),
-        timeout=75,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout)
+    """Remove every deployed stack this run owns, reading only its manifest.
+
+    One run's teardown is manifest-driven by contract: it removes the stack names
+    this run wrote ahead, never everything that looks like a live-test stack.
+    (The prefix sweep belongs to the global `make test-live-clean`, which owns no
+    manifest.) A record enriched by wait_deploy names its target; a write-ahead
+    record does not, and the cleanup module then resolves the targets itself.
+    """
+    for resource in ctx["manifest"].resources:
+        if resource.kind != "server_deployment":
+            continue
+        metadata = resource.metadata
+        handle = metadata["server_handle"] if "server_handle" in metadata else None
+        result = docker_exec_python_module(
+            "langgraph",
+            "shared.live_harness_cleanup",
+            _server_cleanup_args(resource.identifier, handle),
+            # A record without a resolved target clears the stack on every listed
+            # server, each with its own 60s SSH budget, so this is not the
+            # single-target 75s any more.
+            timeout=SERVER_CLEANUP_TIMEOUT,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr or result.stdout)
 
 
 async def cleanup_all(

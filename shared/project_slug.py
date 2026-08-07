@@ -39,3 +39,15 @@ def generate_project_slug(title: str, project_id: uuid.UUID) -> str:
     if not PROJECT_SLUG_PATTERN.fullmatch(slug):
         raise ValueError(f"generated invalid project slug {slug!r}")
     return slug
+
+
+def project_slug_prefix(title_prefix: str) -> str:
+    """Return the slug fragment shared by every project titled ``<prefix>-...``.
+
+    Slugs truncate the title before appending the project UUID, so a `live-test`
+    project deploys as `live-te-<uuid hex>`. Anything sweeping deployed stacks by
+    name needs that truncated form, and derives it here rather than hardcoding a
+    copy of the truncation rule.
+    """
+    suffix = uuid.UUID(int=0).hex
+    return generate_project_slug(title_prefix, uuid.UUID(int=0)).removesuffix(suffix)
