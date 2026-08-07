@@ -72,26 +72,17 @@ async def process_provisioner_result(result: ProvisionerResult) -> None:
 
 
 async def _handle_success(result: ProvisionerResult, log) -> None:
-    """Handle successful provisioning - update server to active."""
-    try:
-        update = ServerUpdate(status=ServerStatus.ACTIVE)
+    """Observe successful provisioning without touching the terminal status.
 
-        await api_client.update_server(result.server_handle, update)
-
-        log.info(
-            "server_status_updated",
-            new_status=ServerStatus.ACTIVE,
-            services_redeployed=result.services_redeployed,
-        )
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == httpx.codes.NOT_FOUND:
-            log.warning("server_not_found_in_api", server_handle=result.server_handle)
-        else:
-            log.error(
-                "api_update_failed",
-                status_code=e.response.status_code,
-                error=str(e),
-            )
+    The success path owns the terminal status: it is written atomically, together
+    with the attempt-counter reset, by the provisioning-attempts reset endpoint,
+    and only while the episode is still current. This listener used to overwrite
+    that READY with ACTIVE from the side, so it only logs now.
+    """
+    log.info(
+        "provisioner_result_success_observed",
+        services_redeployed=result.services_redeployed,
+    )
 
 
 async def _handle_failure(result: ProvisionerResult, log) -> None:
