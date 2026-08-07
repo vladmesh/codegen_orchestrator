@@ -79,6 +79,11 @@ async def reserve_provisioning_attempt(
 async def reset_provisioning_attempts(
     server_handle: str, attempt_number: int, episode_id: str
 ) -> bool:
-    """Atomically clear attempts and mark ready if this attempt is still current."""
+    """Atomically clear attempts and mark ready if this attempt is still current.
+
+    This endpoint is the single owner of the terminal READY status: the counter
+    reset and the status write happen in one conditional UPDATE, so a superseded
+    attempt can never mark a server that a newer episode already owns.
+    """
     result = await api_client.reset_provisioning_attempts(server_handle, attempt_number, episode_id)
     return result.reset

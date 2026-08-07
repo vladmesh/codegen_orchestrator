@@ -16,16 +16,59 @@ import pytest
 
 from shared.contracts.dto.server import ServerStatus
 from shared.contracts.queues.provisioner import ProvisionerResult
+from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
+
+
+def _entry_key(entry_id: str) -> tuple[int, int]:
+    ms, seq = entry_id.split("-")
+    return int(ms), int(seq)
+
+
+async def _wait_until_consumed(redis_client, entry_id: str, timeout_sec: int = 15) -> None:
+    """Block until the scheduler's consumer group has processed ``entry_id``.
+
+    Asserting that a status did NOT change is only meaningful once the listener
+    has actually handled the message, so this anchors the assertion to the real
+    consumer progress instead of to a bare sleep. The listener ACKs only after
+    processing, so "delivered and no longer pending" means "done".
+    """
+    for _ in range(timeout_sec):
+        groups = await redis_client.xinfo_groups(PROVISIONER_RESULTS)
+        group = next((g for g in groups if g["name"] == SCHEDULER_CONSUMER_GROUP), None)
+        if group and _entry_key(group["last-delivered-id"]) >= _entry_key(entry_id):
+            pending = await redis_client.xpending_range(
+                PROVISIONER_RESULTS,
+                SCHEDULER_CONSUMER_GROUP,
+                min=entry_id,
+                max=entry_id,
+                count=1,
+            )
+            if not pending:
+                return
+        await asyncio.sleep(1)
+
+    pytest.fail(
+        f"Scheduler did not consume {entry_id} from {PROVISIONER_RESULTS} "
+        f"within {timeout_sec} seconds"
+    )
 
 
 @pytest.mark.asyncio
-async def test_provisioner_success_flow_updates_server_to_active(redis_client, api_client):
+async def test_provisioner_success_result_does_not_overwrite_terminal_status(
+    redis_client, api_client
+):
     """
-    Integration Test: Full provisioner feedback loop.
+    Integration Test: the success result does not move the server from the side.
+
+    The terminal status of a successful provisioning is written by the success path
+    itself (infra-service resets the attempt counter and marks the server READY in
+    one atomic, episode-guarded update). The scheduler's result listener is only an
+    observer: this test publishes a success result without that success path having
+    run, so nothing may change the server's status.
 
     GIVEN: Server in 'provisioning' status exists in DB
     WHEN:  ProvisionerResult(status="success") is published to provisioner:results
-    THEN:  Scheduler processes it and updates server status to 'active'
+    THEN:  Scheduler consumes it and leaves the status untouched
     """
     # Arrange: Create unique server handle
     server_handle = f"int-prov-{uuid.uuid4().hex[:8]}"
@@ -53,36 +96,21 @@ async def test_provisioner_success_flow_updates_server_to_active(redis_client, a
         services_redeployed=0,
     )
 
-    await redis_client.xadd(
-        "provisioner:results",
+    entry_id = await redis_client.xadd(
+        PROVISIONER_RESULTS,
         {"data": result.model_dump_json()},
     )
 
-    # Wait for scheduler to process (polling with timeout)
-    max_attempts = 10
-    for _attempt in range(max_attempts):
-        resp = await api_client.get("/api/servers/")
-        servers = resp.json()
-        target = next((s for s in servers if s["handle"] == server_handle), None)
+    await _wait_until_consumed(redis_client, entry_id)
 
-        if target and target["status"] == ServerStatus.ACTIVE:
-            break
-
-        await asyncio.sleep(1)
-    else:
-        # Get final status for error message
-        resp = await api_client.get("/api/servers/")
-        servers = resp.json()
-        target = next((s for s in servers if s["handle"] == server_handle), None)
-        final_status = target["status"] if target else "NOT FOUND"
-
-        pytest.fail(
-            f"Server status not updated to 'active' within {max_attempts} seconds. "
-            f"Final status: {final_status}"
-        )
-
-    # Assert: Server status is now active
-    assert target["status"] == ServerStatus.ACTIVE
+    # Assert: the listener consumed the success result and changed nothing
+    resp = await api_client.get("/api/servers/")
+    target = next((s for s in resp.json() if s["handle"] == server_handle), None)
+    assert target is not None, f"Server {server_handle} disappeared"
+    assert target["status"] == ServerStatus.PROVISIONING, (
+        "The scheduler listener must not write a terminal status on success: "
+        f"got {target['status']}"
+    )
 
 
 @pytest.mark.asyncio

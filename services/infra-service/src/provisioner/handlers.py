@@ -4,12 +4,54 @@ import structlog
 
 from shared.notifications import notify_admins_best_effort
 
-from .api_client import reset_provisioning_attempts, save_server_ssh_key, update_server_status
+from .api_client import reset_provisioning_attempts, save_server_ssh_key
 from .incidents import resolve_active_incidents
 from .recovery import redeploy_all_services
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
+
+
+async def _persist_server_ssh_key(server_handle: str, ssh_manager: SSHManager | None) -> str | None:
+    """Store the key that grants access to the provisioned server.
+
+    The key lives in the infra-service container's ephemeral filesystem. Until it
+    is in the DB, recreating the container loses access to the server forever, so
+    a failure here is a provisioning failure, not a skippable side effect.
+
+    Returns:
+        None on success, otherwise the failure reason.
+    """
+    if ssh_manager is None:
+        logger.error(
+            "provisioning_ssh_key_persist_failed",
+            server_handle=server_handle,
+            reason="ssh_manager_missing",
+        )
+        return "ssh_manager_missing"
+
+    private_key = ssh_manager.get_private_key()
+    if not private_key:
+        logger.error(
+            "provisioning_ssh_key_persist_failed",
+            server_handle=server_handle,
+            reason="ssh_private_key_missing",
+        )
+        return "ssh_private_key_missing"
+
+    try:
+        await save_server_ssh_key(server_handle, private_key)
+    except Exception as exc:
+        logger.error(
+            "provisioning_ssh_key_persist_failed",
+            server_handle=server_handle,
+            reason="save_server_ssh_key_failed",
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        return "save_server_ssh_key_failed"
+
+    return None
 
 
 async def handle_provisioning_success(
@@ -19,9 +61,17 @@ async def handle_provisioning_success(
     provisioning_episode_id: str,
     is_recovery: bool,
     method_suffix: str = "",
-    ssh_manager: SSHManager | None = None,
+    *,
+    ssh_manager: SSHManager | None,
 ) -> dict:
-    """Handle successful provisioning - update status, resolve incidents, redeploy services.
+    """Handle successful provisioning - persist key, close episode, resolve incidents.
+
+    Success is committed in one fixed order on every path:
+    1. persist the server's private SSH key to the DB — no key, no success;
+    2. close the provisioning episode via ``reset_provisioning_attempts``, which
+       atomically clears the counter and writes the terminal READY status; it is
+       the single owner of that status;
+    3. resolve incidents and redeploy services.
 
     Args:
         server_handle: Server handle
@@ -29,11 +79,38 @@ async def handle_provisioning_success(
         provisioning_attempts: Number of attempts
         is_recovery: Whether this is incident recovery
         method_suffix: Suffix for message (e.g., " (Reinstalled)")
-        ssh_manager: SSHManager to persist the private key to DB
+        ssh_manager: SSHManager holding the private key; None is a failure
 
     Returns:
         State update dict
     """
+    key_failure = await _persist_server_ssh_key(server_handle, ssh_manager)
+    if key_failure:
+        await notify_admins_best_effort(
+            f"❌ Server *{server_handle}* provisioned, but its SSH key could not be stored "
+            f"({key_failure}). The server is NOT ready.",
+            level="error",
+            server_handle=server_handle,
+        )
+        return {
+            "messages": [
+                {
+                    "message": (
+                        f"❌ Provisioning of {server_handle} failed: the private SSH key "
+                        f"could not be persisted ({key_failure})"
+                    )
+                }
+            ],
+            "errors": [f"SSH key persistence failed: {key_failure}"],
+            "provisioning_result": {
+                "status": "failed",
+                "reason": key_failure,
+                "server_handle": server_handle,
+                "server_ip": server_ip,
+            },
+            "current_agent": "provisioner",
+        }
+
     reset = await reset_provisioning_attempts(
         server_handle, provisioning_attempts, provisioning_episode_id
     )
@@ -42,12 +119,14 @@ async def handle_provisioning_success(
             "provisioning_attempt_reset_skipped",
             server_handle=server_handle,
             attempt=provisioning_attempts,
+            ssh_key_persisted=True,
         )
         return {
             "messages": [
                 {
                     "message": (
-                        f"Provisioning success for {server_handle} superseded by a newer attempt"
+                        f"Provisioning success for {server_handle} superseded by a newer attempt "
+                        "(its SSH key is stored)"
                     )
                 }
             ],
@@ -58,14 +137,6 @@ async def handle_provisioning_success(
             },
             "current_agent": "provisioner",
         }
-
-    # Persist SSH key to DB for per-server key storage
-    if ssh_manager:
-        private_key = ssh_manager.get_private_key()
-        if private_key:
-            await save_server_ssh_key(server_handle, private_key)
-
-    await update_server_status(server_handle, "ready")
 
     incident_journal_status = "resolved"
     try:

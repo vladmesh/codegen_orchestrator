@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-08-07
+
+- **Provisioning success commits its result in one order** (`issue:23593a6a2850ae9c7964`):
+  `handle_provisioning_success` now persists the server's private SSH key **first**, then closes
+  the episode. A missing `ssh_manager`, an empty private key, or a failing `save_server_ssh_key`
+  is a failed provisioning (`status: "failed"` with a `reason`, logged as
+  `provisioning_ssh_key_persist_failed`) instead of a silently skipped `if`, and the superseded
+  branch (`reset == False`) can no longer return before the key is stored — the key of a server
+  that was really provisioned always lands in the DB. The keys live in the infra-service
+  container's ephemeral filesystem, so a skipped save meant permanent loss of access to that
+  server.
+
+  The terminal status has a single owner: the `provisioning-attempts/reset` endpoint, which writes
+  `attempts = 0`, clears the episode and sets `READY` in one conditional UPDATE. The handler's own
+  unconditional `update_server_status(..., "ready")` and the scheduler result listener's
+  `ACTIVE` write on success are both gone; neither can overwrite a status the newer episode owns.
+
+  The infra integration test that asserted the old side-write
+  (`test_provisioner_success_flow_updates_server_to_active`) now encodes the new contract as
+  `test_provisioner_success_result_does_not_overwrite_terminal_status`: it waits until the
+  scheduler's consumer group has actually consumed and ACKed the success entry, then asserts the
+  server's status is unchanged.
+
 ## 2026-08-06
 
 - **The API answers nobody anonymously** (`issue:a625fbca694614214ea5`): one dependency on the
