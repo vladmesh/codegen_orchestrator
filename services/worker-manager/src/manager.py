@@ -46,6 +46,20 @@ class WorkerManager:
 
         await self.redis.set(f"worker:image:last_used:{image}", datetime.now().isoformat())
 
+    def _resolve_worker_network(self) -> tuple[str, bool]:
+        """Return the worker network and whether a test-only host mode is permitted."""
+        configured_network = settings.DOCKER_NETWORK.strip()
+        network_name = configured_network or settings.WORKER_NETWORK.strip()
+        if not network_name:
+            raise RuntimeError("WORKER_NETWORK must name a dedicated Docker network")
+
+        if network_name == "host":
+            if settings.ENVIRONMENT != "test":
+                raise RuntimeError("DOCKER_NETWORK=host is only supported when ENVIRONMENT=test")
+            return network_name, True
+
+        return network_name, False
+
     async def create_worker(
         self,
         worker_id: str,
@@ -55,17 +69,29 @@ class WorkerManager:
         network_name: Optional[str] = None,
         create_dev_network: bool = True,
         workspace_path: Optional[str] = None,
+        container_config: Optional[WorkerContainerConfig] = None,
+        allow_host_network: bool = False,
     ) -> str:
         """
         Create and start a new worker container.
 
         Args:
-            network_name: Primary Docker network to attach to. If None, uses host networking.
+            network_name: Primary Docker network to attach to. If None, uses WORKER_NETWORK.
             create_dev_network: If True, also create a dev_proj_<worker_id> network and
                                 connect the container to it as a second network.
             workspace_path: Host path to the worker workspace (stored in Redis metadata).
         """
         env_vars = env_vars or {}
+        network_name = network_name or settings.WORKER_NETWORK
+        container_config = container_config or WorkerContainerConfig(
+            worker_id=worker_id,
+            worker_type="developer",
+            agent_type=AgentType.CLAUDE,
+            capabilities=[],
+        )
+
+        if allow_host_network and settings.ENVIRONMENT != "test":
+            raise RuntimeError("Host networking is only supported when ENVIRONMENT=test")
 
         await self.ensure_image(image)
 
@@ -81,7 +107,7 @@ class WorkerManager:
             worker_id=worker_id,
             image=image,
             container_name=container_name,
-            network=network_name or "host",
+            network=network_name,
             dev_network=dev_network if create_dev_network else None,
         )
 
@@ -93,19 +119,19 @@ class WorkerManager:
 
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STARTING})
 
-            run_kwargs = {
-                "image": image,
-                "name": container_name,
-                "detach": True,
-                "environment": env_vars,
-                "labels": labels,
-                "volumes": volumes,
-            }
-
-            if network_name:
-                run_kwargs["network"] = network_name
-            else:
-                run_kwargs["network_mode"] = "host"
+            run_kwargs = container_config.to_docker_run_kwargs(
+                network_name=network_name,
+                allow_host_network=allow_host_network,
+            )
+            run_kwargs.update(
+                {
+                    "image": image,
+                    "name": container_name,
+                    "environment": env_vars,
+                    "labels": labels,
+                    "volumes": volumes,
+                }
+            )
 
             container = await self.docker.run_container(**run_kwargs)
 
@@ -383,6 +409,8 @@ class WorkerManager:
             project_id=project_id,
         )
 
+        network_name, allow_host_network = self._resolve_worker_network()
+
         if agent_type == AgentType.CODEX and auth_mode == "host_session":
             from .codex_auth import validate_codex_host_session
 
@@ -476,19 +504,16 @@ class WorkerManager:
 
             volumes = config.to_volume_mounts()
 
-            if settings.DOCKER_NETWORK:
-                network_name = settings.DOCKER_NETWORK if settings.DOCKER_NETWORK != "host" else None
-            else:
-                network_name = settings.WORKER_NETWORK
-
             container_id = await self.create_worker(
                 worker_id=worker_id,
                 image=image_tag,
                 env_vars=container_env,
                 volumes=volumes,
                 network_name=network_name,
-                create_dev_network=network_name is not None,
+                create_dev_network=network_name != "host",
                 workspace_path=str(ws_path),
+                container_config=config,
+                allow_host_network=allow_host_network,
             )
 
             await self.docker.exec_in_container(

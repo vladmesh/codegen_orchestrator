@@ -88,6 +88,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     user: root  # Required for Docker daemon access and workspace chown (matches production)
     environment:
+      - ENVIRONMENT=test
       - REDIS_URL=redis://172.31.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
       - DOCKER_NETWORK=host

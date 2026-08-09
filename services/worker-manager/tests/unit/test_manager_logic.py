@@ -5,6 +5,7 @@ import uuid
 from fakeredis import aioredis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 from src.manager import WorkerManager
 
@@ -83,6 +84,134 @@ async def test_network_selection_uses_worker_network():
     container_env = run_call.kwargs.get("environment") or run_call[1]["environment"]
     assert container_env["WORKER_REDIS_URL"] == "redis://worker-redis:6379/0"
     assert container_env["WORKER_API_URL"] == "http://worker-api:8000"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_type", [AgentType.CLAUDE, AgentType.CODEX, AgentType.FACTORY])
+async def test_production_launch_uses_hardened_container_config(agent_type):
+    """The real production launch passes the config's hardening to Docker."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("src.manager.settings") as mock_settings,
+        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
+    ):
+        mock_settings.ENVIRONMENT = "production"
+        mock_settings.DOCKER_NETWORK = ""
+        mock_settings.WORKER_NETWORK = "codegen_worker"
+        mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
+        mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+        mock_settings.WORKER_API_URL = "http://worker-api:8000"
+        mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+        mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
+        mock_settings.WORKER_IMAGE_PREFIX = "worker"
+        mock_settings.WORKER_DOCKER_LABELS = "{}"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
+
+        await manager.create_worker_with_capabilities(
+            worker_id=f"w-{agent_type.value}",
+            capabilities=["git"],
+            base_image="worker-base:latest",
+            agent_type=agent_type,
+            auth_mode="api_key",
+            api_key="test-api-key",
+            repo_id="repo-1",
+        )
+
+    kwargs = wrapper.run_container.call_args.kwargs
+    assert kwargs["network"] == "codegen_worker"
+    assert "network_mode" not in kwargs
+    assert kwargs["mem_limit"] == "4g"
+    assert kwargs["cpu_period"] == 100000
+    assert kwargs["cpu_quota"] == 100000
+    assert kwargs["pids_limit"] > 0
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["security_opt"] == ["no-new-privileges:true"]
+
+
+@pytest.mark.asyncio
+async def test_production_launch_rejects_host_network_configuration():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("src.manager.settings") as mock_settings,
+        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
+    ):
+        mock_settings.ENVIRONMENT = "production"
+        mock_settings.DOCKER_NETWORK = "host"
+        mock_settings.WORKER_NETWORK = "codegen_worker"
+        mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
+        mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+        mock_settings.WORKER_API_URL = "http://worker-api:8000"
+        mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+        mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
+        mock_settings.WORKER_IMAGE_PREFIX = "worker"
+        mock_settings.WORKER_DOCKER_LABELS = "{}"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
+
+        with pytest.raises(RuntimeError, match="DOCKER_NETWORK=host"):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-host-network",
+                capabilities=["git"],
+                base_image="worker-base:latest",
+                agent_type=AgentType.CLAUDE,
+                auth_mode="api_key",
+                api_key="test-api-key",
+                repo_id="repo-1",
+            )
+
+    wrapper.run_container.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("src.manager.settings") as mock_settings,
+        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
+    ):
+        mock_settings.ENVIRONMENT = "test"
+        mock_settings.DOCKER_NETWORK = "host"
+        mock_settings.WORKER_NETWORK = "codegen_worker"
+        mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
+        mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+        mock_settings.WORKER_API_URL = "http://worker-api:8000"
+        mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+        mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
+        mock_settings.WORKER_IMAGE_PREFIX = "worker"
+        mock_settings.WORKER_DOCKER_LABELS = "{}"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
+
+        await manager.create_worker_with_capabilities(
+            worker_id="w-dind-host-network",
+            capabilities=["git"],
+            base_image="worker-base:latest",
+            agent_type=AgentType.CLAUDE,
+            auth_mode="api_key",
+            api_key="test-api-key",
+            repo_id="repo-1",
+        )
+
+    kwargs = wrapper.run_container.call_args.kwargs
+    assert kwargs["network_mode"] == "host"
+    assert "network" not in kwargs
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["security_opt"] == ["no-new-privileges:true"]
 
 
 @pytest.mark.asyncio

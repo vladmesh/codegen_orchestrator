@@ -1,3 +1,5 @@
+import pytest
+
 from src.container_config import WorkerContainerConfig
 
 
@@ -126,18 +128,17 @@ class TestWorkerContainerConfig:
         # api_key mode keeps no session, and the worker must not demand a mount.
         assert env["WORKER_AUTH_MODE"] == "api_key"
 
-    def test_to_docker_run_kwargs_defaults_to_host_network(self):
-        """Without network_name, should use host networking."""
+    def test_to_docker_run_kwargs_requires_a_dedicated_network(self):
+        """Coding workers fail closed instead of falling back to host networking."""
         config = WorkerContainerConfig(
             worker_id="test-1",
             worker_type="developer",
             agent_type="claude",
             capabilities=[],
         )
-        kwargs = config.to_docker_run_kwargs()
-        assert kwargs["network_mode"] == "host"
-        assert "network" not in kwargs
-        assert kwargs["mem_limit"] == "4g"
+
+        with pytest.raises(ValueError, match="dedicated Docker network"):
+            config.to_docker_run_kwargs()
 
     def test_noop_worker_keeps_lower_memory_limit(self):
         """Noop workers do not need the real-agent memory budget."""
@@ -147,7 +148,7 @@ class TestWorkerContainerConfig:
             agent_type="noop",
             capabilities=[],
         )
-        kwargs = config.to_docker_run_kwargs()
+        kwargs = config.to_docker_run_kwargs(network_name="test-network")
         assert kwargs["mem_limit"] == "2g"
 
     def test_factory_worker_gets_real_agent_memory_limit(self):
@@ -158,7 +159,7 @@ class TestWorkerContainerConfig:
             agent_type="factory",
             capabilities=[],
         )
-        kwargs = config.to_docker_run_kwargs()
+        kwargs = config.to_docker_run_kwargs(network_name="test-network")
         assert kwargs["mem_limit"] == "4g"
 
     def test_codex_worker_gets_real_agent_memory_limit(self):
@@ -168,10 +169,10 @@ class TestWorkerContainerConfig:
             agent_type="codex",
             capabilities=[],
         )
-        assert config.to_docker_run_kwargs()["mem_limit"] == "4g"
+        assert config.to_docker_run_kwargs(network_name="test-network")["mem_limit"] == "4g"
 
     def test_to_docker_run_kwargs_with_network_name(self):
-        """With network_name, should attach to that network."""
+        """Coding workers have fixed native Docker hardening on their network."""
         config = WorkerContainerConfig(
             worker_id="test-1",
             worker_type="developer",
@@ -181,6 +182,23 @@ class TestWorkerContainerConfig:
         kwargs = config.to_docker_run_kwargs(network_name="test-network")
         assert kwargs["network"] == "test-network"
         assert "network_mode" not in kwargs
+        assert kwargs["mem_limit"] == "4g"
+        assert kwargs["cpu_period"] == 100000
+        assert kwargs["cpu_quota"] == 100000
+        assert kwargs["pids_limit"] > 0
+        assert kwargs["cap_drop"] == ["ALL"]
+        assert kwargs["security_opt"] == ["no-new-privileges:true"]
+
+    def test_to_docker_run_kwargs_rejects_host_network(self):
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=[],
+        )
+
+        with pytest.raises(ValueError, match="host networking"):
+            config.to_docker_run_kwargs(network_name="host")
 
     def test_workspace_bind_mount(self):
         """When workspace_host_path is set, should add bind mount to /workspace."""

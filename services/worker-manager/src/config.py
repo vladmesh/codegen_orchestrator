@@ -12,8 +12,8 @@ class WorkerManagerSettings(BaseSettings):
     WORKER_DOCKER_LABELS: str = "{}"  # JSON string
 
     # Network config
-    # If set, workers attach to this Docker network (for DIND/integration tests)
-    # If empty/None, workers use host networking (production default)
+    # If set, workers attach to this Docker network (for DIND/integration tests).
+    # If empty, workers attach to WORKER_NETWORK. Host networking is test-only.
     DOCKER_NETWORK: str = ""
 
     # Worker-visible URLs (for DIND where workers can't resolve docker-compose DNS)
