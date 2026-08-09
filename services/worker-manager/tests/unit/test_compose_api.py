@@ -24,18 +24,13 @@ def client(tmp_path):
 
     redis = AsyncMock()
     redis.hget = AsyncMock(return_value=None)
-    redis.hgetall = AsyncMock(
-        return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
-    )
+    redis.hgetall = AsyncMock(return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()})
 
     app.state.compose_runner = runner
     app.state.docker = docker
     app.state.redis = redis
-    with TestClient(
-        app,
-        raise_server_exceptions=True,
-        headers={"X-Worker-Broker-Token": "broker-test-token"},
-    ) as c:
+    with TestClient(app, raise_server_exceptions=True) as c:
+        c.headers.update({"X-Worker-Broker-Token": "broker-test-token"})
         yield c, runner, redis
 
 

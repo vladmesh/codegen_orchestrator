@@ -1,6 +1,6 @@
 import pytest
 import json
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from src.config import WorkerManagerSettings
 
 
@@ -24,3 +24,10 @@ def worker_settings(monkeypatch):
 def mock_worker_path_preparation(monkeypatch):
     """Keep manager unit tests independent of host-owned bind mounts."""
     monkeypatch.setattr("src.manager.workspace_mod.prepare_worker_paths", MagicMock())
+
+
+@pytest.fixture(autouse=True)
+def mock_worker_broker_registration(monkeypatch):
+    """Worker-manager units exercise launch policy, not a live broker HTTP service."""
+    monkeypatch.setattr("src.manager.WorkerManager._register_broker_worker", AsyncMock())
+    monkeypatch.setattr("src.manager.WorkerManager._unregister_broker_worker", AsyncMock())

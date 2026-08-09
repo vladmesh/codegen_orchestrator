@@ -11,7 +11,9 @@ class WorkerWrapperConfig(BaseSettings):
     """Configuration for Worker Wrapper."""
 
     broker_url: str | None = Field(default=None, description="Authenticated worker-broker URL")
-    broker_token: str | None = Field(default=None, min_length=32, description="Per-worker broker credential")
+    broker_token: str | None = Field(
+        default=None, min_length=32, description="Per-worker broker credential"
+    )
     worker_id: str | None = Field(default=None, description="Worker identity")
     # Compatibility fields exist only for injected test doubles. Production workers
     # receive the broker settings above and never instantiate a Redis transport.

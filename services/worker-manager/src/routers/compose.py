@@ -3,7 +3,7 @@
 import hashlib
 import hmac
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from ..compose_validator import validate_command, validate_compose_file, resolve_compose_path
@@ -31,7 +31,7 @@ async def run_compose(
     worker_id: str,
     request: ComposeRequest,
     req: Request,
-    x_worker_broker_token: str | None = None,
+    x_worker_broker_token: str | None = Header(default=None),
 ) -> ComposeResponse:
     """Run a docker compose command scoped to a worker's workspace."""
     # 1. Validate command whitelist and flags

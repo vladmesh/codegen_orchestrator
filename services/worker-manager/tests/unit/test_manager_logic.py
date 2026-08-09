@@ -62,10 +62,8 @@ async def test_network_selection_uses_worker_network():
         mock_settings.INTERNAL_NETWORK = "codegen_internal"
         mock_settings.WORKER_NETWORK = "codegen_worker"
         mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
-        mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
-        mock_settings.WORKER_API_URL = "http://worker-api:8000"
+        mock_settings.WORKER_BROKER_URL = "http://worker-broker:8001"
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
-        mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
         mock_settings.WORKER_DOCKER_LABELS = "{}"
 
@@ -82,8 +80,9 @@ async def test_network_selection_uses_worker_network():
     run_call = wrapper.run_container.call_args
     assert run_call.kwargs.get("network") == "codegen_worker" or run_call[1].get("network") == "codegen_worker"
     container_env = run_call.kwargs.get("environment") or run_call[1]["environment"]
-    assert container_env["WORKER_REDIS_URL"] == "redis://worker-redis:6379/0"
-    assert container_env["WORKER_API_URL"] == "http://worker-api:8000"
+    assert container_env["WORKER_BROKER_URL"] == "http://worker-broker:8001"
+    assert "WORKER_REDIS_URL" not in container_env
+    assert "WORKER_API_URL" not in container_env
 
 
 @pytest.mark.asyncio

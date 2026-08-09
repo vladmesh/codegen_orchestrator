@@ -169,9 +169,7 @@ class ResultHttpServer:
     async def _handle_infra_compose(self, raw_body: bytes) -> tuple[HTTPStatus, dict]:
         """Handle POST /infra/compose — proxy to worker-manager."""
         if self._compose is None:
-            return HTTPStatus.SERVICE_UNAVAILABLE, {
-                "error": "worker broker is not configured"
-            }
+            return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "worker broker is not configured"}
         try:
             request = json.loads(raw_body) if raw_body else {}
         except json.JSONDecodeError:

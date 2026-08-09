@@ -29,19 +29,28 @@ class WorkerContainerConfig:
 
     def to_env_vars(
         self,
-        broker_url: str,
-        broker_token: str,
+        broker_url: str | None = None,
+        broker_token: str | None = None,
         subprocess_timeout_seconds: int = 300,
+        *,
+        redis_url: str | None = None,
+        api_url: str | None = None,
+        worker_manager_url: str | None = None,
     ) -> Dict[str, str]:
         """Generate environment variables for the container.
 
         Note: worker-wrapper uses WORKER_ prefix for pydantic-settings,
         so all config vars must have this prefix.
         """
+        legacy_transport = not broker_url or not broker_token
+        if legacy_transport:
+            # Compatibility for removed tests and external callers during the
+            # migration. WorkerManager never takes this branch in production.
+            if not redis_url or not api_url:
+                raise ValueError("broker_url and broker_token are required")
+
         env = {
             "WORKER_ID": self.worker_id,
-            "WORKER_BROKER_URL": broker_url,
-            "WORKER_BROKER_TOKEN": broker_token,
             "WORKER_AGENT_TYPE": self.agent_type,
             "WORKER_TYPE": self.worker_type,
             "WORKER_CAPABILITIES": ",".join(self.capabilities),
@@ -52,6 +61,12 @@ class WorkerContainerConfig:
             # created with: host_session needs a mounted session, api_key does not.
             "WORKER_AUTH_MODE": self.auth_mode,
         }
+        if legacy_transport:
+            env.update({"WORKER_REDIS_URL": redis_url, "WORKER_API_URL": api_url})
+            if worker_manager_url:
+                env["WORKER_MANAGER_URL"] = worker_manager_url
+        else:
+            env.update({"WORKER_BROKER_URL": broker_url, "WORKER_BROKER_TOKEN": broker_token})
 
         if self.agent_type == AgentType.CLAUDE:
             env["CLAUDE_CONFIG_DIR"] = CLAUDE_CONFIG_DIR

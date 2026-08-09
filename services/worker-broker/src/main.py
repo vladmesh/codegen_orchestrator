@@ -121,7 +121,9 @@ async def lease_input(worker_id: str, x_worker_broker_token: str | None = Header
 
 
 @app.post("/v1/workers/{worker_id}/output")
-async def submit_output(worker_id: str, submission: Submission, x_worker_broker_token: str | None = Header(default=None)):
+async def submit_output(
+    worker_id: str, submission: Submission, x_worker_broker_token: str | None = Header(default=None)
+):
     redis: Redis = app.state.redis
     metadata = await _worker(redis, worker_id, x_worker_broker_token)
     result = parse_worker_result(submission.result)
@@ -147,7 +149,7 @@ async def update_status(worker_id: str, update: StatusUpdate, x_worker_broker_to
 @app.get("/v1/workers/{worker_id}/session")
 async def get_session(worker_id: str, x_worker_broker_token: str | None = Header(default=None)):
     redis: Redis = app.state.redis
-    await _worker(redis, worker_id, x_worker_broker_token)
+    metadata = await _worker(redis, worker_id, x_worker_broker_token)
     value = await redis.get(f"worker:session:{worker_id}")
     if value:
         await redis.expire(f"worker:session:{worker_id}", int(metadata["session_ttl_seconds"]))
@@ -157,7 +159,7 @@ async def get_session(worker_id: str, x_worker_broker_token: str | None = Header
 @app.put("/v1/workers/{worker_id}/session")
 async def set_session(worker_id: str, update: SessionUpdate, x_worker_broker_token: str | None = Header(default=None)):
     redis: Redis = app.state.redis
-    await _worker(redis, worker_id, x_worker_broker_token)
+    metadata = await _worker(redis, worker_id, x_worker_broker_token)
     await redis.set(f"worker:session:{worker_id}", update.session_id, ex=int(metadata["session_ttl_seconds"]))
     return {"ok": True}
 

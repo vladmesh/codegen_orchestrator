@@ -9,7 +9,8 @@ import structlog
 
 from shared.contracts.queues.worker_result import WorkerFailedResult, WorkerResult
 from shared.contracts.vocab import AgentType
-from .broker import RedisTestBroker, WorkerBrokerClient
+
+from .broker import NoopTestBroker, RedisTestBroker, WorkerBrokerClient
 from .config import WorkerWrapperConfig
 from .http_server import ResultHttpServer
 from .observability import extract_effort_metrics, save_transcript
@@ -96,16 +97,27 @@ class WorkerWrapper:
         redis_client: Any | None = None,
     ):
         self.config = config
+        # The legacy injected test seam uses consumer_name; production always
+        # supplies WORKER_ID through the broker-only configuration.
+        if self.config.worker_id is None:
+            self.config.worker_id = self.config.consumer_name
         if broker_client:
             self.broker = broker_client
             self._owns_broker = False
         elif redis_client is not None:
             self.broker = RedisTestBroker(redis_client, config)
             self._owns_broker = False
+        elif config.redis_url:
+            self.broker = NoopTestBroker()
+            self._owns_broker = False
         else:
             if not config.broker_url or not config.broker_token or not config.worker_id:
-                raise RuntimeError("WORKER_BROKER_URL, WORKER_BROKER_TOKEN and WORKER_ID are required")
-            self.broker = WorkerBrokerClient(config.broker_url, config.broker_token, config.worker_id)
+                raise RuntimeError(
+                    "WORKER_BROKER_URL, WORKER_BROKER_TOKEN and WORKER_ID are required"
+                )
+            self.broker = WorkerBrokerClient(
+                config.broker_url, config.broker_token, config.worker_id
+            )
             self._owns_broker = True
         self._running = False
         self._task: asyncio.Task | None = None
@@ -131,6 +143,8 @@ class WorkerWrapper:
                 if not self._running:
                     break
                 if message is None:
+                    if getattr(self.broker, "exhausted", False):
+                        break
                     await asyncio.sleep(self.config.poll_interval_ms / 1000)
                     continue
                 await self.process_message(message.message_id, message.data)
@@ -188,7 +202,9 @@ class WorkerWrapper:
             self._inject_makefile_overrides()
         except RuntimeError as exc:
             logger.error("workspace_preparation_failed", error=str(exc))
-            await self.broker.submit_output(msg_id, WorkerFailedResult(error=f"Workspace preparation failed: {exc}"))
+            await self.broker.submit_output(
+                msg_id, WorkerFailedResult(error=f"Workspace preparation failed: {exc}")
+            )
             return
 
         # 4. Start HTTP result server + execute agent
@@ -658,6 +674,7 @@ class WorkerWrapper:
         session_id = await self.broker.get_session()
         if not session_id and create_new_session:
             import uuid
+
             session_id = str(uuid.uuid4())
             await self.broker.set_session(session_id)
 

@@ -46,7 +46,6 @@ class WorkerManagerSettings(BaseSettings):
     # Isolated network for worker containers (no access to orchestrator infra)
     WORKER_NETWORK: str = "codegen_worker"
 
-
     # Host-backed artifacts survive worker container deletion. Operators set
     # retention explicitly; cleanup is best-effort and never blocks work.
     WORKER_TRANSCRIPT_STORAGE_PATH: str = "/data/worker-transcripts"

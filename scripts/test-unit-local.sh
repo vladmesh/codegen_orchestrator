@@ -43,6 +43,7 @@ CLEAN_ENV=(
     WORKER_MANAGER_URL="http://localhost:8001"
     WORKER_REDIS_URL="redis://localhost:6379/0"
     WORKER_API_URL="http://localhost:8000"
+    BROKER_INTERNAL_TOKEN="test-worker-broker-internal-token"
     WORKER_BROKER_INTERNAL_TOKEN="test-worker-broker-internal-token"
     LK_DOMAIN="https://lk.test.example.com"
     INTERNAL_API_KEY="test-internal-key"
