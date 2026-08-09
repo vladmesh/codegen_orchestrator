@@ -2,6 +2,16 @@
 
 ## 2026-08-09
 
+- Coding-agent subprocesses now inherit an explicit, documented allowlist
+  instead of the worker-wrapper container environment. Normal launches and
+  Claude auto-resume share it, preserving required CLI process basics,
+  per-agent authentication/session settings, Claude's disabled updater and
+  telemetry settings, `PYTHONNOUSERSITE`, and repository-scoped GitHub
+  credentials while excluding wrapper transport URLs, encryption material,
+  Docker/Compose configuration, host paths and arbitrary command variables.
+  Transcript redaction continues to use the complete wrapper environment, so a
+  secret excluded from the child environment remains scrubbed from artifacts.
+
 - Worker-manager now resolves scaffolded workspace entries against the configured
   root and accepts only a single direct child. Absolute ids, traversal,
   multi-component ids and symlinks resolving outside that root fail before

@@ -1,4 +1,4 @@
-"""Tests for agent subprocess environment — PYTHONPATH must not shadow project packages."""
+"""Tests for the allowlisted environment passed to agent subprocesses."""
 
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,18 +21,18 @@ def _make_config(**overrides) -> WorkerWrapperConfig:
     return WorkerWrapperConfig(**defaults)
 
 
-def _make_wrapper() -> WorkerWrapper:
+def _make_wrapper(**config_overrides) -> WorkerWrapper:
     """Create a WorkerWrapper with mocked Redis."""
     mock_redis = MagicMock()
     mock_redis.redis = AsyncMock()
     # SessionManager.get_or_create_session needs hget
     mock_redis.redis.hget = AsyncMock(return_value=None)
     mock_redis.redis.hset = AsyncMock()
-    wrapper = WorkerWrapper(config=_make_config(), redis_client=mock_redis)
+    wrapper = WorkerWrapper(config=_make_config(**config_overrides), redis_client=mock_redis)
     return wrapper
 
 
-def _fake_subprocess():
+def _fake_subprocess(stdout: bytes = b"", stderr: bytes = b""):
     """Return a fake create_subprocess_exec and a dict to capture kwargs."""
     captured: dict = {}
 
@@ -40,7 +40,7 @@ def _fake_subprocess():
         captured.update(kwargs)
         captured["args"] = args
         proc = AsyncMock()
-        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.communicate = AsyncMock(return_value=(stdout, stderr))
         proc.returncode = 0
         proc.kill = AsyncMock()
         proc.wait = AsyncMock()
@@ -50,13 +50,50 @@ def _fake_subprocess():
 
 
 class TestAgentSubprocessEnv:
-    """execute_agent must strip /app from PYTHONPATH for the agent subprocess.
+    """Agent subprocesses receive only their declared runtime environment."""
 
-    The worker image sets PYTHONPATH=/app so the wrapper can import the
-    orchestrator's ``shared``.  But the agent runs in a scaffolded project
-    whose venvs have their own ``shared`` (via .pth editable links).
-    Keeping /app shadows the project's shared and causes ModuleNotFoundError.
-    """
+    _ALLOWED_AGENT_SETTINGS = {
+        "ANTHROPIC_API_KEY": "ant-key",
+        "ANTHROPIC_AUTH_TOKEN": "ant-token",
+        "ANTHROPIC_BASE_URL": "https://anthropic.example",
+        "CLAUDE_CONFIG_DIR": "/home/worker/.claude",
+        "CODEX_API_KEY": "codex-key",
+        "CODEX_HOME": "/home/worker/.codex",
+        "DISABLE_AUTOUPDATER": "1",
+        "DISABLE_TELEMETRY": "1",
+        "FACTORY_API_KEY": "factory-key",
+        "GITHUB_TOKEN": "github-token",
+        "GH_TOKEN": "github-token",
+        "PYTHONNOUSERSITE": "1",
+    }
+
+    _BLOCKED_WRAPPER_SETTINGS = {
+        "WORKER_MANAGER_URL": "http://worker-manager:8000",
+        "WORKER_API_URL": "http://api:8000",
+        "WORKER_REDIS_URL": "redis://redis:6379",
+        "SECRETS_ENCRYPTION_KEY": "wrapper-secret",
+        "DOCKER_HOST": "unix:///var/run/docker.sock",
+        "DOCKER_CONFIG": "/root/.docker",
+        "DOCKER_CERT_PATH": "/root/.docker/certs",
+        "COMPOSE_FILE": "/app/compose.yml",
+        "HOST_CLAUDE_DIR": "/host/claude",
+        "HOST_CODEX_HOME": "/host/codex",
+        "HOST_WORKSPACE_PATH": "/host/workspace",
+        "COMMAND_INJECTED_VAR": "must-not-reach-agent",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUNBUFFERED": "1",
+    }
+
+    @classmethod
+    def _wrapper_environment(cls) -> dict[str, str]:
+        return {
+            "PATH": "/usr/bin",
+            "HOME": "/home/worker",
+            "LANG": "C.UTF-8",
+            "PYTHONPATH": "/app:/extra/lib:/more",
+            **cls._ALLOWED_AGENT_SETTINGS,
+            **cls._BLOCKED_WRAPPER_SETTINGS,
+        }
 
     @pytest.mark.asyncio
     async def test_subprocess_strips_app_from_pythonpath(self):
@@ -104,12 +141,12 @@ class TestAgentSubprocessEnv:
         assert "/more" in parts
 
     @pytest.mark.asyncio
-    async def test_subprocess_env_inherits_other_vars(self):
-        """Subprocess env must preserve non-PYTHONPATH vars (PATH, HOME, etc)."""
+    async def test_subprocess_uses_allowlist_without_wrapper_control_plane_settings(self):
+        """Normal execution keeps the CLI settings and drops wrapper-only values."""
         wrapper = _make_wrapper()
         fake_exec, captured = _fake_subprocess()
 
-        fake_env = {"PATH": "/usr/bin", "HOME": "/home/worker", "PYTHONPATH": "/app"}
+        fake_env = self._wrapper_environment()
 
         with (
             patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
@@ -121,6 +158,50 @@ class TestAgentSubprocessEnv:
         env = captured.get("env", {})
         assert env.get("PATH") == "/usr/bin"
         assert env.get("HOME") == "/home/worker"
+        assert env.get("LANG") == "C.UTF-8"
+        assert env.get("PYTHONPATH") == "/extra/lib:/more"
+        for name, value in self._ALLOWED_AGENT_SETTINGS.items():
+            assert env.get(name) == value
+        for name in self._BLOCKED_WRAPPER_SETTINGS:
+            assert name not in env
+
+    @pytest.mark.asyncio
+    async def test_transcript_redacts_non_allowlisted_wrapper_secret(self, tmp_path):
+        """Transcript redaction must retain wrapper-only secrets as scrub sources."""
+        wrapper = _make_wrapper(transcript_dir=str(tmp_path))
+        fake_exec, captured = _fake_subprocess(stdout=b"wrapper-secret")
+
+        with (
+            patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch.object(wrapper, "_resolve_prompt", return_value="do stuff"),
+            patch.dict("os.environ", self._wrapper_environment(), clear=True),
+        ):
+            await wrapper.execute_agent({"prompt": "test", "request_id": "redaction"})
+
+        assert "SECRETS_ENCRYPTION_KEY" not in captured["env"]
+        transcript = (tmp_path / "test_worker" / "redaction.log").read_text()
+        assert "wrapper-secret" not in transcript
+        assert "[redacted]" in transcript
+
+    @pytest.mark.asyncio
+    async def test_auto_resume_uses_the_same_allowlist(self):
+        """Claude auto-resume must not regain wrapper credentials or sockets."""
+        wrapper = _make_wrapper(agent_type="claude")
+        fake_exec, captured = _fake_subprocess()
+
+        with (
+            patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch.dict("os.environ", self._wrapper_environment(), clear=True),
+        ):
+            resumed = await wrapper._attempt_auto_resume({"prompt": "test"})
+
+        assert resumed is True
+        env = captured["env"]
+        assert env.get("PYTHONPATH") == "/extra/lib:/more"
+        for name, value in self._ALLOWED_AGENT_SETTINGS.items():
+            assert env.get(name) == value
+        for name in self._BLOCKED_WRAPPER_SETTINGS:
+            assert name not in env
 
     @pytest.mark.asyncio
     async def test_subprocess_removes_pythonpath_when_only_app(self):

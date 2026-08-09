@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 import json
 import os
 import subprocess
@@ -20,6 +21,67 @@ WORKSPACE_DIR = "/workspace"
 TASK_MD_PATH = "/workspace/TASK.md"
 STORY_DIR = "/workspace/.story"
 OLD_TASKS_DIR = "/workspace/.story/old_tasks"
+
+# The agent's subprocess environment is distinct from the wrapper's. Keep it
+# limited to CLI process basics plus the settings worker-manager deliberately
+# supplies for agent authentication, sessions and repository work.
+AGENT_SUBPROCESS_ENV_ALLOWLIST = frozenset(
+    {
+        # Process basics used by CLIs and their git/python subprocesses.
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PATH",
+        "PYTHONPATH",
+        # Agent Python commands must not load user-site packages that can shadow
+        # the wrapper's shared package. Project dependencies belong in a venv.
+        "PYTHONNOUSERSITE",
+        "TERM",
+        "TMPDIR",
+        "TZ",
+        # Claude authentication, host session and test endpoint configuration.
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CONFIG_DIR",
+        "DISABLE_AUTOUPDATER",
+        "DISABLE_TELEMETRY",
+        # Codex authentication and mounted session profile.
+        "CODEX_API_KEY",
+        "CODEX_HOME",
+        # Factory authentication.
+        "FACTORY_API_KEY",
+        # Repository-scoped GitHub credentials.
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+    }
+)
+
+
+def build_agent_subprocess_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build the explicit environment inherited by a coding-agent subprocess.
+
+    Wrapper transport, Docker/Compose settings, host paths and arbitrary task
+    command environment entries must stay with the wrapper. Agents report
+    results and request Compose operations through localhost:9090 instead.
+    """
+    source = os.environ if source is None else source
+    agent_env = {name: source[name] for name in AGENT_SUBPROCESS_ENV_ALLOWLIST if name in source}
+
+    # The wrapper needs /app to import the orchestrator's shared package. An
+    # agent runs in the scaffolded project, where /app shadows that project's
+    # own shared package. Keep any project-specific PYTHONPATH entries.
+    existing = agent_env.get("PYTHONPATH", "")
+    cleaned = os.pathsep.join(
+        part for part in existing.split(os.pathsep) if part and part != "/app"
+    )
+    if cleaned:
+        agent_env["PYTHONPATH"] = cleaned
+    else:
+        agent_env.pop("PYTHONPATH", None)
+
+    return agent_env
 
 
 class WorkerWrapper:
@@ -636,20 +698,8 @@ class WorkerWrapper:
             agent_type=self.config.agent_type,
         )
 
-        # Build subprocess env: remove /app from PYTHONPATH.
-        # The worker image sets PYTHONPATH=/app so the wrapper itself can
-        # import orchestrator's ``shared``.  But the agent subprocess runs
-        # inside a scaffolded project whose venvs have their own ``shared``
-        # package (installed via .pth editable links).  Keeping /app in
-        # PYTHONPATH shadows the project's shared — e.g. the orchestrator's
-        # shared has no ``logging`` module, causing ModuleNotFoundError.
-        agent_env = os.environ.copy()
-        existing = agent_env.get("PYTHONPATH", "")
-        cleaned = os.pathsep.join(p for p in existing.split(os.pathsep) if p and p != "/app")
-        if cleaned:
-            agent_env["PYTHONPATH"] = cleaned
-        else:
-            agent_env.pop("PYTHONPATH", None)
+        wrapper_env = dict(os.environ)
+        agent_env = build_agent_subprocess_env(wrapper_env)
 
         # Execute Subprocess
         proc = await asyncio.create_subprocess_exec(
@@ -685,7 +735,7 @@ class WorkerWrapper:
             str(data.get("request_id", "unknown")),
             f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n",
             self.config.transcript_max_bytes,
-            agent_env,
+            wrapper_env,
         )
 
         # Codex stdout/stderr are transport diagnostics, never business output.
@@ -746,13 +796,7 @@ class WorkerWrapper:
         cmd = runner.build_command(prompt=resume_prompt)
         logger.info("auto_resume_command", cmd=cmd)
 
-        agent_env = os.environ.copy()
-        existing = agent_env.get("PYTHONPATH", "")
-        cleaned = os.pathsep.join(p for p in existing.split(os.pathsep) if p and p != "/app")
-        if cleaned:
-            agent_env["PYTHONPATH"] = cleaned
-        else:
-            agent_env.pop("PYTHONPATH", None)
+        agent_env = build_agent_subprocess_env()
 
         try:
             resume_timeout = min(120, self.config.subprocess_timeout_seconds)
