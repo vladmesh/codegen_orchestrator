@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Updated**: 2026-07-29 (hand-maintained)
+> **Updated**: 2026-08-09 (hand-maintained)
 >
 > Story-level arcs only. Active work lives on the Pipeline board; the deferred pool, the plans and
 > the history of past sprints live in the driving installation's knowledge store under
@@ -16,15 +16,32 @@ updated bot.
 
 Stages 1-8 of the stabilization plan are complete: CI gate, template contract audit and
 corrections, Sprint 002 hardening, deterministic mock smoke, template matrix, live validation and
-the Telegram end-to-end. Both are verified as of 2026-07-24: the full mega passed 12/12 (noop 7/7
-plus LLM 5/5 through generated code, CI, merge, deploy, `/health` and QA), and a Telegram message
-produced a working generated bot without a manual step. Next:
+the Telegram end-to-end. The Telegram end-to-end was verified on 2026-07-24: a message produced a
+working generated bot without a manual step.
 
-- Stage 9: worker isolation hardening — mandatory before onboarding external users.
+The live pipeline is verified as of **2026-08-09 on `main` 2446db88**: the full mega passed 12/12
+**twice in a row** — 18:01 and 16:05, the second started a minute after the first finished, with no
+cleanup between them, so the run is idempotent and not merely green once. Each run covers the noop
+and LLM pipelines end to end: scaffold → engineering → CI → merge → deploy → `/health` → QA. The
+run before it, also 12/12, was 2026-08-06 on the rebuilt control plane.
+
+Infrastructure behind those runs: the control plane is `5wce` (Time4VPS 275198, since 2026-08-06),
+the deploy target is `5wf9` (275301). A deploy target's SSH key lives in the database, not on the
+control plane host — `deployer.py` fetches it per deploy — so the target is deliberately unreachable
+from the host's own keys. Next:
+
+- Stage 9: worker isolation hardening — mandatory before onboarding external users. Composition on
+  the board: escape from the worker compose proxy to root on the host, the worker seeing the control
+  plane (API and Redis on the `codegen_worker` network), and production running a bind-mounted work
+  tree instead of a built image. Shipped alongside it, because external users make them measurable:
+  global spend/concurrency limits with an operator kill switch, and rotation of the credentials that
+  could have leaked into logs.
 - Stage 10: swarm seams — on a trigger (a second worker host or sustained parallel load).
 
-Stage 7 tail debt is on the board (548, 676→527, 597, 673; 600 landed in PR #127) and gates
-nothing. Testability of private bots is tracked separately: access is set by the template contract
+Stage 7 tail debt is tracked on the Pipeline board and gates nothing. The pre-668 numbering that
+used to name it belonged to the internal tracker removed by `codegen_orchestrator-668`; those
+numbers no longer resolve, so the board is the only place to look it up. Testability of private
+bots is tracked separately: access is set by the template contract
 (service-template 0.3.6), filling the audience from the PO menu is `codegen_orchestrator-826`, and issuing and
 revoking a temporary test identity around the QA run is `codegen_orchestrator-744`.
 
