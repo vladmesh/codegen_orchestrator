@@ -15,6 +15,18 @@ needs_mount_point = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_direct_control_plane_environment(monkeypatch):
+    """Agent-state validation is independent of suite transport fixtures."""
+    for name in (
+        "WORKER_REDIS_URL",
+        "WORKER_API_URL",
+        "WORKER_MANAGER_URL",
+        "SECRETS_ENCRYPTION_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def make_config(
     agent_type: str,
     claude_config_dir: str | None,

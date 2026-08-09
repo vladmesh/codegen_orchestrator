@@ -515,6 +515,7 @@ def test_the_tracked_set_covers_the_images_that_bake_shared_and_are_reused():
         "codegen-orchestrator/worker-manager:local",
         "codegen-orchestrator/worker-broker:local",
         "codegen-orchestrator/worker-manager:test",
+        "codegen-orchestrator/worker-broker:test",
         "codegen-orchestrator/api:test",
         "codegen-orchestrator/langgraph:test",
         "codegen-orchestrator/scheduler:test",
