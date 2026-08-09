@@ -16,6 +16,7 @@ services:
       - ENVIRONMENT=test
       - 'WORKER_DOCKER_LABELS={"com.codegen.environment": "test"}'
       - WORKER_IMAGE_PREFIX=worker-test
+      - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -48,6 +49,7 @@ services:
     environment:
       - WORKER_MANAGER_URL=http://worker-manager:8000
       - REDIS_URL=redis://redis:6379/0
+      - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
     depends_on:
       worker-manager:
         condition: service_healthy
