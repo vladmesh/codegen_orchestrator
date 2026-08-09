@@ -106,6 +106,20 @@ the project is created.
 - `POST /infra/compose` — a compose proxy for managing the sidecar infrastructure (db, redis). Proxied to worker-manager.
 - The Makefile override targets (`make migrate`, `make dev-start`) inside the worker use `curl localhost:9090/infra/compose`.
 
+### Agent subprocess environment
+
+The wrapper does not pass its complete container environment to Claude, Codex,
+Factory or noop subprocesses. Both the normal launch and Claude auto-resume use
+the same allowlist: process basics (`HOME`, `PATH`, locale, terminal, temporary
+directory, timezone and `PYTHONPATH` without `/app`); Claude authentication and
+session settings (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`, `CLAUDE_CONFIG_DIR`); Codex authentication and session
+settings (`CODEX_API_KEY`, `CODEX_HOME`); `FACTORY_API_KEY`; and the
+repository-scoped `GITHUB_TOKEN` and `GH_TOKEN` credentials. The agent uses
+`localhost:9090` for result reporting and Compose operations, so no wrapper
+Redis/API/manager URLs, encryption keys, Docker/Compose sockets, host paths or
+arbitrary task command environment variables cross this boundary.
+
 ---
 
 ## Mapping onto the graph nodes
