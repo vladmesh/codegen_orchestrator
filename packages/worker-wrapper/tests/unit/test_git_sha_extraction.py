@@ -9,11 +9,9 @@ from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
 @pytest.fixture
 def wrapper_config():
     return WorkerWrapperConfig(
-        redis_url="redis://localhost",
-        input_stream="in",
-        output_stream="out",
-        consumer_group="grp",
-        consumer_name="worker-1",
+        broker_url="http://worker-broker:8001",
+        broker_token="x" * 43,
+        worker_id="test-worker",
         agent_type="claude",
     )
 
@@ -22,7 +20,7 @@ def wrapper_config():
 def wrapper(wrapper_config):
     mock_redis = MagicMock()
     mock_redis.redis = AsyncMock()
-    return WorkerWrapper(config=wrapper_config, redis_client=mock_redis)
+    return WorkerWrapper(config=wrapper_config, broker_client=mock_redis)
 
 
 class TestGetGitBranch:

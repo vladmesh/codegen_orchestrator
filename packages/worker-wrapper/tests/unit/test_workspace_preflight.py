@@ -12,15 +12,13 @@ def _make_wrapper():
     from worker_wrapper.config import WorkerWrapperConfig
 
     config = WorkerWrapperConfig(
-        redis_url="redis://fake:6379",
-        input_stream="test:input",
-        output_stream="test:output",
-        consumer_group="test_group",
-        consumer_name="test_worker",
+        broker_url="http://worker-broker:8001",
+        broker_token="x" * 43,
+        worker_id="test-worker",
         agent_type="claude",
     )
     # Pass a fake redis to avoid connection
-    return WorkerWrapper(config, redis_client=None)
+    return WorkerWrapper(config, broker_client=None)
 
 
 class TestWorkspacePreflight:

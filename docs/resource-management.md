@@ -130,7 +130,7 @@ For parallel workers (see [docs/parallel-workers.md](parallel-workers.md)) the s
 
 1. **The lifecycle**:
    * A worker gets a workspace directory (pre-scaffolded: `/data/workspaces/{repo_id}/`, ephemeral: `/tmp/codegen/workspaces/{worker_id}/`) and an isolated Docker network `dev_proj_<worker_id>`.
-   * The agent calls the compose proxy through `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose` to manage sidecars inside that namespace.
+   * The agent calls `http://127.0.0.1:9090/infra/compose`; worker-wrapper forwards it through worker-broker, which authenticates and scopes the request before worker-manager manages sidecars in that namespace.
 2. **Garbage Collection**:
    * Explicit removal: on completion LangGraph calls `delete_worker` on `worker-manager`, which removes the containers, the network and the space on disk.
    * Background garbage collection (GC): the `scheduler` triggers GC in `worker-manager` every 30 minutes. The `WorkerManager.garbage_collect_orphaned_resources()` method finds "orphaned" worker containers, `dev_proj_*` networks and directories on disk (matching them against the active `worker:status:*` keys in Redis) and removes them, protecting the system from leaks after crashes or OOM events.

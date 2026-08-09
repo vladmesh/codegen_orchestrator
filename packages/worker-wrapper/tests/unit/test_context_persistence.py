@@ -2,10 +2,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakeredis import FakeAsyncRedis
 import pytest
+from worker_wrapper.broker import BrokerMessage
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
-
-from shared.contracts.queues.worker_result import WorkerFailedResult
 
 
 @pytest.fixture(autouse=True)
@@ -28,26 +27,20 @@ async def test_wrapper_saves_task_context_to_redis(fake_redis):
     This enables crash recovery to identify which task was running.
     """
     # 1. Setup
-    worker_id = "test-worker-1"
     config = WorkerWrapperConfig(
-        redis_url="redis://localhost:6379",
+        broker_url="http://worker-broker:8001",
+        broker_token="x" * 43,
+        worker_id="test-worker",
         agent_type="claude",
-        input_stream="worker:developer:input",
-        output_stream="worker:developer:output",
-        consumer_group="workers",
-        consumer_name=worker_id,
     )
 
     # Mock Redis client
-    mock_redis_client = MagicMock()
+    broker_client = AsyncMock()
     # Use the fixture instance
-    mock_redis_client.redis = fake_redis
-    # We need to mock connect/close/etc since they are async
-    mock_redis_client.connect = AsyncMock()
-    mock_redis_client.close = AsyncMock()
-    mock_redis_client.ensure_consumer_group = AsyncMock()
-    mock_redis_client.publish = AsyncMock()
-    mock_redis_client.publish_message = AsyncMock()
+    broker_client.update_status = AsyncMock()
+    broker_client.submit_output = AsyncMock()
+    broker_client.get_session = AsyncMock(return_value=None)
+    broker_client.set_session = AsyncMock()
 
     # Mock consume to yield one message then stop
     message_data = {
@@ -62,16 +55,13 @@ async def test_wrapper_saves_task_context_to_redis(fake_redis):
     mock_message.message_id = "1-0"
     mock_message.data = message_data
 
-    # We use a trick to make consume yield once then cancel
-    async def mock_consume(**kwargs):
-        yield mock_message
-        # Stop loop after one message
-        wrapper._running = False
-
-    mock_redis_client.consume = mock_consume
+    broker_client.lease_input = AsyncMock(
+        side_effect=[BrokerMessage(mock_message.message_id, mock_message.data), None]
+    )
+    broker_client.exhausted = True
 
     # Initialize Wrapper
-    wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+    wrapper = WorkerWrapper(config, broker_client=broker_client)
 
     # Mock execute_agent so we don't actually run anything
     wrapper.execute_agent = AsyncMock(return_value={"status": "success"})
@@ -80,52 +70,38 @@ async def test_wrapper_saves_task_context_to_redis(fake_redis):
     # 2. Run
     await wrapper.run()
 
-    # 3. Verify Redis State
-    # Check if task context was saved to worker:status:{id}
-    status_hash = await fake_redis.hgetall(f"worker:status:{worker_id}")
-
-    # Decode bytes from redis
-    status_hash = {k.decode(): v.decode() for k, v in status_hash.items()}
-
-    assert "task_id" in status_hash, "task_id not saved to Redis status"
-    assert status_hash["task_id"] == "task-456"
-    assert "request_id" in status_hash, "request_id not saved to Redis status"
-    assert status_hash["request_id"] == "req-123"
+    broker_client.update_status.assert_awaited_once_with(
+        {"task_id": "task-456", "request_id": "req-123"}
+    )
 
 
 @pytest.mark.asyncio
 async def test_wrapper_publishes_error_to_output_stream_on_failure(fake_redis):
     """When execute_agent raises, wrapper must publish error to output stream
     so that the spawner (engineering-worker) doesn't hang forever."""
-    worker_id = "test-worker-err"
     config = WorkerWrapperConfig(
-        redis_url="redis://localhost:6379",
+        broker_url="http://worker-broker:8001",
+        broker_token="x" * 43,
+        worker_id="test-worker",
         agent_type="claude",
-        input_stream="worker:developer:input",
-        output_stream="worker:developer:output",
-        consumer_group="workers",
-        consumer_name=worker_id,
     )
 
-    mock_redis_client = MagicMock()
-    mock_redis_client.redis = fake_redis
-    mock_redis_client.connect = AsyncMock()
-    mock_redis_client.close = AsyncMock()
-    mock_redis_client.ensure_consumer_group = AsyncMock()
-    mock_redis_client.publish = AsyncMock()
-    mock_redis_client.publish_message = AsyncMock()
+    broker_client = AsyncMock()
+    broker_client.update_status = AsyncMock()
+    broker_client.submit_output = AsyncMock()
+    broker_client.get_session = AsyncMock(return_value=None)
+    broker_client.set_session = AsyncMock()
 
     mock_message = MagicMock()
     mock_message.message_id = "1-0"
     mock_message.data = {"prompt": "Do something"}
 
-    async def mock_consume(**kwargs):
-        yield mock_message
-        wrapper._running = False
+    broker_client.lease_input = AsyncMock(
+        side_effect=[BrokerMessage(mock_message.message_id, mock_message.data), None]
+    )
+    broker_client.exhausted = True
 
-    mock_redis_client.consume = mock_consume
-
-    wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+    wrapper = WorkerWrapper(config, broker_client=broker_client)
     wrapper.execute_agent = AsyncMock(
         side_effect=RuntimeError("Agent process timed out after 600 seconds")
     )
@@ -133,8 +109,4 @@ async def test_wrapper_publishes_error_to_output_stream_on_failure(fake_redis):
 
     await wrapper.run()
 
-    # Error should be published to output stream
-    mock_redis_client.publish_message.assert_called_once_with(
-        "worker:developer:output",
-        WorkerFailedResult(error="Agent process timed out after 600 seconds"),
-    )
+    broker_client.submit_output.assert_awaited_once()

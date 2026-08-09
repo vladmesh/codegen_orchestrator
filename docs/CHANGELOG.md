@@ -2,6 +2,17 @@
 
 ## 2026-08-09
 
+- **Worker broker launch contract**: coding workers now receive only
+  `WORKER_BROKER_URL`, a per-worker broker token and `WORKER_ID`; wrapper
+  configuration maps that exact identity and fails closed when a direct Redis,
+  API, manager or encryption transport value is present. Removed the shipped
+  Redis session adapter and wrapper Redis dependency. The broker internal
+  credential is required and non-empty for manager and broker settings, is
+  provisioned by deploy and every Compose harness, and is documented in the
+  deployment and secrets guides. DinD/E2E harnesses launch a broker and route
+  Compose through it. Worker input and output streams now have documented
+  bounded retention, alongside broker session expiry and credential-scope tests.
+
 - Added the authenticated worker-broker boundary for coding-worker control-plane traffic.
 
 - Coding-agent subprocesses now inherit an explicit, documented allowlist

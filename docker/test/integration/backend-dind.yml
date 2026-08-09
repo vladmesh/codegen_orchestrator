@@ -93,9 +93,10 @@ services:
       - REDIS_URL=redis://172.31.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
       - DOCKER_NETWORK=host
-      # Worker URLs use IP because workers inside DIND can't resolve DNS
-      - WORKER_REDIS_URL=redis://172.31.0.10:6379/0
-      - WORKER_API_URL=http://172.31.0.20:8000
+      # Workers use the broker's fixed address because DinD host-network
+      # containers cannot resolve Compose DNS.
+      - WORKER_BROKER_URL=http://172.31.0.31:8001
+      - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
       - SCAFFOLDED_WORKSPACE_PATH=/tmp/codegen/workspaces
       - WORKER_TRANSCRIPT_STORAGE_PATH=/tmp/codegen/worker-transcripts
       # Claude host_session workers must get a real bind mount for their config
@@ -109,8 +110,33 @@ services:
         condition: service_healthy
       docker:
         condition: service_healthy
+      worker-broker:
+        condition: service_healthy
     networks:
       - backend-test
+
+  worker-broker:
+    image: codegen-orchestrator/worker-broker:test
+    build:
+      context: ../../..
+      dockerfile: services/worker-broker/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    environment:
+      - REDIS_URL=redis://172.31.0.10:6379/0
+      - BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
+      - WORKER_MANAGER_URL=http://worker-manager:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/docs')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      backend-test:
+        ipv4_address: 172.31.0.31
 
   # Infrastructure
   db:

@@ -10,11 +10,9 @@ from worker_wrapper.wrapper import WorkerWrapper
 
 def _make_config(**overrides) -> WorkerWrapperConfig:
     defaults = {
-        "redis_url": "redis://localhost:6379",
-        "input_stream": "worker:test:input",
-        "output_stream": "worker:test:output",
-        "consumer_group": "test_group",
-        "consumer_name": "test_worker",
+        "broker_url": "http://worker-broker:8001",
+        "broker_token": "x" * 43,
+        "worker_id": "test_worker",
         "agent_type": "noop",
     }
     defaults.update(overrides)
@@ -22,13 +20,12 @@ def _make_config(**overrides) -> WorkerWrapperConfig:
 
 
 def _make_wrapper(**config_overrides) -> WorkerWrapper:
-    """Create a WorkerWrapper with mocked Redis."""
+    """Create a WorkerWrapper with a mocked broker client."""
     mock_redis = MagicMock()
     mock_redis.redis = AsyncMock()
-    # SessionManager.get_or_create_session needs hget
-    mock_redis.redis.hget = AsyncMock(return_value=None)
-    mock_redis.redis.hset = AsyncMock()
-    wrapper = WorkerWrapper(config=_make_config(**config_overrides), redis_client=mock_redis)
+    mock_redis.get_session = AsyncMock(return_value=None)
+    mock_redis.set_session = AsyncMock()
+    wrapper = WorkerWrapper(config=_make_config(**config_overrides), broker_client=mock_redis)
     return wrapper
 
 
@@ -187,6 +184,7 @@ class TestAgentSubprocessEnv:
     async def test_auto_resume_uses_the_same_allowlist(self):
         """Claude auto-resume must not regain wrapper credentials or sockets."""
         wrapper = _make_wrapper(agent_type="claude")
+        wrapper.broker.get_session.return_value = "session-for-resume"
         fake_exec, captured = _fake_subprocess()
 
         with (

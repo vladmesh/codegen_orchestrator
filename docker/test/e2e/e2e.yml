@@ -136,15 +136,40 @@ services:
       REDIS_URL: redis://172.30.0.10:6379/0
       DOCKER_HOST: tcp://docker:2375
       DOCKER_NETWORK: e2e-test-network
-      WORKER_REDIS_URL: redis://172.30.0.10:6379/0
-      WORKER_API_URL: http://172.30.0.20:8000
+      WORKER_BROKER_URL: http://172.30.0.31:8001
+      WORKER_BROKER_INTERNAL_TOKEN: test-worker-broker-internal-token
     depends_on:
       redis:
         condition: service_healthy
       docker:
         condition: service_healthy
+      worker-broker:
+        condition: service_healthy
     networks:
       - e2e-test
+
+  worker-broker:
+    image: codegen-orchestrator/worker-broker:test
+    build:
+      context: ../../..
+      dockerfile: services/worker-broker/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    environment:
+      REDIS_URL: redis://172.30.0.10:6379/0
+      BROKER_INTERNAL_TOKEN: test-worker-broker-internal-token
+      WORKER_MANAGER_URL: http://worker-manager:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/docs')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      e2e-test:
+        ipv4_address: 172.30.0.31
 
   # === Test Runner ===
   e2e-test-runner:

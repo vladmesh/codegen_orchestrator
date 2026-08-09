@@ -48,7 +48,7 @@ Work on the orchestrator itself is scoped and tracked outside this repository, o
 The capabilities of a Developer agent are configured through `WorkerConfig.capabilities`:
 - `git`, `github` — working with repositories
 - `python`, `node` — runtime environments
-- Docker is no longer provided inside the container (DinD was removed). Infrastructure is brought up through the compose proxy (`curl localhost:9090/infra/compose`): the request is proxied by worker-wrapper to worker-manager.
+- Docker is no longer provided inside the container (DinD was removed). Infrastructure is brought up through the compose proxy (`curl localhost:9090/infra/compose`): worker-wrapper forwards the request through worker-broker, which authenticates it before worker-manager runs it.
 
 ### Project placement
 
@@ -73,7 +73,8 @@ taken from the default value.
 | `api` | FastAPI + SQLAlchemy — projects, servers, users, configs |
 | `telegram_bot` | The Telegram interface (PO via Redis Streams) |
 | `scaffolder` | Preparation of repositories for new projects (copier + make setup + git push). Consumes `scaffold:queue`, saves the tree to the DB. A light image without the Docker SDK and without an LLM |
-| `worker-manager` | Docker containers with CLI agents and a `docker compose` proxy for sidecar infrastructure (Flat Dev Environment). Mounts pre-scaffolded workspace volumes. Workers run in the isolated `codegen_worker` network. |
+| `worker-manager` | Docker containers with CLI agents and a broker-authenticated `docker compose` proxy for sidecar infrastructure (Flat Dev Environment). Mounts pre-scaffolded workspace volumes. Workers run in the isolated `codegen_worker` network. |
+| `worker-broker` | The only service on both control-plane and worker networks. Authenticates per-worker credentials and brokers worker streams, sessions, status and Compose requests. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
 | `scheduler` | Background workers: task dispatcher (scaffold trigger, dispatch unblocked tasks), story completion, pr_poller, supervisor, provisioner trigger and result listener, github_sync, fail-closed Time4VPS server sync, health_checker, app_health_prober, ssl_checker, analytics_aggregator, rag_summarizer, queue_cleanup, temporary_access |

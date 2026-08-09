@@ -21,6 +21,11 @@ def test_worker_broker_internal_token_is_required(monkeypatch):
         WorkerManagerSettings()
 
 
+def test_worker_broker_internal_token_cannot_be_empty():
+    with pytest.raises(ValueError, match="WORKER_BROKER_INTERNAL_TOKEN"):
+        WorkerManagerSettings(WORKER_BROKER_INTERNAL_TOKEN="")
+
+
 def test_service_compose_supplies_required_broker_internal_token():
     compose_path = Path(__file__).parents[4] / "docker/test/service/worker-manager.yml"
     compose = yaml.safe_load(compose_path.read_text())

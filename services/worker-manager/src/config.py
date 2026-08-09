@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,7 +20,7 @@ class WorkerManagerSettings(BaseSettings):
 
     # The broker is the sole worker-visible control-plane transport.
     WORKER_BROKER_URL: str = "http://worker-broker:8001"
-    WORKER_BROKER_INTERNAL_TOKEN: str
+    WORKER_BROKER_INTERNAL_TOKEN: str = Field(min_length=1)
     WORKER_BROKER_SESSION_TTL_SECONDS: int = 3600
 
     # Host path to .claude directory (for mounting into workers)

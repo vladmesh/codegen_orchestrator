@@ -10,7 +10,7 @@ import structlog
 from shared.contracts.queues.worker_result import WorkerFailedResult, WorkerResult
 from shared.contracts.vocab import AgentType
 
-from .broker import NoopTestBroker, RedisTestBroker, WorkerBrokerClient
+from .broker import WorkerBrokerClient
 from .config import WorkerWrapperConfig
 from .http_server import ResultHttpServer
 from .observability import extract_effort_metrics, save_transcript
@@ -94,27 +94,12 @@ class WorkerWrapper:
         self,
         config: WorkerWrapperConfig,
         broker_client: WorkerBrokerClient | None = None,
-        redis_client: Any | None = None,
     ):
         self.config = config
-        # The legacy injected test seam uses consumer_name; production always
-        # supplies WORKER_ID through the broker-only configuration.
-        if self.config.worker_id is None:
-            self.config.worker_id = self.config.consumer_name
         if broker_client:
             self.broker = broker_client
             self._owns_broker = False
-        elif redis_client is not None:
-            self.broker = RedisTestBroker(redis_client, config)
-            self._owns_broker = False
-        elif config.redis_url:
-            self.broker = NoopTestBroker()
-            self._owns_broker = False
         else:
-            if not config.broker_url or not config.broker_token or not config.worker_id:
-                raise RuntimeError(
-                    "WORKER_BROKER_URL, WORKER_BROKER_TOKEN and WORKER_ID are required"
-                )
             self.broker = WorkerBrokerClient(
                 config.broker_url, config.broker_token, config.worker_id
             )
@@ -133,7 +118,7 @@ class WorkerWrapper:
         self._running = True
         logger.info(
             "worker_wrapper_starting",
-            worker_id=self.config.worker_id or self.config.consumer_name,
+            worker_id=self.config.worker_id,
             agent_type=self.config.agent_type,
         )
 
@@ -159,11 +144,8 @@ class WorkerWrapper:
                 await self.broker.close()
                 logger.info("worker_wrapper_stopped")
 
-    async def process_message(self, msg_id: str | Any, data: dict | None = None):
+    async def process_message(self, msg_id: str, data: dict):
         """Process a single task message."""
-        if data is None:
-            data = msg_id.data
-            msg_id = msg_id.message_id
         logger.info("processing_task", msg_id=msg_id)
 
         # Persist task context for crash recovery (Gap B)

@@ -3,6 +3,12 @@ import pytest
 from src.container_config import WorkerContainerConfig
 
 
+BROKER_ARGS = {
+    "broker_url": "http://worker-broker:8001",
+    "broker_token": "x" * 43,
+}
+
+
 class TestWorkerContainerConfig:
     def test_to_env_vars_includes_required_fields(self):
         """Config should generate all required env vars with WORKER_ prefix."""
@@ -13,13 +19,13 @@ class TestWorkerContainerConfig:
             capabilities=["GIT"],
             auth_mode="host_session",
         )
-        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+        env = config.to_env_vars(**BROKER_ARGS)
 
         # All config vars use WORKER_ prefix for pydantic-settings compatibility
         assert env["WORKER_ID"] == "test-1"
-        assert env["WORKER_REDIS_URL"] == "redis://r"
+        assert env["WORKER_BROKER_URL"] == "http://worker-broker:8001"
         assert env["WORKER_AGENT_TYPE"] == "claude"
-        assert env["WORKER_API_URL"] == "http://api"
+        assert env["WORKER_BROKER_TOKEN"] == "x" * 43
         assert env["WORKER_TYPE"] == "developer"
         assert env["WORKER_CAPABILITIES"] == "GIT"
 
@@ -53,7 +59,7 @@ class TestWorkerContainerConfig:
             host_claude_dir="/home/user/.claude-worker",
         )
 
-        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+        env = config.to_env_vars(**BROKER_ARGS)
         volumes = config.to_volume_mounts()
 
         assert env["CLAUDE_CONFIG_DIR"] == volumes["/home/user/.claude-worker"]["bind"]
@@ -92,7 +98,7 @@ class TestWorkerContainerConfig:
             host_codex_home="/home/user/.codex-worker",
         )
 
-        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+        env = config.to_env_vars(**BROKER_ARGS)
 
         assert env["CODEX_HOME"] == "/home/worker/.codex"
         assert "OPENAI_API_KEY" not in env
@@ -108,7 +114,7 @@ class TestWorkerContainerConfig:
             api_key="sk-openai-test",
         )
 
-        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+        env = config.to_env_vars(**BROKER_ARGS)
 
         assert env["CODEX_API_KEY"] == "sk-openai-test"
         assert "OPENAI_API_KEY" not in env
@@ -123,7 +129,7 @@ class TestWorkerContainerConfig:
             auth_mode="api_key",
             api_key="sk-ant-test",
         )
-        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+        env = config.to_env_vars(**BROKER_ARGS)
         assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
         # api_key mode keeps no session, and the worker must not demand a mount.
         assert env["WORKER_AUTH_MODE"] == "api_key"
@@ -240,31 +246,22 @@ class TestWorkerContainerConfig:
         # No workspace mount
         assert all(v.get("bind") != "/workspace" for v in volumes.values())
 
-    def test_worker_manager_url_env_var(self):
-        """When worker_manager_url is provided, WORKER_MANAGER_URL should be set."""
+    def test_direct_control_plane_variables_are_absent(self):
+        """Coding workers receive only broker transport variables."""
         config = WorkerContainerConfig(
             worker_id="test-1",
             worker_type="developer",
             agent_type="claude",
             capabilities=[],
         )
-        env = config.to_env_vars(
-            redis_url="redis://r",
-            api_url="http://api",
-            worker_manager_url="http://worker-manager:8000",
-        )
-        assert env["WORKER_MANAGER_URL"] == "http://worker-manager:8000"
-
-    def test_worker_manager_url_absent_when_not_provided(self):
-        """When worker_manager_url is not provided, env var should not be set."""
-        config = WorkerContainerConfig(
-            worker_id="test-1",
-            worker_type="developer",
-            agent_type="claude",
-            capabilities=[],
-        )
-        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
-        assert "WORKER_MANAGER_URL" not in env
+        env = config.to_env_vars(**BROKER_ARGS)
+        for forbidden in (
+            "WORKER_REDIS_URL",
+            "WORKER_API_URL",
+            "WORKER_MANAGER_URL",
+            "SECRETS_ENCRYPTION_KEY",
+        ):
+            assert forbidden not in env
 
     def test_no_orchestrator_env_vars(self):
         """Env vars should not contain any ORCHESTRATOR_ prefixed keys."""
@@ -274,10 +271,6 @@ class TestWorkerContainerConfig:
             agent_type="claude",
             capabilities=["GIT"],
         )
-        env = config.to_env_vars(
-            redis_url="redis://r",
-            api_url="http://api",
-            worker_manager_url="http://wm:8000",
-        )
+        env = config.to_env_vars(**BROKER_ARGS)
         orchestrator_keys = [k for k in env if k.startswith("ORCHESTRATOR_")]
         assert orchestrator_keys == [], f"Unexpected ORCHESTRATOR_ env vars: {orchestrator_keys}"

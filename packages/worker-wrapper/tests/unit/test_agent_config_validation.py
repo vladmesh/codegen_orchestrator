@@ -21,32 +21,29 @@ def make_config(
     auth_mode: str = "host_session",
 ) -> WorkerWrapperConfig:
     return WorkerWrapperConfig(
-        redis_url="redis://localhost:6379",
+        broker_url="http://worker-broker:8001",
+        broker_token="x" * 43,
+        worker_id="test-worker",
         agent_type=agent_type,
         auth_mode=auth_mode,
-        input_stream="worker:dev-1:input",
-        output_stream="worker:dev-1:output",
-        consumer_group="workers",
-        consumer_name="dev-1",
         claude_config_dir=claude_config_dir,
     )
 
 
 def test_worker_reads_the_cli_variable_and_the_auth_mode_from_the_container(monkeypatch):
-    """worker-manager exports CLAUDE_CONFIG_DIR and WORKER_AUTH_MODE."""
+    """worker-manager exports the broker-only worker launch contract."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/home/worker/.claude")
     monkeypatch.setenv("WORKER_AUTH_MODE", "api_key")
-    monkeypatch.setenv("WORKER_REDIS_URL", "redis://localhost:6379")
     monkeypatch.setenv("WORKER_AGENT_TYPE", "claude")
-    monkeypatch.setenv("WORKER_INPUT_STREAM", "worker:dev-1:input")
-    monkeypatch.setenv("WORKER_OUTPUT_STREAM", "worker:dev-1:output")
-    monkeypatch.setenv("WORKER_CONSUMER_GROUP", "workers")
-    monkeypatch.setenv("WORKER_CONSUMER_NAME", "dev-1")
+    monkeypatch.setenv("WORKER_BROKER_URL", "http://worker-broker:8001")
+    monkeypatch.setenv("WORKER_BROKER_TOKEN", "x" * 43)
+    monkeypatch.setenv("WORKER_ID", "dev-1")
 
     config = WorkerWrapperConfig()
 
     assert config.claude_config_dir == "/home/worker/.claude"
     assert config.auth_mode == "api_key"
+    assert config.worker_id == "dev-1"
 
 
 def test_claude_worker_without_config_dir_fails_at_startup():

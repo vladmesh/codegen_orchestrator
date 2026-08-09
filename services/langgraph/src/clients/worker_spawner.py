@@ -29,7 +29,7 @@ from shared.contracts.queues.worker_result import (
 from shared.diagnostics import safe_validation_errors
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
-from shared.redis.client import decode_redis_value
+from shared.redis.client import DEFAULT_STREAM_MAXLEN, decode_redis_value
 
 from ..config.constants import Timeouts
 from ..config.settings import get_settings
@@ -446,7 +446,12 @@ async def request_spawn(
         }
         if story_md:
             task_message["story_md"] = story_md
-        await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})
+        await redis_client.xadd(
+            input_stream,
+            {"data": json.dumps(task_message)},
+            maxlen=DEFAULT_STREAM_MAXLEN,
+            approximate=True,
+        )
         logger.info("task_sent_to_worker", request_id=request_id, worker_id=worker_id)
 
         # Wait for output (worker output doesn't have request_id, so pass None)
@@ -555,7 +560,12 @@ async def send_task_to_worker(
             task_message["story_md"] = story_md
         if branch:
             task_message["branch"] = branch
-        await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})
+        await redis_client.xadd(
+            input_stream,
+            {"data": json.dumps(task_message)},
+            maxlen=DEFAULT_STREAM_MAXLEN,
+            approximate=True,
+        )
         logger.info(
             "task_sent_to_existing_worker",
             request_id=request_id,

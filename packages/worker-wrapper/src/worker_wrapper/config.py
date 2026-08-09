@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 from shared.contracts.vocab import AgentType
@@ -10,18 +10,11 @@ from shared.contracts.vocab import AgentType
 class WorkerWrapperConfig(BaseSettings):
     """Configuration for Worker Wrapper."""
 
-    broker_url: str | None = Field(default=None, description="Authenticated worker-broker URL")
-    broker_token: str | None = Field(
-        default=None, min_length=32, description="Per-worker broker credential"
+    broker_url: str = Field(min_length=1, description="Authenticated worker-broker URL")
+    broker_token: str = Field(min_length=32, description="Per-worker broker credential")
+    worker_id: str = Field(
+        validation_alias="WORKER_ID", min_length=1, description="Worker identity"
     )
-    worker_id: str | None = Field(default=None, description="Worker identity")
-    # Compatibility fields exist only for injected test doubles. Production workers
-    # receive the broker settings above and never instantiate a Redis transport.
-    redis_url: str | None = None
-    input_stream: str | None = None
-    output_stream: str | None = None
-    consumer_group: str | None = None
-    consumer_name: str | None = None
     agent_type: AgentType = Field(..., description="Which coding agent runs in this worker")
     auth_mode: str = Field(
         default="host_session",
@@ -45,7 +38,27 @@ class WorkerWrapperConfig(BaseSettings):
         description="Directory the Claude CLI keeps .claude.json and its session in",
     )
 
-    model_config = {"env_prefix": "WORKER_", "populate_by_name": True}
+    model_config = {"env_prefix": "WORKER_", "populate_by_name": True, "extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_direct_control_plane_transport(cls, values):
+        forbidden = {
+            "WORKER_REDIS_URL",
+            "WORKER_API_URL",
+            "WORKER_MANAGER_URL",
+            "SECRETS_ENCRYPTION_KEY",
+            "redis_url",
+            "api_url",
+            "worker_manager_url",
+        }
+        if isinstance(values, dict):
+            supplied = forbidden.intersection(values)
+            if supplied:
+                raise ValueError(
+                    f"direct worker transport is forbidden: {', '.join(sorted(supplied))}"
+                )
+        return values
 
 
 def validate_agent_config(config: WorkerWrapperConfig) -> None:
@@ -60,6 +73,16 @@ def validate_agent_config(config: WorkerWrapperConfig) -> None:
 
     api_key mode authenticates per call and keeps no session, so it needs none of this.
     """
+    forbidden = (
+        "WORKER_REDIS_URL",
+        "WORKER_API_URL",
+        "WORKER_MANAGER_URL",
+        "SECRETS_ENCRYPTION_KEY",
+    )
+    supplied = [name for name in forbidden if os.environ.get(name)]
+    if supplied:
+        raise RuntimeError(f"direct worker transport is forbidden: {', '.join(supplied)}")
+
     if config.agent_type != AgentType.CLAUDE or config.auth_mode != "host_session":
         return
 

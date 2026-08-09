@@ -22,11 +22,9 @@ from shared.contracts.queues.worker_result import (
 
 def _make_config(**overrides) -> WorkerWrapperConfig:
     defaults = {
-        "redis_url": "redis://localhost:6379",
-        "input_stream": "worker:test-w1:input",
-        "output_stream": "worker:test-w1:output",
-        "consumer_group": "test-group",
-        "consumer_name": "test-w1",
+        "broker_url": "http://worker-broker:8001",
+        "broker_token": "x" * 43,
+        "worker_id": "test-w1",
         "agent_type": "claude",
         "subprocess_timeout_seconds": 10,
         "http_server_port": 0,  # OS-assigned
@@ -35,15 +33,14 @@ def _make_config(**overrides) -> WorkerWrapperConfig:
     return WorkerWrapperConfig(**defaults)
 
 
-def _make_redis_mock():
-    redis_mock = AsyncMock()
-    redis_mock.connect = AsyncMock()
-    redis_mock.close = AsyncMock()
-    redis_mock.publish = AsyncMock()
-    redis_mock.publish_message = AsyncMock()
-    redis_mock.redis = MagicMock()
-    redis_mock.redis.hset = AsyncMock()
-    return redis_mock
+def _make_broker_mock():
+    broker = AsyncMock()
+    broker.get_session = AsyncMock(return_value=None)
+    broker.set_session = AsyncMock()
+    broker.update_status = AsyncMock()
+    broker.submit_output = AsyncMock()
+    broker.compose = AsyncMock(return_value=(200, {}))
+    return broker
 
 
 class TestHttpServerLifecycle:
@@ -52,8 +49,8 @@ class TestHttpServerLifecycle:
     async def test_http_result_published_to_output_stream(self):
         """When agent POSTs to /complete, result appears on output stream."""
         config = _make_config()
-        redis_mock = _make_redis_mock()
-        wrapper = WorkerWrapper(config=config, redis_client=redis_mock)
+        broker_mock = _make_broker_mock()
+        wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
 
         async def fake_agent(data):
             port = wrapper._http_server.port
@@ -83,18 +80,18 @@ class TestHttpServerLifecycle:
                             msg = MagicMock()
                             msg.message_id = "msg-1"
                             msg.data = {"prompt": "do stuff"}
-                            await wrapper.process_message(msg)
+                            await wrapper.process_message(msg.message_id, msg.data)
 
-        redis_mock.publish_message.assert_any_call(
-            "worker:test-w1:output",
+        broker_mock.submit_output.assert_any_call(
+            "msg-1",
             WorkerCompletedResult(commit_sha="abc123", content="Done"),
         )
 
     async def test_http_server_stops_after_agent(self):
         """HTTP server is cleaned up even if agent fails."""
         config = _make_config()
-        redis_mock = _make_redis_mock()
-        wrapper = WorkerWrapper(config=config, redis_client=redis_mock)
+        broker_mock = _make_broker_mock()
+        wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
 
         async def failing_agent(data):
             assert wrapper._http_server is not None
@@ -109,7 +106,7 @@ class TestHttpServerLifecycle:
                             msg = MagicMock()
                             msg.message_id = "msg-2"
                             msg.data = {"prompt": "do stuff"}
-                            await wrapper.process_message(msg)
+                            await wrapper.process_message(msg.message_id, msg.data)
 
         assert wrapper._http_server is None or wrapper._http_server._server is None
 
@@ -120,8 +117,8 @@ class TestStdoutCapture:
     async def test_stdout_tail_attached_to_http_result(self):
         """When agent produces stdout, it's included in the published result."""
         config = _make_config()
-        redis_mock = _make_redis_mock()
-        wrapper = WorkerWrapper(config=config, redis_client=redis_mock)
+        broker_mock = _make_broker_mock()
+        wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
 
         async def agent_with_stdout(data):
             # Simulate stdout capture
@@ -152,10 +149,10 @@ class TestStdoutCapture:
                             msg = MagicMock()
                             msg.message_id = "msg-stdout"
                             msg.data = {"prompt": "do stuff"}
-                            await wrapper.process_message(msg)
+                            await wrapper.process_message(msg.message_id, msg.data)
 
-        publish_calls = redis_mock.publish_message.call_args_list
-        output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
+        publish_calls = broker_mock.submit_output.call_args_list
+        output_calls = publish_calls
         assert len(output_calls) == 1
         result = output_calls[0][0][1]
         assert result.agent_stdout_tail == "Agent thinking about task..."
@@ -164,8 +161,8 @@ class TestStdoutCapture:
     async def test_stdout_tail_attached_to_error_result(self):
         """When agent crashes, stdout tail is still attached to failed result."""
         config = _make_config()
-        redis_mock = _make_redis_mock()
-        wrapper = WorkerWrapper(config=config, redis_client=redis_mock)
+        broker_mock = _make_broker_mock()
+        wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
 
         async def crashing_agent(data):
             wrapper._agent_stdout_tail = "Partial output before crash"
@@ -179,10 +176,10 @@ class TestStdoutCapture:
                             msg = MagicMock()
                             msg.message_id = "msg-crash"
                             msg.data = {"prompt": "do stuff"}
-                            await wrapper.process_message(msg)
+                            await wrapper.process_message(msg.message_id, msg.data)
 
-        publish_calls = redis_mock.publish_message.call_args_list
-        output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
+        publish_calls = broker_mock.submit_output.call_args_list
+        output_calls = publish_calls
         assert len(output_calls) == 1
         result = output_calls[0][0][1]
         assert result.status == WorkerResultStatus.FAILED
@@ -191,7 +188,7 @@ class TestStdoutCapture:
     async def test_codex_diagnostics_are_not_persisted_or_returned(self):
         raw_diagnostic = "refresh-token-must-not-leak"
         config = _make_config(agent_type="codex")
-        wrapper = WorkerWrapper(config=config, redis_client=_make_redis_mock())
+        wrapper = WorkerWrapper(config=config, broker_client=_make_broker_mock())
         process = MagicMock(returncode=1)
         process.communicate = AsyncMock(
             return_value=(
@@ -200,15 +197,11 @@ class TestStdoutCapture:
             )
         )
 
-        with patch(
-            "worker_wrapper.session.SessionManager.get_or_create_session",
-            new_callable=AsyncMock,
-            return_value="unused",
-        ):
-            with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
-                spawn.return_value = process
-                with pytest.raises(RuntimeError) as exc_info:
-                    await wrapper.execute_agent({"prompt": "do stuff"})
+        wrapper.broker.get_session.return_value = "unused"
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
+            spawn.return_value = process
+            with pytest.raises(RuntimeError) as exc_info:
+                await wrapper.execute_agent({"prompt": "do stuff"})
 
         assert raw_diagnostic not in str(exc_info.value)
         assert wrapper._agent_stdout_tail is None
@@ -220,8 +213,8 @@ class TestWatchdog:
     async def test_watchdog_publishes_failed_after_resume_fails(self):
         """Agent exits without HTTP → resume attempted → still no result → fail."""
         config = _make_config()
-        redis_mock = _make_redis_mock()
-        wrapper = WorkerWrapper(config=config, redis_client=redis_mock)
+        broker_mock = _make_broker_mock()
+        wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
 
         async def silent_agent(data):
             pass  # Agent exits without calling HTTP
@@ -238,10 +231,10 @@ class TestWatchdog:
                                 msg = MagicMock()
                                 msg.message_id = "msg-3"
                                 msg.data = {"prompt": "do stuff"}
-                                await wrapper.process_message(msg)
+                                await wrapper.process_message(msg.message_id, msg.data)
 
-        publish_calls = redis_mock.publish_message.call_args_list
-        output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
+        publish_calls = broker_mock.submit_output.call_args_list
+        output_calls = publish_calls
         assert len(output_calls) == 1
         assert output_calls[0][0][1].status == WorkerResultStatus.FAILED
         assert "without reporting result" in output_calls[0][0][1].error
@@ -249,8 +242,8 @@ class TestWatchdog:
     async def test_watchdog_skips_resume_for_non_claude(self):
         """Non-claude agents don't support resume — go straight to fail."""
         config = _make_config(agent_type="factory")
-        redis_mock = _make_redis_mock()
-        wrapper = WorkerWrapper(config=config, redis_client=redis_mock)
+        broker_mock = _make_broker_mock()
+        wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
 
         async def silent_agent(data):
             pass
@@ -263,18 +256,18 @@ class TestWatchdog:
                             msg = MagicMock()
                             msg.message_id = "msg-factory"
                             msg.data = {"prompt": "do stuff"}
-                            await wrapper.process_message(msg)
+                            await wrapper.process_message(msg.message_id, msg.data)
 
-        publish_calls = redis_mock.publish_message.call_args_list
-        output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
+        publish_calls = broker_mock.submit_output.call_args_list
+        output_calls = publish_calls
         assert len(output_calls) == 1
         assert output_calls[0][0][1].status == WorkerResultStatus.FAILED
 
     async def test_http_result_prevents_watchdog(self):
         """If HTTP result received, watchdog does not publish failed."""
         config = _make_config()
-        redis_mock = _make_redis_mock()
-        wrapper = WorkerWrapper(config=config, redis_client=redis_mock)
+        broker_mock = _make_broker_mock()
+        wrapper = WorkerWrapper(config=config, broker_client=broker_mock)
 
         async def agent_with_http(data):
             port = wrapper._http_server.port
@@ -304,10 +297,10 @@ class TestWatchdog:
                             msg = MagicMock()
                             msg.message_id = "msg-5"
                             msg.data = {"prompt": "do stuff"}
-                            await wrapper.process_message(msg)
+                            await wrapper.process_message(msg.message_id, msg.data)
 
         # HTTP result published by callback, no additional failed publish
-        publish_calls = redis_mock.publish_message.call_args_list
-        output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
+        publish_calls = broker_mock.submit_output.call_args_list
+        output_calls = publish_calls
         assert len(output_calls) == 1
         assert output_calls[0][0][1].commit_sha == "http-sha"

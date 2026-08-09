@@ -39,7 +39,7 @@ Instead of Docker-in-Docker (Sysbox), the system uses the **Flat Dev Environment
    - `dev_proj_<worker_id>` — an isolated network for the project's sidecar containers.
 
 2. **Compose Proxy**:
-   The workers (the injected AI agents) **have no access to Docker**. To start the infrastructure dependencies (DB, Redis) the agents call the compose proxy through `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose`, which proxies the request to `worker-manager`.
+   The workers (the injected AI agents) **have no access to Docker**. To start infrastructure dependencies they call `http://127.0.0.1:9090/infra/compose`; worker-wrapper forwards the request through the authenticated worker-broker to worker-manager.
 
 3. **Workspace Bind-Mount**:
    The scaffolded workspace is mounted at `/workspace` inside the container. Two modes:
