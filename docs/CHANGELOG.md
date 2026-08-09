@@ -2,6 +2,13 @@
 
 ## 2026-08-09
 
+- Worker-manager now resolves scaffolded workspace entries against the configured
+  root and accepts only a single direct child. Absolute ids, traversal,
+  multi-component ids and symlinks resolving outside that root fail before
+  ownership preparation, volume construction, container launch or git setup.
+  Workspace cleanup uses the same guard, so an unsafe entry cannot recursively
+  remove a path outside the configured root.
+
 - Coding-worker Docker launches now take their runtime kwargs from
   `WorkerContainerConfig`: Claude, Codex and Factory are capped at 4g and one CPU,
   with a 256-PID ceiling, all Linux capabilities dropped, and

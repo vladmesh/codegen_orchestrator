@@ -26,6 +26,19 @@ class TestGetScaffoldedWorkspace:
         path, _ = get_scaffolded_workspace(str(tmp_path), "repo-abc")
         assert str(path) == str(tmp_path / "repo-abc")
 
+    @pytest.mark.parametrize("repo_id", ["/tmp/outside", "../outside", "repo-123/nested", ".", ".."])
+    def test_rejects_repo_ids_that_are_not_direct_workspace_children(self, tmp_path, repo_id):
+        with pytest.raises(ValueError, match="direct child"):
+            get_scaffolded_workspace(str(tmp_path), repo_id)
+
+    def test_rejects_child_symlink_that_resolves_outside_workspace_root(self, tmp_path):
+        outside = tmp_path.parent / f"outside-{tmp_path.name}"
+        outside.mkdir()
+        (tmp_path / "repo-escape").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="direct child"):
+            get_scaffolded_workspace(str(tmp_path), "repo-escape")
+
 
 class TestRemoveWorkspace:
     def test_removes_directory(self, tmp_path):
@@ -41,6 +54,17 @@ class TestRemoveWorkspace:
     def test_ignores_missing(self, tmp_path):
         """remove_workspace should not raise if directory doesn't exist."""
         remove_workspace(str(tmp_path), "nonexistent")
+
+    def test_refuses_unsafe_entry_without_removing_outside_path(self, tmp_path):
+        outside = tmp_path.parent / f"outside-{tmp_path.name}"
+        outside.mkdir()
+        marker = outside / "keep.txt"
+        marker.touch()
+
+        with pytest.raises(ValueError, match="direct child"):
+            remove_workspace(str(tmp_path), f"../{outside.name}")
+
+        assert marker.exists()
 
 
 class TestPrepareWorkerPaths:

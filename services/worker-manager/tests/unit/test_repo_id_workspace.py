@@ -115,6 +115,37 @@ def mock_redis():
 
 class TestCreateWorkerWithRepoId:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("repo_id", ["/tmp/outside", "../outside", "repo-123/nested"])
+    @patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock)
+    @patch("src.manager.workspace_mod.prepare_worker_paths")
+    async def test_rejects_unsafe_repo_id_before_worker_setup(
+        self, mock_prepare_paths, mock_refresh, repo_id, mock_redis, mock_docker, tmp_path
+    ):
+        """Unsafe ids must not reach ownership preparation, Docker, or git setup."""
+        from src.manager import WorkerContainerConfig, WorkerManager
+
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+        with (
+            patch("src.manager.settings") as mock_settings,
+            patch.object(WorkerContainerConfig, "to_volume_mounts") as mock_volumes,
+        ):
+            mock_settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
+
+            with pytest.raises(ValueError, match="direct child"):
+                await manager.create_worker_with_capabilities(
+                    worker_id="w-unsafe",
+                    capabilities=["git"],
+                    base_image="worker-base:latest",
+                    env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
+                    repo_id=repo_id,
+                )
+
+        mock_prepare_paths.assert_not_called()
+        mock_volumes.assert_not_called()
+        mock_docker.run_container.assert_not_awaited()
+        mock_refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True)
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
