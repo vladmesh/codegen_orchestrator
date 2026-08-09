@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Generic wrapper for executing worker agents"
 authors = [{name = "Antigravity", email = "antigravity@gemini.google.com"}]
 dependencies = [
+    # shared is copied into the worker image and imports its Redis helpers,
+    # even though the wrapper's runtime transport is broker-only.
+    "redis>=8.0.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.0.0",
     "structlog>=24.1.0",
