@@ -8,6 +8,7 @@ from shared.contracts.vocab import AgentType
 # CLI writes ~/.claude.json into the container's ephemeral layer while its backups
 # land in the mounted directory, so every run starts from empty state.
 CLAUDE_CONFIG_DIR = "/home/worker/.claude"
+WORKER_PIDS_LIMIT = 256
 
 
 @dataclass
@@ -110,30 +111,40 @@ class WorkerContainerConfig:
 
         return volumes
 
-    def to_docker_run_kwargs(self, network_name: Optional[str] = None) -> Dict[str, Any]:
+    def to_docker_run_kwargs(
+        self,
+        network_name: Optional[str] = None,
+        *,
+        allow_host_network: bool = False,
+    ) -> Dict[str, Any]:
         """Generate kwargs for docker.containers.run().
 
         Args:
-            network_name: Optional Docker network to attach container to.
-                          If None, uses host networking (production default).
-                          If provided, attaches to specified network (for DIND/testing).
+            network_name: Dedicated Docker network to attach the container to.
+            allow_host_network: Test-only compatibility switch for DinD.
         """
+        if not network_name:
+            raise ValueError("A dedicated Docker network is required for coding workers")
+
+        if network_name == "host" and not allow_host_network:
+            raise ValueError("Coding workers cannot use host networking")
+
         kwargs = {
             "detach": True,
             "name": f"worker-{self.worker_id}",
             "hostname": f"worker-{self.worker_id}",
-            # Standard limits
             "mem_limit": self._mem_limit(),
             "cpu_period": 100000,
             "cpu_quota": 100000,  # 1 CPU
+            "pids_limit": WORKER_PIDS_LIMIT,
+            "cap_drop": ["ALL"],
+            "security_opt": ["no-new-privileges:true"],
         }
 
-        if network_name:
-            # Attach to specific network (for DIND / integration tests)
-            kwargs["network"] = network_name
-        else:
-            # Use host networking (production default)
+        if network_name == "host":
             kwargs["network_mode"] = "host"
+        else:
+            kwargs["network"] = network_name
 
         return kwargs
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-08-09
+
+- Coding-worker Docker launches now take their runtime kwargs from
+  `WorkerContainerConfig`: Claude, Codex and Factory are capped at 4g and one CPU,
+  with a 256-PID ceiling, all Linux capabilities dropped, and
+  `no-new-privileges:true`. Empty network configuration resolves to
+  `WORKER_NETWORK`; production rejects `DOCKER_NETWORK=host` before creation.
+  The existing DinD host-network fixture declares `ENVIRONMENT=test` explicitly,
+  preserving its isolated test-only compatibility path. Worker-manager now
+  normalizes workspace and transcript bind-mount ownership from its trusted
+  root context before launching the capability-restricted container, and aborts
+  on a failed `chown`; the old in-container ownership repair was removed because
+  `cap_drop: ["ALL"]` correctly prevents it.
+
 ## 2026-08-07
 
 - **The Claude worker keeps its CLI config in the mounted host session directory**
