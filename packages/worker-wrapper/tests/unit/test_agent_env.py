@@ -32,7 +32,7 @@ def _make_wrapper(**config_overrides) -> WorkerWrapper:
     return wrapper
 
 
-def _fake_subprocess():
+def _fake_subprocess(stdout: bytes = b"", stderr: bytes = b""):
     """Return a fake create_subprocess_exec and a dict to capture kwargs."""
     captured: dict = {}
 
@@ -40,7 +40,7 @@ def _fake_subprocess():
         captured.update(kwargs)
         captured["args"] = args
         proc = AsyncMock()
-        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.communicate = AsyncMock(return_value=(stdout, stderr))
         proc.returncode = 0
         proc.kill = AsyncMock()
         proc.wait = AsyncMock()
@@ -59,9 +59,12 @@ class TestAgentSubprocessEnv:
         "CLAUDE_CONFIG_DIR": "/home/worker/.claude",
         "CODEX_API_KEY": "codex-key",
         "CODEX_HOME": "/home/worker/.codex",
+        "DISABLE_AUTOUPDATER": "1",
+        "DISABLE_TELEMETRY": "1",
         "FACTORY_API_KEY": "factory-key",
         "GITHUB_TOKEN": "github-token",
         "GH_TOKEN": "github-token",
+        "PYTHONNOUSERSITE": "1",
     }
 
     _BLOCKED_WRAPPER_SETTINGS = {
@@ -77,6 +80,8 @@ class TestAgentSubprocessEnv:
         "HOST_CODEX_HOME": "/host/codex",
         "HOST_WORKSPACE_PATH": "/host/workspace",
         "COMMAND_INJECTED_VAR": "must-not-reach-agent",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUNBUFFERED": "1",
     }
 
     @classmethod
@@ -159,6 +164,24 @@ class TestAgentSubprocessEnv:
             assert env.get(name) == value
         for name in self._BLOCKED_WRAPPER_SETTINGS:
             assert name not in env
+
+    @pytest.mark.asyncio
+    async def test_transcript_redacts_non_allowlisted_wrapper_secret(self, tmp_path):
+        """Transcript redaction must retain wrapper-only secrets as scrub sources."""
+        wrapper = _make_wrapper(transcript_dir=str(tmp_path))
+        fake_exec, captured = _fake_subprocess(stdout=b"wrapper-secret")
+
+        with (
+            patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch.object(wrapper, "_resolve_prompt", return_value="do stuff"),
+            patch.dict("os.environ", self._wrapper_environment(), clear=True),
+        ):
+            await wrapper.execute_agent({"prompt": "test", "request_id": "redaction"})
+
+        assert "SECRETS_ENCRYPTION_KEY" not in captured["env"]
+        transcript = (tmp_path / "test_worker" / "redaction.log").read_text()
+        assert "wrapper-secret" not in transcript
+        assert "[redacted]" in transcript
 
     @pytest.mark.asyncio
     async def test_auto_resume_uses_the_same_allowlist(self):

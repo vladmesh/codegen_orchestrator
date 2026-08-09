@@ -22,9 +22,9 @@ TASK_MD_PATH = "/workspace/TASK.md"
 STORY_DIR = "/workspace/.story"
 OLD_TASKS_DIR = "/workspace/.story/old_tasks"
 
-# The agent is a separate trust boundary from the wrapper. Keep its inherited
-# environment limited to CLI process basics plus the settings worker-manager
-# deliberately supplies for agent authentication, sessions and repository work.
+# The agent's subprocess environment is distinct from the wrapper's. Keep it
+# limited to CLI process basics plus the settings worker-manager deliberately
+# supplies for agent authentication, sessions and repository work.
 AGENT_SUBPROCESS_ENV_ALLOWLIST = frozenset(
     {
         # Process basics used by CLIs and their git/python subprocesses.
@@ -34,6 +34,9 @@ AGENT_SUBPROCESS_ENV_ALLOWLIST = frozenset(
         "LC_CTYPE",
         "PATH",
         "PYTHONPATH",
+        # Agent Python commands must not load user-site packages that can shadow
+        # the wrapper's shared package. Project dependencies belong in a venv.
+        "PYTHONNOUSERSITE",
         "TERM",
         "TMPDIR",
         "TZ",
@@ -42,6 +45,8 @@ AGENT_SUBPROCESS_ENV_ALLOWLIST = frozenset(
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
         "CLAUDE_CONFIG_DIR",
+        "DISABLE_AUTOUPDATER",
+        "DISABLE_TELEMETRY",
         # Codex authentication and mounted session profile.
         "CODEX_API_KEY",
         "CODEX_HOME",
@@ -693,7 +698,8 @@ class WorkerWrapper:
             agent_type=self.config.agent_type,
         )
 
-        agent_env = build_agent_subprocess_env()
+        wrapper_env = dict(os.environ)
+        agent_env = build_agent_subprocess_env(wrapper_env)
 
         # Execute Subprocess
         proc = await asyncio.create_subprocess_exec(
@@ -729,7 +735,7 @@ class WorkerWrapper:
             str(data.get("request_id", "unknown")),
             f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n",
             self.config.transcript_max_bytes,
-            agent_env,
+            wrapper_env,
         )
 
         # Codex stdout/stderr are transport diagnostics, never business output.
