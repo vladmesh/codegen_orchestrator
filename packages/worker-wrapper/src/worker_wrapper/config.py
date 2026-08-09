@@ -10,11 +10,16 @@ from shared.contracts.vocab import AgentType
 class WorkerWrapperConfig(BaseSettings):
     """Configuration for Worker Wrapper."""
 
-    redis_url: str = Field(..., description="Redis URL connection string")
-    input_stream: str = Field(..., description="Redis stream to read tasks from")
-    output_stream: str = Field(..., description="Redis stream to write results to")
-    consumer_group: str = Field(..., description="Consumer group name")
-    consumer_name: str = Field(..., description="Consumer instance name")
+    broker_url: str | None = Field(default=None, description="Authenticated worker-broker URL")
+    broker_token: str | None = Field(default=None, min_length=32, description="Per-worker broker credential")
+    worker_id: str | None = Field(default=None, description="Worker identity")
+    # Compatibility fields exist only for injected test doubles. Production workers
+    # receive the broker settings above and never instantiate a Redis transport.
+    redis_url: str | None = None
+    input_stream: str | None = None
+    output_stream: str | None = None
+    consumer_group: str | None = None
+    consumer_name: str | None = None
     agent_type: AgentType = Field(..., description="Which coding agent runs in this worker")
     auth_mode: str = Field(
         default="host_session",

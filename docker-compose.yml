@@ -32,7 +32,6 @@ services:
       start_period: 5s
     networks:
       - internal
-      - worker
     volumes:
       - ./services/api/src:/app/src:delegated
       - ./services/api/alembic.ini:/app/alembic.ini:ro
@@ -286,8 +285,9 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       API_BASE_URL: http://api:8000
-      WORKER_REDIS_URL: redis://redis:6379/0
-      WORKER_API_URL: http://api:8000
+      WORKER_BROKER_URL: http://worker-broker:8001
+      WORKER_BROKER_INTERNAL_TOKEN: ${WORKER_BROKER_INTERNAL_TOKEN}
+      WORKER_BROKER_SESSION_TTL_SECONDS: ${WORKER_BROKER_SESSION_TTL_SECONDS:-3600}
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LOG_FORMAT: ${LOG_FORMAT:-json}
@@ -300,7 +300,6 @@ services:
       SCAFFOLDED_WORKSPACE_PATH: /data/workspaces
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
-      WORKER_MANAGER_URL: http://worker-manager:8000
       # This is both the Docker-host source path and the manager-visible path.
       # Keep them identical because worker containers are created through the
       # host Docker socket.
@@ -316,11 +315,33 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      worker-broker:
+        condition: service_started
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - internal
+    restart: unless-stopped
+
+  worker-broker:
+    image: codegen-orchestrator/worker-broker:local
+    build:
+      context: .
+      dockerfile: services/worker-broker/Dockerfile
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      BROKER_INTERNAL_TOKEN: ${WORKER_BROKER_INTERNAL_TOKEN}
+      WORKER_MANAGER_URL: http://worker-manager:8000
+      SESSION_TTL_SECONDS: ${WORKER_BROKER_SESSION_TTL_SECONDS:-3600}
+      STREAM_MAXLEN: ${WORKER_BROKER_STREAM_MAXLEN:-1000}
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - internal
       - worker
@@ -570,7 +591,6 @@ services:
       start_period: 2s
     networks:
       - internal
-      - worker
     restart: unless-stopped
 
 networks:

@@ -5,6 +5,7 @@ class WorkerManagerSettings(BaseSettings):
     ENVIRONMENT: str = "production"
     LOG_LEVEL: str = "INFO"
     REDIS_URL: str = "redis://redis:6379/0"
+    API_BASE_URL: str = "http://api:8000"
 
     # Worker config
     WORKER_IMAGE_PREFIX: str = "worker"
@@ -16,10 +17,10 @@ class WorkerManagerSettings(BaseSettings):
     # If empty, workers attach to WORKER_NETWORK. Host networking is test-only.
     DOCKER_NETWORK: str = ""
 
-    # Worker-visible URLs (for DIND where workers can't resolve docker-compose DNS)
-    # If not set, uses REDIS_URL. Set to IP-based URL for DIND testing.
-    WORKER_REDIS_URL: str = ""
-    WORKER_API_URL: str = ""
+    # The broker is the sole worker-visible control-plane transport.
+    WORKER_BROKER_URL: str = "http://worker-broker:8001"
+    WORKER_BROKER_INTERNAL_TOKEN: str
+    WORKER_BROKER_SESSION_TTL_SECONDS: int = 3600
 
     # Host path to .claude directory (for mounting into workers)
     HOST_CLAUDE_DIR: str | None = None
@@ -45,8 +46,6 @@ class WorkerManagerSettings(BaseSettings):
     # Isolated network for worker containers (no access to orchestrator infra)
     WORKER_NETWORK: str = "codegen_worker"
 
-    # URL of this worker-manager service (injected into worker containers)
-    WORKER_MANAGER_URL: str = "http://worker-manager:8000"
 
     # Host-backed artifacts survive worker container deletion. Operators set
     # retention explicitly; cleanup is best-effort and never blocks work.
@@ -58,14 +57,3 @@ class WorkerManagerSettings(BaseSettings):
 
 
 settings = WorkerManagerSettings()
-
-
-def worker_urls(current_settings: WorkerManagerSettings | None = None) -> tuple[str, str]:
-    """Return required worker-visible Redis and API URLs."""
-    current_settings = current_settings or settings
-    redis_url = current_settings.WORKER_REDIS_URL.strip()
-    api_url = current_settings.WORKER_API_URL.strip()
-    missing = [name for name, value in (("WORKER_REDIS_URL", redis_url), ("WORKER_API_URL", api_url)) if not value]
-    if missing:
-        raise RuntimeError(f"Required worker URL configuration is missing: {', '.join(missing)}")
-    return redis_url, api_url

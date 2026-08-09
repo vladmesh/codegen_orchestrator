@@ -1,18 +1,21 @@
 import base64
+import hashlib
 from pathlib import Path
 import json
 import os
+import secrets
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional, Dict, List
 
 import structlog
+import httpx
 from redis.asyncio import Redis
 
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 
-from .config import settings, worker_urls
+from .config import settings
 from .docker_ops import DockerClientWrapper
 from .image_builder import WORKER_SOURCE_HASH_LABEL, ImageBuilder, get_base_image
 from .container_config import WorkerContainerConfig
@@ -36,6 +39,40 @@ class WorkerManager:
     def __init__(self, redis: Redis, docker_client: Optional[DockerClientWrapper] = None):
         self.redis = redis
         self.docker = docker_client or DockerClientWrapper()
+
+    async def _register_broker_worker(self, worker_id: str, token: str) -> None:
+        """Register a worker-scoped credential before its container is started."""
+        from shared.contracts.queues.worker import WorkerChannels
+
+        payload = {
+            "worker_id": worker_id,
+            "token": token,
+            "input_stream": WorkerChannels.INPUT_PATTERN.value.format(worker_id=worker_id),
+            "output_stream": WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=worker_id),
+            "session_ttl_seconds": settings.WORKER_BROKER_SESSION_TTL_SECONDS,
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(
+                f"{settings.WORKER_BROKER_URL.rstrip('/')}/internal/workers",
+                json=payload,
+                headers={"X-Broker-Internal-Token": settings.WORKER_BROKER_INTERNAL_TOKEN},
+            )
+            response.raise_for_status()
+        await self.redis.hset(
+            f"worker:broker:{worker_id}", mapping={"token_digest": hashlib.sha256(token.encode()).hexdigest()}
+        )
+
+    async def _unregister_broker_worker(self, worker_id: str) -> None:
+        """Revoke a deleted worker's broker metadata without exposing its credential."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.delete(
+                    f"{settings.WORKER_BROKER_URL.rstrip('/')}/internal/workers/{worker_id}",
+                    headers={"X-Broker-Internal-Token": settings.WORKER_BROKER_INTERNAL_TOKEN},
+                )
+                response.raise_for_status()
+        except Exception:
+            logger.warning("broker_worker_unregistration_failed", worker_id=worker_id)
 
     async def ensure_image(self, image: str) -> None:
         """Ensure image exists and update access time."""
@@ -192,6 +229,7 @@ class WorkerManager:
             logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
         finally:
+            await self._unregister_broker_worker(worker_id)
             if project_id:
                 logger.info("workspace_preserved", project_id=project_id, worker_id=worker_id)
                 await self.redis.srem("workspace:active_projects", project_id)
@@ -208,6 +246,7 @@ class WorkerManager:
                 f"worker:status:{worker_id}",
                 f"worker:meta:{worker_id}",
                 f"worker:error:{worker_id}",
+                f"worker:broker:{worker_id}",
                 f"worker:last_activity:{worker_id}",
                 f"worker:{worker_id}:input",
                 f"worker:{worker_id}:output",
@@ -480,14 +519,16 @@ class WorkerManager:
                 path=str(ws_path),
             )
 
-            worker_redis_url, worker_api_url = worker_urls(settings)
+            broker_token = secrets.token_urlsafe(32)
+            await self._register_broker_worker(worker_id, broker_token)
             container_env = config.to_env_vars(
-                redis_url=worker_redis_url,
-                api_url=worker_api_url,
+                broker_url=settings.WORKER_BROKER_URL,
+                broker_token=broker_token,
                 subprocess_timeout_seconds=settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS,
-                worker_manager_url=settings.WORKER_MANAGER_URL,
             )
             container_env.update(env_vars)
+            for forbidden in ("WORKER_REDIS_URL", "WORKER_API_URL", "WORKER_MANAGER_URL", "SECRETS_ENCRYPTION_KEY"):
+                container_env.pop(forbidden, None)
             if agent_type == AgentType.FACTORY and "FACTORY_API_KEY" not in container_env:
                 factory_api_key = os.getenv("FACTORY_API_KEY")
                 if not factory_api_key:
@@ -497,10 +538,6 @@ class WorkerManager:
             github_token = env_vars.get("GITHUB_TOKEN")
             if github_token:
                 container_env["GH_TOKEN"] = github_token
-
-            secrets_key = os.getenv("SECRETS_ENCRYPTION_KEY")
-            if secrets_key:
-                container_env["SECRETS_ENCRYPTION_KEY"] = secrets_key
 
             workspace_mod.prepare_worker_paths(
                 workspace_path=config.workspace_host_path,
@@ -583,6 +620,7 @@ class WorkerManager:
 
             return worker_id
         except Exception:
+            await self._unregister_broker_worker(worker_id)
             # Early lock was registered — clean it up on failure
             if project_id:
                 await self.redis.srem("workspace:active_projects", project_id)

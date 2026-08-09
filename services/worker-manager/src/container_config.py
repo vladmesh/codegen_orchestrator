@@ -29,31 +29,23 @@ class WorkerContainerConfig:
 
     def to_env_vars(
         self,
-        redis_url: str,
-        api_url: str,
+        broker_url: str,
+        broker_token: str,
         subprocess_timeout_seconds: int = 300,
-        worker_manager_url: Optional[str] = None,
     ) -> Dict[str, str]:
         """Generate environment variables for the container.
 
         Note: worker-wrapper uses WORKER_ prefix for pydantic-settings,
         so all config vars must have this prefix.
         """
-        from shared.contracts.queues.worker import WorkerChannels
-
         env = {
             "WORKER_ID": self.worker_id,
-            "WORKER_REDIS_URL": redis_url,  # worker-wrapper expects WORKER_ prefix
-            "WORKER_API_URL": api_url,
+            "WORKER_BROKER_URL": broker_url,
+            "WORKER_BROKER_TOKEN": broker_token,
             "WORKER_AGENT_TYPE": self.agent_type,
             "WORKER_TYPE": self.worker_type,
             "WORKER_CAPABILITIES": ",".join(self.capabilities),
             "WORKER_SUBPROCESS_TIMEOUT_SECONDS": str(subprocess_timeout_seconds),
-            # Redis Stream Config (already have WORKER_ prefix)
-            "WORKER_INPUT_STREAM": WorkerChannels.INPUT_PATTERN.value.format(worker_id=self.worker_id),
-            "WORKER_OUTPUT_STREAM": WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=self.worker_id),
-            "WORKER_CONSUMER_GROUP": "worker_group",
-            "WORKER_CONSUMER_NAME": self.worker_id,
             "WORKER_TRANSCRIPT_DIR": "/artifacts/worker-transcripts",
             "WORKER_TRANSCRIPT_MAX_BYTES": str(self.transcript_max_bytes),
             # The worker validates its own agent state against the mode it was
@@ -74,9 +66,6 @@ class WorkerContainerConfig:
                 env["CODEX_API_KEY"] = self.api_key
             else:
                 env["ANTHROPIC_API_KEY"] = self.api_key
-
-        if worker_manager_url:
-            env["WORKER_MANAGER_URL"] = worker_manager_url
 
         return env
 

@@ -1,5 +1,7 @@
 """HTTP endpoints for running docker compose commands on behalf of workers."""
 
+import hashlib
+import hmac
 import structlog
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -25,7 +27,12 @@ class ComposeResponse(BaseModel):
 
 
 @router.post("/{worker_id}/infra/compose")
-async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> ComposeResponse:
+async def run_compose(
+    worker_id: str,
+    request: ComposeRequest,
+    req: Request,
+    x_worker_broker_token: str | None = None,
+) -> ComposeResponse:
     """Run a docker compose command scoped to a worker's workspace."""
     # 1. Validate command whitelist and flags
     cmd_result = validate_command(request.args)
@@ -36,6 +43,12 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
     runner: ComposeRunner = req.app.state.compose_runner
     docker = req.app.state.docker
     redis = req.app.state.redis
+
+    broker_metadata = await redis.hgetall(f"worker:broker:{worker_id}")
+    expected = broker_metadata.get("token_digest") if broker_metadata else None
+    digest = hashlib.sha256((x_worker_broker_token or "").encode()).hexdigest()
+    if not expected or not hmac.compare_digest(digest, expected):
+        raise HTTPException(status_code=403, detail="broker authentication required")
 
     # Resolve actual workspace path from Redis metadata.
     # When workers are created with a project_id, the workspace lives under

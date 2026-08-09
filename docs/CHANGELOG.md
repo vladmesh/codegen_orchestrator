@@ -2,6 +2,8 @@
 
 ## 2026-08-09
 
+- Added the authenticated worker-broker boundary for coding-worker control-plane traffic.
+
 - Coding-agent subprocesses now inherit an explicit, documented allowlist
   instead of the worker-wrapper container environment. Normal launches and
   Claude auto-resume share it, preserving required CLI process basics,

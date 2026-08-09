@@ -11,9 +11,6 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 import json
-import os
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from pydantic import ValidationError
 import structlog
@@ -46,6 +43,7 @@ class ResultHttpServer:
         result_event: asyncio.Event,
         host: str = "127.0.0.1",
         port: int = 9090,
+        compose_callback: Callable[[dict], Awaitable[tuple[int, dict]]] | None = None,
     ):
         self.worker_id = worker_id
         self._publish = publish_callback
@@ -53,6 +51,7 @@ class ResultHttpServer:
         self._host = host
         self._port = port
         self._server: asyncio.Server | None = None
+        self._compose = compose_callback
 
     @property
     def port(self) -> int:
@@ -169,43 +168,16 @@ class ResultHttpServer:
 
     async def _handle_infra_compose(self, raw_body: bytes) -> tuple[HTTPStatus, dict]:
         """Handle POST /infra/compose — proxy to worker-manager."""
-        manager_url = os.environ.get("WORKER_MANAGER_URL")
-        worker_id = os.environ.get("WORKER_ID")
-
-        if not manager_url or not worker_id:
+        if self._compose is None:
             return HTTPStatus.SERVICE_UNAVAILABLE, {
-                "error": "WORKER_MANAGER_URL or WORKER_ID not configured"
+                "error": "worker broker is not configured"
             }
-
-        target_url = f"{manager_url}/api/worker/{worker_id}/infra/compose"
-
-        # Run blocking urllib in executor to avoid blocking the event loop
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._proxy_request, target_url, raw_body)
-
-    @staticmethod
-    def _proxy_request(target_url: str, raw_body: bytes) -> tuple[HTTPStatus, dict]:
-        """Forward request to worker-manager and return its response."""
-        # target_url is always internal worker-manager, not user-controlled
-        req = Request(  # noqa: S310
-            target_url,
-            data=raw_body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
         try:
-            with urlopen(req, timeout=180) as resp:  # noqa: S310
-                response_body = resp.read()
-                return HTTPStatus.OK, json.loads(response_body)
-        except HTTPError as e:
-            try:
-                error_body = json.loads(e.read())
-            except (json.JSONDecodeError, AttributeError):
-                error_body = {"error": str(e)}
-            return HTTPStatus(e.code), error_body
-        except URLError as e:
-            logger.error("infra_proxy_connection_error", error=str(e))
-            return HTTPStatus.BAD_GATEWAY, {"error": f"Cannot reach worker-manager: {e.reason}"}
+            request = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
+        status, body = await self._compose(request)
+        return HTTPStatus(status), body
 
     @staticmethod
     async def _send_response(writer: asyncio.StreamWriter, status: HTTPStatus, body: dict) -> None:
