@@ -215,6 +215,45 @@ async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
 
 
 @pytest.mark.asyncio
+async def test_ownership_preparation_failure_aborts_before_container_launch():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("src.manager.settings") as mock_settings,
+        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
+        patch("src.manager.workspace_mod.prepare_worker_paths", side_effect=RuntimeError("ownership failed")),
+    ):
+        mock_settings.ENVIRONMENT = "production"
+        mock_settings.DOCKER_NETWORK = ""
+        mock_settings.WORKER_NETWORK = "codegen_worker"
+        mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
+        mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+        mock_settings.WORKER_API_URL = "http://worker-api:8000"
+        mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+        mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
+        mock_settings.WORKER_IMAGE_PREFIX = "worker"
+        mock_settings.WORKER_DOCKER_LABELS = "{}"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
+
+        with pytest.raises(RuntimeError, match="ownership failed"):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-ownership-failure",
+                capabilities=["git"],
+                base_image="worker-base:latest",
+                agent_type=AgentType.CLAUDE,
+                auth_mode="api_key",
+                api_key="test-api-key",
+                repo_id="repo-1",
+            )
+
+    wrapper.run_container.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_create_worker_creates_dev_network():
     """create_worker with create_dev_network=True should create a dev_proj_<id> network."""
     redis = aioredis.FakeRedis(decode_responses=True)

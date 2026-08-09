@@ -1,5 +1,6 @@
 volumes:
   workspaces:
+  worker-transcripts:
   dind-storage:
 
 networks:
@@ -96,11 +97,13 @@ services:
       - WORKER_REDIS_URL=redis://172.31.0.10:6379/0
       - WORKER_API_URL=http://172.31.0.20:8000
       - SCAFFOLDED_WORKSPACE_PATH=/tmp/codegen/workspaces
+      - WORKER_TRANSCRIPT_STORAGE_PATH=/tmp/codegen/worker-transcripts
       # Claude host_session workers must get a real bind mount for their config
       # directory; inside DIND that is the daemon-visible /host-claude.
       - HOST_CLAUDE_DIR=/host-claude
     volumes:
       - workspaces:/tmp/codegen/workspaces
+      - worker-transcripts:/tmp/codegen/worker-transcripts
     depends_on:
       redis:
         condition: service_healthy
@@ -172,6 +175,7 @@ services:
       - dind-storage:/var/lib/docker
       - ${HOST_CLAUDE_DIR:-/tmp/fake-claude}:/host-claude:rw
       - workspaces:/tmp/codegen/workspaces
+      - worker-transcripts:/tmp/codegen/worker-transcripts
     # Pass DNS to Docker daemon for containers spawned inside DIND
     command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--dns=8.8.8.8", "--dns=8.8.4.4"]
     healthcheck:

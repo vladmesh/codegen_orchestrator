@@ -502,6 +502,10 @@ class WorkerManager:
             if secrets_key:
                 container_env["SECRETS_ENCRYPTION_KEY"] = secrets_key
 
+            workspace_mod.prepare_worker_paths(
+                workspace_path=config.workspace_host_path,
+                transcript_path=config.transcript_host_path,
+            )
             volumes = config.to_volume_mounts()
 
             container_id = await self.create_worker(
@@ -514,12 +518,6 @@ class WorkerManager:
                 workspace_path=str(ws_path),
                 container_config=config,
                 allow_host_network=allow_host_network,
-            )
-
-            await self.docker.exec_in_container(
-                container_id,
-                "chown -R worker:worker /workspace /artifacts/worker-transcripts",
-                user="root",
             )
 
             if repo_id:

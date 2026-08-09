@@ -76,13 +76,23 @@ class TestDevEnvIntegration:
 
         container = docker_client.containers.get(f"worker-{worker_name}")
 
-        # Touch a file in /workspace inside the container
-        exit_code, output = container.exec_run("touch /workspace/test.txt")
+        container.reload()
+        host_config = container.attrs["HostConfig"]
+        assert host_config["CapDrop"] == ["ALL"]
+        assert host_config["SecurityOpt"] == ["no-new-privileges:true"]
+
+        # The hardened worker user must write both paths prepared before launch.
+        exit_code, output = container.exec_run(
+            "touch /workspace/test.txt /artifacts/worker-transcripts/test.jsonl"
+        )
         assert exit_code == 0, f"touch failed: {output.decode()}"
 
         # Verify file exists (proves workspace is writable and mounted)
         exit_code, output = container.exec_run("ls /workspace/test.txt")
         assert exit_code == 0, f"File not found: {output.decode()}"
+
+        exit_code, output = container.exec_run("ls /artifacts/worker-transcripts/test.jsonl")
+        assert exit_code == 0, f"Transcript not found: {output.decode()}"
 
     async def test_compose_rejects_absolute_volumes(
         self, redis_client, docker_client, scaffolded_workspace

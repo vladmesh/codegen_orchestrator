@@ -18,3 +18,9 @@ def worker_settings(monkeypatch):
     monkeypatch.setenv("WORKER_IMAGE_PREFIX", "worker-test")
     monkeypatch.setenv("WORKER_DOCKER_LABELS", json.dumps({"com.codegen.environment": "test"}))
     return WorkerManagerSettings()
+
+
+@pytest.fixture(autouse=True)
+def mock_worker_path_preparation(monkeypatch):
+    """Keep manager unit tests independent of host-owned bind mounts."""
+    monkeypatch.setattr("src.manager.workspace_mod.prepare_worker_paths", MagicMock())
