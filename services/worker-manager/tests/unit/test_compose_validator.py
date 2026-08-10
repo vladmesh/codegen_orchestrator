@@ -369,3 +369,23 @@ class TestValidateEffectiveCompose:
         assert safe_result.valid, safe_result.errors
         assert not unsafe_result.valid
         assert any("absolute bind" in error for error in unsafe_result.errors)
+
+    def test_effective_relative_dockerfile_is_resolved_from_build_context(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        build_context = workspace / "backend"
+        build_context.mkdir(parents=True)
+        compose = _safe_effective_compose()
+        compose["services"]["db"]["build"] = {
+            "context": str(build_context),
+            "dockerfile": "Dockerfile",
+        }
+
+        result = validate_effective_compose(compose, "worker-123", workspace)
+
+        assert result.valid, result.errors
+
+        compose["services"]["db"]["build"]["dockerfile"] = "../../Dockerfile"
+        escaped_result = validate_effective_compose(compose, "worker-123", workspace)
+
+        assert not escaped_result.valid
+        assert any("build.dockerfile" in error for error in escaped_result.errors)

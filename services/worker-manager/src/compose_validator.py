@@ -154,12 +154,20 @@ def _validate_build(service_name: str, config: dict[str, Any], workspace_path: P
     if not isinstance(build, dict):
         errors.append(f"Service '{service_name}': build must be a mapping")
         return
-    for key in ("context", "dockerfile"):
-        value = build.get(key)
-        if value and (
-            not isinstance(value, str) or workspace_path is None or not _is_within_workspace(value, workspace_path)
-        ):
-            errors.append(f"Service '{service_name}': build.{key} must remain within the worker workspace")
+    context = build.get("context")
+    if context and (
+        not isinstance(context, str) or workspace_path is None or not _is_within_workspace(context, workspace_path)
+    ):
+        errors.append(f"Service '{service_name}': build.context must remain within the worker workspace")
+    dockerfile = build.get("dockerfile")
+    if dockerfile:
+        if not isinstance(dockerfile, str) or workspace_path is None:
+            errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
+        elif Path(dockerfile).is_absolute():
+            if not _is_within_workspace(dockerfile, workspace_path):
+                errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
+        elif not isinstance(context, str) or not _is_within_workspace(str(Path(context) / dockerfile), workspace_path):
+            errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
     for key in ("additional_contexts", "secrets", "ssh"):
         if build.get(key):
             errors.append(f"Service '{service_name}': build.{key} is not supported")

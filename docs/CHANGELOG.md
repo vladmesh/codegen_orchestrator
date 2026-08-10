@@ -19,6 +19,10 @@
   the worker plan after teardown. Limits remain project-declared when valid, with
   feasible defaults only for services that omit them.
 
+- Fixed effective Compose build validation to resolve relative Dockerfiles from
+  their validated build context, preserving safe service-template builds while
+  rejecting a Dockerfile path that escapes the worker workspace.
+
 ## 2026-08-09
 
 - Added executable worker-broker acceptance regressions: resolved production
