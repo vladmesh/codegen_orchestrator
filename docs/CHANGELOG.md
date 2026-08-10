@@ -33,6 +33,10 @@
   directory for nested source paths. Recovery now distinguishes global file
   selection from the supported `logs -f` follow flag.
 
+- Restricted source-only Compose path fields to static literals, rejecting
+  interpolation in `env_file` and `extends.file` before project environment
+  values can select a host path during configuration resolution.
+
 ## 2026-08-09
 
 - Added executable worker-broker acceptance regressions: resolved production

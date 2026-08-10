@@ -39,6 +39,7 @@ _SAFE_VALUE_COMMAND_FLAGS = {"up": {"--wait-timeout"}, "logs": {"--tail", "--sin
 MAX_CPU_LIMIT = 3.0
 MAX_MEMORY_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
 _MEMORY_LIMIT_RE = re.compile(r"^(?P<amount>\d+(?:\.\d+)?)(?P<unit>[kKmMgGtT](?:i)?[bB]?)?$")
+_COMPOSE_PATH_INTERPOLATION_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 
 
 @dataclass
@@ -296,6 +297,9 @@ def validate_command(args: list[str]) -> ValidationResult:
 def _source_path(value: Any, project_directory: Path, workspace_path: Path, errors: list[str], label: str) -> None:
     if not isinstance(value, str) or not value:
         errors.append(f"{label} must be a non-empty workspace path")
+        return
+    if _COMPOSE_PATH_INTERPOLATION_RE.search(value):
+        errors.append(f"{label} must not use Compose interpolation")
         return
     try:
         resolved = (project_directory / value).resolve()

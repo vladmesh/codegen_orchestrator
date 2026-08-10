@@ -224,14 +224,17 @@ class TestComposeApi:
         assert "privileged" in response.json()["detail"]
         runner.run.assert_awaited_once()
 
-    def test_broker_api_rejects_extends_secret_escape_before_compose_config(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("env_file", "project_env"),
+        [("${EVIL}", "EVIL=../../HOSTSECRET.env\n"), ("${HOME}/HOSTSECRET.env", None)],
+    )
+    def test_broker_api_rejects_interpolated_env_file_before_compose_config(self, tmp_path, env_file, project_env):
         workspace = tmp_path / "workspace"
         infra = workspace / "infra"
         infra.mkdir(parents=True)
-        (infra / "compose.base.yml").write_text("services:\n  db:\n    extends: {file: ../evil.yml, service: db}\n")
-        (workspace / "evil.yml").write_text(
-            "services:\n  db:\n    image: postgres:16\n    env_file: ../HOSTSECRET.env\n"
-        )
+        if project_env:
+            (workspace / ".env").write_text(project_env)
+        (infra / "compose.base.yml").write_text(f"services:\n  db:\n    image: postgres:16\n    env_file: {env_file}\n")
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
         app.state.compose_runner = ComposeRunner(str(tmp_path))
@@ -252,5 +255,5 @@ class TestComposeApi:
             )
 
         assert response.status_code == 400
-        assert "env_file" in response.json()["detail"]
+        assert "interpolation" in response.json()["detail"]
         mock_run.assert_not_called()

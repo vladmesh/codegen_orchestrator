@@ -454,6 +454,41 @@ class TestComposeRunner:
         mock_run.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("env_file", "project_env"),
+        [("${EVIL}", "EVIL=../../HOSTSECRET.env\n"), ("${HOME}/HOSTSECRET.env", None)],
+    )
+    async def test_interpolated_env_file_is_rejected_before_compose_resolution(self, workspace, env_file, project_env):
+        root = workspace / "worker-123" / "workspace"
+        if project_env:
+            (root / ".env").write_text(project_env)
+        (root / "infra" / "compose.base.yml").write_text(
+            f"services:\n  db:\n    image: postgres:16\n    env_file: {env_file}\n"
+        )
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="interpolation"):
+                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+
+        mock_run.assert_not_called()
+        assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
+
+    @pytest.mark.asyncio
+    async def test_interpolated_extends_file_is_rejected_before_compose_resolution(self, workspace):
+        root = workspace / "worker-123" / "workspace"
+        (root / "infra" / "compose.base.yml").write_text(
+            "services:\n  db:\n    extends: {file: '${EVIL}', service: db}\n"
+        )
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="interpolation"):
+                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_extends_source_paths_use_the_extended_file_directory(self, workspace):
         root = workspace / "worker-123" / "workspace"
         (root / "infra" / "compose.base.yml").write_text(
