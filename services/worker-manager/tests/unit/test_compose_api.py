@@ -1,7 +1,7 @@
 """Service tests for the compose HTTP API endpoint."""
 
 import hashlib
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -51,6 +51,42 @@ def client(tmp_path):
 
 
 class TestComposeApi:
+    def test_broker_authenticated_creation_uses_the_real_runner_plan(self, tmp_path):
+        workspace = tmp_path / "project" / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        (infra / "compose.base.yml").write_text("services:\n  db:\n    image: postgres:16\n")
+        (infra / "compose.dev.yml").write_text("services:\n  db:\n    ports: ['5432:5432']\n")
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        config = (
+            '{"services":{"db":{"image":"postgres:16","networks":{"default":null},"ports":["5432:5432"]}},'
+            '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
+        )
+        config_result = MagicMock(returncode=0, stdout=config, stderr="")
+        execution_result = MagicMock(returncode=0, stdout="started\n", stderr="")
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run", side_effect=[config_result, execution_result]) as mock_run,
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["up", "-d"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 200
+        assert mock_run.call_count == 2
+        assert "config" in mock_run.call_args_list[0].args[0]
+        assert "compose.resolved.yml" in " ".join(mock_run.call_args_list[1].args[0])
+
     def test_direct_request_without_broker_credential_is_rejected(self, client):
         c, _, _ = client
         response = c.post(
@@ -75,8 +111,9 @@ class TestComposeApi:
         assert data["exit_code"] == 0
 
     def test_blocked_command_returns_400(self, client):
-        """Commands not in the whitelist should return 400."""
-        c, _, _redis = client
+        """Runner policy failures are surfaced through the authenticated route."""
+        c, runner, _redis = client
+        runner.run = AsyncMock(side_effect=ValueError("Command 'exec' is not allowed"))
         response = c.post(
             "/api/worker/worker-123/infra/compose",
             json={"args": ["exec", "db", "bash"]},
@@ -85,8 +122,9 @@ class TestComposeApi:
         assert "exec" in response.json()["detail"].lower()
 
     def test_interactive_flag_returns_400(self, client):
-        """Interactive flags should return 400."""
-        c, _, _redis = client
+        """The router does not duplicate the runner argument policy."""
+        c, runner, _redis = client
+        runner.run = AsyncMock(side_effect=ValueError("Flag '-it' is not allowed"))
         response = c.post(
             "/api/worker/worker-123/infra/compose",
             json={"args": ["run", "-it", "db"]},
@@ -95,6 +133,7 @@ class TestComposeApi:
 
     def test_run_scope_flag_never_reaches_runner(self, client):
         c, runner, _redis = client
+        runner.run = AsyncMock(side_effect=ValueError("Flag '--volume=/:/host' is not allowed"))
 
         response = c.post(
             "/api/worker/worker-123/infra/compose",
@@ -102,8 +141,7 @@ class TestComposeApi:
         )
 
         assert response.status_code == 400
-        runner.inspect.assert_not_called()
-        runner.run.assert_not_called()
+        runner.run.assert_awaited_once()
 
     def test_nonzero_exit_code_still_returns_200(self, client):
         """Non-zero exit codes from compose should still return 200 with the exit code."""
@@ -147,8 +185,8 @@ class TestComposeApi:
         call_kwargs = runner.run.call_args
         assert call_kwargs.kwargs.get("workspace_dir") == "/tmp/workspaces/project-uuid/workspace"
 
-    def test_selected_source_is_read_relative_to_compose_cwd(self, client):
-        c, _runner, _redis = client
+    def test_router_delegates_selected_source_and_cwd_to_runner(self, client):
+        c, runner, _redis = client
 
         response = c.post(
             "/api/worker/worker-123/infra/compose",
@@ -156,12 +194,11 @@ class TestComposeApi:
         )
 
         assert response.status_code == 200
-        source_command = c.app.state.docker.exec_in_container.call_args.args[1]
-        assert source_command == "cat -- /workspace/infra/compose.yml"
+        assert runner.run.call_args.kwargs["cwd"] == "infra"
 
-    def test_unreadable_selected_compose_source_never_reaches_runner(self, client):
+    def test_source_failure_from_runner_returns_400(self, client):
         c, runner, _redis = client
-        c.app.state.docker.exec_in_container = AsyncMock(return_value=(1, b"missing"))
+        runner.run = AsyncMock(side_effect=ValueError("Compose source cannot be resolved"))
 
         response = c.post(
             "/api/worker/worker-123/infra/compose",
@@ -169,26 +206,11 @@ class TestComposeApi:
         )
 
         assert response.status_code == 400
-        runner.run.assert_not_called()
+        runner.run.assert_awaited_once()
 
-    def test_unsafe_effective_compose_never_reaches_runner(self, client):
+    def test_effective_policy_failure_from_runner_returns_400(self, client):
         c, runner, _redis = client
-        runner.inspect = AsyncMock(
-            return_value=(
-                {
-                    "services": {
-                        "db": {
-                            "image": "postgres:16",
-                            "networks": {"default": None},
-                            "privileged": True,
-                            "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
-                        }
-                    },
-                    "networks": {"default": {"name": "dev_proj_worker-123", "external": True}},
-                },
-                None,
-            )
-        )
+        runner.run = AsyncMock(side_effect=ValueError("Service 'db': privileged is not allowed"))
 
         response = c.post(
             "/api/worker/worker-123/infra/compose",
@@ -197,4 +219,4 @@ class TestComposeApi:
 
         assert response.status_code == 400
         assert "privileged" in response.json()["detail"]
-        runner.run.assert_not_called()
+        runner.run.assert_awaited_once()

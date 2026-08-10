@@ -12,6 +12,13 @@
   volumes fail closed. Focused coverage includes actual service-template Compose
   resolution when the Docker CLI is available.
 
+- Reworked Compose execution into a runner-owned plan compiler: creation resolves
+  and validates source and effective configuration, writes a restrictive
+  manager-owned snapshot, and executes only that snapshot. The recovery profile
+  now permits scoped `down -v`, does not reread a hostile manifest, and removes
+  the worker plan after teardown. Limits remain project-declared when valid, with
+  feasible defaults only for services that omit them.
+
 ## 2026-08-09
 
 - Added executable worker-broker acceptance regressions: resolved production

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from src.compose_validator import (
@@ -12,7 +14,7 @@ from src.compose_validator import (
 class TestValidateCommand:
     def test_allowed_commands_pass(self):
         for cmd in ALLOWED_COMMANDS:
-            result = validate_command([cmd, "-d"])
+            result = validate_command([cmd])
             assert result.valid, f"Expected '{cmd}' to be allowed, got errors: {result.errors}"
 
     def test_blocked_command_rejected(self):
@@ -165,6 +167,43 @@ services:
         result = validate_compose_file(content)
         assert not result.valid
 
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "env_file: /etc/passwd",
+            "extends: {file: /etc/compose.yml, service: app}",
+            "build: {context: /etc}",
+            "build: {context: ., dockerfile: /etc/Dockerfile}",
+        ],
+    )
+    def test_source_only_workspace_escapes_are_rejected(self, tmp_path, fragment):
+        source = tmp_path / "infra" / "compose.yml"
+        source.parent.mkdir()
+        source.write_text(f"services:\n  app:\n    image: alpine\n    {fragment}\n")
+
+        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+
+        assert not result.valid, result.errors
+
+    @pytest.mark.parametrize("kind", ["secrets", "configs"])
+    def test_external_or_host_file_sources_are_rejected(self, tmp_path, kind):
+        source = tmp_path / "compose.yml"
+        source.write_text(
+            f"services:\n  app:\n    image: alpine\n{kind}:\n  host:\n    external: true\n    file: /etc/passwd\n"
+        )
+
+        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+
+        assert not result.valid, result.errors
+
+    def test_external_include_is_rejected_before_resolution(self, tmp_path):
+        source = tmp_path / "compose.yml"
+        source.write_text("include: /etc/compose.yml\nservices:\n  app:\n    image: alpine\n")
+
+        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+
+        assert not result.valid, result.errors
+
 
 class TestResolveComposePath:
     def test_valid_path_resolved(self, tmp_path):
@@ -278,6 +317,44 @@ class TestValidateEffectiveCompose:
 
         assert not result.valid
         assert any("volume" in error.lower() for error in result.errors)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("uts", "host"),
+            ("userns_mode", "host"),
+            ("cgroup", "host"),
+            ("volumes_from", ["container:orchestrator-db"]),
+            ("security_opt", ["apparmor=unconfined"]),
+        ],
+    )
+    def test_remaining_host_capable_service_fields_are_rejected(self, field, value):
+        compose = _safe_effective_compose()
+        compose["services"]["db"][field] = value
+
+        result = validate_effective_compose(compose, "worker-123")
+
+        assert not result.valid, result.errors
+        assert any(field in error for error in result.errors)
+
+    @pytest.mark.parametrize("definition", [{"external": True}, {"file": "/etc/passwd"}])
+    def test_effective_secret_and_config_escapes_are_rejected(self, definition):
+        compose = _safe_effective_compose()
+        compose["secrets"] = {"host": definition}
+        compose["configs"] = {"host": definition}
+
+        result = validate_effective_compose(compose, "worker-123", Path("/workspace"))
+
+        assert not result.valid, result.errors
+
+    def test_external_named_volume_is_rejected(self):
+        compose = _safe_effective_compose()
+        compose["services"]["db"]["volumes"] = ["stolen:/data"]
+        compose["volumes"] = {"stolen": {"external": True, "name": "orchestrator_data"}}
+
+        result = validate_effective_compose(compose, "worker-123")
+
+        assert not result.valid, result.errors
 
     def test_resolved_workspace_bind_is_allowed_but_external_bind_is_rejected(self, tmp_path):
         workspace = tmp_path / "workspace"

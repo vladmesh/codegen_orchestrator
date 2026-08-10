@@ -1,7 +1,8 @@
 import asyncio
 import os
+import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import structlog
@@ -9,10 +10,9 @@ import yaml
 
 from .compose_validator import (
     CONTAINER_CREATING_COMMANDS,
-    MAX_CPU_LIMIT,
-    MAX_MEMORY_LIMIT_BYTES,
     VALUE_FLAGS,
     validate_command,
+    validate_compose_file,
     validate_effective_compose,
 )
 
@@ -24,11 +24,10 @@ _NETWORK_INJECTION_COMMANDS = {"up", "run", "build"}
 # Network override file written in the workspace
 _NETWORK_OVERRIDE_FILENAME = ".codegen-network.yml"
 
-# Ports override file that clears published ports (avoids host port conflicts)
-_PORTS_OVERRIDE_FILENAME = ".codegen-ports.yml"
-
-# Limits override written in the workspace for every container-creating command.
-_LIMITS_OVERRIDE_FILENAME = ".codegen-limits.yml"
+_PLAN_DIRECTORY = ".compose-plans"
+_DEFAULT_CPU_LIMIT = "1.0"
+_DEFAULT_MEMORY_LIMIT = "512MiB"
+_DOCKER_EXECUTABLE = Path(shutil.which("docker") or "/usr/bin/docker")
 
 # Default compose files for service-template projects (under infra/)
 _DEFAULT_COMPOSE_FILES = ["infra/compose.base.yml", "infra/compose.dev.yml"]
@@ -63,45 +62,8 @@ class ComposeInvocation:
     env: dict[str, str]
     source_files: list[str]
     workspace_path: Path
-
-
-def _generate_ports_override(compose_files: list[Path]) -> str | None:
-    """Generate a compose override that clears published ports for all services.
-
-    Parses the compose files to find services with `ports` defined,
-    then returns an override YAML that sets `ports: []` for each.
-    This prevents host port conflicts when workers run on a host
-    that already has those ports bound (e.g. orchestrator's own postgres/redis).
-
-    Returns None if no services have ports defined.
-    """
-    services_with_ports: set[str] = set()
-    for cf in compose_files:
-        if not cf.is_file():
-            raise ValueError(f"Compose source is unavailable: {cf}")
-        try:
-            data = yaml.safe_load(cf.read_text())
-        except (OSError, UnicodeError, yaml.YAMLError) as exc:
-            raise ValueError(f"Compose source cannot be resolved: {cf}: {exc}") from exc
-        if not isinstance(data, dict):
-            continue
-        services = data.get("services")
-        if not isinstance(services, dict):
-            continue
-        for svc_name, svc_config in services.items():
-            if isinstance(svc_config, dict) and svc_config.get("ports"):
-                services_with_ports.add(svc_name)
-
-    if not services_with_ports:
-        return None
-
-    # Use !reset tag so Docker Compose v2 clears ports instead of merging.
-    # yaml.dump doesn't support custom tags, so we build the YAML manually.
-    lines = ["services:"]
-    for svc in sorted(services_with_ports):
-        lines.append(f"  {svc}:")
-        lines.append("    ports: !reset []")
-    return "\n".join(lines) + "\n"
+    project_name: str
+    snapshot_path: Path | None = None
 
 
 def _generate_network_override(worker_id: str) -> str:
@@ -118,37 +80,44 @@ def _generate_network_override(worker_id: str) -> str:
     return f"networks:\n  default:\n    name: {network_name}\n    external: true\n"
 
 
-def _generate_limits_override(compose_files: list[Path]) -> str:
-    """Generate bounded resource limits for every service selected for execution."""
-    service_names: set[str] = set()
-    for compose_file in compose_files:
-        if not compose_file.is_file():
-            raise ValueError(f"Compose source is unavailable: {compose_file}")
-        try:
-            data = yaml.safe_load(compose_file.read_text())
-        except (OSError, UnicodeError, yaml.YAMLError) as exc:
-            raise ValueError(f"Compose source cannot be resolved: {compose_file}: {exc}") from exc
-        if not isinstance(data, dict):
+def _apply_effective_overrides(data: dict) -> None:
+    """Apply manager-owned limits and port policy to the resolved project."""
+    services = data.get("services")
+    if not isinstance(services, dict):
+        raise ValueError("Resolved Compose configuration must contain services")
+    for name, service in services.items():
+        if not isinstance(service, dict):
+            raise ValueError(f"Service '{name}' must be a mapping")
+        service["ports"] = []
+        deploy = service.setdefault("deploy", {})
+        if not isinstance(deploy, dict):
             continue
-        services = data.get("services")
-        if isinstance(services, dict):
-            service_names.update(str(name) for name, config in services.items() if isinstance(config, dict))
-    if not service_names:
-        raise ValueError("Compose sources contain no services for resource limits")
+        resources = deploy.setdefault("resources", {})
+        if not isinstance(resources, dict):
+            continue
+        limits = resources.get("limits")
+        if limits is None:
+            resources["limits"] = {"cpus": _DEFAULT_CPU_LIMIT, "memory": _DEFAULT_MEMORY_LIMIT}
 
-    lines = ["services:"]
-    for service_name in sorted(service_names):
-        lines.extend(
-            [
-                f"  {service_name}:",
-                "    deploy:",
-                "      resources:",
-                "        limits:",
-                f'          cpus: "{MAX_CPU_LIMIT}"',
-                f'          memory: "{MAX_MEMORY_LIMIT_BYTES}"',
-            ]
-        )
-    return "\n".join(lines) + "\n"
+
+def _write_snapshot(invocation: ComposeInvocation, data: dict, command_args: list[str]) -> ComposeInvocation:
+    """Persist the validated resolved project outside the worker-writable workspace."""
+    plan_directory = invocation.snapshot_path.parent if invocation.snapshot_path else None
+    if plan_directory is None:
+        raise ValueError("Compose plan directory is unavailable")
+    snapshot_path = plan_directory / "compose.resolved.yml"
+    snapshot_path.write_text(yaml.safe_dump(data, sort_keys=True))
+    snapshot_path.chmod(0o600)
+    command = [
+        str(_DOCKER_EXECUTABLE),
+        "compose",
+        "--project-name",
+        invocation.project_name,
+        "-f",
+        str(snapshot_path),
+        *command_args,
+    ]
+    return replace(invocation, command=command, snapshot_path=snapshot_path)
 
 
 class ComposeRunner:
@@ -156,6 +125,12 @@ class ComposeRunner:
 
     def __init__(self, workspace_base_path: str):
         self.workspace_base_path = Path(workspace_base_path)
+
+    def _plan_directory(self, worker_id: str) -> Path:
+        path = self.workspace_base_path / _PLAN_DIRECTORY / worker_id
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.chmod(0o700)
+        return path
 
     @staticmethod
     def _subcommand(args: list[str]) -> str | None:
@@ -170,6 +145,46 @@ class ComposeRunner:
             if not arg.startswith("-"):
                 return arg
         return None
+
+    @staticmethod
+    def _without_file_flags(args: list[str]) -> list[str]:
+        result: list[str] = []
+        index = 0
+        while index < len(args):
+            if args[index] in ("-f", "--file"):
+                index += 2
+                continue
+            result.append(args[index])
+            index += 1
+        return result
+
+    @staticmethod
+    def _validate_source_tree(source: Path, workspace_path: Path, seen: set[Path] | None = None) -> None:
+        """Validate selected Compose files and every file reached through ``extends``."""
+        seen = seen or set()
+        try:
+            source = source.resolve()
+            source.relative_to(workspace_path)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Compose source cannot be resolved: {source}") from exc
+        if source in seen:
+            return
+        seen.add(source)
+        try:
+            content = source.read_text()
+            source_result = validate_compose_file(content, source_file=source, workspace_path=workspace_path)
+            data = yaml.safe_load(content)
+        except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
+            raise ValueError(f"Compose source cannot be resolved: {source}: {exc}") from exc
+        if not source_result.valid:
+            raise ValueError("; ".join(source_result.errors))
+        services = data.get("services", {}) if isinstance(data, dict) else {}
+        if not isinstance(services, dict):
+            return
+        for service in services.values():
+            extends = service.get("extends") if isinstance(service, dict) else None
+            if isinstance(extends, dict) and isinstance(extends.get("file"), str):
+                ComposeRunner._validate_source_tree(source.parent / extends["file"], workspace_path, seen)
 
     def _prepare_invocation(
         self,
@@ -201,6 +216,7 @@ class ComposeRunner:
             raise ValueError(f"Compose cwd does not exist: {effective_cwd}")
 
         project_name = f"worker_{worker_id}"
+        plan_directory = self._plan_directory(worker_id)
 
         subcommand = self._subcommand(args)
 
@@ -226,22 +242,13 @@ class ComposeRunner:
                 default_file_args.extend(["-f", compose_file])
 
         network_args: list[str] = []
-        ports_args: list[str] = []
-        limits_args: list[str] = []
         if subcommand in _NETWORK_INJECTION_COMMANDS:
-            override_path = effective_cwd / _NETWORK_OVERRIDE_FILENAME
+            override_path = plan_directory / _NETWORK_OVERRIDE_FILENAME
             override_path.write_text(_generate_network_override(worker_id))
-            network_args = ["-f", str(override_path)]
-
             compose_sources = [effective_cwd / compose_file for compose_file in source_files]
-            ports_content = _generate_ports_override(compose_sources)
-            if ports_content:
-                ports_path = effective_cwd / _PORTS_OVERRIDE_FILENAME
-                ports_path.write_text(ports_content)
-                ports_args = ["-f", str(ports_path)]
-            limits_path = effective_cwd / _LIMITS_OVERRIDE_FILENAME
-            limits_path.write_text(_generate_limits_override(compose_sources))
-            limits_args = ["-f", str(limits_path)]
+            for source in compose_sources:
+                self._validate_source_tree(source, worker_workspace_resolved)
+            network_args = ["-f", str(override_path)]
 
         env_file_args: list[str] = []
         dot_env = worker_workspace_resolved / ".env"
@@ -249,7 +256,7 @@ class ComposeRunner:
             env_file_args = ["--env-file", str(dot_env)]
 
         prefix = [
-            "docker",
+            str(_DOCKER_EXECUTABLE),
             "compose",
             "--project-name",
             project_name,
@@ -257,22 +264,12 @@ class ComposeRunner:
             *file_args,
             *default_file_args,
             *network_args,
-            *ports_args,
-            *limits_args,
         ]
         run_env = {key: value for key in _INHERITED_ENV_VARS if (value := os.environ.get(key)) is not None}
         run_env["HOST_UID"] = "1000"
         run_env["HOST_GID"] = "1000"
-        if dot_env.exists():
-            for line in dot_env.read_text().splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                key, _, value = line.partition("=")
-                if key:
-                    run_env[key] = value
         if env:
-            run_env.update(env)
+            raise ValueError("Caller-controlled Compose environment is not allowed")
 
         return ComposeInvocation(
             command=[*prefix, *command_args],
@@ -281,6 +278,33 @@ class ComposeRunner:
             env=run_env,
             source_files=source_files,
             workspace_path=worker_workspace_resolved,
+            project_name=project_name,
+            snapshot_path=plan_directory / "compose.resolved.yml",
+        )
+
+    def _prepare_recovery_invocation(
+        self, worker_id: str, args: list[str], workspace_dir: str | None = None
+    ) -> ComposeInvocation:
+        """Build a project-bound cleanup command without reading a worker manifest."""
+        command_result = validate_command(args)
+        if not command_result.valid:
+            raise ValueError("; ".join(command_result.errors))
+        workspace = Path(workspace_dir) if workspace_dir else self.workspace_base_path / worker_id / "workspace"
+        if not workspace.is_dir():
+            raise ValueError(f"Workspace for worker '{worker_id}' does not exist: {workspace}")
+        plan_directory = self._plan_directory(worker_id)
+        environment = {key: value for key in _INHERITED_ENV_VARS if (value := os.environ.get(key)) is not None}
+        environment["HOST_UID"] = "1000"
+        environment["HOST_GID"] = "1000"
+        project_name = f"worker_{worker_id}"
+        return ComposeInvocation(
+            command=[str(_DOCKER_EXECUTABLE), "compose", "--project-name", project_name, *args],
+            config_command=[],
+            cwd=plan_directory,
+            env=environment,
+            source_files=[],
+            workspace_path=workspace.resolve(),
+            project_name=project_name,
         )
 
     async def inspect(
@@ -325,9 +349,11 @@ class ComposeRunner:
         if not isinstance(data, dict):
             raise ValueError("docker compose config returned no project mapping")  # noqa: TRY004
         if self._subcommand(args) in CONTAINER_CREATING_COMMANDS:
+            _apply_effective_overrides(data)
             policy_result = validate_effective_compose(data, worker_id, invocation.workspace_path)
             if not policy_result.valid:
                 raise ValueError("; ".join(policy_result.errors))
+            invocation = _write_snapshot(invocation, data, self._without_file_flags(args))
         return data, invocation
 
     async def run(
@@ -355,13 +381,15 @@ class ComposeRunner:
         Returns:
             (exit_code, stdout, stderr)
         """
-        if prepared is None and self._subcommand(args) in CONTAINER_CREATING_COMMANDS:
-            _, prepared = await self.inspect(
-                worker_id, args, cwd=cwd, timeout=timeout, env=env, workspace_dir=workspace_dir
-            )
-        invocation = prepared or self._prepare_invocation(
-            worker_id, args, cwd=cwd, timeout=timeout, env=env, workspace_dir=workspace_dir
-        )
+        subcommand = self._subcommand(args)
+        if subcommand in CONTAINER_CREATING_COMMANDS:
+            if prepared is None:
+                _, prepared = await self.inspect(
+                    worker_id, args, cwd=cwd, timeout=timeout, env=env, workspace_dir=workspace_dir
+                )
+            invocation = prepared
+        else:
+            invocation = self._prepare_recovery_invocation(worker_id, args, workspace_dir)
 
         logger.info(
             "compose_run",
@@ -394,5 +422,8 @@ class ComposeRunner:
             worker_id=worker_id,
             exit_code=result.returncode,
         )
+
+        if subcommand == "down":
+            shutil.rmtree(invocation.cwd, ignore_errors=True)
 
         return result.returncode, result.stdout, result.stderr

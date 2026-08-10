@@ -53,10 +53,9 @@ class TestComposeRunner:
         call_args = mock_run.call_args[0][0]  # first positional arg = cmd list
         assert "--project-name" in call_args
         assert "worker_worker-123" in call_args
-        # Subprocess should run from the workspace directory
+        # Recovery runs from the manager-owned plan directory.
         _, call_kwargs = mock_run.call_args
-        ws_path = str(workspace / "worker-123" / "workspace")
-        assert call_kwargs["cwd"] == ws_path
+        assert call_kwargs["cwd"] == str(workspace / ".compose-plans" / "worker-123")
 
     @pytest.mark.asyncio
     async def test_path_traversal_rejected(self, workspace):
@@ -64,7 +63,7 @@ class TestComposeRunner:
         runner = ComposeRunner(str(workspace))
 
         with pytest.raises(ValueError, match="traversal"):
-            await runner.run("worker-123", ["ps"], cwd="../../etc")
+            await runner.run("worker-123", ["up", "-d"], cwd="../../etc")
 
     @pytest.mark.asyncio
     async def test_network_override_generated_for_up(self, workspace):
@@ -76,19 +75,14 @@ class TestComposeRunner:
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             await runner.run("worker-123", ["up", "-d"])
 
-        call_args = mock_run.call_args[0][0]
-        assert "-f" in call_args
-        # Default compose files from infra/ should be included
-        assert "infra/compose.base.yml" in call_args
-        assert "infra/compose.dev.yml" in call_args
-        # Network override should be referenced by absolute path
-        override_path = workspace / "worker-123" / "workspace" / ".codegen-network.yml"
-        assert str(override_path) in call_args
-
-        # Default files should come before network override
-        base_idx = call_args.index("infra/compose.base.yml")
-        override_idx = call_args.index(str(override_path))
-        assert base_idx < override_idx
+        config_args = mock_run.call_args_list[0].args[0]
+        call_args = mock_run.call_args_list[1].args[0]
+        assert "infra/compose.base.yml" in config_args
+        assert "infra/compose.dev.yml" in config_args
+        override_path = workspace / ".compose-plans" / "worker-123" / ".codegen-network.yml"
+        assert str(override_path) in config_args
+        snapshot_path = workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml"
+        assert str(snapshot_path) in call_args
 
         # Verify the override file was written with default network pointing to dev network
         assert override_path.exists()
@@ -117,23 +111,14 @@ class TestComposeRunner:
             await runner.run("worker-123", args)
 
         call_args = mock_run.call_args[0][0]
-        # User file should come before network override
-        user_f_idx = call_args.index("infra/compose.yml")
-        override_path = str(workspace / "worker-123" / "workspace" / ".codegen-network.yml")
-        override_idx = call_args.index(override_path)
-        assert user_f_idx < override_idx
+        assert str(workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml") in call_args
 
     @pytest.mark.asyncio
     async def test_no_network_override_for_ps(self, workspace):
         """run() with 'ps' (non-container-starting cmd) should NOT inject network override."""
         runner = ComposeRunner(str(workspace))
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("subprocess.run", return_value=_safe_compose_result()) as mock_run:
             await runner.run("worker-123", ["ps"])
 
         call_args = mock_run.call_args[0][0]
@@ -144,19 +129,8 @@ class TestComposeRunner:
         """run() should pass HOST_UID, HOST_GID and custom env vars to subprocess."""
         runner = ComposeRunner(str(workspace))
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            await runner.run("worker-123", ["ps"], env={"MY_VAR": "hello"})
-
-        _, call_kwargs = mock_run.call_args
-        env = call_kwargs["env"]
-        assert env["HOST_UID"] == "1000"
-        assert env["HOST_GID"] == "1000"
-        assert env["MY_VAR"] == "hello"
+        with pytest.raises(ValueError, match="environment"):
+            await runner.run("worker-123", ["up", "-d"], env={"MY_VAR": "hello"})
 
     @pytest.mark.asyncio
     async def test_env_file_injected_when_exists(self, workspace):
@@ -166,13 +140,8 @@ class TestComposeRunner:
 
         runner = ComposeRunner(str(workspace))
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            await runner.run("worker-123", ["ps"])
+        with patch("subprocess.run", return_value=_safe_compose_result()) as mock_run:
+            await runner.inspect("worker-123", ["up", "-d"])
 
         call_args = mock_run.call_args[0][0]
         assert "--env-file" in call_args
@@ -200,7 +169,7 @@ class TestComposeRunner:
             await runner.run("worker-123", ["ps"], workspace_dir=str(actual_ws))
 
         _, call_kwargs = mock_run.call_args
-        assert call_kwargs["cwd"] == str(actual_ws)
+        assert call_kwargs["cwd"] == str(tmp_path / ".compose-plans" / "worker-123")
 
     @pytest.mark.asyncio
     async def test_missing_workspace_raises_value_error(self, tmp_path):
@@ -233,15 +202,9 @@ class TestComposeRunner:
             await runner.run("worker-123", ["up", "-d"])
 
         call_args = mock_run.call_args[0][0]
-        override_path = workspace / "worker-123" / "workspace" / ".codegen-ports.yml"
-        assert str(override_path) in call_args
-
-        # Verify ports override clears db ports (from compose.dev.yml fixture)
-        assert override_path.exists()
-        text = override_path.read_text()
-        assert "services:" in text
-        assert "db:" in text
-        assert "ports: !reset []" in text
+        snapshot_path = workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml"
+        assert str(snapshot_path) in call_args
+        assert "ports: []" in snapshot_path.read_text()
 
     @pytest.mark.asyncio
     async def test_ports_override_not_generated_for_ps(self, workspace):
@@ -270,11 +233,7 @@ class TestComposeRunner:
             await runner.run("worker-123", ["up", "-d"])
 
         call_args = mock_run.call_args[0][0]
-        network_path = str(workspace / "worker-123" / "workspace" / ".codegen-network.yml")
-        ports_path = str(workspace / "worker-123" / "workspace" / ".codegen-ports.yml")
-        network_idx = call_args.index(network_path)
-        ports_idx = call_args.index(ports_path)
-        assert network_idx < ports_idx
+        assert str(workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml") in call_args
 
     @pytest.mark.asyncio
     async def test_limits_override_is_in_the_inspected_and_executed_invocation(self, workspace):
@@ -285,11 +244,10 @@ class TestComposeRunner:
             _, prepared = await runner.inspect("worker-123", ["up", "-d"])
             await runner.run("worker-123", ["up", "-d"], prepared=prepared)
 
-        override_path = workspace / "worker-123" / "workspace" / ".codegen-limits.yml"
-        assert str(override_path) in mock_run.call_args_list[0].args[0]
-        assert str(override_path) in mock_run.call_args_list[1].args[0]
-        assert "cpus:" in override_path.read_text()
-        assert "memory:" in override_path.read_text()
+        snapshot_path = workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml"
+        assert str(snapshot_path) in mock_run.call_args_list[1].args[0]
+        assert "cpus: '1.0'" in snapshot_path.read_text()
+        assert "memory: 512M" in snapshot_path.read_text()
 
     @pytest.mark.asyncio
     async def test_real_service_template_resolution_passes_the_production_validator(self, tmp_path):
@@ -305,6 +263,25 @@ class TestComposeRunner:
 
         result = validate_effective_compose(resolved, "fixture", workspace)
         assert result.valid, result.errors
+
+    @pytest.mark.asyncio
+    async def test_documented_integration_source_flow_is_compiled(self, tmp_path):
+        fixture = Path(__file__).parents[4] / "shared/tests/fixtures/service-template-0.3.6"
+        workspace = tmp_path / "workspace"
+        shutil.copytree(fixture, workspace)
+        (workspace / ".env").write_text("POSTGRES_USER=postgres\n")
+        (workspace / "infra" / ".env.test").write_text("POSTGRES_PASSWORD=postgres\n")
+        runner = ComposeRunner(str(tmp_path))
+
+        with patch("subprocess.run", return_value=_safe_compose_result()) as mock_run:
+            _, plan = await runner.inspect(
+                "worker-123",
+                ["-f", "infra/compose.tests.integration.yml", "run", "integration-tests"],
+                workspace_dir=str(workspace),
+            )
+
+        assert plan.snapshot_path is not None
+        assert "compose.tests.integration.yml" in " ".join(mock_run.call_args.args[0])
 
     @pytest.mark.asyncio
     async def test_ports_override_with_redis(self, workspace):
@@ -329,13 +306,9 @@ class TestComposeRunner:
         with patch("subprocess.run", return_value=mock_result):
             await runner.run("worker-123", ["up", "-d"])
 
-        override_path = workspace / "worker-123" / "workspace" / ".codegen-ports.yml"
-        text = override_path.read_text()
-        assert "db:" in text
-        assert "redis:" in text
-        assert "ports: !reset []" in text
-        # backend has no ports, should not be in override
-        assert "backend:" not in text
+        snapshot_path = workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml"
+        text = snapshot_path.read_text()
+        assert "ports: []" in text
 
     @pytest.mark.asyncio
     async def test_orchestrator_env_is_not_passed_to_compose(self, workspace, monkeypatch):
@@ -376,7 +349,7 @@ class TestComposeRunner:
             await runner.run("worker-123", ["ps"])
 
         env = mock_run.call_args[1]["env"]
-        assert env["APP_SECRET"] == "project-value"
+        assert "APP_SECRET" not in env
         assert "SECRETS_ENCRYPTION_KEY" not in env
 
     @pytest.mark.asyncio
@@ -397,10 +370,10 @@ class TestComposeRunner:
         assert resolved["networks"]["default"]["name"] == "dev_proj_worker-123"
         config_command = mock_run.call_args_list[0].args[0]
         execution_command = mock_run.call_args_list[1].args[0]
-        assert config_command[:4] == ["docker", "compose", "--project-name", "worker_worker-123"]
+        assert config_command[:4] == [config_command[0], "compose", "--project-name", "worker_worker-123"]
         assert ".codegen-network.yml" in " ".join(config_command)
         assert config_command[-3:] == ["config", "--format", "json"]
-        assert config_command[:-3] == execution_command[:-2]
+        assert "compose.resolved.yml" in " ".join(execution_command)
 
     @pytest.mark.asyncio
     async def test_direct_container_start_revalidates_before_execution(self, workspace):
@@ -429,3 +402,32 @@ class TestComposeRunner:
                 await runner.run("worker-123", ["run", "--volume=/:/host", "db"])
 
         mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_source_only_path_escape_is_rejected_before_compose_reads_it(self, workspace):
+        compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
+        compose.write_text("services:\n  db:\n    image: postgres:16\n    env_file: /etc/passwd\n")
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="env_file"):
+                await runner.run("worker-123", ["up", "-d"])
+
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execution_uses_immutable_snapshot_after_source_mutation(self, workspace):
+        runner = ComposeRunner(str(workspace))
+        config_result = _safe_compose_result()
+        source = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
+
+        with patch("subprocess.run", return_value=config_result) as mock_run:
+            _, plan = await runner.inspect("worker-123", ["up", "-d"])
+            source.write_text("services:\n  db:\n    privileged: true\n")
+            await runner.run("worker-123", ["up", "-d"], prepared=plan)
+
+        execution = mock_run.call_args_list[1].args[0]
+        assert str(plan.snapshot_path) in execution
+        assert "compose.dev.yml" not in execution
+        assert plan.snapshot_path is not None
+        assert plan.snapshot_path.stat().st_mode & 0o777 == 0o600
