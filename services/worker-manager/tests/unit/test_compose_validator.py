@@ -1,6 +1,9 @@
+import pytest
+
 from src.compose_validator import (
     validate_command,
     validate_compose_file,
+    validate_effective_compose,
     resolve_compose_path,
     ALLOWED_COMMANDS,
 )
@@ -42,6 +45,17 @@ class TestValidateCommand:
     def test_multiple_file_flags(self):
         result = validate_command(["-f", "compose.yml", "-f", "compose.override.yml", "up", "-d"])
         assert result.valid
+
+    def test_project_scope_overrides_are_rejected(self):
+        for args in (
+            ["--project-name", "another-project", "up"],
+            ["--project-directory=/tmp", "up"],
+            ["--env-file", "attacker.env", "up"],
+            ["run", "--network", "codegen_internal", "db"],
+            ["--file=outside.yml", "up"],
+        ):
+            result = validate_command(args)
+            assert not result.valid, args
 
 
 class TestValidateComposeFile:
@@ -151,3 +165,65 @@ class TestResolveComposePath:
         resolved, result = resolve_compose_path("subproject", tmp_path)
         assert result.valid
         assert resolved == subdir.resolve()
+
+
+def _safe_effective_compose():
+    return {
+        "services": {
+            "db": {
+                "image": "postgres:16",
+                "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
+            }
+        },
+        "networks": {"default": {"name": "dev_proj_worker-123", "external": True}},
+    }
+
+
+class TestValidateEffectiveCompose:
+    def test_safe_bounded_effective_compose_passes(self):
+        result = validate_effective_compose(_safe_effective_compose(), "worker-123")
+        assert result.valid, result.errors
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("privileged", True),
+            ("network_mode", "host"),
+            ("pid", "host"),
+            ("ipc", "host"),
+            ("devices", ["/dev/fuse"]),
+            ("device_cgroup_rules", ["c 1:3 rwm"]),
+            ("cap_add", ["SYS_ADMIN"]),
+        ],
+    )
+    def test_host_escape_settings_are_rejected(self, field, value):
+        compose = _safe_effective_compose()
+        compose["services"]["db"][field] = value
+        result = validate_effective_compose(compose, "worker-123")
+        assert not result.valid
+        assert any(field in error for error in result.errors)
+
+    def test_socket_mount_custom_network_and_unbounded_resources_are_rejected(self):
+        compose = _safe_effective_compose()
+        service = compose["services"]["db"]
+        service["volumes"] = ["./docker.sock:/var/run/docker.sock"]
+        service["networks"] = ["orchestrator"]
+        del service["deploy"]
+        compose["networks"] = {"orchestrator": {"external": True}}
+
+        result = validate_effective_compose(compose, "worker-123")
+
+        assert not result.valid
+        assert any("socket" in error.lower() for error in result.errors)
+        assert any("network" in error.lower() for error in result.errors)
+        assert any("limits" in error.lower() for error in result.errors)
+
+    def test_over_limit_resources_are_rejected(self):
+        compose = _safe_effective_compose()
+        compose["services"]["db"]["deploy"]["resources"]["limits"] = {"cpus": "4.1", "memory": "5G"}
+
+        result = validate_effective_compose(compose, "worker-123")
+
+        assert not result.valid
+        assert any("CPU" in error for error in result.errors)
+        assert any("memory" in error.lower() for error in result.errors)

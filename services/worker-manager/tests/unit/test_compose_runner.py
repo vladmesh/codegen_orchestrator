@@ -1,9 +1,23 @@
 import subprocess
-
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.compose_runner import ComposeRunner
+
+SAFE_EFFECTIVE_CONFIG = (
+    '{"services":{"db":{"image":"postgres:16","deploy":{"resources":'
+    '{"limits":{"cpus":"1.0","memory":"512M"}}}}},'
+    '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
+)
+
+
+def _safe_compose_result():
+    result = MagicMock()
+    result.returncode = 0
+    result.stdout = SAFE_EFFECTIVE_CONFIG
+    result.stderr = ""
+    return result
 
 
 @pytest.fixture
@@ -54,10 +68,7 @@ class TestComposeRunner:
         """run() with 'up' should write .codegen-network.yml and include it in args."""
         runner = ComposeRunner(str(workspace))
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+        mock_result = _safe_compose_result()
 
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             await runner.run("worker-123", ["up", "-d"])
@@ -96,13 +107,11 @@ class TestComposeRunner:
         infra.mkdir(parents=True, exist_ok=True)
         (infra / "compose.yml").write_text("services:\n  db:\n    image: postgres:16\n")
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+        mock_result = _safe_compose_result()
 
         with patch("subprocess.run", return_value=mock_result) as mock_run:
-            await runner.run("worker-123", ["-f", "infra/compose.yml", "up", "-d"])
+            args = ["-f", "infra/compose.yml", "up", "-d"]
+            await runner.run("worker-123", args)
 
         call_args = mock_run.call_args[0][0]
         # User file should come before network override
@@ -203,7 +212,10 @@ class TestComposeRunner:
         """run() should raise ValueError (not TimeoutExpired) when compose times out."""
         runner = ComposeRunner(str(workspace))
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker compose", timeout=1)):
+        with patch(
+            "subprocess.run",
+            side_effect=[_safe_compose_result(), subprocess.TimeoutExpired(cmd="docker compose", timeout=1)],
+        ):
             with pytest.raises(ValueError, match="[Tt]imed? ?out"):
                 await runner.run("worker-123", ["up", "-d"], timeout=1)
 
@@ -212,10 +224,7 @@ class TestComposeRunner:
         """run() with 'up' should write .codegen-ports.yml clearing published ports."""
         runner = ComposeRunner(str(workspace))
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+        mock_result = _safe_compose_result()
 
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             await runner.run("worker-123", ["up", "-d"])
@@ -252,10 +261,7 @@ class TestComposeRunner:
         """Ports override should come after network override (last override wins)."""
         runner = ComposeRunner(str(workspace))
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+        mock_result = _safe_compose_result()
 
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             await runner.run("worker-123", ["up", "-d"])
@@ -285,10 +291,7 @@ class TestComposeRunner:
         )
         runner = ComposeRunner(str(workspace))
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_result.stderr = ""
+        mock_result = _safe_compose_result()
 
         with patch("subprocess.run", return_value=mock_result):
             await runner.run("worker-123", ["up", "-d"])
@@ -342,3 +345,44 @@ class TestComposeRunner:
         env = mock_run.call_args[1]["env"]
         assert env["APP_SECRET"] == "project-value"
         assert "SECRETS_ENCRYPTION_KEY" not in env
+
+    @pytest.mark.asyncio
+    async def test_inspect_resolves_the_same_fixed_scope_as_execution(self, workspace):
+        """The preflight config command carries the generated network and fixed project name."""
+        runner = ComposeRunner(str(workspace))
+        config = (
+            '{"services":{"db":{"image":"postgres:16","deploy":{"resources":'
+            '{"limits":{"cpus":"1.0","memory":"512M"}}}}},'
+            '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
+        )
+        mock_result = MagicMock(returncode=0, stdout=config, stderr="")
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            resolved, prepared = await runner.inspect("worker-123", ["up", "-d"])
+            await runner.run("worker-123", ["up", "-d"], prepared=prepared)
+
+        assert resolved["networks"]["default"]["name"] == "dev_proj_worker-123"
+        config_command = mock_run.call_args_list[0].args[0]
+        execution_command = mock_run.call_args_list[1].args[0]
+        assert config_command[:4] == ["docker", "compose", "--project-name", "worker_worker-123"]
+        assert ".codegen-network.yml" in " ".join(config_command)
+        assert config_command[-3:] == ["config", "--format", "json"]
+        assert config_command[:-3] == execution_command[:-2]
+
+    @pytest.mark.asyncio
+    async def test_direct_container_start_revalidates_before_execution(self, workspace):
+        """ComposeRunner has no unvalidated container-creating execution path."""
+        runner = ComposeRunner(str(workspace))
+        config = (
+            '{"services":{"db":{"image":"postgres:16","privileged":true,"deploy":{"resources":'
+            '{"limits":{"cpus":"1.0","memory":"512M"}}}}},'
+            '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
+        )
+        mock_result = MagicMock(returncode=0, stdout=config, stderr="")
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            with pytest.raises(ValueError, match="privileged"):
+                await runner.run("worker-123", ["up", "-d"])
+
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.args[0][-3:] == ["config", "--format", "json"]

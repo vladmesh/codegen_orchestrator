@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-08-10
+
+- Worker-manager now resolves every broker-authenticated Compose request with
+  the exact fixed execution scope before it invokes Compose. Container-creating
+  commands fail closed unless Docker Compose's resolved project has bounded CPU
+  and memory limits on every service, only the worker's `dev_proj_<worker_id>`
+  network, and no privileged mode, host namespaces, devices, added capabilities,
+  Docker/Compose socket mounts, or absolute bind mounts. Caller flags can no
+  longer replace the fixed project name, project directory, environment file, or
+  network scope. The runner shares its resolved invocation with execution, so
+  the inspected project name, environment and generated network/ports overrides
+  are the ones executed.
+
 ## 2026-08-09
 
 - Added executable worker-broker acceptance regressions: resolved production

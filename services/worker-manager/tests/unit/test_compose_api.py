@@ -1,10 +1,11 @@
 """Service tests for the compose HTTP API endpoint."""
 
 import hashlib
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 from src.routers.compose import router as compose_router
 from src.compose_runner import ComposeRunner
 
@@ -18,9 +19,23 @@ def client(tmp_path):
 
     runner = MagicMock(spec=ComposeRunner)
     runner.run = AsyncMock(return_value=(0, "output\n", ""))
+    runner.inspect = AsyncMock(
+        return_value=(
+            {
+                "services": {
+                    "db": {
+                        "image": "postgres:16",
+                        "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
+                    }
+                },
+                "networks": {"default": {"name": "dev_proj_worker-123", "external": True}},
+            },
+            None,
+        )
+    )
 
     docker = MagicMock()
-    docker.exec_in_container = AsyncMock(side_effect=Exception("no container"))
+    docker.exec_in_container = AsyncMock(return_value=(0, b"services:\n  db:\n    image: postgres:16\n"))
 
     redis = AsyncMock()
     redis.hget = AsyncMock(return_value=None)
@@ -118,3 +133,42 @@ class TestComposeApi:
         # Verify runner.run was called with workspace_dir from Redis
         call_kwargs = runner.run.call_args
         assert call_kwargs.kwargs.get("workspace_dir") == "/tmp/workspaces/project-uuid/workspace"
+
+    def test_unreadable_selected_compose_source_never_reaches_runner(self, client):
+        c, runner, _redis = client
+        c.app.state.docker.exec_in_container = AsyncMock(return_value=(1, b"missing"))
+
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["ps"]},
+        )
+
+        assert response.status_code == 400
+        runner.run.assert_not_called()
+
+    def test_unsafe_effective_compose_never_reaches_runner(self, client):
+        c, runner, _redis = client
+        runner.inspect = AsyncMock(
+            return_value=(
+                {
+                    "services": {
+                        "db": {
+                            "image": "postgres:16",
+                            "privileged": True,
+                            "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
+                        }
+                    },
+                    "networks": {"default": {"name": "dev_proj_worker-123", "external": True}},
+                },
+                None,
+            )
+        )
+
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["up", "-d"]},
+        )
+
+        assert response.status_code == 400
+        assert "privileged" in response.json()["detail"]
+        runner.run.assert_not_called()
