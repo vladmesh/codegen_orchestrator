@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.compose_validator import (
+    SOURCE_DIRECTIVE_POLICIES,
     validate_command,
     validate_compose_file,
     validate_effective_compose,
@@ -79,6 +80,29 @@ class TestValidateCommand:
 
 
 class TestValidateComposeFile:
+    def test_source_directive_sweep_has_one_policy_for_every_compose_v227_loader(self):
+        """Keep the v2.27.1 source-loader sweep from silently growing a bypass."""
+        assert set(SOURCE_DIRECTIVE_POLICIES) == {
+            "env_file",
+            "extends.file",
+            "build.context",
+            "build.dockerfile",
+            "secrets.*.file",
+            "configs.*.file",
+            "label_file",
+            "include",
+            "build.additional_contexts",
+            "build.secrets",
+            "build.ssh",
+            "credential_spec.file",
+            "develop.watch.path",
+        }
+        for policy in SOURCE_DIRECTIVE_POLICIES.values():
+            assert policy.resolution_context
+            assert policy.interpolation
+            assert policy.containment
+        assert SOURCE_DIRECTIVE_POLICIES["label_file"].allowed is False
+
     def test_relative_volume_allowed(self):
         content = """
 services:
@@ -221,6 +245,17 @@ services:
 
         assert not result.valid, result.errors
         assert any("env_file" in error for error in result.errors)
+
+    @pytest.mark.parametrize("label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"])
+    def test_label_file_is_rejected_at_the_source_directive_boundary(self, tmp_path, label_file):
+        source = tmp_path / "infra" / "compose.yml"
+        source.parent.mkdir()
+        source.write_text(f"services:\n  app:\n    image: alpine\n    label_file: {label_file}\n")
+
+        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+
+        assert not result.valid
+        assert result.errors == ["Service 'app': label_file is not supported"]
 
 
 class TestResolveComposePath:

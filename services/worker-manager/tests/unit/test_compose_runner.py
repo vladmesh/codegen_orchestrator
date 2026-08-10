@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.compose_runner import ComposeRunner
+from src.compose_runner import ComposeInvocation, ComposeRunner, _write_snapshot
 from src.compose_validator import validate_effective_compose
 
 SAFE_EFFECTIVE_CONFIG = (
@@ -36,6 +36,25 @@ def workspace(tmp_path):
 
 
 class TestComposeRunner:
+    def test_snapshot_compiler_rejects_retained_loader_directives(self, tmp_path):
+        snapshot = tmp_path / "compose.resolved.yml"
+        invocation = ComposeInvocation(
+            command=[],
+            config_command=[],
+            cwd=tmp_path,
+            env={},
+            source_files=[],
+            workspace_path=tmp_path,
+            project_directory=tmp_path,
+            project_name="worker_worker-123",
+            snapshot_path=snapshot,
+        )
+
+        with pytest.raises(ValueError, match="label_file cannot be retained"):
+            _write_snapshot(invocation, {"services": {"app": {"label_file": ["/etc/passwd"]}}}, ["up"])
+
+        assert not snapshot.exists()
+
     @pytest.mark.asyncio
     async def test_builds_correct_command(self, workspace):
         """run() should build a command with --project-name and run from workspace cwd."""
@@ -262,6 +281,11 @@ class TestComposeRunner:
         result = validate_effective_compose(resolved, "fixture", workspace)
         assert result.valid, result.errors
 
+    def test_service_template_has_no_label_file_compatibility_consumer(self):
+        fixture = Path(__file__).parents[4] / "shared/tests/fixtures/service-template-0.3.6"
+
+        assert all("label_file" not in source.read_text() for source in (fixture / "infra").glob("compose*.yml"))
+
     @pytest.mark.asyncio
     async def test_real_documented_integration_resolution_passes_the_production_validator(self, tmp_path):
         fixture = Path(__file__).parents[4] / "shared/tests/fixtures/service-template-0.3.6"
@@ -433,6 +457,22 @@ class TestComposeRunner:
                 await runner.run("worker-123", ["up", "-d"])
 
         mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"])
+    async def test_label_file_is_rejected_before_compose_or_snapshot(self, workspace, label_file):
+        root = workspace / "worker-123" / "workspace"
+        (root / "infra" / "compose.base.yml").write_text(
+            f"services:\n  db:\n    image: postgres:16\n    label_file: {label_file}\n"
+        )
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="label_file is not supported"):
+                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+
+        mock_run.assert_not_called()
+        assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
 
     @pytest.mark.asyncio
     async def test_multi_file_source_paths_use_the_first_file_project_directory(self, workspace):

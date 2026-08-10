@@ -2,6 +2,12 @@
 
 ## 2026-08-10
 
+- Added a finite Compose v2.27.1 source-directive admission table to
+  worker-manager. `label_file` and unsupported loaders are rejected before
+  configuration resolution, supported static sources retain their contextual
+  workspace checks, and the immutable execution snapshot rejects retained
+  loader directives.
+
 - Hardened worker-manager's broker-authenticated Compose boundary. Container
   creation now admits only scoped safe command arguments, so runtime mounts,
   capabilities, ports, names, environment and identity overrides cannot bypass

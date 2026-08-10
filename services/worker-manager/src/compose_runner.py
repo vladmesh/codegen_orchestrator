@@ -32,6 +32,12 @@ _DOCKER_EXECUTABLE = Path(shutil.which("docker") or "/usr/bin/docker")
 # Default compose files for service-template projects (under infra/)
 _DEFAULT_COMPOSE_FILES = ["infra/compose.base.yml", "infra/compose.dev.yml"]
 
+# These Compose v2.27.1 loader fields must have been consumed while compiling the
+# manager-owned plan. Keeping one would let execution read a worker-selected
+# source after the pre-resolution admission boundary. Build inputs are deliberately
+# absent: they are execution inputs protected by the static source policy instead.
+_SNAPSHOT_LOADER_DIRECTIVES = ("env_file", "extends", "label_file")
+
 # Environment passed to `docker compose`. The compose manifest belongs to the
 # agent and compose interpolates ${VAR} out of this environment into it, with the
 # result handed back to the agent as command output. Inheriting worker-manager's
@@ -103,6 +109,15 @@ def _apply_effective_overrides(data: dict) -> None:
 
 def _write_snapshot(invocation: ComposeInvocation, data: dict, command_args: list[str]) -> ComposeInvocation:
     """Persist the validated resolved project outside the worker-writable workspace."""
+    services = data.get("services")
+    if not isinstance(services, dict):
+        raise ValueError("Resolved Compose configuration must contain services")
+    for service_name, service in services.items():
+        if not isinstance(service, dict):
+            raise ValueError(f"Service '{service_name}' must be a mapping")
+        for directive in _SNAPSHOT_LOADER_DIRECTIVES:
+            if directive in service:
+                raise ValueError(f"Service '{service_name}': {directive} cannot be retained in an execution snapshot")
     plan_directory = invocation.snapshot_path.parent if invocation.snapshot_path else None
     if plan_directory is None:
         raise ValueError("Compose plan directory is unavailable")

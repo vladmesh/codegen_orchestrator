@@ -48,6 +48,45 @@ class ValidationResult:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SourceDirectivePolicy:
+    """Admission rule for a Compose field that can name a host-side source."""
+
+    allowed: bool
+    resolution_context: str
+    interpolation: str
+    containment: str
+
+
+# Compose v2.27.1 is pinned in services/worker-manager/Dockerfile. This table is
+# the worker-manager's sweep of compose-go's host-source fields reachable through
+# the supported up, run and build commands. Every field is either admitted here
+# with a static workspace path check or rejected before `docker compose config`
+# can load it. `develop.watch.path` is listed too: `watch` is not an allowed
+# command, but rejecting it keeps a future command admission from creating a
+# loader bypass. credential_spec.file is not loaded by this Linux worker image,
+# but is forbidden because it is a host path on other Compose targets.
+SOURCE_DIRECTIVE_POLICIES = {
+    "env_file": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "extends.file": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "build.context": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "build.dockerfile": SourceDirectivePolicy(True, "build context", "static literal only", "workspace"),
+    "secrets.*.file": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "configs.*.file": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "label_file": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "include": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "build.additional_contexts": SourceDirectivePolicy(
+        False, "not resolved", "rejected before interpolation", "not reached"
+    ),
+    "build.secrets": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "build.ssh": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "credential_spec.file": SourceDirectivePolicy(
+        False, "not resolved", "rejected before interpolation", "not reached"
+    ),
+    "develop.watch.path": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+}
+
+
 def _flag_is_set(arg: str, flag: str) -> bool:
     return arg == flag or arg.startswith(f"{flag}=") or (flag == "-p" and arg.startswith("-p") and arg != "-p")
 
@@ -323,6 +362,27 @@ def _source_path_values(
         _source_path(item, project_directory, workspace_path, errors, label)
 
 
+def _admit_source_directive(
+    directive: str,
+    value: Any,
+    project_directory: Path,
+    workspace_path: Path,
+    errors: list[str],
+    label: str,
+    *,
+    multiple: bool = False,
+) -> None:
+    """Apply the one source-directive policy boundary before Compose resolves it."""
+    policy = SOURCE_DIRECTIVE_POLICIES[directive]
+    if not policy.allowed:
+        errors.append(f"{label} is not supported")
+        return
+    if multiple:
+        _source_path_values(value, project_directory, workspace_path, errors, label)
+    else:
+        _source_path(value, project_directory, workspace_path, errors, label)
+
+
 def _validate_source_build(
     service_name: str, config: dict[str, Any], project_directory: Path, workspace_path: Path, errors: list[str]
 ) -> None:
@@ -330,17 +390,32 @@ def _validate_source_build(
     if build is None:
         return
     if isinstance(build, str):
-        _source_path(build, project_directory, workspace_path, errors, f"Service '{service_name}': build context")
+        _admit_source_directive(
+            "build.context",
+            build,
+            project_directory,
+            workspace_path,
+            errors,
+            f"Service '{service_name}': build context",
+        )
         return
     if not isinstance(build, dict):
         errors.append(f"Service '{service_name}': build must be a mapping")
         return
     context = build.get("context", ".")
-    _source_path(context, project_directory, workspace_path, errors, f"Service '{service_name}': build context")
+    _admit_source_directive(
+        "build.context",
+        context,
+        project_directory,
+        workspace_path,
+        errors,
+        f"Service '{service_name}': build context",
+    )
     if "dockerfile" in build:
         # Dockerfile is relative to the build context, unlike other Compose paths.
         if isinstance(context, str) and isinstance(build["dockerfile"], str):
-            _source_path(
+            _admit_source_directive(
+                "build.dockerfile",
                 str(Path(context) / build["dockerfile"]),
                 project_directory,
                 workspace_path,
@@ -350,14 +425,16 @@ def _validate_source_build(
         else:
             errors.append(f"Service '{service_name}': build dockerfile must be a workspace path")
     for key in ("additional_contexts", "secrets", "ssh"):
-        if key not in build:
-            continue
-        value = build[key]
-        if isinstance(value, dict):
-            values = list(value.values())
-        else:
-            values = value
-        _source_path_values(values, project_directory, workspace_path, errors, f"Service '{service_name}': build {key}")
+        if key in build:
+            _admit_source_directive(
+                f"build.{key}",
+                build[key],
+                project_directory,
+                workspace_path,
+                errors,
+                f"Service '{service_name}': build {key}",
+                multiple=True,
+            )
     if build.get("network") is not None:
         errors.append(f"Service '{service_name}': build network is not supported")
 
@@ -371,8 +448,8 @@ def validate_compose_file(
 ) -> ValidationResult:
     """Validate an individual selected Compose source before configuration resolution.
 
-    Compose reads ``env_file`` and ``extends.file`` while resolving configuration, so
-    source-only paths are checked before the CLI can read beyond the workspace.
+    SourceDirectivePolicy is the admission boundary for every swept Compose loader,
+    so source-only paths are checked before the CLI can read beyond the workspace.
     """
     try:
         data = yaml.safe_load(content)
@@ -395,20 +472,66 @@ def validate_compose_file(
         source_base = project_directory or source_file.parent
         name = str(service_name)
         if "env_file" in service_config:
-            _source_path_values(
-                service_config["env_file"], source_base, workspace_path, errors, f"Service '{name}': env_file"
+            _admit_source_directive(
+                "env_file",
+                service_config["env_file"],
+                source_base,
+                workspace_path,
+                errors,
+                f"Service '{name}': env_file",
+                multiple=True,
+            )
+        if "label_file" in service_config:
+            _admit_source_directive(
+                "label_file",
+                service_config["label_file"],
+                source_base,
+                workspace_path,
+                errors,
+                f"Service '{name}': label_file",
+                multiple=True,
             )
         extends = service_config.get("extends")
         if isinstance(extends, dict) and "file" in extends:
-            _source_path(extends["file"], source_base, workspace_path, errors, f"Service '{name}': extends file")
+            _admit_source_directive(
+                "extends.file",
+                extends["file"],
+                source_base,
+                workspace_path,
+                errors,
+                f"Service '{name}': extends file",
+            )
         elif extends is not None and not isinstance(extends, dict):
             errors.append(f"Service '{name}': extends must be a mapping")
         _validate_source_build(name, service_config, source_base, workspace_path, errors)
+        credential_spec = service_config.get("credential_spec")
+        if isinstance(credential_spec, dict) and "file" in credential_spec:
+            _admit_source_directive(
+                "credential_spec.file",
+                credential_spec["file"],
+                source_base,
+                workspace_path,
+                errors,
+                f"Service '{name}': credential_spec file",
+            )
+        develop = service_config.get("develop")
+        if isinstance(develop, dict) and "watch" in develop:
+            _admit_source_directive(
+                "develop.watch.path",
+                develop["watch"],
+                source_base,
+                workspace_path,
+                errors,
+                f"Service '{name}': develop watch path",
+                multiple=True,
+            )
 
     if source_file is not None and workspace_path is not None:
         source_base = project_directory or source_file.parent
-        if data.get("include"):
-            errors.append("Compose include is not supported")
+        if "include" in data:
+            _admit_source_directive(
+                "include", data["include"], source_base, workspace_path, errors, "Compose include", multiple=True
+            )
         for kind in ("secrets", "configs"):
             definitions = data.get(kind, {})
             if not isinstance(definitions, dict):
@@ -421,8 +544,13 @@ def validate_compose_file(
                 if definition.get("external"):
                     errors.append(f"{kind.title()} '{name}': external sources are not allowed")
                 if "file" in definition:
-                    _source_path(
-                        definition["file"], source_base, workspace_path, errors, f"{kind.title()} '{name}': file"
+                    _admit_source_directive(
+                        f"{kind}.*.file",
+                        definition["file"],
+                        source_base,
+                        workspace_path,
+                        errors,
+                        f"{kind.title()} '{name}': file",
                     )
     return ValidationResult(valid=not errors, errors=errors)
 
