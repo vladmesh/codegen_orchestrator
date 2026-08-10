@@ -29,6 +29,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
 )
+from shared.contracts.dto.user import UserDTO
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
@@ -82,6 +83,16 @@ def _stored_grant(payload) -> TemporaryAccessGrantDTO:
     )
 
 
+def _resolved_user(user_id: int) -> UserDTO:
+    """A user whose Telegram chat id is deliberately nothing like their User.id."""
+    return UserDTO(
+        id=user_id,
+        telegram_id=900000000 + user_id,
+        is_admin=False,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
 @pytest.fixture
 def api_client():
     client = AsyncMock()
@@ -91,6 +102,7 @@ def api_client():
     client.get_run_if_missing_returns_none.return_value = None
     client.create_temporary_access_grant.side_effect = _stored_grant
     client.transition_story.return_value = {}
+    client.get_user.side_effect = _resolved_user
     return client
 
 
@@ -197,7 +209,6 @@ class TestHandoffThroughTheGrant:
 
         assert result["tested"] == 1
         api_client.create_temporary_access_grant.assert_not_called()
-        api_client.get_project.assert_not_called()
         assert len(_published(redis_client, QA_QUEUE)) == 1
 
     @pytest.mark.asyncio
@@ -234,7 +245,7 @@ def _live_grant(**overrides) -> TemporaryAccessGrantDTO:
         "qa_message": {
             "story_id": "story-1",
             "project_id": PROJECT_ID,
-            "user_id": "",
+            "telegram_chat_id": "",
             "deployed_url": "https://example.com",
             "application_id": 42,
             "acceptance_criteria": "the bot answers /start",
@@ -405,7 +416,7 @@ class TestTheHandoffSurvivesARestart:
             qa_message=QAMessage(
                 story_id="story-1",
                 project_id=PROJECT_ID,
-                user_id="",
+                telegram_chat_id="",
                 deployed_url="https://example.com",
                 application_id=42,
                 acceptance_criteria="the bot answers /start",

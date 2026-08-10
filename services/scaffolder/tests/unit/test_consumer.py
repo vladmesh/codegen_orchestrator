@@ -36,7 +36,7 @@ def valid_job_data():
     return {
         "project_id": "proj-123",
         "repository_id": "repo-456",
-        "user_id": "user-1",
+        "telegram_chat_id": "987654321",
         "template_repo": "gh:vladmesh/service-template",
         "template_ref": "0.3.0",
         "project_name": "my-project",

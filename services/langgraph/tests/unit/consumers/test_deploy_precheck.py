@@ -209,7 +209,7 @@ class TestDeployPreCheckIntegration:
         job_data = {
             "task_id": "deploy-1",
             "project_id": "proj-1",
-            "user_id": "u1",
+            "telegram_chat_id": "u1",
             "action": "create",
             "head_sha": "a" * 40,
         }
@@ -249,7 +249,7 @@ class TestDeployPreCheckIntegration:
         job_data = {
             "task_id": "deploy-1",
             "project_id": "proj-1",
-            "user_id": "u1",
+            "telegram_chat_id": "u1",
             "action": "feature",
             "head_sha": "a" * 40,
         }
@@ -277,7 +277,7 @@ class TestDeployPreCheckIntegration:
             {
                 "task_id": "deploy-1",
                 "project_id": "proj-1",
-                "user_id": "u1",
+                "telegram_chat_id": "u1",
                 "action": "create",
                 "head_sha": "",
             },

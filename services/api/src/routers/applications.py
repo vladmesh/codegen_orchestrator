@@ -43,6 +43,7 @@ from ..schemas.actions import AdminAction
 from ..schemas.repository import RepositoryRead
 from ..schemas.run import RunRead
 from ..utils.telegram_binding import release_bot_binding
+from ._recipients import resolve_project_chat_id
 
 logger = structlog.get_logger()
 
@@ -554,7 +555,7 @@ async def run_e2e(
     # Publish QA message
     msg = QAMessage(
         project_id=str(repo.project_id),
-        user_id="",
+        telegram_chat_id=await resolve_project_chat_id(db, repo.project_id, event="qa_run"),
         deployed_url=deployed_url,
         application_id=application_id,
         acceptance_criteria=acceptance_criteria,

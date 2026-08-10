@@ -169,7 +169,7 @@ async def _create_grant(api: httpx.AsyncClient, bot: DeployedBot, qa_run_id: str
             "qa_message": {
                 "story_id": "",
                 "project_id": PROJECT_ID,
-                "user_id": "",
+                "telegram_chat_id": "",
                 "deployed_url": bot.deployed_url,
                 "application_id": bot.application["id"],
                 "acceptance_criteria": "live bot access revocation check",

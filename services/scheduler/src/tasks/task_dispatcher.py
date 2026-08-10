@@ -27,6 +27,7 @@ from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
+from ._recipients import resolve_project_recipient
 from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
@@ -192,10 +193,13 @@ async def _create_and_publish_run(
     )
 
     action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="task_dispatch", story_id=story_id or ""
+    )
     eng_msg = EngineeringMessage(
         task_id=run_id,
         project_id=project_id,
-        user_id="",  # StoryDTO has no user_id field
+        telegram_chat_id=recipient.telegram_chat_id,
         action=action,
         description=description,
         skip_deploy=True,  # Deploy handled at story level

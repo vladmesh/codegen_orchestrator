@@ -19,11 +19,13 @@ import structlog
 
 from shared.contracts.queues.po import (
     POInputMessage,
-    POProactiveMessage,
     POResponse,
+    po_thread_id,
+    proactive_from_input,
     to_flat_fields,
 )
 from shared.log_config.correlation import bind_message_context, unbind_message_context
+from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis import decode_redis_fields, decode_redis_value
 from shared.redis_client import RedisStreamClient
@@ -214,20 +216,25 @@ async def _process_message(
         return
 
     bind_message_context(data)
-    user_id = data.get("user_id", "unknown")
-    lock = user_locks.setdefault(user_id, asyncio.Lock())
+    # The addressing key is the Telegram chat, never the internal user id: it is
+    # what the per-user lock and the PO thread are keyed by, so a pipeline event
+    # about a project lands in the same conversation the user is typing in.
+    telegram_chat_id = data.get("telegram_chat_id", "")
+    lock = user_locks.setdefault(telegram_chat_id, asyncio.Lock())
 
     async with sem:
         async with lock:
             try:
-                await _handle_message(graph, client, user_id, data)
+                await _handle_message(graph, client, telegram_chat_id, data)
             except Exception:
-                logger.exception("po_invoke_failed", user_id=user_id, msg_id=msg_id)
+                logger.exception(
+                    "po_invoke_failed", telegram_chat_id=telegram_chat_id, msg_id=msg_id
+                )
                 request_id = data.get("request_id")
                 if request_id:
                     error_resp = POResponse(
                         text="An error occurred, please try again.",
-                        user_id=user_id,
+                        telegram_chat_id=telegram_chat_id,
                         error="true",
                     )
                     await client.publish_flat(
@@ -281,7 +288,9 @@ async def _repair_orphan_tool_calls(graph, thread_id: str) -> int:
     return len(orphan_calls)
 
 
-async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: dict) -> None:
+async def _handle_message(
+    graph, client: RedisStreamClient, telegram_chat_id: str, data: dict
+) -> None:
     """Format message, invoke PO graph, write response."""
     timestamp = data.get("timestamp", "")
     text = data.get("text", "")
@@ -301,7 +310,34 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
         "task_resources_resumed",
     }
     if msg_type == "system_event" and event not in _STORY_EVENTS:
-        logger.info("po_system_event_dropped", user_id=user_id, event_type=event, text=text)
+        logger.info(
+            "po_system_event_dropped",
+            telegram_chat_id=telegram_chat_id,
+            event_type=event,
+            text=text,
+        )
+        return
+
+    # A user-facing event whose recipient was never resolved cannot be delivered
+    # and must not be answered into a thread keyed by nothing. Producers resolve
+    # the chat before publishing, so reaching here is a defect worth an alert.
+    if not telegram_chat_id:
+        logger.error(
+            "po_message_without_recipient",
+            msg_type=msg_type,
+            event_type=event,
+            story_id=data.get("story_id", ""),
+            project_id=data.get("project_id", ""),
+        )
+        await notify_admins_best_effort(
+            f"PO event has no Telegram recipient: event={event or msg_type} "
+            f"story={data.get('story_id') or '-'} project={data.get('project_id') or '-'} "
+            f"owner_user_id={data.get('owner_user_id') or '-'}",
+            level="error",
+            po_event=event or msg_type,
+            story_id=data.get("story_id", ""),
+            project_id=data.get("project_id", ""),
+        )
         return
 
     user_name = data.get("user_name", "")
@@ -313,15 +349,17 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
         formatted = f"[system: {tag}] {formatted}"
     else:
         # Inject user context so PO knows who it's talking to
-        context_line = f"[context: user_id={user_id}, user_name={user_name}]"
+        context_line = f"[context: telegram_chat_id={telegram_chat_id}, user_name={user_name}]"
         formatted = f"{context_line} {formatted}"
     msg = HumanMessage(content=formatted)
-    thread_id = f"po-user-{user_id}"
+    # One thread per Telegram chat: both the user's own messages and the events
+    # the pipeline raises about their projects resolve to the same key.
+    thread_id = po_thread_id(telegram_chat_id)
     invoke_input = {"messages": [msg]}
     invoke_config = {
         "configurable": {
             "thread_id": thread_id,
-            "user_id": user_id,
+            "telegram_chat_id": telegram_chat_id,
             "user_name": user_name,
             "retry_story_id": data.get("story_id", ""),
         },
@@ -355,17 +393,22 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
         # Synchronous response — telegram bot is waiting
         if not response_text:
             response_text = "Бот вернул пустой ответ"
-            logger.warning("po_empty_response_fallback", user_id=user_id, request_id=request_id)
-        resp = POResponse(text=response_text, user_id=user_id)
+            logger.warning(
+                "po_empty_response_fallback",
+                telegram_chat_id=telegram_chat_id,
+                request_id=request_id,
+            )
+        resp = POResponse(text=response_text, telegram_chat_id=telegram_chat_id)
         await client.publish_flat(f"po:response:{request_id}", to_flat_fields(resp))
     elif response_text:
-        # No request_id (reminder, system event) — forward to user via proactive stream
-        proactive = POProactiveMessage(text=response_text, user_id=user_id)
+        # No request_id (reminder, system event) — forward to user via proactive
+        # stream, carrying the identifiers the transport needs if delivery fails.
+        proactive = proactive_from_input(data, response_text, telegram_chat_id)
         await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
 
     logger.info(
         "po_message_handled",
-        user_id=user_id,
+        telegram_chat_id=telegram_chat_id,
         msg_type=msg_type,
         response_empty=not bool(response_text),
         has_request_id=bool(request_id),

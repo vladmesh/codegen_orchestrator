@@ -38,7 +38,7 @@ async def test_reminder_fires_and_reaches_po_input(redis, raw_redis):
     reminder = json.dumps(
         {
             "type": "reminder",
-            "user_id": "user-42",
+            "telegram_chat_id": "user-42",
             "text": "check task eng-abc123",
             "timestamp": "2026-02-15T14:30:00+00:00",
         }
@@ -64,7 +64,7 @@ async def test_reminder_fires_and_reaches_po_input(redis, raw_redis):
     assert len(received) == 1
     data = received[0]
     assert data["type"] == "reminder"
-    assert data["user_id"] == "user-42"
+    assert data["telegram_chat_id"] == "user-42"
     assert data["text"] == "check task eng-abc123"
 
     # 4. Verify reminder removed from ZSET
@@ -81,7 +81,7 @@ async def test_future_reminder_not_fired(redis, raw_redis):
     reminder = json.dumps(
         {
             "type": "reminder",
-            "user_id": "user-99",
+            "telegram_chat_id": "user-99",
             "text": "future check",
             "timestamp": "2026-02-15T20:00:00+00:00",
         }
@@ -103,7 +103,7 @@ async def test_multiple_due_reminders_all_fire(redis, raw_redis):
         reminder = json.dumps(
             {
                 "type": "reminder",
-                "user_id": f"user-{i}",
+                "telegram_chat_id": f"user-{i}",
                 "text": f"check task {i}",
                 "timestamp": "2026-02-15T14:30:00+00:00",
             }

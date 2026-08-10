@@ -54,7 +54,7 @@ class TestRejectGaveUpHandling:
             planning_task_id="task-123",
             story_id="story-1",
             reason="Docker registry TLS cert is self-signed",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 
@@ -82,7 +82,7 @@ class TestRejectGaveUpHandling:
             planning_task_id="task-123",
             story_id="story-1",
             reason="Missing secrets",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 

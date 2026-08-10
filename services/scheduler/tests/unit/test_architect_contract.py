@@ -13,20 +13,20 @@ class TestArchitectMessage:
         msg = ArchitectMessage(
             story_id="story-abc123",
             project_id="proj-456",
-            user_id="user-789",
+            telegram_chat_id="user-789",
         )
         data = msg.model_dump()
         restored = ArchitectMessage.model_validate(data)
 
         assert restored.story_id == "story-abc123"
         assert restored.project_id == "proj-456"
-        assert restored.user_id == "user-789"
+        assert restored.telegram_chat_id == "user-789"
 
     def test_has_base_message_fields(self):
         msg = ArchitectMessage(
             story_id="story-abc123",
             project_id="proj-456",
-            user_id="user-789",
+            telegram_chat_id="user-789",
         )
         assert msg.version == "1"
         assert msg.correlation_id
@@ -37,7 +37,7 @@ class TestArchitectMessage:
         msg = ArchitectMessage(
             story_id="story-abc123",
             project_id="proj-456",
-            user_id="user-789",
+            telegram_chat_id="user-789",
         )
         json_str = msg.model_dump_json()
         restored = ArchitectMessage.model_validate_json(json_str)
@@ -47,7 +47,7 @@ class TestArchitectMessage:
         msg = ArchitectMessage(
             story_id="story-abc123",
             project_id="proj-456",
-            user_id="user-789",
+            telegram_chat_id="user-789",
         )
         assert msg.is_reopen is False
         assert msg.user_report is None
@@ -56,7 +56,7 @@ class TestArchitectMessage:
         msg = ArchitectMessage(
             story_id="story-abc123",
             project_id="proj-456",
-            user_id="user-789",
+            telegram_chat_id="user-789",
             is_reopen=True,
             user_report="Images broken on mobile",
         )
@@ -68,7 +68,7 @@ class TestArchitectMessage:
         data = {
             "story_id": "story-abc",
             "project_id": "proj-1",
-            "user_id": "user-1",
+            "telegram_chat_id": "user-1",
         }
         msg = ArchitectMessage.model_validate(data)
         assert msg.is_reopen is False

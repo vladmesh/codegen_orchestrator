@@ -260,7 +260,7 @@ async def test_qa_consumer_quarantines_claude_hook_write_trace(tmp_path):
             {
                 "story_id": "story-1",
                 "project_id": "project-1",
-                "user_id": "1",
+                "telegram_chat_id": "1",
                 "deployed_url": "http://app.example",
                 "application_id": 1,
                 "acceptance_criteria": "- bot replies to /start",

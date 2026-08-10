@@ -111,7 +111,7 @@ class TestHandleEngineeringSuccess:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -153,7 +153,7 @@ class TestHandleEngineeringSuccess:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -162,7 +162,7 @@ class TestHandleEngineeringSuccess:
 
     @pytest.mark.asyncio
     async def test_deploy_message_includes_user_id(self, mock_redis, mock_api):
-        """DeployMessage queued must include user_id (BUG 17)."""
+        """DeployMessage queued must include telegram_chat_id (BUG 17)."""
         from src.consumers.engineering import _handle_engineering_success
 
         result_data = {
@@ -179,7 +179,7 @@ class TestHandleEngineeringSuccess:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="625038902",
+                telegram_chat_id="625038902",
             )
         )
 
@@ -194,7 +194,9 @@ class TestHandleEngineeringSuccess:
         )
 
         deploy_msg = deploy_calls[0][0][1]
-        assert deploy_msg.user_id == "625038902", f"user_id mismatch. Full deploy_msg: {deploy_msg}"
+        assert deploy_msg.telegram_chat_id == "625038902", (
+            f"telegram_chat_id mismatch. Full deploy_msg: {deploy_msg}"
+        )
 
     @pytest.mark.asyncio
     async def test_deploy_message_includes_action(self, mock_redis, mock_api):
@@ -215,7 +217,7 @@ class TestHandleEngineeringSuccess:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
                 action="feature",
             )
         )
@@ -252,7 +254,7 @@ class TestNotificationDecoupling:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -287,7 +289,7 @@ class TestNotificationDecoupling:
                 redis=mock_redis,
                 skip_deploy=True,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -321,7 +323,7 @@ class TestNotificationDecoupling:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -399,7 +401,7 @@ class TestFeatureActionFlow:
                 "project_id": "proj-1",
                 "action": "feature",
                 "description": "Add stats endpoint",
-                "user_id": "u1",
+                "telegram_chat_id": "u1",
                 "callback_stream": "po:input",
             },
             mock_redis,
@@ -478,7 +480,7 @@ class TestFeatureActionFlow:
                 "project_id": "proj-1",
                 "action": "feature",
                 "description": "Add feature",
-                "user_id": "u1",
+                "telegram_chat_id": "u1",
                 "callback_stream": "po:input",
             },
             mock_redis,
@@ -548,7 +550,7 @@ class TestFeatureActionFlow:
                 "project_id": "proj-1",
                 "action": "feature",
                 "description": "Add feature",
-                "user_id": "u1",
+                "telegram_chat_id": "u1",
                 "callback_stream": "po:input",
             },
             mock_redis,
@@ -617,7 +619,7 @@ class TestFeatureActionFlow:
                 "action": "feature",
                 "skip_deploy": False,
                 "description": "Add feature",
-                "user_id": "u1",
+                "telegram_chat_id": "u1",
                 "callback_stream": "po:input",
             },
             mock_redis,
@@ -635,7 +637,7 @@ class TestFeatureActionFlow:
 
         deploy_msg = deploy_calls[0][0][1]
         assert deploy_msg.project_id  # project_id is populated from ProjectDTO.id
-        assert deploy_msg.user_id == "u1"
+        assert deploy_msg.telegram_chat_id == "u1"
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
@@ -696,7 +698,7 @@ class TestFeatureActionFlow:
                 "project_id": "proj-1",
                 "action": "feature",
                 "description": None,
-                "user_id": "u1",
+                "telegram_chat_id": "u1",
                 "callback_stream": "po:input",
             },
             mock_redis,

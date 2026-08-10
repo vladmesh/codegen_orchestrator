@@ -54,7 +54,9 @@ class DeployMessage(BaseMessage):
 
     task_id: str
     project_id: str
-    user_id: str = ""
+    # Telegram chat of the project owner, resolved by the producer. Empty when
+    # the work was started by the system and has no user to report back to.
+    telegram_chat_id: str = ""
     story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: DeployAction = DeployAction.CREATE

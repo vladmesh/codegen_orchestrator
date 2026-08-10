@@ -116,7 +116,7 @@ class TestTwoTaskStoryLifecycle:
             {
                 "task_id": "eng-task1",
                 "project_id": "proj-1",
-                "user_id": "u-1",
+                "telegram_chat_id": "u-1",
                 "action": "feature",
                 "description": "Create User model",
                 "story_id": "story-1",
@@ -155,7 +155,7 @@ class TestTwoTaskStoryLifecycle:
             {
                 "task_id": "eng-task2",
                 "project_id": "proj-1",
-                "user_id": "u-1",
+                "telegram_chat_id": "u-1",
                 "action": "feature",
                 "description": "Add API endpoint",
                 "story_id": "story-1",

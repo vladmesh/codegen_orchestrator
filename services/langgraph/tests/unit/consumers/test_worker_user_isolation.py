@@ -48,7 +48,7 @@ def mock_deploy_api():
 class TestEngineeringWorkerPassesTelegramId:
     @pytest.mark.asyncio
     async def test_get_project_receives_telegram_id(self, mock_redis, mock_api):
-        """engineering_worker should pass user_id as telegram_id to get_project."""
+        """engineering_worker should pass telegram_chat_id as telegram_id to get_project."""
         mock_api.get_project.return_value = None  # Project not found → early exit
 
         from src.consumers.engineering import process_engineering_job
@@ -56,7 +56,7 @@ class TestEngineeringWorkerPassesTelegramId:
         job_data = {
             "task_id": "eng-test",
             "project_id": "proj-1",
-            "user_id": "12345",
+            "telegram_chat_id": "12345",
             "action": "create",
             "callback_stream": "po:input",
         }
@@ -67,7 +67,7 @@ class TestEngineeringWorkerPassesTelegramId:
 
     @pytest.mark.asyncio
     async def test_empty_user_id_no_telegram_id(self, mock_redis, mock_api):
-        """Empty user_id should not pass telegram_id (graceful degradation)."""
+        """Empty telegram_chat_id should not pass telegram_id (graceful degradation)."""
         mock_api.get_project.return_value = None
 
         from src.consumers.engineering import process_engineering_job
@@ -75,7 +75,7 @@ class TestEngineeringWorkerPassesTelegramId:
         job_data = {
             "task_id": "eng-test",
             "project_id": "proj-1",
-            "user_id": "",
+            "telegram_chat_id": "",
             "action": "create",
             "callback_stream": "po:input",
         }
@@ -88,7 +88,7 @@ class TestEngineeringWorkerPassesTelegramId:
 class TestDeployWorkerPassesTelegramId:
     @pytest.mark.asyncio
     async def test_get_project_receives_telegram_id(self, mock_redis, mock_deploy_api):
-        """deploy_worker should pass user_id as telegram_id to get_project."""
+        """deploy_worker should pass telegram_chat_id as telegram_id to get_project."""
         mock_deploy_api.get_project.return_value = None
 
         from src.consumers.deploy import process_deploy_job
@@ -96,7 +96,7 @@ class TestDeployWorkerPassesTelegramId:
         job_data = {
             "task_id": "deploy-test",
             "project_id": "proj-1",
-            "user_id": "67890",
+            "telegram_chat_id": "67890",
             "callback_stream": "po:input",
             "triggered_by": "po",
             "head_sha": "a" * 40,

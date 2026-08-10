@@ -53,7 +53,7 @@ def _qa_message(run_id: str = "qa-1") -> QAMessage:
     return QAMessage(
         story_id="story-1",
         project_id=PROJECT_ID,
-        user_id="",
+        telegram_chat_id="",
         deployed_url="https://example.com",
         application_id=42,
         acceptance_criteria="the bot answers /start",

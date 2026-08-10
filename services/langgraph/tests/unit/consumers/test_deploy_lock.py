@@ -71,7 +71,7 @@ def _job(*, task_id="deploy-lock-1", project_id="proj-1"):
     return {
         "task_id": task_id,
         "project_id": project_id,
-        "user_id": "12345",
+        "telegram_chat_id": "12345",
         "callback_stream": "",
         "triggered_by": DeployTrigger.WEBHOOK.value,
         "head_sha": "a" * 40,

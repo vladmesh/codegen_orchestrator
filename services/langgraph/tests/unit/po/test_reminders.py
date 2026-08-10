@@ -23,11 +23,11 @@ def mock_client():
     return client
 
 
-def _make_reminder(user_id: str = "user-42", text: str = "check task eng-abc123") -> str:
+def _make_reminder(telegram_chat_id: str = "user-42", text: str = "check task eng-abc123") -> str:
     return json.dumps(
         {
             "type": "reminder",
-            "user_id": user_id,
+            "telegram_chat_id": telegram_chat_id,
             "text": text,
             "timestamp": "2026-02-15T14:30:00+00:00",
         }
@@ -48,7 +48,7 @@ class TestPollOnce:
         assert call_args[0][0] == PO_INPUT_QUEUE
         fields = call_args[0][1]
         assert fields["type"] == "reminder"
-        assert fields["user_id"] == "user-42"
+        assert fields["telegram_chat_id"] == "user-42"
         assert fields["text"] == "check task eng-abc123"
 
     @pytest.mark.asyncio
@@ -63,8 +63,8 @@ class TestPollOnce:
 
     @pytest.mark.asyncio
     async def test_fires_multiple_reminders(self, mock_client):
-        r1 = _make_reminder(user_id="user-1", text="check task 1")
-        r2 = _make_reminder(user_id="user-2", text="check task 2")
+        r1 = _make_reminder(telegram_chat_id="user-1", text="check task 1")
+        r2 = _make_reminder(telegram_chat_id="user-2", text="check task 2")
         mock_client.redis.zrangebyscore.return_value = [r1, r2]
 
         fired = await _poll_once(mock_client)
@@ -158,7 +158,7 @@ class TestSetReminderUsesConstant:
 
         await set_reminder.ainvoke(
             {"delay_minutes": 5, "reason": "test"},
-            config={"configurable": {"thread_id": "po-user-user-1", "user_id": "user-1"}},
+            config={"configurable": {"thread_id": "po-chat-user-1", "telegram_chat_id": "user-1"}},
         )
 
         call_args = mock_client.redis.zadd.call_args

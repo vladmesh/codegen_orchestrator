@@ -41,7 +41,7 @@ async def _poll_once(client: RedisStreamClient) -> int:
 
         reminder = POReminderMessage(
             text=data.get("text", ""),
-            user_id=data.get("user_id", "unknown"),
+            telegram_chat_id=data["telegram_chat_id"],
             story_id=data.get("story_id", ""),
             timestamp=data.get("timestamp", ""),
         )
@@ -51,7 +51,7 @@ async def _poll_once(client: RedisStreamClient) -> int:
 
         logger.info(
             "reminder_fired",
-            user_id=data.get("user_id"),
+            telegram_chat_id=data["telegram_chat_id"],
             text=data.get("text"),
         )
 

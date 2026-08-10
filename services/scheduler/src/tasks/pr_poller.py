@@ -18,6 +18,7 @@ from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from .. import startup
+from ._recipients import resolve_project_recipient
 from .story_completion import _parse_owner_repo
 
 if TYPE_CHECKING:
@@ -226,8 +227,9 @@ async def poll_merged_prs(
         # Transition story to deploying
         await api_client.transition_story(story_id, "deploy")
 
-        # StoryDTO has no user_id field
-        user_id = ""
+        recipient = await resolve_project_recipient(
+            api_client, str(project_id), event="deploy_after_pr_merge", story_id=story_id
+        )
 
         # Determine action: "create" for first deploy, "feature" for subsequent
         all_stories = await api_client.get_stories_by_project(project_id)
@@ -251,7 +253,7 @@ async def poll_merged_prs(
         deploy_msg = DeployMessage(
             task_id=run_id,
             project_id=str(project_id),
-            user_id=str(user_id),
+            telegram_chat_id=recipient.telegram_chat_id,
             story_id=story_id,
             triggered_by=DeployTrigger.WEBHOOK,
             action=action,

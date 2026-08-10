@@ -87,7 +87,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
         scaffold_msg = {
             "project_id": project_id,
             "repository_id": repo_id,
-            "user_id": "live-test",
+            "telegram_chat_id": "live-test",
             "template_repo": TEMPLATE_REPO,
             "project_name": project_name,
             "modules": "backend,tg_bot",

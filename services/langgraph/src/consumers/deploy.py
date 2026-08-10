@@ -319,7 +319,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
     project_id = msg.project_id
     story_id = msg.story_id
     callback_stream = msg.callback_stream
-    user_id = msg.user_id
+    telegram_chat_id = msg.telegram_chat_id
 
     logger.info(
         "deploy_job_started",
@@ -393,7 +393,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             "progress",
             task_id,
             "Deploy task started",
-            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
             project_id=project_id or "",
         )
 
@@ -411,14 +411,18 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 story_id=story_id,
                 error_msg=error_msg,
                 callback_stream=callback_stream,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 redis=redis,
                 deploy_outcome=DeployOutcome.HEAD_SHA_MISSING,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
         # Fetch project details (with user isolation)
-        tg_kwargs = {"telegram_id": int(user_id)} if user_id and user_id.isdigit() else {}
+        tg_kwargs = (
+            {"telegram_id": int(telegram_chat_id)}
+            if telegram_chat_id and telegram_chat_id.isdigit()
+            else {}
+        )
         project: ProjectDTO | None = await api_client.get_project(project_id, **tg_kwargs)
         if not project:
             error_msg = f"Project {project_id} not found"
@@ -465,7 +469,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 story_id=story_id,
                 error_msg=str(error),
                 callback_stream=callback_stream,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 redis=redis,
                 deploy_outcome=DeployOutcome.ENVIRONMENT_CONTRACT_INVALID,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
@@ -507,7 +511,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 "completed",
                 task_id,
                 "Deploy skipped: application already runs this commit",
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 project_id=project_id,
             )
             return live_work_settled({"status": "success", "reason": reason})
@@ -539,7 +543,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 story_id=story_id,
                 error_msg=precheck_error,
                 callback_stream=callback_stream,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 redis=redis,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
@@ -605,7 +609,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                     project_id=project_id,
                     project_name=project_name,
                     callback_stream=callback_stream,
-                    user_id=user_id,
+                    telegram_chat_id=telegram_chat_id,
                     story_id=story_id,
                     redis=redis,
                     msg=msg,
@@ -618,7 +622,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 project_id=project_id,
                 project=project,
                 callback_stream=callback_stream,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 story_id=story_id,
                 redis=redis,
                 application_id=result.get("application_id"),
@@ -643,7 +647,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 story_id=story_id,
                 error_msg=f"Missing secrets: {', '.join(missing_keys)}",
                 callback_stream=callback_stream,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 redis=redis,
                 deploy_outcome=outcome,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
@@ -659,7 +663,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                     story_id=story_id,
                     error_msg="; ".join(errors),
                     callback_stream=callback_stream,
-                    user_id=user_id,
+                    telegram_chat_id=telegram_chat_id,
                     redis=redis,
                     deploy_outcome=typed_outcome,
                     deploy_fix_attempt=msg.deploy_fix_attempt,
@@ -674,7 +678,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 story_id=story_id,
                 error_msg=error_msg,
                 callback_stream=callback_stream,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 redis=redis,
                 deploy_outcome=DeployOutcome.RETRY,
                 deploy_fix_attempt=msg.deploy_fix_attempt,
@@ -718,7 +722,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             story_id=story_id,
             error_msg=str(e),
             callback_stream=callback_stream,
-            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
             redis=redis,
             deploy_fix_attempt=msg.deploy_fix_attempt,
         )

@@ -75,14 +75,14 @@ async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfi
         reason: Why you're setting this reminder (e.g. "check engineering task eng-abc123").
     """
     redis = _get_stream_client().redis
-    user_id = config["configurable"].get("user_id", "unknown")
+    telegram_chat_id = config["configurable"]["telegram_chat_id"]
     fire_at = time.time() + delay_minutes * 60
     story_match = _STORY_ID_RE.search(reason)
 
     reminder = json.dumps(
         {
             "type": "reminder",
-            "user_id": user_id,
+            "telegram_chat_id": telegram_chat_id,
             "text": reason,
             "story_id": story_match.group(0) if story_match else "",
             "timestamp": datetime.now(UTC).isoformat(),
@@ -90,7 +90,7 @@ async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfi
     )
     await redis.zadd(PO_REMINDERS_KEY, {reminder: fire_at})
 
-    logger.info("po_reminder_set", user_id=user_id, delay_minutes=delay_minutes)
+    logger.info("po_reminder_set", telegram_chat_id=telegram_chat_id, delay_minutes=delay_minutes)
     return f"Reminder set for {delay_minutes} minutes: {reason}"
 
 
@@ -107,11 +107,11 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
         message: Text to send to the user right now.
     """
     client = _get_stream_client()
-    user_id = config["configurable"].get("user_id", "unknown")
-    msg = POProactiveMessage(text=message, user_id=user_id)
+    telegram_chat_id = config["configurable"]["telegram_chat_id"]
+    msg = POProactiveMessage(text=message, telegram_chat_id=telegram_chat_id)
     await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(msg))
 
-    logger.info("po_notify_user", user_id=user_id, text_length=len(message))
+    logger.info("po_notify_user", telegram_chat_id=telegram_chat_id, text_length=len(message))
     return "Message sent to user."
 
 

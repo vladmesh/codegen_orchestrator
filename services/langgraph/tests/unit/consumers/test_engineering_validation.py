@@ -22,7 +22,7 @@ async def test_malformed_job_is_terminal_not_poison_loop():
     api = AsyncMock()
     redis = AsyncMock()
     # project_id is required by EngineeringMessage — omit it.
-    bad_job = {"task_id": "eng-1", "user_id": "123", "action": "feature"}
+    bad_job = {"task_id": "eng-1", "telegram_chat_id": "123", "action": "feature"}
 
     with (
         patch("src.consumers.engineering.api_client", api),
@@ -46,7 +46,11 @@ async def test_malformed_job_reraises_when_terminal_write_is_transiently_lost():
     api = AsyncMock()
     api.patch = AsyncMock(side_effect=_http_error(503))
     redis = AsyncMock()
-    bad_job = {"task_id": "eng-1", "user_id": "123", "action": "feature"}  # missing project_id
+    bad_job = {
+        "task_id": "eng-1",
+        "telegram_chat_id": "123",
+        "action": "feature",
+    }  # missing project_id
 
     with (
         patch("src.consumers.engineering.api_client", api),
@@ -65,7 +69,7 @@ async def test_malformed_job_acks_when_run_is_non_retryably_unwritable():
     api = AsyncMock()
     api.patch = AsyncMock(side_effect=_http_error(404))
     redis = AsyncMock()
-    bad_job = {"task_id": "eng-1", "user_id": "123", "action": "feature"}
+    bad_job = {"task_id": "eng-1", "telegram_chat_id": "123", "action": "feature"}
 
     with (
         patch("src.consumers.engineering.api_client", api),
@@ -82,7 +86,7 @@ async def test_malformed_job_without_task_id_still_terminates():
     """No identifiable run — still returns terminally and touches no business logic."""
     api = AsyncMock()
     redis = AsyncMock()
-    bad_job = {"user_id": "123", "action": "feature"}  # no task_id, no project_id
+    bad_job = {"telegram_chat_id": "123", "action": "feature"}  # no task_id, no project_id
 
     with patch("src.consumers.engineering.api_client", api):
         result = await process_engineering_job(bad_job, redis)
@@ -95,7 +99,7 @@ async def test_malformed_job_without_task_id_still_terminates():
 def test_unknown_extra_fields_are_ignored_and_defaults_apply():
     """Wire additions do not crash the boundary; omitted optional fields take defaults."""
     msg = EngineeringMessage.model_validate(
-        {"task_id": "t", "project_id": "p", "user_id": "u", "surprise": "x"}
+        {"task_id": "t", "project_id": "p", "telegram_chat_id": "u", "surprise": "x"}
     )
     assert msg.task_id == "t"
     assert msg.action.value == "create"

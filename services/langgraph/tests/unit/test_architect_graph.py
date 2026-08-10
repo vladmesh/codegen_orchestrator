@@ -58,7 +58,7 @@ class TestArchitectState:
         annotations = ArchitectState.__annotations__
         assert "story_id" in annotations
         assert "project_id" in annotations
-        assert "user_id" in annotations
+        assert "telegram_chat_id" in annotations
         assert "messages" in annotations
 
 

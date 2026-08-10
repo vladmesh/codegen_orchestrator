@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
 from .. import startup
+from ._recipients import resolve_project_recipient
 from .temporary_access import grant_temporary_access
 
 logger = structlog.get_logger(__name__)
@@ -182,11 +183,15 @@ async def supervise_stuck_stories(
             failed += 1
             continue
 
-        # Retry: republish to architect:queue (StoryDTO has no user_id field)
+        # Retry: the story's owner is reached through its project, so the
+        # lifecycle events this retry produces still have somewhere to go.
+        recipient = await resolve_project_recipient(
+            api_client, project_id, event="story_stuck_retry", story_id=story_id
+        )
         arch_msg = ArchitectMessage(
             story_id=story_id,
             project_id=project_id,
-            user_id="",
+            telegram_chat_id=recipient.telegram_chat_id,
         )
         await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
         await redis.set(retry_key, current_retries + 1, ex=_story_retry_ttl())
@@ -335,8 +340,10 @@ async def _request_impossible_capacity_via_po(
     log: structlog.stdlib.BoundLogger,
 ) -> None:
     """Ask PO to explain that the requested deployment cannot fit managed capacity."""
-    project = await api_client.get_project(str(task.project_id))
-    if project is None or not project.owner_id:
+    recipient = await resolve_project_recipient(
+        api_client, str(task.project_id), event="task_impossible_capacity", story_id=task.story_id
+    )
+    if not recipient.is_addressable:
         return
     event = POSystemEvent(
         event="task_impossible_capacity",
@@ -345,7 +352,9 @@ async def _request_impossible_capacity_via_po(
             "the request needs operator review."
         ),
         task_id=task.id,
-        user_id=str(project.owner_id),
+        story_id=task.story_id or "",
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
         project_id=str(task.project_id),
     )
     await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
@@ -359,8 +368,10 @@ async def _request_resources_via_po(
     log: structlog.stdlib.BoundLogger,
 ) -> None:
     """Ask PO to tell the owner that engineering is waiting for capacity."""
-    project = await api_client.get_project(str(task.project_id))
-    if project is None or not project.owner_id:
+    recipient = await resolve_project_recipient(
+        api_client, str(task.project_id), event="task_waiting_resources", story_id=task.story_id
+    )
+    if not recipient.is_addressable:
         return
     event = POSystemEvent(
         event="task_waiting_resources",
@@ -369,7 +380,9 @@ async def _request_resources_via_po(
             "automatically when capacity becomes available."
         ),
         task_id=task.id,
-        user_id=str(project.owner_id),
+        story_id=task.story_id or "",
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
         project_id=str(task.project_id),
     )
     await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
@@ -480,14 +493,18 @@ async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -
 async def _notify_resources_resumed_via_po(
     api_client: SchedulerAPIClient, redis_client: RedisStreamClient, task
 ) -> None:
-    project = await api_client.get_project(str(task.project_id))
-    if project is None or not project.owner_id:
+    recipient = await resolve_project_recipient(
+        api_client, str(task.project_id), event="task_resources_resumed", story_id=task.story_id
+    )
+    if not recipient.is_addressable:
         return
     event = POSystemEvent(
         event="task_resources_resumed",
         text="Server capacity is available again. Tell the user that engineering has resumed.",
         task_id=task.id,
-        user_id=str(project.owner_id),
+        story_id=task.story_id or "",
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
         project_id=str(task.project_id),
     )
     await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
@@ -728,10 +745,13 @@ async def _handle_deploy_success_story(
     # Its id is derived from the deploy run, so the retry lands on the same run
     # instead of creating a second one for the same deploy.
     qa_run_id = _qa_run_id_for_deploy(run.id)
+    qa_recipient = await resolve_project_recipient(
+        api_client, project_id, event="qa_dispatch", story_id=story_id
+    )
     qa_message = QAMessage(
         story_id=story_id,
         project_id=project_id,
-        user_id="",
+        telegram_chat_id=qa_recipient.telegram_chat_id,
         deployed_url=deployed_url,
         application_id=application_id,
         acceptance_criteria=acceptance_criteria,
@@ -917,10 +937,13 @@ async def _handle_deploy_code_fix(
     except Exception:
         log.warning("deploy_fix_run_create_failed", fix_task_id=fix_task_id, exc_info=True)
 
+    fix_recipient = await resolve_project_recipient(
+        api_client, project_id, event="deploy_code_fix", story_id=story_id
+    )
     fix_msg = EngineeringMessage(
         task_id=fix_task_id,
         project_id=project_id,
-        user_id="",
+        telegram_chat_id=fix_recipient.telegram_chat_id,
         action="fix",
         description=(
             f"Deploy failed — fix the code so containers start cleanly.\n\n"
@@ -992,10 +1015,13 @@ async def _handle_deploy_retry(
         }
     )
 
+    retry_recipient = await resolve_project_recipient(
+        api_client, project_id, event="deploy_retry", story_id=story_id
+    )
     deploy_msg = DeployMessage(
         task_id=new_run_id,
         project_id=project_id,
-        user_id="",
+        telegram_chat_id=retry_recipient.telegram_chat_id,
         story_id=story_id,
         triggered_by=DeployTrigger.WEBHOOK,
         action="feature",
@@ -1080,13 +1106,11 @@ async def _request_user_secret_via_po(
     `consumers` never leave the resolver — only the key and its description reach
     the user.
     """
-    project = await api_client.get_project(project_id)
-    if project is None:
-        log.warning("waiting_user_secret_no_project", project_id=project_id)
-        return
-    user_id = str(project.owner_id)
-    if not user_id:
-        log.warning("waiting_user_secret_no_owner", project_id=project_id)
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="story_waiting_user_secret", story_id=story_id
+    )
+    if not recipient.is_addressable:
+        log.warning("waiting_user_secret_unaddressable", project_id=project_id)
         return
 
     secret_lines = "\n".join(f"- {m.key}: {m.description}" for m in missing)
@@ -1101,7 +1125,9 @@ async def _request_user_secret_via_po(
         event="story_waiting_user_secret",
         text=text,
         task_id=story_id,
-        user_id=user_id,
+        story_id=story_id,
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
         project_id=project_id,
     )
     await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
@@ -1252,10 +1278,13 @@ async def _redispatch_waiting_deploy(
         }
     )
 
+    secret_recipient = await resolve_project_recipient(
+        api_client, project_id, event="deploy_after_user_secret", story_id=story_id
+    )
     deploy_msg = DeployMessage(
         task_id=new_run_id,
         project_id=project_id,
-        user_id="",
+        telegram_chat_id=secret_recipient.telegram_chat_id,
         story_id=story_id,
         triggered_by=DeployTrigger.WEBHOOK,
         action="feature",
@@ -1498,9 +1527,11 @@ async def _notify_quarantine_owner(
     log: structlog.stdlib.BoundLogger,
 ) -> None:
     """Ask the project owner to decide what to do with a stopped bot."""
-    project = await api_client.get_project(project_id)
-    if project is None:
-        log.warning("qa_quarantine_no_project", project_id=project_id)
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="story_quarantined", story_id=story_id
+    )
+    if not recipient.is_addressable:
+        log.warning("qa_quarantine_unaddressable", project_id=project_id)
         return
 
     outcome = reason["qa_outcome"]
@@ -1517,7 +1548,9 @@ async def _notify_quarantine_owner(
             "Please decide whether to fix and redeploy it."
         ),
         task_id=story_id,
-        user_id=str(project.owner_id),
+        story_id=story_id,
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
         project_id=project_id,
     )
     await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))

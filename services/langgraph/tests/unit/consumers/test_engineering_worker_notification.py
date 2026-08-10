@@ -75,7 +75,7 @@ class TestLevel1CascadeFailure:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -106,7 +106,7 @@ class TestLevel1CascadeFailure:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -130,7 +130,7 @@ class TestLevel2NotificationDecoupling:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -161,7 +161,7 @@ class TestLevel2NotificationDecoupling:
                 redis=mock_redis,
                 skip_deploy=True,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 
@@ -187,7 +187,7 @@ class TestLevel2NotificationDecoupling:
                 redis=mock_redis,
                 skip_deploy=False,
                 developer_started_at=datetime.now(UTC),
-                user_id="u1",
+                telegram_chat_id="u1",
             )
         )
 

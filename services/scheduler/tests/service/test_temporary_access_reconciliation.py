@@ -169,7 +169,7 @@ async def _grant(
             qa_message=QAMessage(
                 story_id="story-1",
                 project_id=project_id,
-                user_id="",
+                telegram_chat_id="",
                 deployed_url="https://example.com",
                 # The deployment QA tested the borrowed identity on. The reading
                 # that closes this grant has to be of that machine and no other.

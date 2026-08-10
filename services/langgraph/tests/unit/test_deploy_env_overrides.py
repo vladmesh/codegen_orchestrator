@@ -216,7 +216,7 @@ def _fenced_job(**overrides) -> dict:
     job = {
         "task_id": "deploy-revoke-1",
         "project_id": "proj-1",
-        "user_id": "",
+        "telegram_chat_id": "",
         "callback_stream": "",
         "triggered_by": DeployTrigger.ADMIN.value,
         "action": DeployAction.FEATURE.value,

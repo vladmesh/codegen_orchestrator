@@ -36,7 +36,4 @@ def _get_stream_client() -> RedisStreamClient:
 
 def _user_headers(config: RunnableConfig) -> dict[str, str]:
     """Extract X-Telegram-ID header from LangGraph config."""
-    user_id = config["configurable"].get("user_id", "")
-    if user_id:
-        return {"X-Telegram-ID": str(user_id)}
-    return {}
+    return {"X-Telegram-ID": str(config["configurable"]["telegram_chat_id"])}

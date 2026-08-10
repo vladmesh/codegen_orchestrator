@@ -43,7 +43,7 @@ class TestProactiveListener:
     async def test_reads_proactive_stream(self, mock_client, mock_bot):
         """Should read messages from po:proactive stream."""
         msg = StreamMessage(
-            message_id="1-0", data={"user_id": "42", "text": "Your project is ready!"}
+            message_id="1-0", data={"telegram_chat_id": "42", "text": "Your project is ready!"}
         )
         mock_client.consume = _make_consume_iter([msg])
 
@@ -61,8 +61,10 @@ class TestProactiveListener:
 
     @pytest.mark.asyncio
     async def test_sends_to_correct_user(self, mock_client, mock_bot):
-        """Should send message to the user_id from stream data."""
-        msg = StreamMessage(message_id="1-0", data={"user_id": "12345", "text": "Deploy done!"})
+        """Should send message to the telegram_chat_id from stream data."""
+        msg = StreamMessage(
+            message_id="1-0", data={"telegram_chat_id": "12345", "text": "Deploy done!"}
+        )
         mock_client.consume = _make_consume_iter([msg])
 
         listener = ProactiveListener(client=mock_client)
@@ -83,7 +85,7 @@ class TestProactiveListener:
         """Should continue processing even if send_message fails."""
         mock_bot.send_message = AsyncMock(side_effect=Exception("Telegram API error"))
 
-        msg = StreamMessage(message_id="msg-1", data={"user_id": "42", "text": "Hello!"})
+        msg = StreamMessage(message_id="msg-1", data={"telegram_chat_id": "42", "text": "Hello!"})
         mock_client.consume = _make_consume_iter([msg])
 
         listener = ProactiveListener(client=mock_client)

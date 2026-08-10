@@ -23,7 +23,7 @@ class TestSetProjectSecretAtomicMerge:
 
             result = await set_project_secret.ainvoke(
                 {"project_id": "proj-1", "key": "NEW_KEY", "value": "new-value"},
-                config={"configurable": {"thread_id": "po-user-1", "user_id": "1"}},
+                config={"configurable": {"thread_id": "po-chat-1", "telegram_chat_id": "1"}},
             )
 
         mock_api.post_raw.assert_called_once()

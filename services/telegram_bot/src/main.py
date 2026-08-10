@@ -44,6 +44,7 @@ from .handlers import handle_add_user_input, handle_callback_query  # noqa: E402
 from .keyboards import main_menu_keyboard  # noqa: E402
 from .middleware import auth_middleware, is_admin  # noqa: E402
 from .notifications import ProvisionerNotifier  # noqa: E402
+from .proactive import deliver_proactive_message, send_message_to_chat  # noqa: E402
 
 logger = structlog.get_logger()
 
@@ -237,7 +238,7 @@ async def _read_po_response(
 
 async def _send_to_po_and_wait(
     client: RedisStreamClient,
-    user_id: int,
+    telegram_chat_id: int,
     text: str,
     bot,
     chat_id: int,
@@ -249,7 +250,7 @@ async def _send_to_po_and_wait(
 
     Args:
         client: Redis stream client
-        user_id: Telegram user ID
+        telegram_chat_id: Telegram chat the answer is delivered to
         text: User message text
         bot: Telegram bot instance
         chat_id: Chat ID for typing indicator
@@ -265,12 +266,17 @@ async def _send_to_po_and_wait(
     response_stream = f"po:response:{request_id}"
 
     # Publish to PO input stream
-    msg = POUserMessage(text=text, user_id=str(user_id), request_id=request_id, user_name=user_name)
+    msg = POUserMessage(
+        text=text,
+        telegram_chat_id=str(telegram_chat_id),
+        request_id=request_id,
+        user_name=user_name,
+    )
     await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))
 
     logger.info(
         "po_message_sent",
-        user_id=user_id,
+        telegram_chat_id=telegram_chat_id,
         request_id=request_id,
     )
 
@@ -355,7 +361,7 @@ async def handle_message(update: Update, context) -> None:
         user_name = update.effective_user.first_name or ""
         response_text = await _send_to_po_and_wait(
             client=_stream_client,
-            user_id=user_id,
+            telegram_chat_id=user_id,
             text=text,
             bot=context.bot,
             chat_id=chat_id,
@@ -376,16 +382,14 @@ async def handle_message(update: Update, context) -> None:
         await update.message.reply_text(f"Ошибка: {e!s}")
 
 
-async def _send_message_to_chat(bot, chat_id: int, text: str) -> None:
-    """Send text to a Telegram chat with markdown fallback."""
-    try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
-    except Exception:
-        await bot.send_message(chat_id=chat_id, text=text)
-
-
 class ProactiveListener:
-    """Listens to po:proactive stream and sends messages to users."""
+    """Listens to po:proactive stream and sends messages to users.
+
+    Delivery is retried a bounded number of times. A message that still cannot
+    be delivered is not lost quietly: admins are alerted with the story, project
+    and event that produced it, and the outcome is distinguishable in the logs
+    (``proactive_message_sent`` vs ``proactive_message_delivery_exhausted``).
+    """
 
     def __init__(self, client: RedisStreamClient):
         self.client = client
@@ -418,29 +422,24 @@ class ProactiveListener:
                     continue
                 try:
                     proactive = from_flat_fields(msg.data, POProactiveMessage)
-                    chat_id = int(proactive.user_id)
-                    await _send_message_to_chat(bot, chat_id, proactive.text)
-                    logger.info(
-                        "proactive_message_sent",
-                        user_id=chat_id,
-                        text_length=len(msg.data.get("text", "")),
-                    )
                 except Exception as e:
                     logger.error(
-                        "proactive_message_send_failed",
+                        "proactive_message_invalid",
                         error=str(e),
-                        user_id=msg.data.get("user_id"),
+                        telegram_chat_id=msg.data.get("telegram_chat_id"),
                     )
+                    continue
+                await deliver_proactive_message(bot, proactive)
         except asyncio.CancelledError:
             pass
 
         logger.info("proactive_listener_stopped")
 
 
-async def _send_response_to_user(app: Application, user_id: int, text: str) -> None:
+async def _send_response_to_user(app: Application, telegram_chat_id: int, text: str) -> None:
     """Send response text to Telegram user with markdown fallback."""
-    await _send_message_to_chat(app.bot, user_id, text)
-    logger.info("worker_response_sent", user_id=user_id, text_length=len(text))
+    await send_message_to_chat(app.bot, telegram_chat_id, text)
+    logger.info("worker_response_sent", telegram_chat_id=telegram_chat_id, text_length=len(text))
 
 
 async def post_init(app: Application) -> None:

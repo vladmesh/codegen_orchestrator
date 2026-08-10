@@ -39,18 +39,18 @@ class TestPublishCallbackEvent:
 
     @pytest.mark.asyncio
     async def test_with_user_id(self, mock_redis):
-        """user_id should be included when provided."""
+        """telegram_chat_id should be included when provided."""
         await publish_callback_event(
             mock_redis,
             "test:stream",
             "progress",
             "task-1",
             "Working...",
-            user_id="123",
+            telegram_chat_id="123",
         )
 
         fields = mock_redis.publish_flat.call_args[0][1]
-        assert fields["user_id"] == "123"
+        assert fields["telegram_chat_id"] == "123"
 
     @pytest.mark.asyncio
     async def test_with_project_id(self, mock_redis):
@@ -86,18 +86,18 @@ class TestPublishCallbackEvent:
 
     @pytest.mark.asyncio
     async def test_omits_empty_user_id(self, mock_redis):
-        """Empty user_id should not be included in fields."""
+        """Empty telegram_chat_id should not be included in fields."""
         await publish_callback_event(
             mock_redis,
             "test:stream",
             "completed",
             "task-1",
             "Done!",
-            user_id="",
+            telegram_chat_id="",
         )
 
         fields = mock_redis.publish_flat.call_args[0][1]
-        assert "user_id" not in fields
+        assert "telegram_chat_id" not in fields
 
     @pytest.mark.asyncio
     async def test_omits_empty_project_id(self, mock_redis):
