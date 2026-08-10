@@ -9,8 +9,8 @@ import structlog
 
 from shared.contracts.queues.worker_result import WorkerFailedResult, WorkerResult
 from shared.contracts.vocab import AgentType
-from shared.redis.client import RedisStreamClient
 
+from .broker import WorkerBrokerClient
 from .config import WorkerWrapperConfig
 from .http_server import ResultHttpServer
 from .observability import extract_effort_metrics, save_transcript
@@ -86,18 +86,24 @@ def build_agent_subprocess_env(source: Mapping[str, str] | None = None) -> dict[
 
 class WorkerWrapper:
     """
-    Wraps a worker agent process, handling Redis Stream communication
+    Wraps a worker agent process, handling brokered control-plane communication
     and lifecycle management.
     """
 
-    def __init__(self, config: WorkerWrapperConfig, redis_client: RedisStreamClient | None = None):
+    def __init__(
+        self,
+        config: WorkerWrapperConfig,
+        broker_client: WorkerBrokerClient | None = None,
+    ):
         self.config = config
-        if redis_client:
-            self.redis = redis_client
-            self._owns_redis = False
+        if broker_client:
+            self.broker = broker_client
+            self._owns_broker = False
         else:
-            self.redis = RedisStreamClient(redis_url=config.redis_url)
-            self._owns_redis = True
+            self.broker = WorkerBrokerClient(
+                config.broker_url, config.broker_token, config.worker_id
+            )
+            self._owns_broker = True
         self._running = False
         self._task: asyncio.Task | None = None
         self._http_server: ResultHttpServer | None = None
@@ -110,27 +116,23 @@ class WorkerWrapper:
     async def run(self):
         """Main loop: connect, consume, execute, publish."""
         self._running = True
-        logger.info("worker_wrapper_starting", config=self.config.model_dump())
-
-        await self.redis.connect()
-        # Ensure group exists
-        await self.redis.ensure_consumer_group(self.config.input_stream, self.config.consumer_group)
+        logger.info(
+            "worker_wrapper_starting",
+            worker_id=self.config.worker_id,
+            agent_type=self.config.agent_type,
+        )
 
         try:
-            async for message in self.redis.consume(
-                stream=self.config.input_stream,
-                group=self.config.consumer_group,
-                consumer=self.config.consumer_name,
-                block_ms=self.config.poll_interval_ms,
-            ):
+            while self._running:
+                message = await self.broker.lease_input()
                 if not self._running:
                     break
-
                 if message is None:
-                    # Timeout/No message, continue loop
+                    if getattr(self.broker, "exhausted", False):
+                        break
+                    await asyncio.sleep(self.config.poll_interval_ms / 1000)
                     continue
-
-                await self.process_message(message)
+                await self.process_message(message.message_id, message.data)
 
         except asyncio.CancelledError:
             logger.info("worker_wrapper_cancelled")
@@ -138,15 +140,12 @@ class WorkerWrapper:
             logger.exception("worker_wrapper_crashed", error=str(e))
             raise
         finally:
-            if self._owns_redis:
-                await self.redis.close()
+            if self._owns_broker:
+                await self.broker.close()
                 logger.info("worker_wrapper_stopped")
 
-    async def process_message(self, message):
+    async def process_message(self, msg_id: str, data: dict):
         """Process a single task message."""
-        msg_id = message.message_id
-        data = message.data
-
         logger.info("processing_task", msg_id=msg_id)
 
         # Persist task context for crash recovery (Gap B)
@@ -158,10 +157,7 @@ class WorkerWrapper:
             context_update["request_id"] = data["request_id"]
 
         if context_update:
-            # Access raw redis client to use hset
-            await self.redis.redis.hset(
-                f"worker:status:{self.config.consumer_name}", mapping=context_update
-            )
+            await self.broker.update_status(context_update)
 
         # 1. Pre-turn setup
         await self._prepare_workspace(data)
@@ -176,10 +172,7 @@ class WorkerWrapper:
                 "Refusing to launch agent to avoid wasting credits.",
             )
             error = f"Workspace pre-flight failed: {workspace_detail}"
-            await self.redis.publish_message(
-                self.config.output_stream,
-                WorkerFailedResult(error=error),
-            )
+            await self.broker.submit_output(msg_id, WorkerFailedResult(error=error))
             return
         logger.info("workspace_preflight_passed", detail=workspace_detail)
 
@@ -191,9 +184,8 @@ class WorkerWrapper:
             self._inject_makefile_overrides()
         except RuntimeError as exc:
             logger.error("workspace_preparation_failed", error=str(exc))
-            await self.redis.publish_message(
-                self.config.output_stream,
-                WorkerFailedResult(error=f"Workspace preparation failed: {exc}"),
+            await self.broker.submit_output(
+                msg_id, WorkerFailedResult(error=f"Workspace preparation failed: {exc}")
             )
             return
 
@@ -205,11 +197,12 @@ class WorkerWrapper:
             self._buffered_result = result
 
         self._http_server = ResultHttpServer(
-            worker_id=self.config.consumer_name,
+            worker_id=self.config.worker_id,
             publish_callback=_buffer_http_result,
             result_event=self._result_event,
             host="127.0.0.1",
             port=self.config.http_server_port,
+            compose_callback=self.broker.compose,
         )
 
         try:
@@ -229,13 +222,13 @@ class WorkerWrapper:
             self._archive_task(data, report)
 
             # 6. Publish result
-            await self._publish_result(data, error, status, report)
+            await self._publish_result(msg_id, data, error, status, report)
         finally:
             await self._http_server.stop()
             self._http_server = None
 
     async def _publish_result(
-        self, data: dict, error: str | None, status: str, report: str | None
+        self, lease_id: str, data: dict, error: str | None, status: str, report: str | None
     ) -> tuple[str, str | None]:
         """Publish task result to Redis, handling HTTP results, errors, and auto-resume.
 
@@ -245,16 +238,16 @@ class WorkerWrapper:
         observability = self._observability_metadata()
 
         if self._result_event.is_set() and self._buffered_result is not None:
-            logger.info("result_received_via_http", worker_id=self.config.consumer_name)
+            logger.info("result_received_via_http", worker_id=self.config.worker_id)
             result = self._attach_metadata(
                 self._buffered_result, report, stdout_tail, observability
             )
-            await self.redis.publish_message(self.config.output_stream, result)
+            await self.broker.submit_output(lease_id, result)
             return status, error
 
         if error:
             result = WorkerFailedResult(error=error, agent_stdout_tail=stdout_tail, **observability)
-            await self.redis.publish_message(self.config.output_stream, result)
+            await self.broker.submit_output(lease_id, result)
             return status, error
 
         # Watchdog: agent exited without reporting via HTTP
@@ -262,22 +255,22 @@ class WorkerWrapper:
         if self.config.agent_type == AgentType.CLAUDE:
             resumed = await self._attempt_auto_resume(data)
             if resumed and self._result_event.is_set() and self._buffered_result is not None:
-                logger.info("result_received_after_resume", worker_id=self.config.consumer_name)
+                logger.info("result_received_after_resume", worker_id=self.config.worker_id)
                 stdout_tail = self._agent_stdout_tail
                 result = self._attach_metadata(
                     self._buffered_result, report, stdout_tail, self._observability_metadata()
                 )
-                await self.redis.publish_message(self.config.output_stream, result)
+                await self.broker.submit_output(lease_id, result)
                 return status, error
 
-        logger.warning("agent_exited_without_result", worker_id=self.config.consumer_name)
+        logger.warning("agent_exited_without_result", worker_id=self.config.worker_id)
         error = "Agent exited without reporting result"
         status = "failed"
         stdout_tail = self._agent_stdout_tail
         result = WorkerFailedResult(
             error=error, agent_stdout_tail=stdout_tail, **self._observability_metadata()
         )
-        await self.redis.publish_message(self.config.output_stream, result)
+        await self.broker.submit_output(lease_id, result)
         return status, error
 
     @staticmethod
@@ -316,12 +309,7 @@ class WorkerWrapper:
             self._write_story_md(story_md)
 
         if data.get("clear_session"):
-            from .session import SessionManager
-
-            session_manager = SessionManager(
-                redis=self.redis.redis, worker_id=self.config.consumer_name
-            )
-            await session_manager.clear_session()
+            await self.broker.clear_session()
             logger.info("session_cleared_for_fresh_start")
 
     def _check_workspace_ready(self) -> tuple[bool, str]:
@@ -664,14 +652,13 @@ class WorkerWrapper:
         Results are reported by the agent via HTTP (localhost:9090).
         This method only manages the subprocess lifecycle and session.
         """
-        from .session import SessionManager
-
-        session_manager = SessionManager(
-            redis=self.redis.redis, worker_id=self.config.consumer_name
-        )
-
         create_new_session = self.config.agent_type != AgentType.CLAUDE
-        session_id = await session_manager.get_or_create_session(create_new=create_new_session)
+        session_id = await self.broker.get_session()
+        if not session_id and create_new_session:
+            import uuid
+
+            session_id = str(uuid.uuid4())
+            await self.broker.set_session(session_id)
 
         # Select Runner
         from .runners.claude import ClaudeRunner
@@ -731,7 +718,7 @@ class WorkerWrapper:
         self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
         self._transcript_path, self._transcript_truncated = save_transcript(
             self.config.transcript_dir,
-            self.config.consumer_name,
+            self.config.worker_id,
             str(data.get("request_id", "unknown")),
             f"--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n",
             self.config.transcript_max_bytes,
@@ -762,7 +749,7 @@ class WorkerWrapper:
             captured_session_id = self._extract_session_id_from_output(stdout)
             if captured_session_id:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
-                await session_manager.update_session(captured_session_id)
+                await self.broker.set_session(captured_session_id)
 
     async def _attempt_auto_resume(self, data: dict) -> bool:
         """Attempt one resume of the Claude agent to get it to call /result.
@@ -770,17 +757,11 @@ class WorkerWrapper:
         Returns True if the resume subprocess completed (result may or may not
         have been received via HTTP — caller checks _result_event).
         """
-        logger.warning("attempting_auto_resume", worker_id=self.config.consumer_name)
-
-        from .session import SessionManager
-
-        session_manager = SessionManager(
-            redis=self.redis.redis, worker_id=self.config.consumer_name
-        )
-        session_id = await session_manager.get_or_create_session(create_new=False)
+        logger.warning("attempting_auto_resume", worker_id=self.config.worker_id)
+        session_id = await self.broker.get_session()
 
         if not session_id:
-            logger.warning("auto_resume_no_session", worker_id=self.config.consumer_name)
+            logger.warning("auto_resume_no_session", worker_id=self.config.worker_id)
             return False
 
         resume_prompt = (
@@ -823,7 +804,7 @@ class WorkerWrapper:
 
             return True
         except TimeoutError:
-            logger.error("auto_resume_timed_out", worker_id=self.config.consumer_name)
+            logger.error("auto_resume_timed_out", worker_id=self.config.worker_id)
             try:
                 proc.kill()
                 await proc.wait()
@@ -831,7 +812,7 @@ class WorkerWrapper:
                 pass
             return False
         except Exception:
-            logger.exception("auto_resume_failed", worker_id=self.config.consumer_name)
+            logger.exception("auto_resume_failed", worker_id=self.config.worker_id)
             return False
 
     def _collect_and_archive(self, data: dict) -> None:

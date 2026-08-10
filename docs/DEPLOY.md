@@ -147,6 +147,16 @@ proxy, which stamps it into the requests it forwards. `X-Telegram-ID` alone is r
 `is_admin` on `POST /api/users` is accepted only from an internal caller — a container that
 can reach the API's port can no longer write itself an administrator.
 
+### Worker broker authentication
+
+| Secret | Description |
+|--------|-------------|
+| `WORKER_BROKER_INTERNAL_TOKEN` | Non-empty shared manager-to-broker credential. Generate with `openssl rand -hex 32`. |
+
+The deploy workflow writes this value to `.env` before Compose starts. Both
+`worker-manager` and `worker-broker` reject a missing or empty value at boot; it
+is never passed into coding-worker containers.
+
 ### LLM Providers
 
 | Secret | Description |

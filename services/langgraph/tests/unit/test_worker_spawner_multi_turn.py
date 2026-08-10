@@ -113,8 +113,8 @@ class TestSendTaskToWorker:
 
         captured_xadds = []
 
-        async def capture_xadd(stream, data):
-            captured_xadds.append((stream, data))
+        async def capture_xadd(stream, data, **kwargs):
+            captured_xadds.append((stream, data, kwargs))
             return "msg-id"
 
         mock_redis.xadd = capture_xadd
@@ -154,10 +154,11 @@ class TestSendTaskToWorker:
 
         # Verify XADD to input stream
         assert len(captured_xadds) == 1
-        stream, data = captured_xadds[0]
+        stream, data, kwargs = captured_xadds[0]
         assert stream == "worker:dev-123:input"
         payload = json.loads(data["data"])
         assert payload["prompt"] == "Fix the CI error in test_foo.py"
+        assert kwargs == {"maxlen": 1000, "approximate": True}
 
         # Verify result
         assert result.success is True

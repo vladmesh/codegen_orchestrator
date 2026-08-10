@@ -1,5 +1,6 @@
 """Service tests for the compose HTTP API endpoint."""
 
+import hashlib
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
@@ -23,15 +24,26 @@ def client(tmp_path):
 
     redis = AsyncMock()
     redis.hget = AsyncMock(return_value=None)
+    redis.hgetall = AsyncMock(return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()})
 
     app.state.compose_runner = runner
     app.state.docker = docker
     app.state.redis = redis
     with TestClient(app, raise_server_exceptions=True) as c:
+        c.headers.update({"X-Worker-Broker-Token": "broker-test-token"})
         yield c, runner, redis
 
 
 class TestComposeApi:
+    def test_direct_request_without_broker_credential_is_rejected(self, client):
+        c, _, _ = client
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["ps"]},
+            headers={"X-Worker-Broker-Token": "wrong-token"},
+        )
+        assert response.status_code == 403
+
     def test_valid_ps_returns_output(self, client, tmp_path):
         """A valid 'ps' command should return 200 with stdout/stderr."""
         c, runner, _redis = client

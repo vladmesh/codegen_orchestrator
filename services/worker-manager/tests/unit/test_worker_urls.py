@@ -1,24 +1,35 @@
-from unittest.mock import MagicMock
+from pathlib import Path
 
 import pytest
+import yaml
 
-from src import config
-
-
-def test_worker_urls_return_explicit_configured_values(monkeypatch):
-    settings = MagicMock(WORKER_REDIS_URL="redis://worker-redis:6379/0", WORKER_API_URL="http://worker-api:8000")
-    monkeypatch.setattr(config, "settings", settings)
-
-    assert config.worker_urls() == ("redis://worker-redis:6379/0", "http://worker-api:8000")
+from src.config import WorkerManagerSettings
 
 
-@pytest.mark.parametrize(
-    ("redis_url", "api_url", "missing"),
-    [("", "http://api:8000", "WORKER_REDIS_URL"), ("redis://redis:6379/0", " ", "WORKER_API_URL")],
-)
-def test_worker_urls_reject_missing_required_values(monkeypatch, redis_url, api_url, missing):
-    settings = MagicMock(WORKER_REDIS_URL=redis_url, WORKER_API_URL=api_url)
-    monkeypatch.setattr(config, "settings", settings)
+def test_worker_broker_url_is_explicitly_configurable():
+    settings = WorkerManagerSettings(
+        WORKER_BROKER_URL="http://worker-broker.internal:8001",
+        WORKER_BROKER_INTERNAL_TOKEN="test-internal-token",
+    )
 
-    with pytest.raises(RuntimeError, match=missing):
-        config.worker_urls()
+    assert settings.WORKER_BROKER_URL == "http://worker-broker.internal:8001"
+
+
+def test_worker_broker_internal_token_is_required(monkeypatch):
+    monkeypatch.delenv("WORKER_BROKER_INTERNAL_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="WORKER_BROKER_INTERNAL_TOKEN"):
+        WorkerManagerSettings()
+
+
+def test_worker_broker_internal_token_cannot_be_empty():
+    with pytest.raises(ValueError, match="WORKER_BROKER_INTERNAL_TOKEN"):
+        WorkerManagerSettings(WORKER_BROKER_INTERNAL_TOKEN="")
+
+
+def test_service_compose_supplies_required_broker_internal_token():
+    compose_path = Path(__file__).parents[4] / "docker/test/service/worker-manager.yml"
+    compose = yaml.safe_load(compose_path.read_text())
+
+    for service in ("worker-manager", "worker-manager-test-runner"):
+        environment = compose["services"][service]["environment"]
+        assert "WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token" in environment

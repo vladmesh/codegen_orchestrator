@@ -76,7 +76,12 @@ BUILD_ARG = "SOURCE_HASH"
 # worker-wrapper and their own definitions alongside it, and one hash over the union is
 # cheaper than one hash per image. An edit to worker-wrapper therefore also marks the
 # worker-manager image stale, which costs a rebuild and never hides one.
-HASHED_TREES = ("shared", "packages/worker-wrapper", "services/worker-manager/images")
+HASHED_TREES = (
+    "shared",
+    "packages/worker-wrapper",
+    "services/worker-manager/images",
+    "services/worker-broker",
+)
 HASH_LENGTH = 16
 HASH_RE = re.compile(rf"^[0-9a-f]{{{HASH_LENGTH}}}$")
 

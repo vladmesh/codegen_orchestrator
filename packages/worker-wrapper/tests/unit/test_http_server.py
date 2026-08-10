@@ -136,69 +136,37 @@ class TestResultEndpointDuplicate:
 
 
 class TestInfraComposeProxy:
-    async def test_infra_compose_proxies_to_manager(self, server, monkeypatch):
-        """POST /infra/compose proxies to worker-manager."""
-        monkeypatch.setenv("WORKER_MANAGER_URL", "http://fake-manager:8000")
-        monkeypatch.setenv("WORKER_ID", "worker-42")
-
+    async def test_infra_compose_proxies_to_broker(self, server):
+        """POST /infra/compose delegates only to the authenticated broker client."""
         response_data = {"exit_code": 0, "stdout": "ok\n", "stderr": ""}
-
-        from unittest.mock import MagicMock, patch
-
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps(response_data).encode()
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-
-        with patch(
-            "worker_wrapper.http_server.urlopen", return_value=mock_response
-        ) as mock_urlopen:
-            status, body = await _post(
-                server,
-                "/infra/compose",
-                {"args": ["up", "-d", "db"], "timeout": 30},
-            )
+        compose = AsyncMock(return_value=(HTTPStatus.OK, response_data))
+        server._compose = compose
+        request = {"args": ["up", "-d", "db"], "timeout": 30}
+        status, body = await _post(server, "/infra/compose", request)
 
         assert status == HTTPStatus.OK
         assert body == response_data
-        call_args = mock_urlopen.call_args
-        req = call_args[0][0]
-        assert req.full_url == "http://fake-manager:8000/api/worker/worker-42/infra/compose"
-        assert req.method == "POST"
+        compose.assert_awaited_once_with(request)
 
-    async def test_infra_compose_missing_env(self, server, monkeypatch):
-        """Returns 503 when env vars not configured."""
-        monkeypatch.delenv("WORKER_MANAGER_URL", raising=False)
-        monkeypatch.delenv("WORKER_ID", raising=False)
-
+    async def test_infra_compose_missing_broker(self, server):
+        """Returns 503 when the wrapper has no broker transport."""
         status, body = await _post(
             server,
             "/infra/compose",
             {"args": ["ps"]},
         )
         assert status == HTTPStatus.SERVICE_UNAVAILABLE
-        assert "not configured" in body["error"]
+        assert "broker" in body["error"]
 
-    async def test_infra_compose_manager_unreachable(self, server, monkeypatch):
-        """Returns 502 when worker-manager is unreachable."""
-        monkeypatch.setenv("WORKER_MANAGER_URL", "http://fake-manager:8000")
-        monkeypatch.setenv("WORKER_ID", "worker-42")
-
-        from unittest.mock import patch
-        from urllib.error import URLError
-
-        with patch(
-            "worker_wrapper.http_server.urlopen",
-            side_effect=URLError("Connection refused"),
-        ):
-            status, body = await _post(
-                server,
-                "/infra/compose",
-                {"args": ["ps"]},
-            )
+    async def test_infra_compose_broker_failure(self, server):
+        """The local endpoint preserves broker failure responses."""
+        server._compose = AsyncMock(
+            return_value=(HTTPStatus.BAD_GATEWAY, {"error": "broker unavailable"})
+        )
+        status, body = await _post(server, "/infra/compose", {"args": ["ps"]})
 
         assert status == HTTPStatus.BAD_GATEWAY
-        assert "Cannot reach worker-manager" in body["error"]
+        assert "broker" in body["error"]
 
 
 class TestEdgeCases:

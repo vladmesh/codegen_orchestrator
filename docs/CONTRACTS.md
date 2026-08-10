@@ -124,7 +124,7 @@ cannot poison-loop the reclaim.
 | `worker:{worker_id}:input` | — | DeveloperWorkerInput | langgraph (DeveloperNode) | worker-wrapper | Task input to Developer worker |
 | `worker:{worker_id}:output` | — | DeveloperWorkerOutput | worker-wrapper | langgraph (DeveloperNode) | Developer worker results |
 
-> **Note:** Worker I/O streams use `worker:{worker_id}:input/output` pattern. Used only for Developer workers. PO communicates via `po:input` / `po:response:{request_id}` (see PO ReactAgent I/O below).
+> **Note:** Worker I/O streams use `worker:{worker_id}:input/output` pattern. Used only for Developer workers. The worker-broker owns their Redis access: input is leased before processing and ACKed only after one typed output is accepted. Both input and output use approximate `MAXLEN` retention (default 1000 entries); sessions use a finite broker TTL (default 3600 seconds). PO communicates via `po:input` / `po:response:{request_id}` (see PO ReactAgent I/O below).
 
 ---
 
@@ -154,9 +154,9 @@ cannot poison-loop the reclaim.
 >
 > For **Developer-Worker** messages, the actual transport is:
 > ```
-> Developer Worker (AI Agent) → curl localhost:9090 → worker-wrapper → Redis
+> Developer Worker (AI Agent) → curl localhost:9090 → worker-wrapper → worker-broker → Redis
 > ```
-> The HTTP server in worker-wrapper validates and proxies agent results to Redis.
+> The HTTP server in worker-wrapper validates agent results locally; the authenticated broker owns stream, status, session and Compose transport.
 
 ### Actor Roles
 

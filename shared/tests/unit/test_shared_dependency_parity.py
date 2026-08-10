@@ -89,7 +89,6 @@ def test_consumer_discovery_covers_every_bind_mounted_service():
         "worker-manager",
         "infra-service",
         "scaffolder",
-        "worker-wrapper",
     }
 
 

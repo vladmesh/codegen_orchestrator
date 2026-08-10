@@ -11,11 +11,11 @@ services:
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - WORKER_REDIS_URL=redis://redis:6379/0
-      - WORKER_API_URL=http://api:8000
+      - WORKER_BROKER_URL=http://worker-broker:8001
       - ENVIRONMENT=test
       - 'WORKER_DOCKER_LABELS={"com.codegen.environment": "test"}'
       - WORKER_IMAGE_PREFIX=worker-test
+      - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -48,6 +48,7 @@ services:
     environment:
       - WORKER_MANAGER_URL=http://worker-manager:8000
       - REDIS_URL=redis://redis:6379/0
+      - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
     depends_on:
       worker-manager:
         condition: service_healthy

@@ -15,11 +15,9 @@ def wrapper(tmp_path, monkeypatch):
         "Config",
         (),
         {
-            "redis_url": "redis://fake",
-            "input_stream": "test:in",
-            "output_stream": "test:out",
-            "consumer_group": "grp",
-            "consumer_name": "worker-42",
+            "broker_url": "http://worker-broker:8001",
+            "broker_token": "x" * 43,
+            "worker_id": "worker-42",
             "agent_type": "claude",
             "poll_interval_ms": 500,
             "subprocess_timeout_seconds": 300,
@@ -30,10 +28,10 @@ def wrapper(tmp_path, monkeypatch):
 
     from unittest.mock import MagicMock
 
-    redis_mock = MagicMock()
+    broker_mock = MagicMock()
     w = WorkerWrapper.__new__(WorkerWrapper)
     w.config = config
-    w.redis = redis_mock
+    w.redis = broker_mock
     w._owns_redis = False
     return w
 

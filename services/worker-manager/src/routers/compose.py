@@ -1,7 +1,9 @@
 """HTTP endpoints for running docker compose commands on behalf of workers."""
 
+import hashlib
+import hmac
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from ..compose_validator import validate_command, validate_compose_file, resolve_compose_path
@@ -25,24 +27,36 @@ class ComposeResponse(BaseModel):
 
 
 @router.post("/{worker_id}/infra/compose")
-async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> ComposeResponse:
+async def run_compose(
+    worker_id: str,
+    request: ComposeRequest,
+    req: Request,
+    x_worker_broker_token: str | None = Header(default=None),
+) -> ComposeResponse:
     """Run a docker compose command scoped to a worker's workspace."""
-    # 1. Validate command whitelist and flags
-    cmd_result = validate_command(request.args)
-    if not cmd_result.valid:
-        raise HTTPException(status_code=400, detail="; ".join(cmd_result.errors))
-
-    # 2. Get compose runner and docker client from app state
+    # Authenticate before validating request details so direct callers cannot
+    # probe worker-scoped Compose policy.
     runner: ComposeRunner = req.app.state.compose_runner
     docker = req.app.state.docker
     redis = req.app.state.redis
+
+    broker_metadata = await redis.hgetall(f"worker:broker:{worker_id}")
+    expected = broker_metadata.get("token_digest") if broker_metadata else None
+    digest = hashlib.sha256((x_worker_broker_token or "").encode()).hexdigest()
+    if not expected or not hmac.compare_digest(digest, expected):
+        raise HTTPException(status_code=403, detail="broker authentication required")
+
+    # Validate command whitelist and flags only for the authenticated worker.
+    cmd_result = validate_command(request.args)
+    if not cmd_result.valid:
+        raise HTTPException(status_code=400, detail="; ".join(cmd_result.errors))
 
     # Resolve actual workspace path from Redis metadata.
     # When workers are created with a project_id, the workspace lives under
     # the project_id directory, not the worker_id directory.
     stored_workspace = await redis.hget(f"worker:meta:{worker_id}", "workspace_path")
 
-    # 3. Resolve and validate compose file(s)
+    # Resolve and validate compose file(s)
     from pathlib import Path
     from ..config import settings
 
@@ -87,7 +101,7 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
     if not cwd_result.valid:
         raise HTTPException(status_code=400, detail="; ".join(cwd_result.errors))
 
-    # 4. Run compose
+    # Run compose
     try:
         exit_code, stdout, stderr = await runner.run(
             worker_id=worker_id,

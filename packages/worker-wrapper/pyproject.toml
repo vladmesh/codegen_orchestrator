@@ -4,14 +4,12 @@ version = "0.1.0"
 description = "Generic wrapper for executing worker agents"
 authors = [{name = "Antigravity", email = "antigravity@gemini.google.com"}]
 dependencies = [
-    "redis>=8.0.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.0.0",
     "structlog>=24.1.0",
 
-    # shared/ deps. The worker base image COPY's the whole shared tree and
-    # installs nothing for it, so every module under shared/ has to be importable
-    # from the deps declared here.
+    # Dependencies of the broker client and the shared contracts/logging modules
+    # explicitly copied into the worker image.
     "pgvector>=0.2.5",
     "pyyaml>=6.0",
     "httpx>=0.27.0",

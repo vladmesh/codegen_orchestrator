@@ -136,10 +136,21 @@ class TestDevEnvIntegration:
         )
         assert exit_code == 0
 
-        # POST to compose proxy should reject absolute volume mounts
-        async with httpx.AsyncClient(base_url=WORKER_MANAGER_URL) as client:
+        # Call through the authenticated broker, exactly as the localhost
+        # worker-wrapper proxy does. The worker token is read from the real
+        # DinD-launched container, never invented by the test.
+        container.reload()
+        worker_env = dict(
+            item.split("=", 1) for item in container.attrs["Config"]["Env"] if "=" in item
+        )
+        broker_url = worker_env["WORKER_BROKER_URL"]
+        broker_token = worker_env["WORKER_BROKER_TOKEN"]
+        async with httpx.AsyncClient(
+            base_url=broker_url,
+            headers={"X-Worker-Broker-Token": broker_token},
+        ) as client:
             response = await client.post(
-                f"/api/worker/{worker_name}/infra/compose",
+                f"/v1/workers/{worker_name}/infra/compose",
                 json={"args": ["-f", "docker-compose.yml", "up", "-d"]},
             )
 

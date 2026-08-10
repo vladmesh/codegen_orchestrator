@@ -61,8 +61,12 @@ COPY --from=builder /build/wheels /wheels
 # Install Python packages from wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 
-# Copy shared as plain files (deps are in package pyproject.toml files)
-COPY shared /app/shared
+# Ship only the shared modules the wrapper imports. In particular, do not ship
+# shared.redis: workers have no Redis transport and therefore no Redis runtime
+# dependency.
+COPY shared/contracts /app/shared/contracts
+COPY shared/log_config /app/shared/log_config
+COPY shared/diagnostics.py /app/shared/diagnostics.py
 ENV PYTHONPATH=/app
 
 # Create non-root user

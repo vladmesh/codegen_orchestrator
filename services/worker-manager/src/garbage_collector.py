@@ -13,7 +13,7 @@ from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.worker import WorkerStatus
 from shared.redis import decode_redis_fields
 
-from .config import settings, worker_urls
+from .config import settings
 from .docker_ops import DockerClientWrapper
 from . import workspace as workspace_mod
 
@@ -154,7 +154,7 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
 
 async def _notify_workspace_deleted(repo_id: str) -> None:
     """Notify API that a workspace was GC'd so workspace_ready is cleared."""
-    _, api_url = worker_urls(settings)
+    api_url = settings.API_BASE_URL
     try:
         client = InternalAPIClient(api_url, timeout=10)
         try:

@@ -22,6 +22,11 @@ These secrets are required for the platform itself to function.
 *   **Access**: read at service startup (`os.getenv`).
 *   **Repo**: stored in `.env` (locally) or in the Secret Manager of the hosting platform.
 
+`WORKER_BROKER_INTERNAL_TOKEN` is an L1 credential shared only by
+`worker-manager` and `worker-broker`. It authenticates worker registration and
+must be non-empty before either service starts. Coding workers receive only a
+distinct per-worker broker credential.
+
 ### Level 2: Project Secrets (The Generated App)
 The key point: **the secrets are encrypted at rest in PostgreSQL** (Fernet encryption).
 *   **Storage**: `project.config.secrets` (JSONB) — all values are encrypted as Fernet tokens (`gAAAAA...`).
