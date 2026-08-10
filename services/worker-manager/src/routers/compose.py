@@ -2,12 +2,12 @@
 
 import hashlib
 import hmac
+
 import structlog
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from ..compose_validator import validate_command, validate_compose_file, resolve_compose_path
-from ..compose_runner import ComposeRunner, _DEFAULT_COMPOSE_FILES
+from ..compose_runner import ComposeRunner
 
 logger = structlog.get_logger()
 
@@ -37,7 +37,6 @@ async def run_compose(
     # Authenticate before validating request details so direct callers cannot
     # probe worker-scoped Compose policy.
     runner: ComposeRunner = req.app.state.compose_runner
-    docker = req.app.state.docker
     redis = req.app.state.redis
 
     broker_metadata = await redis.hgetall(f"worker:broker:{worker_id}")
@@ -46,61 +45,9 @@ async def run_compose(
     if not expected or not hmac.compare_digest(digest, expected):
         raise HTTPException(status_code=403, detail="broker authentication required")
 
-    # Validate command whitelist and flags only for the authenticated worker.
-    cmd_result = validate_command(request.args)
-    if not cmd_result.valid:
-        raise HTTPException(status_code=400, detail="; ".join(cmd_result.errors))
-
-    # Resolve actual workspace path from Redis metadata.
-    # When workers are created with a project_id, the workspace lives under
-    # the project_id directory, not the worker_id directory.
+    # ComposeRunner is the only policy compiler and executor. The router keeps
+    # authentication and workspace lookup separate from policy decisions.
     stored_workspace = await redis.hget(f"worker:meta:{worker_id}", "workspace_path")
-
-    # Resolve and validate compose file(s)
-    from pathlib import Path
-    from ..config import settings
-
-    workspace_path = (
-        Path(stored_workspace) if stored_workspace else (Path(settings.SCAFFOLDED_WORKSPACE_PATH) / worker_id)
-    )
-    container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
-
-    # Collect compose file paths from -f/--file flags, or default to infra/ layout
-    compose_files: list[str] = []
-    args_iter = iter(request.args)
-    for arg in args_iter:
-        if arg in ("-f", "--file"):
-            try:
-                compose_files.append(next(args_iter))
-            except StopIteration:
-                break
-    if not compose_files:
-        compose_files = list(_DEFAULT_COMPOSE_FILES)
-
-    for cf in compose_files:
-        # Check path traversal (works without filesystem access)
-        _, path_result = resolve_compose_path(cf, workspace_path)
-        if not path_result.valid:
-            raise HTTPException(status_code=400, detail="; ".join(path_result.errors))
-
-        # Read compose file from inside the worker container.
-        # This works in DinD where the host filesystem doesn't reflect container writes.
-        try:
-            exit_code, output = await docker.exec_in_container(container_name, f"cat /workspace/{cf}", user="root")
-            if exit_code == 0:
-                file_result = validate_compose_file(output.decode())
-                if not file_result.valid:
-                    raise HTTPException(status_code=400, detail="; ".join(file_result.errors))
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # Container unreachable or file missing — compose will fail naturally
-
-    # Check path traversal in cwd
-    _, cwd_result = resolve_compose_path(request.cwd, workspace_path)
-    if not cwd_result.valid:
-        raise HTTPException(status_code=400, detail="; ".join(cwd_result.errors))
-
     # Run compose
     try:
         exit_code, stdout, stderr = await runner.run(
@@ -118,7 +65,7 @@ async def run_compose(
             worker_id=worker_id,
             args=request.args,
             cwd=request.cwd,
-            workspace_path=str(workspace_path),
+            workspace_path=stored_workspace,
         )
         raise
 

@@ -1,12 +1,15 @@
 """Service tests for the compose HTTP API endpoint."""
 
 import hashlib
-import pytest
-from unittest.mock import AsyncMock, MagicMock
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 from src.routers.compose import router as compose_router
 from src.compose_runner import ComposeRunner
+from src.compose_validator import RESOURCE_IDENTITY_POLICY
 
 
 @pytest.fixture
@@ -18,9 +21,24 @@ def client(tmp_path):
 
     runner = MagicMock(spec=ComposeRunner)
     runner.run = AsyncMock(return_value=(0, "output\n", ""))
+    runner.inspect = AsyncMock(
+        return_value=(
+            {
+                "services": {
+                    "db": {
+                        "image": "postgres:16",
+                        "networks": {"default": None},
+                        "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
+                    }
+                },
+                "networks": {"default": {"name": "dev_proj_worker-123", "external": True}},
+            },
+            None,
+        )
+    )
 
     docker = MagicMock()
-    docker.exec_in_container = AsyncMock(side_effect=Exception("no container"))
+    docker.exec_in_container = AsyncMock(return_value=(0, b"services:\n  db:\n    image: postgres:16\n"))
 
     redis = AsyncMock()
     redis.hget = AsyncMock(return_value=None)
@@ -35,6 +53,93 @@ def client(tmp_path):
 
 
 class TestComposeApi:
+    def test_broker_authenticated_creation_uses_the_real_runner_plan(self, tmp_path):
+        workspace = tmp_path / "project" / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        (infra / "compose.base.yml").write_text("services:\n  db:\n    image: postgres:16\n")
+        (infra / "compose.dev.yml").write_text("services:\n  db:\n    ports: ['5432:5432']\n")
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        config = (
+            '{"services":{"db":{"image":"postgres:16","networks":{"default":null},"ports":["5432:5432"]}},'
+            '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
+        )
+        config_result = MagicMock(returncode=0, stdout=config, stderr="")
+        execution_result = MagicMock(returncode=0, stdout="started\n", stderr="")
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run", side_effect=[config_result, execution_result]) as mock_run,
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["up", "-d"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 200
+        assert mock_run.call_count == 2
+        config_command = mock_run.call_args_list[0].args[0]
+        assert "config" in config_command
+        project_directory_index = config_command.index("--project-directory")
+        assert config_command[project_directory_index + 1] == str(infra)
+        assert "compose.resolved.yml" in " ".join(mock_run.call_args_list[1].args[0])
+
+    def test_broker_api_replaces_worker_build_image_with_manager_identity(self, tmp_path):
+        workspace = tmp_path / "project" / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        (workspace / "Dockerfile").write_text("FROM scratch\n")
+        (infra / "compose.base.yml").write_text(
+            "services:\n  app:\n    image: codegen-orchestrator/victim:latest\n    build:\n      context: ..\n"
+        )
+        (infra / "compose.dev.yml").write_text("services: {}\n")
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        config = json.dumps(
+            {
+                "services": {
+                    "app": {
+                        "image": "codegen-orchestrator/victim:latest",
+                        "build": {"context": str(workspace)},
+                        "networks": {"default": None},
+                        "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
+                    }
+                },
+                "networks": {"default": {"name": "dev_proj_worker-123", "external": True}},
+            }
+        )
+        config_result = MagicMock(returncode=0, stdout=config, stderr="")
+        execution_result = MagicMock(returncode=0, stdout="built\n", stderr="")
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run", side_effect=[config_result, execution_result]),
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["build"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 200
+        snapshot = tmp_path / ".compose-plans" / "worker-123" / "compose.resolved.yml"
+        assert RESOURCE_IDENTITY_POLICY.build_image("worker-123", "app") in snapshot.read_text()
+        assert "codegen-orchestrator/victim:latest" not in snapshot.read_text()
+
     def test_direct_request_without_broker_credential_is_rejected(self, client):
         c, _, _ = client
         response = c.post(
@@ -59,8 +164,9 @@ class TestComposeApi:
         assert data["exit_code"] == 0
 
     def test_blocked_command_returns_400(self, client):
-        """Commands not in the whitelist should return 400."""
-        c, _, _redis = client
+        """Runner policy failures are surfaced through the authenticated route."""
+        c, runner, _redis = client
+        runner.run = AsyncMock(side_effect=ValueError("Command 'exec' is not allowed"))
         response = c.post(
             "/api/worker/worker-123/infra/compose",
             json={"args": ["exec", "db", "bash"]},
@@ -69,13 +175,26 @@ class TestComposeApi:
         assert "exec" in response.json()["detail"].lower()
 
     def test_interactive_flag_returns_400(self, client):
-        """Interactive flags should return 400."""
-        c, _, _redis = client
+        """The router does not duplicate the runner argument policy."""
+        c, runner, _redis = client
+        runner.run = AsyncMock(side_effect=ValueError("Flag '-it' is not allowed"))
         response = c.post(
             "/api/worker/worker-123/infra/compose",
             json={"args": ["run", "-it", "db"]},
         )
         assert response.status_code == 400
+
+    def test_run_scope_flag_never_reaches_runner(self, client):
+        c, runner, _redis = client
+        runner.run = AsyncMock(side_effect=ValueError("Flag '--volume=/:/host' is not allowed"))
+
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["run", "--volume=/:/host", "db"]},
+        )
+
+        assert response.status_code == 400
+        runner.run.assert_awaited_once()
 
     def test_nonzero_exit_code_still_returns_200(self, client):
         """Non-zero exit codes from compose should still return 200 with the exit code."""
@@ -118,3 +237,173 @@ class TestComposeApi:
         # Verify runner.run was called with workspace_dir from Redis
         call_kwargs = runner.run.call_args
         assert call_kwargs.kwargs.get("workspace_dir") == "/tmp/workspaces/project-uuid/workspace"
+
+    def test_router_delegates_selected_source_and_cwd_to_runner(self, client):
+        c, runner, _redis = client
+
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["-f", "compose.yml", "up", "-d"], "cwd": "infra"},
+        )
+
+        assert response.status_code == 200
+        assert runner.run.call_args.kwargs["cwd"] == "infra"
+
+    def test_source_failure_from_runner_returns_400(self, client):
+        c, runner, _redis = client
+        runner.run = AsyncMock(side_effect=ValueError("Compose source cannot be resolved"))
+
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["ps"]},
+        )
+
+        assert response.status_code == 400
+        runner.run.assert_awaited_once()
+
+    def test_effective_policy_failure_from_runner_returns_400(self, client):
+        c, runner, _redis = client
+        runner.run = AsyncMock(side_effect=ValueError("Service 'db': privileged is not allowed"))
+
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["up", "-d"]},
+        )
+
+        assert response.status_code == 400
+        assert "privileged" in response.json()["detail"]
+        runner.run.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("env_file", "project_env"),
+        [("${EVIL}", "EVIL=../../HOSTSECRET.env\n"), ("${HOME}/HOSTSECRET.env", None)],
+    )
+    def test_broker_api_rejects_interpolated_env_file_before_compose_config(self, tmp_path, env_file, project_env):
+        workspace = tmp_path / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        if project_env:
+            (workspace / ".env").write_text(project_env)
+        (infra / "compose.base.yml").write_text(f"services:\n  db:\n    image: postgres:16\n    env_file: {env_file}\n")
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run") as mock_run,
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["-f", "infra/compose.base.yml", "up", "-d"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 400
+        assert "interpolation" in response.json()["detail"]
+        mock_run.assert_not_called()
+
+    @pytest.mark.parametrize("label_file", ["/etc/passwd", "../../HOSTSECRET.env", "${HOME}/HOSTSECRET.env"])
+    def test_broker_api_rejects_label_file_before_compose_or_error_reflection(self, tmp_path, label_file):
+        workspace = tmp_path / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        (infra / "compose.base.yml").write_text(
+            f"services:\n  db:\n    image: postgres:16\n    label_file: {label_file}\n"
+        )
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run") as mock_run,
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["-f", "infra/compose.base.yml", "up", "-d"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Service 'db': label_file is not supported"
+        mock_run.assert_not_called()
+        assert not (tmp_path / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
+
+    @pytest.mark.parametrize(
+        ("build_key", "cache_value"),
+        [
+            ("cache_from", "type=local,src=/etc"),
+            ("cache_to", "type=local,dest=/manager-owned-path"),
+        ],
+    )
+    def test_broker_api_rejects_build_cache_before_compose_config(self, tmp_path, build_key, cache_value):
+        workspace = tmp_path / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        (infra / "compose.base.yml").write_text(
+            f"services:\n  db:\n    build:\n      context: ..\n      {build_key}:\n        - {cache_value}\n"
+        )
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run") as mock_run,
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["-f", "infra/compose.base.yml", "up", "-d"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == f"Service 'db': build {build_key} is not supported"
+        mock_run.assert_not_called()
+        assert not (tmp_path / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
+
+    def test_broker_api_rejects_daemon_global_resource_identity_before_compose_config(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        (infra / "compose.base.yml").write_text(
+            "services:\n  db:\n    image: postgres:16\n    container_name: worker-manager\n"
+        )
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run") as mock_run,
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["-f", "infra/compose.base.yml", "up", "-d"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 400
+        assert "container_name" in response.json()["detail"]
+        mock_run.assert_not_called()

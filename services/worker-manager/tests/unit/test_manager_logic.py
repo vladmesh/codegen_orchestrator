@@ -342,6 +342,40 @@ async def test_delete_worker_full_cleanup():
     assert await redis.get(f"worker:last_activity:{worker_id}") is None
 
 
+@pytest.mark.asyncio
+async def test_delete_worker_uses_real_runner_recovery_profile(tmp_path):
+    """Teardown remains project-scoped even when the workspace manifest is hostile."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    worker_id = "worker-real-recovery"
+    workspace = tmp_path / "project" / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "compose.yml").write_text("services: [malformed]\n")
+    await redis.hset(
+        f"worker:meta:{worker_id}",
+        mapping={"dev_network": f"dev_proj_{worker_id}", "workspace_path": str(workspace)},
+    )
+
+    result = MagicMock(returncode=0, stdout="", stderr="")
+    with (
+        patch("src.manager.settings.SCAFFOLDED_WORKSPACE_PATH", str(tmp_path)),
+        patch("src.compose_runner.subprocess.run", return_value=result) as mock_run,
+    ):
+        await manager.delete_worker(worker_id)
+
+    command = mock_run.call_args.args[0]
+    assert Path(command[0]).is_absolute()
+    assert command[:4] == [command[0], "compose", "--project-name", f"worker_{worker_id}"]
+    assert command[4:6] == ["--project-directory", str(tmp_path / ".compose-plans" / worker_id)]
+    assert command[6:] == ["down", "-v"]
+    assert "-f" not in command
+    assert mock_run.call_args.kwargs["cwd"] == str(tmp_path / ".compose-plans" / worker_id)
+    assert not (tmp_path / ".compose-plans" / worker_id).exists()
+    wrapper.remove_container.assert_awaited_with(f"worker-{worker_id}", force=True)
+    wrapper.remove_network.assert_awaited_with(f"dev_proj_{worker_id}")
+
+
 # --- Orphaned Resource GC Tests ---
 
 

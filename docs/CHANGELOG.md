@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-08-10
+
+- Made worker-manager the sole producer of Docker-global identities in generated
+  Compose plans. Build services receive a manager-derived per-worker/service
+  output tag, while source-declared volume `name` and `container_name` fail
+  closed. Resolver-materialized volume names are removed from the immutable
+  plan so the fixed Compose project name derives them again at execution.
+
+- Replaced worker-manager's source-only Compose admission table with one
+  host-capability policy for resolution and build execution. Generated builds
+  now admit only static workspace-contained `context`/`dockerfile` and build
+  `args`; cache import/export and every other pinned Compose v2.27.1
+  `BuildConfig` property fail before resolution, are rechecked after resolution,
+  and cannot be written into an immutable execution snapshot.
+
+- Added a finite Compose v2.27.1 source-directive admission table to
+  worker-manager. `label_file` and unsupported loaders are rejected before
+  configuration resolution, supported static sources retain their contextual
+  workspace checks, and the immutable execution snapshot rejects retained
+  loader directives.
+
+- Hardened worker-manager's broker-authenticated Compose boundary. Container
+  creation now admits only scoped safe command arguments, so runtime mounts,
+  capabilities, ports, names, environment and identity overrides cannot bypass
+  policy. The runner applies bounded CPU and memory overrides for every selected
+  service in the same fixed invocation used for resolution and execution.
+  Resolved workspace-relative binds remain supported, while outside binds,
+  sockets, namespace opt-outs, non-worker networks and host-exposing named
+  volumes fail closed. Focused coverage includes actual service-template Compose
+  resolution when the Docker CLI is available.
+
+- Reworked Compose execution into a runner-owned plan compiler: creation resolves
+  and validates source and effective configuration, writes a restrictive
+  manager-owned snapshot, and executes only that snapshot. The recovery profile
+  now permits scoped `down -v`, does not reread a hostile manifest, and removes
+  the worker plan after teardown. Limits remain project-declared when valid, with
+  feasible defaults only for services that omit them.
+
+- Fixed effective Compose build validation to resolve relative Dockerfiles from
+  their validated build context, preserving safe service-template builds while
+  rejecting a Dockerfile path that escapes the worker workspace.
+
+- Pinned worker Compose source validation and execution to the first selected
+  file's project directory, so multi-file source paths cannot resolve against a
+  different base before inspection. Build-network selection is now unsupported,
+  and recovery commands reject worker-selected Compose files.
+
+- Corrected Compose source-tree path contexts: selected files use the fixed
+  project directory, while files loaded through `extends` use their own
+  directory for nested source paths. Recovery now distinguishes global file
+  selection from the supported `logs -f` follow flag.
+
+- Restricted source-only Compose path fields to static literals, rejecting
+  interpolation in `env_file` and `extends.file` before project environment
+  values can select a host path during configuration resolution.
+
 ## 2026-08-09
 
 - Added executable worker-broker acceptance regressions: resolved production
