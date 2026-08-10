@@ -87,8 +87,8 @@ async def run_compose(
     from pathlib import Path
     from ..config import settings
 
-    workspace_path = Path(stored_workspace) if stored_workspace else (
-        Path(settings.SCAFFOLDED_WORKSPACE_PATH) / worker_id
+    workspace_path = (
+        Path(stored_workspace) if stored_workspace else (Path(settings.SCAFFOLDED_WORKSPACE_PATH) / worker_id)
     )
     container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
 
@@ -118,17 +118,13 @@ async def run_compose(
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(
-                status_code=400, detail=f"Compose source '{cf}' cannot be read"
-            ) from exc
+            raise HTTPException(status_code=400, detail=f"Compose source '{cf}' cannot be read") from exc
         if exit_code != 0:
             raise HTTPException(status_code=400, detail=f"Compose source '{cf}' cannot be read")
         try:
             content = output.decode()
         except UnicodeDecodeError as exc:
-            raise HTTPException(
-                status_code=400, detail=f"Compose source '{cf}' is not UTF-8"
-            ) from exc
+            raise HTTPException(status_code=400, detail=f"Compose source '{cf}' is not UTF-8") from exc
         file_result = validate_compose_file(content)
         if not file_result.valid:
             raise HTTPException(status_code=400, detail="; ".join(file_result.errors))

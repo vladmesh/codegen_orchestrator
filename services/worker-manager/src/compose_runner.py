@@ -142,18 +142,14 @@ class ComposeRunner:
         else:
             worker_workspace = self.workspace_base_path / worker_id / "workspace"
         if not worker_workspace.is_dir():
-            raise ValueError(
-                f"Workspace for worker '{worker_id}' does not exist: {worker_workspace}"
-            )
+            raise ValueError(f"Workspace for worker '{worker_id}' does not exist: {worker_workspace}")
         worker_workspace_resolved = worker_workspace.resolve()
 
         try:
             effective_cwd = (worker_workspace / cwd).resolve()
             effective_cwd.relative_to(worker_workspace_resolved)
         except ValueError as exc:
-            raise ValueError(
-                f"Path traversal detected: cwd '{cwd}' resolves outside workspace"
-            ) from exc
+            raise ValueError(f"Path traversal detected: cwd '{cwd}' resolves outside workspace") from exc
         if not effective_cwd.is_dir():
             raise ValueError(f"Compose cwd does not exist: {effective_cwd}")
 
@@ -212,11 +208,7 @@ class ComposeRunner:
             *network_args,
             *ports_args,
         ]
-        run_env = {
-            key: value
-            for key in _INHERITED_ENV_VARS
-            if (value := os.environ.get(key)) is not None
-        }
+        run_env = {key: value for key in _INHERITED_ENV_VARS if (value := os.environ.get(key)) is not None}
         run_env["HOST_UID"] = "1000"
         run_env["HOST_GID"] = "1000"
         if dot_env.exists():
@@ -266,9 +258,7 @@ class ComposeRunner:
         try:
             result = await loop.run_in_executor(None, _run_config)
         except subprocess.TimeoutExpired as exc:
-            raise ValueError(
-                f"docker compose config timed out after {timeout}s for worker '{worker_id}'"
-            ) from exc
+            raise ValueError(f"docker compose config timed out after {timeout}s for worker '{worker_id}'") from exc
         except OSError as exc:
             raise ValueError(f"docker compose config is unavailable: {exc}") from exc
         if result.returncode != 0:

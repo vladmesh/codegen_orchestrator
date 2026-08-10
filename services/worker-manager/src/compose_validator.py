@@ -38,9 +38,7 @@ class ValidationResult:
 
 
 def _flag_is_set(arg: str, flag: str) -> bool:
-    return arg == flag or arg.startswith(f"{flag}=") or (
-        flag == "-p" and arg.startswith("-p") and arg != "-p"
-    )
+    return arg == flag or arg.startswith(f"{flag}=") or (flag == "-p" and arg.startswith("-p") and arg != "-p")
 
 
 def _volume_parts(volume: Any) -> tuple[str, str, str]:
@@ -69,13 +67,9 @@ def _validate_volumes(service_name: str, service_config: dict[str, Any], errors:
     for volume in volumes:
         source, target, volume_type = _volume_parts(volume)
         if volume_type == "bind" and source.startswith("/"):
-            errors.append(
-                f"Service '{service_name}': absolute bind mount source '{source}' is not allowed"
-            )
+            errors.append(f"Service '{service_name}': absolute bind mount source '{source}' is not allowed")
         if _is_socket_path(source) or _is_socket_path(target):
-            errors.append(
-                f"Service '{service_name}': Docker or Compose socket mount is not allowed"
-            )
+            errors.append(f"Service '{service_name}': Docker or Compose socket mount is not allowed")
 
 
 def _memory_bytes(value: Any) -> int | None:
@@ -113,16 +107,11 @@ def _memory_bytes(value: Any) -> int | None:
     return int(amount * factor) if factor is not None else None
 
 
-def _validate_resource_limits(
-    service_name: str, service_config: dict[str, Any], errors: list[str]
-) -> None:
+def _validate_resource_limits(service_name: str, service_config: dict[str, Any], errors: list[str]) -> None:
     try:
         limits = service_config["deploy"]["resources"]["limits"]
     except (KeyError, TypeError):
-        errors.append(
-            f"Service '{service_name}': deploy.resources.limits with CPU and "
-            "memory limits is required"
-        )
+        errors.append(f"Service '{service_name}': deploy.resources.limits with CPU and memory limits is required")
         return
     if not isinstance(limits, dict):
         errors.append(f"Service '{service_name}': deploy.resources.limits must be a mapping")
@@ -133,15 +122,11 @@ def _validate_resource_limits(
     except (TypeError, ValueError):
         cpu_limit = 0
     if not math.isfinite(cpu_limit) or cpu_limit <= 0 or cpu_limit > MAX_CPU_LIMIT:
-        errors.append(
-            f"Service '{service_name}': CPU limit must be greater than 0 and "
-            f"at most {MAX_CPU_LIMIT}"
-        )
+        errors.append(f"Service '{service_name}': CPU limit must be greater than 0 and at most {MAX_CPU_LIMIT}")
     memory_limit = _memory_bytes(limits.get("memory"))
     if memory_limit is None or memory_limit > MAX_MEMORY_LIMIT_BYTES:
         errors.append(
-            f"Service '{service_name}': memory limit must be a positive value at most "
-            f"{MAX_MEMORY_LIMIT_BYTES} bytes"
+            f"Service '{service_name}': memory limit must be a positive value at most {MAX_MEMORY_LIMIT_BYTES} bytes"
         )
 
 
@@ -202,14 +187,10 @@ def validate_compose_file(content: str) -> ValidationResult:
 def validate_effective_compose(data: Any, worker_id: str) -> ValidationResult:
     """Validate Docker Compose's fully resolved JSON for a container-creating command."""
     if not isinstance(data, dict):
-        return ValidationResult(
-            valid=False, errors=["Resolved Compose configuration must be a mapping"]
-        )
+        return ValidationResult(valid=False, errors=["Resolved Compose configuration must be a mapping"])
     services = data.get("services")
     if not isinstance(services, dict) or not services:
-        return ValidationResult(
-            valid=False, errors=["Resolved Compose configuration must contain services"]
-        )
+        return ValidationResult(valid=False, errors=["Resolved Compose configuration must contain services"])
 
     expected_network = f"dev_proj_{worker_id}"
     errors: list[str] = []
@@ -232,20 +213,16 @@ def validate_effective_compose(data: Any, worker_id: str) -> ValidationResult:
         name = str(service_name)
         if service_config.get("privileged"):
             errors.append(f"Service '{name}': privileged is not allowed")
-        for field in ("network_mode", "pid", "ipc"):
-            if service_config.get(field) == "host":
-                errors.append(f"Service '{name}': {field}: host is not allowed")
-        for field in ("devices", "device_cgroup_rules", "cap_add"):
-            if service_config.get(field):
-                errors.append(f"Service '{name}': {field} is not allowed")
+        for namespace_field in ("network_mode", "pid", "ipc"):
+            if service_config.get(namespace_field) == "host":
+                errors.append(f"Service '{name}': {namespace_field}: host is not allowed")
+        for capability_field in ("devices", "device_cgroup_rules", "cap_add"):
+            if service_config.get(capability_field):
+                errors.append(f"Service '{name}': {capability_field} is not allowed")
         _validate_volumes(name, service_config, errors)
         service_networks = service_config.get("networks")
         if service_networks is not None:
-            names = (
-                set(service_networks)
-                if isinstance(service_networks, (dict, list))
-                else set()
-            )
+            names = set(service_networks) if isinstance(service_networks, (dict, list)) else set()
             if names != {"default"}:
                 errors.append(f"Service '{name}': only the worker default network is allowed")
         _validate_resource_limits(name, service_config, errors)
@@ -263,7 +240,5 @@ def resolve_compose_path(compose_file: str, workspace_path: Path) -> tuple[Path,
             False, [f"Path traversal detected: '{compose_file}' resolves outside workspace"]
         )
     except Exception as exc:
-        return workspace_path, ValidationResult(
-            False, [f"Failed to resolve path '{compose_file}': {exc}"]
-        )
+        return workspace_path, ValidationResult(False, [f"Failed to resolve path '{compose_file}': {exc}"])
     return resolved, ValidationResult(valid=True)
