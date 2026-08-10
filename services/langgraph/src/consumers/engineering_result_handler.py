@@ -389,6 +389,11 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                 task_id=deploy_task_id,
                 project_id=project_id,
                 telegram_chat_id=telegram_chat_id,
+                # The deploy inherits the engineering task's recipient. Engineering
+                # work that arrived without one stays unaddressed, and says so.
+                unaddressed_reason=(
+                    "" if telegram_chat_id else "engineering task carried no recipient"
+                ),
                 callback_stream=callback_stream,
                 triggered_by=DeployTrigger.ENGINEERING,
                 action=action,

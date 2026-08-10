@@ -54,9 +54,13 @@ class DeployMessage(BaseMessage):
 
     task_id: str
     project_id: str
-    # Telegram chat of the project owner, resolved by the producer. Empty when
-    # the work was started by the system and has no user to report back to.
+    # Telegram chat of the project owner, resolved by the producer before it
+    # publishes. A deploy with no user to report back to says so in
+    # ``unaddressed_reason``; exactly one of the two is set, so a producer that
+    # forgot to resolve a recipient cannot pass for one that deliberately has
+    # none.
     telegram_chat_id: str = ""
+    unaddressed_reason: str = ""
     story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: DeployAction = DeployAction.CREATE
@@ -85,6 +89,16 @@ class DeployMessage(BaseMessage):
     # expires and does not reach the run it started, so an abandoned deploy can
     # otherwise land after the one that cleared its value.
     fence_active_deploys: bool = False
+
+    @model_validator(mode="after")
+    def _names_a_recipient_or_says_why_not(self) -> "DeployMessage":
+        if bool(self.telegram_chat_id) == bool(self.unaddressed_reason):
+            raise ValueError(
+                "set telegram_chat_id (the resolved Telegram chat of the owner) or "
+                "unaddressed_reason (why this deploy reports to nobody), never both "
+                "and never neither"
+            )
+        return self
 
     @model_validator(mode="after")
     def _lifecycle_names_its_target(self) -> "DeployMessage":

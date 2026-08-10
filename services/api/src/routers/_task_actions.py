@@ -246,7 +246,12 @@ async def spawn_worker(
     msg = EngineeringMessage(
         task_id=run_id,
         project_id=str(task.project_id),
-        telegram_chat_id=await resolve_project_chat_id(db, task.project_id, event="worker_spawned"),
+        telegram_chat_id=await resolve_project_chat_id(
+            db,
+            task.project_id,
+            event="worker_spawned",
+            story_id=task.story_id or "",
+        ),
         action=task.type or "feature",
         description=body.description or task.description,
         planning_task_id=task.id,

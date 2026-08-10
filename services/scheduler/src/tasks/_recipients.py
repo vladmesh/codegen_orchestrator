@@ -28,15 +28,23 @@ class Recipient:
 
     ``telegram_chat_id`` empty means the event has no reachable user; the
     producer has already alerted admins and must publish the message without a
-    destination rather than inventing one.
+    destination rather than inventing one. ``unaddressed_reason`` says why there
+    is none, so contracts that demand one or the other (``DeployMessage``) carry
+    the reason instead of an empty field nobody can tell from an oversight.
     """
 
     telegram_chat_id: str = ""
     owner_user_id: str = ""
+    unaddressed_reason: str = ""
 
     @property
     def is_addressable(self) -> bool:
         return bool(self.telegram_chat_id)
+
+
+def _unresolved_reason(reason: str) -> str:
+    """The reason text a message carries when its recipient could not be resolved."""
+    return f"recipient unresolved: {reason}"
 
 
 async def _alert_unresolved(
@@ -83,18 +91,22 @@ async def resolve_owner_recipient(
             story_id=story_id,
             owner_user_id="",
         )
-        return Recipient()
+        return Recipient(unaddressed_reason=_unresolved_reason("project has no owner"))
 
     user = await api_client.get_user(int(owner_id))
     if user is None or not user.telegram_id:
+        reason = "owner has no telegram id" if user is not None else "owner user not found"
         await _alert_unresolved(
-            "owner has no telegram id" if user is not None else "owner user not found",
+            reason,
             event=event,
             project_id=project_id,
             story_id=story_id,
             owner_user_id=str(owner_id),
         )
-        return Recipient(owner_user_id=str(owner_id))
+        return Recipient(
+            owner_user_id=str(owner_id),
+            unaddressed_reason=_unresolved_reason(reason),
+        )
 
     return Recipient(telegram_chat_id=str(user.telegram_id), owner_user_id=str(owner_id))
 
@@ -116,7 +128,7 @@ async def resolve_project_recipient(
             story_id=story_id,
             owner_user_id="",
         )
-        return Recipient()
+        return Recipient(unaddressed_reason=_unresolved_reason("project not found"))
     return await resolve_owner_recipient(
         api_client,
         project.owner_id,

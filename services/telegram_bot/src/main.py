@@ -24,12 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from shared.contracts.queues.po import (
-    POProactiveMessage,
-    POUserMessage,
-    from_flat_fields,
-    to_flat_fields,
-)
+from shared.contracts.queues.po import POUserMessage, to_flat_fields
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
 from shared.redis import decode_redis_fields
 from shared.redis_client import RedisStreamClient
@@ -44,7 +39,11 @@ from .handlers import handle_add_user_input, handle_callback_query  # noqa: E402
 from .keyboards import main_menu_keyboard  # noqa: E402
 from .middleware import auth_middleware, is_admin  # noqa: E402
 from .notifications import ProvisionerNotifier  # noqa: E402
-from .proactive import deliver_proactive_message, send_message_to_chat  # noqa: E402
+from .proactive import (  # noqa: E402
+    PROACTIVE_RECLAIM_IDLE_MS,
+    process_proactive_entry,
+    send_message_to_chat,
+)
 
 logger = structlog.get_logger()
 
@@ -385,10 +384,11 @@ async def handle_message(update: Update, context) -> None:
 class ProactiveListener:
     """Listens to po:proactive stream and sends messages to users.
 
-    Delivery is retried a bounded number of times. A message that still cannot
-    be delivered is not lost quietly: admins are alerted with the story, project
-    and event that produced it, and the outcome is distinguishable in the logs
-    (``proactive_message_sent`` vs ``proactive_message_delivery_exhausted``).
+    Every entry is settled by ``process_proactive_entry``, which owns the ack:
+    delivered, or out of bounded attempts with an admin alert naming the story,
+    project and event. Entries are consumed without auto-ack and the pending ones
+    left by a previous incarnation are claimed on startup, so a bot that died
+    while calling Telegram picks the notification back up instead of losing it.
     """
 
     def __init__(self, client: RedisStreamClient):
@@ -414,22 +414,15 @@ class ProactiveListener:
                 PO_PROACTIVE_GROUP,
                 "bot-0",
                 count=10,
-                auto_ack=True,
+                auto_ack=False,
+                claim_pending=True,
+                pending_timeout_ms=PROACTIVE_RECLAIM_IDLE_MS,
             ):
                 if not self._running:
                     break
                 if msg is None:
                     continue
-                try:
-                    proactive = from_flat_fields(msg.data, POProactiveMessage)
-                except Exception as e:
-                    logger.error(
-                        "proactive_message_invalid",
-                        error=str(e),
-                        telegram_chat_id=msg.data.get("telegram_chat_id"),
-                    )
-                    continue
-                await deliver_proactive_message(bot, proactive)
+                await process_proactive_entry(bot, self.client, msg)
         except asyncio.CancelledError:
             pass
 

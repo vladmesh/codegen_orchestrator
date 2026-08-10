@@ -1014,6 +1014,9 @@ class DeployMessage(BaseMessage):
     task_id: str
     project_id: str
     telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
+    # Why this deploy reports to nobody (admin action, temporary-access
+    # machinery). Exactly one of it and telegram_chat_id is set.
+    unaddressed_reason: str = ""
     story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: DeployAction = DeployAction.CREATE
@@ -1451,7 +1454,11 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 
 > **Transport note:** PO streams use **flat Redis fields** (not JSON `data` wrapper). Use `to_flat_fields()` / `from_flat_fields()` helpers from `shared.contracts.queues.po` for serialization.
 
-**Addressing**: every queue message and PO event names its recipient as `telegram_chat_id` — the Telegram chat the message is delivered to. `Project.owner_id` is an internal `User.id` and addresses nothing, so the producer resolves it (`User.id` → `User.telegram_id`) *before* publishing; the internal id travels beside it as `owner_user_id`, for logs and admin alerts only. A recipient that cannot be resolved raises an admin alert instead of being dropped, and an empty `telegram_chat_id` means the work has no user to report back to (system-initiated deploys, temporary-access machinery). PO keys its thread on the chat (`po-chat-{telegram_chat_id}`), so a user's own message and a pipeline event about their project land in one conversation. The bot retries a failed Telegram delivery a bounded number of times and alerts admins with the story, project and event when the attempts run out.
+**Addressing**: every queue message and PO event names its recipient as `telegram_chat_id` — the Telegram chat the message is delivered to. `Project.owner_id` is an internal `User.id` and addresses nothing, so the producer resolves it (`User.id` → `User.telegram_id`) *before* publishing; the internal id travels beside it as `owner_user_id`, for logs and admin alerts only. A recipient that cannot be resolved raises an admin alert instead of being dropped. `DeployMessage` makes the second case explicit: it carries either `telegram_chat_id` or `unaddressed_reason` (never both, never neither), so an admin-initiated action or temporary-access machinery says *why* it reports to nobody instead of leaving an empty field a forgetful producer would also leave. PO keys its thread on the chat (`po-chat-{telegram_chat_id}`), so a user's own message and a pipeline event about their project land in one conversation.
+
+**The removed `user_id`**: the field that used to mean both a Telegram chat id and a `User.id` is not merely unused — it is rejected. Every addressable contract refuses a payload containing `user_id` (`shared/contracts/recipient.py`), because Pydantic would otherwise accept it and drop the recipient silently, turning somebody's notification into unaddressable work. The consumers that see the rejection (`consume_typed`, the PO consumer, the bot's proactive listener) log it and raise an admin alert naming story, project and event, then ack the entry away instead of retrying something that can never succeed.
+
+**Delivery of `po:proactive`**: the bot consumes without auto-ack and claims the pending entries of its previous incarnation on startup, so a delivery interrupted by a restart is picked up rather than lost. `telegram_bot/src/proactive.py::process_proactive_entry` is the single place that settles an entry: it acks only after the message was delivered or its attempts ran out, and the attempt bound is the group's PEL delivery count, which survives the restart (`PROACTIVE_MAX_ATTEMPTS` inside one delivery, `PROACTIVE_MAX_DELIVERIES` across them). Exhaustion raises an admin alert with story, project and event; success and exhaustion are distinct log events (`proactive_message_sent` / `proactive_message_delivery_exhausted`).
 
 **System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`. User-facing resource lifecycle events are `task_waiting_resources`, `task_impossible_capacity`, and `task_resources_resumed`; the scheduler supplies context, PO writes the user text.
 

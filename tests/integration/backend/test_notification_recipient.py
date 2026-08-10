@@ -42,7 +42,11 @@ from shared.contracts.queues.po import (  # noqa: E402
     proactive_from_input,
     to_flat_fields,
 )
-from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE  # noqa: E402
+from shared.queues import (  # noqa: E402
+    PO_INPUT_QUEUE,
+    PO_PROACTIVE_GROUP,
+    PO_PROACTIVE_QUEUE,
+)
 from shared.redis.client import RedisStreamClient, decode_redis_fields  # noqa: E402
 
 OWNER_TELEGRAM_ID = 987654321
@@ -118,6 +122,30 @@ async def _owner_and_project(api_client) -> tuple[int, str]:
     return user_id, resp.json()["id"]
 
 
+async def _read_one_proactive_entry(client: RedisStreamClient, *, claim_pending: bool = False):
+    """Read one po:proactive entry through the group, without acking it."""
+    async for msg in client.consume(
+        PO_PROACTIVE_QUEUE,
+        PO_PROACTIVE_GROUP,
+        "bot-0",
+        count=1,
+        block_ms=1000,
+        auto_ack=False,
+        claim_pending=claim_pending,
+        pending_timeout_ms=0,
+    ):
+        if msg is not None:
+            return msg
+    raise AssertionError("po:proactive had nothing to read")
+
+
+async def _pending_count(client: RedisStreamClient) -> int:
+    entries = await client.redis.xpending_range(
+        PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, min="-", max="+", count=10
+    )
+    return len(entries)
+
+
 @pytest.mark.asyncio
 async def test_pipeline_event_reaches_the_owner_telegram_chat(
     api_client, scheduler_api, stream_client
@@ -152,14 +180,59 @@ async def test_pipeline_event_reaches_the_owner_telegram_chat(
     published = await stream_client.redis.xrange(PO_PROACTIVE_QUEUE)
     assert len(published) == 1
     message = from_flat_fields(decode_redis_fields(published[0][1]), POProactiveMessage)
+    assert message.telegram_chat_id == str(OWNER_TELEGRAM_ID)
+    assert message.owner_user_id == str(user_id)
 
     delivery = _load_bot_delivery()
     bot = AsyncMock()
-    delivered = await delivery.deliver_proactive_message(bot, message)
+    entry = await _read_one_proactive_entry(stream_client)
+    outcome = await delivery.process_proactive_entry(bot, stream_client, entry)
 
-    assert delivered is True
+    assert outcome is delivery.ProactiveOutcome.DELIVERED
     chat_id = bot.send_message.await_args.kwargs["chat_id"]
     assert chat_id == OWNER_TELEGRAM_ID
     # The regression this test exists for: the internal id must never be the
     # destination.
     assert chat_id != user_id
+    assert await _pending_count(stream_client) == 0, "a delivered entry is acked"
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_abandoned_by_a_bot_restart_still_reaches_the_owner(
+    api_client, stream_client
+):
+    """The bot dying mid-send must not swallow the notification.
+
+    The entry stays in the consumer group's pending list; the next bot claims it
+    and delivers it to the same chat. Real Redis, real consumer group.
+    """
+    user_id, project_id = await _owner_and_project(api_client)
+    proactive = POProactiveMessage(
+        text="Your project is deployed",
+        telegram_chat_id=str(OWNER_TELEGRAM_ID),
+        owner_user_id=str(user_id),
+        event="story_completed",
+        story_id="story-recip-2",
+        project_id=project_id,
+    )
+    await stream_client.ensure_consumer_group(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP)
+    await stream_client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+
+    # First delivery: handed out, never settled — the bot was killed.
+    await stream_client.redis.xreadgroup(
+        groupname=PO_PROACTIVE_GROUP,
+        consumername="bot-0",
+        streams={PO_PROACTIVE_QUEUE: ">"},
+        count=10,
+        block=0,
+    )
+    assert await _pending_count(stream_client) == 1
+
+    delivery = _load_bot_delivery()
+    bot = AsyncMock()
+    entry = await _read_one_proactive_entry(stream_client, claim_pending=True)
+    outcome = await delivery.process_proactive_entry(bot, stream_client, entry)
+
+    assert outcome is delivery.ProactiveOutcome.DELIVERED
+    assert bot.send_message.await_args.kwargs["chat_id"] == OWNER_TELEGRAM_ID
+    assert await _pending_count(stream_client) == 0

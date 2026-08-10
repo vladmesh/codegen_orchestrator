@@ -432,7 +432,7 @@ async def send_to_architect(
         story_id=story.id,
         project_id=str(story.project_id),
         telegram_chat_id=await resolve_project_chat_id(
-            db, story.project_id, event="story_sent_to_architect"
+            db, story.project_id, event="story_sent_to_architect", story_id=story.id
         ),
         is_reopen=is_reopen,
         user_report=story.user_report if is_reopen else None,

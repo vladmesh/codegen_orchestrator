@@ -322,7 +322,7 @@ async def _publish_deploy(
             project_id=grant.project_id,
             # A temporary-access deploy is machinery, not something the owner
             # asked for: it carries no recipient on purpose.
-            telegram_chat_id="",
+            unaddressed_reason="temporary QA access deploy, not requested by the owner",
             story_id="",
             triggered_by=DeployTrigger.ADMIN,
             action=DeployAction.FEATURE,

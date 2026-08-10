@@ -460,6 +460,45 @@ class TestConsumeTyped:
         assert [m.value.capability for m in received] == ["git"]
 
 
+class TestLegacyRecipientRejection:
+    """A message addressed by the removed ``user_id`` is refused, loudly."""
+
+    async def test_a_legacy_addressed_message_alerts_admins_and_is_not_yielded(
+        self, client, fake_redis
+    ):
+        await client.publish(
+            "s",
+            {
+                "user_id": "1",
+                "story_id": "story-7",
+                "project_id": "proj-3",
+                "event": "story_completed",
+            },
+        )
+
+        with patch("shared.notifications.notify_admins_best_effort", new=AsyncMock()) as alert:
+            with capture_logs() as logs:
+                received = await _drain_typed(client, TypedSample)
+
+        assert received == [], "unaddressable work is never handed to the consumer"
+        alert.assert_awaited_once()
+        text = alert.await_args.args[0]
+        assert "user_id" in text
+        assert "story-7" in text
+        assert "proj-3" in text
+        assert any(entry["event"] == "legacy_recipient_field_rejected" for entry in logs)
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 0, "rejected terminally, not left to poison the loop"
+
+    async def test_an_ordinary_invalid_message_raises_no_recipient_alert(self, client):
+        await client.publish("s", {"wrong_field": "x"})
+
+        with patch("shared.notifications.notify_admins_best_effort", new=AsyncMock()) as alert:
+            assert await _drain_typed(client, TypedSample) == []
+
+        alert.assert_not_awaited()
+
+
 class TestPublishFlat:
     async def test_publish_flat_writes_fields_directly(self, client, fake_redis):
         """publish_flat() should write fields directly without JSON 'data' wrapper."""

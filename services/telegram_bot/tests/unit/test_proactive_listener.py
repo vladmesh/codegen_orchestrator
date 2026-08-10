@@ -1,7 +1,7 @@
 """Tests for ProactiveListener."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -15,6 +15,9 @@ def mock_client():
     client = MagicMock()
     client.consume = MagicMock()
     client.ack = AsyncMock()
+    # The delivery path reads the PEL delivery count to bound its attempts and
+    # acks the entry itself; a first delivery is count 1.
+    client.delivery_count = AsyncMock(return_value=1)
     return client
 
 
@@ -81,23 +84,31 @@ class TestProactiveListener:
         assert call_args.kwargs["chat_id"] == 12345  # noqa: PLR2004
 
     @pytest.mark.asyncio
-    async def test_handles_send_error_gracefully(self, mock_client, mock_bot):
+    async def test_handles_send_error_gracefully(self, mock_client, mock_bot, monkeypatch):
         """Should continue processing even if send_message fails."""
+        monkeypatch.setattr("src.proactive.PROACTIVE_RETRY_DELAY_S", 0)
         mock_bot.send_message = AsyncMock(side_effect=Exception("Telegram API error"))
 
         msg = StreamMessage(message_id="msg-1", data={"telegram_chat_id": "42", "text": "Hello!"})
         mock_client.consume = _make_consume_iter([msg])
 
         listener = ProactiveListener(client=mock_client)
-        task = await listener.start(mock_bot)
-        await asyncio.sleep(0)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        with patch("src.proactive.notify_admins_best_effort", new=AsyncMock()) as alert:
+            task = await listener.start(mock_bot)
+            for _ in range(200):
+                if mock_client.ack.await_count:
+                    break
+                await asyncio.sleep(0.01)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
-        # Should not crash — auto_ack handles ACK
+        # Should not crash, and the entry is settled — given up on with an admin
+        # alert — rather than left pending forever.
+        mock_client.ack.assert_awaited()
+        alert.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_cancellation(self, mock_client, mock_bot):

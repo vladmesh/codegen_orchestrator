@@ -24,6 +24,10 @@ from shared.contracts.queues.po import (
     proactive_from_input,
     to_flat_fields,
 )
+from shared.contracts.recipient import (
+    alert_legacy_recipient_field,
+    has_legacy_recipient_field,
+)
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
@@ -212,6 +216,11 @@ async def _process_message(
             msg_id=msg_id,
             errors=_safe_validation_errors(exc),
         )
+        # An event addressed by the removed ``user_id`` field is refused rather
+        # than answered into a thread keyed by an id that means two things. It is
+        # somebody's notification, so it gets an alert, not just a log line.
+        if has_legacy_recipient_field(data):
+            await alert_legacy_recipient_field(source=PO_INPUT_QUEUE, entry_id=msg_id, data=data)
         await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
         return
 

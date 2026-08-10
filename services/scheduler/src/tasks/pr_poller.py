@@ -254,6 +254,7 @@ async def poll_merged_prs(
             task_id=run_id,
             project_id=str(project_id),
             telegram_chat_id=recipient.telegram_chat_id,
+            unaddressed_reason=recipient.unaddressed_reason,
             story_id=story_id,
             triggered_by=DeployTrigger.WEBHOOK,
             action=action,

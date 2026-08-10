@@ -8,7 +8,9 @@ Addressing: ``telegram_chat_id`` is the Telegram chat the message is delivered
 to — never the internal ``User.id``. Producers that only know the internal id
 (scheduler, workers) resolve it to a Telegram chat id *before* publishing;
 ``owner_user_id`` carries the internal id alongside it for identification in
-logs and admin alerts, and is never used as a destination.
+logs and admin alerts, and is never used as a destination. A message that still
+addresses a user through the removed ``user_id`` field is rejected — see
+``shared.contracts.recipient``.
 """
 
 from __future__ import annotations
@@ -18,10 +20,12 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from shared.contracts.recipient import RejectsLegacyRecipientField
+
 # --- PO Input messages (po:input) ---
 
 
-class POUserMessage(BaseModel):
+class POUserMessage(RejectsLegacyRecipientField):
     """User message from Telegram bot."""
 
     type: Literal["user_message"] = "user_message"
@@ -32,7 +36,7 @@ class POUserMessage(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"))
 
 
-class POSystemEvent(BaseModel):
+class POSystemEvent(RejectsLegacyRecipientField):
     """System event from workers (progress, completed, failed, etc.).
 
     ``telegram_chat_id`` is empty only for events that are not addressed to a
@@ -50,7 +54,7 @@ class POSystemEvent(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
-class POReminderMessage(BaseModel):
+class POReminderMessage(RejectsLegacyRecipientField):
     """Reminder fired from the sorted set poller."""
 
     type: Literal["reminder"] = "reminder"
@@ -69,7 +73,7 @@ POInputMessage = Annotated[
 # --- PO Output messages ---
 
 
-class POResponse(BaseModel):
+class POResponse(RejectsLegacyRecipientField):
     """Synchronous PO response (po:response:{request_id})."""
 
     text: str
@@ -77,7 +81,7 @@ class POResponse(BaseModel):
     error: str | None = None
 
 
-class POProactiveMessage(BaseModel):
+class POProactiveMessage(RejectsLegacyRecipientField):
     """Proactive PO notification (po:proactive).
 
     Carries the identifiers the transport needs to raise a useful admin alert

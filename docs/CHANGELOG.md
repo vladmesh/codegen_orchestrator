@@ -17,6 +17,21 @@
   success/exhaustion logs, and an admin alert naming story, project and event
   when the attempts run out.
 
+- Made that separation fail closed. A payload still carrying the removed
+  `user_id` is now rejected by every addressable contract instead of validating
+  with its recipient silently dropped; the consumers that see the rejection log
+  it and alert admins with story, project and event
+  (`shared/contracts/recipient.py`). `DeployMessage` requires either
+  `telegram_chat_id` or an explicit `unaddressed_reason`, so admin-initiated
+  application actions and temporary-access deploys state why they report to
+  nobody rather than leaving an empty field; an owner-requested project teardown
+  resolves the owner's chat like any other user-facing lifecycle message. The
+  bot's proactive listener no longer auto-acks: it claims the pending entries of
+  its previous incarnation on startup and bounds retries by the consumer group's
+  delivery count, so a delivery interrupted by a restart is retried and
+  eventually alerted about instead of sitting in the PEL forever. The API's
+  unresolved-recipient alert now names the story as well as the project.
+
 - Restricted live cleanup and write-ahead deployment recovery to API server
   rows authorized by the existing managed Time4VPS provisioning policy.
   Unrelated inventory rows are logged and skipped before SSH-key retrieval or
