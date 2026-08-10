@@ -47,6 +47,7 @@ def _assert_before(sql: str, earlier: str, later: str) -> None:
 @pytest.mark.asyncio
 async def test_server_cleanup_authenticates_ssh_key_fetch(monkeypatch, tmp_path):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
     saw_key_fetch = False
 
     def fake_run(argv, **kwargs):
@@ -59,7 +60,14 @@ async def test_server_cleanup_authenticates_ssh_key_fetch(monkeypatch, tmp_path)
         assert request.headers.get("X-Internal-Key") == "test-internal-key"
         if request.url.path == "/api/servers/vps-1":
             return httpx.Response(
-                200, json={"handle": "vps-1", "ssh_user": "dev", "public_ip": "203.0.113.7"}
+                200,
+                json={
+                    "handle": "vps-1",
+                    "ssh_user": "dev",
+                    "public_ip": "203.0.113.7",
+                    "is_managed": True,
+                    "provider_id": "1001",
+                },
             )
         if request.url.path == "/api/servers/vps-1/ssh-key":
             saw_key_fetch = True

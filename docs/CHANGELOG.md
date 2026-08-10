@@ -2,6 +2,12 @@
 
 ## 2026-08-10
 
+- Restricted live cleanup and write-ahead deployment recovery to API server
+  rows authorized by the existing managed Time4VPS provisioning policy.
+  Unrelated inventory rows are logged and skipped before SSH-key retrieval or
+  SSH, while missing keys, invalid admitted connection data and an empty
+  managed target set remain fail-closed errors.
+
 - Made worker-manager the sole producer of Docker-global identities in generated
   Compose plans. Build services receive a manager-derived per-worker/service
   output tag, while source-declared volume `name` and `container_name` fail

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.env_contract import merge_env_contract_fragments
+from shared.provisioning_policy import parse_time4vps_server_id, server_is_provisioning_allowed
 
 GITHUB_ORG = "project-factory-organization"
 ENV_CONTRACT_FILENAME = "env.contract.yaml"
@@ -23,6 +25,67 @@ ENV_CONTRACT_PROBE_MARKER = "ENV_CONTRACT_PROBE:"
 HTTP_OK = 200
 HTTP_NOT_FOUND = 404
 REMOTE_CLEANUP_SCRIPT = Path(__file__).with_name("live_harness_remote_cleanup.sh")
+
+
+class _CleanupServerPolicyAdapter:
+    """Adapt an API server DTO to the authoritative provisioning policy."""
+
+    def __init__(self, server: Mapping[str, Any]) -> None:
+        self._server = server
+
+    @property
+    def is_managed(self) -> bool:
+        return self._server.get("is_managed") is True
+
+    @property
+    def provider_id(self) -> str | None:
+        value = self._server.get("provider_id")
+        return value if isinstance(value, str) else None
+
+
+def cleanup_target_skip_reason(server: object) -> str | None:
+    """Return why an API row is not a managed cleanup target, if any.
+
+    Cleanup uses the same fail-closed `is_managed` plus Time4VPS provider-ID
+    admission as provisioning. This decision runs before a key request, SSH,
+    residue scan, or teardown, so inventory-only installation hosts cannot be
+    contacted merely because they appear in the API listing.
+    """
+    if not isinstance(server, Mapping):
+        return "malformed_server_record"
+    adapter = _CleanupServerPolicyAdapter(server)
+    if not adapter.is_managed:
+        return "is_not_managed"
+    if parse_time4vps_server_id(adapter.provider_id) is None:
+        return "invalid_provider_id"
+    if not server_is_provisioning_allowed(adapter):
+        return "provider_id_not_allowlisted"
+    return None
+
+
+def managed_cleanup_targets(servers: list[object]) -> list[dict[str, Any]]:
+    """Select only policy-authorized API rows and log every unrelated row."""
+    logger = structlog.get_logger(__name__)
+    targets: list[dict[str, Any]] = []
+    for server in servers:
+        reason = cleanup_target_skip_reason(server)
+        if reason is not None:
+            handle = server.get("handle") if isinstance(server, Mapping) else None
+            logger.info("cleanup_target_skipped", server_handle=handle, reason=reason)
+            continue
+        # `cleanup_target_skip_reason` admits Mapping instances only.
+        targets.append(dict(server))  # type: ignore[arg-type]
+    return targets
+
+
+def validate_managed_cleanup_target(server: Mapping[str, Any]) -> dict[str, Any]:
+    """Require the non-secret connection fields of an admitted target."""
+    target = dict(server)
+    for field in ("handle", "ssh_user", "public_ip"):
+        value = target.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"managed cleanup target has invalid {field}")
+    return target
 
 
 async def probe_env_contract(
@@ -205,25 +268,30 @@ async def _resolve_cleanup_targets(
 ) -> list[dict[str, Any]]:
     """Return the server DTOs one deploy's teardown must clear.
 
-    A resolved handle names its one target. A deploy owned write-ahead has no
-    target yet — the allocator had not picked one when the stack name was
-    recorded — so teardown clears that stack name on every server the API lists.
-    An empty list is a failure, not a clean result: it would silently prove
-    nothing about a stack the manifest says may exist.
+    A resolved handle is admitted by the same managed-target policy as a list.
+    A deploy owned write-ahead has no target yet, so teardown clears that stack
+    name on every and only managed target. An empty admitted set is a failure:
+    it would silently prove nothing about a stack the manifest says may exist.
     """
     if server_handle is not None:
         srv = await client.get(f"/api/servers/{server_handle}")
         if srv.status_code != HTTP_OK:
             raise RuntimeError(f"server fetch failed: {srv.status_code}")
-        return [srv.json()]
+        targets = managed_cleanup_targets([srv.json()])
+        if not targets:
+            raise RuntimeError(f"server {server_handle} is not a managed cleanup target")
+        return [validate_managed_cleanup_target(targets[0])]
 
     listing = await client.get("/api/servers/")
     if listing.status_code != HTTP_OK:
         raise RuntimeError(f"server list fetch failed: {listing.status_code}")
     servers = listing.json()
-    if not servers:
-        raise RuntimeError("server list fetch returned no target for an owned deploy")
-    return servers
+    if not isinstance(servers, list):
+        raise RuntimeError("server list fetch returned a non-list response")
+    targets = managed_cleanup_targets(servers)
+    if not targets:
+        raise RuntimeError("server list fetch returned no managed target for an owned deploy")
+    return [validate_managed_cleanup_target(target) for target in targets]
 
 
 async def cleanup_server_deployment(
@@ -243,6 +311,8 @@ async def cleanup_server_deployment(
             if resp.status_code != HTTP_OK:
                 raise RuntimeError(f"ssh key fetch failed: {resp.status_code}")
             key = resp.json().get("ssh_key", "")
+            if not isinstance(key, str) or not key.strip():
+                raise RuntimeError(f"ssh key fetch failed for {handle}: empty ssh_key")
             if not key.endswith("\n"):
                 key += "\n"
             # ssh_user and public_ip come from the same DTO deploy authorizes

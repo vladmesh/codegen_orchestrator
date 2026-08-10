@@ -20,7 +20,9 @@ from shared.live_harness_cleanup import (  # noqa: E402
     REMOTE_CLEANUP_SCRIPT,
     build_remote_cleanup_command,
     build_remote_residue_command,
+    managed_cleanup_targets,
     tolerant_prefix_pattern,
+    validate_managed_cleanup_target,
 )
 from shared.project_slug import project_slug_prefix  # noqa: E402
 
@@ -439,7 +441,10 @@ def _fetch_remote_servers() -> list[dict]:
             servers = resp.json()
             if not isinstance(servers, list):
                 raise CleanupFailure("server list fetch returned a non-list response")
-            return servers
+            targets = managed_cleanup_targets(servers)
+            if not targets:
+                raise CleanupFailure("server list fetch returned no managed cleanup target")
+            return [validate_managed_cleanup_target(target) for target in targets]
     except CleanupFailure:
         raise
     except Exception as exc:
@@ -459,7 +464,7 @@ def _fetch_remote_server_key(handle: str) -> str:
                     f"ssh key fetch failed for {handle}: {resp.status_code} {resp.text[:200]}"
                 )
             key = resp.json().get("ssh_key")
-            if not isinstance(key, str) or not key:
+            if not isinstance(key, str) or not key.strip():
                 raise CleanupFailure(f"ssh key fetch failed for {handle}: empty ssh_key")
             return key
     except CleanupFailure:
