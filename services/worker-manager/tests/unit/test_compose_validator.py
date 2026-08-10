@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.compose_validator import (
-    SOURCE_DIRECTIVE_POLICIES,
+    COMPOSE_HOST_CAPABILITY_POLICIES,
     validate_command,
     validate_compose_file,
     validate_effective_compose,
@@ -80,28 +80,62 @@ class TestValidateCommand:
 
 
 class TestValidateComposeFile:
-    def test_source_directive_sweep_has_one_policy_for_every_compose_v227_loader(self):
-        """Keep the v2.27.1 source-loader sweep from silently growing a bypass."""
-        assert set(SOURCE_DIRECTIVE_POLICIES) == {
+    def test_host_capability_policy_covers_source_and_build_execution_fields(self):
+        """Pin the v2.27.1 fields admitted before resolution or build execution."""
+        assert set(COMPOSE_HOST_CAPABILITY_POLICIES) == {
             "env_file",
             "extends.file",
             "build.context",
             "build.dockerfile",
+            "build.args",
             "secrets.*.file",
             "configs.*.file",
             "label_file",
             "include",
             "build.additional_contexts",
+            "build.cache_from",
+            "build.cache_to",
+            "build.dockerfile_inline",
+            "build.entitlements",
+            "build.extra_hosts",
+            "build.isolation",
+            "build.labels",
+            "build.network",
+            "build.no_cache",
+            "build.platforms",
+            "build.privileged",
+            "build.pull",
             "build.secrets",
+            "build.shm_size",
             "build.ssh",
+            "build.tags",
+            "build.target",
+            "build.ulimits",
             "credential_spec.file",
             "develop.watch.path",
         }
-        for policy in SOURCE_DIRECTIVE_POLICIES.values():
+        for policy in COMPOSE_HOST_CAPABILITY_POLICIES.values():
             assert policy.resolution_context
             assert policy.interpolation
             assert policy.containment
-        assert SOURCE_DIRECTIVE_POLICIES["label_file"].allowed is False
+        assert COMPOSE_HOST_CAPABILITY_POLICIES["label_file"].allowed is False
+
+    @pytest.mark.parametrize("build_key", ["cache_from", "cache_to", "entitlements"])
+    def test_unadmitted_build_properties_are_rejected_before_compose_resolution(self, tmp_path, build_key):
+        source = tmp_path / "infra" / "compose.yml"
+        source.parent.mkdir()
+        source.write_text(
+            "services:\n"
+            "  app:\n"
+            "    build:\n"
+            "      context: ..\n"
+            f"      {build_key}: type=local,dest=/manager-owned-path\n"
+        )
+
+        result = validate_compose_file(source.read_text(), source_file=source, workspace_path=tmp_path)
+
+        assert not result.valid, result.errors
+        assert result.errors == [f"Service 'app': build {build_key} is not supported"]
 
     def test_relative_volume_allowed(self):
         content = """
@@ -453,3 +487,18 @@ class TestValidateEffectiveCompose:
 
         assert not result.valid, result.errors
         assert any("build.network" in error for error in result.errors)
+
+    @pytest.mark.parametrize("build_key", ["cache_from", "cache_to", "entitlements"])
+    def test_effective_unadmitted_build_properties_are_rejected(self, tmp_path, build_key):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        compose = _safe_effective_compose()
+        compose["services"]["db"]["build"] = {
+            "context": str(workspace),
+            build_key: ["type=local,dest=/manager-owned-path"],
+        }
+
+        result = validate_effective_compose(compose, "worker-123", workspace)
+
+        assert not result.valid, result.errors
+        assert result.errors == [f"Service 'db': build.{build_key} is not supported"]

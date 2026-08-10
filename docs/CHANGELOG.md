@@ -2,6 +2,13 @@
 
 ## 2026-08-10
 
+- Replaced worker-manager's source-only Compose admission table with one
+  host-capability policy for resolution and build execution. Generated builds
+  now admit only static workspace-contained `context`/`dockerfile` and build
+  `args`; cache import/export and every other pinned Compose v2.27.1
+  `BuildConfig` property fail before resolution, are rechecked after resolution,
+  and cannot be written into an immutable execution snapshot.
+
 - Added a finite Compose v2.27.1 source-directive admission table to
   worker-manager. `label_file` and unsupported loaders are rejected before
   configuration resolution, supported static sources retain their contextual

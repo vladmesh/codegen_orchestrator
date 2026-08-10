@@ -11,6 +11,7 @@ import yaml
 from .compose_validator import (
     CONTAINER_CREATING_COMMANDS,
     VALUE_FLAGS,
+    assert_permitted_build_shape,
     validate_command,
     validate_compose_file,
     validate_effective_compose,
@@ -118,6 +119,7 @@ def _write_snapshot(invocation: ComposeInvocation, data: dict, command_args: lis
         for directive in _SNAPSHOT_LOADER_DIRECTIVES:
             if directive in service:
                 raise ValueError(f"Service '{service_name}': {directive} cannot be retained in an execution snapshot")
+        assert_permitted_build_shape(service_name, service)
     plan_directory = invocation.snapshot_path.parent if invocation.snapshot_path else None
     if plan_directory is None:
         raise ValueError("Compose plan directory is unavailable")

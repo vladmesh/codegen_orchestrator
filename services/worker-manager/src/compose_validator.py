@@ -49,8 +49,8 @@ class ValidationResult:
 
 
 @dataclass(frozen=True)
-class SourceDirectivePolicy:
-    """Admission rule for a Compose field that can name a host-side source."""
+class ComposeHostCapabilityPolicy:
+    """Admission rule for a Compose field with manager or daemon reachability."""
 
     allowed: bool
     resolution_context: str
@@ -58,33 +58,89 @@ class SourceDirectivePolicy:
     containment: str
 
 
-# Compose v2.27.1 is pinned in services/worker-manager/Dockerfile. This table is
-# the worker-manager's sweep of compose-go's host-source fields reachable through
-# the supported up, run and build commands. Every field is either admitted here
-# with a static workspace path check or rejected before `docker compose config`
-# can load it. `develop.watch.path` is listed too: `watch` is not an allowed
-# command, but rejecting it keeps a future command admission from creating a
-# loader bypass. credential_spec.file is not loaded by this Linux worker image,
-# but is forbidden because it is a host path on other Compose targets.
-SOURCE_DIRECTIVE_POLICIES = {
-    "env_file": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "extends.file": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "build.context": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "build.dockerfile": SourceDirectivePolicy(True, "build context", "static literal only", "workspace"),
-    "secrets.*.file": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "configs.*.file": SourceDirectivePolicy(True, "declaring Compose file", "static literal only", "workspace"),
-    "label_file": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
-    "include": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
-    "build.additional_contexts": SourceDirectivePolicy(
+# Compose v2.27.1 is pinned in services/worker-manager/Dockerfile. This is the
+# one admission policy for fields reachable from supported up, run and build
+# commands that can read or write manager paths, mount or inject secrets, escape
+# network/namespace isolation, or select external daemon objects. Resolution
+# fields are checked before `docker compose config`; build-execution fields are
+# checked there and again in the resolved project and immutable snapshot.
+#
+# The build entries are the pinned compose-go BuildConfig surface. Generated
+# projects may use only the service-template shape: static workspace-contained
+# context and dockerfile plus non-host-capable build args. This table deliberately
+# does not claim to model arbitrary Compose fields outside the supported commands.
+COMPOSE_HOST_CAPABILITY_POLICIES = {
+    "env_file": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "extends.file": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "build.context": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "build.dockerfile": ComposeHostCapabilityPolicy(True, "build context", "static literal only", "workspace"),
+    "build.args": ComposeHostCapabilityPolicy(True, "build execution", "Compose value", "not a host path"),
+    "secrets.*.file": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "configs.*.file": ComposeHostCapabilityPolicy(True, "declaring Compose file", "static literal only", "workspace"),
+    "label_file": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "include": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "build.dockerfile_inline": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.entitlements": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.additional_contexts": ComposeHostCapabilityPolicy(
         False, "not resolved", "rejected before interpolation", "not reached"
     ),
-    "build.secrets": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
-    "build.ssh": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
-    "credential_spec.file": SourceDirectivePolicy(
+    "build.cache_from": ComposeHostCapabilityPolicy(
+        False, "build execution", "rejected before resolution", "not reached"
+    ),
+    "build.cache_to": ComposeHostCapabilityPolicy(
+        False, "build execution", "rejected before resolution", "not reached"
+    ),
+    "build.extra_hosts": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.isolation": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.labels": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.network": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.no_cache": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.platforms": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.privileged": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.pull": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before build execution", "not reached"),
+    "build.secrets": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "build.shm_size": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.ssh": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "build.tags": ComposeHostCapabilityPolicy(False, "not resolved", "rejected before build execution", "not reached"),
+    "build.target": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "build.ulimits": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before build execution", "not reached"
+    ),
+    "credential_spec.file": ComposeHostCapabilityPolicy(
         False, "not resolved", "rejected before interpolation", "not reached"
     ),
-    "develop.watch.path": SourceDirectivePolicy(False, "not resolved", "rejected before interpolation", "not reached"),
+    "develop.watch.path": ComposeHostCapabilityPolicy(
+        False, "not resolved", "rejected before interpolation", "not reached"
+    ),
 }
+
+_PERMITTED_BUILD_KEYS = frozenset(
+    field.removeprefix("build.")
+    for field, policy in COMPOSE_HOST_CAPABILITY_POLICIES.items()
+    if field.startswith("build.") and policy.allowed
+)
 
 
 def _flag_is_set(arg: str, flag: str) -> bool:
@@ -194,6 +250,7 @@ def _validate_build(service_name: str, config: dict[str, Any], workspace_path: P
     if not isinstance(build, dict):
         errors.append(f"Service '{service_name}': build must be a mapping")
         return
+    _validate_build_keys(service_name, build, errors)
     context = build.get("context")
     if context and (
         not isinstance(context, str) or workspace_path is None or not _is_within_workspace(context, workspace_path)
@@ -208,11 +265,27 @@ def _validate_build(service_name: str, config: dict[str, Any], workspace_path: P
                 errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
         elif not isinstance(context, str) or not _is_within_workspace(str(Path(context) / dockerfile), workspace_path):
             errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
-    if build.get("network") is not None:
-        errors.append(f"Service '{service_name}': build.network is not supported")
-    for key in ("additional_contexts", "secrets", "ssh"):
-        if build.get(key):
-            errors.append(f"Service '{service_name}': build.{key} is not supported")
+
+
+def _validate_build_keys(service_name: str, build: dict[str, Any], errors: list[str], *, source: bool = False) -> None:
+    for key in _unsupported_build_keys(build):
+        separator = " " if source else "."
+        errors.append(f"Service '{service_name}': build{separator}{key} is not supported")
+
+
+def _unsupported_build_keys(build: dict[str, Any]) -> list[str]:
+    return sorted(set(build) - _PERMITTED_BUILD_KEYS)
+
+
+def assert_permitted_build_shape(service_name: str, service_config: dict[str, Any]) -> None:
+    """Assert an execution snapshot retains only the admitted BuildConfig shape."""
+    build = service_config.get("build")
+    if build is None or isinstance(build, str):
+        return
+    if not isinstance(build, dict):
+        raise ValueError(f"Service '{service_name}': build must be a mapping")
+    if unsupported := _unsupported_build_keys(build):
+        raise ValueError(f"Service '{service_name}': build.{unsupported[0]} is not supported")
 
 
 def _memory_bytes(value: Any) -> int | None:
@@ -373,7 +446,7 @@ def _admit_source_directive(
     multiple: bool = False,
 ) -> None:
     """Apply the one source-directive policy boundary before Compose resolves it."""
-    policy = SOURCE_DIRECTIVE_POLICIES[directive]
+    policy = COMPOSE_HOST_CAPABILITY_POLICIES[directive]
     if not policy.allowed:
         errors.append(f"{label} is not supported")
         return
@@ -402,6 +475,7 @@ def _validate_source_build(
     if not isinstance(build, dict):
         errors.append(f"Service '{service_name}': build must be a mapping")
         return
+    _validate_build_keys(service_name, build, errors, source=True)
     context = build.get("context", ".")
     _admit_source_directive(
         "build.context",
@@ -424,19 +498,9 @@ def _validate_source_build(
             )
         else:
             errors.append(f"Service '{service_name}': build dockerfile must be a workspace path")
-    for key in ("additional_contexts", "secrets", "ssh"):
-        if key in build:
-            _admit_source_directive(
-                f"build.{key}",
-                build[key],
-                project_directory,
-                workspace_path,
-                errors,
-                f"Service '{service_name}': build {key}",
-                multiple=True,
-            )
-    if build.get("network") is not None:
-        errors.append(f"Service '{service_name}': build network is not supported")
+    # args are the only admitted non-path BuildConfig field. Every other
+    # BuildConfig key is rejected by _validate_build_keys before Compose can
+    # resolve or execute it.
 
 
 def validate_compose_file(

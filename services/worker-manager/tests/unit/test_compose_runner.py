@@ -55,6 +55,29 @@ class TestComposeRunner:
 
         assert not snapshot.exists()
 
+    def test_snapshot_compiler_rejects_unadmitted_build_properties(self, tmp_path):
+        snapshot = tmp_path / "compose.resolved.yml"
+        invocation = ComposeInvocation(
+            command=[],
+            config_command=[],
+            cwd=tmp_path,
+            env={},
+            source_files=[],
+            workspace_path=tmp_path,
+            project_directory=tmp_path,
+            project_name="worker_worker-123",
+            snapshot_path=snapshot,
+        )
+
+        with pytest.raises(ValueError, match="build.cache_to is not supported"):
+            _write_snapshot(
+                invocation,
+                {"services": {"app": {"build": {"context": str(tmp_path), "cache_to": ["type=local"]}}}},
+                ["build"],
+            )
+
+        assert not snapshot.exists()
+
     @pytest.mark.asyncio
     async def test_builds_correct_command(self, workspace):
         """run() should build a command with --project-name and run from workspace cwd."""
@@ -578,6 +601,29 @@ class TestComposeRunner:
                 await runner.run("worker-123", args)
 
         mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [["build"], ["up", "--build"], ["up", "-d"]])
+    @pytest.mark.parametrize("build_key", ["cache_from", "cache_to"])
+    async def test_build_cache_is_rejected_before_every_create_route(self, workspace, args, build_key):
+        victim_snapshot = workspace / ".compose-plans" / "worker-victim" / "compose.resolved.yml"
+        victim_snapshot.parent.mkdir(parents=True)
+        victim_snapshot.write_text("victim plan\n")
+        cache_value = "type=local,src=/etc" if build_key == "cache_from" else f"type=local,dest={victim_snapshot}"
+        compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
+        compose.write_text(
+            f"services:\n  db:\n    build:\n      context: ..\n      {build_key}:\n        - {cache_value}\n"
+        )
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match=f"build {build_key} is not supported"):
+                await runner.run("worker-123", args)
+
+        mock_run.assert_not_called()
+        assert victim_snapshot.is_file()
+        assert victim_snapshot.read_text() == "victim plan\n"
+        assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
 
     @pytest.mark.asyncio
     async def test_recovery_rejects_worker_selected_compose_files(self, workspace):

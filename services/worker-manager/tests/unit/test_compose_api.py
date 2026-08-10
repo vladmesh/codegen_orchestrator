@@ -289,3 +289,41 @@ class TestComposeApi:
         assert response.json()["detail"] == "Service 'db': label_file is not supported"
         mock_run.assert_not_called()
         assert not (tmp_path / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
+
+    @pytest.mark.parametrize(
+        ("build_key", "cache_value"),
+        [
+            ("cache_from", "type=local,src=/etc"),
+            ("cache_to", "type=local,dest=/manager-owned-path"),
+        ],
+    )
+    def test_broker_api_rejects_build_cache_before_compose_config(self, tmp_path, build_key, cache_value):
+        workspace = tmp_path / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        (infra / "compose.base.yml").write_text(
+            f"services:\n  db:\n    build:\n      context: ..\n      {build_key}:\n        - {cache_value}\n"
+        )
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run") as mock_run,
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["-f", "infra/compose.base.yml", "up", "-d"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == f"Service 'db': build {build_key} is not supported"
+        mock_run.assert_not_called()
+        assert not (tmp_path / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
