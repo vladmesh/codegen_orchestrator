@@ -47,7 +47,7 @@ async def _handle_smoke_failure(
     project_id: str,
     project_name: str,
     callback_stream: str,
-    user_id: str,
+    telegram_chat_id: str,
     story_id: str,
     redis: RedisStreamClient,
     msg: DeployMessage,
@@ -92,7 +92,7 @@ async def _handle_smoke_failure(
         "failed",
         task_id,
         error_msg,
-        user_id=user_id,
+        telegram_chat_id=telegram_chat_id,
         project_id=project_id,
     )
 
@@ -114,7 +114,7 @@ async def _handle_deploy_success(
     project_id: str,
     project: ProjectDTO,
     callback_stream: str,
-    user_id: str,
+    telegram_chat_id: str,
     story_id: str,
     redis: RedisStreamClient,
     application_id: int | None = None,
@@ -154,7 +154,7 @@ async def _handle_deploy_success(
             "completed",
             task_id,
             f"Deploy completed: {result['deployed_url']}",
-            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
             project_id=project_id,
         )
 

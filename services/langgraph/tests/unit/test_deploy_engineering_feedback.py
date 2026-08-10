@@ -75,11 +75,11 @@ def mock_devops_subgraph():
         yield graph
 
 
-def _job(*, story_id="story-1", user_id="12345", deploy_fix_attempt=0):
+def _job(*, story_id="story-1", telegram_chat_id="12345", deploy_fix_attempt=0):
     return {
         "task_id": "deploy-1",
         "project_id": "proj-1",
-        "user_id": user_id,
+        "telegram_chat_id": telegram_chat_id,
         "callback_stream": "",
         "story_id": story_id,
         "triggered_by": DeployTrigger.ENGINEERING.value,
@@ -301,7 +301,7 @@ class TestEngineringMessagePassthrough:
             job = {
                 "task_id": "eng-fix-1",
                 "project_id": "proj-1",
-                "user_id": "12345",
+                "telegram_chat_id": "12345",
                 "action": "fix",
                 "deploy_fix_attempt": 2,
                 "skip_deploy": False,

@@ -14,6 +14,8 @@ from shared.contracts.queues.worker import DeleteWorkerCommand
 from shared.queues import ARCHITECT_QUEUE, STORY_WORKERS_KEY, WORKER_COMMANDS
 from shared.redis_client import RedisStreamClient
 
+from ._recipients import resolve_project_recipient
+
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
@@ -83,10 +85,13 @@ async def _trigger_next_story(
         return
 
     next_story = project_stories[0]
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="next_story_triggered", story_id=next_story.id
+    )
     arch_msg = ArchitectMessage(
         story_id=next_story.id,
         project_id=project_id,
-        user_id="",
+        telegram_chat_id=recipient.telegram_chat_id,
     )
     await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
     logger.info(

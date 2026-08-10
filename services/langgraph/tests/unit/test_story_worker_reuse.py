@@ -236,7 +236,7 @@ class TestEngineeringConsumerStoryWorker:
             {
                 "task_id": "eng-123",
                 "project_id": "proj-1",
-                "user_id": "u-1",
+                "telegram_chat_id": "u-1",
                 "action": "feature",
                 "description": "Add login",
                 "story_id": "story-1",
@@ -299,7 +299,7 @@ class TestEngineeringConsumerStoryWorker:
             {
                 "task_id": "eng-456",
                 "project_id": "proj-1",
-                "user_id": "u-1",
+                "telegram_chat_id": "u-1",
                 "action": "feature",
                 "description": "Add profile page",
                 "story_id": "story-1",
@@ -358,7 +358,7 @@ class TestEngineeringConsumerStoryWorker:
             {
                 "task_id": "eng-789",
                 "project_id": "proj-1",
-                "user_id": "u-1",
+                "telegram_chat_id": "u-1",
                 "action": "feature",
                 "description": "Standalone fix",
                 "skip_deploy": True,
@@ -407,7 +407,7 @@ class TestHandleSuccessWorkerLifecycle:
                 redis=redis_mock,
                 skip_deploy=True,
                 developer_started_at=datetime.now(UTC),
-                user_id="u-1",
+                telegram_chat_id="u-1",
                 planning_task_id="task-1",
                 story_id="story-1",
             )
@@ -447,7 +447,7 @@ class TestHandleSuccessWorkerLifecycle:
                 redis=redis_mock,
                 skip_deploy=True,
                 developer_started_at=datetime.now(UTC),
-                user_id="u-1",
+                telegram_chat_id="u-1",
             )
         )
 

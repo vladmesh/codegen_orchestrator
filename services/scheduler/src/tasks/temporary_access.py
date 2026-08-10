@@ -320,7 +320,9 @@ async def _publish_deploy(
         DeployMessage(
             task_id=run_id,
             project_id=grant.project_id,
-            user_id="",
+            # A temporary-access deploy is machinery, not something the owner
+            # asked for: it carries no recipient on purpose.
+            unaddressed_reason="temporary QA access deploy, not requested by the owner",
             story_id="",
             triggered_by=DeployTrigger.ADMIN,
             action=DeployAction.FEATURE,

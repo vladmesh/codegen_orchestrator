@@ -117,6 +117,7 @@ def test_deploy_message_carries_overrides() -> None:
     msg = DeployMessage(
         task_id="t",
         project_id="p",
+        telegram_chat_id="987654321",
         action=DeployAction.CREATE,
         head_sha=HEAD,
         env_overrides={"TG_BOT_TEST_TELEGRAM_ID": "5"},
@@ -126,7 +127,13 @@ def test_deploy_message_carries_overrides() -> None:
 
 
 def test_deploy_message_defaults_to_no_overrides() -> None:
-    msg = DeployMessage(task_id="t", project_id="p", action=DeployAction.CREATE, head_sha=HEAD)
+    msg = DeployMessage(
+        task_id="t",
+        project_id="p",
+        telegram_chat_id="987654321",
+        action=DeployAction.CREATE,
+        head_sha=HEAD,
+    )
 
     assert msg.env_overrides == {}
 
@@ -216,7 +223,9 @@ def _fenced_job(**overrides) -> dict:
     job = {
         "task_id": "deploy-revoke-1",
         "project_id": "proj-1",
-        "user_id": "",
+        # A temporary-access fence deploy the owner never asked for: it says why
+        # it reports to nobody instead of leaving the recipient empty.
+        "unaddressed_reason": "temporary QA access deploy, not requested by the owner",
         "callback_stream": "",
         "triggered_by": DeployTrigger.ADMIN.value,
         "action": DeployAction.FEATURE.value,

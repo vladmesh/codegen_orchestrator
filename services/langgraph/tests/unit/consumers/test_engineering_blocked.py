@@ -52,7 +52,7 @@ class TestGaveUpHandling:
             planning_task_id=None,
             story_id=None,
             reason="blocked",
-            user_id="",
+            telegram_chat_id="",
             redis=mock_redis,
             worker_observability={"cost_usd": 0.04, "transcript_truncated": True},
         )
@@ -80,7 +80,7 @@ class TestGaveUpHandling:
             planning_task_id="task-123",
             story_id="story-1",
             reason="56/78 image URLs return 404",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 
@@ -106,7 +106,7 @@ class TestGaveUpHandling:
             planning_task_id="task-123",
             story_id="story-1",
             reason="Missing credentials",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 
@@ -134,7 +134,7 @@ class TestGaveUpHandling:
             planning_task_id="task-123",
             story_id="story-1",
             reason="API key missing",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 
@@ -160,7 +160,7 @@ class TestGaveUpHandling:
             planning_task_id="task-123",
             story_id="story-1",
             reason="URLs return 404",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 
@@ -188,14 +188,14 @@ class TestGaveUpHandling:
             planning_task_id="task-123",
             story_id="story-1",
             reason="External API down",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 
         mock_po_event.assert_awaited_once()
         call_kwargs = mock_po_event.call_args[1]
         assert call_kwargs["event"] == "story_blocked"
-        assert call_kwargs["user_id"] == "u1"
+        assert call_kwargs["telegram_chat_id"] == "u1"
 
     @pytest.mark.asyncio
     @patch(
@@ -216,7 +216,7 @@ class TestGaveUpHandling:
             planning_task_id="task-123",
             story_id="story-1",
             reason="Contradictory requirements",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 
@@ -248,7 +248,7 @@ class TestGaveUpHandling:
             planning_task_id="task-123",
             story_id=None,
             reason="Some issue",
-            user_id="u1",
+            telegram_chat_id="u1",
             redis=mock_redis,
         )
 

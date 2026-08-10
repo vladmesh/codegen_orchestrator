@@ -17,7 +17,8 @@ class ScaffoldMessage(BaseMessage):
 
     project_id: str
     repository_id: str
-    user_id: str
+    # Telegram chat of the project owner, resolved by the producer.
+    telegram_chat_id: str = ""
     template_repo: ServiceTemplateSource
     template_ref: ServiceTemplateRef
     project_name: str  # sanitized name for copier

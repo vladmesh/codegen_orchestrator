@@ -203,9 +203,9 @@ async def set_bot_access(
     used. Use ``public`` without IDs. For ``custom``, pass the
     comma-separated base audience chosen by the user.
     """
-    user_id = str(config["configurable"].get("user_id", "")).strip()
+    telegram_chat_id = str(config["configurable"]["telegram_chat_id"]).strip()
     if mode == "only_me":
-        allowed_telegram_ids = user_id
+        allowed_telegram_ids = telegram_chat_id
     if mode in {"only_me", "custom"} and not allowed_telegram_ids.strip():
         return "Error: a private bot needs at least one Telegram ID in its audience."
 

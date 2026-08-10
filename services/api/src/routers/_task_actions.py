@@ -17,6 +17,7 @@ from ..dependencies import get_redis_client
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
+from ._recipients import resolve_project_chat_id
 from ._task_helpers import create_status_event, get_task, to_read, validate_transition
 
 logger = structlog.get_logger()
@@ -245,7 +246,12 @@ async def spawn_worker(
     msg = EngineeringMessage(
         task_id=run_id,
         project_id=str(task.project_id),
-        user_id="",
+        telegram_chat_id=await resolve_project_chat_id(
+            db,
+            task.project_id,
+            event="worker_spawned",
+            story_id=task.story_id or "",
+        ),
         action=task.type or "feature",
         description=body.description or task.description,
         planning_task_id=task.id,

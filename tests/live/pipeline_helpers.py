@@ -180,7 +180,7 @@ def api_client_as_unscoped_observer(**kwargs) -> httpx.AsyncClient:
     stricter contract, and the difference is load-bearing: list_runs narrows its
     result to the caller's own runs the moment it sees a non-admin X-Telegram-ID,
     and a valid internal key does not lift that narrowing. Deploy and QA runs have
-    no user_id, so a user header here makes them invisible — the 2026-07-16
+    no telegram_chat_id, so a user header here makes them invisible — the 2026-07-16
     blindness that hotfix #232 repaired. The invariant is asserted, not merely
     documented, so it cannot drift back in.
     """
@@ -365,7 +365,7 @@ def trigger_scaffold(ctx: dict) -> None:
     msg = {
         "project_id": ctx["project_id"],
         "repository_id": ctx["repo_id"],
-        "user_id": "live-test",
+        "telegram_chat_id": "live-test",
         "template_repo": TEMPLATE_REPO,
         "template_ref": TEMPLATE_REF,
         "project_name": ctx["project_name"],
@@ -748,9 +748,9 @@ def record_env_contract(
 def require_unscoped_run_observer(api_internal: httpx.AsyncClient) -> None:
     """Reject a run-observing client that authenticates as a user.
 
-    list_runs narrows its result to ``Run.user_id == caller`` for every non-admin
+    list_runs narrows its result to ``Run.telegram_chat_id == caller`` for every non-admin
     ``X-Telegram-ID`` it sees, and a valid internal key does not lift that
-    narrowing. Deploy and QA producers can create runs with no user_id, so a
+    narrowing. Deploy and QA producers can create runs with no telegram_chat_id, so a
     user-scoped client is answered `[]` for them no matter which filter it passes.
 
     On 2026-07-16 that silently cost the mega a 420s wait for the already
@@ -761,7 +761,7 @@ def require_unscoped_run_observer(api_internal: httpx.AsyncClient) -> None:
         raise RuntimeError(
             f"runs must be observed without {USER_AUTH_HEADER}: list_runs narrows "
             "its result to runs the non-admin harness user owns, while internal "
-            "deploy and QA runs can have no user_id"
+            "deploy and QA runs can have no telegram_chat_id"
         )
 
 

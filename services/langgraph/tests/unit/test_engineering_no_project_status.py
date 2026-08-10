@@ -17,7 +17,7 @@ def _make_job_data(**overrides):
     base = {
         "task_id": "eng-test-1",
         "project_id": "proj-1",
-        "user_id": "123",
+        "telegram_chat_id": "123",
         "callback_stream": "cb:test",
         "action": "feature",
         "description": "add a button",

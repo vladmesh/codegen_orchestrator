@@ -72,7 +72,7 @@ class TestReadPOResponse:
     async def test_returns_data_on_response(self):
         """Should return response data when available."""
         mock_redis = AsyncMock()
-        response_data = {"text": "Hello!", "user_id": "123"}
+        response_data = {"text": "Hello!", "telegram_chat_id": "123"}
         mock_redis.xread = AsyncMock(return_value=[("po:response:abc", [("1-0", response_data)])])
 
         result = await _read_po_response(mock_redis, "po:response:abc", timeout_s=5.0)
@@ -105,7 +105,7 @@ class TestReadPOResponse:
     async def test_retries_on_transient_error(self):
         """Should retry on transient Redis errors."""
         mock_redis = AsyncMock()
-        response_data = {"text": "recovered", "user_id": "123"}
+        response_data = {"text": "recovered", "telegram_chat_id": "123"}
         mock_redis.xread = AsyncMock(
             side_effect=[
                 ConnectionError("Redis gone"),
@@ -125,7 +125,7 @@ class TestSendToPOAndWait:
     @pytest.mark.asyncio
     async def test_successful_response(self, mock_stream_client, mock_bot):
         """Should return response text on success."""
-        response_data = {"text": "Project created!", "user_id": "42"}
+        response_data = {"text": "Project created!", "telegram_chat_id": "42"}
         mock_stream_client.redis.xread = AsyncMock(
             return_value=[("po:response:test-id", [("1-0", response_data)])]
         )
@@ -136,7 +136,7 @@ class TestSendToPOAndWait:
 
             result = await _send_to_po_and_wait(
                 client=mock_stream_client,
-                user_id=42,
+                telegram_chat_id=42,
                 text="Create a blog",
                 bot=mock_bot,
                 chat_id=42,
@@ -147,14 +147,14 @@ class TestSendToPOAndWait:
     @pytest.mark.asyncio
     async def test_message_format_plain_fields(self, mock_stream_client, mock_bot):
         """Should send plain fields to po:input (not JSON-wrapped)."""
-        response_data = {"text": "ok", "user_id": "42"}
+        response_data = {"text": "ok", "telegram_chat_id": "42"}
         mock_stream_client.redis.xread = AsyncMock(
             return_value=[("po:response:test-id", [("1-0", response_data)])]
         )
 
         await _send_to_po_and_wait(
             client=mock_stream_client,
-            user_id=42,
+            telegram_chat_id=42,
             text="hello",
             bot=mock_bot,
             chat_id=42,
@@ -167,21 +167,21 @@ class TestSendToPOAndWait:
         assert stream_name == "po:input"
         assert fields["type"] == "user_message"
         assert fields["text"] == "hello"
-        assert fields["user_id"] == "42"
+        assert fields["telegram_chat_id"] == "42"
         assert "request_id" in fields
         assert "timestamp" in fields
 
     @pytest.mark.asyncio
     async def test_message_includes_user_name(self, mock_stream_client, mock_bot):
         """Should include user_name in published fields."""
-        response_data = {"text": "ok", "user_id": "42"}
+        response_data = {"text": "ok", "telegram_chat_id": "42"}
         mock_stream_client.redis.xread = AsyncMock(
             return_value=[("po:response:test-id", [("1-0", response_data)])]
         )
 
         await _send_to_po_and_wait(
             client=mock_stream_client,
-            user_id=42,
+            telegram_chat_id=42,
             text="hello",
             bot=mock_bot,
             chat_id=42,
@@ -197,7 +197,7 @@ class TestSendToPOAndWait:
         """Should raise RuntimeError when PO returns error."""
         error_data = {
             "text": "An error occurred, please try again.",
-            "user_id": "42",
+            "telegram_chat_id": "42",
             "error": "true",
         }
         mock_stream_client.redis.xread = AsyncMock(
@@ -207,7 +207,7 @@ class TestSendToPOAndWait:
         with pytest.raises(RuntimeError, match="An error occurred"):
             await _send_to_po_and_wait(
                 client=mock_stream_client,
-                user_id=42,
+                telegram_chat_id=42,
                 text="hello",
                 bot=mock_bot,
                 chat_id=42,
@@ -224,7 +224,7 @@ class TestSendToPOAndWait:
         ):
             await _send_to_po_and_wait(
                 client=mock_stream_client,
-                user_id=42,
+                telegram_chat_id=42,
                 text="hello",
                 bot=mock_bot,
                 chat_id=42,
@@ -233,14 +233,14 @@ class TestSendToPOAndWait:
     @pytest.mark.asyncio
     async def test_stream_cleanup_after_success(self, mock_stream_client, mock_bot):
         """Should delete response stream after reading."""
-        response_data = {"text": "done", "user_id": "42"}
+        response_data = {"text": "done", "telegram_chat_id": "42"}
         mock_stream_client.redis.xread = AsyncMock(
             return_value=[("po:response:test-id", [("1-0", response_data)])]
         )
 
         await _send_to_po_and_wait(
             client=mock_stream_client,
-            user_id=42,
+            telegram_chat_id=42,
             text="hello",
             bot=mock_bot,
             chat_id=42,
@@ -254,7 +254,7 @@ class TestSendToPOAndWait:
     @pytest.mark.asyncio
     async def test_stream_cleanup_after_error(self, mock_stream_client, mock_bot):
         """Should delete response stream even after error."""
-        error_data = {"text": "error", "user_id": "42", "error": "true"}
+        error_data = {"text": "error", "telegram_chat_id": "42", "error": "true"}
         mock_stream_client.redis.xread = AsyncMock(
             return_value=[("po:response:test-id", [("1-0", error_data)])]
         )
@@ -262,7 +262,7 @@ class TestSendToPOAndWait:
         with pytest.raises(RuntimeError):
             await _send_to_po_and_wait(
                 client=mock_stream_client,
-                user_id=42,
+                telegram_chat_id=42,
                 text="hello",
                 bot=mock_bot,
                 chat_id=42,
@@ -273,7 +273,7 @@ class TestSendToPOAndWait:
     @pytest.mark.asyncio
     async def test_empty_response_raises(self, mock_stream_client, mock_bot):
         """Should raise RuntimeError when PO returns empty text."""
-        empty_data = {"text": "", "user_id": "42"}
+        empty_data = {"text": "", "telegram_chat_id": "42"}
         mock_stream_client.redis.xread = AsyncMock(
             return_value=[("po:response:test-id", [("1-0", empty_data)])]
         )
@@ -281,7 +281,7 @@ class TestSendToPOAndWait:
         with pytest.raises(RuntimeError, match="empty response"):
             await _send_to_po_and_wait(
                 client=mock_stream_client,
-                user_id=42,
+                telegram_chat_id=42,
                 text="hello",
                 bot=mock_bot,
                 chat_id=42,
@@ -290,7 +290,7 @@ class TestSendToPOAndWait:
     @pytest.mark.asyncio
     async def test_typing_indicator_started_and_cancelled(self, mock_stream_client, mock_bot):
         """Should start typing task and cancel it after response."""
-        response_data = {"text": "done", "user_id": "42"}
+        response_data = {"text": "done", "telegram_chat_id": "42"}
 
         # Delay xread response so typing task has time to fire
         async def delayed_xread(*args, **kwargs):
@@ -302,7 +302,7 @@ class TestSendToPOAndWait:
         with patch("src.main.TYPING_INTERVAL_S", 0.01):
             await _send_to_po_and_wait(
                 client=mock_stream_client,
-                user_id=42,
+                telegram_chat_id=42,
                 text="hello",
                 bot=mock_bot,
                 chat_id=42,

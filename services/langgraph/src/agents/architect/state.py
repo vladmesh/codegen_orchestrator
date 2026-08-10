@@ -12,4 +12,4 @@ class ArchitectState(AgentState):
 
     story_id: str
     project_id: str
-    user_id: str
+    telegram_chat_id: str

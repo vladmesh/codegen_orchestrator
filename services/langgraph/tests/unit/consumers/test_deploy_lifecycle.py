@@ -20,7 +20,7 @@ def _make_job_data(*, action: str, **overrides) -> dict:
     defaults = {
         "task_id": "deploy-lifecycle-1",
         "project_id": "proj-1",
-        "user_id": "",
+        "telegram_chat_id": "987654321",
         "story_id": "",
         "triggered_by": DeployTrigger.ENGINEERING.value,
         "action": action,

@@ -17,43 +17,43 @@ from shared.contracts.queues.po import (
 
 class TestPOUserMessage:
     def test_defaults(self):
-        msg = POUserMessage(text="hi", user_id="42", request_id="abc")
+        msg = POUserMessage(text="hi", telegram_chat_id="42", request_id="abc")
         assert msg.type == "user_message"
         assert msg.text == "hi"
         assert msg.timestamp  # auto-filled
 
     def test_user_name_default_empty(self):
-        msg = POUserMessage(text="hi", user_id="42", request_id="abc")
+        msg = POUserMessage(text="hi", telegram_chat_id="42", request_id="abc")
         assert msg.user_name == ""
 
     def test_user_name_set(self):
-        msg = POUserMessage(text="hi", user_id="42", request_id="abc", user_name="Vlad")
+        msg = POUserMessage(text="hi", telegram_chat_id="42", request_id="abc", user_name="Vlad")
         assert msg.user_name == "Vlad"
 
     def test_user_name_in_flat_fields(self):
-        msg = POUserMessage(text="hi", user_id="42", request_id="abc", user_name="Vlad")
+        msg = POUserMessage(text="hi", telegram_chat_id="42", request_id="abc", user_name="Vlad")
         fields = to_flat_fields(msg)
         assert fields["user_name"] == "Vlad"
 
     def test_user_name_empty_omitted_from_flat_fields(self):
-        msg = POUserMessage(text="hi", user_id="42", request_id="abc")
+        msg = POUserMessage(text="hi", telegram_chat_id="42", request_id="abc")
         fields = to_flat_fields(msg)
         assert "user_name" not in fields
 
     def test_round_trip(self):
         msg = POUserMessage(
-            text="hello", user_id="1", request_id="r1", timestamp="2025-01-01T00:00:00"
+            text="hello", telegram_chat_id="1", request_id="r1", timestamp="2025-01-01T00:00:00"
         )
         fields = to_flat_fields(msg)
         restored = from_flat_fields(fields, POUserMessage)
         assert restored.text == msg.text
-        assert restored.user_id == msg.user_id
+        assert restored.telegram_chat_id == msg.telegram_chat_id
         assert restored.request_id == msg.request_id
 
     def test_round_trip_with_user_name(self):
         msg = POUserMessage(
             text="hello",
-            user_id="1",
+            telegram_chat_id="1",
             request_id="r1",
             timestamp="2025-01-01T00:00:00",
             user_name="Vlad",
@@ -74,7 +74,7 @@ class TestPOSystemEvent:
             event="completed",
             text="Task finished",
             task_id="t1",
-            user_id="42",
+            telegram_chat_id="42",
             project_id="00000000-0000-0000-0000-000000000001",
             timestamp="2025-01-01T00:00:00+00:00",
         )
@@ -87,21 +87,23 @@ class TestPOSystemEvent:
         msg = POSystemEvent(event="progress", text="building")
         fields = to_flat_fields(msg)
         assert "task_id" not in fields
-        assert "user_id" not in fields
+        assert "telegram_chat_id" not in fields
         assert "project_id" not in fields
 
 
 class TestPOReminderMessage:
     def test_defaults(self):
-        msg = POReminderMessage(text="check status", user_id="42")
+        msg = POReminderMessage(text="check status", telegram_chat_id="42")
         assert msg.type == "reminder"
 
     def test_round_trip(self):
-        msg = POReminderMessage(text="follow up", user_id="99", timestamp="2025-06-01T12:00:00")
+        msg = POReminderMessage(
+            text="follow up", telegram_chat_id="99", timestamp="2025-06-01T12:00:00"
+        )
         fields = to_flat_fields(msg)
         restored = from_flat_fields(fields, POReminderMessage)
         assert restored.text == msg.text
-        assert restored.user_id == msg.user_id
+        assert restored.telegram_chat_id == msg.telegram_chat_id
 
 
 class TestPOInputDiscriminator:
@@ -109,7 +111,7 @@ class TestPOInputDiscriminator:
 
     def test_user_message_dispatch(self):
         result = self.adapter.validate_python(
-            {"type": "user_message", "text": "hi", "user_id": "1", "request_id": "r1"}
+            {"type": "user_message", "text": "hi", "telegram_chat_id": "1", "request_id": "r1"}
         )
         assert isinstance(result, POUserMessage)
 
@@ -121,7 +123,7 @@ class TestPOInputDiscriminator:
 
     def test_reminder_dispatch(self):
         result = self.adapter.validate_python(
-            {"type": "reminder", "text": "check", "user_id": "42"}
+            {"type": "reminder", "text": "check", "telegram_chat_id": "42"}
         )
         assert isinstance(result, POReminderMessage)
 
@@ -132,15 +134,15 @@ class TestPOInputDiscriminator:
 
 class TestPOResponse:
     def test_basic(self):
-        resp = POResponse(text="answer", user_id="42")
+        resp = POResponse(text="answer", telegram_chat_id="42")
         assert resp.error is None
 
     def test_with_error(self):
-        resp = POResponse(text="oops", user_id="42", error="true")
+        resp = POResponse(text="oops", telegram_chat_id="42", error="true")
         assert resp.error == "true"
 
     def test_round_trip(self):
-        resp = POResponse(text="answer", user_id="42")
+        resp = POResponse(text="answer", telegram_chat_id="42")
         fields = to_flat_fields(resp)
         restored = from_flat_fields(fields, POResponse)
         assert restored.text == resp.text
@@ -148,20 +150,20 @@ class TestPOResponse:
 
 class TestPOProactiveMessage:
     def test_basic(self):
-        msg = POProactiveMessage(text="notification", user_id="42")
+        msg = POProactiveMessage(text="notification", telegram_chat_id="42")
         assert msg.text == "notification"
 
     def test_round_trip(self):
-        msg = POProactiveMessage(text="update", user_id="99")
+        msg = POProactiveMessage(text="update", telegram_chat_id="99")
         fields = to_flat_fields(msg)
         restored = from_flat_fields(fields, POProactiveMessage)
         assert restored.text == msg.text
-        assert restored.user_id == msg.user_id
+        assert restored.telegram_chat_id == msg.telegram_chat_id
 
 
 class TestFlatFieldHelpers:
     def test_to_flat_fields_all_strings(self):
-        msg = POUserMessage(text="hi", user_id="42", request_id="r1", timestamp="ts")
+        msg = POUserMessage(text="hi", telegram_chat_id="42", request_id="r1", timestamp="ts")
         fields = to_flat_fields(msg)
         for v in fields.values():
             assert isinstance(v, str)

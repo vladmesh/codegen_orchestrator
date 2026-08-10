@@ -20,7 +20,7 @@ def scaffold_msg():
     return {
         "project_id": "proj-123",
         "repository_id": "repo-456",
-        "user_id": "user-1",
+        "telegram_chat_id": "987654321",
         "template_repo": "/data/service-template",
         "template_ref": "0.3.0",
         "project_name": "my-project",
@@ -192,7 +192,7 @@ class TestScaffoldInjectionGuard:
         with patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_exec):
             result = await run_scaffold(
                 **(
-                    {key: value for key, value in scaffold_msg.items() if key != "user_id"}
+                    {key: value for key, value in scaffold_msg.items() if key != "telegram_chat_id"}
                     | {
                         "repository_id": "repo with spaces",
                         "template_repo": "template repo;$(id)",
@@ -224,7 +224,7 @@ class TestScaffoldInjectionGuard:
         with patch("src.scaffold.asyncio.create_subprocess_exec") as mock_exec:
             traversal = await run_scaffold(
                 **(
-                    {key: value for key, value in scaffold_msg.items() if key != "user_id"}
+                    {key: value for key, value in scaffold_msg.items() if key != "telegram_chat_id"}
                     | {"repository_id": "../outside"}
                 ),
                 repo_full_name="org/project",
@@ -268,7 +268,7 @@ class TestScaffoldInjectionGuard:
             patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_exec),
         ):
             result = await run_scaffold(
-                **{key: value for key, value in scaffold_msg.items() if key != "user_id"},
+                **{key: value for key, value in scaffold_msg.items() if key != "telegram_chat_id"},
                 repo_full_name="org/project",
                 github_token=sentinel,
                 settings=settings,

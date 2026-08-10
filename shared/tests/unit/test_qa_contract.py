@@ -15,14 +15,14 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
             acceptance_criteria=CRITERIA,
         )
         assert msg.story_id == "story-abc"
         assert msg.project_id == "proj-123"
-        assert msg.user_id == "user-1"
+        assert msg.telegram_chat_id == "user-1"
         assert msg.deployed_url == "https://example.com"
         assert msg.application_id == 17
 
@@ -30,7 +30,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
             acceptance_criteria=CRITERIA,
@@ -46,7 +46,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
             acceptance_criteria=CRITERIA,
@@ -58,7 +58,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
             acceptance_criteria=CRITERIA,
@@ -70,7 +70,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
             acceptance_criteria=CRITERIA,
@@ -96,7 +96,7 @@ class TestQAMessage:
             QAMessage(
                 story_id="story-abc",
                 project_id="proj-123",
-                user_id="user-1",
+                telegram_chat_id="user-1",
                 deployed_url="https://example.com",
                 application_id=17,
             )
@@ -107,7 +107,7 @@ class TestQAMessage:
             QAMessage(
                 story_id="story-abc",
                 project_id="proj-123",
-                user_id="user-1",
+                telegram_chat_id="user-1",
                 deployed_url="https://example.com",
                 application_id=17,
                 acceptance_criteria="",
@@ -144,7 +144,7 @@ class TestQAMessageRunId:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
             acceptance_criteria=CRITERIA,
@@ -156,7 +156,7 @@ class TestQAMessageRunId:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
             acceptance_criteria=CRITERIA,
@@ -172,7 +172,7 @@ class TestQAMessageOptionalStoryId:
         """QAMessage story_id defaults to empty string for standalone triggers."""
         msg = QAMessage(
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
             acceptance_criteria=CRITERIA,
@@ -183,7 +183,7 @@ class TestQAMessageOptionalStoryId:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
             acceptance_criteria=CRITERIA,
@@ -194,7 +194,7 @@ class TestQAMessageOptionalStoryId:
         """QAMessage without story_id survives serialization."""
         msg = QAMessage(
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
             acceptance_criteria=CRITERIA,
@@ -207,7 +207,7 @@ class TestQAMessageOptionalStoryId:
         """QAMessage works when story_id is missing from input dict."""
         data = {
             "project_id": "proj-123",
-            "user_id": "user-1",
+            "telegram_chat_id": "user-1",
             "deployed_url": "https://example.com",
             "application_id": 17,
             "acceptance_criteria": CRITERIA,

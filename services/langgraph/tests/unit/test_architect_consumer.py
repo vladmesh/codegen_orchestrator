@@ -40,7 +40,7 @@ class TestProcessArchitectJob:
         msg = ArchitectMessage(
             story_id="story-abc",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
         )
         return msg.model_dump(mode="json")
 
@@ -133,7 +133,7 @@ class TestProcessArchitectJob:
         reopen_data = ArchitectMessage(
             story_id="story-reopen",
             project_id="proj-123",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             is_reopen=True,
             user_report="Images broken on mobile",
         ).model_dump(mode="json")
@@ -256,7 +256,7 @@ class TestProcessArchitectJobIntegration:
         msg = ArchitectMessage(
             story_id="story-int",
             project_id="proj-int",
-            user_id="user-1",
+            telegram_chat_id="user-1",
         )
         return msg.model_dump(mode="json")
 

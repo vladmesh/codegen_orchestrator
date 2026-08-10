@@ -39,7 +39,7 @@ async def test_deploy_failure_stores_retry_outcome(mock_redis, mock_api):
         story_id="story-1",
         error_msg="SSH pre-check failed",
         callback_stream="",
-        user_id="12345",
+        telegram_chat_id="12345",
         redis=mock_redis,
     )
 
@@ -60,7 +60,7 @@ async def test_deploy_failure_stores_give_up_outcome(mock_redis, mock_api):
         story_id="story-1",
         error_msg="port already allocated",
         callback_stream="",
-        user_id="12345",
+        telegram_chat_id="12345",
         redis=mock_redis,
         deploy_outcome=DeployOutcome.GIVE_UP,
     )
@@ -81,7 +81,7 @@ async def test_deploy_failure_stores_deploy_fix_attempt(mock_redis, mock_api):
         story_id="story-1",
         error_msg="test error",
         callback_stream="",
-        user_id="12345",
+        telegram_chat_id="12345",
         redis=mock_redis,
         deploy_fix_attempt=2,
     )
@@ -102,7 +102,7 @@ async def test_deploy_failure_does_not_transition_story(mock_redis, mock_api):
         story_id="story-1",
         error_msg="test error",
         callback_stream="",
-        user_id="12345",
+        telegram_chat_id="12345",
         redis=mock_redis,
     )
 

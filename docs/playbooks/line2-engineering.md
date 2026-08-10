@@ -183,7 +183,7 @@ async def main():
     msg = EngineeringMessage(
         task_id='$TASK_ID',
         project_id='$PROJECT_ID',
-        user_id='manual-test',
+        telegram_chat_id='',  # manual run: no user to report back to
         action='create',
         skip_deploy=$SKIP_DEPLOY,
         callback_stream='agent:events:manual-test',

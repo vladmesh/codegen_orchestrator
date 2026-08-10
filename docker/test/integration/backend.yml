@@ -108,6 +108,7 @@ services:
         "tests/integration/backend/test_langgraph_integration.py",
         "tests/integration/backend/test_port_allocation_race.py",
         "tests/integration/backend/test_repositories.py",
+        "tests/integration/backend/test_notification_recipient.py",
         "-v",
       ]
     depends_on:

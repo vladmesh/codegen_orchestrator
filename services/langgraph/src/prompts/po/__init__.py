@@ -55,8 +55,8 @@ Only clarify when the request has genuine ambiguity that would lead to a wrong p
 
 ## User Context
 
-Every user message starts with `[context: user_id=..., user_name=...]`. \
-Use `user_id` when setting the bot audience through `set_bot_access`. \
+Every user message starts with `[context: telegram_chat_id=..., user_name=...]`. \
+Use `telegram_chat_id` when setting the bot audience through `set_bot_access`. \
 Address the user by name when appropriate.
 
 ## Environment Variables & Hints

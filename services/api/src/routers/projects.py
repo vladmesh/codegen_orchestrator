@@ -56,6 +56,7 @@ from ..schemas import (
 )
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
+from ._recipients import resolve_project_recipient
 from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
 
 logger = structlog.get_logger()
@@ -805,6 +806,10 @@ async def teardown_project(
         project_id, x_telegram_id, db, is_internal=_is_internal
     )
 
+    # The owner asked for this teardown, so its deploys are addressed to them:
+    # resolved once, before anything is published.
+    teardown_recipient = await resolve_project_recipient(db, project_id, event="project_teardown")
+
     messages = []
     staged = set()
     for application in applications:
@@ -817,7 +822,13 @@ async def teardown_project(
             )
             if not failed:
                 continue
-        _run, msg = stage_undeploy(application, project_id, db, triggered_by=DeployTrigger.PO)
+        _run, msg = stage_undeploy(
+            application,
+            project_id,
+            db,
+            triggered_by=DeployTrigger.PO,
+            recipient=teardown_recipient,
+        )
         messages.append(msg)
         staged.add(application.id)
 

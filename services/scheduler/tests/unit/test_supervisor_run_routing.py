@@ -6,6 +6,7 @@ Shared DTO factories live in `_run_routing_factories`.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, patch
 
@@ -23,6 +24,7 @@ from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.user import UserDTO
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 from shared.queues import DEPLOY_QUEUE, PO_INPUT_QUEUE
@@ -36,6 +38,16 @@ _WAITING_SECRET_RESULT = {
 }
 
 
+def _resolved_user(user_id: int) -> UserDTO:
+    """A user whose Telegram chat id is deliberately nothing like their User.id."""
+    return UserDTO(
+        id=user_id,
+        telegram_id=900000000 + user_id,
+        is_admin=False,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
 @pytest.fixture
 def api_client():
     client = AsyncMock()
@@ -43,6 +55,9 @@ def api_client():
     client.get_primary_repository.return_value = _make_repo()
     # Most stories borrow no temporary access; the ones that do say so.
     client.get_live_temporary_access_grant_for_run.return_value = None
+    # The owner's internal id is not their Telegram chat: resolution goes
+    # through the users API, and the two numbers must never be confused.
+    client.get_user.side_effect = _resolved_user
     return client
 
 
@@ -631,7 +646,9 @@ class TestSuperviseDeployingStories:
         assert len(po_calls) == 1
         fields = po_calls[0][0][1]
         assert fields["event"] == "story_waiting_user_secret"
-        assert fields["user_id"] == "555"
+        # owner_id 555 is a User.id; the event carries the chat it resolves to.
+        assert fields["telegram_chat_id"] == "900000555"
+        assert fields["owner_user_id"] == "555"
         assert "TELEGRAM_BOT_TOKEN" in fields["text"]
         assert "Telegram bot token" in fields["text"]
 
@@ -1003,7 +1020,8 @@ class TestSuperviseTestingStories:
         api_client.fail_story.assert_not_called()
         event = redis_client.publish_flat.await_args.args[1]
         assert event["event"] == "story_quarantined"
-        assert event["user_id"] == "100713"
+        assert event["telegram_chat_id"] == "900100713"
+        assert event["owner_user_id"] == "100713"
 
     @pytest.mark.asyncio
     async def test_error_quarantines_application(self, api_client, redis_client):

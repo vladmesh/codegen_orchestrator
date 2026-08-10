@@ -2,6 +2,36 @@
 
 ## 2026-08-10
 
+- Separated the internal user id from the Telegram chat id in every queue and PO
+  contract. `user_id` — which meant a Telegram id from the bot and a `User.id`
+  from the scheduler — is gone; messages now carry `telegram_chat_id` (the
+  destination) and, where it matters, `owner_user_id` (identification only).
+  Scheduler and API producers resolve `Project.owner_id` → `User.telegram_id`
+  *before* publishing, including the sites that used to publish `user_id=""`
+  with a "StoryDTO has no user_id field" comment, and a recipient that cannot be
+  resolved raises an admin alert instead of vanishing. PO keys its thread on the
+  chat (`po-chat-{id}`), so a user's message and a pipeline event about their
+  project share one conversation, and it refuses to answer a user-facing event
+  that arrives without a recipient. The bot's proactive delivery moved to
+  `telegram_bot/src/proactive.py`: bounded retries, distinguishable
+  success/exhaustion logs, and an admin alert naming story, project and event
+  when the attempts run out.
+
+- Made that separation fail closed. A payload still carrying the removed
+  `user_id` is now rejected by every addressable contract instead of validating
+  with its recipient silently dropped; the consumers that see the rejection log
+  it and alert admins with story, project and event
+  (`shared/contracts/recipient.py`). `DeployMessage` requires either
+  `telegram_chat_id` or an explicit `unaddressed_reason`, so admin-initiated
+  application actions and temporary-access deploys state why they report to
+  nobody rather than leaving an empty field; an owner-requested project teardown
+  resolves the owner's chat like any other user-facing lifecycle message. The
+  bot's proactive listener no longer auto-acks: it claims the pending entries of
+  its previous incarnation on startup and bounds retries by the consumer group's
+  delivery count, so a delivery interrupted by a restart is retried and
+  eventually alerted about instead of sitting in the PEL forever. The API's
+  unresolved-recipient alert now names the story as well as the project.
+
 - Restricted live cleanup and write-ahead deployment recovery to API server
   rows authorized by the existing managed Time4VPS provisioning policy.
   Unrelated inventory rows are logged and skipped before SSH-key retrieval or

@@ -9,6 +9,10 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 import structlog
 
+from shared.contracts.recipient import (
+    alert_legacy_recipient_field,
+    has_legacy_recipient_field,
+)
 from shared.diagnostics import safe_validation_errors
 
 try:
@@ -136,6 +140,20 @@ class RedisStreamClient:
         """Acknowledge a message, removing it from the pending entries list (PEL)."""
         await self.redis.xack(stream, group, message_id)
         logger.debug("message_acked", stream=stream, message_id=message_id)
+
+    async def delivery_count(self, stream: str, group: str, message_id: str) -> int:
+        """How many times this group has been handed *message_id*.
+
+        Read from the group's PEL, so the count survives a consumer restart:
+        a handler that must bound its attempts across restarts cannot keep the
+        tally in memory. Returns 0 once the entry is acked and gone from the PEL.
+        """
+        entries = await self.redis.xpending_range(
+            stream, group, min=message_id, max=message_id, count=1
+        )
+        if not entries:
+            return 0
+        return int(entries[0]["times_delivered"])
 
     async def ensure_consumer_group(self, stream: str, group: str) -> None:
         """Ensure a consumer group exists for the stream.
@@ -387,6 +405,14 @@ class RedisStreamClient:
                     entry_id=message_id,
                     errors=safe_validation_errors(e),
                 )
+                # A message still addressed by the removed ``user_id`` field is
+                # not just malformed: somebody's notification has nowhere to go.
+                # Reject it loudly instead of letting it pass as unaddressable
+                # work.
+                if has_legacy_recipient_field(data):
+                    await alert_legacy_recipient_field(
+                        source=stream, entry_id=message_id, data=data
+                    )
                 await self._terminal_ack(stream, group, message_id)
                 continue
 

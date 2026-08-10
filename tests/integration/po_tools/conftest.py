@@ -90,6 +90,11 @@ async def test_user(api_client):
     return TEST_TELEGRAM_ID
 
 
-def make_config(user_id: str | int = TEST_TELEGRAM_ID) -> dict:
+def make_config(telegram_chat_id: str | int = TEST_TELEGRAM_ID) -> dict:
     """Create a RunnableConfig for PO tool invocation."""
-    return {"configurable": {"thread_id": f"po-user-{user_id}", "user_id": str(user_id)}}
+    return {
+        "configurable": {
+            "thread_id": f"po-chat-{telegram_chat_id}",
+            "telegram_chat_id": str(telegram_chat_id),
+        }
+    }

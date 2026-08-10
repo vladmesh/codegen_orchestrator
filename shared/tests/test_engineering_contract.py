@@ -8,7 +8,7 @@ class TestEngineeringMessage:
         msg = EngineeringMessage(
             task_id="eng-123",
             project_id="proj-456",
-            user_id="user-1",
+            telegram_chat_id="user-1",
         )
         assert msg.branch is None
 
@@ -16,7 +16,7 @@ class TestEngineeringMessage:
         msg = EngineeringMessage(
             task_id="eng-123",
             project_id="proj-456",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             branch="story/story-abc",
         )
         assert msg.branch == "story/story-abc"
@@ -25,7 +25,7 @@ class TestEngineeringMessage:
         msg = EngineeringMessage(
             task_id="eng-123",
             project_id="proj-456",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             branch="story/story-abc",
         )
         data = msg.model_dump()
@@ -37,7 +37,7 @@ class TestEngineeringMessage:
         data = {
             "task_id": "eng-123",
             "project_id": "proj-456",
-            "user_id": "user-1",
+            "telegram_chat_id": "user-1",
         }
         msg = EngineeringMessage(**data)
         assert msg.branch is None

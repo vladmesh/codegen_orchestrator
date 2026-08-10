@@ -63,7 +63,7 @@ class TestTaskStatusUpdates:
                 callback_stream=None,
                 redis=mock_redis,
                 skip_deploy=False,
-                user_id="u-1",
+                telegram_chat_id="u-1",
                 action="feature",
                 planning_task_id="task-42",
             )
@@ -105,7 +105,7 @@ class TestTaskStatusUpdates:
                 callback_stream=None,
                 redis=mock_redis,
                 skip_deploy=False,
-                user_id="u-1",
+                telegram_chat_id="u-1",
                 action="feature",
                 planning_task_id="task-42",
             )
@@ -137,7 +137,7 @@ class TestTaskStatusUpdates:
                 callback_stream=None,
                 redis=mock_redis,
                 skip_deploy=False,
-                user_id="u-1",
+                telegram_chat_id="u-1",
                 action="feature",
                 # No planning_task_id
             )

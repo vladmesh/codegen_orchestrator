@@ -4,11 +4,17 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+from shared.contracts.recipient import RejectsLegacyRecipientField
 from shared.contracts.vocab import ResultStatus
 
 
-class QueueMeta(BaseModel):
-    """Metadata for all queue messages."""
+class QueueMeta(RejectsLegacyRecipientField):
+    """Metadata for all queue messages.
+
+    Inherits the rejection of the removed ``user_id`` field: no queue message
+    carries a recipient under that name any more, and one that arrives with it
+    is refused rather than accepted with its recipient dropped.
+    """
 
     version: Literal["1"] = "1"
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))

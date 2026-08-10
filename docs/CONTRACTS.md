@@ -218,7 +218,7 @@ sequenceDiagram
     participant WM as worker-manager
 
     User->>TG: "Build me a blog"
-    TG->>Redis: XADD po:input {text, user_id, request_id}
+    TG->>Redis: XADD po:input {text, telegram_chat_id, request_id}
     Redis-->>PO: Consumer reads (po-consumer group)
 
     Note over PO: ReactAgent tool calls
@@ -266,7 +266,7 @@ sequenceDiagram
     participant GH as GitHub API
 
     User->>TG: "Deploy project X"
-    TG->>Redis: XADD po:input {text, user_id, request_id}
+    TG->>Redis: XADD po:input {text, telegram_chat_id, request_id}
     Redis-->>PO: Consumer reads (po-consumer group)
     PO->>API: trigger_deploy(project_id)
     PO->>Redis: XADD deploy:queue
@@ -303,7 +303,7 @@ sequenceDiagram
     GH-->>SCH: merged PR found
     SCH->>API: Transition story → deploying
     SCH->>DB: Create Run (type=deploy)
-    SCH->>Redis: XADD deploy:queue {task_id, project_id, user_id, story_id}
+    SCH->>Redis: XADD deploy:queue {task_id, project_id, telegram_chat_id, story_id}
     Redis-->>DW: Consumer reads deploy:queue
     DW->>DW: DevOps Subgraph (EnvironmentContractLoader → SecretResolver → Deployer)
     DW->>API: PATCH run.result = DeployOutcome (SUCCESS/CODE_FIX/RETRY/GIVE_UP)
@@ -895,7 +895,7 @@ class ScaffoldMessage(BaseMessage):
     """
     project_id: str
     repository_id: str
-    user_id: str
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     template_repo: str    # e.g. "gh:vladmesh/service-template"
     project_name: str     # sanitized name for copier
     modules: str          # comma-separated, e.g. "backend,tg_bot"
@@ -922,7 +922,7 @@ class ArchitectMessage(BaseMessage):
     """Trigger story decomposition into tasks."""
     story_id: str
     project_id: str
-    user_id: str
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     is_reopen: bool = False          # True when story is being reopened (not first decomposition)
     user_report: str | None = None   # User feedback on what's wrong (for reopened stories)
 ```
@@ -946,7 +946,7 @@ class EngineeringMessage(BaseMessage):
     """Start engineering task."""
     task_id: str
     project_id: str
-    user_id: str
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     action: ActionType = ActionType.CREATE  # shared.contracts.vocab
     description: str | None = None
     skip_deploy: bool = False
@@ -1013,7 +1013,10 @@ class DeployMessage(BaseMessage):
     """Start deploy task."""
     task_id: str
     project_id: str
-    user_id: str = ""
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
+    # Why this deploy reports to nobody (admin action, temporary-access
+    # machinery). Exactly one of it and telegram_chat_id is set.
+    unaddressed_reason: str = ""
     story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: DeployAction = DeployAction.CREATE
@@ -1201,7 +1204,7 @@ class QAMessage(BaseMessage):
     """Trigger QA testing for a deployed project."""
     story_id: str = ""
     project_id: str
-    user_id: str
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     deployed_url: str
     application_id: int
     acceptance_criteria: str      # resolved by the producer, never by the consumer
@@ -1450,6 +1453,12 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 | `po:proactive` | `tg-bot-proactive` | `POProactiveMessage` | langgraph (PO `notify_user` tool, deploy-worker) | telegram-bot (ProactiveListener) | Proactive messages to users (PO notifications + webhook deploy results) |
 
 > **Transport note:** PO streams use **flat Redis fields** (not JSON `data` wrapper). Use `to_flat_fields()` / `from_flat_fields()` helpers from `shared.contracts.queues.po` for serialization.
+
+**Addressing**: every queue message and PO event names its recipient as `telegram_chat_id` — the Telegram chat the message is delivered to. `Project.owner_id` is an internal `User.id` and addresses nothing, so the producer resolves it (`User.id` → `User.telegram_id`) *before* publishing; the internal id travels beside it as `owner_user_id`, for logs and admin alerts only. A recipient that cannot be resolved raises an admin alert instead of being dropped. `DeployMessage` makes the second case explicit: it carries either `telegram_chat_id` or `unaddressed_reason` (never both, never neither), so an admin-initiated action or temporary-access machinery says *why* it reports to nobody instead of leaving an empty field a forgetful producer would also leave. PO keys its thread on the chat (`po-chat-{telegram_chat_id}`), so a user's own message and a pipeline event about their project land in one conversation.
+
+**The removed `user_id`**: the field that used to mean both a Telegram chat id and a `User.id` is not merely unused — it is rejected. Every addressable contract refuses a payload containing `user_id` (`shared/contracts/recipient.py`), because Pydantic would otherwise accept it and drop the recipient silently, turning somebody's notification into unaddressable work. The consumers that see the rejection (`consume_typed`, the PO consumer, the bot's proactive listener) log it and raise an admin alert naming story, project and event, then ack the entry away instead of retrying something that can never succeed.
+
+**Delivery of `po:proactive`**: the bot consumes without auto-ack and claims the pending entries of its previous incarnation on startup, so a delivery interrupted by a restart is picked up rather than lost. `telegram_bot/src/proactive.py::process_proactive_entry` is the single place that settles an entry: it acks only after the message was delivered or its attempts ran out, and the attempt bound is the group's PEL delivery count, which survives the restart (`PROACTIVE_MAX_ATTEMPTS` inside one delivery, `PROACTIVE_MAX_DELIVERIES` across them). Exhaustion raises an admin alert with story, project and event; success and exhaustion are distinct log events (`proactive_message_sent` / `proactive_message_delivery_exhausted`).
 
 **System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`. User-facing resource lifecycle events are `task_waiting_resources`, `task_impossible_capacity`, and `task_resources_resumed`; the scheduler supplies context, PO writes the user text.
 

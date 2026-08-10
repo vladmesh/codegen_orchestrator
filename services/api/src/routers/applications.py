@@ -43,6 +43,7 @@ from ..schemas.actions import AdminAction
 from ..schemas.repository import RepositoryRead
 from ..schemas.run import RunRead
 from ..utils.telegram_binding import release_bot_binding
+from ._recipients import ProjectRecipient, resolve_project_chat_id
 
 logger = structlog.get_logger()
 
@@ -283,6 +284,16 @@ def _make_deploy_run_id() -> str:
     return f"deploy-{uuid.uuid4().hex[:12]}"
 
 
+# Why an admin action on an application reports to nobody in Telegram: these
+# endpoints act on one deployed application on an operator's request, not on a
+# story the owner asked about, and the operator reads the API response. Stated
+# rather than left as an empty recipient, so it cannot be mistaken for a producer
+# that forgot to resolve one.
+ADMIN_ACTION_UNADDRESSED_REASON = (
+    "admin-initiated application action, reported to the operator that requested it"
+)
+
+
 UNDEPLOYABLE_STATUSES = frozenset(
     {
         ApplicationStatus.RUNNING,
@@ -299,12 +310,17 @@ def stage_undeploy(
     db: AsyncSession,
     *,
     triggered_by: DeployTrigger,
+    recipient: ProjectRecipient,
 ) -> tuple[Run, DeployMessage]:
     """Move an application to undeploying and build the message that tears it down.
 
     Mutates the session without committing and does not publish: the caller owns
     the transaction, and the message must not reach the deploy consumer before the
     Run it names is committed.
+
+    *recipient* is the caller's answer to who hears about this teardown: a
+    teardown the owner asked for carries their chat, an operator's carries the
+    reason it does not.
     """
     application.status = ApplicationStatus.UNDEPLOYING
     run_id = _make_deploy_run_id()
@@ -321,6 +337,8 @@ def stage_undeploy(
     msg = DeployMessage(
         task_id=run_id,
         project_id=str(project_id),
+        telegram_chat_id=recipient.telegram_chat_id,
+        unaddressed_reason=recipient.unaddressed_reason,
         triggered_by=triggered_by,
         action=DeployAction.UNDEPLOY,
         application_id=application.id,
@@ -418,6 +436,7 @@ async def stop_application(
     msg = DeployMessage(
         task_id=run_id,
         project_id=str(repo.project_id),
+        unaddressed_reason=ADMIN_ACTION_UNADDRESSED_REASON,
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.STOP,
         application_id=app.id,
@@ -445,7 +464,13 @@ async def undeploy_application(
             detail=f"Cannot undeploy application in status '{app.status}'.",
         )
 
-    _run, msg = stage_undeploy(app, repo.project_id, db, triggered_by=DeployTrigger.ADMIN)
+    _run, msg = stage_undeploy(
+        app,
+        repo.project_id,
+        db,
+        triggered_by=DeployTrigger.ADMIN,
+        recipient=ProjectRecipient(unaddressed_reason=ADMIN_ACTION_UNADDRESSED_REASON),
+    )
     await db.commit()
     await db.refresh(app)
 
@@ -488,6 +513,7 @@ async def redeploy_application(
     msg = DeployMessage(
         task_id=run_id,
         project_id=str(repo.project_id),
+        unaddressed_reason=ADMIN_ACTION_UNADDRESSED_REASON,
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.CREATE,
         head_sha=head_sha,
@@ -554,7 +580,7 @@ async def run_e2e(
     # Publish QA message
     msg = QAMessage(
         project_id=str(repo.project_id),
-        user_id="",
+        telegram_chat_id=await resolve_project_chat_id(db, repo.project_id, event="qa_run"),
         deployed_url=deployed_url,
         application_id=application_id,
         acceptance_criteria=acceptance_criteria,
@@ -684,6 +710,7 @@ async def create_from_repo(
     msg = DeployMessage(
         task_id=run_id,
         project_id=str(body.project_id),
+        unaddressed_reason=ADMIN_ACTION_UNADDRESSED_REASON,
         triggered_by=DeployTrigger.ADMIN,
         action=DeployAction.CREATE,
         head_sha=head_sha,

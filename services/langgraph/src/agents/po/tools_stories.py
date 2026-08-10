@@ -142,7 +142,7 @@ async def create_story(
         patch_resp.raise_for_status()
 
     # 2. Check if project already has an active story (sequential processing)
-    user_id = config["configurable"].get("user_id", "unknown")
+    telegram_chat_id = config["configurable"]["telegram_chat_id"]
     active_stories = [story for story in project_stories if story.get("status") == "in_progress"]
 
     if active_stories:
@@ -162,7 +162,7 @@ async def create_story(
     arch_msg = ArchitectMessage(
         story_id=story_id,
         project_id=project_id,
-        user_id=user_id,
+        telegram_chat_id=telegram_chat_id,
     )
     await _get_stream_client().publish_message(ARCHITECT_QUEUE, arch_msg)
 
@@ -211,7 +211,7 @@ async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfi
     """
     api = _get_api()
     headers = _user_headers(config)
-    user_id = config["configurable"].get("user_id", "unknown")
+    telegram_chat_id = config["configurable"]["telegram_chat_id"]
 
     resp = await api.post_raw(
         f"stories/{story_id}/reopen",
@@ -224,7 +224,7 @@ async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfi
     arch_msg = ArchitectMessage(
         story_id=story_id,
         project_id=story["project_id"],
-        user_id=user_id,
+        telegram_chat_id=telegram_chat_id,
         is_reopen=True,
         user_report=user_report,
     )

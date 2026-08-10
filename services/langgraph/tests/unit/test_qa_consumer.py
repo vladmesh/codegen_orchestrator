@@ -136,7 +136,7 @@ def qa_message_data():
     return {
         "story_id": "story-1",
         "project_id": "proj-1",
-        "user_id": "12345",
+        "telegram_chat_id": "12345",
         "deployed_url": "https://weather.example.com",
         "application_id": 1,
         "acceptance_criteria": AGENT_CRITERIA,
@@ -739,7 +739,7 @@ class TestProcessQAJobEdgeCases:
         data = {
             "story_id": "",
             "project_id": "proj-1",
-            "user_id": "12345",
+            "telegram_chat_id": "12345",
             "deployed_url": "https://weather.example.com",
             "application_id": 42,
             "acceptance_criteria": AGENT_CRITERIA,
@@ -769,7 +769,7 @@ class TestProcessQAJobEdgeCases:
         data = {
             "story_id": "",
             "project_id": "proj-1",
-            "user_id": "12345",
+            "telegram_chat_id": "12345",
             "deployed_url": "https://weather.example.com",
             "application_id": 1,
             "acceptance_criteria": AGENT_CRITERIA,

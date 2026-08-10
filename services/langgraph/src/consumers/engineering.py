@@ -55,10 +55,10 @@ __all__ = [
 ]
 
 
-def _parse_telegram_id(user_id: str) -> dict:
-    """Build get_project kwargs with telegram_id if user_id is numeric."""
-    if user_id and user_id.isdigit():
-        return {"telegram_id": int(user_id)}
+def _parse_telegram_id(telegram_chat_id: str) -> dict:
+    """Build get_project kwargs with telegram_id if telegram_chat_id is numeric."""
+    if telegram_chat_id and telegram_chat_id.isdigit():
+        return {"telegram_id": int(telegram_chat_id)}
     return {}
 
 
@@ -155,7 +155,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     action = msg.action
     description = msg.description
     skip_deploy = msg.skip_deploy
-    user_id = msg.user_id
+    telegram_chat_id = msg.telegram_chat_id
     planning_task_id = msg.planning_task_id
     story_id = msg.story_id
     deploy_fix_attempt = msg.deploy_fix_attempt
@@ -179,11 +179,11 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "progress",
             task_id,
             "Engineering task started",
-            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
             project_id=project_id or "",
         )
 
-        project = await api_client.get_project(project_id, **_parse_telegram_id(user_id))
+        project = await api_client.get_project(project_id, **_parse_telegram_id(telegram_chat_id))
         if not project:
             return await _fail_job(task_id, f"Project {project_id} not found", planning_task_id)
 
@@ -286,7 +286,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     redis=redis,
                     skip_deploy=skip_deploy,
                     developer_started_at=developer_started_at,
-                    user_id=user_id,
+                    telegram_chat_id=telegram_chat_id,
                     action=action,
                     planning_task_id=planning_task_id,
                     story_id=story_id,
@@ -303,7 +303,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 planning_task_id=planning_task_id,
                 story_id=story_id,
                 reason=reason,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 redis=redis,
                 worker_observability=result.get("worker_observability"),
             )
@@ -318,7 +318,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 "failed",
                 task_id,
                 error_msg,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 project_id=project_id or "",
             )
             return await _fail_job(
@@ -342,7 +342,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "failed",
             task_id,
             f"Engineering task failed: {e!s}",
-            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
             project_id=project_id or "",
         )
         return await _fail_job(task_id, str(e), planning_task_id)
