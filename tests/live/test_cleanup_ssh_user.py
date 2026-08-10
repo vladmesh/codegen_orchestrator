@@ -49,6 +49,7 @@ def test_pipeline_cleanup_command_has_no_hardcoded_root():
 async def test_pipeline_cleanup_ssh_target_uses_server_ssh_user(monkeypatch, tmp_path):
     """Execute the cleanup module: it must SSH as the DTO's ssh_user."""
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
     captured: dict[str, list[str]] = {}
 
@@ -64,7 +65,14 @@ async def test_pipeline_cleanup_ssh_target_uses_server_ssh_user(monkeypatch, tmp
             return httpx.Response(401, json={"detail": "unauthorized"})
         if request.url.path == "/api/servers/vps-1":
             return httpx.Response(
-                200, json={"handle": "vps-1", "ssh_user": "dev", "public_ip": "203.0.113.7"}
+                200,
+                json={
+                    "handle": "vps-1",
+                    "ssh_user": "dev",
+                    "public_ip": "203.0.113.7",
+                    "is_managed": True,
+                    "provider_id": "1001",
+                },
             )
         if request.url.path == "/api/servers/vps-1/ssh-key":
             return httpx.Response(200, json={"ssh_key": "PRIVATE-KEY"})
@@ -105,6 +113,7 @@ async def test_written_ahead_deploy_is_cleaned_on_every_listed_server(monkeypatc
     required a resolved ``server_handle`` — is what left run 7's stack live.
     """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001,1002")
     destinations: list[str] = []
 
     def fake_run(argv, **kwargs):
@@ -118,8 +127,20 @@ async def test_written_ahead_deploy_is_cleaned_on_every_listed_server(monkeypatc
             return httpx.Response(
                 200,
                 json=[
-                    {"handle": "vps-1", "ssh_user": "dev", "public_ip": "203.0.113.7"},
-                    {"handle": "vps-2", "ssh_user": "runner", "public_ip": "203.0.113.8"},
+                    {
+                        "handle": "vps-1",
+                        "ssh_user": "dev",
+                        "public_ip": "203.0.113.7",
+                        "is_managed": True,
+                        "provider_id": "1001",
+                    },
+                    {
+                        "handle": "vps-2",
+                        "ssh_user": "runner",
+                        "public_ip": "203.0.113.8",
+                        "is_managed": True,
+                        "provider_id": "1002",
+                    },
                 ],
             )
         if request.url.path.endswith("/ssh-key"):
@@ -165,7 +186,7 @@ async def test_written_ahead_deploy_fails_closed_without_any_target(monkeypatch,
 
     remote_script = tmp_path / "remote.sh"
     remote_script.write_text("set -eu\n")
-    with pytest.raises(RuntimeError, match="no target"):
+    with pytest.raises(RuntimeError, match="no managed target"):
         await live_harness_cleanup.cleanup_server_deployment(
             project_name="live-te-x",
             api_url="http://test",
