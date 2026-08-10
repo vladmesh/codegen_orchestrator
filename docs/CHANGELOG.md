@@ -28,6 +28,11 @@
   different base before inspection. Build-network selection is now unsupported,
   and recovery commands reject worker-selected Compose files.
 
+- Corrected Compose source-tree path contexts: selected files use the fixed
+  project directory, while files loaded through `extends` use their own
+  directory for nested source paths. Recovery now distinguishes global file
+  selection from the supported `logs -f` follow flag.
+
 ## 2026-08-09
 
 - Added executable worker-broker acceptance regressions: resolved production

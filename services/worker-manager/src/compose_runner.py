@@ -163,25 +163,29 @@ class ComposeRunner:
 
     @staticmethod
     def _validate_source_tree(
-        source: Path, workspace_path: Path, project_directory: Path, seen: set[Path] | None = None
+        source: Path,
+        workspace_path: Path,
+        source_base: Path,
+        seen: set[tuple[Path, Path]] | None = None,
     ) -> None:
-        """Validate selected Compose files and every file reached through ``extends``."""
+        """Validate a Compose source with the path base Compose assigned to it."""
         seen = seen or set()
         try:
             source = source.resolve()
             source.relative_to(workspace_path)
         except (OSError, ValueError) as exc:
             raise ValueError(f"Compose source cannot be resolved: {source}") from exc
-        if source in seen:
+        context = (source, source_base.resolve())
+        if context in seen:
             return
-        seen.add(source)
+        seen.add(context)
         try:
             content = source.read_text()
             source_result = validate_compose_file(
                 content,
                 source_file=source,
                 workspace_path=workspace_path,
-                project_directory=project_directory,
+                project_directory=source_base,
             )
             data = yaml.safe_load(content)
         except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
@@ -194,9 +198,25 @@ class ComposeRunner:
         for service in services.values():
             extends = service.get("extends") if isinstance(service, dict) else None
             if isinstance(extends, dict) and isinstance(extends.get("file"), str):
-                ComposeRunner._validate_source_tree(
-                    project_directory / extends["file"], workspace_path, project_directory, seen
-                )
+                target = (source_base / extends["file"]).resolve()
+                ComposeRunner._validate_source_tree(target, workspace_path, target.parent, seen)
+
+    @staticmethod
+    def _has_global_file_selection(args: list[str]) -> bool:
+        """Return whether a worker selected a Compose file before its subcommand."""
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg in ("-f", "--file"):
+                return True
+            if arg in VALUE_FLAGS:
+                index += 2
+                continue
+            if arg.startswith("-"):
+                index += 1
+                continue
+            return False
+        return False
 
     def _prepare_invocation(
         self,
@@ -315,7 +335,7 @@ class ComposeRunner:
         command_result = validate_command(args)
         if not command_result.valid:
             raise ValueError("; ".join(command_result.errors))
-        if any(arg in ("-f", "--file") for arg in args):
+        if self._has_global_file_selection(args):
             raise ValueError("Recovery commands do not allow worker-selected Compose files")
         workspace = Path(workspace_dir) if workspace_dir else self.workspace_base_path / worker_id / "workspace"
         if not workspace.is_dir():

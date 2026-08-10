@@ -223,3 +223,34 @@ class TestComposeApi:
         assert response.status_code == 400
         assert "privileged" in response.json()["detail"]
         runner.run.assert_awaited_once()
+
+    def test_broker_api_rejects_extends_secret_escape_before_compose_config(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        (infra / "compose.base.yml").write_text("services:\n  db:\n    extends: {file: ../evil.yml, service: db}\n")
+        (workspace / "evil.yml").write_text(
+            "services:\n  db:\n    image: postgres:16\n    env_file: ../HOSTSECRET.env\n"
+        )
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        app.state.compose_runner = ComposeRunner(str(tmp_path))
+        app.state.redis = AsyncMock()
+        app.state.redis.hgetall = AsyncMock(
+            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
+        )
+        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+
+        with (
+            TestClient(app, raise_server_exceptions=True) as c,
+            patch("src.compose_runner.subprocess.run") as mock_run,
+        ):
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["-f", "infra/compose.base.yml", "up", "-d"]},
+                headers={"X-Worker-Broker-Token": "broker-test-token"},
+            )
+
+        assert response.status_code == 400
+        assert "env_file" in response.json()["detail"]
+        mock_run.assert_not_called()

@@ -454,6 +454,42 @@ class TestComposeRunner:
         mock_run.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_extends_source_paths_use_the_extended_file_directory(self, workspace):
+        root = workspace / "worker-123" / "workspace"
+        (root / "infra" / "compose.base.yml").write_text(
+            "services:\n  db:\n    extends: {file: ../evil.yml, service: db}\n"
+        )
+        (root / "evil.yml").write_text("services:\n  db:\n    image: postgres:16\n    env_file: ../HOSTSECRET.env\n")
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="env_file"):
+                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+
+        mock_run.assert_not_called()
+        assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
+
+    @pytest.mark.asyncio
+    async def test_nested_extends_targets_use_each_declaring_directory(self, workspace):
+        root = workspace / "worker-123" / "workspace"
+        deep = root / "deep"
+        deep.mkdir()
+        (root / "infra" / "compose.base.yml").write_text(
+            "services:\n  db:\n    extends: {file: ../deep/mid.yml, service: db}\n"
+        )
+        (deep / "mid.yml").write_text("services:\n  db:\n    extends: {file: leaf.yml, service: db}\n")
+        (root / "infra" / "leaf.yml").write_text("services:\n  db:\n    image: postgres:16\n")
+        (deep / "leaf.yml").write_text("services:\n  db:\n    image: postgres:16\n    env_file: /etc/passwd\n")
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="env_file"):
+                await runner.inspect("worker-123", ["-f", "infra/compose.base.yml", "up", "-d"])
+
+        mock_run.assert_not_called()
+        assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("args", [["build"], ["up", "--build"]])
     async def test_build_network_is_rejected_before_create_execution(self, workspace, args):
         compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
@@ -477,6 +513,18 @@ class TestComposeRunner:
                 await runner.run("worker-123", ["-f", "/etc/shadow", "ps"])
 
         mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recovery_preserves_logs_follow_and_tail_flags(self, workspace):
+        runner = ComposeRunner(str(workspace))
+        result = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", return_value=result) as mock_run:
+            await runner.run("worker-123", ["logs", "-f", "--tail", "10"])
+
+        command = mock_run.call_args.args[0]
+        assert command[-4:] == ["logs", "-f", "--tail", "10"]
+        assert "--project-directory" in command
 
     @pytest.mark.asyncio
     async def test_execution_uses_immutable_snapshot_after_source_mutation(self, workspace):
