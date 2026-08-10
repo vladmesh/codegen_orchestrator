@@ -88,3 +88,21 @@ make test-live-clean     # always run after a live attempt
 
 The mega runs only on explicit request. Live-run logs go to `.live-runs/`, debug
 artifacts to `docs/e2e_results/` (local, gitignored).
+
+### Cleanup target admission
+
+Both standalone cleanup and write-ahead manifest recovery select remote targets with the same
+fail-closed provisioning policy used by the product: the API row must have `is_managed=true` and a
+positive provider ID present in `TIME4VPS_MANAGED_SERVER_IDS`. Unrelated inventory rows are logged
+and skipped before SSH-key retrieval or SSH. Once a target is admitted, a missing key, malformed
+connection data, failed residue scan or failed teardown is an error; key absence is never treated as
+proof of cleanliness. An owned manifest with no admissible target is also an error.
+
+## Trusted pre-alpha acceptance baseline
+
+The accepted baseline is `main@14b2b4583b9afc05e10eb236618cd86128fe1f88` (2026-08-10). The
+production stack was rebuilt from that exact SHA, `make test-live-clean` passed before the canary,
+`make test-live-mega` passed 12/12 in 20:20 with a real Claude worker, broker transport, bounded
+Compose, deploy, health and non-LLM QA, and the post-canary `make test-live-clean` passed with no
+local or remote live-test residue. This is an acceptance record, not a promise that future `main`
+revisions inherit the verdict without rerunning the gates.

@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Updated**: 2026-08-09 (hand-maintained)
+> **Updated**: 2026-08-10 (hand-maintained)
 >
 > Story-level arcs only. Active work lives on the Pipeline board; the deferred pool, the plans and
 > the history of past sprints live in the driving installation's knowledge store under
@@ -19,24 +19,35 @@ corrections, Sprint 002 hardening, deterministic mock smoke, template matrix, li
 the Telegram end-to-end. The Telegram end-to-end was verified on 2026-07-24: a message produced a
 working generated bot without a manual step.
 
-The live pipeline is verified as of **2026-08-09 on `main` 2446db88**: the full mega passed 12/12
-**twice in a row** — 18:01 and 16:05, the second started a minute after the first finished, with no
-cleanup between them, so the run is idempotent and not merely green once. Each run covers the noop
-and LLM pipelines end to end: scaffold → engineering → CI → merge → deploy → `/health` → QA. The
-run before it, also 12/12, was 2026-08-06 on the rebuilt control plane.
+The trusted pre-alpha gate is accepted as of **2026-08-10 on `main`
+`14b2b4583b9afc05e10eb236618cd86128fe1f88`**. Two production-like megas passed before the final
+cleanup remediation. The production stack was then rebuilt from the exact merge SHA, a clean
+pre-canary inventory sweep passed, and a separate exact-SHA create-to-clean canary passed 12/12 in
+20:20. The final cleanup again proved no project, container, network, capability or remote-stack
+residue. Each mega covers the noop and real LLM pipelines end to end: scaffold → engineering → CI →
+merge → deploy → `/health` → QA.
 
 Infrastructure behind those runs: the control plane is `5wce` (Time4VPS 275198, since 2026-08-06),
 the deploy target is `5wf9` (275301). A deploy target's SSH key lives in the database, not on the
 control plane host — `deployer.py` fetches it per deploy — so the target is deliberately unreachable
-from the host's own keys. Next:
+from the host's own keys.
 
-- Stage 9: worker isolation hardening — mandatory before onboarding external users. Composition on
-  the board: escape from the worker compose proxy to root on the host, the worker seeing the control
-  plane (API and Redis on the `codegen_worker` network), and production running a bind-mounted work
-  tree instead of a built image. Shipped alongside it, because external users make them measurable:
-  global spend/concurrency limits with an operator kill switch, and rotation of the credentials that
-  could have leaked into logs.
-- Stage 10: swarm seams — on a trigger (a second worker host or sustained parallel load).
+Stage 9's trusted-user boundary is complete. Coding workers now run from immutable images with
+Docker CPU/RAM/PID/capability limits, receive an allowlisted agent environment, and reach neither
+the API nor control-plane Redis directly. Their narrow localhost transport terminates at an
+authenticated broker. Worker-requested Compose is compiled and validated by worker-manager into a
+manager-owned immutable plan; unsafe CLI overrides, host capabilities, namespaces, mounts, networks
+and unbounded services fail closed. Live cleanup admits only explicitly managed provider targets
+before key retrieval or SSH and remains fail closed for an admitted target.
+
+Next:
+
+- Onboard the first trusted pre-alpha users under the documented operational limits. The Secretary
+  board separately tracks rebuilding the project onboarding adapter so clean development worktrees
+  get pinned `uv`; that tooling defect does not affect the deployed product runtime.
+- Stage 10: sandbox/swarm seams — only on a trigger such as a second worker host, sustained parallel
+  load, or evidence from the managed-sandbox bake-off. Do not move the control plane to Kubernetes
+  merely to replace the worker runtime.
 
 Stage 7 tail debt is tracked on the Pipeline board and gates nothing. The pre-668 numbering that
 used to name it belonged to the internal tracker removed by `codegen_orchestrator-668`; those
