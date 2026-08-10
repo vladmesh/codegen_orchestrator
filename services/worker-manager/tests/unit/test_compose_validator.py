@@ -57,6 +57,24 @@ class TestValidateCommand:
             result = validate_command(args)
             assert not result.valid, args
 
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["run", "--volume", "/:/host", "db"],
+            ["run", "--volume=/:/host", "db"],
+            ["run", "-v", "/:/host", "db"],
+            ["run", "--cap-add", "SYS_ADMIN", "db"],
+            ["run", "--cap-add=SYS_ADMIN", "db"],
+            ["run", "--service-ports", "db"],
+            ["run", "--env", "SECRET=value", "db"],
+            ["run", "--name=orchestrator-db", "db"],
+            ["run", "--user", "0", "db"],
+        ],
+    )
+    def test_container_creating_runtime_scope_flags_are_rejected(self, args):
+        result = validate_command(args)
+        assert not result.valid, result.errors
+
 
 class TestValidateComposeFile:
     def test_relative_volume_allowed(self):
@@ -172,6 +190,7 @@ def _safe_effective_compose():
         "services": {
             "db": {
                 "image": "postgres:16",
+                "networks": {"default": None},
                 "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
             }
         },
@@ -227,3 +246,49 @@ class TestValidateEffectiveCompose:
         assert not result.valid
         assert any("CPU" in error for error in result.errors)
         assert any("memory" in error.lower() for error in result.errors)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("network_mode", "container:codegen-postgres"),
+            ("network_mode", "service:db"),
+            ("network_mode", "bridge"),
+            ("network_mode", "none"),
+            ("pid", "container:codegen-postgres"),
+            ("ipc", "shareable"),
+        ],
+    )
+    def test_namespace_mode_bypasses_are_rejected(self, field, value):
+        compose = _safe_effective_compose()
+        compose["services"]["db"][field] = value
+
+        result = validate_effective_compose(compose, "worker-123")
+
+        assert not result.valid
+        assert any(field in error for error in result.errors)
+
+    def test_named_local_bind_volume_is_rejected(self):
+        compose = _safe_effective_compose()
+        compose["services"]["db"]["volumes"] = [{"type": "volume", "source": "hostroot", "target": "/host"}]
+        compose["volumes"] = {
+            "hostroot": {"driver": "local", "driver_opts": {"type": "none", "device": "/", "o": "bind"}}
+        }
+
+        result = validate_effective_compose(compose, "worker-123")
+
+        assert not result.valid
+        assert any("volume" in error.lower() for error in result.errors)
+
+    def test_resolved_workspace_bind_is_allowed_but_external_bind_is_rejected(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        compose = _safe_effective_compose()
+        compose["services"]["db"]["volumes"] = [{"type": "bind", "source": str(workspace / "data"), "target": "/data"}]
+
+        safe_result = validate_effective_compose(compose, "worker-123", workspace)
+        compose["services"]["db"]["volumes"][0]["source"] = "/etc"
+        unsafe_result = validate_effective_compose(compose, "worker-123", workspace)
+
+        assert safe_result.valid, safe_result.errors
+        assert not unsafe_result.valid
+        assert any("absolute bind" in error for error in unsafe_result.errors)

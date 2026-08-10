@@ -10,7 +10,6 @@ import yaml
 
 ALLOWED_COMMANDS = {"up", "down", "build", "run", "ps", "logs", "stop"}
 CONTAINER_CREATING_COMMANDS = {"up", "build", "run"}
-BLOCKED_FLAGS = {"-it", "--interactive", "--tty", "-i", "-t"}
 # Flags that consume the next argument as a value (skip it when scanning for subcommand).
 VALUE_FLAGS = {
     "-f",
@@ -22,6 +21,17 @@ VALUE_FLAGS = {
     "--profile",
 }
 _SCOPE_OVERRIDE_FLAGS = {"--project-directory", "--project-name", "--env-file", "-p", "--network"}
+_GLOBAL_FILE_FLAGS = {"-f", "--file"}
+_SAFE_COMMAND_FLAGS = {
+    "up": {"-d", "--detach", "--wait", "--build", "--no-build"},
+    "build": {"-d"},
+    "run": {"-d"},
+    "down": {"-d"},
+    "ps": {"-d"},
+    "logs": {"-d"},
+    "stop": {"-d"},
+}
+_SAFE_VALUE_COMMAND_FLAGS = {"up": {"--wait-timeout"}}
 
 # Generated projects are allowed at most the same envelope as a capability worker.
 # Compose accepts CPU values as decimal core counts and memory as bytes or an IEC/SI
@@ -59,17 +69,59 @@ def _is_socket_path(path: str) -> bool:
     return "docker.sock" in lowered or "compose.sock" in lowered
 
 
-def _validate_volumes(service_name: str, service_config: dict[str, Any], errors: list[str]) -> None:
+def _is_within_workspace(source: str, workspace_path: Path) -> bool:
+    try:
+        Path(source).resolve().relative_to(workspace_path.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _validate_volumes(
+    service_name: str,
+    service_config: dict[str, Any],
+    errors: list[str],
+    *,
+    workspace_path: Path | None = None,
+    resolved: bool = False,
+) -> None:
     volumes = service_config.get("volumes", [])
     if not isinstance(volumes, list):
         errors.append(f"Service '{service_name}': volumes must be a list")
         return
     for volume in volumes:
         source, target, volume_type = _volume_parts(volume)
-        if volume_type == "bind" and source.startswith("/"):
-            errors.append(f"Service '{service_name}': absolute bind mount source '{source}' is not allowed")
         if _is_socket_path(source) or _is_socket_path(target):
             errors.append(f"Service '{service_name}': Docker or Compose socket mount is not allowed")
+        if volume_type != "bind":
+            continue
+        if not resolved:
+            if source.startswith("/"):
+                errors.append(f"Service '{service_name}': absolute bind mount source '{source}' is not allowed")
+            continue
+        if not source.startswith("/") or workspace_path is None or not _is_within_workspace(source, workspace_path):
+            errors.append(f"Service '{service_name}': absolute bind mount source '{source}' is not allowed")
+
+
+def _validate_named_volumes(data: dict[str, Any], errors: list[str]) -> None:
+    volumes = data.get("volumes", {})
+    if volumes is None:
+        return
+    if not isinstance(volumes, dict):
+        errors.append("Resolved Compose volumes must be a mapping")
+        return
+    for volume_name, volume_config in volumes.items():
+        if volume_config is None:
+            continue
+        if not isinstance(volume_config, dict):
+            errors.append(f"Volume '{volume_name}' must be a mapping")
+            continue
+        driver = volume_config.get("driver", "local")
+        if driver != "local":
+            errors.append(f"Volume '{volume_name}': only the default local driver is allowed")
+        driver_opts = volume_config.get("driver_opts")
+        if driver_opts:
+            errors.append(f"Volume '{volume_name}': driver_opts are not allowed")
 
 
 def _memory_bytes(value: Any) -> int | None:
@@ -132,33 +184,60 @@ def _validate_resource_limits(service_name: str, service_config: dict[str, Any],
 
 def validate_command(args: list[str]) -> ValidationResult:
     """Validate Compose commands without allowing the worker to alter its scope."""
-    errors = []
+    errors: list[str] = []
+    index = 0
     subcommand = None
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg in VALUE_FLAGS:
-            skip_next = True
+    while index < len(args):
+        arg = args[index]
+        if arg in _GLOBAL_FILE_FLAGS:
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                errors.append("Compose file flag requires a separate path")
+                break
+            index += 2
             continue
         if arg.startswith("-"):
+            if any(_flag_is_set(arg, flag) for flag in _SCOPE_OVERRIDE_FLAGS):
+                errors.append(f"Flag '{arg}' cannot override the worker Compose scope")
+            elif arg.startswith("--file=") or (arg.startswith("-f") and arg != "-f"):
+                errors.append(f"Flag '{arg}' must use a separate Compose file path")
+            else:
+                errors.append(f"Global flag '{arg}' is not allowed")
+            index += 1
             continue
         subcommand = arg
+        index += 1
         break
 
     if subcommand is None:
         errors.append("No subcommand found in args")
-    elif subcommand not in ALLOWED_COMMANDS:
+        return ValidationResult(valid=False, errors=errors)
+    if subcommand not in ALLOWED_COMMANDS:
         errors.append(f"Command '{subcommand}' is not allowed. Allowed: {sorted(ALLOWED_COMMANDS)}")
+        return ValidationResult(valid=False, errors=errors)
 
-    for arg in args:
-        if arg in BLOCKED_FLAGS:
-            errors.append(f"Flag '{arg}' is not allowed (interactive flags are blocked)")
+    safe_flags = _SAFE_COMMAND_FLAGS[subcommand]
+    safe_value_flags = _SAFE_VALUE_COMMAND_FLAGS.get(subcommand, set())
+    while index < len(args):
+        arg = args[index]
+        if not arg.startswith("-"):
+            index += 1
+            continue
+        if arg in safe_flags:
+            index += 1
+            continue
+        if arg in safe_value_flags:
+            if index + 1 >= len(args) or args[index + 1].startswith("-"):
+                errors.append(f"Flag '{arg}' requires a value")
+            index += 2
+            continue
+        if any(arg.startswith(f"{flag}=") for flag in safe_value_flags):
+            index += 1
+            continue
         if any(_flag_is_set(arg, flag) for flag in _SCOPE_OVERRIDE_FLAGS):
             errors.append(f"Flag '{arg}' cannot override the worker Compose scope")
-        if arg.startswith("--file=") or (arg.startswith("-f") and arg != "-f"):
-            errors.append(f"Flag '{arg}' must use a separate Compose file path")
+        else:
+            errors.append(f"Flag '{arg}' is not allowed for '{subcommand}'")
+        index += 1
 
     return ValidationResult(valid=not errors, errors=errors)
 
@@ -184,7 +263,7 @@ def validate_compose_file(content: str) -> ValidationResult:
     return ValidationResult(valid=not errors, errors=errors)
 
 
-def validate_effective_compose(data: Any, worker_id: str) -> ValidationResult:
+def validate_effective_compose(data: Any, worker_id: str, workspace_path: Path | None = None) -> ValidationResult:
     """Validate Docker Compose's fully resolved JSON for a container-creating command."""
     if not isinstance(data, dict):
         return ValidationResult(valid=False, errors=["Resolved Compose configuration must be a mapping"])
@@ -206,6 +285,8 @@ def validate_effective_compose(data: Any, worker_id: str) -> ValidationResult:
         ):
             errors.append(f"Resolved Compose default network must be external '{expected_network}'")
 
+    _validate_named_volumes(data, errors)
+
     for service_name, service_config in services.items():
         if not isinstance(service_config, dict):
             errors.append(f"Service '{service_name}' must be a mapping")
@@ -214,17 +295,16 @@ def validate_effective_compose(data: Any, worker_id: str) -> ValidationResult:
         if service_config.get("privileged"):
             errors.append(f"Service '{name}': privileged is not allowed")
         for namespace_field in ("network_mode", "pid", "ipc"):
-            if service_config.get(namespace_field) == "host":
-                errors.append(f"Service '{name}': {namespace_field}: host is not allowed")
+            if service_config.get(namespace_field) is not None:
+                errors.append(f"Service '{name}': {namespace_field} is not allowed")
         for capability_field in ("devices", "device_cgroup_rules", "cap_add"):
             if service_config.get(capability_field):
                 errors.append(f"Service '{name}': {capability_field} is not allowed")
-        _validate_volumes(name, service_config, errors)
+        _validate_volumes(name, service_config, errors, workspace_path=workspace_path, resolved=True)
         service_networks = service_config.get("networks")
-        if service_networks is not None:
-            names = set(service_networks) if isinstance(service_networks, (dict, list)) else set()
-            if names != {"default"}:
-                errors.append(f"Service '{name}': only the worker default network is allowed")
+        names = set(service_networks) if isinstance(service_networks, (dict, list)) else set()
+        if names != {"default"}:
+            errors.append(f"Service '{name}': only the worker default network is allowed")
         _validate_resource_limits(name, service_config, errors)
 
     return ValidationResult(valid=not errors, errors=errors)
@@ -239,6 +319,6 @@ def resolve_compose_path(compose_file: str, workspace_path: Path) -> tuple[Path,
         return workspace_path, ValidationResult(
             False, [f"Path traversal detected: '{compose_file}' resolves outside workspace"]
         )
-    except Exception as exc:
+    except (OSError, RuntimeError) as exc:
         return workspace_path, ValidationResult(False, [f"Failed to resolve path '{compose_file}': {exc}"])
     return resolved, ValidationResult(valid=True)

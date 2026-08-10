@@ -1,12 +1,15 @@
 import subprocess
+import shutil
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.compose_runner import ComposeRunner
+from src.compose_validator import validate_effective_compose
 
 SAFE_EFFECTIVE_CONFIG = (
-    '{"services":{"db":{"image":"postgres:16","deploy":{"resources":'
+    '{"services":{"db":{"image":"postgres:16","networks":{"default":null},"deploy":{"resources":'
     '{"limits":{"cpus":"1.0","memory":"512M"}}}}},'
     '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
 )
@@ -274,6 +277,36 @@ class TestComposeRunner:
         assert network_idx < ports_idx
 
     @pytest.mark.asyncio
+    async def test_limits_override_is_in_the_inspected_and_executed_invocation(self, workspace):
+        runner = ComposeRunner(str(workspace))
+        mock_result = _safe_compose_result()
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            _, prepared = await runner.inspect("worker-123", ["up", "-d"])
+            await runner.run("worker-123", ["up", "-d"], prepared=prepared)
+
+        override_path = workspace / "worker-123" / "workspace" / ".codegen-limits.yml"
+        assert str(override_path) in mock_run.call_args_list[0].args[0]
+        assert str(override_path) in mock_run.call_args_list[1].args[0]
+        assert "cpus:" in override_path.read_text()
+        assert "memory:" in override_path.read_text()
+
+    @pytest.mark.asyncio
+    async def test_real_service_template_resolution_passes_the_production_validator(self, tmp_path):
+        fixture = Path(__file__).parents[4] / "shared/tests/fixtures/service-template-0.3.6"
+        if not shutil.which("docker"):
+            pytest.skip("Docker Compose CLI is unavailable")
+        workspace = tmp_path / "workspace"
+        shutil.copytree(fixture, workspace)
+        (workspace / ".env").write_text("POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n")
+        runner = ComposeRunner(str(tmp_path))
+
+        resolved, _ = await runner.inspect("fixture", ["up", "-d"], workspace_dir=str(workspace))
+
+        result = validate_effective_compose(resolved, "fixture", workspace)
+        assert result.valid, result.errors
+
+    @pytest.mark.asyncio
     async def test_ports_override_with_redis(self, workspace):
         """Ports override should clear ports for all services that publish them."""
         # Add redis with ports to compose.dev.yml
@@ -351,7 +384,7 @@ class TestComposeRunner:
         """The preflight config command carries the generated network and fixed project name."""
         runner = ComposeRunner(str(workspace))
         config = (
-            '{"services":{"db":{"image":"postgres:16","deploy":{"resources":'
+            '{"services":{"db":{"image":"postgres:16","networks":{"default":null},"deploy":{"resources":'
             '{"limits":{"cpus":"1.0","memory":"512M"}}}}},'
             '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
         )
@@ -374,7 +407,7 @@ class TestComposeRunner:
         """ComposeRunner has no unvalidated container-creating execution path."""
         runner = ComposeRunner(str(workspace))
         config = (
-            '{"services":{"db":{"image":"postgres:16","privileged":true,"deploy":{"resources":'
+            '{"services":{"db":{"image":"postgres:16","networks":{"default":null},"privileged":true,"deploy":{"resources":'
             '{"limits":{"cpus":"1.0","memory":"512M"}}}}},'
             '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
         )
@@ -386,3 +419,13 @@ class TestComposeRunner:
 
         assert mock_run.call_count == 1
         assert mock_run.call_args.args[0][-3:] == ["config", "--format", "json"]
+
+    @pytest.mark.asyncio
+    async def test_direct_run_scope_flag_is_rejected_before_resolution(self, workspace):
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="--volume"):
+                await runner.run("worker-123", ["run", "--volume=/:/host", "db"])
+
+        mock_run.assert_not_called()

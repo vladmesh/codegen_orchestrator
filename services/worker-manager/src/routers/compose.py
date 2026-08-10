@@ -88,9 +88,17 @@ async def run_compose(
     from ..config import settings
 
     workspace_path = (
-        Path(stored_workspace) if stored_workspace else (Path(settings.SCAFFOLDED_WORKSPACE_PATH) / worker_id)
+        Path(stored_workspace)
+        if stored_workspace
+        else (Path(settings.SCAFFOLDED_WORKSPACE_PATH) / worker_id / "workspace")
     )
     container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
+
+    # Resolve cwd before sources: Compose resolves relative -f paths from its
+    # working directory, so raw-source inspection must cover that same file.
+    cwd_path, cwd_result = resolve_compose_path(request.cwd, workspace_path)
+    if not cwd_result.valid:
+        raise HTTPException(status_code=400, detail="; ".join(cwd_result.errors))
 
     # Collect compose file paths from -f/--file flags, or default to infra/ layout
     compose_files: list[str] = []
@@ -105,12 +113,12 @@ async def run_compose(
         compose_files = list(_DEFAULT_COMPOSE_FILES)
 
     for cf in compose_files:
-        # Check path traversal (works without filesystem access)
-        _, path_result = resolve_compose_path(cf, workspace_path)
+        # Check path traversal relative to the exact cwd passed to Compose.
+        resolved_source, path_result = resolve_compose_path(cf, cwd_path)
         if not path_result.valid:
             raise HTTPException(status_code=400, detail="; ".join(path_result.errors))
 
-        source_path = f"/workspace/{cf}"
+        source_path = f"/workspace/{resolved_source.relative_to(workspace_path.resolve()).as_posix()}"
         try:
             exit_code, output = await docker.exec_in_container(
                 container_name, f"cat -- {shlex.quote(source_path)}", user="root"
@@ -129,16 +137,11 @@ async def run_compose(
         if not file_result.valid:
             raise HTTPException(status_code=400, detail="; ".join(file_result.errors))
 
-    # Check path traversal in cwd
-    _, cwd_result = resolve_compose_path(request.cwd, workspace_path)
-    if not cwd_result.valid:
-        raise HTTPException(status_code=400, detail="; ".join(cwd_result.errors))
-
     # Compose itself resolves extends, interpolation and overrides. Resolve the
-    # exact final JSON with the same fixed project name, environment, network and
-    # ports override that ComposeRunner will execute. This is required even for
-    # read-only commands so an unresolvable selected configuration cannot reach
-    # the executor.
+    # exact final JSON with the same fixed project name, environment and generated
+    # network, ports and limits overrides that ComposeRunner will execute. This is
+    # required even for read-only commands so an unresolvable selected
+    # configuration cannot reach the executor.
     try:
         effective_project, prepared = await runner.inspect(
             worker_id=worker_id,
@@ -150,10 +153,9 @@ async def run_compose(
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if _subcommand(request.args) in CONTAINER_CREATING_COMMANDS:
-        effective_result = validate_effective_compose(effective_project, worker_id)
+        effective_result = validate_effective_compose(effective_project, worker_id, workspace_path)
         if not effective_result.valid:
             raise HTTPException(status_code=400, detail="; ".join(effective_result.errors))
-
     # Run compose
     try:
         exit_code, stdout, stderr = await runner.run(

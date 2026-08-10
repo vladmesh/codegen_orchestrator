@@ -25,6 +25,7 @@ def client(tmp_path):
                 "services": {
                     "db": {
                         "image": "postgres:16",
+                        "networks": {"default": None},
                         "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
                     }
                 },
@@ -92,6 +93,18 @@ class TestComposeApi:
         )
         assert response.status_code == 400
 
+    def test_run_scope_flag_never_reaches_runner(self, client):
+        c, runner, _redis = client
+
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["run", "--volume=/:/host", "db"]},
+        )
+
+        assert response.status_code == 400
+        runner.inspect.assert_not_called()
+        runner.run.assert_not_called()
+
     def test_nonzero_exit_code_still_returns_200(self, client):
         """Non-zero exit codes from compose should still return 200 with the exit code."""
         c, runner, _redis = client
@@ -134,6 +147,18 @@ class TestComposeApi:
         call_kwargs = runner.run.call_args
         assert call_kwargs.kwargs.get("workspace_dir") == "/tmp/workspaces/project-uuid/workspace"
 
+    def test_selected_source_is_read_relative_to_compose_cwd(self, client):
+        c, _runner, _redis = client
+
+        response = c.post(
+            "/api/worker/worker-123/infra/compose",
+            json={"args": ["-f", "compose.yml", "up", "-d"], "cwd": "infra"},
+        )
+
+        assert response.status_code == 200
+        source_command = c.app.state.docker.exec_in_container.call_args.args[1]
+        assert source_command == "cat -- /workspace/infra/compose.yml"
+
     def test_unreadable_selected_compose_source_never_reaches_runner(self, client):
         c, runner, _redis = client
         c.app.state.docker.exec_in_container = AsyncMock(return_value=(1, b"missing"))
@@ -154,6 +179,7 @@ class TestComposeApi:
                     "services": {
                         "db": {
                             "image": "postgres:16",
+                            "networks": {"default": None},
                             "privileged": True,
                             "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
                         }
