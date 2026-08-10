@@ -1,5 +1,7 @@
 import hashlib
+import json
 
+import httpx
 import pytest
 from fakeredis import FakeAsyncRedis
 
@@ -123,3 +125,65 @@ async def test_output_stream_retention_is_bounded(monkeypatch):
         )
 
     assert await redis.xlen("worker:one:output") <= 2
+
+
+@pytest.mark.asyncio
+async def test_authenticated_registration_lease_output_session_and_compose_forward(monkeypatch):
+    """Exercise every broker hop with the same credentials a worker receives."""
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    worker_id = "worker-one"
+    worker_token = "a" * 43
+    registration = main.Registration(
+        worker_id=worker_id,
+        token=worker_token,
+        input_stream=f"worker:{worker_id}:input",
+        output_stream=f"worker:{worker_id}:output",
+        session_ttl_seconds=60,
+    )
+
+    with pytest.raises(main.HTTPException) as denied:
+        await main.register_worker(registration, "wrong-internal-token")
+    assert denied.value.status_code == 403
+
+    await main.register_worker(registration, main.settings.BROKER_INTERNAL_TOKEN)
+    await redis.xadd(registration.input_stream, {"data": json.dumps({"task_id": "task-1", "prompt": "fix it"})})
+
+    lease = await main.lease_input(worker_id, worker_token)
+    assert lease["data"] == {"task_id": "task-1", "prompt": "fix it"}
+
+    await main.set_session(worker_id, main.SessionUpdate(session_id="session-1"), worker_token)
+    assert await main.get_session(worker_id, worker_token) == {"session_id": "session-1"}
+    await main.update_status(worker_id, main.StatusUpdate(values={"status": "running"}), worker_token)
+    assert await redis.hgetall(f"worker:status:{worker_id}") == {"status": "running"}
+
+    forwarded = {}
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        forwarded["url"] = str(request.url)
+        forwarded["token"] = request.headers["X-Worker-Broker-Token"]
+        forwarded["body"] = json.loads(request.content)
+        return httpx.Response(400, json={"detail": "compose command rejected"})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(upstream)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+
+    compose_response = await main.compose(worker_id, {"args": ["up", "-d"]}, worker_token)
+    assert compose_response.status_code == 400
+    assert json.loads(compose_response.body) == {"detail": "compose command rejected"}
+    assert forwarded == {
+        "url": f"{main.settings.WORKER_MANAGER_URL}/api/worker/{worker_id}/infra/compose",
+        "token": worker_token,
+        "body": {"args": ["up", "-d"]},
+    }
+
+    await main.submit_output(
+        worker_id,
+        main.Submission(lease_id=lease["lease_id"], result={"status": "failed", "error": "agent failed"}),
+        worker_token,
+    )
+    output = await redis.xrange(registration.output_stream)
+    result = json.loads(output[0][1]["data"])
+    assert result["status"] == "failed"
+    assert result["error"] == "agent failed"

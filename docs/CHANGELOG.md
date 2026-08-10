@@ -2,6 +2,11 @@
 
 ## 2026-08-09
 
+- Added executable worker-broker acceptance regressions: resolved production
+  Compose topology now protects the worker-only broker contour, and a
+  deterministic broker flow covers internal-token denial, registration, input
+  lease, session/status, typed output acknowledgement and Compose forwarding.
+
 - **Worker broker launch contract**: coding workers now receive only
   `WORKER_BROKER_URL`, a per-worker broker token and `WORKER_ID`; wrapper
   configuration maps that exact identity and fails closed when a direct Redis,
