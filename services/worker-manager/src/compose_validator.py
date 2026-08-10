@@ -2,6 +2,7 @@
 
 import math
 import re
+from hashlib import sha256
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,82 @@ class ComposeHostCapabilityPolicy:
     resolution_context: str
     interpolation: str
     containment: str
+
+
+@dataclass(frozen=True)
+class ResourceIdentityPolicy:
+    """Manager-owned names for Docker-global resources in generated projects."""
+
+    def build_image(self, worker_id: str, service_name: str) -> str:
+        worker_scope = sha256(worker_id.encode()).hexdigest()[:16]
+        service_scope = sha256(service_name.encode()).hexdigest()[:16]
+        return f"codegen-project-{worker_scope}-{service_scope}:generated"
+
+    def apply(self, data: dict[str, Any], worker_id: str) -> None:
+        """Replace worker-selected global identities in the manager-owned effective plan."""
+        services = data.get("services")
+        if not isinstance(services, dict):
+            raise ValueError("Resolved Compose configuration must contain services")
+        for service_name, service in services.items():
+            if not isinstance(service, dict):
+                raise ValueError(f"Service '{service_name}' must be a mapping")
+            if service.get("build") is not None:
+                service["image"] = self.build_image(worker_id, str(service_name))
+        volumes = data.get("volumes")
+        if isinstance(volumes, dict):
+            for volume in volumes.values():
+                if isinstance(volume, dict):
+                    # `config` materializes Compose's project-derived volume name.
+                    # Drop it so execution re-derives the identity from its fixed
+                    # project name, and so a user-selected global name cannot persist.
+                    volume.pop("name", None)
+
+    def validate_source(self, data: dict[str, Any], errors: list[str]) -> None:
+        """Reject source declarations that can reserve global Docker identities."""
+        services = data.get("services", {})
+        if isinstance(services, dict):
+            for service_name, service in services.items():
+                if isinstance(service, dict) and "container_name" in service:
+                    errors.append(f"Service '{service_name}': container_name is not allowed")
+        volumes = data.get("volumes")
+        if volumes is None:
+            return
+        if not isinstance(volumes, dict):
+            errors.append("Compose volumes must be a mapping")
+            return
+        for volume_name, volume in volumes.items():
+            if isinstance(volume, dict) and "name" in volume:
+                errors.append(f"Volume '{volume_name}': name is not allowed")
+
+    def validate_effective(self, data: dict[str, Any], worker_id: str, errors: list[str]) -> None:
+        """Check the resolved plan after manager-owned resource identities apply."""
+        services = data.get("services")
+        if isinstance(services, dict):
+            for service_name, service in services.items():
+                if not isinstance(service, dict):
+                    continue
+                name = str(service_name)
+                if "container_name" in service:
+                    errors.append(f"Service '{name}': container_name is not allowed")
+                if service.get("build") is not None:
+                    expected_image = self.build_image(worker_id, name)
+                    if service.get("image") != expected_image:
+                        errors.append(f"Service '{name}': build image must be '{expected_image}'")
+        volumes = data.get("volumes")
+        if isinstance(volumes, dict):
+            for volume_name, volume in volumes.items():
+                if isinstance(volume, dict) and "name" in volume:
+                    errors.append(f"Volume '{volume_name}': name is not allowed")
+
+    def assert_snapshot(self, data: dict[str, Any], worker_id: str) -> None:
+        """Keep every persisted execution plan on manager-owned global identities."""
+        errors: list[str] = []
+        self.validate_effective(data, worker_id, errors)
+        if errors:
+            raise ValueError(errors[0])
+
+
+RESOURCE_IDENTITY_POLICY = ResourceIdentityPolicy()
 
 
 # Compose v2.27.1 is pinned in services/worker-manager/Dockerfile. This is the
@@ -526,6 +603,7 @@ def validate_compose_file(
         return ValidationResult(valid=False, errors=["'services' must be a mapping"])
 
     errors: list[str] = []
+    RESOURCE_IDENTITY_POLICY.validate_source(data, errors)
     for service_name, service_config in services.items():
         if not isinstance(service_config, dict):
             errors.append(f"Service '{service_name}' must be a mapping")
@@ -642,6 +720,7 @@ def validate_effective_compose(data: Any, worker_id: str, workspace_path: Path |
             errors.append(f"Resolved Compose default network must be external '{expected_network}'")
 
     _validate_named_volumes(data, errors)
+    RESOURCE_IDENTITY_POLICY.validate_effective(data, worker_id, errors)
     _validate_file_sources("secrets", data.get("secrets"), workspace_path, errors)
     _validate_file_sources("configs", data.get("configs"), workspace_path, errors)
 

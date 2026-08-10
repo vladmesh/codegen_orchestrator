@@ -2,6 +2,12 @@
 
 ## 2026-08-10
 
+- Made worker-manager the sole producer of Docker-global identities in generated
+  Compose plans. Build services receive a manager-derived per-worker/service
+  output tag, while source-declared volume `name` and `container_name` fail
+  closed. Resolver-materialized volume names are removed from the immutable
+  plan so the fixed Compose project name derives them again at execution.
+
 - Replaced worker-manager's source-only Compose admission table with one
   host-capability policy for resolution and build execution. Generated builds
   now admit only static workspace-contained `context`/`dockerfile` and build

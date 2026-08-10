@@ -1,12 +1,14 @@
-import subprocess
+import json
 import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
 from src.compose_runner import ComposeInvocation, ComposeRunner, _write_snapshot
-from src.compose_validator import validate_effective_compose
+from src.compose_validator import RESOURCE_IDENTITY_POLICY, validate_effective_compose
 
 SAFE_EFFECTIVE_CONFIG = (
     '{"services":{"db":{"image":"postgres:16","networks":{"default":null},"deploy":{"resources":'
@@ -21,6 +23,13 @@ def _safe_compose_result():
     result.stdout = SAFE_EFFECTIVE_CONFIG
     result.stderr = ""
     return result
+
+
+def _real_docker_available() -> bool:
+    executable = shutil.which("docker")
+    if executable is None:
+        return False
+    return subprocess.run([executable, "info"], capture_output=True, check=False).returncode == 0
 
 
 @pytest.fixture
@@ -74,6 +83,29 @@ class TestComposeRunner:
                 invocation,
                 {"services": {"app": {"build": {"context": str(tmp_path), "cache_to": ["type=local"]}}}},
                 ["build"],
+            )
+
+        assert not snapshot.exists()
+
+    def test_snapshot_compiler_rejects_daemon_global_resource_identities(self, tmp_path):
+        snapshot = tmp_path / "compose.resolved.yml"
+        invocation = ComposeInvocation(
+            command=[],
+            config_command=[],
+            cwd=tmp_path,
+            env={},
+            source_files=[],
+            workspace_path=tmp_path,
+            project_directory=tmp_path,
+            project_name="worker_worker-123",
+            snapshot_path=snapshot,
+        )
+
+        with pytest.raises(ValueError, match="container_name"):
+            _write_snapshot(
+                invocation,
+                {"services": {"app": {"container_name": "worker-manager"}}},
+                ["up"],
             )
 
         assert not snapshot.exists()
@@ -303,6 +335,8 @@ class TestComposeRunner:
 
         result = validate_effective_compose(resolved, "fixture", workspace)
         assert result.valid, result.errors
+        assert resolved["services"]["db"]["image"] == "postgres:16"
+        assert "name" not in resolved["volumes"]["db_data"]
 
     def test_service_template_has_no_label_file_compatibility_consumer(self):
         fixture = Path(__file__).parents[4] / "shared/tests/fixtures/service-template-0.3.6"
@@ -624,6 +658,114 @@ class TestComposeRunner:
         assert victim_snapshot.is_file()
         assert victim_snapshot.read_text() == "victim plan\n"
         assert not (workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml").exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [["build"], ["up", "--build"], ["up", "-d"]])
+    async def test_manager_replaces_build_output_tag_for_every_create_route(self, workspace, args):
+        compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
+        compose.write_text(
+            "services:\n  db:\n    image: codegen-orchestrator/victim:latest\n    build:\n      context: ..\n"
+        )
+        resolved = _safe_compose_result()
+        resolved.stdout = json.dumps(
+            {
+                "services": {
+                    "db": {
+                        "image": "codegen-orchestrator/victim:latest",
+                        "build": {"context": str(workspace / "worker-123" / "workspace")},
+                        "networks": {"default": None},
+                        "deploy": {"resources": {"limits": {"cpus": "1.0", "memory": "512M"}}},
+                    }
+                },
+                "networks": {"default": {"name": "dev_proj_worker-123", "external": True}},
+            }
+        )
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run", return_value=resolved):
+            await runner.run("worker-123", args)
+
+        snapshot = workspace / ".compose-plans" / "worker-123" / "compose.resolved.yml"
+        assert RESOURCE_IDENTITY_POLICY.build_image("worker-123", "db") in snapshot.read_text()
+        assert "codegen-orchestrator/victim:latest" not in snapshot.read_text()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "services:\n  db:\n    image: postgres:16\n    container_name: worker-manager\n",
+            "services:\n  db:\n    image: postgres:16\nvolumes:\n  data:\n    name: victim-data\n",
+        ],
+    )
+    async def test_daemon_global_resource_identities_are_rejected_before_resolution(self, workspace, content):
+        compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
+        compose.write_text(content)
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="container_name|Volume 'data': name"):
+                await runner.run("worker-123", ["up", "-d"])
+
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_real_daemon_resource_identity_policy_preserves_victim_resources(self, tmp_path):
+        if not _real_docker_available():
+            pytest.skip("Docker daemon is unavailable")
+        token = uuid4().hex
+        worker_id = f"probe-{token[:12]}"
+        victim_image = f"codegen-1163-victim-{token}:latest"
+        victim_volume = f"codegen-1163-volume-{token}"
+        victim_container = f"codegen-1163-container-{token}"
+        output_image = RESOURCE_IDENTITY_POLICY.build_image(worker_id, "app")
+        workspace = tmp_path / "workspace"
+        infra = workspace / "infra"
+        infra.mkdir(parents=True)
+        dockerfile = workspace / "Dockerfile"
+        dockerfile.write_text("FROM scratch\nLABEL marker=victim\n")
+        docker = shutil.which("docker")
+        assert docker is not None
+
+        def docker_run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([docker, *args], check=check, capture_output=True, text=True)
+
+        docker_run("build", "-t", victim_image, str(workspace))
+        victim_before = docker_run("image", "inspect", "--format", "{{.Id}}", victim_image).stdout.strip()
+        dockerfile.write_text("FROM scratch\nLABEL marker=worker\n")
+        (infra / "compose.base.yml").write_text(
+            f"services:\n  app:\n    image: {victim_image}\n    build:\n      context: ..\n"
+        )
+        (infra / "compose.dev.yml").write_text("services: {}\n")
+        runner = ComposeRunner(str(tmp_path))
+        try:
+            await runner.run(worker_id, ["build"], workspace_dir=str(workspace))
+            assert docker_run("image", "inspect", "--format", "{{.Id}}", victim_image).stdout.strip() == victim_before
+            assert docker_run("image", "inspect", output_image).returncode == 0
+
+            docker_run("volume", "create", victim_volume)
+            docker_run("create", "--name", victim_container, victim_image, "/bin/false")
+            (infra / "compose.base.yml").write_text(
+                "services:\n"
+                "  app:\n"
+                f"    image: {victim_image}\n"
+                f"    container_name: {victim_container}\n"
+                "    volumes:\n"
+                "      - data:/data\n"
+                "volumes:\n"
+                "  data:\n"
+                f"    name: {victim_volume}\n"
+            )
+            with pytest.raises(ValueError, match="container_name.*name"):
+                await runner.run(worker_id, ["up", "-d"], workspace_dir=str(workspace))
+
+            assert docker_run("volume", "inspect", victim_volume).returncode == 0
+            assert docker_run("container", "inspect", victim_container).returncode == 0
+            assert not (tmp_path / ".compose-plans" / "victim").exists()
+        finally:
+            docker_run("container", "rm", "-f", victim_container, check=False)
+            docker_run("volume", "rm", victim_volume, check=False)
+            docker_run("image", "rm", "-f", output_image, check=False)
+            docker_run("image", "rm", "-f", victim_image, check=False)
 
     @pytest.mark.asyncio
     async def test_recovery_rejects_worker_selected_compose_files(self, workspace):

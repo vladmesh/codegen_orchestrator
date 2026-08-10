@@ -4,6 +4,7 @@ import pytest
 
 from src.compose_validator import (
     COMPOSE_HOST_CAPABILITY_POLICIES,
+    RESOURCE_IDENTITY_POLICY,
     validate_command,
     validate_compose_file,
     validate_effective_compose,
@@ -147,6 +148,23 @@ services:
 """
         result = validate_compose_file(content)
         assert result.valid, result.errors
+
+    def test_daemon_global_resource_identities_are_rejected_at_source(self):
+        content = """
+services:
+  app:
+    image: alpine
+    container_name: worker-manager
+volumes:
+  data:
+    name: orchestrator-data
+"""
+
+        result = validate_compose_file(content)
+
+        assert not result.valid, result.errors
+        assert "container_name" in result.errors[0]
+        assert "name" in result.errors[1]
 
     def test_named_volume_allowed(self):
         content = """
@@ -329,6 +347,30 @@ class TestValidateEffectiveCompose:
         result = validate_effective_compose(_safe_effective_compose(), "worker-123")
         assert result.valid, result.errors
 
+    def test_build_output_tag_must_be_manager_derived(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        compose = _safe_effective_compose()
+        compose["services"]["db"].update(build={"context": str(workspace)}, image="codegen-orchestrator/victim:latest")
+
+        result = validate_effective_compose(compose, "worker-123", workspace)
+
+        assert not result.valid, result.errors
+        assert result.errors == [
+            f"Service 'db': build image must be '{RESOURCE_IDENTITY_POLICY.build_image('worker-123', 'db')}'"
+        ]
+
+    def test_effective_daemon_global_resource_identities_are_rejected(self):
+        compose = _safe_effective_compose()
+        compose["services"]["db"]["container_name"] = "worker-manager"
+        compose["volumes"] = {"data": {"name": "orchestrator-data"}}
+
+        result = validate_effective_compose(compose, "worker-123")
+
+        assert not result.valid, result.errors
+        assert any("container_name" in error for error in result.errors)
+        assert any("Volume 'data': name" in error for error in result.errors)
+
     @pytest.mark.parametrize(
         ("field", "value"),
         [
@@ -466,6 +508,7 @@ class TestValidateEffectiveCompose:
             "context": str(build_context),
             "dockerfile": "Dockerfile",
         }
+        compose["services"]["db"]["image"] = RESOURCE_IDENTITY_POLICY.build_image("worker-123", "db")
 
         result = validate_effective_compose(compose, "worker-123", workspace)
 
@@ -497,6 +540,7 @@ class TestValidateEffectiveCompose:
             "context": str(workspace),
             build_key: ["type=local,dest=/manager-owned-path"],
         }
+        compose["services"]["db"]["image"] = RESOURCE_IDENTITY_POLICY.build_image("worker-123", "db")
 
         result = validate_effective_compose(compose, "worker-123", workspace)
 

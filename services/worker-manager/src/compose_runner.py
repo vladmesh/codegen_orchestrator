@@ -10,6 +10,7 @@ import yaml
 
 from .compose_validator import (
     CONTAINER_CREATING_COMMANDS,
+    RESOURCE_IDENTITY_POLICY,
     VALUE_FLAGS,
     assert_permitted_build_shape,
     validate_command,
@@ -72,6 +73,7 @@ class ComposeInvocation:
     project_directory: Path
     project_name: str
     snapshot_path: Path | None = None
+    worker_id: str = ""
 
 
 def _generate_network_override(worker_id: str) -> str:
@@ -88,11 +90,12 @@ def _generate_network_override(worker_id: str) -> str:
     return f"networks:\n  default:\n    name: {network_name}\n    external: true\n"
 
 
-def _apply_effective_overrides(data: dict) -> None:
-    """Apply manager-owned limits and port policy to the resolved project."""
+def _apply_effective_overrides(data: dict, worker_id: str) -> None:
+    """Apply manager-owned resource identities, limits, and port policy to the resolved project."""
     services = data.get("services")
     if not isinstance(services, dict):
         raise ValueError("Resolved Compose configuration must contain services")
+    RESOURCE_IDENTITY_POLICY.apply(data, worker_id)
     for name, service in services.items():
         if not isinstance(service, dict):
             raise ValueError(f"Service '{name}' must be a mapping")
@@ -120,6 +123,7 @@ def _write_snapshot(invocation: ComposeInvocation, data: dict, command_args: lis
             if directive in service:
                 raise ValueError(f"Service '{service_name}': {directive} cannot be retained in an execution snapshot")
         assert_permitted_build_shape(service_name, service)
+    RESOURCE_IDENTITY_POLICY.assert_snapshot(data, invocation.worker_id)
     plan_directory = invocation.snapshot_path.parent if invocation.snapshot_path else None
     if plan_directory is None:
         raise ValueError("Compose plan directory is unavailable")
@@ -343,6 +347,7 @@ class ComposeRunner:
             project_directory=project_directory,
             project_name=project_name,
             snapshot_path=plan_directory / "compose.resolved.yml",
+            worker_id=worker_id,
         )
 
     def _prepare_recovery_invocation(
@@ -423,7 +428,7 @@ class ComposeRunner:
         if not isinstance(data, dict):
             raise ValueError("docker compose config returned no project mapping")  # noqa: TRY004
         if self._subcommand(args) in CONTAINER_CREATING_COMMANDS:
-            _apply_effective_overrides(data)
+            _apply_effective_overrides(data, worker_id)
             policy_result = validate_effective_compose(data, worker_id, invocation.workspace_path)
             if not policy_result.valid:
                 raise ValueError("; ".join(policy_result.errors))
