@@ -62,6 +62,7 @@ class ComposeInvocation:
     env: dict[str, str]
     source_files: list[str]
     workspace_path: Path
+    project_directory: Path
     project_name: str
     snapshot_path: Path | None = None
 
@@ -113,6 +114,8 @@ def _write_snapshot(invocation: ComposeInvocation, data: dict, command_args: lis
         "compose",
         "--project-name",
         invocation.project_name,
+        "--project-directory",
+        str(invocation.project_directory),
         "-f",
         str(snapshot_path),
         *command_args,
@@ -159,7 +162,9 @@ class ComposeRunner:
         return result
 
     @staticmethod
-    def _validate_source_tree(source: Path, workspace_path: Path, seen: set[Path] | None = None) -> None:
+    def _validate_source_tree(
+        source: Path, workspace_path: Path, project_directory: Path, seen: set[Path] | None = None
+    ) -> None:
         """Validate selected Compose files and every file reached through ``extends``."""
         seen = seen or set()
         try:
@@ -172,7 +177,12 @@ class ComposeRunner:
         seen.add(source)
         try:
             content = source.read_text()
-            source_result = validate_compose_file(content, source_file=source, workspace_path=workspace_path)
+            source_result = validate_compose_file(
+                content,
+                source_file=source,
+                workspace_path=workspace_path,
+                project_directory=project_directory,
+            )
             data = yaml.safe_load(content)
         except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
             raise ValueError(f"Compose source cannot be resolved: {source}: {exc}") from exc
@@ -184,7 +194,9 @@ class ComposeRunner:
         for service in services.values():
             extends = service.get("extends") if isinstance(service, dict) else None
             if isinstance(extends, dict) and isinstance(extends.get("file"), str):
-                ComposeRunner._validate_source_tree(source.parent / extends["file"], workspace_path, seen)
+                ComposeRunner._validate_source_tree(
+                    project_directory / extends["file"], workspace_path, project_directory, seen
+                )
 
     def _prepare_invocation(
         self,
@@ -241,13 +253,24 @@ class ComposeRunner:
             for compose_file in source_files:
                 default_file_args.extend(["-f", compose_file])
 
+        compose_sources: list[Path] = []
+        for compose_file in source_files:
+            try:
+                source = (effective_cwd / compose_file).resolve()
+                source.relative_to(worker_workspace_resolved)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Compose source cannot be resolved: {compose_file}") from exc
+            if not source.is_file():
+                raise ValueError(f"Compose source cannot be resolved: {compose_file}")
+            compose_sources.append(source)
+        project_directory = compose_sources[0].parent
+
         network_args: list[str] = []
         if subcommand in _NETWORK_INJECTION_COMMANDS:
             override_path = plan_directory / _NETWORK_OVERRIDE_FILENAME
             override_path.write_text(_generate_network_override(worker_id))
-            compose_sources = [effective_cwd / compose_file for compose_file in source_files]
             for source in compose_sources:
-                self._validate_source_tree(source, worker_workspace_resolved)
+                self._validate_source_tree(source, worker_workspace_resolved, project_directory)
             network_args = ["-f", str(override_path)]
 
         env_file_args: list[str] = []
@@ -260,6 +283,8 @@ class ComposeRunner:
             "compose",
             "--project-name",
             project_name,
+            "--project-directory",
+            str(project_directory),
             *env_file_args,
             *file_args,
             *default_file_args,
@@ -278,6 +303,7 @@ class ComposeRunner:
             env=run_env,
             source_files=source_files,
             workspace_path=worker_workspace_resolved,
+            project_directory=project_directory,
             project_name=project_name,
             snapshot_path=plan_directory / "compose.resolved.yml",
         )
@@ -289,6 +315,8 @@ class ComposeRunner:
         command_result = validate_command(args)
         if not command_result.valid:
             raise ValueError("; ".join(command_result.errors))
+        if any(arg in ("-f", "--file") for arg in args):
+            raise ValueError("Recovery commands do not allow worker-selected Compose files")
         workspace = Path(workspace_dir) if workspace_dir else self.workspace_base_path / worker_id / "workspace"
         if not workspace.is_dir():
             raise ValueError(f"Workspace for worker '{worker_id}' does not exist: {workspace}")
@@ -298,12 +326,21 @@ class ComposeRunner:
         environment["HOST_GID"] = "1000"
         project_name = f"worker_{worker_id}"
         return ComposeInvocation(
-            command=[str(_DOCKER_EXECUTABLE), "compose", "--project-name", project_name, *args],
+            command=[
+                str(_DOCKER_EXECUTABLE),
+                "compose",
+                "--project-name",
+                project_name,
+                "--project-directory",
+                str(plan_directory),
+                *args,
+            ],
             config_command=[],
             cwd=plan_directory,
             env=environment,
             source_files=[],
             workspace_path=workspace.resolve(),
+            project_directory=plan_directory,
             project_name=project_name,
         )
 

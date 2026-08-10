@@ -84,7 +84,10 @@ class TestComposeApi:
 
         assert response.status_code == 200
         assert mock_run.call_count == 2
-        assert "config" in mock_run.call_args_list[0].args[0]
+        config_command = mock_run.call_args_list[0].args[0]
+        assert "config" in config_command
+        project_directory_index = config_command.index("--project-directory")
+        assert config_command[project_directory_index + 1] == str(infra)
         assert "compose.resolved.yml" in " ".join(mock_run.call_args_list[1].args[0])
 
     def test_direct_request_without_broker_credential_is_rejected(self, client):

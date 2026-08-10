@@ -23,6 +23,11 @@
   their validated build context, preserving safe service-template builds while
   rejecting a Dockerfile path that escapes the worker workspace.
 
+- Pinned worker Compose source validation and execution to the first selected
+  file's project directory, so multi-file source paths cannot resolve against a
+  different base before inspection. Build-network selection is now unsupported,
+  and recovery commands reject worker-selected Compose files.
+
 ## 2026-08-09
 
 - Added executable worker-broker acceptance regressions: resolved production

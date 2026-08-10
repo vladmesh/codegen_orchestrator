@@ -252,14 +252,30 @@ class TestComposeRunner:
     @pytest.mark.asyncio
     async def test_real_service_template_resolution_passes_the_production_validator(self, tmp_path):
         fixture = Path(__file__).parents[4] / "shared/tests/fixtures/service-template-0.3.6"
-        if not shutil.which("docker"):
-            pytest.skip("Docker Compose CLI is unavailable")
         workspace = tmp_path / "workspace"
         shutil.copytree(fixture, workspace)
         (workspace / ".env").write_text("POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n")
         runner = ComposeRunner(str(tmp_path))
 
         resolved, _ = await runner.inspect("fixture", ["up", "-d"], workspace_dir=str(workspace))
+
+        result = validate_effective_compose(resolved, "fixture", workspace)
+        assert result.valid, result.errors
+
+    @pytest.mark.asyncio
+    async def test_real_documented_integration_resolution_passes_the_production_validator(self, tmp_path):
+        fixture = Path(__file__).parents[4] / "shared/tests/fixtures/service-template-0.3.6"
+        workspace = tmp_path / "workspace"
+        shutil.copytree(fixture, workspace)
+        (workspace / ".env").write_text("POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=postgres\nPOSTGRES_DB=service\n")
+        (workspace / "infra" / ".env.test").write_text("POSTGRES_PASSWORD=postgres\n")
+        runner = ComposeRunner(str(tmp_path))
+
+        resolved, _ = await runner.inspect(
+            "fixture",
+            ["-f", "infra/compose.tests.integration.yml", "run", "integration-tests"],
+            workspace_dir=str(workspace),
+        )
 
         result = validate_effective_compose(resolved, "fixture", workspace)
         assert result.valid, result.errors
@@ -371,8 +387,11 @@ class TestComposeRunner:
         config_command = mock_run.call_args_list[0].args[0]
         execution_command = mock_run.call_args_list[1].args[0]
         assert config_command[:4] == [config_command[0], "compose", "--project-name", "worker_worker-123"]
+        project_directory_index = config_command.index("--project-directory")
+        assert config_command[project_directory_index + 1] == str(workspace / "worker-123" / "workspace" / "infra")
         assert ".codegen-network.yml" in " ".join(config_command)
         assert config_command[-3:] == ["config", "--format", "json"]
+        assert "--project-directory" in execution_command
         assert "compose.resolved.yml" in " ".join(execution_command)
 
     @pytest.mark.asyncio
@@ -412,6 +431,50 @@ class TestComposeRunner:
         with patch("subprocess.run") as mock_run:
             with pytest.raises(ValueError, match="env_file"):
                 await runner.run("worker-123", ["up", "-d"])
+
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multi_file_source_paths_use_the_first_file_project_directory(self, workspace):
+        root = workspace / "worker-123" / "workspace"
+        nested = root / "a" / "b" / "c" / "d" / "e"
+        nested.mkdir(parents=True)
+        (nested / "override.yml").write_text(
+            "services:\n  db:\n    image: postgres:16\n    env_file: ../../../../HOSTSECRET.env\n"
+        )
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="env_file"):
+                await runner.inspect(
+                    "worker-123",
+                    ["-f", "infra/compose.base.yml", "-f", "a/b/c/d/e/override.yml", "up", "-d"],
+                )
+
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [["build"], ["up", "--build"]])
+    async def test_build_network_is_rejected_before_create_execution(self, workspace, args):
+        compose = workspace / "worker-123" / "workspace" / "infra" / "compose.dev.yml"
+        compose.write_text(
+            "services:\n  db:\n    build:\n      context: ..\n      dockerfile: Dockerfile\n      network: host\n"
+        )
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="build network"):
+                await runner.run("worker-123", args)
+
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recovery_rejects_worker_selected_compose_files(self, workspace):
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="Recovery.*file"):
+                await runner.run("worker-123", ["-f", "/etc/shadow", "ps"])
 
         mock_run.assert_not_called()
 

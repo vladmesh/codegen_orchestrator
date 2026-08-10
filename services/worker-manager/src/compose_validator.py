@@ -168,6 +168,8 @@ def _validate_build(service_name: str, config: dict[str, Any], workspace_path: P
                 errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
         elif not isinstance(context, str) or not _is_within_workspace(str(Path(context) / dockerfile), workspace_path):
             errors.append(f"Service '{service_name}': build.dockerfile must remain within the worker workspace")
+    if build.get("network") is not None:
+        errors.append(f"Service '{service_name}': build.network is not supported")
     for key in ("additional_contexts", "secrets", "ssh"):
         if build.get(key):
             errors.append(f"Service '{service_name}': build.{key} is not supported")
@@ -291,20 +293,22 @@ def validate_command(args: list[str]) -> ValidationResult:
     return ValidationResult(valid=not errors, errors=errors)
 
 
-def _source_path(value: Any, source_file: Path, workspace_path: Path, errors: list[str], label: str) -> None:
+def _source_path(value: Any, project_directory: Path, workspace_path: Path, errors: list[str], label: str) -> None:
     if not isinstance(value, str) or not value:
         errors.append(f"{label} must be a non-empty workspace path")
         return
     try:
-        resolved = (source_file.parent / value).resolve()
+        resolved = (project_directory / value).resolve()
         resolved.relative_to(workspace_path.resolve())
     except (OSError, ValueError):
         errors.append(f"{label} must remain within the worker workspace")
 
 
-def _source_path_values(value: Any, source_file: Path, workspace_path: Path, errors: list[str], label: str) -> None:
+def _source_path_values(
+    value: Any, project_directory: Path, workspace_path: Path, errors: list[str], label: str
+) -> None:
     if isinstance(value, str):
-        _source_path(value, source_file, workspace_path, errors, label)
+        _source_path(value, project_directory, workspace_path, errors, label)
         return
     if not isinstance(value, list):
         errors.append(f"{label} must be a workspace path or list of workspace paths")
@@ -312,29 +316,29 @@ def _source_path_values(value: Any, source_file: Path, workspace_path: Path, err
     for item in value:
         if isinstance(item, dict):
             item = item.get("path")
-        _source_path(item, source_file, workspace_path, errors, label)
+        _source_path(item, project_directory, workspace_path, errors, label)
 
 
 def _validate_source_build(
-    service_name: str, config: dict[str, Any], source_file: Path, workspace_path: Path, errors: list[str]
+    service_name: str, config: dict[str, Any], project_directory: Path, workspace_path: Path, errors: list[str]
 ) -> None:
     build = config.get("build")
     if build is None:
         return
     if isinstance(build, str):
-        _source_path(build, source_file, workspace_path, errors, f"Service '{service_name}': build context")
+        _source_path(build, project_directory, workspace_path, errors, f"Service '{service_name}': build context")
         return
     if not isinstance(build, dict):
         errors.append(f"Service '{service_name}': build must be a mapping")
         return
     context = build.get("context", ".")
-    _source_path(context, source_file, workspace_path, errors, f"Service '{service_name}': build context")
+    _source_path(context, project_directory, workspace_path, errors, f"Service '{service_name}': build context")
     if "dockerfile" in build:
         # Dockerfile is relative to the build context, unlike other Compose paths.
         if isinstance(context, str) and isinstance(build["dockerfile"], str):
             _source_path(
                 str(Path(context) / build["dockerfile"]),
-                source_file,
+                project_directory,
                 workspace_path,
                 errors,
                 f"Service '{service_name}': build dockerfile",
@@ -349,11 +353,17 @@ def _validate_source_build(
             values = list(value.values())
         else:
             values = value
-        _source_path_values(values, source_file, workspace_path, errors, f"Service '{service_name}': build {key}")
+        _source_path_values(values, project_directory, workspace_path, errors, f"Service '{service_name}': build {key}")
+    if build.get("network") is not None:
+        errors.append(f"Service '{service_name}': build network is not supported")
 
 
 def validate_compose_file(
-    content: str, *, source_file: Path | None = None, workspace_path: Path | None = None
+    content: str,
+    *,
+    source_file: Path | None = None,
+    workspace_path: Path | None = None,
+    project_directory: Path | None = None,
 ) -> ValidationResult:
     """Validate an individual selected Compose source before configuration resolution.
 
@@ -378,19 +388,21 @@ def validate_compose_file(
         _validate_volumes(str(service_name), service_config, errors)
         if source_file is None or workspace_path is None:
             continue
+        source_base = project_directory or source_file.parent
         name = str(service_name)
         if "env_file" in service_config:
             _source_path_values(
-                service_config["env_file"], source_file, workspace_path, errors, f"Service '{name}': env_file"
+                service_config["env_file"], source_base, workspace_path, errors, f"Service '{name}': env_file"
             )
         extends = service_config.get("extends")
         if isinstance(extends, dict) and "file" in extends:
-            _source_path(extends["file"], source_file, workspace_path, errors, f"Service '{name}': extends file")
+            _source_path(extends["file"], source_base, workspace_path, errors, f"Service '{name}': extends file")
         elif extends is not None and not isinstance(extends, dict):
             errors.append(f"Service '{name}': extends must be a mapping")
-        _validate_source_build(name, service_config, source_file, workspace_path, errors)
+        _validate_source_build(name, service_config, source_base, workspace_path, errors)
 
     if source_file is not None and workspace_path is not None:
+        source_base = project_directory or source_file.parent
         if data.get("include"):
             errors.append("Compose include is not supported")
         for kind in ("secrets", "configs"):
@@ -406,7 +418,7 @@ def validate_compose_file(
                     errors.append(f"{kind.title()} '{name}': external sources are not allowed")
                 if "file" in definition:
                     _source_path(
-                        definition["file"], source_file, workspace_path, errors, f"{kind.title()} '{name}': file"
+                        definition["file"], source_base, workspace_path, errors, f"{kind.title()} '{name}': file"
                     )
     return ValidationResult(valid=not errors, errors=errors)
 

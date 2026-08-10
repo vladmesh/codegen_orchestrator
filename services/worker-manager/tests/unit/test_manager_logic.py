@@ -366,7 +366,10 @@ async def test_delete_worker_uses_real_runner_recovery_profile(tmp_path):
 
     command = mock_run.call_args.args[0]
     assert Path(command[0]).is_absolute()
-    assert command[1:] == ["compose", "--project-name", f"worker_{worker_id}", "down", "-v"]
+    assert command[:4] == [command[0], "compose", "--project-name", f"worker_{worker_id}"]
+    assert command[4:6] == ["--project-directory", str(tmp_path / ".compose-plans" / worker_id)]
+    assert command[6:] == ["down", "-v"]
+    assert "-f" not in command
     assert mock_run.call_args.kwargs["cwd"] == str(tmp_path / ".compose-plans" / worker_id)
     assert not (tmp_path / ".compose-plans" / worker_id).exists()
     wrapper.remove_container.assert_awaited_with(f"worker-{worker_id}", force=True)

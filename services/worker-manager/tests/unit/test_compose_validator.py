@@ -204,6 +204,24 @@ services:
 
         assert not result.valid, result.errors
 
+    def test_source_paths_use_the_fixed_compose_project_directory(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        project_directory = workspace / "infra"
+        nested_source = workspace / "a" / "b" / "c" / "d" / "e" / "override.yml"
+        project_directory.mkdir(parents=True)
+        nested_source.parent.mkdir(parents=True)
+        nested_source.write_text("services:\n  app:\n    image: alpine\n    env_file: ../../../../HOSTSECRET.env\n")
+
+        result = validate_compose_file(
+            nested_source.read_text(),
+            source_file=nested_source,
+            workspace_path=workspace,
+            project_directory=project_directory,
+        )
+
+        assert not result.valid, result.errors
+        assert any("env_file" in error for error in result.errors)
+
 
 class TestResolveComposePath:
     def test_valid_path_resolved(self, tmp_path):
@@ -389,3 +407,14 @@ class TestValidateEffectiveCompose:
 
         assert not escaped_result.valid
         assert any("build.dockerfile" in error for error in escaped_result.errors)
+
+    def test_build_network_is_rejected(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        compose = _safe_effective_compose()
+        compose["services"]["db"]["build"] = {"context": str(workspace), "network": "host"}
+
+        result = validate_effective_compose(compose, "worker-123", workspace)
+
+        assert not result.valid, result.errors
+        assert any("build.network" in error for error in result.errors)
