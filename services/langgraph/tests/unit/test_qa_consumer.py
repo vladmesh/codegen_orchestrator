@@ -20,9 +20,11 @@ from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployRunStart
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
+from shared.contracts.vocab import AgentType
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
 from shared.telegram_access_probe import ProbeRun
 from src.consumers.qa import (
@@ -135,12 +137,20 @@ def mock_redis():
 
 @pytest.fixture(autouse=True)
 def _qa_runtime_configured():
-    """Exploratory QA runs centrally, so the consumer needs an LLM configured."""
+    """The production configuration: a subscription executor and no API triplet.
+
+    Every consumer test below runs with `QA_LLM_*` empty on purpose. That is
+    what a deployment looks like when exploratory QA is performed by the
+    assigned coding agent, and nothing in the consumer may treat it as missing
+    configuration.
+    """
     with patch("src.consumers.qa.get_settings") as get_settings:
         get_settings.return_value = SimpleNamespace(
-            qa_llm_model="anthropic/claude-sonnet-4-5",
-            qa_llm_base_url="https://llm.example.com/v1",
-            qa_llm_api_key="test-key",
+            qa_executor_agent_type=AgentType.CLAUDE,
+            qa_capability_host="qa-worker",
+            qa_llm_model=None,
+            qa_llm_base_url=None,
+            qa_llm_api_key=None,
         )
         yield
 
@@ -494,24 +504,60 @@ class TestProcessQAJobFail:
         mock_api_client.create_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_run_without_the_qa_llm_is_blocked_not_silently_passed(
+    async def test_an_empty_api_triplet_does_not_stop_a_run(
         self, mock_api_client, mock_redis, qa_message_data
     ):
-        """Exploratory QA needs an LLM here; without one there is no verdict."""
+        """`QA_LLM_*` empty is a production configuration, not a missing prerequisite.
+
+        This replaces a test that asserted the opposite — that a run without the
+        triplet is blocked before anything is attempted. That was true while the
+        triplet was the only executor. It is now an optional fallback behind the
+        assigned subscription agent, so refusing the run here would refuse every
+        correctly configured deployment.
+        """
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "passed"
+        mock_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_executor_is_an_infrastructure_outcome_with_an_admin_alert(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """A platform failure reaches an administrator, and never the fix loop."""
+        from src.consumers._qa_runner import QAResult
+
+        blocker = QABlocker(
+            category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+            attempted="run exploratory QA on the assigned executor (claude)",
+            sent="QA_LLM_MODEL, QA_LLM_BASE_URL, QA_LLM_API_KEY",
+            received="the subscription session is not usable",
+        )
         with (
-            patch("src.consumers.qa.get_settings") as get_settings,
-            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_agent,
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run,
+            patch("src.consumers.qa.notify_admins_best_effort", new_callable=AsyncMock) as notify,
         ):
-            get_settings.return_value = SimpleNamespace(
-                qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None
+            mock_run.return_value = QAResult(
+                passed=False, checks=[], summary="no executor", raw="", blocker=blocker
             )
             result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "qa_blocked"
-        mock_agent.assert_not_called()
         run_data = mock_api_client.patch.call_args[1]["json"]
-        assert run_data["result"]["blocker"]["category"] == "claude_unavailable"
-        assert "QA_LLM_MODEL" in run_data["result"]["blocker"]["sent"]
+        assert run_data["result"]["blocker"]["category"] == "qa_executor_unavailable"
+        # Not a product verdict: nothing is asked of engineering.
+        mock_api_client.create_task.assert_not_called()
+        # And the alert is an alert, carrying what a human needs to act.
+        notify.assert_awaited_once()
+        alert = notify.await_args.args[0]
+        assert "story-1" in alert
+        assert "proj-1" in alert
+        assert "qa-run-1" in alert
+        assert "QA_LLM_MODEL" in alert
 
     @pytest.mark.asyncio
     async def test_max_qa_loops_stores_exhausted_outcome(

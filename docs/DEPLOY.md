@@ -276,14 +276,36 @@ would otherwise sign dashboard tokens with a known key.
 
 ## QA runtime (central)
 
-Exploratory QA runs in the orchestrator, in the `qa-worker` container. Deploy targets carry nothing
-for it: no Claude CLI, no LLM credentials, no Telethon session.
+Exploratory QA is performed on the management host by an ephemeral coding agent that
+`qa-worker` starts through worker-manager, on the same subscription session developer workers use.
+Deploy targets carry nothing for it: no CLI, no LLM credentials, no Telethon session.
 
 **What the QA runtime needs** (all in the orchestrator `.env`):
-- `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — the QA agent. Without them exploratory QA is
-  blocked with `claude_unavailable`; health-only criteria still run, since they use no LLM.
+- `QA_EXECUTOR_AGENT_TYPE` — who performs the run. `claude` by default; `codex` only to assign
+  Codex explicitly. The session itself is `HOST_CLAUDE_DIR` / `HOST_CODEX_HOME`, which
+  worker-manager mounts into the ephemeral QA container.
+- `QA_CAPABILITY_HOST` — how that container addresses `qa-worker`'s per-run capability endpoint.
+  It is the service's name on the `codegen_worker` network and only changes if the service is
+  renamed. `qa-worker` is attached to that network for this and for nothing else.
 - `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION` — the QA Telegram account, needed only
   for projects with a bot.
+- `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — **optional**. An API fallback consulted only
+  after the assigned executor has actually failed to run (no session, expired session, broken CLI,
+  container never started). Leaving all three empty is a supported production configuration. If the
+  executor fails and there is no complete triplet, the run ends as `qa_executor_unavailable` — a
+  QA-infrastructure outcome that alerts administrators and sends the story to human review, never a
+  product defect. Health-only criteria run with no executor at all.
+
+**What the QA container can reach.** It has a shell, and that shell reaches nothing of the platform:
+no SSH key, no fleet key, no Telegram session, no provider key, no repository. Its whole route to
+the deployment is one injected command (`/workspace/qa`) that posts named calls to the per-run
+capability endpoint, which performs them from `qa-worker` with the run's borrowed `qa-observer`
+identity. The endpoint accepts GET-only HTTP calls, reads inside the deployment's physical root,
+and read-only docker sub-commands against the deployment's own containers — the same closed set as
+before. The container does have ordinary outbound internet (its CLI needs the model API), so a
+direct write to the deployment's *public* URL is not physically prevented; it is forbidden in the
+prompt and detected afterwards by the runner's write scan over the tool trace and the container's
+transcript, which fails the run closed with a residual-state record.
 
 **Which identity a run uses.** Not `servers.ssh_user`: that column is the administrative account the
 fleet key opens (`root` on every row `server_sync` creates), and a run holding it would have the

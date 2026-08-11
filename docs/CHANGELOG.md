@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-08-11 (11)
+
+- Exploratory QA is performed by the assigned subscription coding agent again —
+  Claude Code by default, Codex when `QA_EXECUTOR_AGENT_TYPE` says so — started
+  centrally on the management host through the existing worker runtime. There is
+  no second mechanism for starting agents: `clients/qa_worker.py` sends the same
+  `worker:commands` create/status/delete a developer worker is started with, and
+  asks for a `qa` worker, which has no repository, no git credentials, an empty
+  scratch workspace deleted with the container, and one injected command.
+- That command (`shared/qa_probe_cli.py`, installed at `/workspace/qa`) is the
+  container's only route to the deployment. It posts named calls to a per-run
+  capability endpoint served by `qa-worker`
+  (`agents/qa/capability_service.py`), which dispatches into exactly the tool
+  set the in-process agent used — `agents/qa/tools.build_qa_callables`, now the
+  single boundary behind both front-ends. The SSH identity, the fleet key and
+  the Telegram session stay in `qa-worker`; the container holds a URL and a
+  token that stop working when the run ends.
+- `QA_LLM_*` is an optional API fallback, read only after the assigned executor
+  has actually failed to run, and never at startup or at the beginning of a run.
+  Empty values are a supported production configuration. A transient executor
+  failure is retried once (`QA_EXECUTOR_ATTEMPTS`); a missing or broken session
+  is not retried.
+- With no executor and no complete fallback, the run ends as
+  `qa_executor_unavailable` with an administrator alert through
+  `notify_admins_best_effort` carrying story, project, run and what is missing.
+  `QABlockerCategory.CLAUDE_UNAVAILABLE` is removed: it had come to mean only
+  "no LLM API key", which stopped being true.
+- The write guard now also scans what the executor's container reported, since
+  that container has a shell. `qa-worker` joins the `codegen_worker` network so
+  the endpoint is reachable from the executor; see `docs/DEPLOY.md` for what the
+  container can and cannot reach, path by path.
+
 ## 2026-08-11 (10)
 
 - The QA identity is now proved on the target before anything records that a

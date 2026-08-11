@@ -55,7 +55,11 @@ class WorkerConfig(BaseModel):
     """Worker container configuration."""
 
     name: str
-    worker_type: Literal["developer"]  # Worker type for queue naming
+    # "developer" writes code in a pre-scaffolded repository workspace.
+    # "qa" is the central exploratory-QA executor: an ephemeral container with
+    # no repository, no git credentials and nothing to commit, whose only reach
+    # into a deployment is the QA runtime's typed capability endpoint.
+    worker_type: Literal["developer", "qa"]
     agent_type: AgentType  # Which AI agent to use
     instructions: str  # Content for instruction file (CLAUDE.md / AGENTS.md)
     task_content: str | None = None  # Content for TASK.md (optional, for task-driven workers)

@@ -49,8 +49,18 @@ class Settings(BaseSettings):
     architect_llm_base_url: str | None = None
     architect_llm_api_key: str | None = None
 
-    # Optional: QA ReactAgent LLM config. Exploratory QA runs here, centrally —
-    # no deploy target holds an LLM credential.
+    # Who performs exploratory QA. Claude Code on the management host's isolated
+    # subscription session by default; Codex only when assigned explicitly.
+    qa_executor_agent_type: AgentType = AgentType.CLAUDE
+    # How the QA executor's container addresses this runtime's per-run
+    # capability endpoint. It is a name on the worker network, not a URL: the
+    # port is chosen per run and the token with it.
+    qa_capability_host: str = "qa-worker"
+
+    # Optional API fallback for exploratory QA, used only after the assigned
+    # subscription executor has actually failed. Empty values are a valid
+    # production configuration: they are never read at startup, never read
+    # because a run began, and never block a run whose executor works.
     qa_llm_model: str | None = None
     qa_llm_base_url: str | None = None
     qa_llm_api_key: str | None = None

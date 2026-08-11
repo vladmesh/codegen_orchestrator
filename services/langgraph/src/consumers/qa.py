@@ -18,6 +18,7 @@ from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
+from shared.notifications import notify_admins_best_effort
 from shared.qa_identity import (
     QA_SSH_USER_LABEL,
     QAIdentityRejection,
@@ -29,7 +30,6 @@ from shared.redis_client import RedisStreamClient
 from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
 
 from ..clients.api import api_client
-from ..config.agent_llm_env import missing_llm_env
 from ..config.settings import get_settings
 from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
@@ -125,37 +125,54 @@ class RunGrantJournal:
         )
 
 
-def _resolve_qa_runtime() -> tuple[QARuntimeConfig | None, QABlocker | None]:
-    """Build the central QA runtime config, or say what it is missing.
+def _resolve_qa_runtime() -> QARuntimeConfig:
+    """Say who performs this run and how they reach this runtime.
 
-    Both halves live in this service's environment now: the LLM the QA agent
-    thinks with, and the Telegram account it talks to bots as. Neither is ever
-    written to a deploy target. A missing Telethon setup is not fatal here — a
-    deployment without a bot never needs it — so it is reported by the bot
-    preflight instead, which is the only place it matters.
+    Nothing here can fail, and nothing here reads `QA_LLM_*`. The executor is
+    the coding agent assigned to testing — Claude Code by default, Codex when
+    `QA_EXECUTOR_AGENT_TYPE` names it — and its subscription session is a
+    directory on the management host that worker-manager mounts into the
+    executor container. The API triplet is an optional fallback and is read only
+    after that executor has actually failed, which is why an unset triplet is a
+    perfectly ordinary production configuration and blocks nothing.
+
+    A missing Telethon setup is not fatal either — a deployment without a bot
+    never needs it — so it is reported by the bot preflight, the only place it
+    matters.
     """
     settings = get_settings()
-    missing = missing_llm_env("qa", settings)
-    if missing:
-        return None, QABlocker(
-            category=QABlockerCategory.CLAUDE_UNAVAILABLE,
-            attempted="start the central QA agent",
-            sent=", ".join(missing),
-            received="the QA runtime has no LLM configured, so no agent can run",
-        )
     try:
         credentials = telethon_env()
     except TelethonCredentialsError as exc:
         logger.info("qa_telethon_not_configured", detail=str(exc))
         credentials = None
-    return (
-        QARuntimeConfig(
-            model=settings.qa_llm_model,
-            base_url=settings.qa_llm_base_url,
-            api_key=settings.qa_llm_api_key,
-            telethon_env=credentials,
-        ),
-        None,
+    return QARuntimeConfig(
+        executor_agent_type=settings.qa_executor_agent_type,
+        capability_host=settings.qa_capability_host,
+        telethon_env=credentials,
+    )
+
+
+async def _alert_admins_no_executor(*, msg: QAMessage, blocker: QABlocker) -> None:
+    """Tell an administrator that QA has no executor, naming what is missing.
+
+    A log line is not an alert. This is the same admin channel the rest of the
+    platform's infrastructure failures use, and it carries the identifiers a
+    human needs to act: which story, which project, which run, and which of the
+    optional fallback variables carry no value.
+    """
+    await notify_admins_best_effort(
+        f"QA has no executor — exploratory QA could not run.\n"
+        f"story: {msg.story_id or '(none)'}\n"
+        f"project: {msg.project_id}\n"
+        f"run: {msg.run_id or '(none)'}\n"
+        f"attempted: {blocker.attempted}\n"
+        f"missing: {blocker.sent}\n"
+        f"detail: {blocker.received}",
+        level="error",
+        story_id=msg.story_id,
+        project_id=msg.project_id,
+        run_id=msg.run_id,
     )
 
 
@@ -239,13 +256,15 @@ async def _run_exploratory_qa(
     server_info: QAServerInfo,
     acceptance_criteria: str,
 ) -> tuple[QAResult | None, QABlocker | None]:
-    """Run the central QA agent against one deployment.
+    """Run the central QA executor against one deployment.
 
     Returns either a product verdict or the blocker that stopped QA from
-    reaching one. Everything the platform owes the run — an unprivileged account
-    to borrow, an LLM to think with, a Telegram account that the bot admits — is
-    settled before the agent starts, so a run that cannot happen costs no LLM
-    and issues no access on the target.
+    reaching one. What the platform owes the run before an executor starts is
+    settled here — an unprivileged account to borrow on the target, and a
+    Telegram account the bot admits — so a run that cannot happen issues no
+    access on the target and starts no container. Whether an executor exists is
+    not one of those preconditions any more: it is discovered by trying, which
+    is the only way a subscription session can be checked honestly.
     """
     missing_identity = await _missing_identity_blocker(server_info)
     if missing_identity:
@@ -257,9 +276,7 @@ async def _run_exploratory_qa(
         )
         return None, missing_identity
 
-    runtime, runtime_blocker = _resolve_qa_runtime()
-    if runtime_blocker:
-        return None, runtime_blocker
+    runtime = _resolve_qa_runtime()
 
     if msg.bot_username:
         access_blocker = await preflight_bot_access(
@@ -289,7 +306,13 @@ async def _run_exploratory_qa(
         # check above refuses on — so it is written to the same journal, against
         # the same handle, rather than ending as a blocked run nobody looks at.
         provisioning_journal=ServerProvisioningJournal(server_info),
+        settings=get_settings(),
     )
+    if (
+        qa_result.blocker is not None
+        and qa_result.blocker.category is QABlockerCategory.QA_EXECUTOR_UNAVAILABLE
+    ):
+        await _alert_admins_no_executor(msg=msg, blocker=qa_result.blocker)
     return qa_result, None
 
 

@@ -21,16 +21,19 @@ A service becomes a consumer only in the context of a specific queue:
 > **Important:** Do not confuse this with a service name. There is no `engineering-consumer` service — there is the `langgraph` service, which is a consumer of the `engineering:queue` queue.
 
 ### Worker
-A Docker container with a CLI coding agent inside. Used only for Developer workers.
+A Docker container with a CLI coding agent inside, started by `worker-manager` on the management host. There are exactly two kinds, and they differ in what they are given, not in how they are started.
 
-| Type | Lifecycle | Queue Pattern | Session |
-|------|-----------|---------------|---------|
-| **Developer Worker** | Per-story (reused) or per-task (standalone) | `worker:{worker_id}:*` | No (stateless) |
+| Type | Lifecycle | Queue Pattern | Workspace |
+|------|-----------|---------------|-----------|
+| **Developer Worker** | Per-story (reused) or per-task (standalone) | `worker:{worker_id}:*` | The repository the scaffolder prepared |
+| **QA Executor** | Per QA run, always ephemeral | `worker:{worker_id}:*` | Empty scratch, deleted with the container |
 
 **Developer Worker** — a container with a coding agent. For tasks inside a Story it is reused between tasks (worker_id is stored in the Redis hash `story:workers`). For standalone tasks it is ephemeral and removed after completion. Stateless — its context is the code in the repo plus the errors.
 
+**QA Executor** — the container that performs one exploratory QA run (`worker_type="qa"`). It has no repository, no git credentials and nothing to commit; its only route to the deployment under test is the injected `/workspace/qa` command, which calls the run's capability endpoint on `qa-worker`. It is not a Developer Worker and never writes code.
+
 **Managed by:** `worker-manager`
-**Configuration:** prompts are stored in `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager maps them to agent-specific files through `get_instruction_path()`: Claude → `CLAUDE.md`, Factory and Codex → `AGENTS.md`. A `TASK.md` with the specific task is injected as well.
+**Configuration:** developer prompts are stored in `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`, QA prompts in `services/langgraph/src/prompts/qa/`. Worker-manager maps them to agent-specific files through `get_instruction_path()`: Claude → `CLAUDE.md`, Factory and Codex → `AGENTS.md`. A `TASK.md` with the specific task is injected as well.
 
 ### Project Status
 The project lifecycle. Minimal set: `draft` → `active` → `paused` / `archived`. It carries no process statuses (scaffolding, deploying) — activity is determined by child entities (Story, Run).
@@ -70,7 +73,7 @@ A service agent in the langgraph service (`services/langgraph/src/agents/archite
 - Analyzes features (Stories) from the database and decomposes them into concrete development tasks (Tasks).
 
 ### CLI-Agent
-The AI that works inside a Developer Worker container.
+The AI that works inside a worker container — a Developer Worker or a QA Executor.
 **Implementations:** Claude Code, Factory.ai Droid, OpenAI Codex CLI.
 
 **Difference from a Service Agent:** a CLI-Agent is a "personality" in an ephemeral container with access to bash and the filesystem, while a Service Agent is a node in the graph of the langgraph service, communicating through @tool.

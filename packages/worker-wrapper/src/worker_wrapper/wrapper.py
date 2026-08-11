@@ -22,6 +22,13 @@ TASK_MD_PATH = "/workspace/TASK.md"
 STORY_DIR = "/workspace/.story"
 OLD_TASKS_DIR = "/workspace/.story/old_tasks"
 
+# The central exploratory-QA executor. Every developer-shaped step of a turn is
+# absent for it, and absent deliberately: there is no repository to pull, no
+# scaffold to verify, no venv whose shebangs need repointing, no compose project
+# to proxy, and no task to archive. Running any of them would either fail the
+# run outright or hand the QA agent a checkout it must not read.
+QA_WORKER_TYPE = "qa"
+
 # The agent's subprocess environment is distinct from the wrapper's. Keep it
 # limited to CLI process basics plus the settings worker-manager deliberately
 # supplies for agent authentication, sessions and repository work.
@@ -55,19 +62,37 @@ AGENT_SUBPROCESS_ENV_ALLOWLIST = frozenset(
         # Repository-scoped GitHub credentials.
         "GITHUB_TOKEN",
         "GH_TOKEN",
+        # The QA executor's capability endpoint and its run-scoped token. This
+        # is the whole address space a QA agent has: an endpoint that dies with
+        # the run and a token that means nothing after it. Neither is a
+        # credential for the deployment — the deployment's credentials never
+        # leave the QA runtime.
+        "QA_CAPABILITY_URL",
+        "QA_CAPABILITY_TOKEN",
     }
 )
 
 
-def build_agent_subprocess_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
+def build_agent_subprocess_env(
+    source: Mapping[str, str] | None = None, *, workspace_on_path: bool = False
+) -> dict[str, str]:
     """Build the explicit environment inherited by a coding-agent subprocess.
 
     Wrapper transport, Docker/Compose settings, host paths and arbitrary task
     command environment entries must stay with the wrapper. Agents report
     results and request Compose operations through localhost:9090 instead.
+
+    Args:
+        workspace_on_path: put the workspace first on PATH. Only a QA executor
+            asks for this, and only so that the one command injected into its
+            workspace can be called by name.
     """
     source = os.environ if source is None else source
     agent_env = {name: source[name] for name in AGENT_SUBPROCESS_ENV_ALLOWLIST if name in source}
+    if workspace_on_path:
+        agent_env["PATH"] = os.pathsep.join(
+            [WORKSPACE_DIR, *(part for part in agent_env.get("PATH", "").split(os.pathsep) if part)]
+        )
 
     # The wrapper needs /app to import the orchestrator's shared package. An
     # agent runs in the scaffolded project, where /app shadows that project's
@@ -112,6 +137,11 @@ class WorkerWrapper:
         self._effort_metrics: dict[str, Any] = {}
         self._transcript_path: str | None = None
         self._transcript_truncated: bool | None = None
+
+    @property
+    def is_qa_executor(self) -> bool:
+        """Whether this container is the central QA executor rather than a developer."""
+        return self.config.worker_type == QA_WORKER_TYPE
 
     async def run(self):
         """Main loop: connect, consume, execute, publish."""
@@ -162,32 +192,37 @@ class WorkerWrapper:
         # 1. Pre-turn setup
         await self._prepare_workspace(data)
 
-        # 3. Pre-flight: verify workspace has project files (not just README)
-        workspace_ok, workspace_detail = self._check_workspace_ready()
-        if not workspace_ok:
-            logger.error(
-                "workspace_preflight_failed",
-                detail=workspace_detail,
-                hint="Workspace appears empty — scaffold phase likely failed or was skipped. "
-                "Refusing to launch agent to avoid wasting credits.",
-            )
-            error = f"Workspace pre-flight failed: {workspace_detail}"
-            await self.broker.submit_output(msg_id, WorkerFailedResult(error=error))
-            return
-        logger.info("workspace_preflight_passed", detail=workspace_detail)
+        # Everything from here to the agent launch is about a repository, and a
+        # QA executor has none. Its workspace is one scratch directory holding
+        # the task and the one command it may call, so an empty-workspace
+        # refusal would be refusing the only correct state it can be in.
+        if not self.is_qa_executor:
+            # 3. Pre-flight: verify workspace has project files (not just README)
+            workspace_ok, workspace_detail = self._check_workspace_ready()
+            if not workspace_ok:
+                logger.error(
+                    "workspace_preflight_failed",
+                    detail=workspace_detail,
+                    hint="Workspace appears empty — scaffold phase likely failed or was skipped. "
+                    "Refusing to launch agent to avoid wasting credits.",
+                )
+                error = f"Workspace pre-flight failed: {workspace_detail}"
+                await self.broker.submit_output(msg_id, WorkerFailedResult(error=error))
+                return
+            logger.info("workspace_preflight_passed", detail=workspace_detail)
 
-        # 3b. Fix venv paths (shebangs, .pth files, direct_url.json)
-        self._fix_venv_paths()
+            # 3b. Fix venv paths (shebangs, .pth files, direct_url.json)
+            self._fix_venv_paths()
 
-        # 3c. Worker-mode targets require the proxy because workers have no Docker socket.
-        try:
-            self._inject_makefile_overrides()
-        except RuntimeError as exc:
-            logger.error("workspace_preparation_failed", error=str(exc))
-            await self.broker.submit_output(
-                msg_id, WorkerFailedResult(error=f"Workspace preparation failed: {exc}")
-            )
-            return
+            # 3c. Worker-mode targets require the proxy because workers have no Docker socket.
+            try:
+                self._inject_makefile_overrides()
+            except RuntimeError as exc:
+                logger.error("workspace_preparation_failed", error=str(exc))
+                await self.broker.submit_output(
+                    msg_id, WorkerFailedResult(error=f"Workspace preparation failed: {exc}")
+                )
+                return
 
         # 4. Start HTTP result server + execute agent
         self._result_event = asyncio.Event()
@@ -219,7 +254,8 @@ class WorkerWrapper:
 
             # 5. Collect report and archive task (before publishing result)
             report = self._read_worker_report()
-            self._archive_task(data, report)
+            if not self.is_qa_executor:
+                self._archive_task(data, report)
 
             # 6. Publish result
             await self._publish_result(msg_id, data, error, status, report)
@@ -251,8 +287,12 @@ class WorkerWrapper:
             return status, error
 
         # Watchdog: agent exited without reporting via HTTP
-        # Attempt one auto-resume for Claude agents before failing
-        if self.config.agent_type == AgentType.CLAUDE:
+        # Attempt one auto-resume for Claude agents before failing.
+        # A QA executor never reports here: its answer goes to the QA runtime's
+        # capability endpoint, which is where the run is judged from. Resuming
+        # it to chase a result this channel was never going to carry would spend
+        # a second agent turn on nothing.
+        if self.config.agent_type == AgentType.CLAUDE and not self.is_qa_executor:
             resumed = await self._attempt_auto_resume(data)
             if resumed and self._result_event.is_set() and self._buffered_result is not None:
                 logger.info("result_received_after_resume", worker_id=self.config.worker_id)
@@ -298,7 +338,8 @@ class WorkerWrapper:
 
     async def _prepare_workspace(self, data: dict) -> None:
         """Pre-turn setup: pull, update TASK.md/STORY.md, clear session."""
-        await self._git_pull()
+        if not self.is_qa_executor:
+            await self._git_pull()
 
         prompt = data.get("prompt")
         if prompt:
@@ -686,7 +727,7 @@ class WorkerWrapper:
         )
 
         wrapper_env = dict(os.environ)
-        agent_env = build_agent_subprocess_env(wrapper_env)
+        agent_env = build_agent_subprocess_env(wrapper_env, workspace_on_path=self.is_qa_executor)
 
         # Execute Subprocess
         proc = await asyncio.create_subprocess_exec(
