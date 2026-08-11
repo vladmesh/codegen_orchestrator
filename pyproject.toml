@@ -16,13 +16,13 @@ dev = [
     # stops treating services/worker-manager as its own config root, which surfaces 132
     # real violations there (blind except, typing.Dict, unsorted imports, naive datetimes).
     # Adopting it means fixing those first.
-    "ruff>=0.15.5,<0.16",
+    "ruff>=0.16.2,<0.17",
     "mypy>=1.13.0",
     "httpx",
     "respx>=0.21.1",
     "fakeredis>=2.34.1",
     "makefun",
-    "copier>=9.4.0",
+    "copier>=9.17.1",
     # Workspace members (all services + packages)
     "api",
     "langgraph-orchestrator",

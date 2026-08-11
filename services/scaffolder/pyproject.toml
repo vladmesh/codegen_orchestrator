@@ -9,7 +9,7 @@ dependencies = [
     "redis[hiredis]>=8.0.0",
     # Config
     "pydantic>=2.13.4",
-    "pydantic-settings>=2.0.0",
+    "pydantic-settings>=2.15.0",
     # Logging
     "structlog>=25.1.0",
     # GitHub App auth

@@ -17,7 +17,7 @@ dependencies = [
     "structlog>=25.1.0",
 
     # Settings
-    "pydantic-settings>=2.0.0",
+    "pydantic-settings>=2.15.0",
 
     # JWT for shared/clients
     "pyjwt[crypto]>=2.13.0",
