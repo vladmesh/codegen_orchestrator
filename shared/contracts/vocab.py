@@ -31,6 +31,19 @@ QA_EXECUTOR_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.CLAUDE, Age
 QAExecutorAgentType = Literal[AgentType.CLAUDE, AgentType.CODEX]
 
 
+class WorkerType(StrEnum):
+    """What a worker container exists to do.
+
+    `WorkerConfig.worker_type` states the same two values as a `Literal` because
+    that is the wire; this enum is what code compares against and what the
+    control-plane allowlist is keyed by, so the spelling lives in one place.
+    `shared/tests/unit/test_vocab.py` fails if the two drift apart.
+    """
+
+    DEVELOPER = "developer"  # writes code in a pre-scaffolded repository workspace
+    QA = "qa"  # the central exploratory-QA executor: no repository, nothing to commit
+
+
 class WorkerCliKind(StrEnum):
     """CLI-agent wire identity reported on `worker:events`.
 

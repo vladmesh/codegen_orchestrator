@@ -5,6 +5,9 @@ import httpx
 import pytest
 from fakeredis import FakeAsyncRedis
 
+from shared.contracts.vocab import WorkerType
+from shared.contracts.worker_control_plane import WorkerControlPlaneOperation
+
 from src.auth import credential_key, verify_token
 from src import main
 from src.config import BrokerSettings
@@ -35,6 +38,7 @@ async def test_worker_credentials_cannot_cross_worker_boundaries():
         main.Registration(
             worker_id="one",
             token=token_one,
+            worker_type=WorkerType.DEVELOPER,
             input_stream="worker:one:input",
             output_stream="worker:one:output",
         ),
@@ -44,6 +48,7 @@ async def test_worker_credentials_cannot_cross_worker_boundaries():
         main.Registration(
             worker_id="two",
             token=token_two,
+            worker_type=WorkerType.DEVELOPER,
             input_stream="worker:two:input",
             output_stream="worker:two:output",
         ),
@@ -51,7 +56,7 @@ async def test_worker_credentials_cannot_cross_worker_boundaries():
     )
 
     with pytest.raises(main.HTTPException) as denied:
-        await main._worker(redis, "two", token_one)
+        await main._worker(redis, "two", token_one, WorkerControlPlaneOperation.INPUT_LEASE)
     assert denied.value.status_code == 403
 
 
@@ -67,6 +72,7 @@ async def test_session_expiry_and_all_worker_paths_require_scoped_credentials(mo
             main.Registration(
                 worker_id=worker_id,
                 token=token,
+                worker_type=WorkerType.DEVELOPER,
                 input_stream=f"worker:{worker_id}:input",
                 output_stream=f"worker:{worker_id}:output",
                 session_ttl_seconds=2,
@@ -109,6 +115,7 @@ async def test_output_stream_retention_is_bounded(monkeypatch):
         main.Registration(
             worker_id="one",
             token=token,
+            worker_type=WorkerType.DEVELOPER,
             input_stream="worker:one:input",
             output_stream="worker:one:output",
         ),
@@ -137,6 +144,7 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
     registration = main.Registration(
         worker_id=worker_id,
         token=worker_token,
+        worker_type=WorkerType.DEVELOPER,
         input_stream=f"worker:{worker_id}:input",
         output_stream=f"worker:{worker_id}:output",
         session_ttl_seconds=60,
@@ -187,3 +195,86 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
     result = json.loads(output[0][1]["data"])
     assert result["status"] == "failed"
     assert result["error"] == "agent failed"
+
+
+@pytest.mark.asyncio
+async def test_a_qa_worker_gets_the_turn_protocol_and_no_control_plane(monkeypatch):
+    """A QA executor's own credential runs its turn and buys nothing else.
+
+    The refusal is on the operation, decided from the type the server recorded
+    at registration — the worker never states its own type — and the upstream
+    call is not made at all, so nothing reaches the management host's daemon.
+    """
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    worker_id = "qa-executor"
+    token = "q" * 43
+
+    await main.register_worker(
+        main.Registration(
+            worker_id=worker_id,
+            token=token,
+            worker_type=WorkerType.QA,
+            input_stream=f"worker:{worker_id}:input",
+            output_stream=f"worker:{worker_id}:output",
+            session_ttl_seconds=60,
+        ),
+        main.settings.BROKER_INTERNAL_TOKEN,
+    )
+    assert await redis.hget(credential_key(worker_id), "worker_type") == WorkerType.QA.value
+
+    # The turn protocol: everything a QA run actually needs.
+    await redis.xadd(f"worker:{worker_id}:input", {"data": json.dumps({"task_id": "qa-1", "prompt": "test it"})})
+    lease = await main.lease_input(worker_id, token)
+    assert lease["data"]["task_id"] == "qa-1"
+    await main.update_status(worker_id, main.StatusUpdate(values={"status": "running"}), token)
+    await main.set_session(worker_id, main.SessionUpdate(session_id="qa-session"), token)
+    assert (await main.get_session(worker_id, token))["session_id"] == "qa-session"
+    await main.clear_session(worker_id, token)
+    await main.submit_output(
+        worker_id,
+        main.Submission(lease_id=lease["lease_id"], result={"status": "failed", "error": "qa run aborted"}),
+        token,
+    )
+
+    # And the one thing that can build a container on the management host.
+    def upstream(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"the broker forwarded a QA compose request to {request.url}")
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(upstream)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+
+    with pytest.raises(main.HTTPException) as denied:
+        await main.compose(worker_id, {"args": ["build"]}, token)
+    assert denied.value.status_code == 403
+    assert denied.value.detail == "a qa worker may not call infra.compose"
+
+
+@pytest.mark.asyncio
+async def test_a_credential_registered_without_a_recorded_type_is_refused_everything():
+    """Fail closed: worker-manager records the type as it hands out the token."""
+    redis = FakeAsyncRedis(decode_responses=True)
+    main.app.state.redis = redis
+    token = "u" * 43
+    await redis.hset(credential_key("stray"), mapping={"token_digest": hashlib.sha256(token.encode()).hexdigest()})
+
+    for operation in WorkerControlPlaneOperation:
+        with pytest.raises(main.HTTPException) as denied:
+            await main._worker(redis, "stray", token, operation)
+        assert denied.value.status_code == 403
+        assert denied.value.detail == "worker type is not recorded for this worker"
+
+
+def test_every_worker_route_states_the_operation_it_authorizes():
+    """No route can reach Redis without naming what it lets a worker do.
+
+    `_worker` takes the operation as a required argument, so a new route that
+    forgets it does not silently inherit somebody else's permissions — it fails
+    to call the authenticator at all.
+    """
+    import inspect
+
+    parameters = inspect.signature(main._worker).parameters
+    assert "operation" in parameters
+    assert parameters["operation"].default is inspect.Parameter.empty

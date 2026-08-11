@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-08-11 (13)
+
+- A QA executor now has no control-plane authority beyond the protocol of its
+  own turn. Its broker token cannot be hidden from the agent — the CLI runs as
+  the same user as the wrapper that holds it, so `/proc/<ppid>/environ` gives it
+  up — so the token itself was worth a `POST /v1/workers/{id}/infra/compose`,
+  and `docker compose build` of an agent-written Dockerfile executes arbitrary
+  `RUN` instructions on the management host's builder, outside the QA
+  executor's internal network and its proxy.
+- The refusal is an allowlist per worker type, not a patch on one endpoint:
+  `shared/contracts/worker_control_plane.py` names every operation a worker
+  credential can ask for and grants a `qa` worker the turn protocol
+  (`input.lease`, `output.submit`, `status.update`, `session` read/write/clear)
+  and nothing else. Adding an operation to the enum without classifying it as
+  turn-protocol or Docker-daemon fails a test, so a future route is refused to
+  QA until someone decides otherwise.
+- It is enforced at both boundaries that already duplicate the token check —
+  `services/worker-broker/src/main.py` (every worker route now states the
+  operation it authorizes, so a new route cannot inherit permissions silently)
+  and `services/worker-manager/src/routers/compose.py`, which is reachable
+  directly with the same token. Both read the worker type from a server-side
+  record written before the credential existed (`worker:broker:{id}` at
+  registration, `worker:meta:{id}` at creation); nothing in the request says
+  what kind of worker is calling, and an unrecorded type is refused. Developer
+  workers are unchanged and keep every operation.
+- `services/worker-manager/tests/service/test_qa_control_plane_boundary.py` is
+  the end-to-end regression against a real broker, a real worker-manager and a
+  real Docker daemon: a developer worker's token really does cause a host-side
+  build (the image exists and carries a marker only a `RUN` on that daemon could
+  write), while a QA worker with the identical workspace and request is refused
+  by both boundaries, produces no image and no compose plan, and still runs its
+  own turn. Worker-manager's unit doubles moved to `tests/unit/conftest.py`, so
+  a service test can no longer be handed a mocked broker registration.
+
 ## 2026-08-11 (12)
 
 - "Exploratory QA cannot write to the application" is now a property of the

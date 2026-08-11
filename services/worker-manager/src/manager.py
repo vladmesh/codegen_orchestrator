@@ -48,13 +48,19 @@ class WorkerManager:
         self.redis = redis
         self.docker = docker_client or DockerClientWrapper()
 
-    async def _register_broker_worker(self, worker_id: str, token: str) -> None:
-        """Register a worker-scoped credential before its container is started."""
+    async def _register_broker_worker(self, worker_id: str, token: str, worker_type: str) -> None:
+        """Register a worker-scoped credential before its container is started.
+
+        The credential carries the worker's type because the type is what the
+        broker authorizes on. It is sent here, from the service that decided
+        what kind of worker this is, and never accepted from the worker.
+        """
         from shared.contracts.queues.worker import WorkerChannels
 
         payload = {
             "worker_id": worker_id,
             "token": token,
+            "worker_type": worker_type,
             "input_stream": WorkerChannels.INPUT_PATTERN.value.format(worker_id=worker_id),
             "output_stream": WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=worker_id),
             "session_ttl_seconds": settings.WORKER_BROKER_SESSION_TTL_SECONDS,
@@ -486,11 +492,14 @@ class WorkerManager:
             worker_type=worker_type,
         )
         is_qa_worker = worker_type == QA_WORKER_TYPE
-        if is_qa_worker:
-            # Written before anything is created, because it is what `delete_worker`
-            # reads to know the workspace is scratch it must remove. A creation that
-            # fails halfway would otherwise leave a directory nothing owns.
-            await self.redis.hset(f"worker:meta:{worker_id}", "worker_type", worker_type)
+        # Written before anything is created, for two reasons that both need it
+        # early. It is what `delete_worker` reads to know a QA workspace is
+        # scratch it must remove — a creation that fails halfway would otherwise
+        # leave a directory nothing owns. And it is the server's record of what
+        # this worker is, which the Compose route authorizes on: the record has
+        # to exist before the credential does, because a request whose worker
+        # type is unrecorded is refused.
+        await self.redis.hset(f"worker:meta:{worker_id}", "worker_type", worker_type)
 
         network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
 
@@ -573,7 +582,7 @@ class WorkerManager:
             config.workspace_host_path = str(ws_path)
 
             broker_token = secrets.token_urlsafe(32)
-            await self._register_broker_worker(worker_id, broker_token)
+            await self._register_broker_worker(worker_id, broker_token, worker_type)
             container_env = config.to_env_vars(
                 broker_url=settings.WORKER_BROKER_URL,
                 broker_token=broker_token,
@@ -639,8 +648,6 @@ class WorkerManager:
                 # branch here — can reach the deployment directly, so it is
                 # refused before it is given any work.
                 qa_egress.verify_isolation(await self.docker.inspect_container(container_id), network_name)
-
-            await self.redis.hset(f"worker:meta:{worker_id}", "worker_type", worker_type)
 
             if repo_id:
                 await self.redis.hset(f"worker:meta:{worker_id}", "repo_id", repo_id)

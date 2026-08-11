@@ -1,15 +1,52 @@
 """Service tests for the compose HTTP API endpoint."""
 
+import asyncio
 import hashlib
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from fakeredis import FakeAsyncRedis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
+from shared.contracts.vocab import WorkerType
 from src.routers.compose import router as compose_router
 from src.compose_runner import ComposeRunner
 from src.compose_validator import RESOURCE_IDENTITY_POLICY
+
+BROKER_TOKEN = "broker-test-token"
+
+
+def server_records(
+    worker_id: str = "worker-123",
+    *,
+    worker_type: WorkerType | str = WorkerType.DEVELOPER,
+    workspace_path: str | None = None,
+    token: str = BROKER_TOKEN,
+):
+    """The Redis records worker-manager itself writes when it creates a worker.
+
+    The route authorizes on these, so the tests state them instead of stubbing
+    the reads: a worker with no recorded type is a real case (it is what a
+    forged worker id looks like) and it must be refused, not waved through.
+    """
+    redis = FakeAsyncRedis(decode_responses=True)
+
+    async def seed():
+        await redis.hset(
+            f"worker:broker:{worker_id}",
+            mapping={"token_digest": hashlib.sha256(token.encode()).hexdigest()},
+        )
+        meta = {}
+        if worker_type is not None:
+            meta["worker_type"] = getattr(worker_type, "value", worker_type)
+        if workspace_path:
+            meta["workspace_path"] = workspace_path
+        if meta:
+            await redis.hset(f"worker:meta:{worker_id}", mapping=meta)
+
+    asyncio.run(seed())
+    return redis
 
 
 @pytest.fixture
@@ -40,9 +77,7 @@ def client(tmp_path):
     docker = MagicMock()
     docker.exec_in_container = AsyncMock(return_value=(0, b"services:\n  db:\n    image: postgres:16\n"))
 
-    redis = AsyncMock()
-    redis.hget = AsyncMock(return_value=None)
-    redis.hgetall = AsyncMock(return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()})
+    redis = server_records()
 
     app.state.compose_runner = runner
     app.state.docker = docker
@@ -62,11 +97,7 @@ class TestComposeApi:
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
         app.state.compose_runner = ComposeRunner(str(tmp_path))
-        app.state.redis = AsyncMock()
-        app.state.redis.hgetall = AsyncMock(
-            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
-        )
-        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        app.state.redis = server_records(workspace_path=str(workspace))
         config = (
             '{"services":{"db":{"image":"postgres:16","networks":{"default":null},"ports":["5432:5432"]}},'
             '"networks":{"default":{"name":"dev_proj_worker-123","external":true}}}'
@@ -104,11 +135,7 @@ class TestComposeApi:
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
         app.state.compose_runner = ComposeRunner(str(tmp_path))
-        app.state.redis = AsyncMock()
-        app.state.redis.hgetall = AsyncMock(
-            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
-        )
-        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        app.state.redis = server_records(workspace_path=str(workspace))
         config = json.dumps(
             {
                 "services": {
@@ -224,8 +251,8 @@ class TestComposeApi:
 
     def test_workspace_resolved_from_redis_meta(self, client):
         """When Redis has workspace_path for worker, it should be passed to runner.run()."""
-        c, runner, mock_redis = client
-        mock_redis.hget = AsyncMock(return_value="/tmp/workspaces/project-uuid/workspace")
+        c, runner, redis = client
+        asyncio.run(redis.hset("worker:meta:worker-123", "workspace_path", "/tmp/workspaces/project-uuid/workspace"))
         runner.run = AsyncMock(return_value=(0, "ok\n", ""))
 
         response = c.post(
@@ -288,11 +315,7 @@ class TestComposeApi:
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
         app.state.compose_runner = ComposeRunner(str(tmp_path))
-        app.state.redis = AsyncMock()
-        app.state.redis.hgetall = AsyncMock(
-            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
-        )
-        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        app.state.redis = server_records(workspace_path=str(workspace))
 
         with (
             TestClient(app, raise_server_exceptions=True) as c,
@@ -319,11 +342,7 @@ class TestComposeApi:
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
         app.state.compose_runner = ComposeRunner(str(tmp_path))
-        app.state.redis = AsyncMock()
-        app.state.redis.hgetall = AsyncMock(
-            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
-        )
-        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        app.state.redis = server_records(workspace_path=str(workspace))
 
         with (
             TestClient(app, raise_server_exceptions=True) as c,
@@ -357,11 +376,7 @@ class TestComposeApi:
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
         app.state.compose_runner = ComposeRunner(str(tmp_path))
-        app.state.redis = AsyncMock()
-        app.state.redis.hgetall = AsyncMock(
-            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
-        )
-        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        app.state.redis = server_records(workspace_path=str(workspace))
 
         with (
             TestClient(app, raise_server_exceptions=True) as c,
@@ -388,11 +403,7 @@ class TestComposeApi:
         app = FastAPI(title="Test Worker Manager")
         app.include_router(compose_router)
         app.state.compose_runner = ComposeRunner(str(tmp_path))
-        app.state.redis = AsyncMock()
-        app.state.redis.hgetall = AsyncMock(
-            return_value={"token_digest": hashlib.sha256(b"broker-test-token").hexdigest()}
-        )
-        app.state.redis.hget = AsyncMock(return_value=str(workspace))
+        app.state.redis = server_records(workspace_path=str(workspace))
 
         with (
             TestClient(app, raise_server_exceptions=True) as c,
@@ -407,3 +418,85 @@ class TestComposeApi:
         assert response.status_code == 400
         assert "container_name" in response.json()["detail"]
         mock_run.assert_not_called()
+
+
+class TestQaWorkerHasNoComposeAuthority:
+    """The second of the two boundaries that refuse Compose to a QA executor.
+
+    The broker refuses it first. This one exists because the token is readable
+    by the agent (`/proc/<ppid>/environ` of its wrapper), so the caller here may
+    have skipped the broker entirely — a boundary that only the well-behaved
+    path passes through is not a boundary.
+    """
+
+    def _app(self, redis):
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        runner = MagicMock(spec=ComposeRunner)
+        runner.run = AsyncMock(return_value=(0, "should never run\n", ""))
+        app.state.compose_runner = runner
+        app.state.redis = redis
+        return app, runner
+
+    @pytest.mark.parametrize("args", [["build"], ["up", "-d"], ["ps"]])
+    def test_a_qa_worker_is_refused_with_its_own_valid_token(self, args):
+        """Authenticated, and still refused — including for a read-only `ps`.
+
+        The command does not matter: what is denied is the operation, so no
+        future argument-level judgement can reopen it.
+        """
+        app, runner = self._app(server_records(worker_type=WorkerType.QA, workspace_path="/workspace"))
+
+        with TestClient(app, raise_server_exceptions=True) as c:
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": args},
+                headers={"X-Worker-Broker-Token": BROKER_TOKEN},
+            )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "a qa worker may not call infra.compose"
+        runner.run.assert_not_awaited()
+
+    def test_a_worker_whose_type_was_never_recorded_is_refused(self):
+        """Fail closed. The record is written before the credential exists."""
+        app, runner = self._app(server_records(worker_type=None))
+
+        with TestClient(app, raise_server_exceptions=True) as c:
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["build"]},
+                headers={"X-Worker-Broker-Token": BROKER_TOKEN},
+            )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "worker type is not recorded for this worker"
+        runner.run.assert_not_awaited()
+
+    def test_the_request_cannot_talk_its_way_into_being_a_developer(self):
+        """The type is read from the server's record, never from the request."""
+        app, runner = self._app(server_records(worker_type=WorkerType.QA, workspace_path="/workspace"))
+
+        with TestClient(app, raise_server_exceptions=True) as c:
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["build"], "worker_type": "developer"},
+                headers={"X-Worker-Broker-Token": BROKER_TOKEN},
+            )
+
+        assert response.status_code == 403
+        runner.run.assert_not_awaited()
+
+    def test_a_developer_worker_still_reaches_the_runner(self):
+        """The control: the boundary must not break the ordinary pipeline."""
+        app, runner = self._app(server_records(worker_type=WorkerType.DEVELOPER, workspace_path="/workspace"))
+
+        with TestClient(app, raise_server_exceptions=True) as c:
+            response = c.post(
+                "/api/worker/worker-123/infra/compose",
+                json={"args": ["build"]},
+                headers={"X-Worker-Broker-Token": BROKER_TOKEN},
+            )
+
+        assert response.status_code == 200
+        runner.run.assert_awaited_once()

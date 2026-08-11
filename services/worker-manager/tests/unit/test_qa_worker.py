@@ -415,3 +415,41 @@ class TestTheContract:
 
         assert config.repo_id is None
         assert config.worker_type == "qa"
+
+
+class TestTheCredentialSaysWhatKindOfWorkerItIs:
+    """Both boundaries authorize on the type, so creation has to record it.
+
+    A worker's broker token is readable by the agent that runs under it, so the
+    only thing standing between a QA executor and the management host's Docker
+    daemon is what the server knows about the token's owner.
+    """
+
+    async def test_the_broker_credential_is_issued_as_a_qa_credential(self, qa_worker):
+        await qa_worker()
+
+        call = WorkerManager._register_broker_worker.await_args
+        assert call.args[0] == "qa-1"
+        assert call.args[2] == QA_WORKER_TYPE
+
+    async def test_the_type_is_recorded_before_the_credential_exists(self, qa_worker):
+        """Ordering, not just presence: an unrecorded type is refused everything.
+
+        If the record were written after the token was handed out, a worker that
+        used it in that window would be refused its own turn.
+        """
+        manager_holder: dict = {}
+        recorded: dict[str, str | None] = {}
+
+        async def capture(worker_id, token, worker_type):
+            recorded["at_registration"] = await manager_holder["manager"].redis.hget(
+                f"worker:meta:{worker_id}", "worker_type"
+            )
+
+        WorkerManager._register_broker_worker.side_effect = capture
+        try:
+            await qa_worker(manager_holder=manager_holder)
+        finally:
+            WorkerManager._register_broker_worker.side_effect = None
+
+        assert recorded["at_registration"] == QA_WORKER_TYPE

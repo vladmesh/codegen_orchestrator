@@ -156,7 +156,7 @@ cannot poison-loop the reclaim.
 > ```
 > Developer Worker (AI Agent) → curl localhost:9090 → worker-wrapper → worker-broker → Redis
 > ```
-> The HTTP server in worker-wrapper validates agent results locally; the authenticated broker owns stream, status, session and Compose transport.
+> The HTTP server in worker-wrapper validates agent results locally; the authenticated broker owns stream, status, session and Compose transport. Authentication is not authorization: the broker and worker-manager each authorize the operation against the worker type recorded server-side (`shared/contracts/worker_control_plane.py`), and a `qa` worker gets the turn protocol only — Compose is refused to it at both hops, because its token is readable by the agent it runs.
 
 ### Actor Roles
 
