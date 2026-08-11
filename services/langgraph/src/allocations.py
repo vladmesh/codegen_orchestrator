@@ -244,7 +244,9 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
     failure. That rule lives in ``shared.server_admission`` and is shared with the
     scheduler's resource wait, so the two cannot diverge. A host that fails it is
     never described as a capacity problem — whichever rejection it was, the
-    refusal carries ``shared.server_admission.ADMISSION_FAILURE_REASON``.
+    refusal carries ``shared.server_admission.ADMISSION_FAILURE_REASON``. The one
+    thing that outranks it is a request no managed server could fit at all; the
+    comment at that check says why it is asked first.
 
     Admission then reserves ``min_ram_mb + ALLOCATION_RAM_RESERVE_MB``. It compares
     that budget against both the persisted sum of application reservations and
@@ -304,6 +306,15 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
 
     if not suitable:
         budget = {"required_ram_mb": required_ram_mb, "min_disk_mb": min_disk_mb}
+        # Fleet-wide impossibility is answered before the admission refusal below,
+        # and that order is deliberate. This holds only when no managed server
+        # would fit the request even fully admitted, so finishing a host's
+        # provisioning cannot change the answer — the host that turns `complete`
+        # is still too small. Calling that an infrastructure wait would park the
+        # request on something that by definition never arrives; `IMPOSSIBLE_CAPACITY`
+        # calls a human at once and names the real blocker. It is not the masking
+        # this rule exists against either: no host's state is being retold as a
+        # memory shortage, a different and durable fact about the fleet is reported.
         if _request_exceeds_every_server(all_managed_servers, required_ram_mb, min_disk_mb):
             raise AllocationError(AllocationFailureReason.IMPOSSIBLE_CAPACITY, **budget)
         # A host that may not take an application is infrastructure, not capacity,

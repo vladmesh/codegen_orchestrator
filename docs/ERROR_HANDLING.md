@@ -138,6 +138,8 @@ That one reason covers all four rejections, on both placement paths, and there i
 
 Reuse is placement, so it is admitted like placement: `ensure_project_allocations()` applies the predicate to the bound server before it returns existing allocations and before it allocates a port for a new module, and refuses with the same constant.
 
+One question is answered ahead of that reason, and only in the search path: whether any managed server could fit the request even fully admitted. If none could, the refusal stays `IMPOSSIBLE_CAPACITY` with `OPERATOR_REVIEW` although a host was also refused admission — finishing that host's provisioning would not make it bigger, so an infrastructure wait would park the request on an event that never arrives, while an operator can be told at once that the fleet has no machine of the required size. That is not a host's state retold as a memory shortage; it is a separate durable fact about the fleet, and the bound-host path never asks it because it has one host and no alternative to compare it with.
+
 A bound-host refusal also shapes the wait: resuming asks whether *any* server is admissible, while this project is refused by *the one it sits on*, so a fleet with one healthy host and one broken host the project is pinned to satisfies the resume condition on every tick and is refused again on every tick. Both waits check their elapsed-time bound before admissibility, which ends that cycle in the same escalation as a wait with no target at all. A server-pinned resume condition would end it sooner, but the wait's contract is fleet-wide today and the bound is what makes the cycle finite.
 
 ### Proactive Message Spam Filter

@@ -69,6 +69,12 @@ class ServerAdmissionRejection(StrEnum):
 #: only some rejections belonged to was exactly that divergence: a server merely
 #: in status `provisioning` fell out of it in the search path and left the
 #: refusal to be described as `insufficient_free_memory`.
+#:
+#: The search path asks one question before this one, which the bound path has no
+#: way to ask: whether any managed server could fit the request at all. That is a
+#: fact about the fleet rather than about a host's state, and no wait can resolve
+#: it, so it is reported as `IMPOSSIBLE_CAPACITY` and reaches an operator at once.
+#: The order and its reason are stated at the check in `allocations.py`.
 ADMISSION_FAILURE_REASON: AllocationFailureReason = AllocationFailureReason.SERVER_NOT_PROVISIONED
 
 

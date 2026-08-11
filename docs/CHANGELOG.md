@@ -22,6 +22,16 @@
   bounded wait that ends with a human, never a message to the owner about
   capacity and never a failed story. Capacity reasons stay reachable only for
   hosts that passed admission and then ran out of room.
+- One thing still outranks the admission reason in the search path, and now says
+  so out loud: a request no managed server could fit even fully admitted stays
+  `IMPOSSIBLE_CAPACITY` with `OPERATOR_REVIEW`. Waiting out provisioning does not
+  make a small host bigger, so an infrastructure wait there would park the request
+  on an event that never arrives, while an operator can be told at once that the
+  fleet has no machine of the required size. That is not a host's state retold as
+  a memory shortage; it is a separate durable fact. The order is now a property of
+  the code — a comment at the check, a pair of tests one fixture apart that draw
+  the line between "not ready yet" and "would never fit", and a cross-path test
+  naming the one question only the search can ask.
 
 ## 2026-08-11 (10)
 
