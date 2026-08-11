@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-08-11 (11)
+
+- An admission refusal is no longer told as a memory shortage. A live acceptance
+  run placed work while its only managed host was still provisioning: the
+  allocator refused correctly, then named the reason `insufficient_free_memory`
+  on an empty 4 GB machine. The search path only kept its own reason for the two
+  provisioning rejections, so a host in a non-admitting status — or one that
+  stopped being managed — fell through to the last line of the search.
+- The reason a refusal carries now lives beside the rejections themselves, as
+  `shared/server_admission.py::ADMISSION_FAILURE_REASON`. It is one constant, not
+  a rejection-to-reason table: no admission rejection is a statement about how
+  much memory was asked for, so there is nothing to branch on. Both placement
+  paths — the search for a new host and the re-admission of a bound one — raise
+  it, and `test_both_placement_paths_refuse_with_the_same_reason` compares the two
+  paths against each other for every refusing state, so the drift that happened
+  here is not expressible again.
+- No new vocabulary member: `SERVER_NOT_PROVISIONED` still describes it, so its
+  consumers (`shared/allocation_disposition.py`, the supervisor's PO event
+  choice) are untouched and the disposition stays `INFRASTRUCTURE_WAIT` — a
+  bounded wait that ends with a human, never a message to the owner about
+  capacity and never a failed story. Capacity reasons stay reachable only for
+  hosts that passed admission and then ran out of room.
+- One thing still outranks the admission reason in the search path, and now says
+  so out loud: a request no managed server could fit even fully admitted stays
+  `IMPOSSIBLE_CAPACITY` with `OPERATOR_REVIEW`. Waiting out provisioning does not
+  make a small host bigger, so an infrastructure wait there would park the request
+  on an event that never arrives, while an operator can be told at once that the
+  fleet has no machine of the required size. That is not a host's state retold as
+  a memory shortage; it is a separate durable fact. The order is now a property of
+  the code — a comment at the check, a pair of tests one fixture apart that draw
+  the line between "not ready yet" and "would never fit", and a cross-path test
+  naming the one question only the search can ask.
+
 ## 2026-08-11 (10)
 
 - The QA identity is now proved on the target before anything records that a

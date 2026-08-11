@@ -4,11 +4,16 @@ from datetime import UTC, datetime
 
 import pytest
 
+from shared.allocation_disposition import (
+    ALLOCATION_DISPOSITIONS,
+    AttemptDisposition,
+)
 from shared.contracts.dto.incident import IncidentDTO, IncidentStatus, IncidentType
+from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.server_admission import (
+    ADMISSION_FAILURE_REASON,
     PROVISIONING_PHASE_COMPLETE,
     PROVISIONING_PHASE_LABEL,
-    PROVISIONING_REJECTIONS,
     ServerAdmissionRejection,
     provisioning_failed_server_handles,
     server_admission_rejection,
@@ -16,6 +21,7 @@ from shared.server_admission import (
 )
 from shared.tests.server_admission_cases import (
     ADMISSION_CASES,
+    CAPACITY_REASONS,
     admission_case_incidents,
     admission_case_server,
 )
@@ -52,7 +58,7 @@ def test_unfinished_provisioning_is_reported_as_a_provisioning_rejection():
     rejection = server_admission_rejection(server, frozenset())
 
     assert rejection is ServerAdmissionRejection.PROVISIONING_INCOMPLETE
-    assert rejection in PROVISIONING_REJECTIONS
+    assert ADMISSION_FAILURE_REASON not in CAPACITY_REASONS
 
 
 def test_open_provisioning_failure_is_reported_as_a_provisioning_rejection():
@@ -63,7 +69,31 @@ def test_open_provisioning_failure_is_reported_as_a_provisioning_rejection():
     rejection = server_admission_rejection(server, failed)
 
     assert rejection is ServerAdmissionRejection.PROVISIONING_FAILED
-    assert rejection in PROVISIONING_REJECTIONS
+    assert ADMISSION_FAILURE_REASON not in CAPACITY_REASONS
+
+
+def test_every_rejection_reports_one_reason_and_it_is_not_a_capacity_reason():
+    """Not managed and not-admitting status are platform state, never a shortage.
+
+    The one reason is the whole point: a rejection-specific reason is where the
+    two placement paths drifted apart, and a capacity reason for any of them
+    would tell an owner the platform ran out of memory when it did not.
+    """
+    assert ADMISSION_FAILURE_REASON not in CAPACITY_REASONS
+    assert ADMISSION_FAILURE_REASON is AllocationFailureReason.SERVER_NOT_PROVISIONED
+    assert set(ServerAdmissionRejection) == {
+        ServerAdmissionRejection.NOT_MANAGED,
+        ServerAdmissionRejection.STATUS_NOT_ADMITTING,
+        ServerAdmissionRejection.PROVISIONING_INCOMPLETE,
+        ServerAdmissionRejection.PROVISIONING_FAILED,
+    }
+
+
+def test_an_admission_refusal_is_a_bounded_wait_not_an_owner_verdict():
+    """The disposition this card must not change: infrastructure wait."""
+    assert (
+        ALLOCATION_DISPOSITIONS[ADMISSION_FAILURE_REASON] is AttemptDisposition.INFRASTRUCTURE_WAIT
+    )
 
 
 def test_only_provisioning_failures_of_that_server_block_it():
