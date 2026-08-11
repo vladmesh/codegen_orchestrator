@@ -23,6 +23,7 @@ from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
+from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
 from shared.telegram_access_probe import ProbeRun
 from src.consumers.qa import (
     MAX_QA_LOOPS,
@@ -50,6 +51,12 @@ def _application(**overrides) -> ApplicationDTO:
 
 
 def _server(**overrides) -> ServerDTO:
+    """A provisioned server: an administrative account, and a QA account beside it.
+
+    `ssh_user` is what the fleet key opens. The label is what provisioning wrote
+    when the software phase completed, and it is where the QA run's identity
+    comes from — a server row without it lends no identity at all.
+    """
     base = {
         "handle": "vps-1",
         "host": "vps-1.example.com",
@@ -57,6 +64,7 @@ def _server(**overrides) -> ServerDTO:
         "ssh_user": "dev",
         "status": "active",
         "is_managed": True,
+        "labels": {QA_SSH_USER_LABEL: QA_SSH_USER},
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
     }
@@ -167,6 +175,8 @@ class TestResolveServerInfo:
         assert isinstance(info, QAServerInfo)
         assert info.server_ip == "1.2.3.4"
         assert info.ssh_user == "dev"
+        assert info.qa_ssh_user == QA_SSH_USER
+        assert info.qa_identity_rejection == ""
         assert "RSA" in info.ssh_key
         assert info.project_name == "weather-bot-0000"
         mock_api_client.get_application.assert_called_once_with(1)

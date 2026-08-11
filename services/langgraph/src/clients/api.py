@@ -10,7 +10,7 @@ import httpx
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
-from shared.contracts.dto.incident import IncidentDTO
+from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -193,6 +193,20 @@ class LanggraphAPIClient(InternalAPIClient):
 
     async def create_incident(self, payload: dict) -> dict:
         return await self._post_json("incidents/", json=payload)
+
+    async def record_provisioning_failure(self, incident: IncidentCreate) -> IncidentDTO:
+        """Record a provisioning failure in its one active episode for that server.
+
+        The endpoint upserts, so a fact rediscovered on every QA run of a broken
+        host stays one journal entry with a rising attempt count instead of a row
+        per run.
+        """
+        if incident.incident_type is not IncidentType.PROVISIONING_FAILED:
+            raise ValueError("record_provisioning_failure requires provisioning_failed")
+        data = await self._post_json(
+            "incidents/provisioning-failure", json=incident.model_dump(mode="json")
+        )
+        return IncidentDTO.model_validate(data)
 
     async def list_active_incidents(self) -> list[IncidentDTO]:
         """Return detected and recovering incidents, typed for admission checks."""

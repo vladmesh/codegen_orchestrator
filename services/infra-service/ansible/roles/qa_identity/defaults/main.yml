@@ -1,0 +1,22 @@
+---
+# The account a central QA run borrows on this target. Kept equal to
+# `shared/qa_identity.py::QA_SSH_USER`, which is what the provisioner writes
+# into `servers.labels.qa_ssh_user`; a unit test holds the two together, because
+# a role that creates one name while the runtime looks for another produces a
+# host that is provisioned and still refuses QA.
+qa_ssh_user: qa-observer
+qa_ssh_home: "/home/{{ qa_ssh_user }}"
+
+# The one command the QA account may run through sudo. The allowlist is inside
+# the script, not in sudoers: a wrapper can refuse a sub-command, and a sudoers
+# wildcard over `docker *` cannot.
+qa_docker_wrapper: /usr/local/bin/qa-docker
+qa_sudoers_file: "/etc/sudoers.d/{{ qa_ssh_user }}"
+
+# `authorized_keys` for this account holds run keys and nothing else, so after a
+# run's key is removed it would be empty — and an empty file is what a failed
+# filter also produces. This comment line is never a key and never matches a run
+# marker, so "the filter kept nothing" stays a failure the runtime can refuse to
+# copy over the file.
+qa_authorized_keys_sentinel: >-
+  # codegen-qa: one-shot run keys are added and removed here by the orchestrator

@@ -24,7 +24,6 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
-import shlex
 import subprocess
 from threading import Thread
 from types import SimpleNamespace
@@ -41,9 +40,11 @@ from src.agents.qa.tools import build_qa_tools
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
     QACapabilities,
+    QAGrantError,
     QATarget,
     QATargetError,
     QATargetSession,
+    _install_grant,
     revoke_grant,
 )
 from src.consumers._qa_workspace import qa_workspace
@@ -144,7 +145,8 @@ def _session(deployment: Path, deployed_url: str, conn: _LocalShellConn) -> QATa
     return QATargetSession(
         QATarget(
             server_ip="127.0.0.1",
-            ssh_user="qa",
+            ssh_user="root",
+            qa_ssh_user="qa-observer",
             server_handle="vps-1",
             project_name="app",
             deployed_url=deployed_url,
@@ -317,11 +319,13 @@ class _FakeTargetConn:
 
     async def run(self, command: str, *, check: bool = False, timeout: float | None = None):
         self.commands.append(command)
-        if command.startswith("grep -c -F"):
+        # The revoke script's last line is the count of the run's lines still in
+        # the file; a target that answers nothing is residue, not a clean revoke.
+        if "grep -c -F" in command:
             return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
         if command.startswith("readlink -f --"):
             return SimpleNamespace(exit_status=0, stdout="/opt/services/app\n", stderr="")
-        if command.startswith("docker ps"):
+        if "qa-docker ps" in command:
             return SimpleNamespace(exit_status=0, stdout=f"{OWN_CONTAINER}\n", stderr="")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 
@@ -360,7 +364,8 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
         result = await run_qa_centrally(
             target=QATarget(
                 server_ip="1.2.3.4",
-                ssh_user="qa",
+                ssh_user="root",
+                qa_ssh_user="qa-observer",
                 server_handle="vps-1",
                 project_name="app",
                 deployed_url="http://app.example",
@@ -402,7 +407,8 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
             new_callable=AsyncMock,
             return_value=QAServerInfo(
                 server_ip="1.2.3.4",
-                ssh_user="qa",
+                ssh_user="root",
+                qa_ssh_user="qa-observer",
                 ssh_key="fake",
                 project_name="app",
                 server_handle="vps-1",
@@ -440,68 +446,168 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
     assert result.state_changes[0].cleanup.succeeded is False
 
 
-class TestRevokeRewritesARealAuthorizedKeysFile:
-    """The revoke edits the file that authorizes the fleet, so a real one is used.
+class _AccountShellConn(_LocalShellConn):
+    """A target where one account exists, with a home under `tmp_path`.
 
-    A fake connection can only confirm the shell text this code sends. What
-    matters here is what that text does to a file, and specifically what it does
-    when the filter behind it comes back empty: copying that result over
-    `authorized_keys` would take the fleet's own line with it and lock the
-    orchestrator out of the target permanently.
+    The install and revoke scripts find the account's home with `getent passwd`,
+    which is the only part of them a test cannot have for real: everything else —
+    the lock, the append, the filter, the readback — runs against actual files.
+    So `getent` is the one thing stubbed, and it is stubbed on PATH rather than
+    in the script, which stays exactly the text the runtime sends.
     """
 
-    @staticmethod
-    def _revoke(tmp_path: Path, keys: Path):
+    def __init__(self, account: str, home: Path) -> None:
+        super().__init__()
+        self._bin = home.parent / "stub-bin"
+        self._bin.mkdir(exist_ok=True)
+        getent = self._bin / "getent"
+        getent.write_text(
+            "#!/bin/sh\n"
+            f'[ "$2" = "{account}" ] || exit 2\n'
+            f'printf "%s\\n" "{account}:x:1001:1001::{home}:/bin/bash"\n'
+        )
+        getent.chmod(0o755)
+
+    async def run(self, command: str, *, check: bool = False, timeout: float | None = None):
+        self.commands.append(command)
+        proc = subprocess.run(
+            ["bash", "-c", command],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PATH": f"{self._bin}:{os.environ['PATH']}"},
+        )
+        return SimpleNamespace(stdout=proc.stdout, stderr=proc.stderr, exit_status=proc.returncode)
+
+
+class TestTheGrantScriptsAgainstARealAuthorizedKeysFile:
+    """The scripts touch one account's file, so a real one is used.
+
+    A fake connection can only confirm the shell text this code sends. What
+    matters here is what that text does to a file: that it appends to the QA
+    account's `authorized_keys` and creates nothing, that it removes exactly the
+    run's own line, and what it does when the filter behind the removal comes
+    back empty. That last case is why the provisioning role opens the file with a
+    comment line — an empty result means the filter failed, and copying it over
+    the file would leave a file the next run cannot use.
+    """
+
+    ACCOUNT = "qa-observer"
+    SENTINEL = "# codegen-qa: run keys are added and removed here\n"
+
+    def _account(self, tmp_path: Path, *, keys: str | None) -> tuple[Path, _AccountShellConn]:
+        home = tmp_path / "home"
+        (home / ".ssh").mkdir(parents=True)
+        authorized = home / ".ssh" / "authorized_keys"
+        if keys is not None:
+            authorized.write_text(keys)
+        return authorized, _AccountShellConn(self.ACCOUNT, home)
+
+    def _connected(self, conn: _AccountShellConn):
         from src.consumers import _qa_target
 
         return patch.multiple(
-            _qa_target,
-            AUTHORIZED_KEYS=shlex.quote(str(keys)),
-            GRANT_LOCK=shlex.quote(str(tmp_path / "qa.lock")),
-            _connect=AsyncMock(return_value=_LocalShellConn()),
-            _import=lambda key: key,
+            _qa_target, _connect=AsyncMock(return_value=conn), _import=lambda key: key
         )
+
+    async def _revoke(self, conn: _AccountShellConn, marker: str) -> str | None:
+        with self._connected(conn):
+            return await revoke_grant(
+                server_ip="127.0.0.1",
+                ssh_user="root",
+                qa_ssh_user=self.ACCOUNT,
+                fleet_key="k",
+                marker=marker,
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_key_is_appended_to_the_qa_accounts_own_file(self, tmp_path):
+        keys, conn = self._account(tmp_path, keys=self.SENTINEL)
+
+        with self._connected(conn):
+            await _install_grant(
+                QATarget(
+                    server_ip="127.0.0.1",
+                    ssh_user="root",
+                    qa_ssh_user=self.ACCOUNT,
+                    server_handle="vps-1",
+                    project_name="app",
+                    deployed_url="http://app.example",
+                ),
+                "fleet-key",
+                "restrict ssh-ed25519 RUNKEY marker-1",
+            )
+
+        assert keys.read_text() == f"{self.SENTINEL}restrict ssh-ed25519 RUNKEY marker-1\n"
+
+    @pytest.mark.asyncio
+    async def test_an_account_without_the_file_is_refused_not_opened(self, tmp_path):
+        """Provisioning opens this file. A runtime that opened it would be root."""
+        keys, conn = self._account(tmp_path, keys=None)
+
+        with self._connected(conn), pytest.raises(QAGrantError):
+            await _install_grant(
+                QATarget(
+                    server_ip="127.0.0.1",
+                    ssh_user="root",
+                    qa_ssh_user=self.ACCOUNT,
+                    server_handle="vps-1",
+                    project_name="app",
+                    deployed_url="http://app.example",
+                ),
+                "fleet-key",
+                "restrict ssh-ed25519 RUNKEY marker-1",
+            )
+
+        assert not keys.exists()
 
     @pytest.mark.asyncio
     async def test_only_the_runs_own_line_is_removed(self, tmp_path):
-        keys = tmp_path / "authorized_keys"
-        keys.write_text("ssh-ed25519 FLEETKEY orchestrator\nssh-ed25519 RUNKEY marker-1\n")
+        keys, conn = self._account(tmp_path, keys=f"{self.SENTINEL}ssh-ed25519 RUNKEY marker-1\n")
 
-        with self._revoke(tmp_path, keys):
-            residual = await revoke_grant(
-                server_ip="127.0.0.1", ssh_user="qa", fleet_key="k", marker="marker-1"
-            )
+        residual = await self._revoke(conn, "marker-1")
 
         assert residual is None
-        assert keys.read_text() == "ssh-ed25519 FLEETKEY orchestrator\n"
+        assert keys.read_text() == self.SENTINEL
 
     @pytest.mark.asyncio
     async def test_a_marker_that_was_never_installed_reads_back_clean(self, tmp_path):
         """The ambiguous case the sweep retries: nothing was installed after all."""
-        keys = tmp_path / "authorized_keys"
-        keys.write_text("ssh-ed25519 FLEETKEY orchestrator\n")
+        keys, conn = self._account(tmp_path, keys=self.SENTINEL)
 
-        with self._revoke(tmp_path, keys):
-            residual = await revoke_grant(
-                server_ip="127.0.0.1", ssh_user="qa", fleet_key="k", marker="never-installed"
-            )
+        residual = await self._revoke(conn, "never-installed")
 
         assert residual is None
-        assert keys.read_text() == "ssh-ed25519 FLEETKEY orchestrator\n"
+        assert keys.read_text() == self.SENTINEL
 
     @pytest.mark.asyncio
     async def test_an_empty_filter_result_is_never_copied_over_the_file(self, tmp_path):
         """A file of nothing but our own line means the filter failed, not that we own it."""
-        keys = tmp_path / "authorized_keys"
-        keys.write_text("ssh-ed25519 RUNKEY marker-1\n")
+        keys, conn = self._account(tmp_path, keys="ssh-ed25519 RUNKEY marker-1\n")
 
-        with self._revoke(tmp_path, keys):
-            residual = await revoke_grant(
-                server_ip="127.0.0.1", ssh_user="qa", fleet_key="k", marker="marker-1"
-            )
+        residual = await self._revoke(conn, "marker-1")
 
         # The file is left exactly as it was, and the readback says so — which is
         # what puts the grant in front of the sweep instead of closing it.
         assert keys.read_text() == "ssh-ed25519 RUNKEY marker-1\n"
         assert residual is not None
         assert "marker-1" in residual
+
+    @pytest.mark.asyncio
+    async def test_an_account_that_is_gone_holds_no_key(self, tmp_path):
+        _, conn = self._account(tmp_path, keys=self.SENTINEL)
+
+        assert await self._revoke(conn, "marker-1") is None
+        with (
+            patch("src.consumers._qa_target._import", lambda key: key),
+            patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
+        ):
+            gone = await revoke_grant(
+                server_ip="127.0.0.1",
+                ssh_user="root",
+                qa_ssh_user="no-such-account",
+                fleet_key="k",
+                marker="marker-1",
+            )
+
+        assert gone is None

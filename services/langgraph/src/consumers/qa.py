@@ -13,10 +13,12 @@ import httpx
 import structlog
 
 from shared.contracts.acceptance import parse_health_only_criteria
+from shared.contracts.dto.incident import IncidentCreate, IncidentType
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
+from shared.qa_identity import QA_SSH_USER_LABEL, qa_identity_rejection, qa_run_identity
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
@@ -36,7 +38,7 @@ from ._qa_runner import (
     run_health_checks,
     run_qa_centrally,
 )
-from ._qa_target import PRIVILEGED_SSH_USERS, QATarget
+from ._qa_target import QATarget
 
 logger = structlog.get_logger(__name__)
 
@@ -72,13 +74,21 @@ async def _resolve_server_info(application_id: int, project_name: str) -> QAServ
         )
         return None
 
+    # The run's identity comes off the server row, not off `ssh_user`: the
+    # administrative account is what the fleet key opens, and a run performed as
+    # it would be a run with the platform's own authority over the thing it is
+    # testing. An empty value here is a host that lends no identity, and the
+    # caller refuses it — it is never quietly replaced with `ssh_user`.
+    rejection = qa_identity_rejection(server)
     return QAServerInfo(
         server_ip=server.public_ip,
         ssh_user=server.ssh_user,
+        qa_ssh_user="" if rejection else qa_run_identity(server),
         ssh_key=ssh_key,
         project_name=project_name,
         server_handle=app.server_handle,
         allocated_ports=frozenset(allocation["port"] for allocation in app.ports),
+        qa_identity_rejection=rejection.value if rejection else "",
     )
 
 
@@ -144,27 +154,65 @@ def _resolve_qa_runtime() -> tuple[QARuntimeConfig | None, QABlocker | None]:
     )
 
 
-def _unprivileged_identity_blocker(server_info: QAServerInfo) -> QABlocker | None:
-    """Refuse a target on which the run's identity would be privileged.
+async def _missing_identity_blocker(server_info: QAServerInfo) -> QABlocker | None:
+    """Refuse a target that lends no QA identity, and record why it was refused.
 
     Exploratory QA borrows an account on the target, and the whole point of the
-    borrowed identity is that it is weaker than the fleet's. On a server whose
-    only SSH account is root there is no such identity to mint, so the run is
-    refused rather than performed as root. This is an infrastructure fact about
-    the host, not a defect in the user's project: it routes to human review as
-    the target being unavailable, and the story is not failed on it.
+    borrowed identity is that it is weaker than the fleet's. Provisioning creates
+    that account; the runtime only writes a key into it. A host that has none is
+    a host whose provisioning did not finish the job — so the refusal is written
+    to the provisioning journal against that server handle, where an
+    administrator already looks, instead of being a warning in this consumer's
+    log. `python -m src.provisioner.qa_identity_retrofit <handle>` in
+    infra-service is what closes it.
+
+    The run itself is blocked, not failed: this is an infrastructure fact about
+    the host, not a defect in the user's project.
     """
-    if server_info.ssh_user not in PRIVILEGED_SSH_USERS:
+    if not server_info.qa_identity_rejection:
         return None
+    await _journal_missing_identity(server_info)
     return QABlocker(
         category=QABlockerCategory.SERVER_UNAVAILABLE,
-        attempted="mint an unprivileged one-shot identity for the QA run",
-        sent=f"ssh_user={server_info.ssh_user} on {server_info.server_ip}",
+        attempted="borrow the target's unprivileged QA account for this run",
+        sent=f"servers.labels.{QA_SSH_USER_LABEL} of {server_info.server_handle}",
         received=(
-            "the target offers no unprivileged account for a QA run identity; "
-            "exploratory QA does not run as root"
+            f"{server_info.qa_identity_rejection}: this host lends no unprivileged account "
+            "for a QA run, and exploratory QA is not performed with the fleet's own access"
         ),
     )
+
+
+async def _journal_missing_identity(server_info: QAServerInfo) -> None:
+    """Record the missing QA identity as the provisioning fact it is.
+
+    The existing provisioning-failure journal is the mechanism: it is keyed by
+    server handle, it upserts into one active episode rather than one row per QA
+    run, and an open entry already means "this host's build is not finished" to
+    everything that places work — so a host that cannot be QA'd also stops
+    receiving new applications until it is repaired. A journal write that fails
+    must not turn a blocked run into a crashed consumer, so it is logged and the
+    refusal stands either way.
+    """
+    incident = IncidentCreate(
+        server_handle=server_info.server_handle,
+        incident_type=IncidentType.PROVISIONING_FAILED,
+        details={
+            "step": "qa_identity",
+            "reason": server_info.qa_identity_rejection,
+            "server_handle": server_info.server_handle,
+            "server_ip": server_info.server_ip,
+            "repair": f"python -m src.provisioner.qa_identity_retrofit {server_info.server_handle}",
+        },
+    )
+    try:
+        await api_client.record_provisioning_failure(incident)
+    except Exception:
+        logger.error(
+            "qa_identity_incident_write_failed",
+            server_handle=server_info.server_handle,
+            exc_info=True,
+        )
 
 
 async def _run_exploratory_qa(
@@ -181,14 +229,15 @@ async def _run_exploratory_qa(
     settled before the agent starts, so a run that cannot happen costs no LLM
     and issues no access on the target.
     """
-    privileged = _unprivileged_identity_blocker(server_info)
-    if privileged:
+    missing_identity = await _missing_identity_blocker(server_info)
+    if missing_identity:
         logger.warning(
             "qa_target_has_no_unprivileged_identity",
+            server_handle=server_info.server_handle,
             server_ip=server_info.server_ip,
-            ssh_user=server_info.ssh_user,
+            rejection=server_info.qa_identity_rejection,
         )
-        return None, privileged
+        return None, missing_identity
 
     runtime, runtime_blocker = _resolve_qa_runtime()
     if runtime_blocker:
@@ -206,6 +255,7 @@ async def _run_exploratory_qa(
         target=QATarget(
             server_ip=server_info.server_ip,
             ssh_user=server_info.ssh_user,
+            qa_ssh_user=server_info.qa_ssh_user,
             server_handle=server_info.server_handle,
             project_name=server_info.project_name,
             deployed_url=msg.deployed_url,

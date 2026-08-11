@@ -1,0 +1,109 @@
+---
+# Bring an already-provisioned host to the state a fresh one comes out in:
+# the QA run identity exists, and nothing is left of the QA agent that used to
+# live on the target.
+#
+# Usage (normally through `python -m src.provisioner.qa_identity_retrofit HANDLE`,
+# which also records the identity on the server row):
+#   ansible-playbook -i inventory/prod.ini playbooks/qa_identity_retrofit.yml \
+#     -e "target_host=1.2.3.4 deploy_user=root"
+#
+# Two properties this playbook owes its caller:
+#
+# * it is repeatable. Every task is a state, not a step; a second run changes
+#   nothing and fails nothing.
+# * it touches only what the platform put there. The removals below name the
+#   files and directories the removed target-local QA provisioning created, and
+#   nothing else — no application data, no deployment directory, no compose
+#   project.
+
+- name: Retrofit the QA run identity
+  hosts: "{{ target_host | default('all') }}"
+  become: true
+  vars_files:
+    - ../group_vars/provision_vars.yml
+
+  pre_tasks:
+    - name: Wait for server to be reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  tasks:
+    - name: Create the QA run identity
+      ansible.builtin.include_role:
+        name: qa_identity
+
+    # The old QA agent ran as the deploy user — which on a host provisioned
+    # before this is `root` — so its leftovers are in that account's home.
+    - name: Resolve the home of the account the old QA agent lived in
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ deploy_user }}"
+
+    - name: Name that home
+      ansible.builtin.set_fact:
+        qa_residue_home: "{{ ansible_facts.getent_passwd[deploy_user][4] }}"
+
+    - name: Remove the target-local QA agent's files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        # The Claude Code CLI that provisioning installed for that account, and
+        # the directory its installer unpacks versions into.
+        - "{{ qa_residue_home }}/.local/bin/claude"
+        - "{{ qa_residue_home }}/.local/share/claude"
+        # The LLM credentials and the agent settings that were copied here. No
+        # deploy target holds LLM credentials any more.
+        - "{{ qa_residue_home }}/.claude"
+        # The Telegram account QA used to talk to bots as.
+        - "{{ qa_residue_home }}/.qa-telethon.env"
+        # The venv (telethon, httpx) and the old write guard.
+        - /opt/qa-runner
+      register: qa_residue_removed
+
+    # The 2GB swap file existed only because the Claude Code installer needed it
+    # to unpack. Taking it away is the one step here that touches a running
+    # system, so it is done in the order that cannot leave a broken host: turn
+    # it off first, and only then unlink it and forget it in fstab.
+    - name: Check whether the QA swap file is in use
+      ansible.builtin.command: grep -q '^/swapfile ' /proc/swaps
+      register: qa_swap_active
+      changed_when: false
+      failed_when: false
+
+    - name: Take the QA swap file out of use
+      ansible.builtin.command: swapoff /swapfile
+      when: qa_swap_active.rc == 0
+      changed_when: true
+
+    - name: Remove the QA swap file
+      ansible.builtin.file:
+        path: /swapfile
+        state: absent
+      register: qa_swap_removed
+
+    - name: Stop mounting the QA swap file at boot
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        line: "/swapfile none swap sw 0 0"
+        state: absent
+      register: qa_swap_fstab
+
+    # What this host actually changed, in one place, so a fleet-wide retrofit
+    # can be read per host instead of by scrolling task output.
+    - name: Report what this host changed
+      ansible.builtin.debug:
+        msg:
+          qa_ssh_user: "{{ qa_ssh_user }}"
+          removed_paths: >-
+            {{ qa_residue_removed.results
+               | selectattr('changed')
+               | map(attribute='item')
+               | list }}
+          swap_disabled: "{{ qa_swap_active.rc == 0 }}"
+          swap_file_removed: "{{ qa_swap_removed.changed }}"
+          fstab_entry_removed: "{{ qa_swap_fstab.changed }}"
