@@ -1412,31 +1412,41 @@ async def _handle_deploy_infrastructure_wait(
     bound the engineering path's wait carries: the platform may keep a user's
     work waiting on its own infrastructure only so long before somebody has to
     look. An unbounded wait is how a stuck story stays invisible.
+
+    The bound is checked before admissibility, exactly as the engineering path
+    checks the task's age before `_resources_available`, because a wait can also
+    fail to end while targets keep appearing. Resuming asks whether *any* server
+    could take the request, while a project already bound to a host is refused by
+    *that* host: a fleet with one healthy server and one broken one the project
+    sits on would otherwise re-dispatch, be refused, and re-dispatch again
+    forever. Escalating on elapsed time bounds that cycle too — the same clock,
+    carried across re-dispatches, ends both shapes of a wait that is not working.
     """
     waiting_since = _infrastructure_wait_started_at(run)
     waited_minutes = (datetime.now(UTC) - waiting_since).total_seconds() / 60
+
+    if waited_minutes >= _resource_wait_timeout_minutes():
+        await _escalate_refused_deploy(
+            api_client,
+            redis_client,
+            story_id,
+            project_id,
+            run,
+            result,
+            tell_owner=False,
+            detail=(
+                f"deploy waited {round(waited_minutes)} minutes for an admissible server "
+                f"({result.allocation_failure_reason.value})"
+            ),
+            log=log,
+        )
+        return RefusedDeployAction.ESCALATED
 
     if not await _admissible_target_exists(
         api_client,
         required_ram_mb=result.allocation_required_ram_mb,
         min_disk_mb=result.allocation_min_disk_mb,
     ):
-        if waited_minutes >= _resource_wait_timeout_minutes():
-            await _escalate_refused_deploy(
-                api_client,
-                redis_client,
-                story_id,
-                project_id,
-                run,
-                result,
-                tell_owner=False,
-                detail=(
-                    f"deploy waited {round(waited_minutes)} minutes for an admissible server "
-                    f"({result.allocation_failure_reason.value})"
-                ),
-                log=log,
-            )
-            return RefusedDeployAction.ESCALATED
         log.info(
             "deploy_waiting_infrastructure",
             run_id=run.id,

@@ -16,6 +16,8 @@ not the collapse; one behaviour for every reason was.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,6 +29,11 @@ from shared.tests.allocation_routing_cases import (
     REFUSED_DEPLOY_REASONS,
     REFUSED_DEPLOY_REQUIRED_RAM_MB,
     refused_deploy_result,
+)
+from shared.tests.server_admission_cases import (
+    ADMISSION_CASES,
+    admission_case_incidents,
+    admission_case_server,
 )
 from tests.unit.factories import make_project, make_repository, make_run, make_run_start
 
@@ -136,6 +143,55 @@ async def test_every_allocation_refusal_keeps_its_type_across_the_boundary(
     assert recorded.allocation_failure_reason is reason
     assert recorded.allocation_required_ram_mb == REFUSED_DEPLOY_REQUIRED_RAM_MB
     assert recorded.allocation_min_disk_mb == REFUSED_DEPLOY_MIN_DISK_MB
+
+
+@pytest.mark.asyncio
+@patch("src.consumers.deploy.create_devops_subgraph")
+async def test_redeploy_onto_an_unready_bound_server_waits_instead_of_failing(
+    mock_devops, mock_redis, mock_api
+):
+    """The reuse path's refusal, through the real allocator rather than a stub.
+
+    A project already placed on a host whose provisioning restarted is the
+    scenario the admission rule exists for. What matters here is the *outcome*
+    the consumer records: an infrastructure wait carrying its reason, not a
+    GIVE_UP that would tell this project's owner their project failed.
+    """
+    from src.consumers.deploy import process_deploy_job
+
+    now = datetime.now(UTC)
+    case = next(
+        candidate
+        for candidate in ADMISSION_CASES
+        if candidate.name == "active_while_installing_software"
+    )
+    server = admission_case_server(case, last_health_check=now)
+    allocations_api = AsyncMock()
+    allocations_api.list_applications.return_value = [
+        {"id": 42, "repo_id": "repo-1", "server_handle": server.handle, "status": "running"}
+    ]
+    allocations_api.get_server.return_value = server
+    allocations_api.list_active_incidents.return_value = admission_case_incidents(
+        case, detected_at=now
+    )
+    settings = SimpleNamespace(
+        allocation_ram_reserve_mb=256, allocation_metrics_freshness_seconds=300
+    )
+
+    with (
+        patch("src.allocations.api_client", allocations_api),
+        patch("src.allocations.get_settings", return_value=settings),
+    ):
+        result = await process_deploy_job(_job(), mock_redis)
+
+    recorded = _recorded_result(mock_api)
+    assert recorded.deploy_outcome is DeployOutcome.WAITING_INFRASTRUCTURE
+    assert recorded.allocation_failure_reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+    assert result["status"] == "waiting_infrastructure"
+    # The refusal happened before anything was handed to the deploy.
+    allocations_api.get_application_allocations.assert_not_awaited()
+    allocations_api.allocate_next_port.assert_not_awaited()
+    mock_devops.assert_not_called()
 
 
 @pytest.mark.asyncio

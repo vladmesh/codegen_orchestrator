@@ -69,6 +69,13 @@ async def ensure_project_allocations(
     3. If yes, returns existing allocations
     4. If no, finds a suitable server and allocates ports
 
+    Both branches pass ``shared.server_admission``: a newly chosen host through
+    :func:`_find_suitable_server`, an already bound host through
+    :func:`_refuse_inadmissible_target`. Reuse is placement too — a redeploy runs
+    the application on that host again and a newly declared module takes a fresh
+    port on it — so the same predicate decides both, and neither can admit what
+    the other refuses.
+
     Args:
         project_id: Project ID (for finding server/repo)
         repo_id: Repository ID for the Application
@@ -86,13 +93,21 @@ async def ensure_project_allocations(
     if modules is None:
         modules = ["backend"]
 
-    # A placement already exists for this repository. Reuse it before admission:
-    # its reservation and observed memory are already included in server load.
+    # A placement already exists for this repository. Its reservation and observed
+    # memory are already included in server load, so reuse skips the *capacity*
+    # budget — but never admission: the bound host still has to be a legal target
+    # before it takes this project's workload again.
     existing_apps = await api_client.list_applications({"repo_id": repo_id})
     if existing_apps:
         app = existing_apps[0]
         server_handle = app["server_handle"]
         server = await api_client.get_server(server_handle)
+        _refuse_inadmissible_target(
+            server,
+            provisioning_failed_server_handles(await api_client.list_active_incidents()),
+            min_ram_mb=min_ram_mb,
+            min_disk_mb=min_disk_mb,
+        )
     else:
         server = await _find_suitable_server(min_ram_mb, min_disk_mb)
         server_handle = server.handle
@@ -176,6 +191,52 @@ async def ensure_project_allocations(
         )
 
     return allocated
+
+
+def _refuse_inadmissible_target(
+    server: ServerDTO,
+    provisioning_failed_handles: frozenset[str],
+    *,
+    min_ram_mb: int,
+    min_disk_mb: int,
+) -> None:
+    """Refuse to put more of a project on a server that may not host one.
+
+    This is the admission decision for an already bound host, and it is the same
+    decision `_find_suitable_server` makes for a new one: `server_admission_rejection`
+    from `shared.server_admission`, over the same snapshot of active incidents.
+    A binding made while the host was legal is not a licence to keep placing work
+    on it after its provisioning restarted or broke.
+
+    The refusal is the existing typed `AllocationError` carrying the admission
+    budget, so it travels the route every other refusal travels
+    (`shared.allocation_disposition`): a bounded infrastructure wait that ends
+    with a human, never a capacity message to the owner and never a story
+    failure.
+
+    All four rejections raise `SERVER_NOT_PROVISIONED`. Two of them — the bound
+    host stopped being managed, or left the admitting statuses — are not literally
+    an unfinished build, and the reason vocabulary has no member for them; they
+    are still the platform's own state rather than the project's, and the
+    alternative to reusing the closest infrastructure reason is describing them
+    to the owner as a capacity shortage, which is worse and false.
+    """
+    admission = server_admission_rejection(server, provisioning_failed_handles)
+    if admission is None:
+        return
+    logger.info(
+        "server_admission_rejected",
+        server=server.handle,
+        status=server.status.value,
+        reason=admission.value,
+        placement="reuse",
+    )
+    raise AllocationError(
+        AllocationFailureReason.SERVER_NOT_PROVISIONED,
+        required_ram_mb=allocation_required_ram_mb(min_ram_mb),
+        min_disk_mb=min_disk_mb,
+        message=(f"Bound server {server.handle} may not host an application: {admission.value}"),
+    )
 
 
 async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:

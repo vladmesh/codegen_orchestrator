@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-08-11 (4)
+
+- Closed the last way past admission: reuse. A project already bound to a server
+  skipped the rule entirely — `ensure_project_allocations()` fetched the bound
+  host, read no incidents, and handed back its allocations or took a fresh port
+  on it for a newly declared module. So a redeploy landed on a host whose
+  provisioning had restarted or broken, which is the placement the rule exists to
+  refuse. The bound host now passes the same `shared/server_admission.py`
+  predicate over the same snapshot of active incidents, before any allocation is
+  returned and before any port is taken.
+- Refused reuse through the existing typed `AllocationError` with the admission
+  budget, so it travels the route every other refusal travels — a bounded
+  infrastructure wait — instead of reaching the deploy path as a `GIVE_UP` that
+  would fail the user's story. No new contract, reason or outcome.
+- Bounded the resume-and-refuse cycle that reuse makes reachable: resuming asks
+  whether any server is admissible, while a bound project is refused by the one
+  it sits on, so a fleet with one healthy host and one broken host the project is
+  pinned to would re-dispatch and be refused forever. The deploy wait now checks
+  `supervisor.resource_wait_timeout_minutes` before admissibility, as the
+  engineering wait already did, and the story reaches a human.
+- Extended the shared admission matrix to the reuse shapes — existing
+  allocations returned whole, and a new module taking a port on the bound host —
+  so all placement paths are checked against the same state table.
+
 ## 2026-08-11 (3)
 
 - Gave every refusal disposition its own behaviour on both routing paths. The

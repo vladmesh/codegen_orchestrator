@@ -1421,6 +1421,51 @@ class TestDeployRefusedByAdmission:
         api_client.fail_story.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_wait_its_own_server_keeps_refusing_reaches_a_human(
+        self, api_client, redis_client
+    ):
+        """The resume-and-refuse cycle is bounded by the same clock as the wait.
+
+        A project already bound to a host is refused by *that* host — the reuse
+        path in `services/langgraph/src/allocations.py` applies admission to the
+        server the application sits on. Resuming, though, asks whether *any*
+        server is admissible. So a fleet with one healthy host and one broken
+        host the project is pinned to satisfies the resume condition on every
+        tick and is refused again on every tick.
+
+        This pins that the cycle ends: the elapsed-time bound is checked before
+        admissibility, the stamp survives each re-dispatch, and the story reaches
+        a human instead of spinning. Without it the deploy would be re-dispatched
+        here forever with nobody told — and it would still never fail the story,
+        which is exactly what makes an unbounded spin invisible.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        started = datetime.now(UTC) - timedelta(minutes=61)
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._refused_run(
+            run_metadata={"infrastructure_wait_started_at": started.isoformat()}
+        )
+        # Another host is perfectly admissible; the project's own host is not.
+        self._fleet(api_client, admissible=True)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["escalated"] == 1
+        assert result["redispatched"] == 0
+        assert result["waiting"] == 0
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        mock_notify.assert_awaited_once()
+        api_client.fail_story.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_the_wait_keeps_its_start_across_a_redispatch(self, api_client, redis_client):
         """Resuming and being refused again must not reset the bound to zero."""
         from src.tasks.supervisor import supervise_deploying_stories
