@@ -115,6 +115,9 @@ Atomic `SET NX` Redis lock per project prevents duplicate deploys. Replaces the 
 ### Resource Allocation Capacity
 Typed allocation failures for insufficient free or reserved RAM park the task in `waiting_resources`, rather than consuming an engineering retry. The scheduler resumes it after fresh server metrics satisfy the same conservative RAM and disk admission checks, and moves it to human review after the configured wait timeout. A request that exceeds every managed server is escalated immediately. `no_fresh_metrics` is an observability failure and stays on the technical-failure path.
 
+### Target Admission (Provisioning Readiness)
+Before capacity is considered at all, a server has to be an admissible target: managed, operational, `labels.provisioning_phase == "complete"`, and free of an active `PROVISIONING_FAILED` incident. The rule is fail-closed — a missing, empty or unknown phase counts as unfinished — and lives once in `shared/server_admission.py`. Both admission paths call it: `_find_suitable_server` (langgraph allocator) and `_resources_available` (scheduler resource wait), so a parked task can never wake up towards a server the allocator would refuse. When no host is admissible for this reason, the allocator raises `AllocationFailureReason.SERVER_NOT_PROVISIONED`: the task parks in `waiting_resources` like a capacity wait — no engineering retry, no story failure, no product-failure notification — but the owner is told through the `task_waiting_infrastructure` PO event, never as a capacity shortage.
+
 ### Proactive Message Spam Filter
 PO sends user-facing lifecycle messages through `po:proactive`: deploy success, permanent story failure, and resource-wait entry, escalation, and resumption. Intermediate smoke, precheck, and workflow failures stay internal.
 

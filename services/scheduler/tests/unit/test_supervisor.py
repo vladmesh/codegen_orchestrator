@@ -13,9 +13,22 @@ from unittest.mock import AsyncMock, patch
 from _run_routing_factories import _make_repo, _make_story, _make_task
 import pytest
 
+from shared.contracts.dto.server import ServerDTO
+from shared.tests.server_admission_cases import (
+    ADMISSION_CASES,
+    admission_case_incidents,
+    admission_case_server,
+)
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _provisioned_server() -> ServerDTO:
+    """A managed host that finished provisioning — the only kind admission takes."""
+    case = next(candidate for candidate in ADMISSION_CASES if candidate.admitted)
+    return admission_case_server(case, last_health_check=datetime.now(UTC))
 
 
 @pytest.fixture
@@ -460,17 +473,8 @@ class TestSuperviseWaitingResourceTasks:
             failure_metadata={"allocation_required_ram_mb": 768, "allocation_min_disk_mb": 1024},
         )
         api_client.get_tasks_by_status.return_value = [task]
-        api_client.get_servers.return_value = [
-            SimpleNamespace(
-                handle="server-1",
-                is_managed=True,
-                status="ready",
-                capacity_ram_mb=2048,
-                capacity_disk_mb=4096,
-                used_ram_mb=0,
-                last_health_check=datetime.now(UTC),
-            )
-        ]
+        api_client.get_servers.return_value = [_provisioned_server()]
+        api_client.list_active_incidents.return_value = []
         api_client.get_applications.return_value = []
         api_client.get_project.return_value = SimpleNamespace(owner_id=42)
 
@@ -514,17 +518,8 @@ class TestSuperviseWaitingResourceTasks:
             [task] if status in {"failed", "waiting_resources", "todo"} else []
         )
         api_client.list_runs.return_value = [old_run]
-        api_client.get_servers.return_value = [
-            SimpleNamespace(
-                handle="server-1",
-                is_managed=True,
-                status="ready",
-                capacity_ram_mb=2048,
-                capacity_disk_mb=4096,
-                used_ram_mb=0,
-                last_health_check=datetime.now(UTC),
-            )
-        ]
+        api_client.get_servers.return_value = [_provisioned_server()]
+        api_client.list_active_incidents.return_value = []
         api_client.get_applications.return_value = []
         api_client.get_project.return_value = SimpleNamespace(
             owner_id=42,
@@ -618,6 +613,112 @@ class TestSuperviseWaitingResourceTasks:
         )
         api_client.create_task_event.assert_awaited_once()
         notify.assert_awaited_once()
+
+
+class TestProvisioningAdmissionInResourceWait:
+    """The wait may only release a task towards a host the allocator would take.
+
+    The states come from `shared.tests.server_admission_cases`, the same table the
+    allocator is checked against, so a rule that starts differing between the two
+    admission paths fails here.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_wait_releases_exactly_the_shared_matrix(self, case, api_client, redis_client):
+        from src.tasks.supervisor import supervise_waiting_resource_tasks
+
+        now = datetime.now(UTC)
+        task = _make_task(
+            status="waiting_resources",
+            failure_metadata={
+                "allocation_required_ram_mb": 768,
+                "allocation_min_disk_mb": 1024,
+            },
+        )
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.get_servers.return_value = [admission_case_server(case, last_health_check=now)]
+        api_client.list_active_incidents.return_value = admission_case_incidents(
+            case, detected_at=now
+        )
+        api_client.get_applications.return_value = []
+        api_client.get_project.return_value = SimpleNamespace(owner_id=42)
+
+        result = await supervise_waiting_resource_tasks(api_client, redis_client)
+
+        assert result == {"resumed": 1 if case.admitted else 0, "expired": 0}
+
+    @pytest.mark.asyncio
+    async def test_unprovisioned_host_parks_the_task_as_infrastructure(
+        self, api_client, redis_client
+    ):
+        """An unfinished machine is not the project's defect and not a shortage."""
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run_result import (
+            AllocationFailureReason,
+            EngineeringRunResult,
+        )
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        task = _make_task(id="task-1", story_id="story-1", status="failed")
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason.SERVER_NOT_PROVISIONED,
+                    allocation_required_ram_mb=768,
+                    allocation_min_disk_mb=1024,
+                )
+            )
+        ]
+        api_client.get_project.return_value = SimpleNamespace(owner_id=42)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_failed_tasks(api_client, redis_client)
+
+        # No retry, no escalation: the code was never the problem.
+        assert result == {"retried": 0, "escalated": 0}
+        api_client.transition_task.assert_awaited_once_with(
+            "task-1", "waiting_resources", "supervisor"
+        )
+        api_client.transition_story.assert_not_awaited()
+        notify.assert_not_awaited()
+        published = redis_client.publish_flat.await_args.args[1]
+        assert published["event"] == "task_waiting_infrastructure"
+        assert "capacity" not in published["text"]
+
+    @pytest.mark.asyncio
+    async def test_capacity_shortage_keeps_its_own_user_message(self, api_client, redis_client):
+        """The two waits must stay distinguishable to the owner, not just in logs."""
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run_result import (
+            AllocationFailureReason,
+            EngineeringRunResult,
+        )
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _make_task(id="task-1", story_id="story-1", status="failed")
+        ]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+                    allocation_required_ram_mb=768,
+                    allocation_min_disk_mb=1024,
+                )
+            )
+        ]
+        api_client.get_project.return_value = SimpleNamespace(owner_id=42)
+
+        await supervise_failed_tasks(api_client, redis_client)
+
+        published = redis_client.publish_flat.await_args.args[1]
+        assert published["event"] == "task_waiting_resources"
 
 
 class TestSuperviseStuckTasks:

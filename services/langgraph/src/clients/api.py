@@ -10,6 +10,7 @@ import httpx
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
+from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -171,8 +172,10 @@ class LanggraphAPIClient(InternalAPIClient):
     async def create_incident(self, payload: dict) -> dict:
         return await self._post_json("incidents/", json=payload)
 
-    async def list_active_incidents(self) -> list[dict]:
-        return await self._get_json("incidents/active")
+    async def list_active_incidents(self) -> list[IncidentDTO]:
+        """Return detected and recovering incidents, typed for admission checks."""
+        incidents = await self._get_json("incidents/active")
+        return [IncidentDTO.model_validate(incident) for incident in incidents]
 
     async def list_incidents(self, params: dict) -> list[dict]:
         return await self._get_json("incidents/", params=params)

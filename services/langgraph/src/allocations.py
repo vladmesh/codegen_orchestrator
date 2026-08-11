@@ -14,7 +14,13 @@ import structlog
 
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationStatus
 from shared.contracts.dto.run_result import AllocationFailureReason
-from shared.contracts.dto.server import ServerDTO, ServerStatus
+from shared.contracts.dto.server import ServerDTO
+from shared.server_admission import (
+    PROVISIONING_REJECTIONS,
+    ServerAdmissionRejection,
+    provisioning_failed_server_handles,
+    server_admission_rejection,
+)
 
 from .clients.api import api_client
 from .config.settings import get_settings
@@ -161,24 +167,43 @@ async def ensure_project_allocations(
 async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
     """Find a server that can admit the requested RAM allocation conservatively.
 
-    Admission reserves ``min_ram_mb + ALLOCATION_RAM_RESERVE_MB``. It compares that
-    budget against both the persisted sum of application reservations and fresh
-    observed RAM use, then uses the larger value. Metrics older than
+    A candidate first has to be an admissible target at all: managed, operational,
+    software provisioning recorded complete, and free of an open provisioning
+    failure. That rule lives in ``shared.server_admission`` and is shared with the
+    scheduler's resource wait, so the two cannot diverge. A host that fails it is
+    never described as a capacity problem — it raises
+    ``AllocationFailureReason.SERVER_NOT_PROVISIONED``.
+
+    Admission then reserves ``min_ram_mb + ALLOCATION_RAM_RESERVE_MB``. It compares
+    that budget against both the persisted sum of application reservations and
+    fresh observed RAM use, then uses the larger value. Metrics older than
     ``ALLOCATION_METRICS_FRESHNESS_SECONDS`` (or absent) are unknown and reject the
-    server. A rejection reports whether every candidate lacked capacity, fresh
-    metrics, or observed free memory.
+    server. A rejection reports whether every candidate was unprovisioned, or
+    lacked capacity, fresh metrics, or observed free memory.
     """
     all_managed_servers = await api_client.list_servers(is_managed=True)
     settings = get_settings()
     required_ram_mb = allocation_required_ram_mb(min_ram_mb)
-
-    # Filter to only active/ready/in_use servers
-    active_statuses = (ServerStatus.ACTIVE, ServerStatus.READY, ServerStatus.IN_USE)
-    servers = [s for s in all_managed_servers if s.status in active_statuses]
+    provisioning_failed_handles = provisioning_failed_server_handles(
+        await api_client.list_active_incidents()
+    )
 
     suitable: list[tuple[ServerDTO, int]] = []
     rejection_reasons: set[str] = set()
-    for srv in servers:
+    admission_rejections: set[ServerAdmissionRejection] = set()
+    for srv in all_managed_servers:
+        admission = server_admission_rejection(srv, provisioning_failed_handles)
+        if admission is not None:
+            admission_rejections.add(admission)
+            if admission in PROVISIONING_REJECTIONS:
+                logger.info(
+                    "server_admission_rejected",
+                    server=srv.handle,
+                    status=srv.status.value,
+                    reason=admission.value,
+                )
+            continue
+
         if srv.capacity_disk_mb < min_disk_mb:
             rejection_reasons.add("insufficient_capacity")
             continue
@@ -208,6 +233,11 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
     if not suitable:
         if _request_exceeds_every_server(all_managed_servers, required_ram_mb, min_disk_mb):
             raise AllocationError(AllocationFailureReason.IMPOSSIBLE_CAPACITY)
+        # An unfinished or broken host build is infrastructure, not capacity: it
+        # resolves by itself when provisioning completes, so it must keep its own
+        # reason instead of collapsing into a memory shortage.
+        if admission_rejections & PROVISIONING_REJECTIONS:
+            raise AllocationError(AllocationFailureReason.SERVER_NOT_PROVISIONED)
         # Unknown metrics cannot truthfully be described to a user as capacity.
         if "no_fresh_metrics" in rejection_reasons:
             raise AllocationError(AllocationFailureReason.NO_FRESH_METRICS)

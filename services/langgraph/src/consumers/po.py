@@ -315,6 +315,7 @@ async def _handle_message(
         "story_quarantined",
         "story_waiting_user_secret",
         "task_waiting_resources",
+        "task_waiting_infrastructure",
         "task_impossible_capacity",
         "task_resources_resumed",
     }

@@ -5,6 +5,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.run_result import AllocationFailureReason
+from shared.tests.server_admission_cases import (
+    ADMISSION_CASES,
+    admission_case_incidents,
+    admission_case_server,
+)
 from tests.unit.factories import make_server
 
 SERVER = make_server(
@@ -350,3 +356,104 @@ class TestSuitableServer:
             selected = await _find_suitable_server(512, 1024)
 
         assert selected is server
+
+
+def _admission_client(case, now: datetime) -> tuple[AsyncMock, object]:
+    """An API client whose whole fleet is the one server this case describes."""
+    server = admission_case_server(case, last_health_check=now)
+    client = AsyncMock()
+    client.list_servers.return_value = [server]
+    client.list_applications.return_value = []
+    client.list_active_incidents.return_value = admission_case_incidents(case, detected_at=now)
+    return client, server
+
+
+class TestProvisioningAdmission:
+    """A host may take an application only once its provisioning really finished.
+
+    The states come from `shared.tests.server_admission_cases`, the same table the
+    scheduler's resource wait is checked against, so the allocator cannot start
+    admitting something the wait does not — or the other way round.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_allocator_admits_exactly_the_shared_matrix(self, case):
+        now = datetime.now(UTC)
+        client, server = _admission_client(case, now)
+
+        with (
+            patch("src.allocations.api_client", client),
+            patch("src.allocations.get_settings", return_value=_allocation_settings()),
+        ):
+            from src.allocations import AllocationError, _find_suitable_server
+
+            if case.admitted:
+                assert await _find_suitable_server(512, 1024) is server
+                return
+            with pytest.raises(AllocationError):
+                await _find_suitable_server(512, 1024)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "case_name",
+        [
+            "active_without_provisioning_phase",
+            "active_while_installing_software",
+            "active_with_empty_provisioning_phase",
+            "active_with_unknown_provisioning_phase",
+            "complete_but_provisioning_failed",
+        ],
+    )
+    async def test_unready_host_is_not_reported_as_a_capacity_shortage(self, case_name):
+        """The machine is unfinished, not full — the reason has to say so."""
+        case = next(candidate for candidate in ADMISSION_CASES if candidate.name == case_name)
+        now = datetime.now(UTC)
+        client, _ = _admission_client(case, now)
+
+        with (
+            patch("src.allocations.api_client", client),
+            patch("src.allocations.get_settings", return_value=_allocation_settings()),
+        ):
+            from src.allocations import AllocationError, _find_suitable_server
+
+            with pytest.raises(AllocationError) as raised:
+                await _find_suitable_server(512, 1024)
+
+        assert raised.value.reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+
+    @pytest.mark.asyncio
+    async def test_provisioned_server_receives_the_application_and_its_ports(self):
+        """The end the rule protects: a finished host does get the deployment."""
+        case = next(
+            candidate
+            for candidate in ADMISSION_CASES
+            if candidate.name == "provisioned_active_server"
+        )
+        now = datetime.now(UTC)
+        client, server = _admission_client(case, now)
+        client.get_or_create_application.return_value = {**APP, "server_handle": server.handle}
+        client.get_application_allocations.return_value = []
+        client.allocate_next_port.return_value = {
+            "port": 8000,
+            "server_handle": server.handle,
+            "service_name": "backend",
+            "application_id": 42,
+        }
+
+        with (
+            patch("src.allocations.api_client", client),
+            patch("src.allocations.get_settings", return_value=_allocation_settings()),
+        ):
+            from src.allocations import ensure_project_allocations
+
+            allocated = await ensure_project_allocations(
+                "proj-1", repo_id="repo-1", service_name="my-bot", modules=["backend"]
+            )
+
+        assert list(allocated) == [f"{server.handle}:8000"]
+        assert allocated[f"{server.handle}:8000"]["server_ip"] == server.public_ip
+        client.allocate_next_port.assert_awaited_once_with(
+            server.handle,
+            {"service_name": "backend", "application_id": 42},
+        )

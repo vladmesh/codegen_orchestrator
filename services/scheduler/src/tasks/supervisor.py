@@ -33,7 +33,6 @@ from shared.contracts.dto.run_result import (
     QABlockerCategory,
     QARunResult,
 )
-from shared.contracts.dto.server import ServerStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
@@ -51,6 +50,10 @@ from shared.queues import (
     QA_QUEUE,
 )
 from shared.redis_client import RedisStreamClient
+from shared.server_admission import (
+    provisioning_failed_server_handles,
+    server_admits_application,
+)
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
@@ -63,6 +66,17 @@ logger = structlog.get_logger(__name__)
 
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
 DEPLOY_RETRY_KEY_PREFIX = "deploy:retries:"
+
+# Allocation failures that resolve on their own once the platform changes, so the
+# task parks and waits instead of spending a code-generation iteration. An
+# unprovisioned host belongs here: the defect is in the machine, not the project.
+_WAITABLE_ALLOCATION_FAILURES = frozenset(
+    {
+        AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+        AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY,
+        AllocationFailureReason.SERVER_NOT_PROVISIONED,
+    }
+)
 
 
 def _max_deploy_retries() -> int:
@@ -306,10 +320,7 @@ async def _park_task_waiting_resources(
             log.warning("impossible_capacity_request_failed", exc_info=True)
         log.warning("task_allocation_impossible")
         return True
-    if reason not in {
-        AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
-        AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY,
-    }:
+    if reason not in _WAITABLE_ALLOCATION_FAILURES:
         return False
 
     metadata = dict(task.failure_metadata or {})
@@ -326,8 +337,15 @@ async def _park_task_waiting_resources(
     await api_client.transition_task(task.id, TaskStatus.WAITING_RESOURCES, "supervisor")
     log.info("task_waiting_resources", reason=reason.value)
     if is_new_wait:
+        # An unfinished host build waits on the same path, but the owner must not
+        # be told the platform ran out of capacity when it did not.
+        request_via_po = (
+            _request_infrastructure_wait_via_po
+            if reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+            else _request_resources_via_po
+        )
         try:
-            await _request_resources_via_po(api_client, redis_client, task, log)
+            await request_via_po(api_client, redis_client, task, log)
         except Exception:
             log.warning("waiting_resources_request_failed", exc_info=True)
     return True
@@ -387,6 +405,43 @@ async def _request_resources_via_po(
     )
     await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
     log.info("waiting_resources_requested")
+
+
+async def _request_infrastructure_wait_via_po(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask PO to tell the owner the target machine is still being prepared.
+
+    This is deliberately not the capacity message: nothing is full and the user's
+    project is not defective — the host it would run on has not finished (or has
+    failed) its software provisioning, which operators and the provisioner resolve.
+    """
+    recipient = await resolve_project_recipient(
+        api_client,
+        str(task.project_id),
+        event="task_waiting_infrastructure",
+        story_id=task.story_id,
+    )
+    if not recipient.is_addressable:
+        return
+    event = POSystemEvent(
+        event="task_waiting_infrastructure",
+        text=(
+            "Engineering is waiting for a server whose setup is still being finished on our "
+            "side. Tell the user this is our infrastructure, not a problem with their project, "
+            "and that work will resume automatically once the server is ready."
+        ),
+        task_id=task.id,
+        story_id=task.story_id or "",
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
+        project_id=str(task.project_id),
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info("waiting_infrastructure_requested")
 
 
 async def supervise_waiting_resource_tasks(
@@ -456,18 +511,23 @@ async def _clear_failed_run_iteration(api_client: SchedulerAPIClient, task) -> N
 
 
 async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -> bool:
-    """Apply the allocator's conservative admission rule to fresh server metrics."""
+    """Apply the allocator's conservative admission rule to fresh server metrics.
+
+    Target admissibility comes from ``shared.server_admission``, the same predicate
+    the allocator applies, so a parked task never wakes up towards a server that
+    ``_find_suitable_server`` would then refuse — an unprovisioned or
+    provisioning-failed host is not "resources becoming available".
+    """
     required_ram = metadata.get("allocation_required_ram_mb")
     min_disk = metadata.get("allocation_min_disk_mb")
     if not isinstance(required_ram, int) or not isinstance(min_disk, int):
         return False
     now = datetime.now(UTC)
+    provisioning_failed_handles = provisioning_failed_server_handles(
+        await api_client.list_active_incidents()
+    )
     for server in await api_client.get_servers():
-        if not server.is_managed or server.status not in {
-            ServerStatus.ACTIVE,
-            ServerStatus.READY,
-            ServerStatus.IN_USE,
-        }:
+        if not server_admits_application(server, provisioning_failed_handles):
             continue
         if server.capacity_ram_mb < required_ram or server.capacity_disk_mb < min_disk:
             continue

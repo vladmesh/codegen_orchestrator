@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-08-11
+
+- Made a server's provisioning state part of admission, so a project application
+  can no longer be placed on a host that has not finished (or has failed) its
+  software installation. `provisioning_phase` — written by the provisioner into
+  `servers.labels` and until now read by nobody — is required to be `complete`,
+  and a server carrying an active `PROVISIONING_FAILED` incident is refused even
+  when it is. The rule is fail-closed: a missing, empty or unknown phase counts
+  as unfinished, because an unknown provisioning state is not readiness. It
+  lives once, in `shared/server_admission.py`, and both decision points now call
+  it — the allocator that picks the host (`_find_suitable_server`) and the
+  scheduler rule that lets a capacity-parked task resume (`_resources_available`)
+  — so "resources became available" can no longer mean something different from
+  "this server may take an application". One shared state matrix
+  (`shared/tests/server_admission_cases.py`) is asserted against the predicate
+  and both paths, so a future divergence fails a suite.
+- Kept an unfinished host build an infrastructure situation rather than a
+  product defect. Admission that fails for this reason raises the new
+  `AllocationFailureReason.SERVER_NOT_PROVISIONED` instead of collapsing into a
+  memory shortage; the task parks in `waiting_resources` on the existing wait
+  path — no engineering retry, no story failure, no admin product-failure alert
+  — and the owner is told through a new `task_waiting_infrastructure` PO event
+  that says the machine is still being prepared, never that capacity ran out.
+
 ## 2026-08-10
 
 - Separated the internal user id from the Telegram chat id in every queue and PO

@@ -78,6 +78,7 @@ class TestHandleMessage:
             "story_failed",
             "story_quarantined",
             "task_waiting_resources",
+            "task_waiting_infrastructure",
             "task_impossible_capacity",
             "task_resources_resumed",
         ],
