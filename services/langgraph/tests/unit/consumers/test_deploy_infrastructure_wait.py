@@ -5,6 +5,13 @@ the consumer writes to the run is what the scheduler will route on. The expected
 result comes from `shared.tests.allocation_routing_cases`, which the scheduler's
 routing test feeds to the supervisor — so the two ends of the boundary are pinned
 to one shape.
+
+The consumer records the *same* outcome for every reason on purpose: the reason
+and the admission budget travel inside the result, and the scheduler decides what
+each disposition does with them. That decision is what must differ per
+disposition, and `services/scheduler/tests/unit/test_supervisor_run_routing.py`
+is where each one's behaviour is pinned. One typed outcome carrying its reason is
+not the collapse; one behaviour for every reason was.
 """
 
 from __future__ import annotations

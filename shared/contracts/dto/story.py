@@ -53,6 +53,11 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
         StoryStatus.COMPLETED,
         StoryStatus.IN_PROGRESS,
         StoryStatus.WAITING_USER_SECRET,
+        # A deploy can be refused by infrastructure in a way no wait resolves —
+        # a request no managed server fits, or a fleet the platform cannot see.
+        # The story is not defective, so it must not be failed; it belongs in
+        # the human-review queue, which it could not reach from here before.
+        StoryStatus.WAITING_HUMAN_REVIEW,
         StoryStatus.FAILED,
     },
     StoryStatus.TESTING: {

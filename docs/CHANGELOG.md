@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-08-11 (3)
+
+- Gave every refusal disposition its own behaviour on both routing paths. The
+  deploy path answered all of them with one infrastructure wait, so a request
+  larger than any managed server — classified `OPERATOR_REVIEW` precisely
+  because waiting is pointless — sat in DEPLOYING being re-polled forever with
+  no human told and no way out. `shared/allocation_disposition.py` now carries
+  `REFUSAL_ROUTING`, a disposition × path table with exactly one behaviour per
+  cell and no behaviour repeated within a path, and both routers branch on it:
+  `_route_refused_deploy` in the scheduler's deploy routing and
+  `_park_task_waiting_resources` on the engineering side. A disposition that
+  starts routing like its neighbour now fails a suite.
+- Routed `OPERATOR_REVIEW` to the human-review queue on the deploy path, the
+  same queue a quarantined QA story reaches and entered the same way: the reason
+  is recorded on the story, the `human-review` action moves it, operators are
+  alerted, and the owner is told the request needs an operator rather than being
+  left watching a wait. `StoryStatus.DEPLOYING → WAITING_HUMAN_REVIEW` is now a
+  valid transition, which is what that route needed; `fail_story` remains out of
+  reach for every infrastructure disposition.
+- Named `TECHNICAL_FAILURE`'s behaviour instead of leaving it a leftover: a fleet
+  the platform cannot see is escalated to a human with an operator alert and no
+  message to the owner, on both paths. It does not wait (the wait's own re-check
+  needs the missing metrics) and no longer spends engineering iterations on a run
+  the allocator will refuse at the same point.
+- Bounded the deploy infrastructure wait with
+  `supervisor.resource_wait_timeout_minutes`, the bound the engineering wait
+  already had, and carried the wait's start across re-dispatches in
+  `run_metadata`. A refused deploy with no `head_sha` — which no wait can supply
+  — goes to a human immediately instead of polling forever.
+- Fixed story escalations that reached nobody: the supervisor posted
+  `waiting_human_review` as a story transition, which is a status value and not
+  a route, so the API answered 404. Every escalation now uses the `human-review`
+  action endpoint.
+
 ## 2026-08-11 (2)
 
 - Stopped an allocation refusal from terminating a user's story on the deploy

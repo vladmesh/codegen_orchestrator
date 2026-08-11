@@ -317,6 +317,7 @@ async def _handle_message(
         "task_waiting_resources",
         "task_waiting_infrastructure",
         "task_impossible_capacity",
+        "story_impossible_capacity",
         "task_resources_resumed",
     }
     if msg_type == "system_event" and event not in _STORY_EVENTS:

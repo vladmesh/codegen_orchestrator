@@ -398,6 +398,7 @@ async def task_dispatcher_loop() -> None:
                     + deploying.get("retried", 0)
                     + deploying.get("redispatched", 0)
                     + deploying.get("waiting", 0)
+                    + deploying.get("escalated", 0)
                     + deploying.get("failed", 0)
                     + waiting_secret.get("redispatched", 0)
                     + waiting_secret.get("failed", 0)
@@ -421,6 +422,7 @@ async def task_dispatcher_loop() -> None:
                         deploy_retried=deploying.get("retried", 0),
                         deploy_redispatched=deploying.get("redispatched", 0),
                         deploy_waiting_user_secret=deploying.get("waiting", 0),
+                        deploy_escalated=deploying.get("escalated", 0),
                         deploy_failed=deploying.get("failed", 0),
                         user_secret_redispatched=waiting_secret.get("redispatched", 0),
                         user_secret_failed=waiting_secret.get("failed", 0),
