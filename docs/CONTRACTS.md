@@ -104,7 +104,7 @@ cannot poison-loop the reclaim.
 |-------|-------|-----|-----------|----------|---------|
 | `engineering:queue` | `capability-workers` | EngineeringMessage | Task Dispatcher (scheduler) | langgraph | Start development task |
 | `deploy:queue` | `capability-workers` | DeployMessage | Task Dispatcher (scheduler) / PO | langgraph | Start deploy task |
-| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA: HTTP checks for GET-only criteria, else Claude Code on prod server |
+| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA: HTTP checks for GET-only criteria, else a central ephemeral `qa` worker on the management host (Claude Code, or Codex when assigned) |
 
 ---
 
@@ -1341,7 +1341,7 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 | Queue | Initiator | Consumer | Purpose |
 |-------|-----------|----------|---------|
 | `worker:commands` | LangGraph | worker-manager | Command to Create/Delete worker container. |
-| `worker:responses:developer` | worker-manager | langgraph | Responses for Developer worker commands (e.g. "Developer container created"). |
+| `worker:responses:developer` | worker-manager | langgraph | Responses for worker commands (e.g. "Developer container created"). The name is historical: `qa` worker create/delete acks ride the same stream, because there is one worker-command mechanism and one response stream for it. |
 
 ## WorkerCommand / WorkerResponse
 
@@ -1358,6 +1358,8 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 
 # AgentType is the canonical enum (shared/contracts/vocab.py), re-exported here.
 from shared.contracts.vocab import AgentType  # claude / factory / codex / noop
+# QA_EXECUTOR_AGENT_TYPES is the subset a `qa` worker may run on: claude / codex.
+from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES
 
 
 class WorkerCapability(StrEnum):
@@ -1376,7 +1378,10 @@ class WorkerChannels(StrEnum):
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
     name: str
-    worker_type: Literal["developer"]         # Worker type for queue naming
+    # "developer" writes code in a pre-scaffolded repository workspace;
+    # "qa" is the central exploratory-QA executor (no repository, no git
+    # credentials, nothing to commit — see `qa:queue` above).
+    worker_type: Literal["developer", "qa"]
     agent_type: AgentType                     # Which AI agent to use
     instructions: str                         # Content for instruction file (CLAUDE.md / AGENTS.md)
     task_content: str | None = None           # Content for TASK.md (optional, for task-driven workers)
@@ -1385,7 +1390,23 @@ class WorkerConfig(BaseModel):
     env_vars: dict[str, str] = {}
     auth_mode: Literal["host_session", "api_key"] = "host_session"
     host_claude_dir: str | None = None
+    host_codex_home: str | None = None
     api_key: str | None = None
+    project_id: str | None = None             # Workspace persistence (developer)
+    repo_id: str | None = None                # Mount pre-scaffolded workspace (developer)
+    scaffold_config: ScaffoldConfig | None = None
+    branch: str | None = None                 # Story branch to checkout
+
+    @model_validator(mode="after")
+    def _qa_runs_on_an_assigned_subscription_agent(self) -> "WorkerConfig":
+        # A `qa` worker may only be claude or codex — both subscription CLIs
+        # whose session stays on the management host. `factory` runs on a
+        # provider API key and `noop` performs no testing, so a `qa` create
+        # carrying either is refused where worker-manager validates the command,
+        # before any container exists. Developer workers keep the full AgentType.
+        if self.worker_type == "qa" and self.agent_type not in QA_EXECUTOR_AGENT_TYPES:
+            raise ValueError(...)
+        return self
 
 
 class CreateWorkerCommand(QueueMeta):

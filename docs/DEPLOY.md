@@ -282,8 +282,10 @@ Deploy targets carry nothing for it: no CLI, no LLM credentials, no Telethon ses
 
 **What the QA runtime needs** (all in the orchestrator `.env`):
 - `QA_EXECUTOR_AGENT_TYPE` — who performs the run. `claude` by default; `codex` only to assign
-  Codex explicitly. The session itself is `HOST_CLAUDE_DIR` / `HOST_CODEX_HOME`, which
-  worker-manager mounts into the ephemeral QA container.
+  Codex explicitly, and nothing else: `factory` (provider API key) and `noop` (no testing at all)
+  are refused when the configuration is read, and a `qa` worker command carrying either is refused
+  by worker-manager before a container exists. The session itself is `HOST_CLAUDE_DIR` /
+  `HOST_CODEX_HOME`, which worker-manager mounts into the ephemeral QA container.
 - `QA_CAPABILITY_HOST` — how that container addresses `qa-worker`'s per-run capability endpoint.
   It is the service's name on the `codegen_worker` network and only changes if the service is
   renamed. `qa-worker` is attached to that network for this and for nothing else.

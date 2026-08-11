@@ -208,3 +208,74 @@ async def test_invalid_command_does_not_leak_secrets_in_logs(redis_client, strea
     mock_worker_manager.create_worker_with_capabilities.assert_not_called()
     pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
     assert pending["pending"] == 0  # discarded terminally
+
+
+def _qa_create_payload(agent_type: str) -> dict:
+    """A create command asking for a `qa` worker on `agent_type`, as it arrives.
+
+    Written as a raw payload on purpose: a command carrying a refused executor
+    cannot be built through the model, and what worker-manager actually takes
+    off the stream is a dict.
+    """
+    return {
+        "command": "create",
+        "request_id": "req-qa-1",
+        "config": {
+            "name": "qa-1",
+            "worker_type": "qa",
+            "agent_type": agent_type,
+            "instructions": "# QA executor",
+            "allowed_commands": ["*"],
+            "capabilities": [],
+        },
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_type", ["factory", "noop"])
+async def test_qa_worker_on_an_unassigned_agent_never_starts(
+    agent_type, redis_client, stream_client, mock_worker_manager
+):
+    """Exploratory QA runs on Claude Code or Codex, and worker-manager enforces it.
+
+    `factory` would run QA on a provider API key and `noop` performs no testing,
+    so neither may become a container. The command is refused where it is taken
+    off the stream, not after a QA run has been started that cannot do QA.
+    """
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    await stream_client.publish(WORKER_COMMANDS, _qa_create_payload(agent_type))
+
+    await _drain_once(consumer)
+
+    mock_worker_manager.create_worker_with_capabilities.assert_not_called()
+    pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
+    assert pending["pending"] == 0  # terminal: it can never succeed on retry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_type", ["claude", "codex"])
+async def test_qa_worker_on_an_assigned_subscription_agent_starts(agent_type, stream_client, mock_worker_manager):
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    await stream_client.publish(WORKER_COMMANDS, _qa_create_payload(agent_type))
+
+    await _drain_once(consumer)
+
+    mock_worker_manager.create_worker_with_capabilities.assert_called_once()
+    assert mock_worker_manager.create_worker_with_capabilities.call_args.kwargs["agent_type"] == AgentType(agent_type)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_type", ["factory", "noop"])
+async def test_a_developer_worker_still_accepts_every_agent(agent_type, stream_client, mock_worker_manager):
+    """The restriction belongs to QA alone; developer workers are unchanged."""
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    payload = _create_command().model_dump(mode="json")
+    payload["config"]["agent_type"] = agent_type
+    await stream_client.publish(WORKER_COMMANDS, payload)
+
+    await _drain_once(consumer)
+
+    mock_worker_manager.create_worker_with_capabilities.assert_called_once()

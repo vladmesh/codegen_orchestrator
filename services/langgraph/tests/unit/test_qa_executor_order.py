@@ -19,11 +19,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import aiohttp
+from pydantic import ValidationError
 import pytest
 
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.vocab import AgentType
 from src.clients.qa_worker import QAExecutorRun, QAExecutorUnavailable
+from src.config.settings import Settings
 from src.consumers._qa_runner import (
     QA_EXECUTOR_ATTEMPTS,
     QARuntimeConfig,
@@ -317,3 +319,42 @@ class TestApiFallbackResolution:
     @pytest.mark.parametrize("settings", [NO_FALLBACK, PARTIAL_FALLBACK])
     def test_an_incomplete_triplet_is_simply_no_fallback(self, settings):
         assert api_fallback(settings) is None
+
+
+class TestOnlyAnAssignedSubscriptionAgentCanBeConfigured:
+    """`QA_EXECUTOR_AGENT_TYPE` names one of two agents, or the service refuses.
+
+    This is the first of the two places the executor is fixed — the other being
+    the create command worker-manager validates. An operator who writes
+    `factory` here would have QA run on a provider API key, and one who writes
+    `noop` would have a QA run that performs no testing; both are refused when
+    the configuration is read, so neither can turn into a run.
+    """
+
+    def test_claude_code_is_the_default(self):
+        assert Settings().qa_executor_agent_type is AgentType.CLAUDE
+
+    @pytest.mark.parametrize("assigned", ["claude", "codex"])
+    def test_an_assigned_subscription_agent_is_accepted(self, assigned, monkeypatch):
+        monkeypatch.setenv("QA_EXECUTOR_AGENT_TYPE", assigned)
+
+        assert Settings().qa_executor_agent_type is AgentType(assigned)
+
+    @pytest.mark.parametrize("rejected", ["factory", "noop"])
+    def test_no_other_agent_can_be_assigned(self, rejected, monkeypatch):
+        monkeypatch.setenv("QA_EXECUTOR_AGENT_TYPE", rejected)
+
+        with pytest.raises(ValidationError):
+            Settings()
+
+    @pytest.mark.parametrize("rejected", [AgentType.FACTORY, AgentType.NOOP])
+    def test_the_same_holds_when_it_is_passed_directly(self, rejected):
+        with pytest.raises(ValidationError):
+            Settings(qa_executor_agent_type=rejected)
+
+    @pytest.mark.parametrize("agent", ["factory", "noop"])
+    def test_a_developer_worker_still_accepts_every_agent(self, agent, monkeypatch):
+        """The narrowing is on QA alone: the default developer agent is untouched."""
+        monkeypatch.setenv("DEFAULT_AGENT_TYPE", agent)
+
+        assert Settings().default_agent_type is AgentType(agent)

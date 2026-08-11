@@ -31,6 +31,13 @@
   that container has a shell. `qa-worker` joins the `codegen_worker` network so
   the endpoint is reachable from the executor; see `docs/DEPLOY.md` for what the
   container can and cannot reach, path by path.
+- Exploratory QA runs on `claude` or `codex` and on nothing else, enforced in
+  both places the executor is named: `QA_EXECUTOR_AGENT_TYPE` fails validation
+  when the service reads its configuration, and a `qa` create command carrying
+  another agent is refused by the `WorkerConfig` contract worker-manager
+  validates every command against, before a container exists. `factory` would
+  run QA on a provider API key and `noop` performs no testing at all. Developer
+  workers keep the full `AgentType`.
 
 ## 2026-08-11 (10)
 
