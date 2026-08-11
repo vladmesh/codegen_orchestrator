@@ -221,13 +221,16 @@ If the developer agent encounters an unsolvable problem:
 
 **How it works**:
 1. QA consumer receives `QAMessage` with `project_id`, `deployed_url`, `application_id`, `run_id`, optional `story_id` and `bot_username`
-2. SSHes to the target prod server as root (via SSH key from DB)
-3. `cd /opt/services/{project_name}` — enters the deployed project directory
-4. Runs `claude -p "<QA prompt>" --output-format json --max-turns 50 --model claude-sonnet-4-6`
-5. QA prompt is built from story description + deployed URL. Claude tests every feature described in the story: curls endpoints, checks responses, tests edge cases. For Telegram bots, uses Telethon (pre-installed in `/opt/qa-runner/venv`)
-6. Claude returns JSON: `{"pass": bool, "checks": [...], "summary": "..."}`
-7. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR)
-8. QA consumer does NOT transition stories or create tasks — it is a pure technical worker
+2. Criteria that only state GET expectations are decided directly over HTTP — no agent, no LLM
+3. Otherwise the run is exploratory. A target whose `ssh_user` is `root` is refused here — QA does not run privileged
+4. The consumer creates an isolated central workspace, writes a durable `qa_ssh_grant` record on the QA run, then mints a one-shot SSH identity on the target (`restrict`, `expiry-time`), installed and removed with the fleet key by the runner
+5. The run's capability set is resolved from deployment data: physical root of the deployment directory (`readlink -f` on the target), containers of this compose project (`docker ps --filter label=com.docker.compose.project=...`), the application's allocated ports, the public URL
+6. A QA ReactAgent runs **in `qa-worker`**, prompted with the acceptance criteria and deployed URL. Every tool it has is bounded by one element of that set: public GET, loopback GET on an allocated port, a read contained in the physical root, read-only docker sub-commands against a container of this deployment, container logs/inspect, Telegram probe. No shell, no server key, no host-wide view
+7. Telegram bots are tested by the runtime, which sends the agent's message as the QA account and returns the replies. The agent never holds the session
+8. The agent writes `QA_REPORT.md` into the central workspace and returns JSON: `{"pass": bool, "checks": [...], "summary": "..."}`
+9. Workspace and target grant are destroyed on every path out, including a failed or interrupted run; anything that survives is reported as a `qa_cleanup_failed` blocker. A grant the run could not settle stays on the record for the `qa-worker` sweep
+10. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR)
+11. QA consumer does NOT transition stories or create tasks — it is a pure technical worker
 
 **Supervisor routing** (`supervise_testing_stories()` in scheduler, 30s poll):
 - Reads QA run outcome from DB
@@ -238,13 +241,12 @@ If the developer agent encounters an unsolvable problem:
 
 **Inflight deduplication**: Uses `application_id` for dedup when no story (standalone E2E triggers). Story-based runs use `story_id`.
 
-**Server prerequisites** (provisioned by `qa_runner` Ansible role):
-- Claude Code CLI (standalone binary via `curl install.sh | bash`)
-- `.credentials.json` OAuth session (copied from orchestrator host)
-- 2GB swap (Claude Code binary extraction needs ~2GB)
-- Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
-- `~/.qa-telethon.env` with api_id, api_hash and a StringSession of the QA Telegram account
-  (required — the role fails without them)
+**Target prerequisites**: none beyond a reachable SSH account and a running deployment. QA installs
+nothing on the target and needs no Claude CLI, LLM credentials or Telethon session there.
+
+**QA runtime prerequisites** (orchestrator `.env`, read by `qa-worker`):
+- `QA_LLM_MODEL` / `QA_LLM_BASE_URL` / `QA_LLM_API_KEY` — without them exploratory QA is blocked
+- `TELETHON_API_ID` / `TELETHON_API_HASH` / `TELETHON_SESSION` — only for projects with a bot
 
 **Outputs**: `QAOutcome` in run.result for supervisor
 
@@ -335,6 +337,6 @@ todo → in_dev → in_ci → testing → done
 ### What QA sees
 - Full story description (used to build QA prompt)
 - Deployed service URL
-- Claude Code CLI on the server (runs as root, cd to `/opt/services/{project}`)
-- Pre-installed tools: `curl`, Telethon (in `/opt/qa-runner/venv`), httpx
-- Bot username (if Telegram bot project — enables Telethon testing)
+- A capability set resolved from this deployment: physical root, its containers, its allocated ports, its URL
+- A typed tool set whose every boundary comes from that set, and nothing else
+- Bot username (if Telegram bot project — enables the Telegram probe tool)

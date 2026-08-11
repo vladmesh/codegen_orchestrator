@@ -13,6 +13,7 @@ from typing import Any
 AGENT_LLM_ENV: dict[str, tuple[str, str, str]] = {
     "po": ("PO_LLM_MODEL", "PO_LLM_BASE_URL", "PO_LLM_API_KEY"),
     "architect": ("ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL", "ARCHITECT_LLM_API_KEY"),
+    "qa": ("QA_LLM_MODEL", "QA_LLM_BASE_URL", "QA_LLM_API_KEY"),
 }
 
 

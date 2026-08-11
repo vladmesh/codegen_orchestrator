@@ -38,9 +38,17 @@ class QAMessage(BaseMessage):
 
 @dataclass(frozen=True)
 class QAServerInfo:
-    """Resolved server connection info for QA testing."""
+    """Resolved server connection info for QA testing.
+
+    `allocated_ports` is deployment data, not a runtime observation: it is what
+    the platform gave this application, and it is what bounds the loopback probe
+    a central QA run may make. A port nobody allocated to this deployment is not
+    this deployment's, whatever happens to be listening on it.
+    """
 
     server_ip: str
     ssh_user: SSHUser
     ssh_key: str
     project_name: str
+    server_handle: str = ""
+    allocated_ports: frozenset[int] = frozenset()

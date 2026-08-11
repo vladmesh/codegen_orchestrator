@@ -22,8 +22,6 @@
       tags: [docker]
     - role: secrets
       tags: [secrets, services]
-    - role: qa_runner
-      tags: [qa]
     - role: services
       tags: [services]
     - role: caddy

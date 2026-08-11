@@ -297,4 +297,4 @@ Key service names: `architect`, `scheduler`, `engineering-worker`, `deploy-worke
 11. **Deploy is triggered by `poll_merged_prs()` poller** (every 30s in scheduler) — do NOT manually trigger deploys, the poller handles it
 12. **Deploy Run record uses `type` field** (not `run_type`)
 13. **DeployMessage requires `task_id`** — this is actually the Run ID, not a task ID
-14. **QA phase** — story goes `deploying` → `testing` → `completed`. qa-worker SSHes to prod, runs Claude Code CLI
+14. **QA phase** — story goes `deploying` → `testing` → `completed`. qa-worker runs the QA agent centrally
