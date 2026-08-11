@@ -2,6 +2,7 @@ from pathlib import Path
 
 RUNTIME_SSH_PATHS = (
     "src/consumers/_qa_runner.py",
+    "src/consumers/_qa_target.py",
     "src/consumers/deploy_lifecycle.py",
     "src/consumers/deploy_precheck.py",
     "src/subgraphs/devops/deployer.py",

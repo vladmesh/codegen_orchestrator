@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-08-11 (5)
+
+- Moved exploratory QA off the deploy target. It used to be a Claude Code CLI
+  living on the tested server, driven over SSH with the fleet's own server key,
+  fed OAuth credentials the runner pushed and refreshed there, and a Telethon
+  session Ansible wrote into the deploy user's home. QA is now a ReactAgent in
+  `qa-worker`: the LLM and the QA Telegram account are the orchestrator's, and a
+  clean target — no `claude` in PATH, no LLM credentials, no Telethon session —
+  passes a full exploratory run.
+- Replaced the agent's shell with a closed set of typed tools bound to one run
+  (`services/langgraph/src/agents/qa/tools.py`): public GET, loopback GET, a file
+  read scoped to the deployment directory, an allowlisted read-only command,
+  container logs/inspect, and a Telegram probe. Every path, container and port is
+  checked against the one `QATarget` the run owns, so naming another deployment
+  is refused rather than answered.
+- Made the identity one-shot. Each run mints an ed25519 key, installs it in the
+  target's `authorized_keys` with `restrict` and an `expiry-time` using the fleet
+  key — held by the runner, never by the agent — and removes it in `finally` on
+  every path out, then reads the file back to prove it is gone. The run also gets
+  an isolated central workspace, destroyed the same way. Anything that survives
+  becomes a `qa_cleanup_failed` blocker instead of a green run.
+- Kept the write guard by removing what it guarded. The old guarantee was a
+  Claude `PreToolUse` hook filtering Bash command lines for writes to the
+  application; there is no Bash now, and no tool takes an HTTP method, so a write
+  is inexpressible. The runner-owned trace of every tool call is still scanned
+  with the same `_forbidden_application_write`, and a write found in any evidence
+  the runner owns still quarantines the run with a residual state trace.
+- Dropped the `qa_runner` Ansible role from provisioning, along with the 2GB swap
+  it needed to unpack the CLI, the copied `.credentials.json`, the
+  `/opt/qa-runner` venv and `~/.qa-telethon.env`. New servers get none of it.
+  Servers provisioned earlier still carry it; nothing reads it, and removing it
+  is a separate task (see `docs/DEPLOY.md`, "QA runtime (central)").
+- Removed `credential_refresh_loop`, which kept a Claude OAuth token alive on
+  every managed server. There is no token out there to refresh.
+- Added the `qa` LLM env group (`QA_LLM_MODEL` / `QA_LLM_BASE_URL` /
+  `QA_LLM_API_KEY`). Missing config blocks exploratory QA with the existing
+  `claude_unavailable` category rather than producing a verdict; health-only
+  criteria still run over HTTP and spend no LLM. `QAResult`, `QABlocker` and
+  `QABlockerCategory` are unchanged, and the prompt and result parsing keep their
+  meaning.
+
 ## 2026-08-11 (4)
 
 - Closed the last way past admission: reuse. A project already bound to a server

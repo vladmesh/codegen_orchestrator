@@ -216,14 +216,14 @@ them in the repository environment. Services fail fast when the in-container pat
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `ADMIN_TELEGRAM_IDS` | Comma-separated admin Telegram IDs |
 | `TELEGRAM_ID_ADMIN` | Primary admin Telegram ID (for seeding) |
-| `TELETHON_API_ID` | Telegram API ID for the QA node's Telethon client |
-| `TELETHON_API_HASH` | Telegram API hash for the QA node's Telethon client |
-| `TELETHON_SESSION` | Authorized Telethon session string for the QA node |
+| `TELETHON_API_ID` | Telegram API ID for the QA runtime's Telethon client |
+| `TELETHON_API_HASH` | Telegram API hash for the QA runtime's Telethon client |
+| `TELETHON_SESSION` | Authorized Telethon session string for the QA account |
 
-All three `TELETHON_*` secrets are required, not optional: the deploy writes them into the server
-`.env`, `infra-service` picks the whole file up through `env_file`, and the `qa_runner` role reads
-them from its own environment into `~/.qa-telethon.env` on the provisioned host — failing the play
-when any of them is empty. See [QA Node](#qa-node-prod-server) below.
+All three `TELETHON_*` secrets are required to test Telegram bots: `qa-worker` reads them from its
+own environment and talks to the bot as the QA account from there. They are never written to a
+deploy target. Without them a bot story is blocked with `missing_telethon_credentials` instead of
+being tested. See [QA runtime](#qa-runtime-central) below.
 
 ### User Dashboard (LK)
 
@@ -274,32 +274,29 @@ would otherwise sign dashboard tokens with a known key.
 | `LOKI_PUSH_PASSWORD_HASH` | Caddy-compatible bcrypt hash of the Loki push password |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana administrator password |
 
-## QA Node (Prod Server)
+## QA runtime (central)
 
-Prod servers are provisioned as QA testing nodes via the `qa_runner` Ansible role (`services/infra-service/ansible/roles/qa_runner/`). This allows the QA consumer to SSH to the server and run Claude Code CLI for post-deploy testing.
+Exploratory QA runs in the orchestrator, in the `qa-worker` container. Deploy targets carry nothing
+for it: no Claude CLI, no LLM credentials, no Telethon session.
 
-**What the role installs**:
-- 2GB swap file (Claude Code binary extraction needs ~2GB, OOM on 4GB servers without it)
-- Claude Code CLI (standalone binary via `curl -fsSL https://claude.ai/install.sh | bash`)
-- Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
-- `.credentials.json` OAuth session (copied from Ansible controller's `~/.claude/.credentials.json`)
-- `~/.qa-telethon.env` (mode 0600) with `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION`
-  taken from the orchestrator `.env`. All three are required: Telethon needs api_id/api_hash even
-  with an authorized session, so the role fails the play when any of them is empty. The QA prompt
-  sources this file — non-interactive SSH reads no profile.
+**What the QA runtime needs** (all in the orchestrator `.env`):
+- `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — the QA agent. Without them exploratory QA is
+  blocked with `claude_unavailable`; health-only criteria still run, since they use no LLM.
+- `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION` — the QA Telegram account, needed only
+  for projects with a bot.
 
-Everything user-scoped is installed for `{{ deploy_user }}` (the server's `ssh_user`), because the
-QA consumer connects as that user and calls `claude` through its `$HOME/.local/bin`. The role
-verifies the binary by running it as that user, so a failed download fails the play instead of
-leaving a server that reports OK and answers QA with exit status 127.
+**What the run does to the target**: for each run the runtime mints a one-shot ed25519 key, installs
+it in the deploy user's `authorized_keys` with `restrict` and an `expiry-time`, and removes it when
+the run ends — reading the file back to prove it is gone. The agent never holds that key or the
+fleet server key; it reaches the target only through the typed tools in
+`services/langgraph/src/agents/qa/tools.py` (public GET, loopback GET, scoped file read, allowlisted
+read-only command, container logs/inspect, Telegram probe).
 
-**Auto-provisioning**: The role is included in `site.yml` and `provision_software.yml` — new servers get QA capabilities automatically. The `claude_credentials_file` defaults to `~/.claude/.credentials.json` on the Ansible controller.
-
-**Manual re-provisioning** (e.g. after session expiry):
-```bash
-cd services/infra-service
-ANSIBLE_STDOUT_CALLBACK=default ansible-playbook -i ansible/inventories/prod/hosts ansible/playbooks/site.yml --tags qa -e "ansible_user=root"
-```
+**Already-provisioned servers**: the `qa_runner` role is gone, so nothing new is installed. Servers
+provisioned before this change still carry what it left behind — the Claude Code CLI under the
+deploy user's `~/.local/bin`, `~/.claude/.credentials.json`, `/opt/qa-runner` (venv and the old
+write-guard script), the 2GB swap file, and `~/.qa-telethon.env`. Nothing reads them any more.
+Removing them from existing hosts is a separate task.
 
 ## Deploying
 

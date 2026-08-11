@@ -8,6 +8,7 @@ Story lifecycle is managed by the dispatcher's supervise_testing_stories().
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -22,6 +23,7 @@ from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
+from shared.telegram_access_probe import ProbeRun
 from src.consumers.qa import (
     MAX_QA_LOOPS,
     _resolve_server_info,
@@ -29,7 +31,7 @@ from src.consumers.qa import (
 )
 
 # Criteria with a prose line — not decidable over HTTP, so QA hands these to the
-# agent on the server. Tests that want the HTTP path override this.
+# central agent. Tests that want the HTTP path override this.
 AGENT_CRITERIA = "- GET /health returns 200\n- GET /api/weather returns forecast"
 
 
@@ -124,6 +126,18 @@ def mock_redis():
 
 
 @pytest.fixture(autouse=True)
+def _qa_runtime_configured():
+    """Exploratory QA runs centrally, so the consumer needs an LLM configured."""
+    with patch("src.consumers.qa.get_settings") as get_settings:
+        get_settings.return_value = SimpleNamespace(
+            qa_llm_model="anthropic/claude-sonnet-4-5",
+            qa_llm_base_url="https://llm.example.com/v1",
+            qa_llm_api_key="test-key",
+        )
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _skip_deployed_url_preflight():
     """Network reachability has dedicated tests; consumer tests mock the runner."""
     with patch("src.consumers.qa.check_deployed_url_reachable", new_callable=AsyncMock) as check:
@@ -203,7 +217,7 @@ class TestProcessQAJobPass:
     ):
         from src.consumers._qa_runner import QAResult
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
             result = await process_qa_job(qa_message_data, mock_redis)
 
@@ -224,7 +238,7 @@ class TestProcessQAJobPass:
     ):
         from src.consumers._qa_runner import QAResult
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="All good")
             await process_qa_job(qa_message_data, mock_redis)
 
@@ -244,7 +258,7 @@ class TestProcessQAJobPass:
             run_id="qa-run-1", started=False, run_status=RunStatus.FAILED
         )
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "skipped"
@@ -272,7 +286,7 @@ class TestProcessQAJobPass:
             response=httpx.Response(httpx.codes.CONFLICT, text="run has recorded its outcome"),
         )
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
             result = await process_qa_job(qa_message_data, mock_redis)
 
@@ -293,7 +307,7 @@ class TestProcessQAJobPass:
         )
 
         with (
-            patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run,
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run,
             pytest.raises(httpx.HTTPStatusError),
         ):
             mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
@@ -312,7 +326,7 @@ class TestProcessQAJobPass:
             sent="POST /users/by-telegram/8202532144",
             received="application state may have changed",
         )
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(
                 passed=False,
                 summary="QA attempted a forbidden application API write",
@@ -341,7 +355,7 @@ class TestProcessQAJobPass:
     ):
         from src.consumers._qa_runner import QAResult
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
             await process_qa_job(qa_message_data, mock_redis)
 
@@ -365,7 +379,7 @@ class TestProcessQAJobFail:
         """Malformed agent output must terminate QA for human review, never pass or crash."""
         from src.consumers._qa_runner import parse_qa_result
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = parse_qa_result(raw)
             result = await process_qa_job(qa_message_data, mock_redis)
 
@@ -382,7 +396,7 @@ class TestProcessQAJobFail:
     ):
         from src.consumers._qa_runner import QAResult
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(
                 passed=False,
                 checks=[{"name": "weather endpoint", "pass": False, "detail": "404"}],
@@ -404,7 +418,7 @@ class TestProcessQAJobFail:
     ):
         from src.consumers._qa_runner import QAResult
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=False, checks=[], summary="Broken", raw="")
             await process_qa_job(qa_message_data, mock_redis)
 
@@ -419,7 +433,7 @@ class TestProcessQAJobFail:
         """Fix task creation moved to dispatcher — QA consumer only stores result."""
         from src.consumers._qa_runner import QAResult
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=False, checks=[], summary="Broken", raw="")
             await process_qa_job(qa_message_data, mock_redis)
 
@@ -431,10 +445,7 @@ class TestProcessQAJobFail:
     ):
         """A QA identity lacking bot access is not evidence of a product bug."""
         qa_message_data["bot_username"] = "private_bot"
-        claude_present = SimpleNamespace(
-            exit_status=0, stdout="/home/dev/.local/bin/claude\n", stderr=""
-        )
-        access_denied = SimpleNamespace(
+        access_denied = ProbeRun(
             exit_status=2,
             stdout=(
                 "telegram_access_denied:\U0001f6ab "
@@ -443,33 +454,54 @@ class TestProcessQAJobFail:
             ),
             stderr="",
         )
-        conn = AsyncMock()
-        conn.run = AsyncMock(side_effect=[claude_present, access_denied])
-        conn.__aenter__ = AsyncMock(return_value=conn)
-        conn.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
-            patch(
-                "src.consumers._qa_runner._require_telethon_credentials",
-                new_callable=AsyncMock,
+            patch.dict(
+                os.environ,
+                {
+                    "TELETHON_API_ID": "1",
+                    "TELETHON_API_HASH": "hash",
+                    "TELETHON_SESSION": "session",
+                },
             ),
             patch(
-                "src.consumers._qa_runner._ensure_claude_credentials",
+                "src.consumers._qa_runner.run_probe_script",
                 new_callable=AsyncMock,
-            ) as ensure_credentials,
+                return_value=access_denied,
+            ) as probe,
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_agent,
         ):
-            mock_asyncssh.import_private_key.return_value = "parsed_key"
-            mock_asyncssh.connect.return_value = conn
             result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "qa_blocked"
-        ensure_credentials.assert_not_awaited()
-        assert all("claude -p" not in call.args[0] for call in conn.run.await_args_list)
+        # The probe is what decided; the agent was never started, so no LLM was
+        # spent and no identity was issued on the target.
+        mock_agent.assert_not_called()
+        assert "client.get_me()" in probe.await_args.args[0]
         run_data = mock_api_client.patch.call_args[1]["json"]
         assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
         assert run_data["result"]["blocker"]["category"] == "telegram_access_denied"
         mock_api_client.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_the_qa_llm_is_blocked_not_silently_passed(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """Exploratory QA needs an LLM here; without one there is no verdict."""
+        with (
+            patch("src.consumers.qa.get_settings") as get_settings,
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_agent,
+        ):
+            get_settings.return_value = SimpleNamespace(
+                qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        mock_agent.assert_not_called()
+        run_data = mock_api_client.patch.call_args[1]["json"]
+        assert run_data["result"]["blocker"]["category"] == "claude_unavailable"
+        assert "QA_LLM_MODEL" in run_data["result"]["blocker"]["sent"]
 
     @pytest.mark.asyncio
     async def test_max_qa_loops_stores_exhausted_outcome(
@@ -479,7 +511,7 @@ class TestProcessQAJobFail:
 
         qa_message_data["qa_attempt"] = MAX_QA_LOOPS
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(
                 passed=False, checks=[], summary="Still broken", raw=""
             )
@@ -505,7 +537,7 @@ class TestHealthOnlyCriteriaRouting:
 
         with (
             patch("src.consumers.qa.run_health_checks", new_callable=AsyncMock) as mock_health,
-            patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_agent,
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_agent,
         ):
             mock_health.return_value = QAResult(
                 passed=True,
@@ -674,7 +706,7 @@ class TestHealthOnlyCriteriaRouting:
 
         with (
             patch("src.consumers.qa.run_health_checks", new_callable=AsyncMock) as mock_health,
-            patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_agent,
+            patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_agent,
         ):
             mock_agent.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
             result = await process_qa_job(qa_message_data, mock_redis)
@@ -682,7 +714,7 @@ class TestHealthOnlyCriteriaRouting:
         assert result["status"] == "passed"
         mock_health.assert_not_called()
         mock_agent.assert_called_once()
-        assert mock_agent.call_args.kwargs["project_name"] == "weather-bot-0000"
+        assert mock_agent.call_args.kwargs["target"].project_name == "weather-bot-0000"
 
 
 class TestProcessQAJobEdgeCases:
@@ -692,7 +724,7 @@ class TestProcessQAJobEdgeCases:
     ):
         """Unexpected worker errors must finish the run for human review."""
         with patch(
-            "src.consumers.qa.run_qa_on_server",
+            "src.consumers.qa.run_qa_centrally",
             new_callable=AsyncMock,
             side_effect=RuntimeError("unexpected runner failure"),
         ):
@@ -747,7 +779,7 @@ class TestProcessQAJobEdgeCases:
             "qa_attempt": 0,
         }
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
             await process_qa_job(data, mock_redis)
 
@@ -777,7 +809,7 @@ class TestProcessQAJobEdgeCases:
             "qa_attempt": 0,
         }
 
-        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
             result = await process_qa_job(data, mock_redis)
 

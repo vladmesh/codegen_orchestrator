@@ -34,8 +34,13 @@ dependencies = [
     # Web search for PO agent (DuckDuckGo, no API key needed)
     "ddgs>=7.0.0",
 
-    # SSH for deploy pre-checks (server directory validation)
+    # SSH for deploy pre-checks (server directory validation) and for the
+    # one-shot identity a central QA run reaches its target with
     "asyncssh>=2.24.0",
+
+    # Telegram QA probe. QA talks to a deployed bot as the platform's test
+    # account from here; no deploy target holds a Telethon session any more.
+    "telethon>=1.36.0",
 
     # shared/ deps (shared is COPY'd as plain files, not pip-installed)
     "pgvector>=0.2.5",

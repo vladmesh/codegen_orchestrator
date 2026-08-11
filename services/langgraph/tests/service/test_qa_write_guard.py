@@ -1,12 +1,21 @@
-"""QA-run boundary tests for the read-only application API contract."""
+"""QA-run boundary tests for the read-only application API contract.
+
+The guard used to be a Claude PreToolUse hook filtering a Bash command line.
+There is no Bash and no on-target agent any more, so the guarantee is enforced
+one layer lower: the tools cannot express a write. These tests put a real HTTP
+server behind the "deployed application", drive the real tool set against it
+through a real shell on the "target", and require that the server never sees a
+method other than GET.
+
+The second half is the fail-closed half: if a write ever does turn up in the
+evidence the runner owns, the run is quarantined with a residual trace rather
+than reported as a QA result.
+"""
 
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 import os
-from pathlib import Path
-import shlex
 import subprocess
 from threading import Thread
 from types import SimpleNamespace
@@ -19,76 +28,73 @@ os.environ.setdefault("INTERNAL_API_KEY", "test-key")
 
 from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAServerInfo
-from src.consumers._qa_runner import run_qa_on_server
+from src.agents.qa.tools import build_qa_tools
+from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
+from src.consumers._qa_target import QATarget, QATargetSession
+from src.consumers._qa_workspace import qa_workspace
 from src.consumers.qa import process_qa_job
 
-GUARD = Path(__file__).parents[3] / "infra-service/ansible/roles/qa_runner/files/qa-write-guard.py"
 
+class _LocalShellConn:
+    """A "target" that really runs what the typed tools ask it to run."""
 
-class _GuardedClaudeConnection:
-    """Minimal remote host that makes the runner exercise its Claude hook settings."""
-
-    def __init__(self, tmp_path: Path, deployed_url: str) -> None:
-        self._tmp_path = tmp_path
-        self._deployed_url = deployed_url
-        self._remote_files: dict[str, Path] = {}
+    def __init__(self) -> None:
         self.commands: list[str] = []
 
-    async def __aenter__(self):
+    async def run(self, command: str, *, check: bool = False, timeout: float | None = None):
+        self.commands.append(command)
+        proc = subprocess.run(
+            ["bash", "-c", command],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return SimpleNamespace(stdout=proc.stdout, stderr=proc.stderr, exit_status=proc.returncode)
+
+
+class _RecordingApplication:
+    """The deployed application, recording every method it is asked for."""
+
+    def __init__(self) -> None:
+        self.methods: list[str] = []
+        application = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _record(self):
+                application.methods.append(self.command)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"ok": true}')
+
+            do_GET = _record
+            do_POST = _record
+            do_PUT = _record
+            do_PATCH = _record
+            do_DELETE = _record
+
+            def log_message(self, format, *args):  # noqa: A002
+                return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = Thread(target=self._server.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
         return self
 
-    async def __aexit__(self, *args):
+    def __exit__(self, *args):
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join()
         return False
 
-    async def run(self, command: str, *, check: bool = False):
-        self.commands.append(command)
-        if "printf %s" in command and "qa-write-guard-" in command:
-            tokens = shlex.split(command)
-            payload = tokens[tokens.index("%s") + 1]
-            remote_path = tokens[-1]
-            local_path = self._tmp_path / Path(remote_path).name
-            local_path.write_text(payload)
-            self._remote_files[remote_path] = local_path
-            return SimpleNamespace(stdout="", stderr="", exit_status=0)
+    @property
+    def port(self) -> int:
+        return self._server.server_port
 
-        if " claude " in command and " --settings " in command:
-            remote_path = shlex.split(command)[-1]
-            settings = json.loads(self._remote_files[remote_path].read_text())
-            hook_command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            hook_args = shlex.split(hook_command)
-            hook_args[0] = str(GUARD)
-            write_attempt = f"curl -X POST {self._deployed_url}/users -d '{{}}'"
-            hook = subprocess.run(
-                hook_args,
-                input=json.dumps({"tool_input": {"command": write_attempt}}),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            assert hook.returncode == 2
-            trace_path = hook_args[hook_args.index("--trace") + 1]
-            self._remote_files[trace_path] = Path(trace_path)
-            return SimpleNamespace(
-                stdout='{"pass": true, "checks": [], "summary": "passed"}',
-                stderr=hook.stderr,
-                exit_status=0,
-            )
-
-        if command.startswith("cat "):
-            remote_path = shlex.split(command)[1]
-            local_path = self._remote_files.get(remote_path)
-            if local_path and local_path.exists():
-                return SimpleNamespace(stdout=local_path.read_text(), stderr="", exit_status=0)
-            return SimpleNamespace(stdout="", stderr="", exit_status=1)
-
-        if command.startswith("rm -f "):
-            for remote_path in shlex.split(command)[2:]:
-                local_path = self._remote_files.get(remote_path)
-                if local_path and local_path.exists():
-                    local_path.unlink()
-            return SimpleNamespace(stdout="", stderr="", exit_status=0)
-
-        return SimpleNamespace(stdout="", stderr="", exit_status=0)
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
 
 
 @pytest.fixture(autouse=True)
@@ -97,112 +103,134 @@ async def _clean_redis():
     yield
 
 
-@pytest.mark.parametrize(
-    "command, expected",
-    [
-        ("curl -XPOST http://app.example/users", "POST http://app.example/users"),
-        (
-            "curl http://app.example/users -X PATCH -d '{}'",
-            "PATCH http://app.example/users",
-        ),
-        (
-            "python -c \"requests.request('POST', 'http://app.example/users')\"",
-            "POST http://app.example/users",
-        ),
-        (
-            "python -c \"httpx.request('DELETE', 'http://app.example/users')\"",
-            "DELETE http://app.example/users",
-        ),
-    ],
+# Every shape the old Bash guard had to filter. None of them is expressible now:
+# there is no tool that takes a method, and no tool that takes a shell.
+WRITE_ATTEMPTS = (
+    ["curl", "-X", "POST", "{url}/users"],
+    ["curl", "{url}/users", "-X", "PATCH", "-d", "{}"],
+    ["python3", "-c", "import requests; requests.post('{url}/users')"],
+    ["sh", "-c", "curl -d '{}' {url}/users"],
+    ["wget", "--method=DELETE", "{url}/users"],
 )
-def test_runner_write_hook_executes_and_records_direct_application_write(
-    tmp_path, command: str, expected: str
-):
-    """The Claude Bash hook prevents a real Bash write from reaching the app."""
-    trace = tmp_path / "writes.jsonl"
-    received_requests: list[str] = []
-
-    class ApplicationHandler(BaseHTTPRequestHandler):
-        def do_POST(self):  # noqa: N802
-            received_requests.append(self.command)
-            self.send_response(201)
-            self.end_headers()
-
-        def do_PUT(self):  # noqa: N802
-            received_requests.append(self.command)
-            self.send_response(200)
-            self.end_headers()
-
-        def do_PATCH(self):  # noqa: N802
-            received_requests.append(self.command)
-            self.send_response(200)
-            self.end_headers()
-
-        def do_DELETE(self):  # noqa: N802
-            received_requests.append(self.command)
-            self.send_response(204)
-            self.end_headers()
-
-        def log_message(self, format, *args):  # noqa: A002
-            return
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), ApplicationHandler)
-    server_thread = Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-    target = f"http://127.0.0.1:{server.server_port}"
-    command = command.replace("http://app.example", target)
-    expected = expected.replace("http://app.example", target)
-
-    result = subprocess.run(
-        [str(GUARD), "--target", target, "--trace", str(trace)],
-        input=json.dumps({"tool_input": {"command": command}}),
-        capture_output=True,
-        text=True,
-    )
-
-    try:
-        # This models Claude's PreToolUse contract: a non-zero hook result
-        # rejects the Bash tool call, so the command below must not run.
-        if result.returncode == 0:
-            subprocess.run(["bash", "-c", command], check=True)
-
-        assert result.returncode == 2
-        assert trace.read_text().strip() == expected
-        assert received_requests == []
-    finally:
-        server.shutdown()
-        server.server_close()
-        server_thread.join()
 
 
 @pytest.mark.asyncio
-async def test_qa_run_claude_settings_hook_blocks_write_and_persists_residual_trace(tmp_path):
-    """A controlled Claude Bash write creates a hook trace that blocks the run."""
-    conn = _GuardedClaudeConnection(tmp_path, "http://app.example")
-
-    with (
-        patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
-        patch(
-            "src.consumers._qa_runner._preflight_agent_qa",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
-        patch(
-            "src.consumers._qa_runner._collect_qa_report",
-            new_callable=AsyncMock,
-            return_value="# QA Report\n- no direct writes\n",
-        ),
-    ):
-        mock_asyncssh.import_private_key.return_value = "parsed_key"
-        mock_asyncssh.connect.return_value = conn
-        result = await run_qa_on_server(
-            server_ip="1.2.3.4",
+@pytest.mark.parametrize("attempt", WRITE_ATTEMPTS)
+async def test_no_tool_can_send_a_write_to_the_application(tmp_path, attempt):
+    conn = _LocalShellConn()
+    with _RecordingApplication() as application:
+        target = QATarget(
+            server_ip="127.0.0.1",
             ssh_user="qa",
-            ssh_key="fake",
             project_name="app",
+            deployed_url=application.url,
+        )
+        session = QATargetSession(target, conn)
+        argv = [part.replace("{url}", application.url) for part in attempt]
+
+        with qa_workspace(root=str(tmp_path)) as workspace:
+            tools = {
+                tool.name: tool for tool in build_qa_tools(session=session, workspace=workspace)
+            }
+            refusal = await tools["remote_exec"].ainvoke({"command": argv})
+            # The read the agent is entitled to still works, and really reaches
+            # the application — so an empty method list would prove nothing.
+            await tools["http_get"].ainvoke({"path": "/health"})
+
+        assert "error" in refusal
+        assert application.methods == ["GET"]
+    # Nothing was even sent to the target: the refusal happens before the wire.
+    assert conn.commands == []
+
+
+@pytest.mark.asyncio
+async def test_the_public_probe_is_get_only(tmp_path):
+    with _RecordingApplication() as application:
+        session = QATargetSession(
+            QATarget(
+                server_ip="127.0.0.1",
+                ssh_user="qa",
+                project_name="app",
+                deployed_url=application.url,
+            ),
+            _LocalShellConn(),
+        )
+        with qa_workspace(root=str(tmp_path)) as workspace:
+            tools = {
+                tool.name: tool for tool in build_qa_tools(session=session, workspace=workspace)
+            }
+            assert "method" not in tools["http_get"].args
+            answer = await tools["http_get"].ainvoke({"path": "/users"})
+
+        assert answer["status"] == 200
+        assert application.methods == ["GET"]
+
+
+class _WritingAgent:
+    """An agent that claims a write in its own result — the fail-closed case."""
+
+    def __init__(self, deployed_url: str) -> None:
+        self.deployed_url = deployed_url
+
+    async def ainvoke(self, state, config=None):
+        return {
+            "messages": [
+                SimpleNamespace(
+                    content=(
+                        '{"pass": true, "checks": [{"name": "signup", "pass": true, "detail": '
+                        f'"POST {self.deployed_url}/users returned 201"}}], "summary": "OK"}}'
+                    )
+                )
+            ]
+        }
+
+
+class _FakeTargetConn:
+    """Answers the grant commands so the run reaches the agent."""
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    async def run(self, command: str, *, check: bool = False, timeout: float | None = None):
+        self.commands.append(command)
+        if command.startswith("grep -c -F"):
+            return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
+        return SimpleNamespace(exit_status=0, stdout="", stderr="")
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+def _writing_graph(deployed_url: str):
+    def create(*, model, base_url, api_key, tools, prompt):
+        return _WritingAgent(deployed_url)
+
+    return create
+
+
+@pytest.mark.asyncio
+async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
+    """Evidence of a write fails the run closed, even when the agent says pass."""
+    conn = _FakeTargetConn()
+    with (
+        patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
+        patch("src.consumers._qa_target._import", lambda key: key),
+        patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "runs")),
+        patch("src.consumers._qa_runner.create_qa_graph", _writing_graph("http://app.example")),
+    ):
+        result = await run_qa_centrally(
+            target=QATarget(
+                server_ip="1.2.3.4",
+                ssh_user="qa",
+                project_name="app",
+                deployed_url="http://app.example",
+            ),
+            fleet_ssh_key="fleet-key",
             acceptance_criteria="- read-only check",
-            deployed_url="http://app.example",
+            runtime=QARuntimeConfig(model="m", base_url="u", api_key="k"),
         )
 
     assert result.passed is False
@@ -210,13 +238,12 @@ async def test_qa_run_claude_settings_hook_blocks_write_and_persists_residual_tr
     assert result.blocker.category is QABlockerCategory.UNKNOWN
     assert result.state_changes[0]["resource"] == "POST http://app.example/users"
     assert result.state_changes[0]["cleanup"]["succeeded"] is False
-    assert any("claude" in command and "--settings" in command for command in conn.commands)
 
 
 @pytest.mark.asyncio
-async def test_qa_consumer_quarantines_claude_hook_write_trace(tmp_path):
+async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
     """The consumer persists the runner-created trace as a quarantine blocker."""
-    conn = _GuardedClaudeConnection(tmp_path, "http://app.example")
+    conn = _FakeTargetConn()
     redis = AsyncMock()
     redis.redis.set = AsyncMock(return_value=True)
     redis.redis.delete = AsyncMock()
@@ -241,21 +268,15 @@ async def test_qa_consumer_quarantines_claude_hook_write_trace(tmp_path):
                 project_name="app",
             ),
         ),
-        patch("src.consumers._qa_runner.asyncssh") as mock_asyncssh,
-        patch(
-            "src.consumers._qa_runner._preflight_agent_qa",
-            new_callable=AsyncMock,
-            return_value=None,
-        ),
-        patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
-        patch(
-            "src.consumers._qa_runner._collect_qa_report",
-            new_callable=AsyncMock,
-            return_value="# QA Report\n- normal output\n",
-        ),
+        patch("src.consumers.qa.get_settings") as get_settings,
+        patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
+        patch("src.consumers._qa_target._import", lambda key: key),
+        patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "runs")),
+        patch("src.consumers._qa_runner.create_qa_graph", _writing_graph("http://app.example")),
     ):
-        mock_asyncssh.import_private_key.return_value = "parsed_key"
-        mock_asyncssh.connect.return_value = conn
+        get_settings.return_value = SimpleNamespace(
+            qa_llm_model="m", qa_llm_base_url="u", qa_llm_api_key="k"
+        )
         await process_qa_job(
             {
                 "story_id": "story-1",
@@ -276,4 +297,3 @@ async def test_qa_consumer_quarantines_claude_hook_write_trace(tmp_path):
     assert result.blocker is not None
     assert result.state_changes[0].resource == "POST http://app.example/users"
     assert result.state_changes[0].cleanup.succeeded is False
-    assert any("claude" in command and "--settings" in command for command in conn.commands)

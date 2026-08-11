@@ -1226,7 +1226,7 @@ Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the
 
 **Bot username:** `Repository.bot_username` is the stored source. `POST /api/projects/{id}/telegram/token` writes it there from the `getMe` response in the same transaction that stores the token, and both producers read it off the same record they read the criteria from. A project without a primary repository gets 409 instead of a half-bound token. The deploy smoke check also reports a `bot_username` on `DeployRunResult`; the supervisor uses it only when the repository has none. A tg_bot project reaching QA without a username errors the run, so a write that silently does nothing turns a working bot into a failed story — the endpoint refuses instead.
 
-**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to Claude Code on the server instead.
+**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to the central QA agent instead (`run_qa_centrally`), which reaches the deployment through typed read-only tools over a one-shot identity issued for that run.
 
 `returns <status>` means the path itself answers that status, so the checks do not follow redirects: a criterion naming a redirect is checked against the redirect, and a criterion naming 200 is not satisfied by a path that redirects to a 200. Checks are retried while the service is still coming up.
 

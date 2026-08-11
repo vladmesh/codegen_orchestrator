@@ -136,10 +136,17 @@ services:
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: qa-worker
+      # Exploratory QA runs here, not on the deploy target: the QA agent's LLM
+      # and the QA Telegram account both live in this container's environment.
+      QA_LLM_MODEL: ${QA_LLM_MODEL:-}
+      QA_LLM_BASE_URL: ${QA_LLM_BASE_URL:-}
+      QA_LLM_API_KEY: ${QA_LLM_API_KEY:-}
+      TELETHON_API_ID: ${TELETHON_API_ID:-}
+      TELETHON_API_HASH: ${TELETHON_API_HASH:-}
+      TELETHON_SESSION: ${TELETHON_SESSION:-}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ~/.claude/.credentials.json:/secrets/claude-credentials.json:ro
     depends_on:
       - api
       - redis

@@ -1,9 +1,13 @@
-"""QA runners — HTTP checks for criteria we can decide, Claude Code for the rest.
+"""QA runners — HTTP checks for criteria we can decide, a central agent for the rest.
 
 Criteria that only state GET expectations are run directly against the deployed
-URL by `run_health_checks`. Anything else goes to `run_qa_on_server`, which
-delegates testing to the Claude Code CLI on the target server, prompted with the
-acceptance criteria and deployment URL.
+URL by `run_health_checks`. Anything else goes to `run_qa_centrally`, which runs
+the QA agent here, in the orchestrator, and lets it reach the deployment only
+through the typed tools in `agents/qa/tools`.
+
+Nothing in this module puts an agent, an LLM credential or a Telegram session on
+the deploy target. The target sees one short-lived SSH identity issued for the
+run and a closed set of read-only calls; see `_qa_target`.
 """
 
 from __future__ import annotations
@@ -12,11 +16,8 @@ import asyncio
 from dataclasses import dataclass, field
 import json
 import re
-import shlex
-import time
 import uuid
 
-import asyncssh
 import httpx
 import structlog
 
@@ -25,33 +26,48 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
 )
-from shared.telegram_access_probe import build_access_probe_command, classify_access_probe
+from shared.telegram_access_probe import (
+    build_access_probe_script,
+    classify_access_probe,
+    run_probe_script,
+)
 
-from ..prompts.qa import TELETHON_ENV_FILE, build_qa_prompt
+from ..agents.qa.graph import create_qa_graph
+from ..agents.qa.tools import build_qa_tools
+from ..prompts.qa import build_qa_prompt
+from ._qa_target import (
+    QAGrantError,
+    QAGrantOutcome,
+    QATarget,
+    new_grant_marker,
+    qa_target_grant,
+)
+from ._qa_workspace import QAWorkspace, qa_workspace
 
 logger = structlog.get_logger(__name__)
 
 QA_TIMEOUT = 1200  # 20 minutes
+QA_MAX_STEPS = 200
 HEALTH_CHECK_TIMEOUT = 30
 HEALTH_CHECK_ATTEMPTS = 5
 HEALTH_CHECK_RETRY_DELAY = 5
-SERVICE_BASE_DIR = "/opt/services"
-CREDENTIALS_PATH = "$HOME/.claude/.credentials.json"
-LOCAL_CREDENTIALS_PATH = "/secrets/claude-credentials.json"  # mounted from host
-OAUTH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
-OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-OAUTH_REFRESH_BUFFER_S = 300  # refresh if expires within 5 minutes
-CREDENTIAL_REFRESH_INTERVAL = 4 * 3600  # 4 hours
-TELETHON_ENV_VARS = ("TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION")
-# Sourced into the QA command itself, so the agent gets TELETHON_* whether or not
-# it follows the prompt. Same reason PATH is exported here.
-TELETHON_ENV_PREFIX = f"set -a && . {TELETHON_ENV_FILE} && set +a && "
-CLAUDE_PATH_PREFIX = 'export PATH="$HOME/.local/bin:$PATH" && '
+ACCESS_PROBE_TIMEOUT = 60
 _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
 
-class TelethonCredentialsError(RuntimeError):
-    """The QA server has no usable Telethon credentials for a bot run."""
+@dataclass(frozen=True)
+class QARuntimeConfig:
+    """What the central QA agent needs to exist: an LLM, and a QA Telegram account.
+
+    `telethon_env` is the QA account's credentials. They live in the QA
+    runtime's environment and are handed to a probe child process; the agent
+    never receives them and no deploy target holds a copy.
+    """
+
+    model: str
+    base_url: str
+    api_key: str
+    telethon_env: dict[str, str] | None = None
 
 
 @dataclass
@@ -121,49 +137,6 @@ def _block_forbidden_application_write(qa_result: QAResult, write: str) -> QARes
     return qa_result
 
 
-def _qa_write_guard_settings(*, deployed_url: str, trace_path: str) -> str:
-    """Build the Claude hook configuration that guards application API writes."""
-    hook_command = (
-        "/opt/qa-runner/qa-write-guard.py "
-        f"--target {shlex.quote(deployed_url)} --trace {shlex.quote(trace_path)}"
-    )
-    return json.dumps(
-        {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{"type": "command", "command": hook_command}],
-                    }
-                ]
-            }
-        }
-    )
-
-
-async def _write_qa_write_guard_settings(
-    conn: asyncssh.SSHClientConnection, *, deployed_url: str, trace_path: str
-) -> str:
-    """Install one-run Claude hook settings before exposing Bash to the agent."""
-    settings_path = f"/tmp/qa-write-guard-{uuid.uuid4().hex}.json"  # noqa: S108
-    payload = _qa_write_guard_settings(deployed_url=deployed_url, trace_path=trace_path)
-    await conn.run(
-        f"umask 077; printf %s {shlex.quote(payload)} > {shlex.quote(settings_path)}", check=True
-    )
-    return settings_path
-
-
-async def _collect_qa_write_guard_trace(conn: asyncssh.SSHClientConnection, trace_path: str) -> str:
-    """Return runner-owned write attempts recorded by the Claude Bash hook."""
-    result = await conn.run(f"cat {shlex.quote(trace_path)} 2>/dev/null", check=False)
-    if result.exit_status != 0:
-        return ""
-    for line in result.stdout.splitlines():
-        if re.fullmatch(rf"(?:{_WRITE_METHODS})\s+\S+", line, flags=re.IGNORECASE):
-            return line
-    return ""
-
-
 def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
     """Fail closed when the agent's result cannot safely drive QA routing."""
     return QAResult(
@@ -172,7 +145,7 @@ def _invalid_qa_payload(raw: str, reason: str) -> QAResult:
         raw=raw,
         blocker=_unknown_result_blocker(
             attempted="validate QA agent result",
-            sent="Claude Code stdout",
+            sent="QA agent final message",
             received=raw[:2000],
         ),
     )
@@ -220,12 +193,13 @@ def _validate_qa_payload(data: dict, raw: str) -> QAResult | None:
 
 
 def parse_qa_result(raw: str) -> QAResult:
-    """Parse Claude Code's JSON output into a QAResult.
+    """Parse the QA agent's final message into a QAResult.
 
     Handles:
-    - --output-format json wrapper: {"type":"result","result":"..."}
     - Raw QA JSON: {"pass": true, ...}
     - JSON wrapped in markdown code blocks
+    - A CLI-style {"type":"result","result":"..."} wrapper, still accepted so a
+      transcript captured from the previous runtime parses the same way
     """
     if not raw or not raw.strip():
         return QAResult(
@@ -234,14 +208,14 @@ def parse_qa_result(raw: str) -> QAResult:
             raw=raw,
             blocker=_unknown_result_blocker(
                 attempted="parse QA agent result",
-                sent="Claude Code stdout",
+                sent="QA agent final message",
                 received="empty output",
             ),
         )
 
     json_str = raw.strip()
 
-    # Step 1: Unwrap --output-format json wrapper if present
+    # Step 1: Unwrap a result wrapper if present
     try:
         wrapper = json.loads(json_str)
         if isinstance(wrapper, dict) and wrapper.get("type") == "result":
@@ -265,7 +239,7 @@ def parse_qa_result(raw: str) -> QAResult:
             raw=raw,
             blocker=_unknown_result_blocker(
                 attempted="parse QA agent result",
-                sent="Claude Code stdout",
+                sent="QA agent final message",
                 received=raw[:2000],
             ),
         )
@@ -277,7 +251,7 @@ def parse_qa_result(raw: str) -> QAResult:
             raw=raw,
             blocker=_unknown_result_blocker(
                 attempted="validate QA agent result",
-                sent="Claude Code stdout",
+                sent="QA agent final message",
                 received=raw[:2000],
             ),
         )
@@ -389,413 +363,236 @@ async def _run_health_check(
     return {"name": name, "pass": False, "detail": detail}, transport_error
 
 
-async def _ensure_claude_credentials(conn: asyncssh.SSHClientConnection) -> None:
-    """Check Claude Code OAuth credentials on server, refresh if expired.
-
-    Strategy:
-    1. Read credentials from server
-    2. If still valid — return
-    3. Try OAuth refresh_token grant
-    4. If refresh fails (400/401 = token revoked/expired) — fallback to local credentials
-    """
-    result = await conn.run(f"cat {CREDENTIALS_PATH} 2>/dev/null", check=False)
-    if result.exit_status != 0 or not result.stdout:
-        # No credentials on server at all — try pushing local
-        logger.warning("claude_credentials_missing_on_server")
-        await _push_local_credentials(conn)
-        return
-
-    creds = json.loads(result.stdout)
-    oauth = creds["claudeAiOauth"]
-    expires_at = oauth["expiresAt"] / 1000  # ms → seconds
-    now = time.time()
-
-    if now < expires_at - OAUTH_REFRESH_BUFFER_S:
-        logger.info("claude_credentials_valid", ttl_s=int(expires_at - now))
-        return
-
-    logger.info("claude_credentials_expired", expired_ago_s=int(now - expires_at))
-
-    # Try OAuth refresh
-    try:
-        await _refresh_oauth_token(conn, oauth)
-        return
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code in (400, 401):
-            logger.warning(
-                "claude_refresh_token_invalid",
-                status=e.response.status_code,
-                body=e.response.text[:200],
-            )
-            # Refresh token is dead — fallback to local credentials
-            await _push_local_credentials(conn)
-        else:
-            raise
-
-
-async def _refresh_oauth_token(
-    conn: asyncssh.SSHClientConnection,
-    oauth: dict,
-) -> None:
-    """Refresh OAuth token and write updated credentials to server."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            OAUTH_ENDPOINT,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": oauth["refreshToken"],
-                "client_id": OAUTH_CLIENT_ID,
-            },
-        )
-        resp.raise_for_status()
-        token_data = resp.json()
-
-    now = time.time()
-    new_creds = {
-        "claudeAiOauth": {
-            "accessToken": token_data["access_token"],
-            "refreshToken": token_data["refresh_token"],
-            "expiresAt": int((now + token_data["expires_in"]) * 1000),
-            "scopes": oauth["scopes"],
-            "subscriptionType": oauth.get("subscriptionType", ""),
-            "rateLimitTier": oauth.get("rateLimitTier", ""),
-        }
-    }
-    await _write_credentials(conn, new_creds)
-    logger.info("claude_credentials_refreshed", expires_in=token_data["expires_in"])
-
-
-async def _push_local_credentials(conn: asyncssh.SSHClientConnection) -> None:
-    """Push local credentials file to server as fallback.
-
-    Reads from LOCAL_CREDENTIALS_PATH (mounted from host) and writes to server.
-    """
-    try:
-        with open(LOCAL_CREDENTIALS_PATH) as f:
-            local_creds = json.load(f)
-    except FileNotFoundError as err:
-        raise RuntimeError(
-            f"Refresh token expired and no local credentials at {LOCAL_CREDENTIALS_PATH}. "
-            "Mount ~/.claude/.credentials.json into the container."
-        ) from err
-
-    local_oauth = local_creds["claudeAiOauth"]
-    local_expires = local_oauth["expiresAt"] / 1000
-    now = time.time()
-
-    if now >= local_expires:
-        raise RuntimeError(
-            f"Local credentials are also expired "
-            f"(expired {int(now - local_expires)}s ago). "
-            "Run 'claude login' on the host machine."
-        )
-
-    await _write_credentials(conn, local_creds)
-    logger.info(
-        "claude_credentials_pushed_from_local",
-        ttl_s=int(local_expires - now),
-    )
-
-
-async def _write_credentials(
-    conn: asyncssh.SSHClientConnection,
-    creds: dict,
-) -> None:
-    """Write credentials JSON to server."""
-    creds_json = json.dumps(creds, indent=2)
-    await conn.run(
-        f"mkdir -p $HOME/.claude && cat > {CREDENTIALS_PATH} "
-        f"<< 'CREDS_EOF'\n{creds_json}\nCREDS_EOF",
-        check=True,
-    )
-
-
-async def _require_telethon_credentials(conn: asyncssh.SSHClientConnection) -> None:
-    """Fail the run when the server's Telethon credentials are missing or empty.
-
-    Without this the QA agent starts anyway and reports the Telegram checks as
-    blocked on a guessed cause. Only variable names are echoed back, never values.
-    """
-    check = (
-        f'test -r {TELETHON_ENV_FILE} || {{ echo "missing"; exit 1; }}; '
-        f"set -a && . {TELETHON_ENV_FILE} && set +a; "
-        "empty=; "
-        f"for v in {' '.join(TELETHON_ENV_VARS)}; do "
-        'eval "value=\\$$v"; [ -n "$value" ] || empty="$empty $v"; done; '
-        '[ -z "$empty" ] || { echo "empty:$empty"; exit 1; }'
-    )
-    result = await conn.run(check, check=False)
-    if result.exit_status == 0:
-        return
-
-    detail = (result.stdout or "").strip() or f"check failed with status {result.exit_status}"
-    if detail == "missing":
-        raise TelethonCredentialsError(f"no credentials file at {TELETHON_ENV_FILE} on the server")
-    if detail.startswith("empty:"):
-        raise TelethonCredentialsError(
-            f"{TELETHON_ENV_FILE} has empty {detail.removeprefix('empty:').strip()}"
-        )
-    raise TelethonCredentialsError(f"cannot read {TELETHON_ENV_FILE}: {detail}")
-
-
-async def _preflight_agent_qa(
-    conn: asyncssh.SSHClientConnection, bot_username: str | None
+async def preflight_bot_access(
+    *, bot_username: str, telethon_env: dict[str, str] | None
 ) -> QABlocker | None:
-    """Check platform-owned prerequisites without invoking Claude Code."""
-    claude = await conn.run(f"{CLAUDE_PATH_PREFIX}command -v claude", check=False)
-    if claude.exit_status != 0:
-        return QABlocker(
-            category=QABlockerCategory.CLAUDE_UNAVAILABLE,
-            attempted="locate Claude Code on QA server",
-            sent=f"{CLAUDE_PATH_PREFIX}command -v claude",
-            received=(claude.stderr or claude.stdout or "command not found").strip(),
-        )
+    """Check the platform's own prerequisites for testing a bot, without the LLM.
 
-    if not bot_username:
-        return None
-
-    try:
-        await _require_telethon_credentials(conn)
-    except TelethonCredentialsError as exc:
+    The credentials are the QA runtime's, so a missing one is named here rather
+    than discovered by the agent mid-run; the probe then asks the bot itself
+    whether it admits the QA identity.
+    """
+    if not telethon_env:
         return QABlocker(
             category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
             attempted="validate QA Telethon credentials",
-            sent=f"read {TELETHON_ENV_FILE} and validate required variable names",
-            received=str(exc),
+            sent="TELETHON_API_ID, TELETHON_API_HASH, TELETHON_SESSION in the QA runtime",
+            received="the QA runtime has no Telegram QA account configured",
         )
-
-    probe = build_access_probe_command(bot_username, TELETHON_ENV_FILE)
-    result = await conn.run(probe, check=False)
+    probe = await run_probe_script(
+        build_access_probe_script(bot_username),
+        env=telethon_env,
+        timeout=ACCESS_PROBE_TIMEOUT,
+    )
     return classify_access_probe(
-        exit_status=result.exit_status,
-        stdout=result.stdout or "",
-        stderr=result.stderr or "",
+        exit_status=probe.exit_status,
+        stdout=probe.stdout,
+        stderr=probe.stderr,
         bot_username=bot_username,
     )
 
 
-async def run_qa_on_server(
-    *,
-    server_ip: str,
-    ssh_user: str,
-    ssh_key: str,
-    project_name: str,
-    acceptance_criteria: str,
-    deployed_url: str,
-    bot_username: str | None = None,
-    timeout: int = QA_TIMEOUT,
-) -> QAResult:
-    """SSH to server, run Claude Code with QA prompt, return parsed result.
+def _final_message_text(state: dict) -> str:
+    """The agent's last message, as text.
 
-    Args:
-        server_ip: Target server IP address
-        ssh_key: PEM-encoded SSH private key
-        project_name: Project directory name under /opt/services/
-        acceptance_criteria: Regression test criteria from repository
-        deployed_url: URL where the project is deployed
-        bot_username: Telegram bot username (if applicable)
-        timeout: Timeout in seconds for the Claude Code run
-    Returns:
-        QAResult with pass/fail status and check details
+    Chat models may return content as a list of blocks; a QA result buried in
+    one of them is still the result, so the blocks are joined rather than
+    stringified into `[{'type': ...}]`.
     """
-    prompt = build_qa_prompt(acceptance_criteria, deployed_url, bot_username)
-    guard_trace_path = f"/tmp/qa-write-guard-{uuid.uuid4().hex}.jsonl"  # noqa: S108
+    messages = state.get("messages") or []
+    if not messages:
+        return ""
+    content = getattr(messages[-1], "content", messages[-1])
+    if isinstance(content, list):
+        return "\n".join(
+            part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+        )
+    return content if isinstance(content, str) else str(content)
 
-    # Escape prompt for shell — use heredoc to avoid quoting issues
-    # Prepend ~/.local/bin to PATH — non-interactive SSH doesn't source .bashrc
-    # Permissions are configured via ~/.claude/settings.json (allowlist).
-    cmd = CLAUDE_PATH_PREFIX + (
-        f"{TELETHON_ENV_PREFIX if bot_username else ''}"
-        f"cd {shlex.quote(f'{SERVICE_BASE_DIR}/{project_name}')} && "
-        f"timeout {timeout} claude -p {shlex.quote(prompt)} "
-        f"--output-format json "
-        f"--max-turns 200 "
-        f"--model claude-sonnet-4-6 "
-        f"2>/dev/null"
+
+def _cleanup_blocker(residues: list[str]) -> QABlocker:
+    detail = "; ".join(residues)
+    return QABlocker(
+        category=QABlockerCategory.QA_CLEANUP_FAILED,
+        attempted="destroy the QA run's workspace and target access",
+        sent="remove the run's authorized_keys entry and its central workspace",
+        received=detail,
     )
 
-    qa_result: QAResult | None = None
+
+def _apply_cleanup_residue(qa_result: QAResult, residues: list[str]) -> QAResult:
+    """A run whose materials outlived it is not a clean pass.
+
+    The run's own verdict is kept in the summary, but the outcome becomes a
+    blocker: leftover access is a platform fact a human has to clear, and it
+    must not be reported as a green QA run.
+    """
+    if not residues:
+        return qa_result
+    logger.error("qa_cleanup_residual", residual=residues)
+    qa_result.passed = False
+    qa_result.blocker = _cleanup_blocker(residues)
+    qa_result.state_changes = [
+        {
+            "resource": residue,
+            "operation": "created",
+            "cleanup": {
+                "attempted": True,
+                "succeeded": False,
+                "detail": residue,
+            },
+        }
+        for residue in residues
+    ]
+    return qa_result
+
+
+async def _invoke_qa_agent(
+    *,
+    target: QATarget,
+    workspace: QAWorkspace,
+    session,
+    acceptance_criteria: str,
+    runtime: QARuntimeConfig,
+    timeout: int,
+) -> QAResult:
+    """Run the agent against one target and turn its answer into a QAResult."""
+    tools = build_qa_tools(
+        session=session,
+        workspace=workspace,
+        telethon_env=runtime.telethon_env,
+    )
+    graph = create_qa_graph(
+        model=runtime.model,
+        base_url=runtime.base_url,
+        api_key=runtime.api_key,
+        tools=tools,
+        prompt=build_qa_prompt(acceptance_criteria, target.deployed_url, target.bot_username),
+    )
     try:
-        key = asyncssh.import_private_key(ssh_key)
-        async with asyncssh.connect(
-            server_ip,
-            username=ssh_user,
-            known_hosts=None,
-            client_keys=[key],
-        ) as conn:
-            logger.info(
-                "qa_ssh_connected",
-                server_ip=server_ip,
-                project_name=project_name,
-                timeout=timeout,
-            )
-
-            # Ensure Claude Code credentials are fresh before running
-            blocker = await _preflight_agent_qa(conn, bot_username)
-            if blocker:
-                return QAResult(passed=False, summary="QA preflight blocked", blocker=blocker)
-
-            await _ensure_claude_credentials(conn)
-            guard_settings_path = await _write_qa_write_guard_settings(
-                conn, deployed_url=deployed_url, trace_path=guard_trace_path
-            )
-
-            result = await conn.run(
-                f"{cmd} --settings {shlex.quote(guard_settings_path)}", check=False
-            )
-
-            # Collect QA_REPORT.md regardless of exit status
-            report = await _collect_qa_report(conn, project_name)
-            guarded_write = await _collect_qa_write_guard_trace(conn, guard_trace_path)
-            await conn.run(
-                f"rm -f {shlex.quote(guard_settings_path)} {shlex.quote(guard_trace_path)}",
-                check=False,
-            )
-
-            if guarded_write:
-                qa_result = QAResult(
-                    passed=False,
-                    report=report,
-                    raw=result.stdout or "",
-                    summary="QA attempted a forbidden application API write",
-                )
-                return _block_forbidden_application_write(qa_result, guarded_write)
-
-            if result.exit_status != 0:
-                logger.warning(
-                    "qa_claude_nonzero_exit",
-                    server_ip=server_ip,
-                    exit_status=result.exit_status,
-                    stderr=result.stderr[:500] if result.stderr else "",
-                )
-                if result.stdout:
-                    qa_result = parse_qa_result(result.stdout)
-                    qa_result.report = report
-                    if qa_result.blocker:
-                        qa_result.blocker = _unknown_result_blocker(
-                            attempted="run Claude Code QA command",
-                            sent=cmd,
-                            received=(
-                                f"exit_status={result.exit_status}; "
-                                f"stdout={result.stdout[:2000]}; "
-                                f"stderr={(result.stderr or '')[:2000]}"
+        state = await asyncio.wait_for(
+            graph.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Run the regression test now and finish with the result JSON."
                             ),
-                        )
-                    write = _forbidden_application_write(f"{result.stdout}\n{report}", deployed_url)
-                    return (
-                        _block_forbidden_application_write(qa_result, write) if write else qa_result
-                    )
-                qa_result = QAResult(
-                    passed=False,
-                    summary=f"Claude Code exited with status {result.exit_status}: "
-                    f"{result.stderr[:300] if result.stderr else 'no output'}",
-                    raw=result.stdout or "",
-                    report=report,
-                    blocker=_unknown_result_blocker(
-                        attempted="run Claude Code QA command",
-                        sent=cmd,
-                        received=(
-                            f"exit_status={result.exit_status}; stdout=; "
-                            f"stderr={(result.stderr or '')[:2000]}"
-                        ),
-                    ),
-                )
-                write = _forbidden_application_write(f"{result.stdout}\n{report}", deployed_url)
-                return _block_forbidden_application_write(qa_result, write) if write else qa_result
-
-            qa_result = parse_qa_result(result.stdout or "")
-            qa_result.report = report
-            write = _forbidden_application_write(f"{result.stdout}\n{report}", deployed_url)
-            return _block_forbidden_application_write(qa_result, write) if write else qa_result
-
-    except TelethonCredentialsError as e:
-        logger.error("qa_telethon_credentials_unusable", server_ip=server_ip, error=str(e))
-        qa_result = QAResult(
+                        }
+                    ]
+                },
+                config={
+                    "recursion_limit": QA_MAX_STEPS,
+                    "configurable": {"thread_id": str(uuid.uuid4())},
+                },
+            ),
+            timeout=timeout,
+        )
+    except TimeoutError:
+        logger.warning("qa_agent_timeout", server_ip=target.server_ip, timeout=timeout)
+        return QAResult(
             passed=False,
-            summary=f"QA cannot test @{bot_username}: {e}",
-            raw="",
-            blocker=QABlocker(
-                category=QABlockerCategory.MISSING_TELETHON_CREDENTIALS,
-                attempted="validate QA Telethon credentials",
-                sent=f"read {TELETHON_ENV_FILE}",
-                received=str(e),
+            summary=f"QA agent did not finish within {timeout}s",
+            report=workspace.read_report(),
+            blocker=_unknown_result_blocker(
+                attempted="run the central QA agent",
+                sent=f"QA agent against {target.deployed_url}",
+                received=f"no result after {timeout}s",
             ),
         )
-        return qa_result
 
-    except Exception as e:
-        logger.error("qa_ssh_failed", server_ip=server_ip, error=str(e))
-        qa_result = QAResult(
+    qa_result = parse_qa_result(_final_message_text(state))
+    qa_result.report = workspace.read_report()
+    return qa_result
+
+
+async def run_qa_centrally(
+    *,
+    target: QATarget,
+    fleet_ssh_key: str,
+    acceptance_criteria: str,
+    runtime: QARuntimeConfig,
+    timeout: int = QA_TIMEOUT,
+) -> QAResult:
+    """Run exploratory QA from the orchestrator against one deployment.
+
+    The run gets an isolated workspace here and a one-shot SSH identity there.
+    Both are destroyed before this returns, on every path out — a raised error,
+    a timeout, a cancelled run — and what could not be destroyed is reported as
+    a blocker rather than dropped.
+
+    Args:
+        target: the single deployment this run may reach.
+        fleet_ssh_key: the server key, used by this function only to issue and
+            revoke the run's own identity. It is never given to the agent.
+        acceptance_criteria: regression test criteria from the repository.
+        runtime: LLM configuration and the QA Telegram account credentials.
+        timeout: seconds the agent is given to reach a verdict.
+    """
+    grant = QAGrantOutcome(marker=new_grant_marker())
+    workspace: QAWorkspace | None = None
+    try:
+        with qa_workspace() as workspace:
+            async with qa_target_grant(
+                target=target, fleet_ssh_key=fleet_ssh_key, outcome=grant
+            ) as session:
+                logger.info(
+                    "qa_central_run_started",
+                    server_ip=target.server_ip,
+                    project_name=target.project_name,
+                    timeout=timeout,
+                )
+                qa_result = await _invoke_qa_agent(
+                    target=target,
+                    workspace=workspace,
+                    session=session,
+                    acceptance_criteria=acceptance_criteria,
+                    runtime=runtime,
+                    timeout=timeout,
+                )
+            # Everything the runner can see of the run: the calls it made on the
+            # agent's behalf, the report, and the agent's own account of itself.
+            write = _forbidden_application_write(
+                f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}",
+                target.deployed_url,
+            )
+            if write:
+                qa_result = _block_forbidden_application_write(qa_result, write)
+    except QAGrantError as exc:
+        logger.error("qa_grant_failed", server_ip=target.server_ip, error=str(exc))
+        return QAResult(
             passed=False,
-            summary=f"SSH connection failed to {server_ip}: {e}",
-            raw="",
+            summary=f"QA could not obtain access to {target.server_ip}: {exc}",
             blocker=QABlocker(
                 category=QABlockerCategory.SERVER_UNAVAILABLE,
-                attempted="connect to QA server",
-                sent=f"SSH connection to {server_ip}",
-                received=str(e),
+                attempted="issue a one-shot QA identity on the target",
+                sent=f"authorized_keys entry {grant.marker} on {target.server_ip}",
+                received=str(exc),
             ),
         )
-        return qa_result
+    except Exception as exc:
+        logger.exception("qa_central_run_failed", server_ip=target.server_ip)
+        return _apply_cleanup_residue(
+            QAResult(
+                passed=False,
+                summary=f"QA run against {target.server_ip} failed: {exc}",
+                blocker=_unknown_result_blocker(
+                    attempted="run the central QA agent against the target",
+                    sent=f"QA run on {target.server_ip}",
+                    received=str(exc),
+                ),
+            ),
+            _residues(grant, workspace),
+        )
+
+    return _apply_cleanup_residue(qa_result, _residues(grant, workspace))
 
 
-async def _collect_qa_report(
-    conn: asyncssh.SSHClientConnection,
-    project_name: str,
-) -> str:
-    """Read and remove QA_REPORT.md from the project directory on the server."""
-    report_path = f"{SERVICE_BASE_DIR}/{project_name}/QA_REPORT.md"
-    quoted_report_path = shlex.quote(report_path)
-    try:
-        result = await conn.run(f"cat {quoted_report_path} 2>/dev/null", check=False)
-        if result.exit_status == 0 and result.stdout:
-            await conn.run(f"rm -f {quoted_report_path}", check=False)
-            logger.info("qa_report_collected", size=len(result.stdout))
-            return result.stdout
-    except Exception as e:
-        logger.warning("qa_report_collect_failed", error=str(e))
-    return ""
-
-
-async def credential_refresh_loop() -> None:
-    """Periodically refresh Claude Code credentials on all managed servers.
-
-    Runs every CREDENTIAL_REFRESH_INTERVAL (4h). Connects to each server
-    via SSH and calls _ensure_claude_credentials to keep tokens fresh.
-    This prevents refresh tokens from expiring between QA runs.
-    """
-    from ..clients.api import api_client
-
-    logger.info("credential_refresh_loop_started", interval_s=CREDENTIAL_REFRESH_INTERVAL)
-
-    while True:
-        try:
-            servers = await api_client.list_servers(is_managed=True)
-            for server in servers:
-                if not server.public_ip:
-                    continue
-                ssh_key = await api_client.get_server_ssh_key(server.handle)
-                if not ssh_key:
-                    continue
-                try:
-                    key = asyncssh.import_private_key(ssh_key)
-                    async with asyncssh.connect(
-                        server.public_ip,
-                        username=server.ssh_user,
-                        known_hosts=None,
-                        client_keys=[key],
-                    ) as conn:
-                        await _ensure_claude_credentials(conn)
-                        logger.info(
-                            "credential_refresh_ok",
-                            server_ip=server.public_ip,
-                        )
-                except Exception:
-                    logger.exception(
-                        "credential_refresh_server_error",
-                        server_ip=server.public_ip,
-                    )
-        except Exception:
-            logger.exception("credential_refresh_cycle_error")
-
-        await asyncio.sleep(CREDENTIAL_REFRESH_INTERVAL)
+def _residues(grant: QAGrantOutcome, workspace: QAWorkspace | None) -> list[str]:
+    """Everything this run created and could not prove gone."""
+    return [
+        residue
+        for residue in (grant.residual, workspace.residual if workspace else None)
+        if residue
+    ]

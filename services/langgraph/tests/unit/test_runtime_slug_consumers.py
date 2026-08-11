@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.contracts.queues.deploy import DeployAction
-from src.consumers._qa_runner import run_qa_on_server
+from src.consumers._qa_target import QATarget, QATargetSession
 from src.consumers.deploy import _build_subgraph_input
 from src.consumers.deploy_lifecycle import process_lifecycle_action
 from src.consumers.deploy_precheck import _pre_check_server
@@ -119,38 +119,19 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
     assert f"cd {SERVICE_DIR}" in smoke_cmd
     assert f"docker compose -p {RUNTIME_SLUG}" in smoke_cmd
 
-    qa_conn = AsyncMock()
-    qa_conn.run = AsyncMock(
-        side_effect=[
-            MagicMock(exit_status=0, stdout=""),
-            MagicMock(
-                exit_status=0,
-                stdout='{"pass": true, "checks": [], "summary": "ok", "state_changes": []}',
-            ),
-            MagicMock(exit_status=1, stdout=""),
-            MagicMock(exit_status=1, stdout=""),
-            MagicMock(exit_status=0, stdout=""),
-        ]
+    # QA reaches the target through a typed session, not a shell. The slug is
+    # what scopes that session: the deployment directory it may read, and the
+    # container names it recognises as belonging to this run.
+    qa_target = QATarget(
+        server_ip="1.2.3.4",
+        ssh_user="dev",
+        project_name=RUNTIME_SLUG,
+        deployed_url="http://1.2.3.4:8000",
     )
-    qa_preflight = AsyncMock(return_value=None)
-    with (
-        patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock),
-        patch("src.consumers._qa_runner._preflight_agent_qa", qa_preflight),
-        patch("src.consumers._qa_runner.asyncssh", _ssh_module_for_connection(qa_conn)),
-    ):
-        qa_result = await run_qa_on_server(
-            server_ip="1.2.3.4",
-            ssh_user="dev",
-            ssh_key="fake-key",
-            project_name=RUNTIME_SLUG,
-            acceptance_criteria="- GET /health returns 200",
-            deployed_url="http://1.2.3.4:8000",
-        )
-    assert qa_result.passed is True
-    qa_cmd = next(
-        call.args[0] for call in qa_conn.run.await_args_list if "claude -p" in call.args[0]
-    )
-    assert f"cd {SERVICE_DIR}" in qa_cmd
+    assert qa_target.service_dir == SERVICE_DIR
+    qa_session = QATargetSession(qa_target, AsyncMock())
+    assert qa_session.resolve_path("infra/compose.yml") == f"{SERVICE_DIR}/infra/compose.yml"
+    assert qa_session.resolve_container(f"{RUNTIME_SLUG}-backend-1") == f"{RUNTIME_SLUG}-backend-1"
 
     unsafe_project = "unsafe project; echo nope"
     unsafe_conn = AsyncMock()

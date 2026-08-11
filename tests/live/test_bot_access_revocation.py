@@ -26,7 +26,6 @@ import os
 import time
 import uuid
 
-import asyncssh
 import httpx
 from pipeline_helpers import api_client_as_internal_service
 import pytest
@@ -38,11 +37,16 @@ from shared.contracts.dto.temporary_access import (
     REVOKE_CONFIRMATION_WINDOW,
     TemporaryAccessStatus,
 )
-from shared.telegram_access_probe import build_access_probe_command, classify_access_probe
+from shared.telegram_access_probe import (
+    build_access_probe_script,
+    classify_access_probe,
+    run_probe_script,
+    telethon_env,
+)
 
-# The QA runner reads its Telethon credentials from the QA user's home; the probe
-# is the same command, so it reads the same file.
-TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
+# QA runs centrally now, so the probe runs here, from the same environment the
+# QA runtime reads its Telethon credentials from.
+ACCESS_PROBE_TIMEOUT = 60
 
 GRANT_TIMEOUT = 900  # a real deploy of the pinned commit, plus the sweep's cycle
 # The same, plus the confirmation window: the record is closed by readings of the
@@ -80,19 +84,15 @@ class DeployedBot:
 
     async def admits_qa_identity(self) -> bool:
         """Send /start as the QA account and read what the bot answers."""
-        async with asyncssh.connect(
-            self.server["public_ip"],
-            username=self.server["ssh_user"],
-            client_keys=[asyncssh.import_private_key(self.ssh_key)],
-            known_hosts=None,
-        ) as conn:
-            result = await conn.run(
-                build_access_probe_command(self.bot_username, TELETHON_ENV_FILE), check=False
-            )
+        probe = await run_probe_script(
+            build_access_probe_script(self.bot_username),
+            env=telethon_env(),
+            timeout=ACCESS_PROBE_TIMEOUT,
+        )
         blocker = classify_access_probe(
-            exit_status=result.exit_status,
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
+            exit_status=probe.exit_status,
+            stdout=probe.stdout,
+            stderr=probe.stderr,
             bot_username=self.bot_username,
         )
         if blocker is None:

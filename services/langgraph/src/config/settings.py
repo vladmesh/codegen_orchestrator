@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     architect_llm_base_url: str | None = None
     architect_llm_api_key: str | None = None
 
+    # Optional: QA ReactAgent LLM config. Exploratory QA runs here, centrally —
+    # no deploy target holds an LLM credential.
+    qa_llm_model: str | None = None
+    qa_llm_base_url: str | None = None
+    qa_llm_api_key: str | None = None
+
     # Optional: PostgreSQL URL for LangGraph checkpointer persistence
     # Falls back to MemorySaver (in-memory) if not set
     checkpoint_database_url: str | None = None

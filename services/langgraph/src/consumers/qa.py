@@ -18,18 +18,23 @@ from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFail
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
+from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
 
 from ..clients.api import api_client
+from ..config.agent_llm_env import missing_llm_env
+from ..config.settings import get_settings
 from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
 from ._live_work import live_work_settled
 from ._qa_runner import (
     QAResult,
+    QARuntimeConfig,
     check_deployed_url_reachable,
-    credential_refresh_loop,
+    preflight_bot_access,
     run_health_checks,
-    run_qa_on_server,
+    run_qa_centrally,
 )
+from ._qa_target import QATarget
 
 logger = structlog.get_logger(__name__)
 
@@ -71,6 +76,80 @@ async def _resolve_server_info(application_id: int, project_name: str) -> QAServ
         ssh_key=ssh_key,
         project_name=project_name,
     )
+
+
+def _resolve_qa_runtime() -> tuple[QARuntimeConfig | None, QABlocker | None]:
+    """Build the central QA runtime config, or say what it is missing.
+
+    Both halves live in this service's environment now: the LLM the QA agent
+    thinks with, and the Telegram account it talks to bots as. Neither is ever
+    written to a deploy target. A missing Telethon setup is not fatal here — a
+    deployment without a bot never needs it — so it is reported by the bot
+    preflight instead, which is the only place it matters.
+    """
+    settings = get_settings()
+    missing = missing_llm_env("qa", settings)
+    if missing:
+        return None, QABlocker(
+            category=QABlockerCategory.CLAUDE_UNAVAILABLE,
+            attempted="start the central QA agent",
+            sent=", ".join(missing),
+            received="the QA runtime has no LLM configured, so no agent can run",
+        )
+    try:
+        credentials = telethon_env()
+    except TelethonCredentialsError as exc:
+        logger.info("qa_telethon_not_configured", detail=str(exc))
+        credentials = None
+    return (
+        QARuntimeConfig(
+            model=settings.qa_llm_model,
+            base_url=settings.qa_llm_base_url,
+            api_key=settings.qa_llm_api_key,
+            telethon_env=credentials,
+        ),
+        None,
+    )
+
+
+async def _run_exploratory_qa(
+    *,
+    msg: QAMessage,
+    server_info: QAServerInfo,
+    acceptance_criteria: str,
+) -> tuple[QAResult | None, QABlocker | None]:
+    """Run the central QA agent against one deployment.
+
+    Returns either a product verdict or the blocker that stopped QA from
+    reaching one. Everything the platform owes the run — an LLM to think with, a
+    Telegram account that the bot admits — is settled before the agent starts,
+    so a run that cannot happen costs no LLM and issues no access on the target.
+    """
+    runtime, runtime_blocker = _resolve_qa_runtime()
+    if runtime_blocker:
+        return None, runtime_blocker
+
+    if msg.bot_username:
+        access_blocker = await preflight_bot_access(
+            bot_username=msg.bot_username,
+            telethon_env=runtime.telethon_env,
+        )
+        if access_blocker:
+            return None, access_blocker
+
+    qa_result = await run_qa_centrally(
+        target=QATarget(
+            server_ip=server_info.server_ip,
+            ssh_user=server_info.ssh_user,
+            project_name=server_info.project_name,
+            deployed_url=msg.deployed_url,
+            bot_username=msg.bot_username,
+        ),
+        fleet_ssh_key=server_info.ssh_key,
+        acceptance_criteria=acceptance_criteria,
+        runtime=runtime,
+    )
+    return qa_result, None
 
 
 async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -159,8 +238,8 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     )
 
         # A QA run without durable storage must not start an agent that could
-        # leave customer data behind. The remote runner installs its journal
-        # before it exposes the mutation helper to Claude.
+        # leave customer data behind. The runner records what the agent did in
+        # its own workspace, and the run is where that record lands.
         if health_checks is None:
             if not run_id:
                 return await _handle_qa_blocked(
@@ -195,15 +274,13 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 checks=health_checks,
             )
         else:
-            qa_result = await run_qa_on_server(
-                server_ip=server_info.server_ip,
-                ssh_user=server_info.ssh_user,
-                ssh_key=server_info.ssh_key,
-                project_name=server_info.project_name,
+            qa_result, exploratory_blocker = await _run_exploratory_qa(
+                msg=msg,
+                server_info=server_info,
                 acceptance_criteria=acceptance_criteria,
-                deployed_url=msg.deployed_url,
-                bot_username=msg.bot_username,
             )
+            if exploratory_blocker:
+                return await _handle_qa_blocked(run_id=run_id, blocker=exploratory_blocker)
 
         logger.info(
             "qa_result",
@@ -393,9 +470,10 @@ async def _update_run(
 def main():
     """Entry point for running as module.
 
-    Runs the queue consumer and credential refresh loop concurrently.
-    The refresh loop keeps OAuth tokens fresh on all managed servers,
-    preventing token expiry between QA runs.
+    Only the queue consumer now. The credential refresh loop that kept Claude
+    Code's OAuth token alive on every managed server is gone with the agent it
+    served: no target holds LLM credentials any more, so there is nothing out
+    there to refresh.
     """
     import asyncio
     import signal
@@ -405,25 +483,7 @@ def main():
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
 
-    async def _run():
-        refresh_task = asyncio.create_task(
-            credential_refresh_loop(),
-            name="credential_refresh",
-        )
-        worker_task = asyncio.create_task(
-            run_queue_worker("qa-worker", QA_QUEUE, process_qa_job, group=QA_GROUP),
-            name="qa_consumer",
-        )
-        done, pending = await asyncio.wait(
-            [refresh_task, worker_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        for task in done:
-            task.result()
-
-    asyncio.run(_run())
+    asyncio.run(run_queue_worker("qa-worker", QA_QUEUE, process_qa_job, group=QA_GROUP))
 
 
 if __name__ == "__main__":
