@@ -5,9 +5,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.allocation_disposition import ALLOCATION_DISPOSITIONS, AttemptDisposition
 from shared.contracts.dto.run_result import AllocationFailureReason
+from shared.server_admission import ADMISSION_FAILURE_REASON, server_admits_application
 from shared.tests.server_admission_cases import (
     ADMISSION_CASES,
+    CAPACITY_REASONS,
+    REFUSED_ADMISSION_CASES,
     admission_case_incidents,
     admission_case_server,
 )
@@ -323,6 +327,46 @@ class TestSuitableServer:
                 await _find_suitable_server(512, 1024)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("used_ram_mb", "applications", "expected"),
+        [
+            (3600, [], AllocationFailureReason.INSUFFICIENT_FREE_MEMORY),
+            (
+                100,
+                [{"reserved_ram_mb": 3900, "status": "running"}],
+                AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY,
+            ),
+        ],
+    )
+    async def test_a_full_but_admissible_host_still_reports_capacity(
+        self, used_ram_mb, applications, expected
+    ):
+        """The other half of the rule: a legal host that is out of room says so.
+
+        Reporting every admission refusal as infrastructure must not make the
+        capacity reasons unreachable — they are the truth about a host that
+        passed admission and then had no memory left.
+        """
+        server = _fresh_server(capacity_ram_mb=4096, used_ram_mb=used_ram_mb)
+        assert server_admits_application(server, frozenset())
+        client = AsyncMock()
+        client.list_servers.return_value = [server]
+        client.list_applications.return_value = applications
+        client.list_active_incidents.return_value = []
+
+        with (
+            patch("src.allocations.api_client", client),
+            patch("src.allocations.get_settings", return_value=_allocation_settings()),
+        ):
+            from src.allocations import AllocationError, _find_suitable_server
+
+            with pytest.raises(AllocationError) as raised:
+                await _find_suitable_server(512, 1024)
+
+        assert raised.value.reason is expected
+        assert raised.value.reason in CAPACITY_REASONS
+
+    @pytest.mark.asyncio
     async def test_returns_candidate_with_most_remaining_memory(self):
         smaller = _fresh_server(handle="smaller", capacity_ram_mb=2048, used_ram_mb=600)
         larger = _fresh_server(handle="larger", capacity_ram_mb=4096, used_ram_mb=1000)
@@ -417,19 +461,14 @@ class TestProvisioningAdmission:
                 await _find_suitable_server(512, 1024)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "case_name",
-        [
-            "active_without_provisioning_phase",
-            "active_while_installing_software",
-            "active_with_empty_provisioning_phase",
-            "active_with_unknown_provisioning_phase",
-            "complete_but_provisioning_failed",
-        ],
-    )
-    async def test_unready_host_is_not_reported_as_a_capacity_shortage(self, case_name):
-        """The machine is unfinished, not full — the reason has to say so."""
-        case = next(candidate for candidate in ADMISSION_CASES if candidate.name == case_name)
+    @pytest.mark.parametrize("case", REFUSED_ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_no_refused_host_is_reported_as_a_capacity_shortage(self, case):
+        """The machine may not take work — that is never "the request was too big".
+
+        Every refusing state is covered, not just the unfinished builds: a host
+        in status `provisioning` or one that stopped being managed says exactly
+        as little about memory as a half-installed one does.
+        """
         now = datetime.now(UTC)
         client, _ = _admission_client(case, now)
 
@@ -442,7 +481,75 @@ class TestProvisioningAdmission:
             with pytest.raises(AllocationError) as raised:
                 await _find_suitable_server(512, 1024)
 
+        assert raised.value.reason is ADMISSION_FAILURE_REASON
+        assert raised.value.reason not in CAPACITY_REASONS
+
+    @pytest.mark.asyncio
+    async def test_the_only_server_still_provisioning_is_not_a_memory_shortage(self):
+        """The live acceptance run, reproduced.
+
+        A single managed host was still being provisioned when the first
+        placement was attempted. The refusal was correct and the wait was
+        correct; the reason read `insufficient_free_memory`, on a 4 GB machine
+        with nothing on it, because a status rejection fell through to the last
+        line of the search.
+        """
+        case = next(
+            candidate
+            for candidate in ADMISSION_CASES
+            if candidate.name == "still_provisioning_status"
+        )
+        now = datetime.now(UTC)
+        client, server = _admission_client(case, now)
+        assert server.used_ram_mb == 0
+        assert server.capacity_ram_mb >= 512 + 256
+
+        with (
+            patch("src.allocations.api_client", client),
+            patch("src.allocations.get_settings", return_value=_allocation_settings()),
+        ):
+            from src.allocations import AllocationError, _find_suitable_server
+
+            with pytest.raises(AllocationError) as raised:
+                await _find_suitable_server(512, 1024)
+
         assert raised.value.reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+        disposition = ALLOCATION_DISPOSITIONS[raised.value.reason]
+        assert disposition is AttemptDisposition.INFRASTRUCTURE_WAIT
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", REFUSED_ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_both_placement_paths_refuse_with_the_same_reason(self, case):
+        """The divergence this card closed must not be expressible again.
+
+        The search for a new host and the re-admission of a bound one are asked
+        about the same server state, and their reasons are compared with each
+        other rather than with a literal, so a path that grows a reason of its
+        own fails here whatever that reason is.
+        """
+        now = datetime.now(UTC)
+        search_client, _ = _admission_client(case, now)
+        bound_client, _ = _bound_client(case, now)
+
+        with (
+            patch("src.allocations.get_settings", return_value=_allocation_settings()),
+        ):
+            from src.allocations import AllocationError, _find_suitable_server
+
+            with patch("src.allocations.api_client", search_client):
+                with pytest.raises(AllocationError) as searched:
+                    await _find_suitable_server(512, 1024)
+
+            from src.allocations import ensure_project_allocations
+
+            with patch("src.allocations.api_client", bound_client):
+                with pytest.raises(AllocationError) as bound:
+                    await ensure_project_allocations(
+                        "proj-1", repo_id="repo-1", service_name="my-bot", modules=["backend"]
+                    )
+
+        assert searched.value.reason is bound.value.reason
+        assert searched.value.reason is ADMISSION_FAILURE_REASON
 
     @pytest.mark.asyncio
     async def test_provisioned_server_receives_the_application_and_its_ports(self):

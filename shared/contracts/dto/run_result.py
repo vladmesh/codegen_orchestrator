@@ -26,10 +26,12 @@ class AllocationFailureReason(StrEnum):
     INSUFFICIENT_RESERVED_MEMORY = "insufficient_reserved_memory"
     IMPOSSIBLE_CAPACITY = "impossible_capacity"
     NO_FRESH_METRICS = "no_fresh_metrics"
-    # No candidate host had finished its software provisioning, or the only ones
-    # that had were carrying a provisioning failure. This is an unfinished host
-    # build, not a capacity shortage, and the scheduler must not describe it to a
-    # user as one — see `shared/server_admission.py`.
+    # No candidate host was an admissible target: an unfinished or broken build,
+    # a status that does not admit, a host that is not managed. Whichever it was,
+    # it is the platform's own state and not a capacity shortage, and the
+    # scheduler must not describe it to a user as one — see
+    # `shared/server_admission.py::ADMISSION_FAILURE_REASON`, the one reason every
+    # admission refusal carries.
     SERVER_NOT_PROVISIONED = "server_not_provisioned"
 
 
