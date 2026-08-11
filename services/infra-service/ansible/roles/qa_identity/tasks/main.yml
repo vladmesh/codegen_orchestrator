@@ -28,6 +28,64 @@
       account that can rewrite the deployment.
     quiet: true
 
+# An account of this name may already be on the target, and if this role did not
+# put it there, nothing here knows what it is. It can carry `uid 0`, somebody
+# else's rule in `/etc/sudoers.d`, an ACL straight onto the docker socket — none
+# of which the tasks below touch, and all of which survive them. Adopting it
+# would mean the runtime later writes a run key into an account that can become
+# root, which is the one thing this identity exists to prevent. So ownership is
+# established first, on the machine, before anything is configured.
+- name: Ask the target whether this account is already there
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ qa_ssh_user }}"
+    fail_key: false
+
+- name: Ask the target whether this role is what put it there
+  ansible.builtin.stat:
+    path: "{{ qa_identity_marker }}"
+  register: qa_identity_owned
+
+- name: Refuse an account of this name that this role did not create
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.getent_passwd[qa_ssh_user] is none or qa_identity_owned.stat.exists
+    fail_msg: >-
+      {{ qa_ssh_user }} already exists on this host and was not created by this
+      role ({{ qa_identity_marker }} is absent), so what it may do here is
+      unknown: it can hold uid 0, a sudo rule in somebody else's file, or an ACL
+      on the docker socket. Provisioning refuses it rather than lending a QA run
+      an account that might be root, and rather than deleting an administrator's
+      own policy to make it fit. Nothing else on this host is changed and no QA
+      identity is recorded for it. Repair it by hand — rename or remove that
+      account if it is not in use — and run this again.
+    quiet: true
+
+# Written before the account is created, not after: a run interrupted between
+# the two would otherwise come back to an account it made and refuse to own it.
+# The claim is only ever laid after the assertion above found no stranger.
+- name: Claim the account name this role is about to create
+  ansible.builtin.file:
+    path: "{{ qa_identity_marker_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Record that this account is provisioning's own
+  ansible.builtin.copy:
+    dest: "{{ qa_identity_marker }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Written by the qa_identity role of the codegen orchestrator.
+      # The local account named by this file is the unprivileged identity a
+      # central QA run borrows on this host. Its presence is how a later run of
+      # that role knows the account is its own rather than somebody else's;
+      # removing this file makes the role refuse the account it names.
+      {{ qa_ssh_user }}
+
 # Named and created here so the account below has a primary group of its own to
 # be moved into, on a host where it already exists inside somebody else's.
 - name: Create the QA account's own group
@@ -115,3 +173,19 @@
     etype: user
     permissions: rx
     state: present
+
+# Everything above states an intention. This asks the machine what came of it,
+# and it is the last word on whether this host has a QA identity at all: the
+# provisioner records the identity on the server row only when this playbook
+# succeeded, so a proof that fails is a host that keeps refusing QA — visibly,
+# as the provisioning failure it is, rather than as a run that quietly cannot
+# find an account.
+- name: Prove on the target that this account cannot become root
+  ansible.builtin.script:
+    cmd: >-
+      qa-identity-proof
+      {{ qa_ssh_user | quote }}
+      {{ qa_docker_wrapper | quote }}
+      {{ qa_docker_socket | quote }}
+  changed_when: false
+  register: qa_identity_proof

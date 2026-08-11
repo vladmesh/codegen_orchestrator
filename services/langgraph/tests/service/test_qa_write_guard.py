@@ -344,6 +344,16 @@ class _Journal:
         self.states.append(grant.state)
 
 
+class _ProvisioningJournal:
+    """The provisioning journal. This target has its account, so nothing is written."""
+
+    def __init__(self) -> None:
+        self.entries = []
+
+    async def missing_identity(self, *, reason, detail) -> None:
+        self.entries.append((reason, detail))
+
+
 def _writing_graph(deployed_url: str):
     def create(*, model, base_url, api_key, tools, prompt):
         return _WritingAgent(deployed_url)
@@ -375,6 +385,7 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
             acceptance_criteria="- read-only check",
             runtime=QARuntimeConfig(model="m", base_url="u", api_key="k"),
             grant_journal=_Journal(),
+            provisioning_journal=_ProvisioningJournal(),
         )
 
     assert result.passed is False

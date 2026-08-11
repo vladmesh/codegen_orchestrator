@@ -301,6 +301,27 @@ is therefore not a way to point a QA run at some other existing account. One con
 knowing: renaming the account is fail-closed — hosts still carrying the old name lend nothing until
 the retrofit has run over them.
 
+**The account has to be provisioning's own, and that is checked on the target.** A host can already
+carry a local account called `qa-observer` that nobody here created, and the role's tasks would not
+take away what such an account might have — `uid 0`, a rule in somebody else's file under
+`/etc/sudoers.d`, an ACL straight on the docker socket. So the role establishes two things before
+anything records that this host has an identity:
+
+- **ownership.** `/etc/codegen-qa-identity/qa-observer` is a root-owned file the role writes when it
+  creates the account. An account of that name found *without* it was created by somebody else, and
+  the role fails there: it changes nothing, deletes nobody's sudoers file, and the host is left with
+  no QA identity. Rename or remove that account by hand and run provisioning again.
+- **the seat itself**, asked of the machine rather than assumed from the tasks that ran
+  (`roles/qa_identity/files/qa-identity-proof`, the role's last task): `uid != 0`, no `docker`,
+  `root`, `sudo` or `wheel` group, everything `sudo -l -U qa-observer` grants is exactly the one
+  wrapper rule, and the account itself cannot read or write `/var/run/docker.sock` (which answers
+  group, file mode and ACL in one question). Anything unproved fails the role.
+
+Because both run inside `provision_software.yml`, a failure is an ordinary provisioning failure: the
+phase does not complete, `labels.qa_ssh_user` is never written, and the host keeps refusing QA. On
+the retrofit path the same failure is recorded as a `provisioning_failed` incident against that
+handle with `details.step = qa_identity` and the playbook output that says what was found.
+
 That account cannot become root: its primary group is its own (`qa-observer`, set explicitly, so a
 retrofit moves an account somebody created inside `docker` out of it), it is in no secondary group
 either, it cannot open the docker socket, and its only sudo rule is
@@ -322,7 +343,13 @@ outcome with a `qa_cleanup_failed` blocker.
 **A host with no QA account is refused, visibly.** The run is blocked with `server_unavailable`
 (human review; the story is not failed, and health-only criteria still run because they never SSH),
 and the reason is written to the provisioning journal as a `provisioning_failed` incident against
-that `server_handle` with `details.step = qa_identity`. That is a normal provisioning incident, so
+that `server_handle` with `details.step = qa_identity`. Both ways of discovering it are journalled
+the same way, into the same upserted entry: the label check before anything connects
+(`qa_identity_not_provisioned`, `qa_identity_privileged`, `qa_identity_not_attested`) and drift found
+on the target afterwards — a row that correctly says `qa-observer` while the account or its
+`authorized_keys` has since been deleted (`qa_identity_absent_on_target`). Failures of the QA runtime
+itself (no LLM, an agent that dies, an unreachable host) are *not* provisioning facts and stay out of
+that journal. That is a normal provisioning incident, so
 the host also stops receiving *new* applications until it is repaired — which is the intent: a host
 where QA cannot run cannot finish the pipeline. Repair it with the retrofit below; the retrofit
 closes the incident.
@@ -366,8 +393,11 @@ cannot be told apart from ordinary interactive data:
   user applications is an outage, not cleanup. The swap and its `fstab` entry stay.
 
 Remove those by hand if you know they are the platform's. The playbook's last task prints, per host,
-both `removed_paths` and `left_in_place` (only those that still exist), so a fleet-wide run is
-readable per machine rather than by scrolling task output.
+`identity_proof` (what the target said about the account), `removed_paths`, and `left_in_place` —
+each surviving path with the reason it survived and the exact command that removes it, e.g.
+`swapoff /swapfile && rm -f /swapfile && sed -i '\|^/swapfile|d' /etc/fstab`. A fleet-wide run is
+therefore readable per machine, and the decision the playbook refuses to make is handed over with
+everything needed to make it.
 
 Only after the playbook succeeds is `labels.qa_ssh_user` written and the host's provisioning-failure
 incident resolved — a label written earlier would be a server row telling the QA runtime something

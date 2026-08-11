@@ -1,23 +1,34 @@
 """The account provisioning creates for QA runs, and the ceiling it lives under.
 
-Two questions are asked here, and only the second one can be asked of a file:
+Three questions are asked here, and only the last two can be asked of a file:
 
+* whether the role adopts an account it did not create. That is a decision, and
+  it is written as one condition in the role, so the condition itself is what is
+  evaluated below — with Jinja2, the same engine Ansible evaluates `that:` with,
+  over the two worlds it exists to tell apart. What is tested is the role's own
+  expression text, not a retyped version of it.
 * what the role declares — that the account exists, that it is in no secondary
   group, that its sudo rule is one command, that it gets a read into the
   deployment tree and no write. These are read out of the YAML, because "not in
   the docker group" is a property of what the role says, and a role that stopped
   saying it would be the regression.
-* what the target actually refuses. The docker wrapper is a real script, so it is
-  run as one: `exec`, `run`, `cp` and friends have to be refused by the script
-  itself, before docker is reached, with no help from the orchestrator that calls
-  it. That is the half of the boundary the QA runtime cannot be trusted to keep,
-  because the whole point is that it holds when the caller misbehaves.
+* what the target actually refuses, which is two real scripts run as scripts: the
+  docker wrapper, and the proof the role puts the finished account through before
+  anything records that this host has a QA identity. Both are executed here
+  against stubs of the commands they consult, because both exist precisely for
+  the case where the caller — or the role's own good intentions — are wrong.
+
+Ansible is not installed in this workspace, so no test here claims to have run
+the role against a host. What the two scripts prove is theirs alone — they are
+executed — and what the YAML tests prove is what the role says; the fresh-host
+acceptance against a real target is a separate card.
 """
 
 from pathlib import Path
 import re
 import subprocess
 
+import jinja2
 import pytest
 import yaml
 
@@ -28,6 +39,7 @@ ROLE = ANSIBLE_DIR / "roles" / "qa_identity"
 ROLE_TASKS = ROLE / "tasks" / "main.yml"
 ROLE_DEFAULTS = ROLE / "defaults" / "main.yml"
 WRAPPER = ROLE / "files" / "qa-docker"
+PROOF = ROLE / "files" / "qa-identity-proof"
 SOFTWARE_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "provision_software.yml"
 RETROFIT_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "qa_identity_retrofit.yml"
 
@@ -113,6 +125,258 @@ class TestTheAccountIsCreatedByProvisioning:
         )["ansible.builtin.assert"]
         assert "qa_ssh_user != 'root'" in assertion["that"]
         assert "qa_ssh_user != deploy_user" in assertion["that"]
+
+
+OWNERSHIP_GUARD = "Refuse an account of this name that this role did not create"
+PROOF_TASK = "Prove on the target that this account cannot become root"
+
+
+def _task_index(name: str) -> int:
+    return next(index for index, task in enumerate(_tasks()) if task["name"] == name)
+
+
+def _guard_admits(*, account_exists: bool, marker_exists: bool) -> bool:
+    """Evaluate the role's own refusal condition over one state of the target.
+
+    The expressions are taken from the role and compiled with Jinja2 — the same
+    engine Ansible evaluates `that:` items with — against the facts the two
+    tasks above it register. Nothing about the condition is restated here, so a
+    role that stopped asking the question cannot keep passing this.
+    """
+    conditions = _task_named(_tasks(), OWNERSHIP_GUARD)["ansible.builtin.assert"]["that"]
+    context = {
+        "qa_ssh_user": QA_SSH_USER,
+        "ansible_facts": {
+            "getent_passwd": {
+                # `getent` with `fail_key: false` records a missing key as None
+                # and a present one as its passwd fields.
+                QA_SSH_USER: ["x", "1001", "1001", "", "/home/qa-observer", "/bin/bash"]
+                if account_exists
+                else None
+            }
+        },
+        "qa_identity_owned": {"stat": {"exists": marker_exists}},
+    }
+    environment = jinja2.Environment(autoescape=False)  # noqa: S701 — shell/YAML, not HTML
+    return all(environment.compile_expression(condition)(**context) for condition in conditions)
+
+
+class TestAnAccountThisRoleDidNotCreateIsRefused:
+    """A host may already carry `qa-observer`, and then nothing here knows what it is.
+
+    The tasks that follow set a primary group, an exact supplementary list and a
+    narrow sudoers file. None of them takes away `uid 0`, a rule in somebody
+    else's file under `/etc/sudoers.d`, or an ACL on the docker socket — so an
+    account somebody else created can survive all of them and still become root.
+    Once the label is written the runtime writes a run key into that account, so
+    the question "is this account ours" has to be answered before anything else,
+    and answered on the machine.
+    """
+
+    def test_a_fresh_host_is_admitted(self):
+        assert _guard_admits(account_exists=False, marker_exists=False) is True
+
+    def test_a_host_this_role_already_ran_on_is_admitted(self):
+        """The retrofit's whole job: come back to our own account and repair it."""
+        assert _guard_admits(account_exists=True, marker_exists=True) is True
+
+    def test_an_account_somebody_else_created_is_refused(self):
+        """The collision case: `qa-observer` is there and this role never made it."""
+        assert _guard_admits(account_exists=True, marker_exists=False) is False
+
+    def test_a_run_interrupted_before_it_created_the_account_can_come_back(self):
+        """The claim is laid first, so a half-finished run does not lock the host out."""
+        assert _guard_admits(account_exists=False, marker_exists=True) is True
+
+        assert _task_index("Record that this account is provisioning's own") < _task_index(
+            "Create the QA observation account"
+        )
+
+    def test_the_claim_is_laid_only_after_the_refusal_could_have_happened(self):
+        """Otherwise the role would own a stranger's account by writing a file."""
+        assert _task_index(OWNERSHIP_GUARD) < _task_index(
+            "Record that this account is provisioning's own"
+        )
+
+    def test_ownership_is_a_fact_on_the_target_and_not_a_row_in_the_database(self):
+        """Root-owned, under /etc, unwritable by the account it speaks for."""
+        marker = _task_named(_tasks(), "Record that this account is provisioning's own")[
+            "ansible.builtin.copy"
+        ]
+        directory = _task_named(_tasks(), "Claim the account name this role is about to create")[
+            "ansible.builtin.file"
+        ]
+
+        assert _resolve(marker["dest"]).startswith("/etc/")
+        assert marker["owner"] == "root"
+        assert marker["mode"] == "0644"
+        assert directory["owner"] == "root"
+        assert directory["mode"] == "0755"
+        # One file per account name, so a rename cannot inherit the claim.
+        assert QA_SSH_USER in _resolve(marker["dest"])
+
+    def test_the_refusal_says_what_to_do_and_takes_nothing_away(self):
+        """Somebody else's sudo policy is their data, not this role's mess to clean.
+
+        Removing `/etc/sudoers.d/qa-observer-admin` to make the account fit would
+        be deleting an administrator's decision, so the role stops instead — and
+        a host that stops here keeps refusing QA, which is the truthful state.
+        """
+        guard = _task_named(_tasks(), OWNERSHIP_GUARD)["ansible.builtin.assert"]
+
+        assert "was not created by this" in guard["fail_msg"]
+        assert "{{ qa_identity_marker }}" in guard["fail_msg"]
+        # Nothing in this role deletes anything on the target.
+        assert "state: absent" not in ROLE_TASKS.read_text()
+
+
+def _stub(directory: Path, name: str, body: str) -> None:
+    script = directory / name
+    script.write_text(f"#!/bin/sh\n{body}\n")
+    script.chmod(0o755)
+
+
+SUDO_ONE_WRAPPER = """Matching Defaults entries for qa-observer on target:
+    !requiretty
+
+User qa-observer may run the following commands on target:
+    (root) NOPASSWD: /usr/local/bin/qa-docker"""
+
+
+class TestTheTargetProvesTheAccountCannotBecomeRoot:
+    """The proof script, run as a script, against stubs of what it consults.
+
+    Everything it asks is asked of the running system: `id`, sudo's own
+    computation over every sudoers file, and a read attempted as the account
+    itself. Each stub below is one of those answers, and each test is one shape
+    of privileged account a pre-existing `qa-observer` can have — the cases the
+    role's tasks pass straight over.
+    """
+
+    @pytest.fixture
+    def socket(self, tmp_path) -> Path:
+        path = tmp_path / "docker.sock"
+        path.touch()
+        return path
+
+    def _target(
+        self,
+        tmp_path,
+        *,
+        exists: bool = True,
+        uid: str = "1001",
+        groups: str = "qa-observer",
+        sudo: str | None = SUDO_ONE_WRAPPER,
+        socket_reachable: bool = False,
+    ) -> Path:
+        stubs = tmp_path / "bin"
+        stubs.mkdir(exist_ok=True)
+        _stub(stubs, "getent", f"exit {0 if exists else 2}")
+        _stub(
+            stubs,
+            "id",
+            f'case "$1" in\n  -u) echo {uid} ;;\n  -nG) echo "{groups}" ;;\nesac',
+        )
+        _stub(
+            stubs,
+            "sudo",
+            "exit 1" if sudo is None else f"cat <<'LISTING'\n{sudo}\nLISTING",
+        )
+        _stub(stubs, "runuser", f"exit {0 if socket_reachable else 1}")
+        return stubs
+
+    def _prove(self, stubs: Path, socket: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(PROOF), QA_SSH_USER, "/usr/local/bin/qa-docker", str(socket)],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{stubs}:/usr/bin:/bin"},
+        )
+
+    def test_the_account_the_role_creates_passes(self, tmp_path, socket):
+        result = self._prove(self._target(tmp_path), socket)
+
+        assert result.returncode == 0, result.stderr
+        assert "uid=1001" in result.stdout
+
+    def test_uid_zero_is_refused(self, tmp_path, socket):
+        """`qa-observer` with uid 0 is root wearing another name."""
+        result = self._prove(self._target(tmp_path, uid="0"), socket)
+
+        assert result.returncode != 0
+        assert "uid 0" in result.stderr
+
+    def test_a_pre_existing_account_in_the_docker_group_is_refused(self, tmp_path, socket):
+        result = self._prove(
+            self._target(tmp_path, groups="qa-observer docker"),
+            socket,
+        )
+
+        assert result.returncode != 0
+        assert "docker group" in result.stderr
+
+    def test_somebody_elses_sudoers_rule_is_refused(self, tmp_path, socket):
+        """The case the role's own file cannot see: a second rule, in a second file.
+
+        The role writes `/etc/sudoers.d/qa-observer` and leaves every other file
+        alone, so an account carrying `qa-observer ALL=(ALL) NOPASSWD: ALL` from
+        somewhere else keeps it. Sudo is what knows; sudo is what is asked.
+        """
+        result = self._prove(
+            self._target(
+                tmp_path,
+                sudo=f"{SUDO_ONE_WRAPPER}\n    (ALL) NOPASSWD: ALL",
+            ),
+            socket,
+        )
+
+        assert result.returncode != 0
+        assert "may run more through sudo" in result.stderr
+
+    def test_an_acl_straight_onto_the_docker_socket_is_refused(self, tmp_path, socket):
+        """No group says so, and `id` cannot see it, so the account is asked instead."""
+        result = self._prove(self._target(tmp_path, socket_reachable=True), socket)
+
+        assert result.returncode != 0
+        assert str(socket) in result.stderr
+
+    def test_an_account_that_is_not_there_is_refused(self, tmp_path, socket):
+        result = self._prove(self._target(tmp_path, exists=False), socket)
+
+        assert result.returncode != 0
+        assert "does not exist" in result.stderr
+
+    def test_sudo_that_cannot_answer_is_refused(self, tmp_path, socket):
+        """An unprovable seat is a failed seat: silence is never taken for absence."""
+        result = self._prove(self._target(tmp_path, sudo=None), socket)
+
+        assert result.returncode != 0
+
+    def test_the_role_runs_this_proof_and_does_it_last(self):
+        """It is a proof about the finished account, so it comes after the work."""
+        proof = _task_named(_tasks(), PROOF_TASK)["ansible.builtin.script"]
+
+        assert "qa-identity-proof" in proof["cmd"]
+        assert "{{ qa_ssh_user | quote }}" in proof["cmd"]
+        assert "{{ qa_docker_wrapper | quote }}" in proof["cmd"]
+        assert "{{ qa_docker_socket | quote }}" in proof["cmd"]
+        assert _task_index(PROOF_TASK) == len(_tasks()) - 1
+
+    def test_a_failed_proof_is_what_stops_the_identity_being_recorded(self):
+        """The provisioner writes the label only when the playbook succeeded.
+
+        So a proof that fails fails the role, fails the playbook, and leaves the
+        host recorded as one with no QA identity — which is how "the account
+        might be root" reaches an administrator as a provisioning failure rather
+        than as a QA run that quietly could not find an account.
+        """
+        for playbook in (SOFTWARE_PLAYBOOK, RETROFIT_PLAYBOOK):
+            tasks = yaml.safe_load(playbook.read_text())[0]["tasks"]
+            include = _task_named(tasks, "Create the QA run identity")
+            assert include["ansible.builtin.include_role"]["name"] == "qa_identity"
+            # Nothing in either playbook goes on regardless of the role failing.
+            assert "ignore_errors" not in include
+            assert "failed_when" not in include
 
 
 def _apply_user_module(before: dict, params: dict) -> dict:
@@ -310,11 +574,16 @@ class TestTheRetrofitRemovesOnlyWhatItCanIdentify:
         )["loop"]
 
     @staticmethod
-    def _left_in_place() -> list[str]:
+    def _left() -> list[dict]:
+        """What stayed, why it stayed, and the command that removes it by hand."""
         return _task_named(
             TestTheRetrofitRemovesOnlyWhatItCanIdentify._playbook_tasks(),
             "Look at what is deliberately left in place",
         )["loop"]
+
+    @staticmethod
+    def _left_in_place() -> list[str]:
+        return [item["path"] for item in TestTheRetrofitRemovesOnlyWhatItCanIdentify._left()]
 
     def test_it_removes_exactly_the_old_runner_s_own_artefacts(self):
         home = "{{ qa_residue_home }}"
@@ -344,14 +613,36 @@ class TestTheRetrofitRemovesOnlyWhatItCanIdentify:
         The old role made 2GB of swap there, and so does every guide an
         administrator follows. Taking swap away from a live host running user
         applications is an outage, not cleanup, so it stays — and the host says
-        it stayed rather than the playbook quietly deciding.
+        it stayed, with the reason and with the command that removes it, rather
+        than the playbook quietly deciding either way.
+
+        The earlier version of this test asserted that the string `swapoff`
+        appeared nowhere in the playbook. It does appear now, inside the report
+        text this test reads: naming the command an administrator would run is
+        the point, and the assertion below says the thing that actually matters —
+        no task acts on swap.
         """
-        playbook_text = RETROFIT_PLAYBOOK.read_text()
+        [swap] = [item for item in self._left() if item["path"] == "/swapfile"]
 
         assert "/swapfile" not in self._removed()
-        assert "swapoff" not in playbook_text
-        assert "/etc/fstab" not in playbook_text
-        assert "/swapfile" in self._left_in_place()
+        assert "outage" in swap["why"]
+        assert swap["remove_by_hand"].startswith("swapoff /swapfile")
+        # And no task does it: the only mention of swap is in what is reported.
+        for task in self._playbook_tasks():
+            module = next(
+                key
+                for key in task
+                if key not in ("name", "loop", "loop_control", "register", "when", "become")
+            )
+            if module == "ansible.builtin.debug":
+                continue
+            assert "swap" not in yaml.safe_dump(task[module])
+
+    def test_what_stays_is_reported_with_a_reason_and_a_way_to_remove_it(self):
+        """Left in place is a decision handed on, not a decision avoided."""
+        for item in self._left():
+            assert item["why"].strip()
+            assert item["path"] in item["remove_by_hand"]
 
     def test_every_host_reports_both_what_went_and_what_stayed(self):
         """A fleet-wide run has to be readable per host, including its refusals."""
@@ -361,8 +652,13 @@ class TestTheRetrofitRemovesOnlyWhatItCanIdentify:
 
         assert "qa_residue_removed.results" in report["removed_paths"]
         assert "selectattr('changed')" in report["removed_paths"]
+        # The whole item travels into the report, so each surviving path arrives
+        # with its reason and its removal command beside it.
         assert "qa_residue_left.results" in report["left_in_place"]
         assert "selectattr('stat.exists')" in report["left_in_place"]
+        assert "map(attribute='item')" in report["left_in_place"]
+        # And what the target said about the account, not what the role intended.
+        assert "qa_identity_proof.stdout" in report["identity_proof"]
 
 
 class TestTheTargetRefusesWhatWrites:

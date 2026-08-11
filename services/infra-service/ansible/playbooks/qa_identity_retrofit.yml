@@ -74,26 +74,42 @@
       register: qa_residue_removed
 
     # Left alone, deliberately, and each for the same reason: on this host they
-    # are indistinguishable from something a person put there.
-    #
-    # * `~/.claude` and `~/.local/share/claude` are the Claude Code CLI's own
-    #   directories. The old role wrote into them, and so does anybody who runs
-    #   Claude Code on this machine; only the credentials file above is certainly
-    #   the platform's.
-    # * `/swapfile` is the sharpest case. The old role created 2GB of swap there
-    #   because the CLI installer needed it — but `/swapfile` is also what every
-    #   guide tells an administrator to call swap, and there is nothing in the
-    #   file to tell the two apart. Taking swap away from a live host running
-    #   user applications is an outage, not cleanup, so it stays until a person
-    #   who can tell says otherwise. That leaves the swap and its `fstab` entry
-    #   in place; the report below is where a fleet-wide run says so per host.
+    # are indistinguishable from something a person put there. Each one is named
+    # in this host's report with why it stayed and the command that removes it,
+    # so the decision is handed to the administrator who can tell — which is more
+    # than a guess here could be worth, and less than an outage.
     - name: Look at what is deliberately left in place
       ansible.builtin.stat:
-        path: "{{ item }}"
+        path: "{{ item.path }}"
       loop:
-        - "{{ qa_residue_home }}/.claude"
-        - "{{ qa_residue_home }}/.local/share/claude"
-        - /swapfile
+        # The Claude Code CLI's own directories. The old role wrote into them,
+        # and so does anybody who runs Claude Code on this machine; only the
+        # credentials file removed above was certainly the platform's.
+        - path: "{{ qa_residue_home }}/.claude"
+          why: >-
+            also where this account's own interactive Claude Code keeps its
+            settings and history; only .credentials.json inside it was certainly
+            the platform's, and that one file has been removed
+          remove_by_hand: "rm -rf {{ qa_residue_home }}/.claude"
+        - path: "{{ qa_residue_home }}/.local/share/claude"
+          why: >-
+            the Claude Code CLI's own data directory, written by anybody who runs
+            that CLI on this host and not only by the removed QA runner
+          remove_by_hand: "rm -rf {{ qa_residue_home }}/.local/share/claude"
+        # The sharpest case. The old role created 2GB of swap there because the
+        # CLI installer needed it — and `/swapfile` is also what every guide
+        # tells an administrator to call swap, with nothing in the file to tell
+        # the two apart. Taking swap off a live host running user applications
+        # is an outage, not cleanup, so the fact is reported and the decision is
+        # left to somebody who knows which of the two this is.
+        - path: /swapfile
+          why: >-
+            2GB of swap at the name every guide uses, so the QA runner's swap
+            and an administrator's own are the same file to this playbook;
+            removing swap from a host running user applications is an outage
+          remove_by_hand: "swapoff /swapfile && rm -f /swapfile && sed -i '\\|^/swapfile|d' /etc/fstab"
+      loop_control:
+        label: "{{ item.path }}"
       register: qa_residue_left
 
     # What this host changed and what it did not, in one place, so a fleet-wide
@@ -102,6 +118,10 @@
       ansible.builtin.debug:
         msg:
           qa_ssh_user: "{{ qa_ssh_user }}"
+          # What the target itself said about the account, not what the role
+          # meant to do to it. A host that got this far has an account that was
+          # proved unable to become root; one that did not never reaches here.
+          identity_proof: "{{ qa_identity_proof.stdout | trim }}"
           removed_paths: >-
             {{ qa_residue_removed.results
                | selectattr('changed')

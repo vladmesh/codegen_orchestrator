@@ -85,6 +85,14 @@ class QAIdentityRejection(StrEnum):
     # provisioning writes one name. An account this platform did not create is an
     # account whose privileges nothing here knows, so it is not borrowed.
     NOT_ATTESTED = "qa_identity_not_attested"
+    # The row says the account is there and the target says it is not: no such
+    # account, or no `authorized_keys` for it. Drift after a provisioning that
+    # did finish — a home cleaned up, an account removed by hand — and exactly
+    # the same fact as the ones above, found one step later. The runtime does not
+    # create what it finds missing, so this ends the run; it is journalled from
+    # wherever it is discovered, because "this host has no QA identity" is a
+    # provisioning fact regardless of which side of the connection noticed.
+    ABSENT_ON_TARGET = "qa_identity_absent_on_target"
 
 
 def qa_identity_rejection(server: ServerDTO) -> QAIdentityRejection | None:

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.clients.time4vps import Time4VPSClient
+from shared.contracts.dto.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     provider_ip_matches,
@@ -22,7 +23,7 @@ from .api_client import (
     record_qa_identity,
     update_server_labels,
 )
-from .incidents import resolve_active_incidents
+from .incidents import create_incident, resolve_active_incidents
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
@@ -117,6 +118,17 @@ async def retrofit_qa_identity(
     )
     if not success:
         logger.error("qa_identity_retrofit_failed", server_handle=server_handle)
+        # A host that cannot be given the identity is a host QA will keep
+        # refusing, so the failure is journalled where the refusal already is:
+        # against this handle, in the provisioning journal an administrator
+        # reads. The role refuses rather than repairs when it finds an account
+        # of that name it did not create, and that refusal arrives here as
+        # playbook output — which is why the output travels with the entry.
+        await create_incident(
+            server_handle,
+            IncidentType.PROVISIONING_FAILED,
+            {"step": "qa_identity", "server_handle": server_handle, "output": output[:500]},
+        )
         return False, f"QA identity retrofit failed: {output[:500]}"
 
     await record_qa_identity(server_handle)

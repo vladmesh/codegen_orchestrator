@@ -17,6 +17,7 @@ import pytest
 os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
+from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerDTO
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
 from shared.server_admission import PROVISIONING_PHASE_COMPLETE, PROVISIONING_PHASE_LABEL
@@ -58,13 +59,14 @@ def target():
         ),
         patch("src.provisioner.operations.record_qa_identity", new=AsyncMock()) as label,
         patch("src.provisioner.operations.resolve_active_incidents", new=AsyncMock()) as incidents,
+        patch("src.provisioner.operations.create_incident", new=AsyncMock()) as journal,
     ):
-        yield runner, label, incidents
+        yield runner, label, incidents, journal
 
 
 class TestTheRepair:
     async def test_it_runs_the_identity_playbook_as_the_administrative_account(self, target):
-        runner, label, _ = target
+        runner, label, _, _ = target
 
         success, message = await retrofit_qa_identity("vps-1001", runner)
 
@@ -80,10 +82,10 @@ class TestTheRepair:
         label.assert_awaited_once_with("vps-1001")
 
     async def test_a_failed_playbook_leaves_the_row_saying_the_host_has_no_identity(self, target):
-        runner, label, incidents = target
+        runner, label, incidents, journal = target
         runner.run_playbook.return_value = (
             False,
-            "TASK [Create the QA observation account] failed",
+            "TASK [Refuse an account of this name that this role did not create] failed",
         )
 
         success, message = await retrofit_qa_identity("vps-1001", runner)
@@ -93,9 +95,36 @@ class TestTheRepair:
         label.assert_not_awaited()
         incidents.assert_not_awaited()
 
+    async def test_a_host_the_role_refuses_is_journalled_against_its_handle(self, target):
+        """The role stops at an account of that name it did not create.
+
+        That host now has no QA identity and will keep refusing exploratory QA,
+        which is the right outcome and a useless one if nobody is told. The
+        refusal goes to the journal an administrator already reads, keyed by the
+        handle, carrying the playbook's own words about what it found — and the
+        row still says the host has no identity, because the label is written
+        only after a run that succeeded.
+        """
+        runner, label, _, journal = target
+        runner.run_playbook.return_value = (
+            False,
+            "fatal: qa-observer already exists on this host and was not created by this role",
+        )
+
+        success, _ = await retrofit_qa_identity("vps-1001", runner)
+
+        assert success is False
+        label.assert_not_awaited()
+        handle, incident_type, details = journal.await_args.args
+        assert handle == "vps-1001"
+        assert incident_type is IncidentType.PROVISIONING_FAILED
+        assert details["step"] == "qa_identity"
+        assert details["server_handle"] == "vps-1001"
+        assert "already exists on this host" in details["output"]
+
     async def test_a_repeat_is_another_noop_run_and_another_label_write(self, target):
         """Both halves are states, so running it twice is running it once."""
-        runner, label, _ = target
+        runner, label, _, _ = target
 
         first = await retrofit_qa_identity("vps-1001", runner)
         second = await retrofit_qa_identity("vps-1001", runner)
@@ -106,7 +135,7 @@ class TestTheRepair:
 
     async def test_the_repair_closes_the_provisioning_failure_it_repairs(self, target):
         """The QA runtime journals the missing identity; a repair closes it."""
-        _, _, incidents = target
+        _, _, incidents, _ = target
 
         await retrofit_qa_identity(
             "vps-1001", MagicMock(**{"run_playbook.return_value": (True, "")})

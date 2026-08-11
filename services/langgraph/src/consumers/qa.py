@@ -18,7 +18,12 @@ from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
-from shared.qa_identity import QA_SSH_USER_LABEL, qa_identity_rejection, qa_run_identity
+from shared.qa_identity import (
+    QA_SSH_USER_LABEL,
+    QAIdentityRejection,
+    qa_identity_rejection,
+    qa_run_identity,
+)
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
@@ -154,6 +159,45 @@ def _resolve_qa_runtime() -> tuple[QARuntimeConfig | None, QABlocker | None]:
     )
 
 
+class ServerProvisioningJournal:
+    """The provisioning journal, addressed at one server, for one kind of fact.
+
+    "This host has no unprivileged account for a QA run" is discovered in two
+    places — on the server row before anything connects, and on the target when
+    the account the row promised is not there — and it is one fact either way.
+    The existing provisioning-failure journal is the mechanism: it is keyed by
+    server handle, it upserts into one active episode rather than one row per QA
+    run, and an open entry already means "this host's build is not finished" to
+    everything that places work, so a host that cannot be QA'd also stops
+    receiving new applications until it is repaired.
+
+    A journal write that fails must not turn a blocked run into a crashed
+    consumer, so it is logged and the refusal stands either way.
+    """
+
+    def __init__(self, server_info: QAServerInfo) -> None:
+        self._server = server_info
+
+    async def missing_identity(self, *, reason: QAIdentityRejection, detail: str) -> None:
+        handle = self._server.server_handle
+        incident = IncidentCreate(
+            server_handle=handle,
+            incident_type=IncidentType.PROVISIONING_FAILED,
+            details={
+                "step": "qa_identity",
+                "reason": reason.value,
+                "detail": detail,
+                "server_handle": handle,
+                "server_ip": self._server.server_ip,
+                "repair": f"python -m src.provisioner.qa_identity_retrofit {handle}",
+            },
+        )
+        try:
+            await api_client.record_provisioning_failure(incident)
+        except Exception:
+            logger.error("qa_identity_incident_write_failed", server_handle=handle, exc_info=True)
+
+
 async def _missing_identity_blocker(server_info: QAServerInfo) -> QABlocker | None:
     """Refuse a target that lends no QA identity, and record why it was refused.
 
@@ -171,7 +215,13 @@ async def _missing_identity_blocker(server_info: QAServerInfo) -> QABlocker | No
     """
     if not server_info.qa_identity_rejection:
         return None
-    await _journal_missing_identity(server_info)
+    await ServerProvisioningJournal(server_info).missing_identity(
+        reason=QAIdentityRejection(server_info.qa_identity_rejection),
+        detail=(
+            f"servers.labels.{QA_SSH_USER_LABEL} of {server_info.server_handle} "
+            "names no account this platform provisioned"
+        ),
+    )
     return QABlocker(
         category=QABlockerCategory.SERVER_UNAVAILABLE,
         attempted="borrow the target's unprivileged QA account for this run",
@@ -181,38 +231,6 @@ async def _missing_identity_blocker(server_info: QAServerInfo) -> QABlocker | No
             "for a QA run, and exploratory QA is not performed with the fleet's own access"
         ),
     )
-
-
-async def _journal_missing_identity(server_info: QAServerInfo) -> None:
-    """Record the missing QA identity as the provisioning fact it is.
-
-    The existing provisioning-failure journal is the mechanism: it is keyed by
-    server handle, it upserts into one active episode rather than one row per QA
-    run, and an open entry already means "this host's build is not finished" to
-    everything that places work — so a host that cannot be QA'd also stops
-    receiving new applications until it is repaired. A journal write that fails
-    must not turn a blocked run into a crashed consumer, so it is logged and the
-    refusal stands either way.
-    """
-    incident = IncidentCreate(
-        server_handle=server_info.server_handle,
-        incident_type=IncidentType.PROVISIONING_FAILED,
-        details={
-            "step": "qa_identity",
-            "reason": server_info.qa_identity_rejection,
-            "server_handle": server_info.server_handle,
-            "server_ip": server_info.server_ip,
-            "repair": f"python -m src.provisioner.qa_identity_retrofit {server_info.server_handle}",
-        },
-    )
-    try:
-        await api_client.record_provisioning_failure(incident)
-    except Exception:
-        logger.error(
-            "qa_identity_incident_write_failed",
-            server_handle=server_info.server_handle,
-            exc_info=True,
-        )
 
 
 async def _run_exploratory_qa(
@@ -266,6 +284,11 @@ async def _run_exploratory_qa(
         acceptance_criteria=acceptance_criteria,
         runtime=runtime,
         grant_journal=RunGrantJournal(msg.run_id),
+        # A row can promise an account the target no longer has. The runner
+        # meets that halfway through, and it is the same provisioning fact the
+        # check above refuses on — so it is written to the same journal, against
+        # the same handle, rather than ending as a blocked run nobody looks at.
+        provisioning_journal=ServerProvisioningJournal(server_info),
     )
     return qa_result, None
 

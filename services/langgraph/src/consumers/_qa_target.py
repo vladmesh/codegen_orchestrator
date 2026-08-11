@@ -62,6 +62,12 @@ STATUS_MARKER = "<<qa-http-status:"
 # from a read that simply found nothing.
 READ_UNRESOLVABLE = 3
 READ_OUTSIDE_ROOT = 4
+# Exit statuses `_INSTALL_GRANT` answers with when the identity itself is not on
+# the target: no such account, and no `authorized_keys` to append to. Both say
+# the same thing about the host, and both are the provisioner's business rather
+# than this run's — see :class:`QAIdentityAbsentError`.
+IDENTITY_ABSENT = 3
+IDENTITY_KEYS_ABSENT = 4
 # Compose stamps this on every container it creates, and it is the deployment's
 # own name for its containers — not a naming convention this code assumes.
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
@@ -163,6 +169,18 @@ class QATargetError(RuntimeError):
 
 class QAGrantError(RuntimeError):
     """The one-shot identity for this run could not be issued."""
+
+
+class QAIdentityAbsentError(QAGrantError):
+    """The account provisioning was supposed to leave here is not on the target.
+
+    Told apart from every other grant failure because it is not a fact about
+    this run: the row says the host has a QA identity and the host says it has
+    none. Nothing here creates it — that is provisioning's job and the reason
+    this runtime holds no power to make accounts — so the run ends, and the
+    caller reports it where a missing identity is already reported: against the
+    server, in the provisioning journal.
+    """
 
 
 class QACapabilityError(RuntimeError):
@@ -514,10 +532,20 @@ async def _install_grant(target: QATarget, fleet_key: str, entry: str) -> None:
         raise QAGrantError(
             f"could not reach {target.server_ip} to issue a QA identity: {exc}"
         ) from exc
+    detail = (result.stderr or result.stdout or "").strip()[:500]
+    # The install script separates "this host has no such identity" from every
+    # other way an append can fail, and the difference matters to the caller:
+    # one is a fact about the host's provisioning that an administrator has to
+    # see, the other is this run's bad luck.
+    if result.exit_status in (IDENTITY_ABSENT, IDENTITY_KEYS_ABSENT):
+        raise QAIdentityAbsentError(
+            f"{target.server_handle} records a QA account but {target.server_ip} has none: "
+            f"{detail or f'{target.qa_ssh_user} is not on the target'}"
+        )
     if result.exit_status != 0:
         raise QAGrantError(
             f"could not install the run identity into {target.qa_ssh_user}@{target.server_ip}: "
-            f"{(result.stderr or result.stdout or '').strip()[:500]}"
+            f"{detail}"
         )
 
 

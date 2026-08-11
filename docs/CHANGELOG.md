@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-08-11 (10)
+
+- The QA identity is now proved on the target before anything records that a
+  host has one. An account named `qa-observer` that this role did not create can
+  carry `uid 0`, a rule in somebody else's `/etc/sudoers.d` file or an ACL on the
+  docker socket, and none of the role's tasks took those away — so ownership is
+  established first, by a root-owned marker the role itself writes
+  (`/etc/codegen-qa-identity/qa-observer`), and an account found without it is
+  refused rather than adopted or repaired. Nobody else's sudoers file is deleted:
+  that is an administrator's policy, and losing it silently would be worse than
+  stopping.
+- After the account is configured, the role asks the machine what came of it
+  (`roles/qa_identity/files/qa-identity-proof`): `uid != 0`, no privileged group,
+  everything `sudo -l -U` grants is exactly the one wrapper rule, and the account
+  itself cannot open `/var/run/docker.sock` — which answers group, mode and ACL
+  together. A failed proof fails the phase, so the label is never written and the
+  host keeps refusing QA, visibly.
+- A target that lost the account after a successful provisioning is journalled
+  like one that never had it. The install script already separated "no such
+  account / no `authorized_keys`" from every other failure; that now reaches the
+  provisioning journal as `qa_identity_absent_on_target` against the server
+  handle, with the retrofit command. Other central-QA failures are deliberately
+  not provisioning facts and stay out of it.
+- A retrofit the role refuses is recorded as a `provisioning_failed` incident
+  against the handle instead of only failing the command, and the per-host report
+  now names, for each thing left in place, why it stayed and the command that
+  removes it — including `/swapfile`, which this playbook still does not touch
+  because the old runner's swap and an administrator's own are the same file.
+
 ## 2026-08-11 (9)
 
 - Gave a QA run an identity that provisioning creates. The `qa_identity` role

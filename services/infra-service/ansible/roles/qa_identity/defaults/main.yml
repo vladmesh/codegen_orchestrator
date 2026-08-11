@@ -22,6 +22,20 @@ qa_ssh_group: "{{ qa_ssh_user }}"
 qa_docker_wrapper: /usr/local/bin/qa-docker
 qa_sudoers_file: "/etc/sudoers.d/{{ qa_ssh_user }}"
 
+# The socket the account must not be able to reach by any route. Named here
+# because the proof below asks the account itself whether it can open it — group
+# membership is only one of the ways in, and a POSIX ACL is invisible in `id`.
+qa_docker_socket: /var/run/docker.sock
+
+# Where this role says, on the target, that the account of that name is its own.
+# One file per account name, root-owned, under a root-owned directory: the QA
+# account cannot write it, and it cannot be inherited by a differently-named
+# account later. Ownership has to be a fact on the machine rather than a row in
+# the platform's database, because the question it answers is "did anything else
+# create this account before we got here" — and only the machine knows that.
+qa_identity_marker_dir: /etc/codegen-qa-identity
+qa_identity_marker: "{{ qa_identity_marker_dir }}/{{ qa_ssh_user }}"
+
 # `authorized_keys` for this account holds run keys and nothing else, so after a
 # run's key is removed it would be empty — and an empty file is what a failed
 # filter also produces. This comment line is never a key and never matches a run

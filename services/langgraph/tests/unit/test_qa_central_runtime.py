@@ -23,6 +23,7 @@ import pytest
 
 from shared.contracts.dto.qa_ssh_grant import QASshGrantState
 from shared.contracts.dto.run_result import QABlockerCategory
+from shared.qa_identity import QAIdentityRejection
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
     GRANT_MARKER_PREFIX,
@@ -99,6 +100,22 @@ class RecordingJournal:
     async def write(self, grant) -> None:
         self.states.append(grant.state)
         self.grants.append(grant)
+
+
+class RecordingProvisioningJournal:
+    """Stands in for the provisioning journal an administrator reads.
+
+    Only one kind of fact is ever written here, and which failures reach it is
+    the point: a host that lost the account provisioning made is a provisioning
+    fact, while an unreachable target or a dead agent is this run's problem and
+    has its own owner.
+    """
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[QAIdentityRejection, str]] = []
+
+    async def missing_identity(self, *, reason: QAIdentityRejection, detail: str) -> None:
+        self.entries.append((reason, detail))
 
 
 class FakeConn:
@@ -208,10 +225,11 @@ def _session(conn=None, capabilities: QACapabilities = CAPABILITIES) -> QATarget
 def central_run(tmp_path):
     """Run `run_qa_centrally` against a fake target with a scripted agent."""
 
-    async def _run(*, behaviour, conn=None, target=TARGET, journal=None):
+    async def _run(*, behaviour, conn=None, target=TARGET, journal=None, provisioning=None):
         connection = conn or FakeConn()
         factory = _graph_factory(behaviour)
         record = journal or RecordingJournal()
+        provisioning_record = provisioning or RecordingProvisioningJournal()
         with (
             patch("src.consumers._qa_target._connect", AsyncMock(return_value=connection)),
             patch("src.consumers._qa_target._import", lambda key: key),
@@ -224,6 +242,7 @@ def central_run(tmp_path):
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
                 grant_journal=record,
+                provisioning_journal=provisioning_record,
             )
         return result, connection, factory, record
 
@@ -271,6 +290,7 @@ class TestCleanTargetPassesExploratoryQA:
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
                 grant_journal=RecordingJournal(),
+                provisioning_journal=RecordingProvisioningJournal(),
             )
 
         admin_key, run_key, revoke_key = captured
@@ -316,6 +336,7 @@ class TestTheRunBorrowsTheAccountProvisioningMade:
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
                 grant_journal=RecordingJournal(),
+                provisioning_journal=RecordingProvisioningJournal(),
             )
 
         assert result.passed is True
@@ -346,6 +367,68 @@ class TestTheRunBorrowsTheAccountProvisioningMade:
         assert "qa-observer" in str(exc.value)
         assert conn.authorized_keys is None
         assert conn.installed == []
+
+    async def test_a_target_that_lost_the_account_is_a_provisioning_fact(self, central_run):
+        """The row promised an account; the host has none. That is drift, and it shows.
+
+        A host provisioned before the account was deleted by hand, or whose home
+        was cleaned up, carries a correct `qa_ssh_user` label and no account. The
+        label check upstream cannot see that, and the install is where it comes
+        out — as the same missing identity, one step later. Ending as a blocked
+        run in this consumer's log would leave an administrator with nothing to
+        look at, so it goes to the journal that names the server.
+        """
+        provisioning = RecordingProvisioningJournal()
+
+        async def behaviour(graph):
+            return PASSING_JSON
+
+        result, conn, _, _ = await central_run(
+            behaviour=behaviour,
+            conn=FakeConn(provisioned=False),
+            provisioning=provisioning,
+        )
+
+        assert result.passed is False
+        # The run still carries whatever this exit leaves unresolved — an
+        # install that raised is residue until something reads the target back,
+        # and that rule is older than this one and stays.
+        assert result.blocker is not None
+        assert "records a QA account but" in result.summary
+        [(reason, detail)] = provisioning.entries
+        assert reason is QAIdentityRejection.ABSENT_ON_TARGET
+        assert TARGET.server_handle in detail
+        # And nothing was created to make the run possible: the runtime has no
+        # power to give itself the account provisioning did not leave.
+        assert conn.authorized_keys is None
+        assert conn.installed == []
+
+    async def test_a_target_that_simply_refuses_the_install_is_not_one(self, central_run):
+        """The journal is for missing identities, not for every failure out here.
+
+        A refused write, an unreachable host, an agent that dies — those are the
+        central runtime's own failures, with their own owner. Writing them here
+        would turn one administrator-facing signal about provisioning into a
+        second QA error log, and the first one would stop being worth reading.
+        """
+        provisioning = RecordingProvisioningJournal()
+        conn = FakeConn()
+
+        async def refuse(command, *, check=False, timeout=None):
+            conn.commands.append(command)
+            return SimpleNamespace(exit_status=1, stdout="", stderr="Permission denied")
+
+        conn.run = refuse
+
+        async def behaviour(graph):
+            return PASSING_JSON
+
+        result, _, _, _ = await central_run(
+            behaviour=behaviour, conn=conn, provisioning=provisioning
+        )
+
+        assert result.passed is False
+        assert provisioning.entries == []
 
     async def test_a_revoke_that_cannot_be_read_back_is_residue_not_success(self):
         """Silence is not "the key is gone"; it is a record the sweep keeps."""
@@ -660,6 +743,7 @@ class TestGrantIsDurableAndDestroyed:
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
                 grant_journal=journal,
+                provisioning_journal=RecordingProvisioningJournal(),
             )
 
         assert journal.states == [QASshGrantState.ISSUING]

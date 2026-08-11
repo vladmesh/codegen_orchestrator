@@ -81,6 +81,31 @@ def _server(*, provisioned: bool = True, **overrides) -> ServerDTO:
     return ServerDTO(**base)
 
 
+class _TargetWithoutTheAccount:
+    """A provisioned host the QA account has since disappeared from.
+
+    The administrative connection still opens — the fleet key works, this is not
+    an unreachable machine — and the install script answers the way it answers
+    when `getent passwd` finds nobody: exit 3, having appended nothing. The
+    revoke that follows reports zero, because a file that is not there holds no
+    key.
+    """
+
+    def __init__(self) -> None:
+        self.appended: list[str] = []
+
+    async def run(self, command, *, check=False, timeout=None):
+        if "grep -c -F" in command:
+            return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
+        return SimpleNamespace(exit_status=3, stdout="", stderr=f"no such account: {QA_SSH_USER}")
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
 @pytest.fixture
 def qa_message():
     return {
@@ -248,6 +273,40 @@ class TestAHostThatLendsNoIdentityIsRefused:
         assert incident.server_handle == "vps-267179"
         assert incident.details["step"] == "qa_identity"
         assert "qa_identity_retrofit vps-267179" in incident.details["repair"]
+
+    async def test_a_host_that_lost_the_account_after_provisioning_is_journalled_too(
+        self, api, redis, qa_message, tmp_path
+    ):
+        """The row is right and the target has drifted. Same fact, same journal.
+
+        This is the host nobody edited: provisioning finished, the label is the
+        one provisioning writes, and later the account or its `authorized_keys`
+        went away — a home cleaned up, an account removed by hand. The label
+        check cannot see that, so the target says it on the install, and the run
+        is refused there. What this holds is that the refusal is still a
+        provisioning fact naming the handle and the repair, and not only a
+        blocked run in a log: those are the two halves of "fail-closed and
+        visible", and the second one is the one that used to be missing.
+        """
+        drifted = _TargetWithoutTheAccount()
+
+        with (
+            patch("src.consumers._qa_target._connect", AsyncMock(return_value=drifted)),
+            patch("src.consumers._qa_target._import", lambda key: key),
+            patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
+        ):
+            result = await process_qa_job(qa_message, redis)
+
+        assert result["status"] == "qa_blocked"
+        incident = api.record_provisioning_failure.await_args.args[0]
+        assert incident.incident_type is IncidentType.PROVISIONING_FAILED
+        assert incident.server_handle == "vps-267179"
+        assert incident.details["step"] == "qa_identity"
+        assert incident.details["reason"] == QAIdentityRejection.ABSENT_ON_TARGET.value
+        assert incident.details["server_handle"] == "vps-267179"
+        assert "qa_identity_retrofit vps-267179" in incident.details["repair"]
+        # Nothing was created to work around it: the account stays missing.
+        assert drifted.appended == []
 
     async def test_a_journal_that_cannot_be_written_still_refuses_the_run(
         self, api, redis, qa_message
