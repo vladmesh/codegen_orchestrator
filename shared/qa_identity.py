@@ -7,18 +7,29 @@ anything the platform can. So the run gets its own account — created by
 provisioning, not minted at run time — and the runtime's only power over it is
 to write one short-lived key into it and take that key back out.
 
-Two facts have to travel from provisioning to the QA runtime, and both live in
-`servers.labels`, next to `provisioning_phase`:
+One fact has to travel from provisioning to the QA runtime, and it lives in
+`servers.labels`, next to `provisioning_phase`: whether this host was
+provisioned by an Ansible that creates the QA account. The label is written by
+the same code that writes `provisioning_phase=complete`, and that phase is the
+one whose playbook creates the account — so "complete without a QA account" is
+not a state the provisioner can produce.
 
-* which account that is (`qa_ssh_user`). It is deliberately data rather than a
-  constant the runtime assumes: a host provisioned before this existed carries
-  no such label, and the runtime has to be able to tell that host apart from one
-  where the account is waiting. The constant below is what provisioning writes;
-  the label is what the runtime reads.
-* that provisioning put it there. The label is written by the same code that
-  writes `provisioning_phase=complete`, and that phase is the one whose playbook
-  creates the account — so "complete without a QA account" is not a state the
-  provisioner can produce.
+What the label is asked, and what it is not:
+
+* **whether it is there** is the question it answers. A host provisioned before
+  the account existed carries no such label, and that is exactly the host the
+  runtime has to tell apart from one where the account is waiting.
+* **what is written in it** is not trusted. `servers.labels` is an untyped dict
+  that `PATCH /api/servers/{handle}` will write, so treating its value as "the
+  account to install a run key into" would let anything that can edit a server
+  row point the runtime at an existing interactive account with sudo or docker —
+  and the runtime would obediently mint access into it. That is the thing this
+  module exists to prevent, so only the name provisioning itself writes
+  (:data:`QA_SSH_USER`) is accepted as an identity; any other value is a refusal.
+
+A consequence worth having: renaming the account later is fail-closed. Hosts
+still carrying the old name lend nothing until the retrofit has run over them,
+rather than lending an account nobody created.
 
 The rejection reasons are not advice to retry. A target that cannot offer this
 identity is refused exploratory QA, and the refusal is recorded against the
@@ -70,6 +81,10 @@ class QAIdentityRejection(StrEnum):
     # A label naming an account that is root, or the administrative account the
     # fleet key already opens. Neither is weaker than the fleet.
     PRIVILEGED = "qa_identity_privileged"
+    # A label naming some other account. Whoever wrote it, provisioning did not:
+    # provisioning writes one name. An account this platform did not create is an
+    # account whose privileges nothing here knows, so it is not borrowed.
+    NOT_ATTESTED = "qa_identity_not_attested"
 
 
 def qa_identity_rejection(server: ServerDTO) -> QAIdentityRejection | None:
@@ -80,6 +95,10 @@ def qa_identity_rejection(server: ServerDTO) -> QAIdentityRejection | None:
     account = str(recorded).strip()
     if account in PRIVILEGED_SSH_USERS or account == server.ssh_user:
         return QAIdentityRejection.PRIVILEGED
+    # The label says a host was provisioned; it does not get to say by whom into
+    # what. Only the account provisioning creates is one a run may borrow.
+    if account != QA_SSH_USER:
+        return QAIdentityRejection.NOT_ATTESTED
     return None
 
 

@@ -34,6 +34,7 @@ from shared.contracts.queues.qa import QAOutcome
 from shared.qa_identity import (
     QA_SSH_USER,
     QA_SSH_USER_LABEL,
+    QAIdentityRejection,
     provisioning_complete_labels,
 )
 from src.consumers._qa_runner import QAResult
@@ -192,9 +193,16 @@ class TestAHostThatLendsNoIdentityIsRefused:
             # A label naming the administrative account, which is not weaker than
             # the fleet and so is not an identity a run may borrow.
             _server(labels={QA_SSH_USER_LABEL: "root"}),
+            # A label naming an account provisioning did not create. `deploy` is
+            # a real account on hosts provisioned by `deploy_target`, it is in
+            # the `docker` group there, and `servers.labels` is an untyped dict
+            # the server API will PATCH — so if the runtime believed this label
+            # it could be pointed at a privileged interactive account and would
+            # write a run key into it.
+            _server(labels={QA_SSH_USER_LABEL: "deploy"}),
         ],
         indirect=True,
-        ids=["no_identity_recorded", "identity_is_the_admin_account"],
+        ids=["no_identity_recorded", "identity_is_the_admin_account", "identity_is_unattested"],
     )
     async def test_the_run_is_blocked_and_no_access_is_issued(self, api, redis, qa_message):
         with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as run:
@@ -206,6 +214,28 @@ class TestAHostThatLendsNoIdentityIsRefused:
         run.assert_not_awaited()
         outcome = api.patch.await_args.kwargs["json"]["result"]
         assert outcome["qa_outcome"] == QAOutcome.BLOCKED.value
+
+    @pytest.mark.parametrize("api", [_server(labels={QA_SSH_USER_LABEL: "deploy"})], indirect=True)
+    async def test_a_label_naming_another_account_never_reaches_that_account(
+        self, api, redis, qa_message
+    ):
+        """The refusal lands before anything connects to the target.
+
+        `run_qa_centrally` is the only thing that opens the administrative
+        connection: it is what issues the one-shot key into the QA account's
+        `authorized_keys` and takes it back. Never awaiting it is what "no key
+        was written into `deploy`" means from here — and the reason it is refused
+        is that provisioning did not write this name, not that this name looks
+        dangerous.
+        """
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as run:
+            result = await process_qa_job(qa_message, redis)
+
+        run.assert_not_awaited()
+        assert result["status"] == "qa_blocked"
+        incident = api.record_provisioning_failure.await_args.args[0]
+        assert incident.details["reason"] == QAIdentityRejection.NOT_ATTESTED.value
+        assert incident.details["server_handle"] == "vps-267179"
 
     async def test_the_refusal_is_journalled_as_a_provisioning_fact(self, api, redis, qa_message):
         api.get_server.return_value = _server(provisioned=False)

@@ -6,9 +6,17 @@
   makes `qa-observer` on every target, from the same phase that records
   `provisioning_phase=complete`, and that completion write now records
   `labels.qa_ssh_user` in the same call — so a host cannot read as provisioned
-  and lend no account. The account is in no secondary group (not `docker`,
-  which is root on the host), has one sudo rule, and reads the deployment tree
+  and lend no account. The account's primary group is its own, stated explicitly,
+  and its supplementary list is exactly empty, so neither membership can be
+  `docker` (which is root on the host) even on a host where somebody had already
+  made the account inside it. It has one sudo rule, and reads the deployment tree
   through an ACL entry rather than by joining the group that can write it.
+- The QA runtime trusts `labels.qa_ssh_user` for *whether* a host was
+  provisioned, not for *whose* `authorized_keys` to write into. `servers.labels`
+  is an untyped dict the server API will PATCH, so only the name provisioning
+  itself writes is accepted; any other value is refused as
+  `qa_identity_not_attested` before anything connects to the target. Editing a
+  server row is not a way to point a QA run at an existing privileged account.
 - Moved the "what may this account do with docker" boundary onto the target.
   `/usr/local/bin/qa-docker` allows `diff, inspect, logs, port, ps, stats, top`
   and refuses `exec`, `run`, `cp`, `build`, `commit` and the rest before docker
@@ -32,11 +40,15 @@
   existing mechanism and the host stops taking new applications until repaired.
 - Added the retrofit for hosts provisioned before this:
   `python -m src.provisioner.qa_identity_retrofit <handle>` in infra-service. It
-  creates the same identity from the same role and removes the target-local QA
-  agent's leftovers — the Claude Code CLI, `~/.claude`, `~/.qa-telethon.env`,
-  `/opt/qa-runner` and the 2GB swap file — without touching application data or
-  deployment directories. The label is written only after the playbook succeeds,
-  and the run reports per host what it changed.
+  creates the same identity from the same role and removes only what is
+  positively the old runner's: `~/.local/bin/claude`,
+  `~/.claude/.credentials.json`, `~/.qa-telethon.env` and `/opt/qa-runner`. The
+  cleanup runs in the administrative account's home, which is also a person's
+  home, so `~/.claude`, `~/.local/share/claude` and `/swapfile` are left alone —
+  the CLI directories are equally an administrator's own, and `/swapfile` cannot
+  be told from swap somebody else made, where removing 2GB from a live host is an
+  outage rather than cleanup. The label is written only after the playbook
+  succeeds, and the run reports per host both what it removed and what it left.
 - `docs/DEPLOY.md` said "servers provisioned by the current Ansible have a deploy
   user and are unaffected". They did not: the role configured the account named
   by `deploy_user`, which was `root`, and put it in the `docker` group.

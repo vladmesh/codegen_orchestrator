@@ -7,6 +7,15 @@
 qa_ssh_user: qa-observer
 qa_ssh_home: "/home/{{ qa_ssh_user }}"
 
+# The account's own primary group, named explicitly rather than left to whatever
+# the account already had. `ansible.builtin.user` splits the two memberships:
+# `groups` + `append: false` makes the *supplementary* list exact, while the
+# primary group is only ever what `group:` says. Without this a retrofit over an
+# account somebody created inside `docker` would leave it there — primary
+# membership of `docker` opens the socket just as well as secondary, and that is
+# root on this host.
+qa_ssh_group: "{{ qa_ssh_user }}"
+
 # The one command the QA account may run through sudo. The allowlist is inside
 # the script, not in sudoers: a wrapper can refuse a sub-command, and a sudoers
 # wildcard over `docker *` cannot.

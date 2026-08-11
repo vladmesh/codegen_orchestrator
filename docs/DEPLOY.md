@@ -293,8 +293,17 @@ phase that writes `labels.provisioning_phase=complete`. The same completion writ
 `labels.qa_ssh_user`, and that label is what the QA runtime reads. A host recorded complete by the
 current provisioner therefore always has the account; a host that has neither ran an older one.
 
-That account cannot become root: it is in no secondary group (in particular not `docker`, which is
-root on the host), it cannot open the docker socket, and its only sudo rule is
+The label answers *whether* this host was provisioned by an Ansible that creates the account — not
+*as whom*. `servers.labels` is an untyped dict that `PATCH /api/servers/{handle}` will write, so the
+runtime accepts only the one name provisioning writes (`qa-observer`); a label naming anything else
+is refused exactly like a missing one, with reason `qa_identity_not_attested`. Editing a server row
+is therefore not a way to point a QA run at some other existing account. One consequence worth
+knowing: renaming the account is fail-closed — hosts still carrying the old name lend nothing until
+the retrofit has run over them.
+
+That account cannot become root: its primary group is its own (`qa-observer`, set explicitly, so a
+retrofit moves an account somebody created inside `docker` out of it), it is in no secondary group
+either, it cannot open the docker socket, and its only sudo rule is
 `/usr/local/bin/qa-docker` — a wrapper that refuses every docker sub-command except
 `diff, inspect, logs, port, ps, stats, top`. `exec`, `run`, `cp`, `build`, `commit` and the rest are
 refused **by the target**, whatever the orchestrator sends. It reads the deployment tree through a
@@ -339,14 +348,30 @@ docker compose exec infra-service python -m src.provisioner.qa_identity_retrofit
 
 It runs `playbooks/qa_identity_retrofit.yml`, which creates the same identity from the same
 `qa_identity` role a fresh host gets, and removes what the old on-target QA agent left behind in the
-administrative account's home: the Claude Code CLI (`~/.local/bin/claude`, `~/.local/share/claude`),
-`~/.claude` (LLM credentials and agent settings), `~/.qa-telethon.env`, `/opt/qa-runner` (venv and
-the old write-guard script), and the 2GB swap file the Claude installer needed (`swapoff`, then the
-file and its `fstab` line). It touches no application data and no deployment directory. Only after
-the playbook succeeds is `labels.qa_ssh_user` written and the host's provisioning-failure incident
-resolved — a label written earlier would be a server row telling the QA runtime something the host
-cannot back up. Every task is a state, so re-running it changes nothing; the playbook's last task
-prints, per host, which paths it removed and whether the swap file was still in use.
+administrative account's home.
+
+Cleanup deletes only paths the removed `qa_runner` role itself created, at names nothing else uses:
+`~/.local/bin/claude`, `~/.claude/.credentials.json` (the LLM credentials copied onto the target),
+`~/.qa-telethon.env`, and `/opt/qa-runner` (venv and the old write-guard script). It touches no
+application data and no deployment directory.
+
+Three things are deliberately **left in place**, because that home is also a person's home and they
+cannot be told apart from ordinary interactive data:
+
+- `~/.claude` and `~/.local/share/claude` — the Claude Code CLI's own directories, which anybody
+  running Claude Code on that host also writes to. Only the credentials file above is certainly the
+  platform's.
+- `/swapfile` — the old role made 2GB of swap there, but so does every guide an administrator
+  follows, and nothing in the file distinguishes them. Taking swap away from a live host running
+  user applications is an outage, not cleanup. The swap and its `fstab` entry stay.
+
+Remove those by hand if you know they are the platform's. The playbook's last task prints, per host,
+both `removed_paths` and `left_in_place` (only those that still exist), so a fleet-wide run is
+readable per machine rather than by scrolling task output.
+
+Only after the playbook succeeds is `labels.qa_ssh_user` written and the host's provisioning-failure
+incident resolved — a label written earlier would be a server row telling the QA runtime something
+the host cannot back up. Every task is a state, so re-running it changes nothing.
 
 ## Deploying
 

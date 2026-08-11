@@ -18,11 +18,22 @@
       - qa_ssh_user | length > 0
       - qa_ssh_user != 'root'
       - qa_ssh_user != deploy_user
+      - qa_ssh_group | length > 0
+      - qa_ssh_group not in ['docker', 'root', 'sudo']
     fail_msg: >-
       qa_ssh_user must name its own account: not root, and not the deploy user,
-      whose docker group membership is root on this host. Provisioning fails
-      rather than handing a QA run an account that can rewrite the deployment.
+      whose docker group membership is root on this host. Its primary group must
+      be its own too — a QA account whose primary group is docker, root or sudo
+      is root on this host. Provisioning fails rather than handing a QA run an
+      account that can rewrite the deployment.
     quiet: true
+
+# Named and created here so the account below has a primary group of its own to
+# be moved into, on a host where it already exists inside somebody else's.
+- name: Create the QA account's own group
+  ansible.builtin.group:
+    name: "{{ qa_ssh_group }}"
+    state: present
 
 - name: Create the QA observation account
   ansible.builtin.user:
@@ -30,9 +41,13 @@
     shell: /bin/bash
     create_home: true
     home: "{{ qa_ssh_home }}"
-    # No secondary groups at all, and not appended: `docker` is root on this
-    # host. `append: false` also makes this a repair — a host where the account
-    # was widened by hand loses that on the next provisioning run.
+    # Both memberships are stated, because the module keeps them apart and only
+    # stating both is a repair. `group:` is the primary one — an existing account
+    # whose primary group is `docker` is moved out of it by this line and by
+    # nothing else. `groups: []` with `append: false` makes the supplementary
+    # list exactly empty, so an account widened by hand loses that too. `docker`
+    # is root on this host through either membership.
+    group: "{{ qa_ssh_group }}"
     groups: []
     append: false
 
@@ -41,7 +56,7 @@
     path: "{{ qa_ssh_home }}/.ssh"
     state: directory
     owner: "{{ qa_ssh_user }}"
-    group: "{{ qa_ssh_user }}"
+    group: "{{ qa_ssh_group }}"
     mode: "0700"
 
 # The file has to exist and be the account's own before a run key can be written
@@ -53,7 +68,7 @@
     line: "{{ qa_authorized_keys_sentinel }}"
     create: true
     owner: "{{ qa_ssh_user }}"
-    group: "{{ qa_ssh_user }}"
+    group: "{{ qa_ssh_group }}"
     mode: "0600"
 
 - name: Install the read-only docker wrapper

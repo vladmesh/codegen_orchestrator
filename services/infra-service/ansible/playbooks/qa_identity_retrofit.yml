@@ -12,10 +12,13 @@
 #
 # * it is repeatable. Every task is a state, not a step; a second run changes
 #   nothing and fails nothing.
-# * it touches only what the platform put there. The removals below name the
-#   files and directories the removed target-local QA provisioning created, and
-#   nothing else — no application data, no deployment directory, no compose
-#   project.
+# * it removes only what is positively identified as the old QA runner's. The
+#   account this cleans up in is the administrative one, which is also where a
+#   human keeps their own things, so "probably ours" is not a reason to delete
+#   anything. A path that cannot be told from ordinary interactive data is left
+#   alone and named in this host's report instead — an administrator can then
+#   look at a named path on a named machine, which no amount of guessing here
+#   would be better than.
 
 - name: Retrofit the QA run identity
   hosts: "{{ target_host | default('all') }}"
@@ -47,55 +50,55 @@
       ansible.builtin.set_fact:
         qa_residue_home: "{{ ansible_facts.getent_passwd[deploy_user][4] }}"
 
-    - name: Remove the target-local QA agent's files
+    # Each path here is one the removed target-local QA provisioning role itself
+    # created, at a name nothing else on a deploy target uses. (Deliberately not
+    # naming that role here: a playbook mentioning it is what a repo test reads
+    # as this playbook still using it.) Nothing is removed by resemblance.
+    - name: Remove what the target-local QA agent left behind
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
-        # The Claude Code CLI that provisioning installed for that account, and
-        # the directory its installer unpacks versions into.
+        # The Claude Code CLI provisioning installed for that account.
         - "{{ qa_residue_home }}/.local/bin/claude"
-        - "{{ qa_residue_home }}/.local/share/claude"
-        # The LLM credentials and the agent settings that were copied here. No
-        # deploy target holds LLM credentials any more.
-        - "{{ qa_residue_home }}/.claude"
+        # The LLM credentials copied onto the target. This one file, not the
+        # directory around it: `~/.claude` is also where an administrator's own
+        # interactive Claude Code keeps its configuration, and no deploy target
+        # needs to hold LLM credentials either way.
+        - "{{ qa_residue_home }}/.claude/.credentials.json"
         # The Telegram account QA used to talk to bots as.
         - "{{ qa_residue_home }}/.qa-telethon.env"
-        # The venv (telethon, httpx) and the old write guard.
+        # The venv (telethon, httpx) and the old write guard. Created by the
+        # role, at a path only the role used.
         - /opt/qa-runner
       register: qa_residue_removed
 
-    # The 2GB swap file existed only because the Claude Code installer needed it
-    # to unpack. Taking it away is the one step here that touches a running
-    # system, so it is done in the order that cannot leave a broken host: turn
-    # it off first, and only then unlink it and forget it in fstab.
-    - name: Check whether the QA swap file is in use
-      ansible.builtin.command: grep -q '^/swapfile ' /proc/swaps
-      register: qa_swap_active
-      changed_when: false
-      failed_when: false
+    # Left alone, deliberately, and each for the same reason: on this host they
+    # are indistinguishable from something a person put there.
+    #
+    # * `~/.claude` and `~/.local/share/claude` are the Claude Code CLI's own
+    #   directories. The old role wrote into them, and so does anybody who runs
+    #   Claude Code on this machine; only the credentials file above is certainly
+    #   the platform's.
+    # * `/swapfile` is the sharpest case. The old role created 2GB of swap there
+    #   because the CLI installer needed it — but `/swapfile` is also what every
+    #   guide tells an administrator to call swap, and there is nothing in the
+    #   file to tell the two apart. Taking swap away from a live host running
+    #   user applications is an outage, not cleanup, so it stays until a person
+    #   who can tell says otherwise. That leaves the swap and its `fstab` entry
+    #   in place; the report below is where a fleet-wide run says so per host.
+    - name: Look at what is deliberately left in place
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ qa_residue_home }}/.claude"
+        - "{{ qa_residue_home }}/.local/share/claude"
+        - /swapfile
+      register: qa_residue_left
 
-    - name: Take the QA swap file out of use
-      ansible.builtin.command: swapoff /swapfile
-      when: qa_swap_active.rc == 0
-      changed_when: true
-
-    - name: Remove the QA swap file
-      ansible.builtin.file:
-        path: /swapfile
-        state: absent
-      register: qa_swap_removed
-
-    - name: Stop mounting the QA swap file at boot
-      ansible.builtin.lineinfile:
-        path: /etc/fstab
-        line: "/swapfile none swap sw 0 0"
-        state: absent
-      register: qa_swap_fstab
-
-    # What this host actually changed, in one place, so a fleet-wide retrofit
-    # can be read per host instead of by scrolling task output.
-    - name: Report what this host changed
+    # What this host changed and what it did not, in one place, so a fleet-wide
+    # retrofit can be read per host instead of by scrolling task output.
+    - name: Report what this host changed and what it left
       ansible.builtin.debug:
         msg:
           qa_ssh_user: "{{ qa_ssh_user }}"
@@ -104,6 +107,8 @@
                | selectattr('changed')
                | map(attribute='item')
                | list }}
-          swap_disabled: "{{ qa_swap_active.rc == 0 }}"
-          swap_file_removed: "{{ qa_swap_removed.changed }}"
-          fstab_entry_removed: "{{ qa_swap_fstab.changed }}"
+          left_in_place: >-
+            {{ qa_residue_left.results
+               | selectattr('stat.exists')
+               | map(attribute='item')
+               | list }}

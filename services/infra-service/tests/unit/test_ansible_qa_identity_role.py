@@ -15,6 +15,7 @@ Two questions are asked here, and only the second one can be asked of a file:
 """
 
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -30,6 +31,8 @@ WRAPPER = ROLE / "files" / "qa-docker"
 SOFTWARE_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "provision_software.yml"
 RETROFIT_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "qa_identity_retrofit.yml"
 
+_VAR = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
 
 def _tasks() -> list[dict]:
     return yaml.safe_load(ROLE_TASKS.read_text())
@@ -41,6 +44,27 @@ def _task_named(tasks: list[dict], name: str) -> dict:
 
 def _defaults() -> dict:
     return yaml.safe_load(ROLE_DEFAULTS.read_text())
+
+
+def _resolved_defaults() -> dict[str, str]:
+    """The role's defaults with their references to each other filled in.
+
+    `qa_ssh_group` is defined in terms of `qa_ssh_user`, so asking "what group
+    does this role actually put the account in" means resolving one through the
+    other rather than comparing template strings.
+    """
+    declared = {name: value for name, value in _defaults().items() if isinstance(value, str)}
+    resolved: dict[str, str] = {}
+    for _ in range(len(declared) + 1):
+        for name, value in declared.items():
+            filled = _VAR.sub(lambda m: resolved.get(m.group(1), m.group(0)), value)
+            if "{{" not in filled:
+                resolved[name] = filled
+    return resolved
+
+
+def _resolve(value: str) -> str:
+    return _VAR.sub(lambda m: _resolved_defaults()[m.group(1)], value)
 
 
 class TestTheAccountIsCreatedByProvisioning:
@@ -91,13 +115,131 @@ class TestTheAccountIsCreatedByProvisioning:
         assert "qa_ssh_user != deploy_user" in assertion["that"]
 
 
+def _apply_user_module(before: dict, params: dict) -> dict:
+    """What `ansible.builtin.user` does to one account's group membership.
+
+    Ansible is not installed in this workspace, so the role cannot be executed
+    against a target from here; what can be done without hand-waving is to take
+    the parameters the role really declares — read out of its YAML, not retyped —
+    and put them through the module's documented contract:
+
+        `group` sets the primary group. `groups` is the *supplementary* list, and
+        `append` decides whether that list is added to the account's existing
+        supplementary groups or replaces them exactly.
+        https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/user_module.html
+
+    The two memberships are kept apart here for the same reason the role has to
+    keep them apart: conflating them is the defect this models the absence of. A
+    role that omits `group:` leaves the primary group untouched, and this model
+    says so — see the test that runs it against exactly that.
+    """
+    primary = params["group"] if "group" in params else before["primary"]
+    if "groups" in params:
+        declared = set(params["groups"])
+        supplementary = (
+            set(before["supplementary"]) | declared if params.get("append") else declared
+        )
+    else:
+        supplementary = set(before["supplementary"])
+    return {"primary": primary, "supplementary": supplementary}
+
+
+def _groups_of(account: dict) -> set[str]:
+    return {account["primary"], *account["supplementary"]}
+
+
+def _reaches_the_docker_socket(account: dict) -> bool:
+    """`/var/run/docker.sock` is `root:docker`, mode 0660.
+
+    So the whole question is group membership, and the account's primary group
+    counts for exactly as much as a supplementary one does.
+    """
+    return "docker" in _groups_of(account)
+
+
 class TestTheAccountCannotBecomeRoot:
     def test_it_is_in_no_secondary_group_at_all(self):
         """Membership of `docker` is root on the host, so there is no group list."""
         user = _task_named(_tasks(), "Create the QA observation account")["ansible.builtin.user"]
         assert user["groups"] == []
-        # Not appending is what repairs a host whose account was widened by hand.
+        # An exact supplementary list is what takes back groups added by hand.
         assert user["append"] is False
+
+    def test_its_primary_group_is_its_own_and_the_role_creates_it(self):
+        """Named explicitly, because the primary group is not `groups`'s business."""
+        tasks = _tasks()
+        user = _task_named(tasks, "Create the QA observation account")["ansible.builtin.user"]
+        group = _task_named(tasks, "Create the QA account's own group")["ansible.builtin.group"]
+
+        assert _resolve(user["group"]) == QA_SSH_USER
+        assert _resolve(group["name"]) == _resolve(user["group"])
+        assert group["state"] == "present"
+
+    def test_a_primary_group_that_would_be_root_on_the_host_fails_provisioning(self):
+        assertion = _task_named(
+            _tasks(), "Refuse a QA identity that would not be its own unprivileged account"
+        )["ansible.builtin.assert"]
+
+        assert "qa_ssh_group not in ['docker', 'root', 'sudo']" in assertion["that"]
+
+
+class TestARetrofitTakesAnExistingAccountOutOfDocker:
+    """The half of the card that is about hosts which already exist.
+
+    A retrofit runs the same role over an account that may already be there, and
+    may already be there wrong — created by hand inside `docker`, which is where
+    somebody would put it if they wanted it to be able to run containers. What
+    the role declares has to end that, and "ends it" is a statement about the
+    account afterwards, not about the role's intentions.
+    """
+
+    @pytest.fixture
+    def user_params(self) -> dict:
+        params = _task_named(_tasks(), "Create the QA observation account")["ansible.builtin.user"]
+        return {
+            key: (_resolve(value) if isinstance(value, str) else value)
+            for key, value in params.items()
+        }
+
+    @pytest.fixture
+    def already_in_docker(self) -> dict:
+        """`qa-observer` as a host may already hold it: primary group `docker`."""
+        return {"primary": "docker", "supplementary": {"docker", "sudo"}}
+
+    def test_the_account_comes_out_of_docker_by_both_memberships(
+        self, user_params, already_in_docker
+    ):
+        after = _apply_user_module(already_in_docker, user_params)
+
+        assert after["primary"] == QA_SSH_USER
+        assert after["supplementary"] == set()
+        assert "docker" not in _groups_of(after)
+        assert not _reaches_the_docker_socket(after)
+
+    def test_running_it_again_over_the_repaired_account_changes_nothing(
+        self, user_params, already_in_docker
+    ):
+        once = _apply_user_module(already_in_docker, user_params)
+        twice = _apply_user_module(once, user_params)
+
+        assert twice == once
+        assert not _reaches_the_docker_socket(twice)
+
+    def test_without_a_primary_group_the_repair_would_not_happen(
+        self, user_params, already_in_docker
+    ):
+        """The assertion above has teeth: this is the role as it was, and it fails.
+
+        `groups: []` with `append: false` empties the supplementary list and says
+        nothing about the primary one, so an account created inside `docker`
+        stays inside `docker` and keeps the socket.
+        """
+        without_primary = {key: value for key, value in user_params.items() if key != "group"}
+
+        after = _apply_user_module(already_in_docker, without_primary)
+
+        assert after["primary"] == "docker"
+        assert _reaches_the_docker_socket(after)
 
     def test_no_task_in_the_role_grants_docker_group_or_socket_access(self):
         role_text = ROLE_TASKS.read_text()
@@ -144,6 +286,83 @@ class TestTheAccountCannotBecomeRoot:
         assert acl["entity"] == "{{ qa_ssh_user }}"
         assert acl["permissions"] == "rx"
         assert "w" not in acl["permissions"]
+
+
+class TestTheRetrofitRemovesOnlyWhatItCanIdentify:
+    """Cleanup runs in the administrative account's home, so it may not guess.
+
+    That home is a person's home too. Every path the retrofit deletes has to be
+    one the removed `qa_runner` role itself created, at a name nothing else uses;
+    anything that is also ordinary interactive data stays where it is and is
+    named in the host's report, which is worth more than a deletion nobody can
+    undo.
+    """
+
+    @staticmethod
+    def _playbook_tasks() -> list[dict]:
+        return yaml.safe_load(RETROFIT_PLAYBOOK.read_text())[0]["tasks"]
+
+    @staticmethod
+    def _removed() -> list[str]:
+        return _task_named(
+            TestTheRetrofitRemovesOnlyWhatItCanIdentify._playbook_tasks(),
+            "Remove what the target-local QA agent left behind",
+        )["loop"]
+
+    @staticmethod
+    def _left_in_place() -> list[str]:
+        return _task_named(
+            TestTheRetrofitRemovesOnlyWhatItCanIdentify._playbook_tasks(),
+            "Look at what is deliberately left in place",
+        )["loop"]
+
+    def test_it_removes_exactly_the_old_runner_s_own_artefacts(self):
+        home = "{{ qa_residue_home }}"
+        assert self._removed() == [
+            f"{home}/.local/bin/claude",
+            f"{home}/.claude/.credentials.json",
+            f"{home}/.qa-telethon.env",
+            "/opt/qa-runner",
+        ]
+
+    def test_the_claude_directory_itself_survives(self):
+        """One credentials file was the platform's; the directory around it is not.
+
+        `~/.claude` on an administrative account also holds whatever that account
+        does with Claude Code interactively — settings, history, backups — and
+        deleting it recursively is the user-data loss this playbook promises not
+        to cause.
+        """
+        home = "{{ qa_residue_home }}"
+        assert f"{home}/.claude" not in self._removed()
+        assert f"{home}/.claude/.credentials.json" in self._removed()
+        assert f"{home}/.claude" in self._left_in_place()
+
+    def test_swap_is_left_alone_and_said_so(self):
+        """`/swapfile` cannot be told from any other swap file on the host.
+
+        The old role made 2GB of swap there, and so does every guide an
+        administrator follows. Taking swap away from a live host running user
+        applications is an outage, not cleanup, so it stays — and the host says
+        it stayed rather than the playbook quietly deciding.
+        """
+        playbook_text = RETROFIT_PLAYBOOK.read_text()
+
+        assert "/swapfile" not in self._removed()
+        assert "swapoff" not in playbook_text
+        assert "/etc/fstab" not in playbook_text
+        assert "/swapfile" in self._left_in_place()
+
+    def test_every_host_reports_both_what_went_and_what_stayed(self):
+        """A fleet-wide run has to be readable per host, including its refusals."""
+        report = _task_named(
+            self._playbook_tasks(), "Report what this host changed and what it left"
+        )["ansible.builtin.debug"]["msg"]
+
+        assert "qa_residue_removed.results" in report["removed_paths"]
+        assert "selectattr('changed')" in report["removed_paths"]
+        assert "qa_residue_left.results" in report["left_in_place"]
+        assert "selectattr('stat.exists')" in report["left_in_place"]
 
 
 class TestTheTargetRefusesWhatWrites:
