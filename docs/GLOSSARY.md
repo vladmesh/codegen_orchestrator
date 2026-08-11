@@ -30,7 +30,7 @@ A Docker container with a CLI coding agent inside, started by `worker-manager` o
 
 **Developer Worker** — a container with a coding agent. For tasks inside a Story it is reused between tasks (worker_id is stored in the Redis hash `story:workers`). For standalone tasks it is ephemeral and removed after completion. Stateless — its context is the code in the repo plus the errors.
 
-**QA Executor** — the container that performs one exploratory QA run (`worker_type="qa"`). It has no repository, no git credentials and nothing to commit; its only route to the deployment under test is the injected `/workspace/qa` command, which calls the run's capability endpoint on `qa-worker`. It is not a Developer Worker and never writes code.
+**QA Executor** — the container that performs one exploratory QA run (`worker_type="qa"`). It has no repository, no git credentials and nothing to commit; its only route to the deployment under test is the injected `/workspace/qa` command, which calls the run's capability endpoint on `qa-worker`. That is not a convention: the container is attached to `codegen_qa_egress` (an `internal` network) and to nothing else, so the deployment is unreachable from it except through that endpoint; one per-run `CONNECT`-only proxy opens the assigned CLI's model backend and nothing besides. It is not a Developer Worker and never writes code.
 
 **Managed by:** `worker-manager`
 **Configuration:** developer prompts are stored in `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`, QA prompts in `services/langgraph/src/prompts/qa/`. Worker-manager maps them to agent-specific files through `get_instruction_path()`: Claude → `CLAUDE.md`, Factory and Codex → `AGENTS.md`. A `TASK.md` with the specific task is injected as well.

@@ -20,8 +20,14 @@ What that buys, precisely:
   stream, so the runner's own record of the run is what the run is judged from.
 
 What it does not buy is a shell that does not exist: the executor's container
-does have one. See ``docs/PIPELINE_V2.md`` and this card's report for what holds
-the "QA does not write to the application" guarantee path by path now.
+does have one. What makes that shell harmless is not this endpoint but the
+network the container is on — `codegen_qa_egress`, declared `internal: true`, on
+which the only reachable things are this endpoint, the worker broker, and a
+per-run CONNECT-only proxy allowlisted to the assigned CLI's model backend. The
+deployment's public URL is not reachable from there at all, so this endpoint's
+GET-only `http_get` is the only way to it. See
+`services/worker-manager/src/qa_egress.py` for the boundary and
+`docs/DEPLOY.md` for how it is deployed.
 """
 
 from __future__ import annotations

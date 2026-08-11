@@ -161,11 +161,13 @@ services:
       - api
       - redis
     networks:
-      # `internal` is how this service reaches the API and Redis. `worker` is
+      # `internal` is how this service reaches the API and Redis. `qa_egress` is
       # the only thing the QA executor's container can see of the platform: one
       # per-run endpoint, on an ephemeral port, holding no credential of its own.
+      # That network has no route off itself, so the endpoint is the executor's
+      # only way to the deployment — see the `qa_egress` definition below.
       - internal
-      - worker
+      - qa_egress
     restart: unless-stopped
     deploy:
       replicas: 1
@@ -321,6 +323,13 @@ services:
       SCAFFOLDED_WORKSPACE_PATH: /data/workspaces
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
+      # The QA executor's network, and the only destinations its per-run egress
+      # proxy opens. Empty backend lists mean the built-in defaults for the
+      # assigned CLI. Worker creation fails closed if this network is not
+      # internal — a QA run never starts with an unrestricted container.
+      QA_EGRESS_NETWORK: codegen_qa_egress
+      QA_CLAUDE_BACKEND_HOSTS: ${QA_CLAUDE_BACKEND_HOSTS:-}
+      QA_CODEX_BACKEND_HOSTS: ${QA_CODEX_BACKEND_HOSTS:-}
       # This is both the Docker-host source path and the manager-visible path.
       # Keep them identical because worker containers are created through the
       # host Docker socket.
@@ -373,6 +382,11 @@ services:
     networks:
       - internal
       - worker
+      # Developer workers reach the broker on `worker`; a QA executor reaches it
+      # on `qa_egress`, because that is the only network it is on. The broker is
+      # the runtime's own control channel — it carries the run's prompt and the
+      # container's output — and it is not a route to the deployment.
+      - qa_egress
     restart: unless-stopped
 
   scheduler:
@@ -626,6 +640,17 @@ networks:
     name: codegen_internal
   worker:
     name: codegen_worker
+  # The QA executor's whole world. `internal: true` is not decoration: it is
+  # what makes "exploratory QA cannot write to the application" a fact about
+  # routing rather than a rule in a prompt. A container attached to this and to
+  # nothing else cannot reach the deployment's public URL, the fleet, or the
+  # internet — only the two services attached here, and the run's own egress
+  # proxy, which opens the assigned CLI's model backend and nothing else.
+  # worker-manager refuses to start a QA executor if this network is missing or
+  # is not internal.
+  qa_egress:
+    name: codegen_qa_egress
+    internal: true
 
 volumes:
   db_data:

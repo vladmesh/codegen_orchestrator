@@ -832,8 +832,16 @@ async def run_qa_centrally(
             # Everything the runner can see of the run: the calls it made on the
             # agent's behalf, the report, the agent's own account of itself, and
             # — since the executor is a container with a shell now — everything
-            # that container reported. This scan is what stands in for a tool
-            # set that could not express a write.
+            # that container reported.
+            #
+            # This scan is a second layer, not the boundary. The boundary is the
+            # executor's network: it is attached to one `internal` Docker
+            # network on which the deployment simply is not reachable, and the
+            # one door out of it opens the assigned CLI's model backend only
+            # (`services/worker-manager/src/qa_egress.py`). What the scan is
+            # still good for is a write that the endpoint's own typed calls
+            # could somehow express, and evidence for a human when something
+            # unexpected shows up in a transcript.
             write = _forbidden_application_write(
                 f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}\n"
                 f"{qa_result.executor_evidence}",

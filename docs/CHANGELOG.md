@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-08-11 (12)
+
+- "Exploratory QA cannot write to the application" is now a property of the
+  executor's network instead of a rule in its prompt. The QA executor container
+  is attached to `codegen_qa_egress` — declared `internal: true` — and to
+  nothing else, so the deployment's public URL, the fleet and the internet are
+  unreachable from it rather than forbidden to it. Reachable on that network are
+  the run's capability endpoint (`qa-worker`), the worker broker, and one
+  per-run egress proxy. The public URL stays reachable only through the typed,
+  GET-only `http_get` the runtime performs. Developer workers are untouched:
+  they keep `codegen_worker` and its ordinary connectivity.
+- The proxy (`services/worker-manager/src/qa_egress_proxy.py`) speaks HTTP
+  `CONNECT` and nothing else, to the assigned CLI's model backend and nothing
+  else (`QA_CLAUDE_BACKEND_HOSTS` / `QA_CODEX_BACKEND_HOSTS`, defaulting per
+  agent). It cannot be used as a forward proxy, so it cannot carry a `POST`, and
+  a `CONNECT` to the deployment is refused with `403` by the same code that
+  refuses any other host. It is created with the run and removed with it,
+  including by orphan GC.
+- Fail-closed, in `services/worker-manager/src/qa_egress.py`: worker-manager
+  proves the network is internal before anything is created, proves the proxy is
+  listening before the executor exists, and proves the started container is
+  attached to that single network. Any of those failing fails worker creation,
+  which the QA runtime already turns into the typed `qa_executor_unavailable`
+  QA-infrastructure outcome — never a silent start with an unrestricted
+  container and never a product defect.
+- The runner's transcript/tool-trace write scan is unchanged and is now a second
+  layer over an enforced boundary rather than the boundary itself.
+- `services/worker-manager/tests/service/test_qa_egress_boundary.py` proves it
+  against a real Docker daemon: a recording application, a real executor
+  container built by the production policy, `POST`/`PUT`/`PATCH`/`DELETE` from
+  `curl` and from a Python client with the proxy variables stripped, and zero
+  write requests in the application's ledger — with positive controls that the
+  ledger records, that the capability endpoint answers, and that an allowlisted
+  tunnel carries a request and a response.
+
 ## 2026-08-11 (11)
 
 - Exploratory QA is performed by the assigned subscription coding agent again —

@@ -18,8 +18,12 @@ import pytest
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import AgentType, WorkerConfig
 from shared.qa_probe_cli import QA_PROBE_PATH
+from src import qa_egress
 from src import workspace as workspace_mod
 from src.manager import QA_WORKER_TYPE, WorkerManager
+
+
+QA_NETWORK = "codegen_qa_egress"
 
 
 def _docker_mock():
@@ -33,9 +37,31 @@ def _docker_mock():
     wrapper.create_network = AsyncMock()
     wrapper.connect_network = AsyncMock()
     wrapper.remove_network = AsyncMock()
+    wrapper.inspect_network = AsyncMock(return_value={"Internal": True})
+    wrapper.inspect_container = AsyncMock(return_value={"NetworkSettings": {"Networks": {QA_NETWORK: {}}}})
     wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
     wrapper.get_container_logs = AsyncMock(return_value="")
     return wrapper
+
+
+def _executor_run(wrapper):
+    """The container that runs the agent, not the run's egress proxy."""
+    [call] = [
+        call
+        for call in wrapper.run_container.await_args_list
+        if not call.kwargs["name"].startswith(qa_egress.PROXY_NAME_PREFIX)
+    ]
+    return call.kwargs
+
+
+def _proxy_run(wrapper):
+    """The run's egress proxy, the one container allowed a second network leg."""
+    [call] = [
+        call
+        for call in wrapper.run_container.await_args_list
+        if call.kwargs["name"].startswith(qa_egress.PROXY_NAME_PREFIX)
+    ]
+    return call.kwargs
 
 
 @pytest.fixture
@@ -64,6 +90,9 @@ def qa_worker(tmp_path):
             settings.ENVIRONMENT = "production"
             settings.DOCKER_NETWORK = ""
             settings.WORKER_NETWORK = "codegen_worker"
+            settings.QA_EGRESS_NETWORK = QA_NETWORK
+            settings.QA_CLAUDE_BACKEND_HOSTS = ""
+            settings.QA_CODEX_BACKEND_HOSTS = ""
             settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
             settings.WORKER_BROKER_URL = "http://worker-broker:8001"
             settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
@@ -97,8 +126,7 @@ class TestAQaExecutorNeedsNoRepository:
         """A developer worker refuses without one; QA has nothing to check out."""
         wrapper, _, _ = await qa_worker()
 
-        wrapper.run_container.assert_awaited_once()
-        mounted = wrapper.run_container.await_args.kwargs["volumes"]
+        mounted = _executor_run(wrapper)["volumes"]
         [workspace] = [host for host, spec in mounted.items() if spec["bind"] == "/workspace"]
         assert Path(workspace).parent == tmp_path
         assert Path(workspace).name == f"{workspace_mod.QA_WORKSPACE_PREFIX}qa-1"
@@ -113,7 +141,7 @@ class TestAQaExecutorNeedsNoRepository:
     async def test_it_carries_no_github_credential(self, qa_worker):
         wrapper, _, _ = await qa_worker()
 
-        env = wrapper.run_container.await_args.kwargs["environment"]
+        env = _executor_run(wrapper)["environment"]
         assert "GITHUB_TOKEN" not in env
         assert "GH_TOKEN" not in env
         assert env["QA_CAPABILITY_TOKEN"] == "run-token"
@@ -122,14 +150,161 @@ class TestAQaExecutorNeedsNoRepository:
         wrapper, _, _ = await qa_worker()
 
         wrapper.create_network.assert_not_awaited()
-        assert wrapper.run_container.await_args.kwargs["network"] == "codegen_worker"
+        assert _executor_run(wrapper)["network"] == QA_NETWORK
 
     async def test_it_keeps_the_hardening_every_worker_has(self, qa_worker):
         wrapper, _, _ = await qa_worker()
 
-        run_kwargs = wrapper.run_container.await_args.kwargs
+        run_kwargs = _executor_run(wrapper)
         assert run_kwargs["cap_drop"] == ["ALL"]
         assert run_kwargs["security_opt"] == ["no-new-privileges:true"]
+
+
+class TestItCannotReachTheApplicationAtAll:
+    """The guarantee is the network, and these are the ways it is held.
+
+    A CLI agent has a shell, so "QA does not write to the application" cannot
+    rest on the tool set any more. It rests on the executor being attached to
+    one internal network and nothing else, with one CONNECT-only proxy opening
+    the assigned CLI's model backend. Every check here fails the run closed.
+    """
+
+    async def test_it_is_attached_to_the_internal_qa_network_and_nothing_else(self, qa_worker):
+        wrapper, _, _ = await qa_worker()
+
+        assert _executor_run(wrapper)["network"] == QA_NETWORK
+        wrapper.inspect_network.assert_awaited_with(QA_NETWORK)
+
+    async def test_a_network_that_can_route_off_itself_stops_the_run(self, qa_worker):
+        """Without `internal: true` the container would simply have the internet."""
+        wrapper = _docker_mock()
+        wrapper.inspect_network = AsyncMock(return_value={"Internal": False})
+
+        with pytest.raises(qa_egress.QAEgressError, match="not internal"):
+            await qa_worker(docker=wrapper)
+
+        assert not [
+            call
+            for call in wrapper.run_container.await_args_list
+            if not call.kwargs["name"].startswith(qa_egress.PROXY_NAME_PREFIX)
+        ], "an executor container was started before its egress policy held"
+
+    async def test_a_missing_qa_network_stops_the_run(self, qa_worker):
+        wrapper = _docker_mock()
+        wrapper.inspect_network = AsyncMock(side_effect=RuntimeError("network not found"))
+
+        with pytest.raises(qa_egress.QAEgressError, match="could not be inspected"):
+            await qa_worker(docker=wrapper)
+
+    async def test_a_container_that_ended_up_on_a_second_network_stops_the_run(self, qa_worker):
+        """Asked-for and attached are different facts; only the second one counts."""
+        wrapper = _docker_mock()
+        wrapper.inspect_container = AsyncMock(
+            return_value={"NetworkSettings": {"Networks": {QA_NETWORK: {}, "codegen_worker": {}}}}
+        )
+
+        with pytest.raises(qa_egress.QAEgressError, match="codegen_worker"):
+            await qa_worker(docker=wrapper)
+
+    async def test_the_run_opens_only_its_assigned_agents_model_backend(self, qa_worker):
+        wrapper, _, _ = await qa_worker()
+
+        proxy = _proxy_run(wrapper)
+        assert proxy["command"] == list(qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CLAUDE])
+        assert proxy["network"] == QA_NETWORK
+        # The proxy — and only the proxy — gets the second leg that has a route out.
+        wrapper.connect_network.assert_awaited_once_with("codegen_worker", "container-id")
+
+    async def test_a_codex_run_opens_codex_backends_and_not_claudes(self, qa_worker):
+        with patch("src.codex_auth.validate_codex_host_session"):
+            wrapper, _, _ = await qa_worker(agent_type=AgentType.CODEX)
+
+        assert _proxy_run(wrapper)["command"] == list(qa_egress.DEFAULT_MODEL_BACKENDS[AgentType.CODEX])
+
+    async def test_the_executor_is_pointed_at_the_proxy_for_everything_else(self, qa_worker):
+        wrapper, _, _ = await qa_worker()
+
+        env = _executor_run(wrapper)["environment"]
+        assert env["HTTPS_PROXY"] == f"http://{qa_egress.proxy_container_name('qa-1')}:3128"
+        assert env["https_proxy"] == env["HTTPS_PROXY"]
+        assert "HTTP_PROXY" not in env
+        # The two runtime services live on the executor's own network; sending
+        # them through the proxy would only get them refused.
+        assert set(env["NO_PROXY"].split(",")) == {
+            "localhost",
+            "127.0.0.1",
+            "qa-worker",
+            "worker-broker",
+        }
+
+    async def test_a_proxy_that_never_listens_stops_the_run(self, qa_worker, monkeypatch):
+        monkeypatch.setattr(qa_egress, "PROXY_READY_ATTEMPTS", 2)
+        monkeypatch.setattr(qa_egress, "PROXY_READY_DELAY", 0)
+        wrapper = _docker_mock()
+        wrapper.exec_in_container = AsyncMock(return_value=(1, "connection refused"))
+
+        with pytest.raises(qa_egress.QAEgressError, match="never accepted a connection"):
+            await qa_worker(docker=wrapper)
+
+    async def test_a_failed_start_takes_the_proxy_with_it(self, qa_worker):
+        wrapper = _docker_mock()
+        wrapper.inspect_container = AsyncMock(
+            return_value={"NetworkSettings": {"Networks": {QA_NETWORK: {}, "bridge": {}}}}
+        )
+
+        with pytest.raises(qa_egress.QAEgressError):
+            await qa_worker(docker=wrapper)
+
+        removed = [call.args[0] for call in wrapper.remove_container.await_args_list]
+        assert qa_egress.proxy_container_name("qa-1") in removed
+
+    async def test_deleting_the_executor_takes_the_proxy_with_it(self, qa_worker, tmp_path):
+        wrapper, manager, _ = await qa_worker()
+
+        with patch("src.manager.settings") as settings:
+            settings.WORKER_IMAGE_PREFIX = "worker"
+            settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
+            await manager.delete_worker("qa-1", reason="completed")
+
+        removed = [call.args[0] for call in wrapper.remove_container.await_args_list]
+        assert qa_egress.proxy_container_name("qa-1") in removed
+
+    async def test_a_developer_worker_keeps_the_ordinary_worker_network(self, tmp_path):
+        """This is the QA worker's network, not a change to everybody's."""
+        wrapper = _docker_mock()
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=wrapper)
+        repo = tmp_path / "repo-1"
+        repo.mkdir()
+
+        with (
+            patch("src.manager.settings") as settings,
+            patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="w:latest"),
+            patch("src.manager.workspace_mod.prepare_worker_paths"),
+            patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(repo, True)),
+        ):
+            settings.ENVIRONMENT = "production"
+            settings.DOCKER_NETWORK = ""
+            settings.WORKER_NETWORK = "codegen_worker"
+            settings.QA_EGRESS_NETWORK = QA_NETWORK
+            settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
+            settings.WORKER_BROKER_URL = "http://worker-broker:8001"
+            settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+            settings.WORKER_IMAGE_PREFIX = "worker"
+            settings.WORKER_DOCKER_LABELS = "{}"
+            settings.WORKER_TRANSCRIPT_STORAGE_PATH = str(tmp_path / "transcripts")
+            settings.WORKER_TRANSCRIPT_MAX_BYTES = 1024
+            settings.WORKER_TRANSCRIPT_RETENTION_DAYS = 1
+            await manager.create_worker_with_capabilities(
+                worker_id="dev-1",
+                capabilities=[],
+                base_image="worker-base:latest",
+                agent_type=AgentType.CLAUDE,
+                repo_id="repo-1",
+            )
+
+        assert wrapper.run_container.await_args.kwargs["network"] == "codegen_worker"
+        wrapper.inspect_network.assert_not_awaited()
 
 
 class TestTheOneCommandItIsGiven:
@@ -146,7 +321,7 @@ class TestTheOneCommandItIsGiven:
         """An executor without it would go looking for another way to reach the app."""
         wrapper = _docker_mock()
 
-        async def exec_in_container(container_id, cmd):
+        async def exec_in_container(container_id, cmd, **kwargs):
             if QA_PROBE_PATH in cmd:
                 return 1, "read-only file system"
             return 0, "ok"
@@ -166,7 +341,7 @@ class TestTheOneCommandItIsGiven:
         """
         wrapper = _docker_mock()
 
-        async def exec_in_container(container_id, cmd):
+        async def exec_in_container(container_id, cmd, **kwargs):
             return (1, "read-only file system") if QA_PROBE_PATH in cmd else (0, "ok")
 
         wrapper.exec_in_container = AsyncMock(side_effect=exec_in_container)

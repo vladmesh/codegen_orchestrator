@@ -304,10 +304,27 @@ the deployment is one injected command (`/workspace/qa`) that posts named calls 
 capability endpoint, which performs them from `qa-worker` with the run's borrowed `qa-observer`
 identity. The endpoint accepts GET-only HTTP calls, reads inside the deployment's physical root,
 and read-only docker sub-commands against the deployment's own containers — the same closed set as
-before. The container does have ordinary outbound internet (its CLI needs the model API), so a
-direct write to the deployment's *public* URL is not physically prevented; it is forbidden in the
-prompt and detected afterwards by the runner's write scan over the tool trace and the container's
-transcript, which fails the run closed with a residual-state record.
+before.
+
+That the container *cannot* go around this is a property of its network, not of the prompt. The QA
+executor is attached to `codegen_qa_egress` and to nothing else, and that network is declared
+`internal: true`: it has no route to the deployment's public URL, to the fleet, or to the internet.
+Reachable on it are the run's capability endpoint (`qa-worker`), the worker broker — the runtime's
+own control channel — and one per-run egress proxy. That proxy speaks `CONNECT` only, to the
+assigned CLI's model backend and nothing else (`QA_CLAUDE_BACKEND_HOSTS` /
+`QA_CODEX_BACKEND_HOSTS`), so it can carry the model traffic the CLI needs and cannot carry a
+request to the application. `worker-manager` proves the network is internal before it creates
+anything, proves the proxy is listening before the executor exists, and proves the started
+container is attached to that single network — any of those failing fails the run closed as a
+QA-infrastructure outcome rather than starting an unrestricted container. Proxy variables are set
+in the executor's environment for the CLI's convenience; stripping them reaches less, not more.
+
+The runner's write scan over the tool trace and the container's transcript is still there, and it
+still fails the run closed with a residual-state record. It is now a second layer over an enforced
+boundary rather than the boundary itself. `services/worker-manager/tests/service/test_qa_egress_boundary.py`
+proves it against a real daemon: a recording application, a real executor container, `POST`/`PUT`/
+`PATCH`/`DELETE` from `curl` and from Python with the proxy configuration stripped, and zero write
+requests in the application's own ledger.
 
 **Which identity a run uses.** Not `servers.ssh_user`: that column is the administrative account the
 fleet key opens (`root` on every row `server_sync` creates), and a run holding it would have the

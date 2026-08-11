@@ -71,10 +71,12 @@ deployment this run is bound to and prints the JSON answer.
   and `{QA_PROBE_NAME} localhost_http_get` take no method; `{QA_PROBE_NAME}
   remote_exec` takes read-only docker sub-commands against your own containers
   and nothing else.
-- Do not try to reach the application any other way — not with curl, not with a
-  script you write, not through any package you install. The runner scans
-  everything this run produced for a direct write to the application and blocks
-  the run when it finds one, whatever the verdict said.
+- There is no other way to reach the application, so do not spend the run
+  looking for one. This container is on a network with no route to the
+  deployment, to the fleet or to the internet: curl, a script you write and any
+  package you install all reach nothing. The runner also scans everything this
+  run produced for a direct write and blocks the run when it finds one,
+  whatever the verdict said.
 - Your workspace is a scratch directory that is destroyed with this container.
   Nothing you write there is delivered anywhere; the report and the result are
   delivered by `{QA_PROBE_NAME} report` and `{QA_PROBE_NAME} finish`.

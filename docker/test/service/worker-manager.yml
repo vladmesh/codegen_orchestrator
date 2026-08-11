@@ -49,6 +49,9 @@ services:
       - WORKER_MANAGER_URL=http://worker-manager:8000
       - REDIS_URL=redis://redis:6379/0
       - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
+      # The QA egress boundary is a property of real Docker networking, so the
+      # test that proves it builds real containers on the host daemon.
+      - QA_EGRESS_TEST_IMAGE=codegen-orchestrator/worker-manager:test
     depends_on:
       worker-manager:
         condition: service_healthy
@@ -56,3 +59,4 @@ services:
       - ../../../services/worker-manager/src:/app/src
       - ../../../services/worker-manager/tests:/app/tests
       - ../../../shared:/app/shared
+      - /var/run/docker.sock:/var/run/docker.sock

@@ -24,6 +24,7 @@ from . import workspace as workspace_mod
 from .compose_runner import ComposeRunner
 from . import garbage_collector as gc
 from . import git_ops
+from . import qa_egress
 
 if TYPE_CHECKING:
     from shared.contracts.queues.worker import ScaffoldConfig
@@ -90,8 +91,22 @@ class WorkerManager:
 
         await self.redis.set(f"worker:image:last_used:{image}", datetime.now().isoformat())
 
-    def _resolve_worker_network(self) -> tuple[str, bool]:
-        """Return the worker network and whether a test-only host mode is permitted."""
+    def _resolve_worker_network(self, *, for_qa: bool = False) -> tuple[str, bool]:
+        """Return the worker network and whether a test-only host mode is permitted.
+
+        A QA executor does not get the shared worker network at all. It gets its
+        own internal one, whose whole purpose is that nothing routes off it, and
+        it never gets host networking — under `host` the container would share
+        the management host's stack and every guarantee here would be a comment.
+        """
+        if for_qa:
+            qa_network = settings.QA_EGRESS_NETWORK.strip()
+            if not qa_network:
+                raise RuntimeError("QA_EGRESS_NETWORK must name a dedicated internal Docker network")
+            if qa_network == "host":
+                raise RuntimeError("a QA executor cannot use host networking")
+            return qa_network, False
+
         configured_network = settings.DOCKER_NETWORK.strip()
         network_name = configured_network or settings.WORKER_NETWORK.strip()
         if not network_name:
@@ -219,6 +234,10 @@ class WorkerManager:
                     f"{workspace_mod.QA_WORKSPACE_PREFIX}{worker_id}",
                 )
                 logger.info("qa_workspace_removed", worker_id=worker_id)
+                # The run's egress proxy is as ephemeral as the run: it holds
+                # the second network leg the executor is not allowed to have, so
+                # it must not outlive the container it was opened for.
+                await qa_egress.tear_down(self.docker, worker_id)
             elif stored_workspace:
                 try:
                     runner = ComposeRunner(settings.SCAFFOLDED_WORKSPACE_PATH)
@@ -473,7 +492,7 @@ class WorkerManager:
             # fails halfway would otherwise leave a directory nothing owns.
             await self.redis.hset(f"worker:meta:{worker_id}", "worker_type", worker_type)
 
-        network_name, allow_host_network = self._resolve_worker_network()
+        network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
 
         if agent_type == AgentType.CODEX and auth_mode == "host_session":
             from .codex_auth import validate_codex_host_session
@@ -573,6 +592,25 @@ class WorkerManager:
             if github_token:
                 container_env["GH_TOKEN"] = github_token
 
+            # The egress policy is put in place before the container that lives
+            # under it exists, and it raises rather than degrading: a QA run
+            # never starts with an unrestricted container. What the executor is
+            # told about the proxy is a convenience for its CLI — the boundary
+            # is the internal network it is about to be attached to.
+            if is_qa_worker:
+                egress = await qa_egress.establish(
+                    self.docker,
+                    worker_id=worker_id,
+                    agent_type=agent_type,
+                    image=image_tag,
+                    network=network_name,
+                    internet_network=settings.WORKER_NETWORK,
+                    configured_backends=self._qa_backend_setting(agent_type),
+                    direct=qa_egress.direct_hosts(container_env, settings.WORKER_BROKER_URL),
+                    labels=json.loads(settings.WORKER_DOCKER_LABELS),
+                )
+                container_env.update(egress.env_vars)
+
             workspace_mod.prepare_worker_paths(
                 workspace_path=config.workspace_host_path,
                 transcript_path=config.transcript_host_path,
@@ -585,14 +623,23 @@ class WorkerManager:
                 env_vars=container_env,
                 volumes=volumes,
                 network_name=network_name,
-                # A QA executor runs no project of its own, so it gets no
-                # project network: the only thing it has to reach is the QA
-                # runtime's capability endpoint on the worker network.
+                # A QA executor runs no project of its own, and a second network
+                # is exactly what it must not have: it is attached to the QA
+                # egress network alone, where the only things it can address are
+                # the run's capability endpoint, the broker, and its own proxy.
                 create_dev_network=network_name != "host" and not is_qa_worker,
                 workspace_path=str(ws_path),
                 container_config=config,
                 allow_host_network=allow_host_network,
             )
+            if is_qa_worker:
+                # Proof, not intent: whatever was asked for, this is what Docker
+                # actually attached. A container that ended up on a second
+                # network — a leftover default, a hand-edited compose, a future
+                # branch here — can reach the deployment directly, so it is
+                # refused before it is given any work.
+                qa_egress.verify_isolation(await self.docker.inspect_container(container_id), network_name)
+
             await self.redis.hset(f"worker:meta:{worker_id}", "worker_type", worker_type)
 
             if repo_id:
@@ -663,6 +710,9 @@ class WorkerManager:
         except Exception as exc:
             await self._unregister_broker_worker(worker_id)
             if is_qa_worker:
+                # The run's door out is removed with the run it was opened for,
+                # including a run that never got going.
+                await qa_egress.tear_down(self.docker, worker_id)
                 # The container may already be up and marked RUNNING by
                 # `create_worker`, while the step that failed is the one that
                 # installs the executor's only route to the deployment. A QA
@@ -678,6 +728,13 @@ class WorkerManager:
                     f"worker:meta:{worker_id}",
                 )
             raise
+
+    @staticmethod
+    def _qa_backend_setting(agent_type: AgentType) -> str:
+        """The operator override for this agent's model backend, if there is one."""
+        if agent_type == AgentType.CODEX:
+            return settings.QA_CODEX_BACKEND_HOSTS
+        return settings.QA_CLAUDE_BACKEND_HOSTS
 
     async def _inject_qa_probe(self, container_id: str, worker_id: str) -> None:
         """Put the QA executor's one command into its workspace.
