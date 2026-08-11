@@ -1007,6 +1007,13 @@ class DeployOutcome(StrEnum):
     CODE_FIX = "code_fix"
     RETRY = "retry"
     GIVE_UP = "give_up"
+    # No server could be allocated, for a reason that is about the platform and
+    # not about the project. The story is not failed: it stays DEPLOYING and is
+    # re-dispatched once admission accepts a target again. The result carries
+    # `allocation_failure_reason` and the admission budget — the contract refuses
+    # this outcome without them, so the classification cannot be lost between the
+    # deploy consumer and the scheduler.
+    WAITING_INFRASTRUCTURE = "waiting_infrastructure"
 
 
 class DeployMessage(BaseMessage):

@@ -42,6 +42,11 @@ class DeployOutcome(StrEnum):
     ENVIRONMENT_CONTRACT_INVALID = "environment_contract_invalid"
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
     HEAD_SHA_MISSING = "head_sha_missing"
+    # The deploy never started: no server could be allocated for the application,
+    # for a reason that is about the platform and not about the project (see
+    # `shared/allocation_disposition.py`). The story is not failed — it waits and
+    # is re-dispatched once a target is admissible again.
+    WAITING_INFRASTRUCTURE = "waiting_infrastructure"
     # Somebody stopped this deploy on purpose: a fence taken by a deploy that has
     # to be the last writer, a teardown, or a withdrawal before it reached
     # GitHub. Nothing failed and nothing was deployed, so the story it belongs to

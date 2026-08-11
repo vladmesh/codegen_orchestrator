@@ -13,6 +13,7 @@ import pytest
 
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import (
+    AllocationFailureReason,
     DeployRunResult,
     EngineeringRunResult,
     QABlocker,
@@ -24,6 +25,11 @@ from shared.contracts.dto.run_result import (
 )
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
+from shared.tests.allocation_routing_cases import (
+    REFUSED_DEPLOY_MIN_DISK_MB,
+    REFUSED_DEPLOY_REQUIRED_RAM_MB,
+    refused_deploy_result,
+)
 
 _NOW = datetime.now(UTC)
 
@@ -224,3 +230,40 @@ class TestOptionalFieldPreservation:
     def test_deploy_outcome_is_typed_enum_not_string(self):
         run = _run(RunType.DEPLOY, {"deploy_outcome": DeployOutcome.RETRY.value})
         assert run.result.deploy_outcome is DeployOutcome.RETRY
+
+
+class TestInfrastructureWaitCarriesItsClassification:
+    """A deploy parked on infrastructure keeps what the scheduler needs to resume."""
+
+    def test_allocation_classification_survives_the_wire(self):
+        wire = refused_deploy_result(AllocationFailureReason.SERVER_NOT_PROVISIONED).model_dump(
+            mode="json"
+        )
+        run = _run(RunType.DEPLOY, wire, status=RunStatus.FAILED)
+
+        assert run.result.deploy_outcome is DeployOutcome.WAITING_INFRASTRUCTURE
+        assert (
+            run.result.allocation_failure_reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+        )
+        assert run.result.allocation_required_ram_mb == REFUSED_DEPLOY_REQUIRED_RAM_MB
+        assert run.result.allocation_min_disk_mb == REFUSED_DEPLOY_MIN_DISK_MB
+
+    @pytest.mark.parametrize(
+        "dropped",
+        [
+            "allocation_failure_reason",
+            "allocation_required_ram_mb",
+            "allocation_min_disk_mb",
+        ],
+    )
+    def test_infrastructure_wait_without_its_classification_is_refused(self, dropped):
+        """A wait the scheduler can neither re-check nor classify is not a wait."""
+        wire = refused_deploy_result().model_dump(mode="json")
+        wire[dropped] = None
+
+        with pytest.raises(ValidationError):
+            DeployRunResult.model_validate(wire)
+
+    def test_other_outcomes_do_not_require_an_allocation_classification(self):
+        gave_up = DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP)
+        assert gave_up.allocation_failure_reason is None

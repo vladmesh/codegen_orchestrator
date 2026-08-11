@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import structlog
 
+from shared.allocation_disposition import attempt_disposition, may_terminate_story
 from shared.clients.github import WorkflowCancellationUnprovenError
 from shared.config_store import ConfigStore
 from shared.contracts.dto.application import (
@@ -33,6 +34,7 @@ from shared.contracts.service_ports import DEPLOY_INFRA_PORT_SERVICES
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
+from ..allocations import AllocationError
 from ..clients.api import api_client
 from ..runtime_identity import project_runtime_slug
 from ..subgraphs.devops import create_devops_subgraph
@@ -84,32 +86,80 @@ def _deploy_lock_ttl() -> int:
 
 
 async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | str:
-    """Get or create allocations. Returns dict of resources or error string."""
-    from ..allocations import AllocationError, ensure_project_allocations
+    """Get or create allocations. Returns dict of resources or error string.
 
-    try:
-        config = project.config or {}
-        modules = list(
-            dict.fromkeys([*config.get("modules", ["backend"]), *DEPLOY_INFRA_PORT_SERVICES])
+    An `AllocationError` is deliberately *not* caught here. It is the one failure
+    on this path that is about the platform rather than the project, and it
+    carries the classification the scheduler needs; flattening it into this
+    function's error string is exactly how an unfinished host build used to reach
+    the story as a product failure. The caller handles it as a typed outcome.
+    """
+    from ..allocations import ensure_project_allocations
+
+    config = project.config or {}
+    modules = list(
+        dict.fromkeys([*config.get("modules", ["backend"]), *DEPLOY_INFRA_PORT_SERVICES])
+    )
+    min_ram_mb = config.get("estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB)
+
+    # Get repo_id from primary repository
+    primary_repo = await api_client.get_primary_repository(project_id)
+    if not primary_repo:
+        return f"No repository found for project {project_id}"
+    repo_id = primary_repo.id
+    service_name = project_runtime_slug(project)
+
+    return await ensure_project_allocations(
+        project_id=project_id,
+        repo_id=repo_id,
+        service_name=service_name,
+        modules=modules,
+        min_ram_mb=min_ram_mb,
+    )
+
+
+async def _record_infrastructure_wait(
+    task_id: str, project_id: str, error: AllocationError
+) -> dict:
+    """Record a deploy that could not be placed, without blaming the project.
+
+    The disposition comes from `shared.allocation_disposition`, the same place the
+    engineering path asks; this consumer keeps no list of its own. Every
+    allocation refusal classifies as infrastructure there, so this run never
+    records GIVE_UP — the outcome the scheduler turns into a failed story and an
+    admin product-failure alert. A refusal that ever classified as a product
+    failure would be a defect in that table, and it is refused loudly here rather
+    than quietly routed as one.
+    """
+    disposition = attempt_disposition(error.reason, product_failure=True)
+    if may_terminate_story(disposition):
+        raise AssertionError(
+            f"allocation refusal {error.reason.value} classified as {disposition.value}"
         )
-        min_ram_mb = config.get("estimated_ram_mb", DEFAULT_APPLICATION_RESERVED_RAM_MB)
-
-        # Get repo_id from primary repository
-        primary_repo = await api_client.get_primary_repository(project_id)
-        if not primary_repo:
-            return f"No repository found for project {project_id}"
-        repo_id = primary_repo.id
-        service_name = project_runtime_slug(project)
-
-        return await ensure_project_allocations(
-            project_id=project_id,
-            repo_id=repo_id,
-            service_name=service_name,
-            modules=modules,
-            min_ram_mb=min_ram_mb,
-        )
-    except AllocationError as e:
-        return str(e)
+    logger.warning(
+        "deploy_allocation_infrastructure_wait",
+        task_id=task_id,
+        project_id=project_id,
+        reason=error.reason.value,
+        disposition=disposition.value,
+        required_ram_mb=error.required_ram_mb,
+        min_disk_mb=error.min_disk_mb,
+    )
+    await api_client.patch(
+        f"runs/{task_id}",
+        json={
+            "status": RunStatus.FAILED.value,
+            "error_message": str(error),
+            "result": DeployRunResult(
+                deploy_outcome=DeployOutcome.WAITING_INFRASTRUCTURE,
+                allocation_failure_reason=error.reason,
+                allocation_required_ram_mb=error.required_ram_mb,
+                allocation_min_disk_mb=error.min_disk_mb,
+                error_details=str(error),
+            ).model_dump(mode="json"),
+        },
+    )
+    return live_work_unsettled({"status": "waiting_infrastructure", "error": str(error)})
 
 
 def _resolution_outcome(result: dict) -> DeployOutcome | None:
@@ -445,7 +495,10 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             return await _handle_lifecycle_action(msg, task_id, project_id, project)
 
         # Get or create allocations for the project
-        alloc_result = await _allocate_resources(project_id, project)
+        try:
+            alloc_result = await _allocate_resources(project_id, project)
+        except AllocationError as error:
+            return await _record_infrastructure_wait(task_id, project_id, error)
         if isinstance(alloc_result, str):
             await api_client.patch(
                 f"runs/{task_id}",

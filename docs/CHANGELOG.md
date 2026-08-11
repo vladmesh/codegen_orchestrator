@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-08-11 (2)
+
+- Stopped an allocation refusal from terminating a user's story on the deploy
+  path. A deploy that could not be placed used to have its typed reason
+  flattened into an error string and recorded as `GIVE_UP`, which the scheduler
+  turns into a failed story and a product-failure alert — so an unfinished host
+  build reached the owner as a broken project. The classification now survives
+  the boundary: `DeployOutcome.WAITING_INFRASTRUCTURE` carries the
+  `AllocationFailureReason` and the admission budget the attempt asked for, and
+  the contract refuses that outcome without them. The story stays DEPLOYING and
+  the deploy is re-dispatched once the shared admission rule accepts a target
+  again.
+- Put the rule that decides this in one place, `shared/allocation_disposition.py`.
+  Every allocation reason is classified there explicitly as infrastructure —
+  a wait, an operator review, or a technical failure — and the precedence is
+  stated once: an allocation refusal outranks a product failure seen in the same
+  attempt. Both routing paths call it and neither keeps a reason list of its own,
+  so the engineering wait and the deploy wait cannot drift apart the way they
+  just did. `shared/tests/allocation_routing_cases.py` pins the wire shape both
+  sides agree on.
+
 ## 2026-08-11
 
 - Made a server's provisioning state part of admission, so a project application

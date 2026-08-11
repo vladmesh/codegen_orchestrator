@@ -32,10 +32,24 @@ DEFAULT_ALLOCATION_MIN_DISK_MB = 1024
 
 
 class AllocationError(Exception):
-    """Raised when resource allocation fails."""
+    """Raised when resource allocation fails.
 
-    def __init__(self, reason: AllocationFailureReason, message: str | None = None) -> None:
+    Carries the admission budget the refused attempt asked for, so every caller
+    can record what has to become available again without recomputing it — and
+    so the classification cannot be reduced to a message on the way out.
+    """
+
+    def __init__(
+        self,
+        reason: AllocationFailureReason,
+        *,
+        required_ram_mb: int,
+        min_disk_mb: int,
+        message: str | None = None,
+    ) -> None:
         self.reason = reason
+        self.required_ram_mb = required_ram_mb
+        self.min_disk_mb = min_disk_mb
         super().__init__(message or f"No suitable server found: {reason.value}")
 
 
@@ -231,19 +245,20 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
         suitable.append((srv, srv.capacity_ram_mb - effective_used_ram_mb))
 
     if not suitable:
+        budget = {"required_ram_mb": required_ram_mb, "min_disk_mb": min_disk_mb}
         if _request_exceeds_every_server(all_managed_servers, required_ram_mb, min_disk_mb):
-            raise AllocationError(AllocationFailureReason.IMPOSSIBLE_CAPACITY)
+            raise AllocationError(AllocationFailureReason.IMPOSSIBLE_CAPACITY, **budget)
         # An unfinished or broken host build is infrastructure, not capacity: it
         # resolves by itself when provisioning completes, so it must keep its own
         # reason instead of collapsing into a memory shortage.
         if admission_rejections & PROVISIONING_REJECTIONS:
-            raise AllocationError(AllocationFailureReason.SERVER_NOT_PROVISIONED)
+            raise AllocationError(AllocationFailureReason.SERVER_NOT_PROVISIONED, **budget)
         # Unknown metrics cannot truthfully be described to a user as capacity.
         if "no_fresh_metrics" in rejection_reasons:
-            raise AllocationError(AllocationFailureReason.NO_FRESH_METRICS)
+            raise AllocationError(AllocationFailureReason.NO_FRESH_METRICS, **budget)
         if "insufficient_reserved_memory" in rejection_reasons:
-            raise AllocationError(AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY)
-        raise AllocationError(AllocationFailureReason.INSUFFICIENT_FREE_MEMORY)
+            raise AllocationError(AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY, **budget)
+        raise AllocationError(AllocationFailureReason.INSUFFICIENT_FREE_MEMORY, **budget)
 
     # Prefer the most remaining RAM after the conservative admission budget.
     return max(suitable, key=lambda candidate: candidate[1])[0]
