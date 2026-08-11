@@ -18,6 +18,7 @@ from shared.contracts.worker_control_plane import (
     WorkerControlPlaneOperation,
     control_plane_denial,
 )
+from shared.worker_type_cutover import backfill_pre_cutover_worker_type
 
 from .auth import credential_key, token_digest, verify_token
 from .config import settings
@@ -93,9 +94,21 @@ def _internal(token: str | None) -> None:
         raise HTTPException(403, "invalid broker internal credential")
 
 
+async def migrate_pre_cutover_credentials(redis: Redis) -> int:
+    """Name the type of credentials issued before the type was recorded.
+
+    Runs before this process serves a request, so a developer worker that was
+    mid-turn when the broker restarted keeps its channel. See
+    `shared/worker_type_cutover.py` for why `developer` is a proof here and not
+    a guess, and for when this call is due to be deleted.
+    """
+    return await backfill_pre_cutover_worker_type(redis, key_pattern=credential_key("*"), boundary="worker-broker")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    await migrate_pre_cutover_credentials(app.state.redis)
     yield
     await app.state.redis.aclose()
 

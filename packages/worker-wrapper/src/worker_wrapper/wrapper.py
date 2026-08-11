@@ -72,9 +72,23 @@ AGENT_SUBPROCESS_ENV_ALLOWLIST = frozenset(
     }
 )
 
+# The QA executor's only route off its own network, and the CLI's only address
+# for its model backend. worker-manager puts the run's CONNECT proxy — a proxy
+# allowlisted to that CLI's backend hosts and nothing else — into the container
+# environment under exactly these four names. They are not credentials and not a
+# route to the deployment: the proxy refuses every method but CONNECT and every
+# host but the ones on its command line.
+#
+# They belong here rather than in the allowlist above because the allowlist is
+# what every agent gets, and a developer worker's agent has an ordinary network
+# and no proxy to speak of. Withholding them from a QA agent is not a boundary —
+# the internal network is — it is simply an executor that cannot reach its own
+# backend, which is the defect this constant exists to prevent.
+QA_EGRESS_PROXY_ENV = frozenset({"HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"})
+
 
 def build_agent_subprocess_env(
-    source: Mapping[str, str] | None = None, *, workspace_on_path: bool = False
+    source: Mapping[str, str] | None = None, *, qa_executor: bool = False
 ) -> dict[str, str]:
     """Build the explicit environment inherited by a coding-agent subprocess.
 
@@ -83,13 +97,20 @@ def build_agent_subprocess_env(
     results and request Compose operations through localhost:9090 instead.
 
     Args:
-        workspace_on_path: put the workspace first on PATH. Only a QA executor
-            asks for this, and only so that the one command injected into its
-            workspace can be called by name.
+        qa_executor: build the environment for the central QA executor. It
+            differs from a developer agent's in exactly two ways, and both are
+            here: the workspace goes first on PATH, so the one command injected
+            into it can be called by name, and the run's egress proxy is passed
+            through, because the QA container has no other way out.
     """
     source = os.environ if source is None else source
-    agent_env = {name: source[name] for name in AGENT_SUBPROCESS_ENV_ALLOWLIST if name in source}
-    if workspace_on_path:
+    names = (
+        AGENT_SUBPROCESS_ENV_ALLOWLIST | QA_EGRESS_PROXY_ENV
+        if qa_executor
+        else AGENT_SUBPROCESS_ENV_ALLOWLIST
+    )
+    agent_env = {name: source[name] for name in names if name in source}
+    if qa_executor:
         agent_env["PATH"] = os.pathsep.join(
             [WORKSPACE_DIR, *(part for part in agent_env.get("PATH", "").split(os.pathsep) if part)]
         )
@@ -727,7 +748,7 @@ class WorkerWrapper:
         )
 
         wrapper_env = dict(os.environ)
-        agent_env = build_agent_subprocess_env(wrapper_env, workspace_on_path=self.is_qa_executor)
+        agent_env = build_agent_subprocess_env(wrapper_env, qa_executor=self.is_qa_executor)
 
         # Execute Subprocess
         proc = await asyncio.create_subprocess_exec(

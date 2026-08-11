@@ -182,3 +182,15 @@ class TestWhatTheExecutorIsToldAboutIt:
         # Plain HTTP is never proxied: everything the container speaks it to is
         # on its own network, and the broker channel must not depend on the door.
         assert "HTTP_PROXY" not in env
+
+    def test_every_variable_this_sets_reaches_the_agent_process(self):
+        """The container is not the consumer of these; the CLI child process is.
+
+        worker-manager writes them into the container, the wrapper decides what
+        the agent inherits, and the two lists are only useful if they are the
+        same list. A variable added here and not there is an executor that
+        cannot reach its backend — which is exactly how it went wrong once.
+        """
+        from worker_wrapper.wrapper import QA_EGRESS_PROXY_ENV
+
+        assert set(qa_egress.proxy_env("qa-egress-qa-1", ("qa-worker",))) == set(QA_EGRESS_PROXY_ENV)

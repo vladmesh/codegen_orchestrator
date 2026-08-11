@@ -500,3 +500,60 @@ class TestQaWorkerHasNoComposeAuthority:
 
         assert response.status_code == 200
         runner.run.assert_awaited_once()
+
+
+class TestTheRolloutOverWorkersThatPredateTheRecordedType:
+    """This endpoint decides from `worker:meta:<id>`, and old records have no type.
+
+    The broker's credential is not the only pre-cutover record: worker-manager
+    authorizes Compose from its own record of the worker it created, and before
+    this change it never wrote a type there either. A developer worker that was
+    running when the control plane was replaced would be refused the one route
+    it needs to verify its change — so the same one-time startup migration runs
+    on this side, over this side's records.
+    """
+
+    def _app(self, redis):
+        app = FastAPI(title="Test Worker Manager")
+        app.include_router(compose_router)
+        runner = MagicMock(spec=ComposeRunner)
+        runner.run = AsyncMock(return_value=(0, "ok\n", ""))
+        app.state.compose_runner = runner
+        app.state.redis = redis
+        return app, runner
+
+    def _compose(self, app, worker_id="worker-123"):
+        with TestClient(app, raise_server_exceptions=True) as c:
+            return c.post(
+                f"/api/worker/{worker_id}/infra/compose",
+                json={"args": ["ps"]},
+                headers={"X-Worker-Broker-Token": BROKER_TOKEN},
+            )
+
+    def test_a_running_developer_worker_keeps_compose_across_the_rollout(self):
+        import src.main as manager_main
+
+        # What the previous release wrote: a workspace, and no type.
+        redis = server_records(worker_type=None, workspace_path="/workspace")
+        app, runner = self._app(redis)
+
+        assert self._compose(app).status_code == 403
+
+        assert asyncio.run(manager_main.migrate_pre_cutover_worker_records(redis)) == 1
+
+        response = self._compose(app)
+        assert response.status_code == 200
+        runner.run.assert_awaited_once()
+
+    def test_the_migration_leaves_a_recorded_qa_executor_exactly_as_it_was(self):
+        import src.main as manager_main
+
+        redis = server_records(worker_type=WorkerType.QA, workspace_path="/workspace")
+        app, runner = self._app(redis)
+
+        assert asyncio.run(manager_main.migrate_pre_cutover_worker_records(redis)) == 0
+
+        response = self._compose(app)
+        assert response.status_code == 403
+        assert response.json()["detail"] == "a qa worker may not call infra.compose"
+        runner.run.assert_not_awaited()

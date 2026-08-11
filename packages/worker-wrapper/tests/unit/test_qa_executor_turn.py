@@ -144,7 +144,7 @@ class TestWhatAQaExecutorIsGiven:
         assert env["QA_CAPABILITY_TOKEN"] == "run-token"  # noqa: S105 — a test fixture
 
     def test_the_workspace_command_is_callable_by_name(self):
-        env = build_agent_subprocess_env({"PATH": "/usr/bin"}, workspace_on_path=True)
+        env = build_agent_subprocess_env({"PATH": "/usr/bin"}, qa_executor=True)
 
         assert env["PATH"].split(os.pathsep)[0] == "/workspace"
 
@@ -158,8 +158,93 @@ class TestWhatAQaExecutorIsGiven:
         ["WORKER_BROKER_TOKEN", "WORKER_BROKER_URL", "SECRETS_ENCRYPTION_KEY", "REDIS_URL"],
     )
     def test_the_wrappers_own_transport_still_stays_with_the_wrapper(self, leaked):
-        env = build_agent_subprocess_env(
-            {"PATH": "/usr/bin", leaked: "secret"}, workspace_on_path=True
-        )
+        env = build_agent_subprocess_env({"PATH": "/usr/bin", leaked: "secret"}, qa_executor=True)
 
         assert leaked not in env
+
+
+# What worker-manager puts in the QA executor's container: the capability
+# endpoint of the run, the wrapper's own transport, and the run's egress proxy.
+# Spelled out here because the defect this class exists for was invisible at the
+# container boundary — the container had all of it, and the agent child did not.
+_QA_CONTAINER_ENV = {
+    "PATH": "/usr/bin",
+    "HOME": "/home/worker",
+    "CLAUDE_CONFIG_DIR": "/home/worker/.claude",
+    "QA_CAPABILITY_URL": "http://qa-worker:41234/qa/call",
+    "QA_CAPABILITY_TOKEN": "run-token",
+    "HTTPS_PROXY": "http://qa-egress-qa-1:3128",
+    "https_proxy": "http://qa-egress-qa-1:3128",
+    "NO_PROXY": "localhost,127.0.0.1,qa-worker,worker-broker",
+    "no_proxy": "localhost,127.0.0.1,qa-worker,worker-broker",
+    "WORKER_BROKER_TOKEN": "wrapper-transport-token",
+    "WORKER_BROKER_URL": "http://worker-broker:8001",
+}
+
+
+async def _agent_child_env(wrapper: WorkerWrapper, container_env: dict[str, str]) -> dict[str, str]:
+    """The environment `create_subprocess_exec` is actually called with.
+
+    The assertion has to be made here and not on `build_agent_subprocess_env`,
+    and not on the container's own environment: the run is decided by what the
+    CLI process inherits, and that is this dict and nothing else.
+    """
+    captured: dict = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured.update(kwargs)
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        proc.kill = AsyncMock()
+        proc.wait = AsyncMock()
+        return proc
+
+    with (
+        patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        patch.object(wrapper, "_resolve_prompt", return_value="test the deployment"),
+        patch.dict(os.environ, container_env, clear=True),
+    ):
+        await wrapper.execute_agent({"prompt": "test the deployment"})
+
+    assert "env" in captured, "execute_agent must pass env= to create_subprocess_exec"
+    return captured["env"]
+
+
+class TestTheQaAgentChildProcessCanReachItsBackend:
+    """The QA executor's CLI is a child process, and that is where a run dies.
+
+    A QA container sits on exactly one internal network. Its only way out is the
+    run's CONNECT proxy, and the only thing that tells the CLI the proxy exists
+    is these four variables. Dropping them on the way to the child turns a
+    working subscription into `qa_executor_unavailable` — the executor never
+    reaches its model backend, and with the intended empty `QA_LLM_*` there is
+    nothing to fall back to. The container's environment proves nothing about
+    this; the child's does.
+    """
+
+    async def test_the_run_s_egress_proxy_reaches_the_cli(self):
+        env = await _agent_child_env(_wrapper(), _QA_CONTAINER_ENV)
+
+        assert env["HTTPS_PROXY"] == "http://qa-egress-qa-1:3128"
+        assert env["https_proxy"] == "http://qa-egress-qa-1:3128"
+        assert env["NO_PROXY"] == "localhost,127.0.0.1,qa-worker,worker-broker"
+        assert env["no_proxy"] == "localhost,127.0.0.1,qa-worker,worker-broker"
+
+    async def test_the_proxy_arrives_without_the_wrappers_transport(self):
+        """The egress variables are added; nothing else is."""
+        env = await _agent_child_env(_wrapper(), _QA_CONTAINER_ENV)
+
+        assert "WORKER_BROKER_TOKEN" not in env
+        assert "WORKER_BROKER_URL" not in env
+        assert env["QA_CAPABILITY_URL"] == "http://qa-worker:41234/qa/call"
+        assert env["PATH"].split(os.pathsep)[0] == "/workspace"
+
+    async def test_a_developer_agent_is_not_given_a_proxy_it_was_never_meant_to_use(self):
+        """The pass-through is the QA executor's, not every agent's."""
+        env = await _agent_child_env(
+            _wrapper(worker_type="developer", worker_id="dev-1"), _QA_CONTAINER_ENV
+        )
+
+        for name in ("HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"):
+            assert name not in env

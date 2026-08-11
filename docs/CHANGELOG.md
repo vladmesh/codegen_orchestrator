@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-08-11 (14)
+
+- The QA executor's CLI can reach its model backend again. worker-manager put
+  the run's egress proxy into the container environment, but the wrapper starts
+  the agent with an explicit replacement environment whose allowlist did not
+  name `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` or `no_proxy` — so the child
+  process, on a container attached to exactly one internal network, had no
+  address for its backend at all and every run ended as
+  `qa_executor_unavailable`. `QA_EGRESS_PROXY_ENV` in
+  `packages/worker-wrapper/src/worker_wrapper/wrapper.py` now passes exactly
+  those four to a QA executor's agent and nothing else; a developer agent, which
+  has an ordinary network and no proxy, is unchanged. The boundary is not
+  weakened: it is the same allowlisted CONNECT-only proxy, and the internal
+  network is still the thing that holds it.
+- The regression test is at the boundary the defect lived on — the environment
+  `create_subprocess_exec` is actually called with, not the container's — and
+  `services/worker-manager/tests/unit/test_qa_egress.py` now asserts that the
+  variables worker-manager sets are exactly the ones the wrapper forwards, so
+  the two lists cannot drift apart again.
+- Workers created before this branch survive the rollout. Both control-plane
+  boundaries now decide from a recorded `worker_type`, and records written by
+  the previous release have none — a developer worker still running when the
+  control plane is replaced would have lost its lease, status, session, result
+  and Compose routes mid-turn, because worker containers and their Redis state
+  are not Compose services. `shared/worker_type_cutover.py` marks those records
+  `developer` once, at startup, in the broker (`worker:broker:*`) and in
+  worker-manager (`worker:meta:*`). It is a proof and not a guess: the QA
+  executor and the recorded type arrive in the same change, so a typeless record
+  cannot be a QA worker. The request path keeps no fallback — a typeless record
+  appearing later is still refused everything — and the migration is due for
+  deletion once no pre-cutover worker can exist, since these records die with
+  their worker.
+- `services/worker-manager/tests/service/test_control_plane_rollout.py` is the
+  rollout regression: a pre-cutover record written into the real Redis is
+  refused before the restart, the real broker and worker-manager containers are
+  restarted the way a deploy restarts them, and afterwards the old credential
+  runs its whole turn over real HTTP and keeps Compose at both hops while the QA
+  credential is still refused at both. Both services are recreated by the same
+  `docker compose up -d` in `docs/DEPLOY.md` and the deploy workflow; DEPLOY.md
+  now says so explicitly, because rolling out the broker alone would make an old
+  worker-manager's registrations fail.
+
 ## 2026-08-11 (13)
 
 - A QA executor now has no control-plane authority beyond the protocol of its

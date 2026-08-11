@@ -497,3 +497,13 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-o
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alembic upgrade head
 docker image prune -f
 ```
+
+`worker-manager` and `worker-broker` are one control plane and roll out
+together — which the command above does, and the deploy workflow does the same.
+Do not restart one alone. They share the worker authorization record: the
+manager writes the worker's type when it issues the credential and the broker
+authorizes every route from it, so a new broker in front of an old manager
+refuses registrations that carry no type, and worker creation fails until the
+manager catches up. Worker containers themselves are not Compose services and
+deliberately survive the rollout; each service migrates the pre-cutover records
+it authorizes on when it starts (`shared/worker_type_cutover.py`).
