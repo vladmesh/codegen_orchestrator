@@ -7,11 +7,18 @@ of those the only thing that knows a key may be on a target is the durable
 record on the QA run (`QASshGrant`), and this is what reads it.
 
 It reconciles from state, not from the happy path, like the temporary-access
-sweep it is modelled on: every recent QA run carrying a record that is not
-`RELEASED` gets a revoke attempt and a readback, however it got that way and
-however many times it has already been tried. A revoke of a marker that was
-never installed reads back zero and closes the record, so the ambiguous case
-costs one ssh and resolves itself.
+sweep it is modelled on: every QA run carrying a record that is not `RELEASED`
+gets a revoke attempt and a readback, however it got that way and however many
+times it has already been tried. A revoke of a marker that was never installed
+reads back zero and closes the record, so the ambiguous case costs one ssh and
+resolves itself.
+
+The selection is by the state of the record and by nothing else. It used to ask
+for QA runs started inside a 24-hour window, and that was the wrong key: an
+outage longer than the window left the record — and the `authorized_keys` line
+it stands for — permanently outside the reach of the only process that removes
+it. Age neither closes a record nor excuses skipping one; the only bound is how
+many rows come back at once, and the sweep walks the pages until they run out.
 
 While a record cannot be closed, the run says so. After
 `GRANT_SWEEP_ESCALATE_AFTER` failed attempts the run's outcome is replaced with
@@ -27,13 +34,13 @@ scheduler would be a second implementation of the same revoke.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 
 import httpx
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant, QASshGrantState
-from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
@@ -47,12 +54,13 @@ from ._qa_target import revoke_grant
 logger = structlog.get_logger(__name__)
 
 GRANT_SWEEP_INTERVAL = 300  # 5 minutes
-# How far back the sweep looks. A grant expires by itself after
-# `GRANT_LIFETIME_S`; this window is wide enough that a record written just
-# before a long outage is still found afterwards.
-GRANT_SWEEP_LOOKBACK = timedelta(hours=24)
+# How many unreleased records one request brings back. This bounds the response,
+# not the work: a full page means there is another one, and the cycle keeps
+# asking. Nothing is dropped for being past the end of a page.
+GRANT_SWEEP_PAGE = 100
 # Attempts before the residual access stops being a retry and becomes the run's
-# reported outcome.
+# reported outcome. Escalating does not close the record: it stays selected, and
+# the sweep keeps trying to take the access back until a readback proves it gone.
 GRANT_SWEEP_ESCALATE_AFTER = 3
 
 
@@ -158,17 +166,38 @@ async def _reconcile(run_id: str, grant: QASshGrant) -> str:
 
 
 async def sweep_qa_ssh_grants() -> dict[str, int]:
-    """Drive every unreleased grant on a recent QA run towards removal."""
-    counts = {"seen": 0, "revoked": 0, "failed": 0, "escalated": 0}
-    since = datetime.now(UTC) - GRANT_SWEEP_LOOKBACK
-    runs = await api_client.list_runs(run_type=RunType.QA.value, started_after=since)
-    for run in runs:
-        grant = _open_grant(run.run_metadata)
-        if grant is None:
-            continue
-        counts["seen"] += 1
-        counts[await _reconcile(run.id, grant)] += 1
-    if counts["seen"]:
+    """Drive every unreleased grant towards removal, however old its run is.
+
+    Pages are walked to the end, oldest record first. A record the API returns
+    but that has meanwhile been released is simply skipped; a record missed
+    because the page shifted under a release is picked up by the next cycle,
+    because it is still selected while it is still open.
+    """
+    counts = {"seen": 0, "revoked": 0, "failed": 0, "escalated": 0, "unreadable": 0}
+    offset = 0
+    while True:
+        runs = await api_client.list_runs_holding_qa_ssh_grant(
+            limit=GRANT_SWEEP_PAGE, offset=offset
+        )
+        for run in runs:
+            try:
+                grant = _open_grant(run.run_metadata)
+            except ValidationError as error:
+                # A record no version of the schema can read is still a key on a
+                # target, so it stays selected. What it must not do is end the
+                # cycle: everything behind it would stop being reached at all,
+                # which is the failure this selection exists to prevent.
+                counts["unreadable"] += 1
+                logger.error("qa_grant_sweep_unreadable_record", run_id=run.id, error=str(error))
+                continue
+            if grant is None:
+                continue
+            counts["seen"] += 1
+            counts[await _reconcile(run.id, grant)] += 1
+        if len(runs) < GRANT_SWEEP_PAGE:
+            break
+        offset += len(runs)
+    if counts["seen"] or counts["unreadable"]:
         logger.info("qa_grant_sweep_cycle", **counts)
     return counts
 

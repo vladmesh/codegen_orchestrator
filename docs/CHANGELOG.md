@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-08-11 (7)
+
+- Stopped selecting the QA grant sweep's work by time. It read QA runs started
+  in the last 24 hours, so an outage longer than the window put an unreleased
+  record permanently out of reach: no revoke, no readback, no `qa_cleanup_failed`
+  escalation, and the `authorized_keys` line it stands for left on the target
+  for good. The window was the wrong key — a record is work while it is
+  unreleased, whether that became true a minute ago or a month ago — and
+  `GRANT_SWEEP_LOOKBACK` is gone rather than widened.
+- Added `GET /api/runs/qa-ssh-grants/held` (internal/admin) so the selection can
+  be made on the record: every run whose `qa_ssh_grant` is not `released`,
+  oldest first, `limit`/`offset`. The page bounds the response and not the
+  coverage — `sweep_qa_ssh_grants` walks pages until one comes back short, so
+  nothing is dropped for being past the end of one.
+- Kept an unparsable record visible instead of hiding or crashing on it.
+  Unreadable is not released, so it is still selected; the sweep counts it,
+  logs `qa_grant_sweep_unreadable_record` and continues, because ending the
+  cycle on it would make every record behind it unreachable — the same failure
+  from the other side.
+
 ## 2026-08-11 (6)
 
 - Gave a central QA run one explicit capability set and made every tool derive

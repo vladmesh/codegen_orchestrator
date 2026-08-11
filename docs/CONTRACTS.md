@@ -1197,10 +1197,18 @@ line, the server it is on, the account it is under, `state`, `revoke_attempts` a
 
 `ISSUING` means a key may be on the target. `OPEN` means the install returned success. Only a
 readback proving the marker is gone writes `RELEASED` — nothing infers removal from a revoke that
-was merely attempted. `sweep_qa_ssh_grants` (in `qa-worker`, every 5 minutes over QA runs started in
-the last 24h) drives every unreleased record to removal, whatever left it that way, and after
-`GRANT_SWEEP_ESCALATE_AFTER` failed attempts writes the run's outcome as a `qa_cleanup_failed`
-blocker so residual access reaches a human.
+was merely attempted. `sweep_qa_ssh_grants` (in `qa-worker`, every 5 minutes) drives every unreleased
+record to removal, whatever left it that way, and after `GRANT_SWEEP_ESCALATE_AFTER` failed attempts
+writes the run's outcome as a `qa_cleanup_failed` blocker so residual access reaches a human.
+Escalating does not close the record: it stays selected until a readback proves the key gone.
+
+The sweep reads its work from `GET /api/runs/qa-ssh-grants/held` (internal/admin), which selects on
+the record and on nothing else: every run whose `qa_ssh_grant` is not `released`, oldest first, one
+page at a time. Age is not a selection key — a record written before an outage of any length is
+still returned afterwards — and a page bounds the response, not the coverage: the caller walks
+pages until one comes back short. A record the current schema cannot parse is still returned, since
+unreadable is not released; the sweep logs it as `qa_grant_sweep_unreadable_record` and carries on
+with the rest rather than letting it end the cycle.
 
 This is not a second `temporary_access`: that grant hands a Telegram identity to a deployed bot and
 is settled by deploys, a different subject with a different lifecycle. What is reused from it is the

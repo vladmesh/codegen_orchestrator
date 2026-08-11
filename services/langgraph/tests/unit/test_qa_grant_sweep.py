@@ -9,7 +9,7 @@ has to act on it from state alone.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -23,6 +23,7 @@ from shared.contracts.dto.qa_ssh_grant import (
 )
 from src.consumers._qa_grant_sweep import (
     GRANT_SWEEP_ESCALATE_AFTER,
+    GRANT_SWEEP_PAGE,
     sweep_qa_ssh_grants,
 )
 
@@ -50,15 +51,24 @@ def _run(grant: QASshGrant | None, run_id: str = "qa-run-1") -> SimpleNamespace:
 
 
 class _Api:
-    """The API surface the sweep uses, recording what it wrote."""
+    """The API surface the sweep uses, recording what it wrote.
+
+    The selection it stands in for is the real one: runs holding an unreleased
+    grant, oldest first, handed out a page at a time. Nothing here knows when a
+    run started, because the endpoint the sweep calls does not select on that.
+    """
 
     def __init__(self, runs, ssh_key="fleet-key", conflict=False):
         self._runs = runs
         self._ssh_key = ssh_key
         self._conflict = conflict
         self.patches: list[tuple[str, dict]] = []
-        self.list_runs = AsyncMock(return_value=runs)
+        self.pages: list[dict] = []
         self.get_server_ssh_key = AsyncMock(return_value=ssh_key)
+
+    async def list_runs_holding_qa_ssh_grant(self, *, limit, offset):
+        self.pages.append({"limit": limit, "offset": offset})
+        return self._runs[offset : offset + limit]
 
     async def patch(self, path, json):
         self.patches.append((path, json))
@@ -115,7 +125,7 @@ class TestAmbiguousGrantsAreRecovered:
         with _sweep(api, revoke)[0], _sweep(api, revoke)[1]:
             counts = await sweep_qa_ssh_grants()
 
-        assert counts == {"seen": 0, "revoked": 0, "failed": 0, "escalated": 0}
+        assert counts == {"seen": 0, "revoked": 0, "failed": 0, "escalated": 0, "unreadable": 0}
         revoke.assert_not_awaited()
 
     async def test_a_run_without_a_record_is_skipped(self):
@@ -198,17 +208,88 @@ class TestAGrantThatWillNotGo:
         assert "no server key" in api.recorded_grant().detail
 
 
-class TestTheSweepLooksAtRecentQARuns:
-    async def test_it_asks_for_qa_runs_in_a_bounded_window(self):
+class TestNoOpenRecordIsOutOfReach:
+    """Age is not a selection key, and the end of a page is not the end of the work.
+
+    Both of these were one defect: the sweep used to ask for QA runs started in
+    the last 24 hours, so an outage longer than that put the record — and the
+    `authorized_keys` line it stands for — permanently beyond the only process
+    that removes it.
+    """
+
+    async def test_a_grant_older_than_any_window_is_still_revoked(self):
+        month_old = _grant(issued_at=datetime.now(UTC) - timedelta(days=30))
+        api = _Api([_run(month_old)])
+        revoke = AsyncMock(return_value=None)
+
+        with _sweep(api, revoke)[0], _sweep(api, revoke)[1]:
+            counts = await sweep_qa_ssh_grants()
+
+        assert counts["revoked"] == 1
+        assert revoke.await_args.kwargs["marker"] == MARKER
+        assert api.recorded_grant().state is QASshGrantState.RELEASED
+
+    async def test_a_month_old_grant_that_will_not_go_reaches_escalation(self):
+        month_old = _grant(
+            state=QASshGrantState.OPEN,
+            issued_at=datetime.now(UTC) - timedelta(days=30),
+            revoke_attempts=GRANT_SWEEP_ESCALATE_AFTER - 1,
+        )
+        api = _Api([_run(month_old)])
+        revoke = AsyncMock(return_value="1 authorized_keys line(s) survived revocation")
+
+        with _sweep(api, revoke)[0], _sweep(api, revoke)[1]:
+            counts = await sweep_qa_ssh_grants()
+
+        assert counts["escalated"] == 1
+        [result] = api.recorded_results()
+        assert result["blocker"]["category"] == "qa_cleanup_failed"
+
+    async def test_the_selection_is_asked_for_by_state_alone(self):
         api = _Api([])
         revoke = AsyncMock(return_value=None)
 
         with _sweep(api, revoke)[0], _sweep(api, revoke)[1]:
             await sweep_qa_ssh_grants()
 
-        kwargs = api.list_runs.await_args.kwargs
-        assert kwargs["run_type"] == "qa"
-        assert kwargs["started_after"] < datetime.now(UTC)
+        # One page, asked for from the top, with no time bound anywhere in it.
+        assert api.pages == [{"limit": GRANT_SWEEP_PAGE, "offset": 0}]
+
+    async def test_a_record_nothing_can_read_does_not_stop_the_ones_behind_it(self):
+        """The selection keeps a malformed record forever, so it cannot be a poison pill.
+
+        A schema change is enough to produce one. If reading it ended the
+        cycle, every record after it would stop being reached — the same
+        unreachability, arrived at from the other side.
+        """
+        unreadable = SimpleNamespace(
+            id="qa-run-unreadable",
+            run_metadata={QA_SSH_GRANT_KEY: {"marker": MARKER, "from": "a schema we lost"}},
+        )
+        api = _Api([unreadable, _run(_grant(), run_id="qa-run-behind-it")])
+        revoke = AsyncMock(return_value=None)
+
+        with _sweep(api, revoke)[0], _sweep(api, revoke)[1]:
+            counts = await sweep_qa_ssh_grants()
+
+        assert counts["unreadable"] == 1
+        assert counts["revoked"] == 1
+        assert [p for p, _ in api.patches] == ["runs/qa-run-behind-it"]
+
+    async def test_a_record_past_the_first_page_is_not_left_behind(self):
+        holders = [_run(_grant(), run_id=f"qa-run-{i}") for i in range(GRANT_SWEEP_PAGE + 1)]
+        api = _Api(holders)
+        revoke = AsyncMock(return_value=None)
+
+        with _sweep(api, revoke)[0], _sweep(api, revoke)[1]:
+            counts = await sweep_qa_ssh_grants()
+
+        assert counts["revoked"] == GRANT_SWEEP_PAGE + 1
+        assert api.pages == [
+            {"limit": GRANT_SWEEP_PAGE, "offset": 0},
+            {"limit": GRANT_SWEEP_PAGE, "offset": GRANT_SWEEP_PAGE},
+        ]
+        assert {p.split("/")[1] for p, _ in api.patches} == {r.id for r in holders}
 
 
 @pytest.mark.parametrize("state", [QASshGrantState.ISSUING, QASshGrantState.OPEN])

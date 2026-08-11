@@ -20,6 +20,7 @@ from shared.contracts.dto.deploy_dispatch import (
     DispatchSupersede,
     DispatchWithdrawal,
 )
+from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus
 from shared.models import Run, User
 
@@ -39,6 +40,11 @@ _TERMINAL_RUN_STATUSES = frozenset(
 # What a run says happened. Once a terminal run carries a result, these are the
 # fields nothing may rewrite.
 _OUTCOME_FIELDS = ("status", "result", "error_message")
+
+# Largest page the QA grant selection will hand out at once. The page bounds one
+# response, never the coverage: the caller walks pages until one comes back
+# short, so no unreleased record falls off the end of the selection.
+QA_SSH_GRANT_PAGE_MAX = 500
 
 
 async def _check_run_access(
@@ -176,6 +182,46 @@ async def list_runs(
     runs = result.scalars().all()
 
     return list(runs)
+
+
+@router.get("/qa-ssh-grants/held", response_model=list[RunRead])
+async def list_runs_holding_qa_ssh_grants(
+    limit: int = Query(100, ge=1, le=QA_SSH_GRANT_PAGE_MAX),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> list[Run]:
+    """Every run whose QA SSH grant is not proven released, oldest first.
+
+    The QA grant sweep needs its work selected by the state of the record, not
+    by when the run started. Asking `/runs/` for a recent window was the wrong
+    key: an outage longer than the window put a live `authorized_keys` line
+    permanently out of reach of the only process that removes it. A record is
+    work while it is unreleased, whether that became true a minute ago or a
+    month ago.
+
+    So age is neither a reason to skip a record nor a reason to close it. What
+    bounds the answer is the page, and the order is oldest first so a caller
+    walking pages drains the whole selection rather than a recent slice of it.
+
+    A record with no readable state is deliberately still selected: it is a
+    malformed grant, and the caller must fail on it loudly rather than never
+    see it.
+    """
+    grant = Run.run_metadata[QA_SSH_GRANT_KEY]
+    grant_state = Run.run_metadata[(QA_SSH_GRANT_KEY, "state")].as_string()
+    query = (
+        select(Run)
+        .where(
+            grant.is_not(None),
+            grant_state.is_distinct_from(QASshGrantState.RELEASED.value),
+        )
+        .order_by(Run.created_at.asc(), Run.id.asc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await db.execute(query)
+    return list(result.scalars().all())
 
 
 async def _lock_run(run_id: str, db: AsyncSession) -> Run:
