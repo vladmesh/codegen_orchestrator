@@ -1,21 +1,30 @@
-"""QA-run boundary tests for the read-only application API contract.
+"""QA-run boundary tests against a real filesystem and a real HTTP server.
 
-The guard used to be a Claude PreToolUse hook filtering a Bash command line.
-There is no Bash and no on-target agent any more, so the guarantee is enforced
-one layer lower: the tools cannot express a write. These tests put a real HTTP
-server behind the "deployed application", drive the real tool set against it
-through a real shell on the "target", and require that the server never sees a
-method other than GET.
+Two guarantees are checked here rather than in the unit tests, because both are
+about what a real target does rather than what this code intends.
 
-The second half is the fail-closed half: if a write ever does turn up in the
-evidence the runner owns, the run is quarantined with a residual trace rather
-than reported as a QA result.
+The read-only guarantee: the guard used to be a Claude PreToolUse hook filtering
+a Bash command line. There is no Bash and no on-target agent any more, so it is
+enforced one layer lower — the tools cannot express a write. A real HTTP server
+stands in for the deployed application, and it must never see a method other
+than GET.
+
+The containment guarantee: a lexical path check is satisfied by a symlink that
+points anywhere. So the read is driven through a real shell, on a real directory
+tree, with a real symlink into a neighbouring project — and the neighbour's file
+has to stay unread.
+
+The last part is fail-closed: if a write does turn up in the evidence the runner
+owns, the run is quarantined with a residual trace rather than reported as a QA
+result.
 """
 
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
+from pathlib import Path
+import shlex
 import subprocess
 from threading import Thread
 from types import SimpleNamespace
@@ -30,9 +39,20 @@ from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAServerInfo
 from src.agents.qa.tools import build_qa_tools
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
-from src.consumers._qa_target import QATarget, QATargetSession
+from src.consumers._qa_target import (
+    QACapabilities,
+    QATarget,
+    QATargetError,
+    QATargetSession,
+    revoke_grant,
+)
 from src.consumers._qa_workspace import qa_workspace
 from src.consumers.qa import process_qa_job
+
+ALLOWED_PORT = 8000
+NEIGHBOUR_PORT = 9000
+OWN_CONTAINER = "app-backend-1"
+NEIGHBOUR_CONTAINER = "other-project-web-1"
 
 
 class _LocalShellConn:
@@ -50,6 +70,12 @@ class _LocalShellConn:
             check=False,
         )
         return SimpleNamespace(stdout=proc.stdout, stderr=proc.stderr, exit_status=proc.returncode)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
 
 
 class _RecordingApplication:
@@ -97,6 +123,43 @@ class _RecordingApplication:
         return f"http://127.0.0.1:{self.port}"
 
 
+def _deployment_tree(tmp_path: Path) -> tuple[Path, Path]:
+    """A deployment directory and a neighbouring project's secret beside it."""
+    deployment = tmp_path / "services" / "app"
+    (deployment / "infra").mkdir(parents=True)
+    (deployment / "infra" / "compose.yml").write_text("services: {}\n")
+
+    neighbour = tmp_path / "services" / "other-project"
+    neighbour.mkdir(parents=True)
+    neighbour_secret = neighbour / "database.conf"
+    neighbour_secret.write_text("PASSWORD=neighbour-secret\n")
+
+    # Valid git and filesystem content: a symlink in the deployed tree that
+    # leads out of it.
+    (deployment / "evidence").symlink_to(neighbour_secret)
+    return deployment, neighbour_secret
+
+
+def _session(deployment: Path, deployed_url: str, conn: _LocalShellConn) -> QATargetSession:
+    return QATargetSession(
+        QATarget(
+            server_ip="127.0.0.1",
+            ssh_user="qa",
+            server_handle="vps-1",
+            project_name="app",
+            deployed_url=deployed_url,
+            allocated_ports=frozenset({ALLOWED_PORT}),
+        ),
+        conn,
+        QACapabilities(
+            deployed_url=deployed_url,
+            physical_root=str(deployment.resolve()),
+            containers=frozenset({OWN_CONTAINER}),
+            loopback_ports=frozenset({ALLOWED_PORT}),
+        ),
+    )
+
+
 @pytest.fixture(autouse=True)
 async def _clean_redis():
     """This runner-boundary test does not use Redis."""
@@ -111,24 +174,20 @@ WRITE_ATTEMPTS = (
     ["python3", "-c", "import requests; requests.post('{url}/users')"],
     ["sh", "-c", "curl -d '{}' {url}/users"],
     ["wget", "--method=DELETE", "{url}/users"],
+    ["docker", "exec", OWN_CONTAINER, "sh", "-c", "curl -XPOST {url}/users"],
 )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("attempt", WRITE_ATTEMPTS)
 async def test_no_tool_can_send_a_write_to_the_application(tmp_path, attempt):
+    deployment, _ = _deployment_tree(tmp_path)
     conn = _LocalShellConn()
     with _RecordingApplication() as application:
-        target = QATarget(
-            server_ip="127.0.0.1",
-            ssh_user="qa",
-            project_name="app",
-            deployed_url=application.url,
-        )
-        session = QATargetSession(target, conn)
+        session = _session(deployment, application.url, conn)
         argv = [part.replace("{url}", application.url) for part in attempt]
 
-        with qa_workspace(root=str(tmp_path)) as workspace:
+        with qa_workspace(root=str(tmp_path / "runs")) as workspace:
             tools = {
                 tool.name: tool for tool in build_qa_tools(session=session, workspace=workspace)
             }
@@ -145,17 +204,10 @@ async def test_no_tool_can_send_a_write_to_the_application(tmp_path, attempt):
 
 @pytest.mark.asyncio
 async def test_the_public_probe_is_get_only(tmp_path):
+    deployment, _ = _deployment_tree(tmp_path)
     with _RecordingApplication() as application:
-        session = QATargetSession(
-            QATarget(
-                server_ip="127.0.0.1",
-                ssh_user="qa",
-                project_name="app",
-                deployed_url=application.url,
-            ),
-            _LocalShellConn(),
-        )
-        with qa_workspace(root=str(tmp_path)) as workspace:
+        session = _session(deployment, application.url, _LocalShellConn())
+        with qa_workspace(root=str(tmp_path / "runs")) as workspace:
             tools = {
                 tool.name: tool for tool in build_qa_tools(session=session, workspace=workspace)
             }
@@ -164,6 +216,78 @@ async def test_the_public_probe_is_get_only(tmp_path):
 
         assert answer["status"] == 200
         assert application.methods == ["GET"]
+
+
+class TestPhysicalContainmentAgainstARealSymlink:
+    """A neighbouring project on the same host, reached by a real symlink."""
+
+    @pytest.mark.asyncio
+    async def test_a_symlink_out_of_the_deployment_does_not_read_the_neighbour(self, tmp_path):
+        deployment, neighbour_secret = _deployment_tree(tmp_path)
+        conn = _LocalShellConn()
+        session = _session(deployment, "http://app.example", conn)
+
+        with pytest.raises(QATargetError) as exc:
+            await session.read_file("evidence")
+
+        assert "resolves outside this run's deployment" in str(exc.value)
+        # The refusal is decided from what the path resolved to on the target,
+        # and the neighbour's content never came back.
+        assert neighbour_secret.read_text() not in " ".join(conn.commands)
+
+    @pytest.mark.asyncio
+    async def test_an_absolute_path_into_the_neighbour_is_refused(self, tmp_path):
+        deployment, neighbour_secret = _deployment_tree(tmp_path)
+        session = _session(deployment, "http://app.example", _LocalShellConn())
+
+        with pytest.raises(QATargetError):
+            await session.read_file(str(neighbour_secret))
+
+    @pytest.mark.asyncio
+    async def test_a_file_inside_the_deployment_is_read(self, tmp_path):
+        deployment, _ = _deployment_tree(tmp_path)
+        session = _session(deployment, "http://app.example", _LocalShellConn())
+
+        result = await session.read_file("infra/compose.yml")
+
+        assert result.exit_status == 0
+        assert result.stdout == "services: {}\n"
+
+    @pytest.mark.asyncio
+    async def test_traversal_out_of_the_deployment_is_refused(self, tmp_path):
+        deployment, _ = _deployment_tree(tmp_path)
+        session = _session(deployment, "http://app.example", _LocalShellConn())
+
+        with pytest.raises(QATargetError):
+            await session.read_file("../other-project/database.conf")
+
+
+class TestANeighbourOnTheSameHost:
+    @pytest.mark.asyncio
+    async def test_a_port_the_deployment_does_not_own_is_never_contacted(self, tmp_path):
+        deployment, _ = _deployment_tree(tmp_path)
+        conn = _LocalShellConn()
+        with _RecordingApplication() as neighbour:
+            session = _session(deployment, "http://app.example", conn)
+
+            with pytest.raises(QATargetError):
+                await session.localhost_http_get(neighbour.port, "/private")
+
+            assert neighbour.methods == []
+        assert conn.commands == []
+
+    @pytest.mark.asyncio
+    async def test_a_container_the_deployment_does_not_own_is_never_named(self, tmp_path):
+        deployment, _ = _deployment_tree(tmp_path)
+        conn = _LocalShellConn()
+        session = _session(deployment, "http://app.example", conn)
+
+        with pytest.raises(QATargetError):
+            await session.container_logs(NEIGHBOUR_CONTAINER)
+        with pytest.raises(QATargetError):
+            await session.exec(["docker", "inspect", NEIGHBOUR_CONTAINER])
+
+        assert conn.commands == []
 
 
 class _WritingAgent:
@@ -186,7 +310,7 @@ class _WritingAgent:
 
 
 class _FakeTargetConn:
-    """Answers the grant commands so the run reaches the agent."""
+    """Answers the grant and capability commands so the run reaches the agent."""
 
     def __init__(self) -> None:
         self.commands: list[str] = []
@@ -195,6 +319,10 @@ class _FakeTargetConn:
         self.commands.append(command)
         if command.startswith("grep -c -F"):
             return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
+        if command.startswith("readlink -f --"):
+            return SimpleNamespace(exit_status=0, stdout="/opt/services/app\n", stderr="")
+        if command.startswith("docker ps"):
+            return SimpleNamespace(exit_status=0, stdout=f"{OWN_CONTAINER}\n", stderr="")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 
     async def __aenter__(self):
@@ -202,6 +330,14 @@ class _FakeTargetConn:
 
     async def __aexit__(self, *args):
         return False
+
+
+class _Journal:
+    def __init__(self) -> None:
+        self.states = []
+
+    async def write(self, grant) -> None:
+        self.states.append(grant.state)
 
 
 def _writing_graph(deployed_url: str):
@@ -225,12 +361,15 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
             target=QATarget(
                 server_ip="1.2.3.4",
                 ssh_user="qa",
+                server_handle="vps-1",
                 project_name="app",
                 deployed_url="http://app.example",
+                allocated_ports=frozenset({ALLOWED_PORT}),
             ),
             fleet_ssh_key="fleet-key",
             acceptance_criteria="- read-only check",
             runtime=QARuntimeConfig(model="m", base_url="u", api_key="k"),
+            grant_journal=_Journal(),
         )
 
     assert result.passed is False
@@ -266,6 +405,8 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
                 ssh_user="qa",
                 ssh_key="fake",
                 project_name="app",
+                server_handle="vps-1",
+                allocated_ports=frozenset({ALLOWED_PORT}),
             ),
         ),
         patch("src.consumers.qa.get_settings") as get_settings,
@@ -297,3 +438,70 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
     assert result.blocker is not None
     assert result.state_changes[0].resource == "POST http://app.example/users"
     assert result.state_changes[0].cleanup.succeeded is False
+
+
+class TestRevokeRewritesARealAuthorizedKeysFile:
+    """The revoke edits the file that authorizes the fleet, so a real one is used.
+
+    A fake connection can only confirm the shell text this code sends. What
+    matters here is what that text does to a file, and specifically what it does
+    when the filter behind it comes back empty: copying that result over
+    `authorized_keys` would take the fleet's own line with it and lock the
+    orchestrator out of the target permanently.
+    """
+
+    @staticmethod
+    def _revoke(tmp_path: Path, keys: Path):
+        from src.consumers import _qa_target
+
+        return patch.multiple(
+            _qa_target,
+            AUTHORIZED_KEYS=shlex.quote(str(keys)),
+            GRANT_LOCK=shlex.quote(str(tmp_path / "qa.lock")),
+            _connect=AsyncMock(return_value=_LocalShellConn()),
+            _import=lambda key: key,
+        )
+
+    @pytest.mark.asyncio
+    async def test_only_the_runs_own_line_is_removed(self, tmp_path):
+        keys = tmp_path / "authorized_keys"
+        keys.write_text("ssh-ed25519 FLEETKEY orchestrator\nssh-ed25519 RUNKEY marker-1\n")
+
+        with self._revoke(tmp_path, keys):
+            residual = await revoke_grant(
+                server_ip="127.0.0.1", ssh_user="qa", fleet_key="k", marker="marker-1"
+            )
+
+        assert residual is None
+        assert keys.read_text() == "ssh-ed25519 FLEETKEY orchestrator\n"
+
+    @pytest.mark.asyncio
+    async def test_a_marker_that_was_never_installed_reads_back_clean(self, tmp_path):
+        """The ambiguous case the sweep retries: nothing was installed after all."""
+        keys = tmp_path / "authorized_keys"
+        keys.write_text("ssh-ed25519 FLEETKEY orchestrator\n")
+
+        with self._revoke(tmp_path, keys):
+            residual = await revoke_grant(
+                server_ip="127.0.0.1", ssh_user="qa", fleet_key="k", marker="never-installed"
+            )
+
+        assert residual is None
+        assert keys.read_text() == "ssh-ed25519 FLEETKEY orchestrator\n"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_filter_result_is_never_copied_over_the_file(self, tmp_path):
+        """A file of nothing but our own line means the filter failed, not that we own it."""
+        keys = tmp_path / "authorized_keys"
+        keys.write_text("ssh-ed25519 RUNKEY marker-1\n")
+
+        with self._revoke(tmp_path, keys):
+            residual = await revoke_grant(
+                server_ip="127.0.0.1", ssh_user="qa", fleet_key="k", marker="marker-1"
+            )
+
+        # The file is left exactly as it was, and the readback says so — which is
+        # what puts the grant in front of the sweep instead of closing it.
+        assert keys.read_text() == "ssh-ed25519 RUNKEY marker-1\n"
+        assert residual is not None
+        assert "marker-1" in residual

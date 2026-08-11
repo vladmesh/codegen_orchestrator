@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-08-11 (6)
+
+- Gave a central QA run one explicit capability set and made every tool derive
+  its boundary from it. Before, each tool invented its own rule and three of
+  them were wrong on a shared host: `docker ps`/`images`/`stats` listed the
+  machine, `localhost_http_get` accepted any port in 1..65535, and path
+  containment was lexical, so a symlink in the deployed tree read a neighbour's
+  `.env` while still looking "inside". The set is resolved once per run from
+  deployment data — physical root via `readlink -f` on the target, containers
+  via the compose project label docker itself stamps, the application's
+  allocated ports, the public URL — and a tool whose boundary cannot come from
+  it is gone rather than patched.
+- Removed the host-wide command surface for that reason. `remote_exec` is now
+  read-only docker sub-commands (`diff`, `inspect`, `logs`, `port`, `stats`,
+  `top`) that must name a container in the set; `docker ps`, `docker images`,
+  `df`, `uptime` and `journalctl` describe the machine and no capability can
+  bound them.
+- Made path containment physical: the read resolves on the target and checks
+  membership of the physical root after resolution, in the same command, so a
+  symlink cannot widen it and a separate resolve cannot answer about a path the
+  read no longer uses. The secret-name check stays on top of that, not instead
+  of it.
+- Made the fact of a target grant durable. `QASshGrant`
+  (`shared/contracts/dto/qa_ssh_grant.py`) is written to the QA run's
+  `run_metadata` **before** the key install is attempted, so an append that
+  lands while its answer is lost still leaves a record; `RELEASED` is written
+  only after the target is read back. `sweep_qa_ssh_grants` in `qa-worker`
+  reconciles every unreleased record, and after three failed attempts writes the
+  run's outcome as a `qa_cleanup_failed` blocker. Residual access now also
+  reaches the run's result on the early-return path where the install itself
+  failed, which previously reported only `server_unavailable`.
+- Stopped the revoke from being able to empty `authorized_keys`. It rewrites the
+  file the fleet key itself is authorized by, and the old form copied the filter
+  result over it unconditionally — a filter that came back empty would have
+  taken the orchestrator's own line with it and locked the target out for good.
+  It now refuses to install an empty result, which leaves the marker readable
+  and hands the grant to the sweep instead of closing it.
+- Refused exploratory QA on a target whose run identity would be root. AC4 asked
+  for an unprivileged identity and `ServerCreate.ssh_user` defaults to `root`,
+  which made the two impossible to satisfy at once on such a host; the run is
+  now blocked as `server_unavailable` rather than performed privileged. Health-
+  only criteria are unaffected — they never SSH — and servers provisioned by the
+  current Ansible have a deploy user.
+
 ## 2026-08-11 (5)
 
 - Moved exploratory QA off the deploy target. It used to be a Claude Code CLI

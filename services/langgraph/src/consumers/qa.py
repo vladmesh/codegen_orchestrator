@@ -13,6 +13,7 @@ import httpx
 import structlog
 
 from shared.contracts.acceptance import parse_health_only_criteria
+from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
@@ -26,6 +27,7 @@ from ..config.settings import get_settings
 from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
 from ._live_work import live_work_settled
+from ._qa_grant_sweep import qa_grant_sweep_loop
 from ._qa_runner import (
     QAResult,
     QARuntimeConfig,
@@ -34,7 +36,7 @@ from ._qa_runner import (
     run_health_checks,
     run_qa_centrally,
 )
-from ._qa_target import QATarget
+from ._qa_target import PRIVILEGED_SSH_USERS, QATarget
 
 logger = structlog.get_logger(__name__)
 
@@ -75,7 +77,37 @@ async def _resolve_server_info(application_id: int, project_name: str) -> QAServ
         ssh_user=server.ssh_user,
         ssh_key=ssh_key,
         project_name=project_name,
+        server_handle=app.server_handle,
+        allocated_ports=frozenset(allocation["port"] for allocation in app.ports),
     )
+
+
+class RunGrantJournal:
+    """The durable record of one run's SSH grant, kept on the run itself.
+
+    The QA run row is where the deploy already leaves its handoff plan, so it is
+    where the grant belongs too: it outlives the process that issued the grant,
+    it is what the sweep reads, and it is queryable without a second store.
+    Writing a single top-level key is enough — the API merges `run_metadata`, so
+    this never disturbs the handoff sitting next to it.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        if not run_id:
+            raise ValueError("a QA grant needs a run to be recorded on")
+        self._run_id = run_id
+
+    async def write(self, grant: QASshGrant) -> None:
+        await api_client.patch(
+            f"runs/{self._run_id}",
+            json={"run_metadata": {QA_SSH_GRANT_KEY: grant.model_dump(mode="json")}},
+        )
+        logger.info(
+            "qa_ssh_grant_recorded",
+            run_id=self._run_id,
+            marker=grant.marker,
+            state=grant.state.value,
+        )
 
 
 def _resolve_qa_runtime() -> tuple[QARuntimeConfig | None, QABlocker | None]:
@@ -112,6 +144,29 @@ def _resolve_qa_runtime() -> tuple[QARuntimeConfig | None, QABlocker | None]:
     )
 
 
+def _unprivileged_identity_blocker(server_info: QAServerInfo) -> QABlocker | None:
+    """Refuse a target on which the run's identity would be privileged.
+
+    Exploratory QA borrows an account on the target, and the whole point of the
+    borrowed identity is that it is weaker than the fleet's. On a server whose
+    only SSH account is root there is no such identity to mint, so the run is
+    refused rather than performed as root. This is an infrastructure fact about
+    the host, not a defect in the user's project: it routes to human review as
+    the target being unavailable, and the story is not failed on it.
+    """
+    if server_info.ssh_user not in PRIVILEGED_SSH_USERS:
+        return None
+    return QABlocker(
+        category=QABlockerCategory.SERVER_UNAVAILABLE,
+        attempted="mint an unprivileged one-shot identity for the QA run",
+        sent=f"ssh_user={server_info.ssh_user} on {server_info.server_ip}",
+        received=(
+            "the target offers no unprivileged account for a QA run identity; "
+            "exploratory QA does not run as root"
+        ),
+    )
+
+
 async def _run_exploratory_qa(
     *,
     msg: QAMessage,
@@ -121,10 +176,20 @@ async def _run_exploratory_qa(
     """Run the central QA agent against one deployment.
 
     Returns either a product verdict or the blocker that stopped QA from
-    reaching one. Everything the platform owes the run — an LLM to think with, a
-    Telegram account that the bot admits — is settled before the agent starts,
-    so a run that cannot happen costs no LLM and issues no access on the target.
+    reaching one. Everything the platform owes the run — an unprivileged account
+    to borrow, an LLM to think with, a Telegram account that the bot admits — is
+    settled before the agent starts, so a run that cannot happen costs no LLM
+    and issues no access on the target.
     """
+    privileged = _unprivileged_identity_blocker(server_info)
+    if privileged:
+        logger.warning(
+            "qa_target_has_no_unprivileged_identity",
+            server_ip=server_info.server_ip,
+            ssh_user=server_info.ssh_user,
+        )
+        return None, privileged
+
     runtime, runtime_blocker = _resolve_qa_runtime()
     if runtime_blocker:
         return None, runtime_blocker
@@ -141,13 +206,16 @@ async def _run_exploratory_qa(
         target=QATarget(
             server_ip=server_info.server_ip,
             ssh_user=server_info.ssh_user,
+            server_handle=server_info.server_handle,
             project_name=server_info.project_name,
             deployed_url=msg.deployed_url,
+            allocated_ports=server_info.allocated_ports,
             bot_username=msg.bot_username,
         ),
         fleet_ssh_key=server_info.ssh_key,
         acceptance_criteria=acceptance_criteria,
         runtime=runtime,
+        grant_journal=RunGrantJournal(msg.run_id),
     )
     return qa_result, None
 
@@ -470,10 +538,14 @@ async def _update_run(
 def main():
     """Entry point for running as module.
 
-    Only the queue consumer now. The credential refresh loop that kept Claude
-    Code's OAuth token alive on every managed server is gone with the agent it
-    served: no target holds LLM credentials any more, so there is nothing out
-    there to refresh.
+    Two loops. The queue consumer runs QA. Beside it the grant sweep reconciles
+    every SSH grant a QA run may still be holding — including the ones this
+    process issued before it was last killed, which is the case the runner's own
+    `finally` cannot cover.
+
+    The credential refresh loop that kept Claude Code's OAuth token alive on
+    every managed server is gone with the agent it served: no target holds LLM
+    credentials any more, so there is nothing out there to refresh.
     """
     import asyncio
     import signal
@@ -483,7 +555,19 @@ def main():
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
 
-    asyncio.run(run_queue_worker("qa-worker", QA_QUEUE, process_qa_job, group=QA_GROUP))
+    async def _run():
+        sweep = asyncio.create_task(qa_grant_sweep_loop(), name="qa_grant_sweep")
+        consumer = asyncio.create_task(
+            run_queue_worker("qa-worker", QA_QUEUE, process_qa_job, group=QA_GROUP),
+            name="qa_consumer",
+        )
+        done, pending = await asyncio.wait([sweep, consumer], return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:
+            task.result()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

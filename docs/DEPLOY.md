@@ -287,10 +287,26 @@ for it: no Claude CLI, no LLM credentials, no Telethon session.
 
 **What the run does to the target**: for each run the runtime mints a one-shot ed25519 key, installs
 it in the deploy user's `authorized_keys` with `restrict` and an `expiry-time`, and removes it when
-the run ends — reading the file back to prove it is gone. The agent never holds that key or the
-fleet server key; it reaches the target only through the typed tools in
-`services/langgraph/src/agents/qa/tools.py` (public GET, loopback GET, scoped file read, allowlisted
-read-only command, container logs/inspect, Telegram probe).
+the run ends — reading the file back to prove it is gone. The fact that a key may be installed is
+written to the QA run's `run_metadata` (`qa_ssh_grant`) *before* the install is attempted, so an
+install whose answer is lost still leaves a record; a sweep in `qa-worker` reconciles every
+unreleased record every 5 minutes and, after 3 failed attempts, replaces the run's outcome with a
+`qa_cleanup_failed` blocker.
+
+**Exploratory QA does not run as root.** The run identity is an unprivileged account on the target,
+so a server whose `ssh_user` is `root` (the default for a server record created without one) is
+refused exploratory QA with `server_unavailable`. Health-only criteria still run — they never SSH.
+Servers provisioned by the current Ansible have a deploy user and are unaffected.
+
+**What the agent can see** is one capability set, resolved per run from deployment data before any
+tool exists (`resolve_capabilities`): the physical root of the deployment directory as the target
+resolves it, the containers docker reports for this compose project, the loopback ports allocated to
+this application, and the public URL. Every tool in
+`services/langgraph/src/agents/qa/tools.py` derives its boundary from that set and from nothing
+else — public GET, loopback GET on an allocated port, a file read contained in the physical root,
+read-only docker sub-commands against a container of this deployment, container logs/inspect,
+Telegram probe. There is no host-wide command (`docker ps`, `df`, `journalctl`): those describe the
+machine, which nothing in the set can bound. The agent never holds the run key or the fleet key.
 
 **Already-provisioned servers**: the `qa_runner` role is gone, so nothing new is installed. Servers
 provisioned before this change still carry what it left behind — the Claude Code CLI under the

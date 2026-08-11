@@ -30,7 +30,7 @@ from shared.telegram_bot_probe import (
     parse_bot_replies,
 )
 
-from ...consumers._qa_target import QATarget, QATargetError, QATargetSession
+from ...consumers._qa_target import QACapabilities, QATargetError, QATargetSession
 from ...consumers._qa_workspace import QAWorkspace
 
 logger = structlog.get_logger(__name__)
@@ -44,11 +44,18 @@ def _truncate(text: str) -> str:
 
 
 def _remote_tools(session: QATargetSession, record, refuse) -> dict:
-    """The calls that leave the QA runtime, each scoped to one target."""
-    target = session.target
+    """The calls that leave the QA runtime, each bounded by the capability set.
+
+    None of these carries a rule of its own: `http_get` can only address the
+    deployed URL in the set, `localhost_http_get` only a port in it,
+    `remote_read` only what resolves inside its physical root, and the docker
+    calls only a container that is in it.
+    """
+    capabilities = session.capabilities
 
     async def http_get(path: str) -> dict:
-        url = f"{target.deployed_url.rstrip('/')}{path if path.startswith('/') else '/' + path}"
+        base = capabilities.deployed_url.rstrip("/")
+        url = f"{base}{path if path.startswith('/') else '/' + path}"
         try:
             async with httpx.AsyncClient(
                 timeout=PUBLIC_PROBE_TIMEOUT, follow_redirects=False
@@ -134,7 +141,7 @@ def build_qa_tools(
             has a bot to talk to. The agent never sees them.
         probe_runner: override for the Telegram child process, for tests.
     """
-    target = session.target
+    capabilities = session.capabilities
     run_probe = probe_runner or run_probe_script
 
     def record(tool: str, request: str, response: str) -> None:
@@ -146,8 +153,8 @@ def build_qa_tools(
         return {"error": str(error)}
 
     async def telegram_probe(message: str) -> dict:
-        request = f"@{target.bot_username} <- {message}"
-        script = build_bot_message_script(target.bot_username, message)
+        request = f"@{capabilities.bot_username} <- {message}"
+        script = build_bot_message_script(capabilities.bot_username, message)
         run: ProbeRun = await run_probe(
             script, env=telethon_env, timeout=TELEGRAM_REPLY_TIMEOUT + 30
         )
@@ -168,11 +175,11 @@ def build_qa_tools(
         return f"QA report stored ({len(markdown)} characters)."
 
     tools = _describe(
-        target,
+        session.capabilities,
         _remote_tools(session, record, refuse),
         write_qa_report,
     )
-    if target.bot_username:
+    if capabilities.bot_username:
         if not telethon_env:
             raise ValueError("a bot target needs the QA account's Telethon credentials")
         tools.append(
@@ -180,53 +187,55 @@ def build_qa_tools(
                 coroutine=telegram_probe,
                 name="telegram_probe",
                 description=(
-                    f"Send a message to @{target.bot_username} as the platform's QA Telegram "
-                    "account and return the bot's replies. This is the only way to talk to the "
-                    "bot; you never hold the account's credentials."
+                    f"Send a message to @{capabilities.bot_username} as the platform's QA "
+                    "Telegram account and return the bot's replies. This is the only way to talk "
+                    "to the bot; you never hold the account's credentials."
                 ),
             )
         )
     return tools
 
 
-def _descriptions(target: QATarget) -> dict[str, str]:
-    """What each tool promises the agent, in the target's own terms."""
+def _descriptions(capabilities: QACapabilities) -> dict[str, str]:
+    """What each tool promises the agent, stated as the capability that bounds it."""
+    containers = ", ".join(sorted(capabilities.containers)) or "(none running)"
+    ports = ", ".join(str(port) for port in sorted(capabilities.loopback_ports)) or "(none)"
     return {
         "http_get": (
             "GET a path on the deployed application over its public URL "
-            f"({target.deployed_url}). Returns status, headers and body. There is no way to "
-            "send POST, PUT, PATCH or DELETE — QA never writes to the application."
+            f"({capabilities.deployed_url}). Returns status, headers and body. There is no way "
+            "to send POST, PUT, PATCH or DELETE — QA never writes to the application."
         ),
         "localhost_http_get": (
             "GET a path on the target's loopback interface, for a service that is not "
-            "published publicly. Arguments: port (1-65535) and path starting with '/'. "
+            f"published publicly. Only ports allocated to this deployment work: {ports}. "
             "GET only, like http_get."
         ),
         "remote_read": (
-            "Read a file from the deployment directory on the target "
-            f"({target.service_dir}). Paths outside it, and files holding deployment "
-            "credentials, are refused."
+            "Read a file from this deployment's directory on the target "
+            f"({capabilities.physical_root}). The path is resolved on the target, so a symlink "
+            "leading out of the deployment is refused, as are files holding deployment "
+            "credentials."
         ),
         "remote_exec": (
-            "Run one read-only command on the target as an argument vector, "
-            'e.g. ["docker", "ps", "-a"]. There is no shell: no pipes, no redirection, no '
-            "globbing. Only read-only programs are accepted and anything that could change "
-            "the deployment is refused."
+            "Run one read-only docker command against a container of this deployment, as an "
+            'argument vector, e.g. ["docker", "top", "<container>"]. Sub-commands: diff, '
+            "inspect, logs, port, stats, top. There is no shell and no command that describes "
+            f"the host. Containers you can name: {containers}."
         ),
-        "container_logs": (
-            "Tail the log of one container belonging to this deployment "
-            f"(names start with '{target.project_name}-')."
-        ),
+        "container_logs": f"Tail the log of one of this deployment's containers: {containers}.",
         "container_inspect": (
-            "Inspect the state of one container of this deployment: running, health, "
-            "exit code, restart count."
+            "Inspect the state of one of this deployment's containers: running, health, "
+            f"exit code, restart count. Containers: {containers}."
         ),
     }
 
 
-def _describe(target: QATarget, remote_tools: dict, write_report) -> list[StructuredTool]:
+def _describe(
+    capabilities: QACapabilities, remote_tools: dict, write_report
+) -> list[StructuredTool]:
     """Bind the run's closures to their names and descriptions."""
-    descriptions = _descriptions(target)
+    descriptions = _descriptions(capabilities)
     tools = [
         StructuredTool.from_function(coroutine=fn, name=name, description=descriptions[name])
         for name, fn in remote_tools.items()

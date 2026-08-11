@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from http import HTTPStatus
 from typing import Any
 
@@ -119,6 +120,19 @@ class LanggraphAPIClient(InternalAPIClient):
     async def get_run(self, run_id: str) -> RunDTO:
         data = await self._get_json(f"runs/{run_id}")
         return RunDTO.model_validate(data)
+
+    async def list_runs(self, *, run_type: str, started_after: datetime) -> list[RunDTO]:
+        """Runs of one type started since a moment, newest first.
+
+        The window is what keeps the QA grant sweep bounded: a grant outlives
+        its run by minutes, never by days, so there is no reason to read the
+        whole history to find the ones still open.
+        """
+        data = await self._get_json(
+            "runs/",
+            params={"run_type": run_type, "started_after": started_after.isoformat()},
+        )
+        return [RunDTO.model_validate(run) for run in data]
 
     async def start_run(self, run_id: str) -> DeployRunStart:
         """Take the run to RUNNING as one locked decision, or learn it is over."""

@@ -216,7 +216,7 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
 - **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (auto-merge on green)
 - **DevOps Subgraph**: typed environment-contract resolution and Ansible deployment via infra-service. Deploy failures use deterministic typed outcomes; unclassified subgraph and smoke failures resolve to RETRY. A future remediation agent may analyze failed runs asynchronously, outside the deploy path.
-- **QA Consumer**: runs the QA agent centrally and reaches the deployment only through typed read-only tools over a one-shot SSH identity issued for the run. Tests endpoints, checks responses against story description. Pass → story completed. Fail → creates fix task, loops back to engineering.
+- **QA Consumer**: runs the QA agent centrally and reaches the deployment only through typed read-only tools, each bounded by a capability set resolved from that deployment, over a one-shot unprivileged SSH identity issued for the run and reconciled by a sweep. Tests endpoints, checks responses against story description. Pass → story completed. Fail → creates fix task, loops back to engineering.
 - **Unified Redis Consumers**: All 10 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)
 
 ## External dependencies

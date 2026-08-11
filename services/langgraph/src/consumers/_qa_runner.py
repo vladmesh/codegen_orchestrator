@@ -36,7 +36,9 @@ from ..agents.qa.graph import create_qa_graph
 from ..agents.qa.tools import build_qa_tools
 from ..prompts.qa import build_qa_prompt
 from ._qa_target import (
+    QACapabilityError,
     QAGrantError,
+    QAGrantJournal,
     QAGrantOutcome,
     QATarget,
     new_grant_marker,
@@ -513,6 +515,7 @@ async def run_qa_centrally(
     fleet_ssh_key: str,
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
+    grant_journal: QAGrantJournal,
     timeout: int = QA_TIMEOUT,
 ) -> QAResult:
     """Run exploratory QA from the orchestrator against one deployment.
@@ -520,7 +523,10 @@ async def run_qa_centrally(
     The run gets an isolated workspace here and a one-shot SSH identity there.
     Both are destroyed before this returns, on every path out — a raised error,
     a timeout, a cancelled run — and what could not be destroyed is reported as
-    a blocker rather than dropped.
+    a blocker on every one of those paths, including the early return when the
+    identity could not be issued at all. That last case is the one that used to
+    be silent: an install whose answer was lost may have landed, so it is
+    residue until something reads the target back.
 
     Args:
         target: the single deployment this run may reach.
@@ -528,6 +534,7 @@ async def run_qa_centrally(
             revoke the run's own identity. It is never given to the agent.
         acceptance_criteria: regression test criteria from the repository.
         runtime: LLM configuration and the QA Telegram account credentials.
+        grant_journal: where the durable record of the grant is written.
         timeout: seconds the agent is given to reach a verdict.
     """
     grant = QAGrantOutcome(marker=new_grant_marker())
@@ -535,7 +542,10 @@ async def run_qa_centrally(
     try:
         with qa_workspace() as workspace:
             async with qa_target_grant(
-                target=target, fleet_ssh_key=fleet_ssh_key, outcome=grant
+                target=target,
+                fleet_ssh_key=fleet_ssh_key,
+                outcome=grant,
+                journal=grant_journal,
             ) as session:
                 logger.info(
                     "qa_central_run_started",
@@ -559,17 +569,23 @@ async def run_qa_centrally(
             )
             if write:
                 qa_result = _block_forbidden_application_write(qa_result, write)
-    except QAGrantError as exc:
+    except (QAGrantError, QACapabilityError) as exc:
         logger.error("qa_grant_failed", server_ip=target.server_ip, error=str(exc))
-        return QAResult(
-            passed=False,
-            summary=f"QA could not obtain access to {target.server_ip}: {exc}",
-            blocker=QABlocker(
-                category=QABlockerCategory.SERVER_UNAVAILABLE,
-                attempted="issue a one-shot QA identity on the target",
-                sent=f"authorized_keys entry {grant.marker} on {target.server_ip}",
-                received=str(exc),
+        # The residue goes through the same path as every other exit: an
+        # unconfirmed install is access this run may be holding, and a run that
+        # reports only "server unavailable" hides it.
+        return _apply_cleanup_residue(
+            QAResult(
+                passed=False,
+                summary=f"QA could not obtain access to {target.server_ip}: {exc}",
+                blocker=QABlocker(
+                    category=QABlockerCategory.SERVER_UNAVAILABLE,
+                    attempted="issue a one-shot QA identity on the target",
+                    sent=f"authorized_keys entry {grant.marker} on {target.server_ip}",
+                    received=str(exc),
+                ),
             ),
+            _residues(grant, workspace),
         )
     except Exception as exc:
         logger.exception("qa_central_run_failed", server_ip=target.server_ip)

@@ -222,13 +222,15 @@ If the developer agent encounters an unsolvable problem:
 **How it works**:
 1. QA consumer receives `QAMessage` with `project_id`, `deployed_url`, `application_id`, `run_id`, optional `story_id` and `bot_username`
 2. Criteria that only state GET expectations are decided directly over HTTP — no agent, no LLM
-3. Otherwise the run is exploratory: the consumer creates an isolated central workspace and mints a one-shot SSH identity on the target (`restrict`, `expiry-time`), installed and removed with the fleet key by the runner
-4. A QA ReactAgent runs **in `qa-worker`**, prompted with the acceptance criteria and deployed URL. It reaches the target only through typed tools: public GET, loopback GET, scoped file read, allowlisted read-only command, container logs/inspect, Telegram probe. No shell, no server key, one target
-5. Telegram bots are tested by the runtime, which sends the agent's message as the QA account and returns the replies. The agent never holds the session
-6. The agent writes `QA_REPORT.md` into the central workspace and returns JSON: `{"pass": bool, "checks": [...], "summary": "..."}`
-7. Workspace and target grant are destroyed on every path out, including a failed or interrupted run; anything that survives is reported as a `qa_cleanup_failed` blocker
-8. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR)
-9. QA consumer does NOT transition stories or create tasks — it is a pure technical worker
+3. Otherwise the run is exploratory. A target whose `ssh_user` is `root` is refused here — QA does not run privileged
+4. The consumer creates an isolated central workspace, writes a durable `qa_ssh_grant` record on the QA run, then mints a one-shot SSH identity on the target (`restrict`, `expiry-time`), installed and removed with the fleet key by the runner
+5. The run's capability set is resolved from deployment data: physical root of the deployment directory (`readlink -f` on the target), containers of this compose project (`docker ps --filter label=com.docker.compose.project=...`), the application's allocated ports, the public URL
+6. A QA ReactAgent runs **in `qa-worker`**, prompted with the acceptance criteria and deployed URL. Every tool it has is bounded by one element of that set: public GET, loopback GET on an allocated port, a read contained in the physical root, read-only docker sub-commands against a container of this deployment, container logs/inspect, Telegram probe. No shell, no server key, no host-wide view
+7. Telegram bots are tested by the runtime, which sends the agent's message as the QA account and returns the replies. The agent never holds the session
+8. The agent writes `QA_REPORT.md` into the central workspace and returns JSON: `{"pass": bool, "checks": [...], "summary": "..."}`
+9. Workspace and target grant are destroyed on every path out, including a failed or interrupted run; anything that survives is reported as a `qa_cleanup_failed` blocker. A grant the run could not settle stays on the record for the `qa-worker` sweep
+10. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR)
+11. QA consumer does NOT transition stories or create tasks — it is a pure technical worker
 
 **Supervisor routing** (`supervise_testing_stories()` in scheduler, 30s poll):
 - Reads QA run outcome from DB
@@ -335,5 +337,6 @@ todo → in_dev → in_ci → testing → done
 ### What QA sees
 - Full story description (used to build QA prompt)
 - Deployed service URL
-- A typed tool set bound to exactly one deployment, and nothing else
+- A capability set resolved from this deployment: physical root, its containers, its allocated ports, its URL
+- A typed tool set whose every boundary comes from that set, and nothing else
 - Bot username (if Telegram bot project — enables the Telegram probe tool)

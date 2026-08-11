@@ -1187,6 +1187,26 @@ already admit the QA identity, a `TemporaryAccessRequest` (`env_key`, `subject`,
 `supervise_testing_stories` finishes any handoff left unfinished from this plan, so no step of it
 depends on the process that planned it still being alive.
 
+### QA SSH grant
+
+`shared/contracts/dto/qa_ssh_grant.py`. The SSH reach a central QA run holds on its target, written
+into the same QA run's `run_metadata` under `qa_ssh_grant`. The record is created **before** the key
+is installed, not after: an append that lands while its answer is lost would otherwise be access
+nobody knows about. `QASshGrant` carries the marker identifying exactly this run's `authorized_keys`
+line, the server it is on, the account it is under, `state`, `revoke_attempts` and `detail`.
+
+`ISSUING` means a key may be on the target. `OPEN` means the install returned success. Only a
+readback proving the marker is gone writes `RELEASED` — nothing infers removal from a revoke that
+was merely attempted. `sweep_qa_ssh_grants` (in `qa-worker`, every 5 minutes over QA runs started in
+the last 24h) drives every unreleased record to removal, whatever left it that way, and after
+`GRANT_SWEEP_ESCALATE_AFTER` failed attempts writes the run's outcome as a `qa_cleanup_failed`
+blocker so residual access reaches a human.
+
+This is not a second `temporary_access`: that grant hands a Telegram identity to a deployed bot and
+is settled by deploys, a different subject with a different lifecycle. What is reused from it is the
+shape — a durable record, a sweep that reconciles from state rather than from the happy path, and a
+failure that lands on the run rather than in a log line.
+
 
 ---
 
@@ -1226,7 +1246,7 @@ Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the
 
 **Bot username:** `Repository.bot_username` is the stored source. `POST /api/projects/{id}/telegram/token` writes it there from the `getMe` response in the same transaction that stores the token, and both producers read it off the same record they read the criteria from. A project without a primary repository gets 409 instead of a half-bound token. The deploy smoke check also reports a `bot_username` on `DeployRunResult`; the supervisor uses it only when the repository has none. A tg_bot project reaching QA without a username errors the run, so a write that silently does nothing turns a working bot into a failed story — the endpoint refuses instead.
 
-**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to the central QA agent instead (`run_qa_centrally`), which reaches the deployment through typed read-only tools over a one-shot identity issued for that run.
+**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to the central QA agent instead (`run_qa_centrally`), which reaches the deployment through typed read-only tools bounded by the run's capability set, over a one-shot unprivileged identity issued for that run.
 
 `returns <status>` means the path itself answers that status, so the checks do not follow redirects: a criterion naming a redirect is checked against the redirect, and a criterion naming 200 is not satisfied by a path that redirects to a 200. Checks are retried while the service is still coming up.
 

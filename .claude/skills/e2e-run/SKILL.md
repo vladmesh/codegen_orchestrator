@@ -560,11 +560,14 @@ curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/
 **Timeouts**: QA has a 20-minute timeout per run. Poll story status every 30s.
 
 **If QA fails**: Check qa-worker logs for the reason. Common issues:
-- SSH connection failed (server unreachable, or the run's one-shot identity could not be installed)
+- `server_unavailable` — the target is unreachable, the run's one-shot identity could not be
+  installed, its deployment directory does not resolve, or the server's `ssh_user` is `root`
+  (exploratory QA does not run privileged)
 - `claude_unavailable` — `QA_LLM_*` not set in the orchestrator `.env`, so no QA agent could start
 - `missing_telethon_credentials` — `TELETHON_*` not set, so a bot project cannot be tested
 - QA agent produced unparseable output (non-JSON final message)
-- `qa_cleanup_failed` — the run's workspace or target access could not be proven gone
+- `qa_cleanup_failed` — the run's workspace or target access could not be proven gone; check the
+  `qa_ssh_grant` record on the run and the `qa_grant_sweep_*` logs in qa-worker
 
 **If QA is stuck**: Check if the qa:queue message was consumed:
 ```bash
