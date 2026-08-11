@@ -26,6 +26,11 @@ class AllocationFailureReason(StrEnum):
     INSUFFICIENT_RESERVED_MEMORY = "insufficient_reserved_memory"
     IMPOSSIBLE_CAPACITY = "impossible_capacity"
     NO_FRESH_METRICS = "no_fresh_metrics"
+    # No candidate host had finished its software provisioning, or the only ones
+    # that had were carrying a provisioning failure. This is an unfinished host
+    # build, not a capacity shortage, and the scheduler must not describe it to a
+    # user as one — see `shared/server_admission.py`.
+    SERVER_NOT_PROVISIONED = "server_not_provisioned"
 
 
 class EngineeringRunResult(BaseModel):
@@ -64,6 +69,13 @@ class DeployRunResult(BaseModel):
     and `smoke_result` are opaque diagnostic blobs from the DevOps subgraph; they
     are stored for observability and never routed on. `missing_user_secrets` is
     the structured list the scheduler reads on a WAITING_FOR_USER_SECRET outcome.
+
+    A deploy that could not place the application carries the allocation
+    classification across this boundary instead of erasing it into an error
+    string: `allocation_failure_reason` and the admission budget the attempt
+    asked for are what let the scheduler tell "the platform could not host this
+    yet" from "this project is broken", and re-check admission before it tries
+    again.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -83,6 +95,36 @@ class DeployRunResult(BaseModel):
     action: DeployAction | None = None
     deployment_result: dict | None = None
     smoke_result: dict | None = None
+    allocation_failure_reason: AllocationFailureReason | None = None
+    allocation_required_ram_mb: int | None = None
+    allocation_min_disk_mb: int | None = None
+
+    @model_validator(mode="after")
+    def _infrastructure_wait_carries_its_classification(self) -> DeployRunResult:
+        """A wait the scheduler cannot re-check is not a wait, it is a stall.
+
+        `WAITING_INFRASTRUCTURE` exists so an allocation refusal keeps its type
+        past this boundary. A producer that sets the outcome without the reason
+        and the admission budget leaves the scheduler holding a story it can
+        neither resume nor distinguish from a broken project, so the contract
+        refuses it here rather than letting it be discovered in a supervisor tick.
+        """
+        if self.deploy_outcome is not DeployOutcome.WAITING_INFRASTRUCTURE:
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("allocation_failure_reason", self.allocation_failure_reason),
+                ("allocation_required_ram_mb", self.allocation_required_ram_mb),
+                ("allocation_min_disk_mb", self.allocation_min_disk_mb),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                f"{DeployOutcome.WAITING_INFRASTRUCTURE.value} requires {', '.join(missing)}"
+            )
+        return self
 
 
 class QAFailedCheck(BaseModel):

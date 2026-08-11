@@ -317,6 +317,27 @@ async def test_start_story():
 
 
 @pytest.mark.asyncio
+async def test_deploying_story_enters_human_review():
+    """The endpoint the supervisor escalates a refused deploy through.
+
+    It is an action path, not a status value — posting `waiting_human_review`
+    reaches no route at all — and it has to accept a story that is DEPLOYING.
+    """
+    story = _make_story(id="story-abc", status="deploying")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/human-review")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "waiting_human_review"
+
+
+@pytest.mark.asyncio
 async def test_start_story_invalid_transition():
     story = _make_story(id="story-abc", status="archived")
     session = _mock_session(scalar_one_or_none=story)

@@ -1007,6 +1007,13 @@ class DeployOutcome(StrEnum):
     CODE_FIX = "code_fix"
     RETRY = "retry"
     GIVE_UP = "give_up"
+    # No server could be allocated, for a reason that is about the platform and
+    # not about the project. The story is not failed: it stays DEPLOYING and is
+    # re-dispatched once admission accepts a target again. The result carries
+    # `allocation_failure_reason` and the admission budget — the contract refuses
+    # this outcome without them, so the classification cannot be lost between the
+    # deploy consumer and the scheduler.
+    WAITING_INFRASTRUCTURE = "waiting_infrastructure"
 
 
 class DeployMessage(BaseMessage):
@@ -1460,7 +1467,7 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 
 **Delivery of `po:proactive`**: the bot consumes without auto-ack and claims the pending entries of its previous incarnation on startup, so a delivery interrupted by a restart is picked up rather than lost. `telegram_bot/src/proactive.py::process_proactive_entry` is the single place that settles an entry: it acks only after the message was delivered or its attempts ran out, and the attempt bound is the group's PEL delivery count, which survives the restart (`PROACTIVE_MAX_ATTEMPTS` inside one delivery, `PROACTIVE_MAX_DELIVERIES` across them). Exhaustion raises an admin alert with story, project and event; success and exhaustion are distinct log events (`proactive_message_sent` / `proactive_message_delivery_exhausted`).
 
-**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`. User-facing resource lifecycle events are `task_waiting_resources`, `task_impossible_capacity`, and `task_resources_resumed`; the scheduler supplies context, PO writes the user text.
+**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`. User-facing resource lifecycle events are `task_waiting_resources`, `task_waiting_infrastructure`, `task_impossible_capacity`, `story_impossible_capacity` (the deploy path's equivalent, emitted when a deploy is escalated to operators), and `task_resources_resumed`; the scheduler supplies context, PO writes the user text. `task_waiting_infrastructure` is the non-capacity member of that set: it is emitted when admission refused every server because its software provisioning is unfinished or failed (`AllocationFailureReason.SERVER_NOT_PROVISIONED`), and it must not be worded as a capacity shortage or as a defect in the user's project.
 
 ---
 

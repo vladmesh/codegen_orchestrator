@@ -15,6 +15,7 @@ from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.user import UserDTO
+from shared.server_admission import PROVISIONING_PHASE_COMPLETE, PROVISIONING_PHASE_LABEL
 
 _NOW = datetime.now(UTC)
 _PROJECT_ID = uuid.uuid4()
@@ -120,6 +121,7 @@ def make_task_event(**overrides) -> TaskEventDTO:
 
 
 def make_server(**overrides) -> ServerDTO:
+    """A finished managed host. Override `labels` to model an unprovisioned one."""
     base = {
         "handle": "srv-1",
         "host": "srv-1.example.com",
@@ -129,6 +131,9 @@ def make_server(**overrides) -> ServerDTO:
         "is_managed": True,
         "capacity_ram_mb": 4096,
         "capacity_disk_mb": 50000,
+        # Admission refuses a host whose software provisioning is not recorded
+        # complete, so the default server here is one that finished provisioning.
+        "labels": {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
         "created_at": _NOW,
         "updated_at": _NOW,
     }

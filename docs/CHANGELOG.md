@@ -1,5 +1,108 @@
 # Changelog
 
+## 2026-08-11 (4)
+
+- Closed the last way past admission: reuse. A project already bound to a server
+  skipped the rule entirely — `ensure_project_allocations()` fetched the bound
+  host, read no incidents, and handed back its allocations or took a fresh port
+  on it for a newly declared module. So a redeploy landed on a host whose
+  provisioning had restarted or broken, which is the placement the rule exists to
+  refuse. The bound host now passes the same `shared/server_admission.py`
+  predicate over the same snapshot of active incidents, before any allocation is
+  returned and before any port is taken.
+- Refused reuse through the existing typed `AllocationError` with the admission
+  budget, so it travels the route every other refusal travels — a bounded
+  infrastructure wait — instead of reaching the deploy path as a `GIVE_UP` that
+  would fail the user's story. No new contract, reason or outcome.
+- Bounded the resume-and-refuse cycle that reuse makes reachable: resuming asks
+  whether any server is admissible, while a bound project is refused by the one
+  it sits on, so a fleet with one healthy host and one broken host the project is
+  pinned to would re-dispatch and be refused forever. The deploy wait now checks
+  `supervisor.resource_wait_timeout_minutes` before admissibility, as the
+  engineering wait already did, and the story reaches a human.
+- Extended the shared admission matrix to the reuse shapes — existing
+  allocations returned whole, and a new module taking a port on the bound host —
+  so all placement paths are checked against the same state table.
+
+## 2026-08-11 (3)
+
+- Gave every refusal disposition its own behaviour on both routing paths. The
+  deploy path answered all of them with one infrastructure wait, so a request
+  larger than any managed server — classified `OPERATOR_REVIEW` precisely
+  because waiting is pointless — sat in DEPLOYING being re-polled forever with
+  no human told and no way out. `shared/allocation_disposition.py` now carries
+  `REFUSAL_ROUTING`, a disposition × path table with exactly one behaviour per
+  cell and no behaviour repeated within a path, and both routers branch on it:
+  `_route_refused_deploy` in the scheduler's deploy routing and
+  `_park_task_waiting_resources` on the engineering side. A disposition that
+  starts routing like its neighbour now fails a suite.
+- Routed `OPERATOR_REVIEW` to the human-review queue on the deploy path, the
+  same queue a quarantined QA story reaches and entered the same way: the reason
+  is recorded on the story, the `human-review` action moves it, operators are
+  alerted, and the owner is told the request needs an operator rather than being
+  left watching a wait. `StoryStatus.DEPLOYING → WAITING_HUMAN_REVIEW` is now a
+  valid transition, which is what that route needed; `fail_story` remains out of
+  reach for every infrastructure disposition.
+- Named `TECHNICAL_FAILURE`'s behaviour instead of leaving it a leftover: a fleet
+  the platform cannot see is escalated to a human with an operator alert and no
+  message to the owner, on both paths. It does not wait (the wait's own re-check
+  needs the missing metrics) and no longer spends engineering iterations on a run
+  the allocator will refuse at the same point.
+- Bounded the deploy infrastructure wait with
+  `supervisor.resource_wait_timeout_minutes`, the bound the engineering wait
+  already had, and carried the wait's start across re-dispatches in
+  `run_metadata`. A refused deploy with no `head_sha` — which no wait can supply
+  — goes to a human immediately instead of polling forever.
+- Fixed story escalations that reached nobody: the supervisor posted
+  `waiting_human_review` as a story transition, which is a status value and not
+  a route, so the API answered 404. Every escalation now uses the `human-review`
+  action endpoint.
+
+## 2026-08-11 (2)
+
+- Stopped an allocation refusal from terminating a user's story on the deploy
+  path. A deploy that could not be placed used to have its typed reason
+  flattened into an error string and recorded as `GIVE_UP`, which the scheduler
+  turns into a failed story and a product-failure alert — so an unfinished host
+  build reached the owner as a broken project. The classification now survives
+  the boundary: `DeployOutcome.WAITING_INFRASTRUCTURE` carries the
+  `AllocationFailureReason` and the admission budget the attempt asked for, and
+  the contract refuses that outcome without them. The story stays DEPLOYING and
+  the deploy is re-dispatched once the shared admission rule accepts a target
+  again.
+- Put the rule that decides this in one place, `shared/allocation_disposition.py`.
+  Every allocation reason is classified there explicitly as infrastructure —
+  a wait, an operator review, or a technical failure — and the precedence is
+  stated once: an allocation refusal outranks a product failure seen in the same
+  attempt. Both routing paths call it and neither keeps a reason list of its own,
+  so the engineering wait and the deploy wait cannot drift apart the way they
+  just did. `shared/tests/allocation_routing_cases.py` pins the wire shape both
+  sides agree on.
+
+## 2026-08-11
+
+- Made a server's provisioning state part of admission, so a project application
+  can no longer be placed on a host that has not finished (or has failed) its
+  software installation. `provisioning_phase` — written by the provisioner into
+  `servers.labels` and until now read by nobody — is required to be `complete`,
+  and a server carrying an active `PROVISIONING_FAILED` incident is refused even
+  when it is. The rule is fail-closed: a missing, empty or unknown phase counts
+  as unfinished, because an unknown provisioning state is not readiness. It
+  lives once, in `shared/server_admission.py`, and both decision points now call
+  it — the allocator that picks the host (`_find_suitable_server`) and the
+  scheduler rule that lets a capacity-parked task resume (`_resources_available`)
+  — so "resources became available" can no longer mean something different from
+  "this server may take an application". One shared state matrix
+  (`shared/tests/server_admission_cases.py`) is asserted against the predicate
+  and both paths, so a future divergence fails a suite.
+- Kept an unfinished host build an infrastructure situation rather than a
+  product defect. Admission that fails for this reason raises the new
+  `AllocationFailureReason.SERVER_NOT_PROVISIONED` instead of collapsing into a
+  memory shortage; the task parks in `waiting_resources` on the existing wait
+  path — no engineering retry, no story failure, no admin product-failure alert
+  — and the owner is told through a new `task_waiting_infrastructure` PO event
+  that says the machine is still being prepared, never that capacity ran out.
+
 ## 2026-08-10
 
 - Separated the internal user id from the Telegram chat id in every queue and PO

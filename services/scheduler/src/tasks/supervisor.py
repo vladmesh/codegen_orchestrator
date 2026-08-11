@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
 import hashlib
 import json
 from typing import TYPE_CHECKING
@@ -11,6 +12,13 @@ import uuid
 from pydantic import ValidationError
 import structlog
 
+from shared.allocation_disposition import (
+    PlacementPath,
+    RefusalRouting,
+    attempt_disposition,
+    may_terminate_story,
+    refusal_routing,
+)
 from shared.contracts.bot_access import (
     QA_TEST_TELEGRAM_ID,
     TEST_IDENTITY_ENV_KEY,
@@ -33,12 +41,16 @@ from shared.contracts.dto.run_result import (
     QABlockerCategory,
     QARunResult,
 )
-from shared.contracts.dto.server import ServerStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
+from shared.contracts.queues.deploy import (
+    DeployAction,
+    DeployMessage,
+    DeployOutcome,
+    DeployTrigger,
+)
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.queues.qa import QAMessage, QAOutcome
@@ -51,6 +63,10 @@ from shared.queues import (
     QA_QUEUE,
 )
 from shared.redis_client import RedisStreamClient
+from shared.server_admission import (
+    provisioning_failed_server_handles,
+    server_admits_application,
+)
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
@@ -63,6 +79,30 @@ logger = structlog.get_logger(__name__)
 
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
 DEPLOY_RETRY_KEY_PREFIX = "deploy:retries:"
+
+#: Where a deploy that carried an infrastructure wait forward started waiting.
+#: Stored in `run_metadata` so the bound survives every re-dispatch.
+INFRASTRUCTURE_WAIT_STARTED_KEY = "infrastructure_wait_started_at"
+
+
+class RefusedDeployAction(StrEnum):
+    """What the deploy path did with one refused placement, for the tick counts.
+
+    Three outcomes, because the shared table gives the refusal dispositions three
+    behaviours. An escalation counted as a wait would be the same collapse in the
+    reporting that the routing no longer allows.
+    """
+
+    REDISPATCHED = "redispatched"
+    WAITING = "waiting"
+    ESCALATED = "escalated"
+
+
+#: The API exposes story transitions as action endpoints, not as status values:
+#: `POST stories/{id}/human-review` is what moves a story into the human-review
+#: queue. Posting `waiting_human_review` instead is a 404 — an escalation that
+#: reaches nobody — so the action lives here once and every caller uses it.
+STORY_HUMAN_REVIEW_ACTION = "human-review"
 
 
 def _max_deploy_retries() -> int:
@@ -263,7 +303,7 @@ async def supervise_failed_tasks(
 
             if story_id:
                 try:
-                    await api_client.transition_story(story_id, StoryStatus.WAITING_HUMAN_REVIEW)
+                    await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
                 except Exception:
                     log.warning(
                         "story_whr_on_retries_exhausted_failed",
@@ -282,7 +322,19 @@ async def _park_task_waiting_resources(
     task,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Park only waitable capacity failures; metrics failures remain technical failures."""
+    """Route a failed engineering run by what its allocation refusal actually was.
+
+    The classification comes from `shared.allocation_disposition`, the one place
+    that decides what an allocation refusal may do, and the behaviour comes from
+    the same table's engineering row; this function keeps no reason list and no
+    behaviour list of its own, so it cannot drift from the deploy path.
+    `product_failure` is True because a FAILED engineering run is otherwise the
+    code's failure — and the shared rule is what says an allocation refusal
+    outranks that.
+
+    Returns True when this function has routed the task, False when the caller's
+    own failure routing applies.
+    """
     runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
     if not runs:
         return False
@@ -291,13 +343,12 @@ async def _park_task_waiting_resources(
     if not result or not isinstance(result, EngineeringRunResult):
         return False
     reason = result.allocation_failure_reason
-    if reason == AllocationFailureReason.IMPOSSIBLE_CAPACITY:
-        await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
-        if task.story_id:
-            await api_client.transition_story(task.story_id, StoryStatus.WAITING_HUMAN_REVIEW)
-        await _notify_admin_failure(
-            task.id,
-            str(task.project_id),
+    disposition = attempt_disposition(reason, product_failure=True)
+    routing = refusal_routing(PlacementPath.ENGINEERING, disposition)
+    if routing is RefusalRouting.HUMAN_REVIEW_WITH_OWNER_NOTICE:
+        await _escalate_task_to_human_review(
+            api_client,
+            task,
             "allocation request exceeds every managed server's capacity",
         )
         try:
@@ -306,10 +357,22 @@ async def _park_task_waiting_resources(
             log.warning("impossible_capacity_request_failed", exc_info=True)
         log.warning("task_allocation_impossible")
         return True
-    if reason not in {
-        AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
-        AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY,
-    }:
+    if routing is RefusalRouting.HUMAN_REVIEW_PLATFORM_ALERT:
+        # The allocator could not evaluate the fleet at all. Parking would never
+        # end — the wait's own re-check needs the metrics that are missing — and
+        # retrying the code charges the platform's blind spot to the user's
+        # iteration budget for a run that will be refused at the same point. So
+        # it stops here, with operators told and the owner left out of it.
+        await _escalate_task_to_human_review(
+            api_client,
+            task,
+            f"placement could not be evaluated: {reason.value}",
+        )
+        log.warning("task_allocation_unevaluable", reason=reason.value)
+        return True
+    if routing is not RefusalRouting.PARK_WAITING_RESOURCES:
+        # CALLER_FAILURE_ROUTING / NO_REFUSAL: no allocation refusal happened,
+        # so this is the code's own failure and the caller retries it.
         return False
 
     metadata = dict(task.failure_metadata or {})
@@ -326,11 +389,35 @@ async def _park_task_waiting_resources(
     await api_client.transition_task(task.id, TaskStatus.WAITING_RESOURCES, "supervisor")
     log.info("task_waiting_resources", reason=reason.value)
     if is_new_wait:
+        # An unfinished host build waits on the same path, but the owner must not
+        # be told the platform ran out of capacity when it did not.
+        request_via_po = (
+            _request_infrastructure_wait_via_po
+            if reason is AllocationFailureReason.SERVER_NOT_PROVISIONED
+            else _request_resources_via_po
+        )
         try:
-            await _request_resources_via_po(api_client, redis_client, task, log)
+            await request_via_po(api_client, redis_client, task, log)
         except Exception:
             log.warning("waiting_resources_request_failed", exc_info=True)
     return True
+
+
+async def _escalate_task_to_human_review(
+    api_client: SchedulerAPIClient,
+    task,
+    detail: str,
+) -> None:
+    """Hand a task the platform cannot place to the human-review queue.
+
+    The story moves through the `human-review` action, which is the endpoint the
+    API exposes for that queue; the status value is not a route, and posting it
+    as one reached nothing.
+    """
+    await api_client.transition_task(task.id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor")
+    if task.story_id:
+        await api_client.transition_story(task.story_id, STORY_HUMAN_REVIEW_ACTION)
+    await _notify_admin_failure(task.id, str(task.project_id), detail)
 
 
 async def _request_impossible_capacity_via_po(
@@ -387,6 +474,43 @@ async def _request_resources_via_po(
     )
     await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
     log.info("waiting_resources_requested")
+
+
+async def _request_infrastructure_wait_via_po(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    task,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Ask PO to tell the owner the target machine is still being prepared.
+
+    This is deliberately not the capacity message: nothing is full and the user's
+    project is not defective — the host it would run on has not finished (or has
+    failed) its software provisioning, which operators and the provisioner resolve.
+    """
+    recipient = await resolve_project_recipient(
+        api_client,
+        str(task.project_id),
+        event="task_waiting_infrastructure",
+        story_id=task.story_id,
+    )
+    if not recipient.is_addressable:
+        return
+    event = POSystemEvent(
+        event="task_waiting_infrastructure",
+        text=(
+            "Engineering is waiting for a server whose setup is still being finished on our "
+            "side. Tell the user this is our infrastructure, not a problem with their project, "
+            "and that work will resume automatically once the server is ready."
+        ),
+        task_id=task.id,
+        story_id=task.story_id or "",
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
+        project_id=str(task.project_id),
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info("waiting_infrastructure_requested")
 
 
 async def supervise_waiting_resource_tasks(
@@ -456,20 +580,40 @@ async def _clear_failed_run_iteration(api_client: SchedulerAPIClient, task) -> N
 
 
 async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -> bool:
-    """Apply the allocator's conservative admission rule to fresh server metrics."""
+    """Apply the allocator's conservative admission rule to fresh server metrics.
+
+    Target admissibility comes from ``shared.server_admission``, the same predicate
+    the allocator applies, so a parked task never wakes up towards a server that
+    ``_find_suitable_server`` would then refuse — an unprovisioned or
+    provisioning-failed host is not "resources becoming available".
+    """
     required_ram = metadata.get("allocation_required_ram_mb")
     min_disk = metadata.get("allocation_min_disk_mb")
     if not isinstance(required_ram, int) or not isinstance(min_disk, int):
         return False
+    return await _admissible_target_exists(
+        api_client, required_ram_mb=required_ram, min_disk_mb=min_disk
+    )
+
+
+async def _admissible_target_exists(
+    api_client: SchedulerAPIClient, *, required_ram_mb: int, min_disk_mb: int
+) -> bool:
+    """Whether any server could take this request right now.
+
+    Both waits ask this: the engineering task parked in `waiting_resources` and
+    the deploy run parked on `WAITING_INFRASTRUCTURE`. Admissibility itself comes
+    from `shared.server_admission`, the predicate the allocator applies, so no
+    wait can end towards a target the allocator would refuse.
+    """
     now = datetime.now(UTC)
+    provisioning_failed_handles = provisioning_failed_server_handles(
+        await api_client.list_active_incidents()
+    )
     for server in await api_client.get_servers():
-        if not server.is_managed or server.status not in {
-            ServerStatus.ACTIVE,
-            ServerStatus.READY,
-            ServerStatus.IN_USE,
-        }:
+        if not server_admits_application(server, provisioning_failed_handles):
             continue
-        if server.capacity_ram_mb < required_ram or server.capacity_disk_mb < min_disk:
+        if server.capacity_ram_mb < required_ram_mb or server.capacity_disk_mb < min_disk_mb:
             continue
         if not server.last_health_check:
             continue
@@ -485,7 +629,7 @@ async def _resources_available(api_client: SchedulerAPIClient, metadata: dict) -
             for app in apps
             if app.status not in {ApplicationStatus.NOT_DEPLOYED, ApplicationStatus.STOPPED}
         )
-        if server.capacity_ram_mb >= max(reserved, server.used_ram_mb) + required_ram:
+        if server.capacity_ram_mb >= max(reserved, server.used_ram_mb) + required_ram_mb:
             return True
     return False
 
@@ -540,7 +684,7 @@ async def supervise_stuck_tasks(
     return {"timed_out": timed_out}
 
 
-async def supervise_deploying_stories(
+async def supervise_deploying_stories(  # noqa: PLR0912
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
@@ -550,19 +694,31 @@ async def supervise_deploying_stories(
     - SUCCESS → story TESTING, publish QAMessage
     - SMOKE_FAILURE / CODE_FIX → story IN_PROGRESS, redispatch to engineering
     - RETRY → increment retry counter, re-publish DeployMessage or FAILED
+    - WAITING_INFRASTRUCTURE → routed by `shared.allocation_disposition`, which
+      gives each refusal disposition its own behaviour: a wait that resumes, an
+      escalation to the human-review queue, or an operator alert. Never failed:
+      the deploy never ran, because the platform had no server to run it on.
     - GIVE_UP → story FAILED, notify admins
 
     Returns dict with counts of actions taken.
     """
     stories = await api_client.get_stories_by_status(StoryStatus.DEPLOYING)
     if not stories:
-        return {"tested": 0, "retried": 0, "redispatched": 0, "waiting": 0, "failed": 0}
+        return {
+            "tested": 0,
+            "retried": 0,
+            "redispatched": 0,
+            "waiting": 0,
+            "escalated": 0,
+            "failed": 0,
+        }
 
     tested = 0
     retried = 0
     redispatched = 0
     waiting = 0
     failed = 0
+    refused: dict[RefusedDeployAction, int] = dict.fromkeys(RefusedDeployAction, 0)
     redis = redis_client._redis
 
     for story in stories:
@@ -628,6 +784,14 @@ async def supervise_deploying_stories(
             else:
                 failed += 1
 
+        elif outcome is DeployOutcome.WAITING_INFRASTRUCTURE:
+            action = await _route_refused_deploy(
+                api_client, redis_client, story_id, project_id, run, run.result, log
+            )
+            # Each action names the counter it advances, so a behaviour the
+            # routing distinguishes cannot be merged back together in the counts.
+            refused[action] += 1
+
         elif outcome == DeployOutcome.WAITING_FOR_USER_SECRET:
             await _handle_deploy_waiting_user_secret(
                 api_client, redis_client, story_id, project_id, run, log
@@ -647,8 +811,9 @@ async def supervise_deploying_stories(
     return {
         "tested": tested,
         "retried": retried,
-        "redispatched": redispatched,
-        "waiting": waiting,
+        "redispatched": redispatched + refused[RefusedDeployAction.REDISPATCHED],
+        "waiting": waiting + refused[RefusedDeployAction.WAITING],
+        "escalated": refused[RefusedDeployAction.ESCALATED],
         "failed": failed,
     }
 
@@ -1056,6 +1221,292 @@ def _deploy_run_head_sha(run) -> str | None:
     """Read the exact commit a deploy run targeted, from its run_metadata."""
     run_metadata = getattr(run, "run_metadata", None) or {}
     return run_metadata.get("head_sha")
+
+
+async def _route_refused_deploy(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    result: DeployRunResult,
+    log: structlog.stdlib.BoundLogger,
+) -> RefusedDeployAction:
+    """Give the refusal the one behaviour the shared table owes its disposition.
+
+    The classification is read from the run result rather than re-derived, and
+    the behaviour comes from `shared.allocation_disposition` — the same table the
+    engineering path consults — so this branch can neither treat a refusal as a
+    product failure nor answer two dispositions the same way. Collapsing them is
+    what left a request no server could ever fit polling forever with nobody
+    told. The contract already refuses a `WAITING_INFRASTRUCTURE` result without
+    its reason and budget, so both are present here.
+    """
+    reason = result.allocation_failure_reason
+    disposition = attempt_disposition(reason, product_failure=True)
+    routing = refusal_routing(PlacementPath.DEPLOY, disposition)
+    log = log.bind(reason=reason.value, disposition=disposition.value, routing=routing.value)
+
+    if routing is RefusalRouting.WAIT_FOR_ADMISSIBLE_TARGET:
+        return await _handle_deploy_infrastructure_wait(
+            api_client, redis_client, story_id, project_id, run, result, log
+        )
+    if routing is RefusalRouting.HUMAN_REVIEW_WITH_OWNER_NOTICE:
+        await _escalate_refused_deploy(
+            api_client,
+            redis_client,
+            story_id,
+            project_id,
+            run,
+            result,
+            tell_owner=True,
+            detail=(
+                f"deploy needs {result.allocation_required_ram_mb} MB RAM and "
+                f"{result.allocation_min_disk_mb} MB disk, which exceeds every managed server"
+            ),
+            log=log,
+        )
+        return RefusedDeployAction.ESCALATED
+    if routing is RefusalRouting.HUMAN_REVIEW_PLATFORM_ALERT:
+        await _escalate_refused_deploy(
+            api_client,
+            redis_client,
+            story_id,
+            project_id,
+            run,
+            result,
+            tell_owner=False,
+            detail=f"deploy placement could not be evaluated: {reason.value}",
+            log=log,
+        )
+        return RefusedDeployAction.ESCALATED
+
+    # CALLER_FAILURE_ROUTING / NO_REFUSAL cannot be reached from an allocation
+    # refusal while the shared table classifies every reason as infrastructure —
+    # `may_terminate_story` says the same thing from the other side. If that ever
+    # changes, a human hears about it: waiting would hide it and failing the
+    # story would charge the platform's own mistake to the user's project.
+    log.error(
+        "deploy_refusal_misclassified",
+        run_id=run.id,
+        may_terminate_story=may_terminate_story(disposition),
+    )
+    await _escalate_refused_deploy(
+        api_client,
+        redis_client,
+        story_id,
+        project_id,
+        run,
+        result,
+        tell_owner=False,
+        detail=f"deploy refusal {reason.value} classified as {disposition.value}",
+        log=log,
+    )
+    return RefusedDeployAction.ESCALATED
+
+
+async def _escalate_refused_deploy(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    result: DeployRunResult,
+    *,
+    tell_owner: bool,
+    detail: str,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Hand a refusal no wait can resolve to the human-review queue that exists.
+
+    This is the same queue a quarantined QA story reaches, entered the same way:
+    the reason is recorded on the story first, then the `human-review` action
+    moves it. It is deliberately not `fail_story` — an infrastructure refusal is
+    never evidence that the user's project is broken — and deliberately not
+    another wait, because the condition it would wait for cannot change on its
+    own.
+    """
+    await api_client.update_story(
+        story_id,
+        {
+            "quarantine_reason": {
+                "deploy_outcome": DeployOutcome.WAITING_INFRASTRUCTURE.value,
+                "allocation_failure_reason": result.allocation_failure_reason.value,
+                "allocation_required_ram_mb": result.allocation_required_ram_mb,
+                "allocation_min_disk_mb": result.allocation_min_disk_mb,
+                "detail": detail,
+            }
+        },
+    )
+    await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+    await _notify_admin_failure(run.id, project_id, detail)
+    if tell_owner:
+        try:
+            await _request_impossible_capacity_for_story(
+                api_client, redis_client, story_id, project_id, log
+            )
+        except Exception:
+            log.warning("deploy_impossible_capacity_request_failed", exc_info=True)
+    log.warning("deploy_refusal_escalated", run_id=run.id, detail=detail, told_owner=tell_owner)
+
+
+async def _request_impossible_capacity_for_story(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Tell the owner their deploy needs an operator, not that we ran out of room.
+
+    Deliberately not the capacity-wait message: nothing will free up that makes
+    this request fit, and the project is not at fault, so the owner is told what
+    is actually happening instead of being left to watch a wait that never ends.
+    """
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="story_impossible_capacity", story_id=story_id
+    )
+    if not recipient.is_addressable:
+        return
+    event = POSystemEvent(
+        event="story_impossible_capacity",
+        text=(
+            "Deploying this project needs more capacity than any managed server can provide. "
+            "Tell the user that our operators have been asked to review it, and that this is "
+            "our infrastructure, not a problem with their project."
+        ),
+        task_id=story_id,
+        story_id=story_id,
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
+        project_id=project_id,
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info("deploy_impossible_capacity_requested")
+
+
+def _infrastructure_wait_started_at(run) -> datetime:
+    """When this story started waiting for infrastructure, across re-dispatches.
+
+    Each re-dispatch carries the stamp forward, so the bound measures how long
+    the user's deploy has actually been waiting rather than restarting every time
+    the wait briefly resumed and was refused again.
+    """
+    run_metadata = getattr(run, "run_metadata", None) or {}
+    stamp = run_metadata.get(INFRASTRUCTURE_WAIT_STARTED_KEY)
+    return _parse_datetime(stamp) if stamp else _parse_datetime(run.created_at)
+
+
+async def _handle_deploy_infrastructure_wait(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    result: DeployRunResult,
+    log: structlog.stdlib.BoundLogger,
+) -> RefusedDeployAction:
+    """A deploy that found no admissible server waits, and never fails the story.
+
+    The wait is bounded by `supervisor.resource_wait_timeout_minutes`, the same
+    bound the engineering path's wait carries: the platform may keep a user's
+    work waiting on its own infrastructure only so long before somebody has to
+    look. An unbounded wait is how a stuck story stays invisible.
+
+    The bound is checked before admissibility, exactly as the engineering path
+    checks the task's age before `_resources_available`, because a wait can also
+    fail to end while targets keep appearing. Resuming asks whether *any* server
+    could take the request, while a project already bound to a host is refused by
+    *that* host: a fleet with one healthy server and one broken one the project
+    sits on would otherwise re-dispatch, be refused, and re-dispatch again
+    forever. Escalating on elapsed time bounds that cycle too — the same clock,
+    carried across re-dispatches, ends both shapes of a wait that is not working.
+    """
+    waiting_since = _infrastructure_wait_started_at(run)
+    waited_minutes = (datetime.now(UTC) - waiting_since).total_seconds() / 60
+
+    if waited_minutes >= _resource_wait_timeout_minutes():
+        await _escalate_refused_deploy(
+            api_client,
+            redis_client,
+            story_id,
+            project_id,
+            run,
+            result,
+            tell_owner=False,
+            detail=(
+                f"deploy waited {round(waited_minutes)} minutes for an admissible server "
+                f"({result.allocation_failure_reason.value})"
+            ),
+            log=log,
+        )
+        return RefusedDeployAction.ESCALATED
+
+    if not await _admissible_target_exists(
+        api_client,
+        required_ram_mb=result.allocation_required_ram_mb,
+        min_disk_mb=result.allocation_min_disk_mb,
+    ):
+        log.info(
+            "deploy_waiting_infrastructure",
+            run_id=run.id,
+            waited_minutes=round(waited_minutes, 1),
+        )
+        return RefusedDeployAction.WAITING
+
+    head_sha = _deploy_run_head_sha(run)
+    if not head_sha:
+        # No wait can supply a commit this run never recorded, so waiting for one
+        # is the silent hang again. The story is not failed — a deploy run
+        # without a head_sha is this platform's defect, not the project's — it
+        # goes to a human.
+        log.error("deploy_infrastructure_wait_head_sha_missing", run_id=run.id)
+        await _escalate_refused_deploy(
+            api_client,
+            redis_client,
+            story_id,
+            project_id,
+            run,
+            result,
+            tell_owner=False,
+            detail="deploy run has no head_sha to resume the infrastructure wait with",
+            log=log,
+        )
+        return RefusedDeployAction.ESCALATED
+
+    new_run_id = f"deploy-infra-{uuid.uuid4().hex[:8]}"
+    await api_client.create_run(
+        {
+            "id": new_run_id,
+            "type": RunType.DEPLOY.value,
+            "project_id": project_id,
+            "story_id": story_id,
+            "status": RunStatus.QUEUED.value,
+            "run_metadata": {
+                "triggered_by": "supervisor_infrastructure_wait",
+                "head_sha": head_sha,
+                INFRASTRUCTURE_WAIT_STARTED_KEY: waiting_since.isoformat(),
+            },
+        }
+    )
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="deploy_after_infrastructure_wait", story_id=story_id
+    )
+    await redis_client.publish_message(
+        DEPLOY_QUEUE,
+        DeployMessage(
+            task_id=new_run_id,
+            project_id=project_id,
+            telegram_chat_id=recipient.telegram_chat_id,
+            unaddressed_reason=recipient.unaddressed_reason,
+            story_id=story_id,
+            triggered_by=DeployTrigger.WEBHOOK,
+            action=DeployAction.FEATURE,
+            head_sha=head_sha,
+        ),
+    )
+    log.info("deploy_infrastructure_wait_redispatched", run_id=run.id, new_run_id=new_run_id)
+    return RefusedDeployAction.REDISPATCHED
 
 
 async def _handle_deploy_waiting_user_secret(
@@ -1516,7 +1967,7 @@ async def _quarantine_unverified_application(
     await api_client.stop_application(application_id)
     reason = _qa_quarantine_reason(run.result)
     await api_client.update_story(story_id, {"quarantine_reason": reason})
-    await api_client.transition_story(story_id, "human-review")
+    await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
     await _notify_quarantine_owner(api_client, redis_client, story_id, project_id, reason, log)
 
 
@@ -1602,7 +2053,7 @@ async def _handle_qa_failed(
             story_id,
             {"quarantine_reason": {"qa_outcome": QAOutcome.FAILED.value, "qa_failure": evidence}},
         )
-        await api_client.transition_story(story_id, "human-review")
+        await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
         exhausted_limit = _qa_failure_limit() if attempt > _qa_failure_limit() else _qa_fix_limit()
         await notify_admins_best_effort(
             f"QA failure {fingerprint} exhausted {exhausted_limit} fix attempts "
