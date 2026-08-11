@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-08-11 (10)
+
+- The QA identity is now proved on the target before anything records that a
+  host has one. An account named `qa-observer` that this role did not create can
+  carry `uid 0`, a rule in somebody else's `/etc/sudoers.d` file or an ACL on the
+  docker socket, and none of the role's tasks took those away — so ownership is
+  established first, by a root-owned marker the role itself writes
+  (`/etc/codegen-qa-identity/qa-observer`), and an account found without it is
+  refused rather than adopted or repaired. Nobody else's sudoers file is deleted:
+  that is an administrator's policy, and losing it silently would be worse than
+  stopping.
+- After the account is configured, the role asks the machine what came of it
+  (`roles/qa_identity/files/qa-identity-proof`): `uid != 0`, no privileged group,
+  everything `sudo -l -U` grants is exactly the one wrapper rule, and the account
+  itself cannot open `/var/run/docker.sock` — which answers group, mode and ACL
+  together. A failed proof fails the phase, so the label is never written and the
+  host keeps refusing QA, visibly.
+- A target that lost the account after a successful provisioning is journalled
+  like one that never had it. The install script already separated "no such
+  account / no `authorized_keys`" from every other failure; that now reaches the
+  provisioning journal as `qa_identity_absent_on_target` against the server
+  handle, with the retrofit command. Other central-QA failures are deliberately
+  not provisioning facts and stay out of it.
+- A retrofit the role refuses is recorded as a `provisioning_failed` incident
+  against the handle instead of only failing the command, and the per-host report
+  now names, for each thing left in place, why it stayed and the command that
+  removes it — including `/swapfile`, which this playbook still does not touch
+  because the old runner's swap and an administrator's own are the same file.
+
+## 2026-08-11 (9)
+
+- Gave a QA run an identity that provisioning creates. The `qa_identity` role
+  makes `qa-observer` on every target, from the same phase that records
+  `provisioning_phase=complete`, and that completion write now records
+  `labels.qa_ssh_user` in the same call — so a host cannot read as provisioned
+  and lend no account. The account's primary group is its own, stated explicitly,
+  and its supplementary list is exactly empty, so neither membership can be
+  `docker` (which is root on the host) even on a host where somebody had already
+  made the account inside it. It has one sudo rule, and reads the deployment tree
+  through an ACL entry rather than by joining the group that can write it.
+- The QA runtime trusts `labels.qa_ssh_user` for *whether* a host was
+  provisioned, not for *whose* `authorized_keys` to write into. `servers.labels`
+  is an untyped dict the server API will PATCH, so only the name provisioning
+  itself writes is accepted; any other value is refused as
+  `qa_identity_not_attested` before anything connects to the target. Editing a
+  server row is not a way to point a QA run at an existing privileged account.
+- Moved the "what may this account do with docker" boundary onto the target.
+  `/usr/local/bin/qa-docker` allows `diff, inspect, logs, port, ps, stats, top`
+  and refuses `exec`, `run`, `cp`, `build`, `commit` and the rest before docker
+  is reached; the QA account may run that command and nothing else. Which
+  containers a run may name is still the run's capability set, in the
+  orchestrator. The runtime's docker calls go through `sudo -n qa-docker`.
+- The QA runtime takes the run's identity from the server row, not from
+  `ssh_user`. The fleet key and the administrative account are used only to
+  append the run's one-shot key to `qa-observer`'s `authorized_keys` and to
+  remove it; the run itself connects as `qa-observer`. The runtime creates no
+  account and no file — a target missing either refuses the install — and
+  `QASshGrant` now records both accounts, because the sweep has to connect as
+  one and clean the other's file.
+- A fresh host provisioned the ordinary way now passes exploratory QA. Before
+  this, a server row created by `server_sync` (no `ssh_user`, so `root`) was
+  refused with `server_unavailable`, which was the accepted cost of moving QA
+  into the orchestrator.
+- A target with no QA account is still refused, but visibly: the refusal is
+  journalled as a `provisioning_failed` incident against that `server_handle`
+  with `details.step = qa_identity`, so it reaches an administrator through the
+  existing mechanism and the host stops taking new applications until repaired.
+- Added the retrofit for hosts provisioned before this:
+  `python -m src.provisioner.qa_identity_retrofit <handle>` in infra-service. It
+  creates the same identity from the same role and removes only what is
+  positively the old runner's: `~/.local/bin/claude`,
+  `~/.claude/.credentials.json`, `~/.qa-telethon.env` and `/opt/qa-runner`. The
+  cleanup runs in the administrative account's home, which is also a person's
+  home, so `~/.claude`, `~/.local/share/claude` and `/swapfile` are left alone —
+  the CLI directories are equally an administrator's own, and `/swapfile` cannot
+  be told from swap somebody else made, where removing 2GB from a live host is an
+  outage rather than cleanup. The label is written only after the playbook
+  succeeds, and the run reports per host both what it removed and what it left.
+- `docs/DEPLOY.md` said "servers provisioned by the current Ansible have a deploy
+  user and are unaffected". They did not: the role configured the account named
+  by `deploy_user`, which was `root`, and put it in the `docker` group.
+
 ## 2026-08-11 (8)
 
 - Made the QA grant sweep's walk survive the selection it is draining. The pages

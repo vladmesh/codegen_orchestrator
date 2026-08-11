@@ -23,8 +23,12 @@ import pytest
 
 from shared.contracts.dto.qa_ssh_grant import QASshGrantState
 from shared.contracts.dto.run_result import QABlockerCategory
+from shared.qa_identity import QAIdentityRejection
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
+    GRANT_MARKER_PREFIX,
+    QA_DOCKER,
+    QA_DOCKER_WRAPPER,
     QACapabilities,
     QACapabilityError,
     QAGrantError,
@@ -35,17 +39,27 @@ from src.consumers._qa_target import (
     new_grant_marker,
     qa_target_grant,
     resolve_capabilities,
+    revoke_grant,
 )
 from src.consumers._qa_workspace import qa_workspace
 
+# Two accounts, and the difference between them is the point: `ssh_user` is what
+# the fleet key opens (root on a row `server_sync` created) and is used only to
+# put the run's key in and take it out; `qa_ssh_user` is the unprivileged account
+# provisioning made, and is who the run is.
 TARGET = QATarget(
     server_ip="1.2.3.4",
-    ssh_user="deploy",
+    ssh_user="root",
+    qa_ssh_user="qa-observer",
     server_handle="vps-1",
     project_name="weather-bot",
     deployed_url="http://1.2.3.4:8000",
     allocated_ports=frozenset({8000, 8001}),
 )
+# The line the qa_identity role opens `authorized_keys` with. It is never a key
+# and never carries a run marker, which is what keeps "the filter kept nothing"
+# a failure rather than a legitimately emptied file.
+SENTINEL = "# codegen-qa: one-shot run keys are added and removed here"
 # What the target reports back about this deployment. Another project's
 # containers and ports exist on the same host and are absent from it.
 OWN_CONTAINERS = ("weather-bot-backend-1", "weather-bot-db-1")
@@ -88,42 +102,88 @@ class RecordingJournal:
         self.grants.append(grant)
 
 
-class FakeConn:
-    """A target that answers the runner's typed commands and records them all."""
+class RecordingProvisioningJournal:
+    """Stands in for the provisioning journal an administrator reads.
 
-    def __init__(self, containers: tuple[str, ...] = OWN_CONTAINERS) -> None:
+    Only one kind of fact is ever written here, and which failures reach it is
+    the point: a host that lost the account provisioning made is a provisioning
+    fact, while an unreachable target or a dead agent is this run's problem and
+    has its own owner.
+    """
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[QAIdentityRejection, str]] = []
+
+    async def missing_identity(self, *, reason: QAIdentityRejection, detail: str) -> None:
+        self.entries.append((reason, detail))
+
+
+class FakeConn:
+    """A target that answers the runner's typed commands and records them all.
+
+    It models the one file the runtime is allowed to touch — the QA account's
+    `authorized_keys`, as provisioning left it — and the two scripts that touch
+    it. `provisioned=False` is a host where that account or that file does not
+    exist, which is what the runtime has to refuse rather than create.
+    """
+
+    def __init__(
+        self, containers: tuple[str, ...] = OWN_CONTAINERS, *, provisioned: bool = True
+    ) -> None:
         self.commands: list[str] = []
-        self.authorized_keys: list[str] = []
+        self.authorized_keys: list[str] | None = [SENTINEL] if provisioned else None
         self.installed: list[str] = []
+        self.written_as: list[str] = []
         self.containers = containers
         self.closed = False
 
+    @property
+    def run_keys(self) -> list[str]:
+        """The run keys standing in that file right now."""
+        return [line for line in (self.authorized_keys or []) if GRANT_MARKER_PREFIX in line]
+
     @staticmethod
-    def _flocked_shell(command: str) -> list[str] | None:
-        """The argv of the shell the runner wrapped in flock, if it wrapped one."""
-        if "flock " not in command:
-            return None
+    def _script(command: str) -> tuple[str, list[str]] | None:
+        """The script body and its arguments, if this command is one of ours."""
         tokens = shlex.split(command)
-        return shlex.split(tokens[tokens.index("-c") + 1])
+        if tokens[:2] != ["sh", "-c"]:
+            return None
+        # sh -c BODY _ ARG...  — the `_` is $0, never an argument.
+        return tokens[2], tokens[4:]
+
+    def _install(self, user: str, entry: str):
+        self.written_as.append(user)
+        if self.authorized_keys is None:
+            return SimpleNamespace(
+                exit_status=4, stdout="", stderr=f"no authorized_keys for {user}"
+            )
+        self.authorized_keys.append(entry)
+        self.installed.append(entry)
+        return SimpleNamespace(exit_status=0, stdout="", stderr="")
+
+    def _revoke(self, user: str, marker: str):
+        self.written_as.append(user)
+        if self.authorized_keys is None:
+            return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
+        kept = [line for line in self.authorized_keys if marker not in line]
+        # The script copies the filter result back only when it kept something.
+        if kept:
+            self.authorized_keys = kept
+        remaining = sum(1 for line in self.authorized_keys if marker in line)
+        return SimpleNamespace(exit_status=0, stdout=f"{remaining}\n", stderr="")
 
     async def run(self, command, *, check=False, timeout=None):
         self.commands.append(command)
-        inner = self._flocked_shell(command)
-        if inner and inner[0] == "printf":
-            self.authorized_keys.append(inner[2])
-            self.installed.append(inner[2])
-            return SimpleNamespace(exit_status=0, stdout="", stderr="")
-        if inner and inner[0] == "grep":
-            marker = inner[inner.index("-F") + 1]
-            self.authorized_keys = [k for k in self.authorized_keys if marker not in k]
-            return SimpleNamespace(exit_status=0, stdout="", stderr="")
-        if command.startswith("grep -c -F"):
-            marker = shlex.split(command)[3]
-            hits = sum(1 for k in self.authorized_keys if marker in k)
-            return SimpleNamespace(exit_status=0, stdout=f"{hits}\n", stderr="")
+        script = self._script(command)
+        if script:
+            body, args = script
+            if "printf" in body:
+                return self._install(*args)
+            if "grep -c -F" in body:
+                return self._revoke(*args)
         if command.startswith("readlink -f --"):
             return SimpleNamespace(exit_status=0, stdout=f"{PHYSICAL_ROOT}\n", stderr="")
-        if command.startswith("docker ps"):
+        if QA_DOCKER_WRAPPER in command and " ps " in command:
             return SimpleNamespace(
                 exit_status=0, stdout="".join(f"{name}\n" for name in self.containers), stderr=""
             )
@@ -165,10 +225,11 @@ def _session(conn=None, capabilities: QACapabilities = CAPABILITIES) -> QATarget
 def central_run(tmp_path):
     """Run `run_qa_centrally` against a fake target with a scripted agent."""
 
-    async def _run(*, behaviour, conn=None, target=TARGET, journal=None):
+    async def _run(*, behaviour, conn=None, target=TARGET, journal=None, provisioning=None):
         connection = conn or FakeConn()
         factory = _graph_factory(behaviour)
         record = journal or RecordingJournal()
+        provisioning_record = provisioning or RecordingProvisioningJournal()
         with (
             patch("src.consumers._qa_target._connect", AsyncMock(return_value=connection)),
             patch("src.consumers._qa_target._import", lambda key: key),
@@ -181,6 +242,7 @@ def central_run(tmp_path):
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
                 grant_journal=record,
+                provisioning_journal=provisioning_record,
             )
         return result, connection, factory, record
 
@@ -228,6 +290,7 @@ class TestCleanTargetPassesExploratoryQA:
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
                 grant_journal=RecordingJournal(),
+                provisioning_journal=RecordingProvisioningJournal(),
             )
 
         admin_key, run_key, revoke_key = captured
@@ -247,6 +310,149 @@ class TestCleanTargetPassesExploratoryQA:
         assert re.search(r'expiry-time="\d{12}"', entry)
 
 
+class TestTheRunBorrowsTheAccountProvisioningMade:
+    """The identity is provisioned; the runtime only borrows it for one run."""
+
+    async def test_the_key_lands_in_the_qa_account_and_the_run_connects_as_it(self, tmp_path):
+        connected: list[str] = []
+        conn = FakeConn()
+
+        async def connect(server_ip, ssh_user, key):
+            connected.append(ssh_user)
+            return conn
+
+        async def behaviour(graph):
+            return PASSING_JSON
+
+        with (
+            patch("src.consumers._qa_target._connect", connect),
+            patch("src.consumers._qa_target._import", lambda key: key),
+            patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
+            patch("src.consumers._qa_runner.create_qa_graph", _graph_factory(behaviour)),
+        ):
+            result = await run_qa_centrally(
+                target=TARGET,
+                fleet_ssh_key="fleet-key",
+                acceptance_criteria="- GET /health returns 200",
+                runtime=RUNTIME,
+                grant_journal=RecordingJournal(),
+                provisioning_journal=RecordingProvisioningJournal(),
+            )
+
+        assert result.passed is True
+        # The administrative account installs and removes; the run itself is the
+        # unprivileged one. Nothing here is ever performed as `ssh_user`.
+        assert connected == ["root", "qa-observer", "root"]
+        # And both writes went into the QA account's file, not the admin's.
+        assert conn.written_as == ["qa-observer", "qa-observer"]
+
+    async def test_a_target_without_the_account_is_refused_rather_than_provisioned(self):
+        """A runtime that could open the account would be a runtime with root."""
+        conn = FakeConn(provisioned=False)
+        outcome = QAGrantOutcome(marker=new_grant_marker())
+
+        with (
+            patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
+            patch("src.consumers._qa_target._import", lambda key: key),
+        ):
+            with pytest.raises(QAGrantError) as exc:
+                async with qa_target_grant(
+                    target=TARGET,
+                    fleet_ssh_key="fleet-key",
+                    outcome=outcome,
+                    journal=RecordingJournal(),
+                ):
+                    pass
+
+        assert "qa-observer" in str(exc.value)
+        assert conn.authorized_keys is None
+        assert conn.installed == []
+
+    async def test_a_target_that_lost_the_account_is_a_provisioning_fact(self, central_run):
+        """The row promised an account; the host has none. That is drift, and it shows.
+
+        A host provisioned before the account was deleted by hand, or whose home
+        was cleaned up, carries a correct `qa_ssh_user` label and no account. The
+        label check upstream cannot see that, and the install is where it comes
+        out — as the same missing identity, one step later. Ending as a blocked
+        run in this consumer's log would leave an administrator with nothing to
+        look at, so it goes to the journal that names the server.
+        """
+        provisioning = RecordingProvisioningJournal()
+
+        async def behaviour(graph):
+            return PASSING_JSON
+
+        result, conn, _, _ = await central_run(
+            behaviour=behaviour,
+            conn=FakeConn(provisioned=False),
+            provisioning=provisioning,
+        )
+
+        assert result.passed is False
+        # The run still carries whatever this exit leaves unresolved — an
+        # install that raised is residue until something reads the target back,
+        # and that rule is older than this one and stays.
+        assert result.blocker is not None
+        assert "records a QA account but" in result.summary
+        [(reason, detail)] = provisioning.entries
+        assert reason is QAIdentityRejection.ABSENT_ON_TARGET
+        assert TARGET.server_handle in detail
+        # And nothing was created to make the run possible: the runtime has no
+        # power to give itself the account provisioning did not leave.
+        assert conn.authorized_keys is None
+        assert conn.installed == []
+
+    async def test_a_target_that_simply_refuses_the_install_is_not_one(self, central_run):
+        """The journal is for missing identities, not for every failure out here.
+
+        A refused write, an unreachable host, an agent that dies — those are the
+        central runtime's own failures, with their own owner. Writing them here
+        would turn one administrator-facing signal about provisioning into a
+        second QA error log, and the first one would stop being worth reading.
+        """
+        provisioning = RecordingProvisioningJournal()
+        conn = FakeConn()
+
+        async def refuse(command, *, check=False, timeout=None):
+            conn.commands.append(command)
+            return SimpleNamespace(exit_status=1, stdout="", stderr="Permission denied")
+
+        conn.run = refuse
+
+        async def behaviour(graph):
+            return PASSING_JSON
+
+        result, _, _, _ = await central_run(
+            behaviour=behaviour, conn=conn, provisioning=provisioning
+        )
+
+        assert result.passed is False
+        assert provisioning.entries == []
+
+    async def test_a_revoke_that_cannot_be_read_back_is_residue_not_success(self):
+        """Silence is not "the key is gone"; it is a record the sweep keeps."""
+        conn = FakeConn()
+
+        async def unreadable(command, *, check=False, timeout=None):
+            conn.commands.append(command)
+            return SimpleNamespace(exit_status=255, stdout="", stderr="broken pipe")
+
+        with patch("src.consumers._qa_target._import", lambda key: key):
+            conn.run = unreadable
+            with patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)):
+                residual = await revoke_grant(
+                    server_ip="1.2.3.4",
+                    ssh_user="root",
+                    qa_ssh_user="qa-observer",
+                    fleet_key="fleet-key",
+                    marker="codegen-qa-run-abc",
+                )
+
+        assert residual is not None
+        assert "codegen-qa-run-abc" in residual
+
+
 class TestCapabilitySet:
     """The set is resolved from the deployment, not guessed by a tool."""
 
@@ -259,7 +465,7 @@ class TestCapabilitySet:
         assert capabilities.containers == frozenset(OWN_CONTAINERS)
         assert capabilities.loopback_ports == frozenset({8000, 8001})
         assert capabilities.deployed_url == TARGET.deployed_url
-        listing = next(c for c in conn.commands if c.startswith("docker ps"))
+        listing = next(c for c in conn.commands if f"{QA_DOCKER_WRAPPER} ps" in c)
         # The compose project label is what makes this the deployment's own list
         # rather than a name-prefix guess about the host's containers.
         assert "label=com.docker.compose.project=weather-bot" in listing
@@ -293,7 +499,7 @@ class TestCapabilitySet:
         assert result.passed is False
         assert result.blocker.category is QABlockerCategory.SERVER_UNAVAILABLE
         # The grant is still taken back: the run never started, the key did.
-        assert conn.authorized_keys == []
+        assert conn.run_keys == []
 
 
 class TestASecondProjectOnTheSameHost:
@@ -466,7 +672,10 @@ class TestTheAgentHasNoShellAndNoHostView:
 
         await _session(conn).exec(["docker", "top", OWN_CONTAINERS[0]])
 
-        assert conn.commands == [f"docker top {OWN_CONTAINERS[0]}"]
+        # Not `docker top` — the QA account cannot reach the daemon. It asks the
+        # wrapper provisioning installed, which is where the target refuses the
+        # sub-commands that write.
+        assert conn.commands == [f"{' '.join(QA_DOCKER)} top {OWN_CONTAINERS[0]}"]
 
     async def test_arguments_cannot_smuggle_a_shell(self):
         session = _session()
@@ -534,6 +743,7 @@ class TestGrantIsDurableAndDestroyed:
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
                 grant_journal=journal,
+                provisioning_journal=RecordingProvisioningJournal(),
             )
 
         assert journal.states == [QASshGrantState.ISSUING]
@@ -551,7 +761,7 @@ class TestGrantIsDurableAndDestroyed:
         result, conn, _, journal = await central_run(behaviour=behaviour)
 
         assert result.passed is False
-        assert conn.authorized_keys == []
+        assert conn.run_keys == []
         assert journal.states[-1] is QASshGrantState.RELEASED
         assert result.blocker.category is QABlockerCategory.UNKNOWN
 
@@ -571,11 +781,14 @@ class TestGrantIsDurableAndDestroyed:
                     outcome=outcome,
                     journal=journal,
                 ):
-                    assert conn.authorized_keys
+                    assert conn.run_keys
                     raise RuntimeError("cancelled")
 
         assert outcome.revoked is True
-        assert conn.authorized_keys == []
+        assert conn.run_keys == []
+        # The line provisioning opened the file with is still there: the run was
+        # a guest in that file, not its owner.
+        assert conn.authorized_keys == [SENTINEL]
         assert journal.states[-1] is QASshGrantState.RELEASED
 
     async def test_workspace_is_gone_after_a_raising_run(self, tmp_path):
@@ -592,11 +805,8 @@ class TestGrantIsDurableAndDestroyed:
         """A key that outlived the run is not a green QA run."""
 
         class StubbornConn(FakeConn):
-            async def run(self, command, *, check=False, timeout=None):
-                if command.startswith("grep -c -F"):
-                    self.commands.append(command)
-                    return SimpleNamespace(exit_status=0, stdout="1\n", stderr="")
-                return await super().run(command, check=check, timeout=timeout)
+            def _revoke(self, user, marker):
+                return SimpleNamespace(exit_status=0, stdout="1\n", stderr="")
 
         async def behaviour(graph):
             return PASSING_JSON

@@ -16,6 +16,7 @@ import asyncio
 from dataclasses import dataclass, field
 import json
 import re
+from typing import Protocol
 import uuid
 
 import httpx
@@ -26,6 +27,7 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
 )
+from shared.qa_identity import QAIdentityRejection
 from shared.telegram_access_probe import (
     build_access_probe_script,
     classify_access_probe,
@@ -40,6 +42,7 @@ from ._qa_target import (
     QAGrantError,
     QAGrantJournal,
     QAGrantOutcome,
+    QAIdentityAbsentError,
     QATarget,
     new_grant_marker,
     qa_target_grant,
@@ -509,6 +512,20 @@ async def _invoke_qa_agent(
     return qa_result
 
 
+class QAProvisioningJournal(Protocol):
+    """Where "this host has no QA identity" is recorded against the server.
+
+    The same fact reaches this runtime two ways: off the server row, before
+    anything connects, and off the target itself, when the account the row
+    promised turns out not to be there. Both are provisioning facts about the
+    host and both belong in the same journal entry, so the runner is handed the
+    journal rather than deciding on its own that a failure it met halfway
+    through is only this run's problem.
+    """
+
+    async def missing_identity(self, *, reason: QAIdentityRejection, detail: str) -> None: ...
+
+
 async def run_qa_centrally(
     *,
     target: QATarget,
@@ -516,6 +533,7 @@ async def run_qa_centrally(
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
     grant_journal: QAGrantJournal,
+    provisioning_journal: QAProvisioningJournal,
     timeout: int = QA_TIMEOUT,
 ) -> QAResult:
     """Run exploratory QA from the orchestrator against one deployment.
@@ -535,6 +553,9 @@ async def run_qa_centrally(
         acceptance_criteria: regression test criteria from the repository.
         runtime: LLM configuration and the QA Telegram account credentials.
         grant_journal: where the durable record of the grant is written.
+        provisioning_journal: where a target that turns out to have no QA
+            account is recorded, so drift after a finished provisioning is as
+            visible to an administrator as a host that was never provisioned.
         timeout: seconds the agent is given to reach a verdict.
     """
     grant = QAGrantOutcome(marker=new_grant_marker())
@@ -571,6 +592,16 @@ async def run_qa_centrally(
                 qa_result = _block_forbidden_application_write(qa_result, write)
     except (QAGrantError, QACapabilityError) as exc:
         logger.error("qa_grant_failed", server_ip=target.server_ip, error=str(exc))
+        if isinstance(exc, QAIdentityAbsentError):
+            # The row says this host has an account and the host says otherwise.
+            # That is the same missing identity the label check refuses before a
+            # connection is opened, found one step later, so it goes to the same
+            # place: an administrator looking at this server sees one entry
+            # naming the handle and the repair, not a QA blocker in a log.
+            await provisioning_journal.missing_identity(
+                reason=QAIdentityRejection.ABSENT_ON_TARGET,
+                detail=str(exc),
+            )
         # The residue goes through the same path as every other exit: an
         # unconfirmed install is access this run may be holding, and a run that
         # reports only "server unavailable" hides it.

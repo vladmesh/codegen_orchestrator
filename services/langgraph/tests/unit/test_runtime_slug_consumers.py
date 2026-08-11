@@ -125,6 +125,7 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
     qa_target = QATarget(
         server_ip="1.2.3.4",
         ssh_user="dev",
+        qa_ssh_user="qa-observer",
         server_handle="vps-1",
         project_name=RUNTIME_SLUG,
         deployed_url="http://1.2.3.4:8000",
