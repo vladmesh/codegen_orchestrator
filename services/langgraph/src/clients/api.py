@@ -120,18 +120,26 @@ class LanggraphAPIClient(InternalAPIClient):
         data = await self._get_json(f"runs/{run_id}")
         return RunDTO.model_validate(data)
 
-    async def list_runs_holding_qa_ssh_grant(self, *, limit: int, offset: int) -> list[RunDTO]:
+    async def list_runs_holding_qa_ssh_grant(
+        self, *, limit: int, after: RunDTO | None = None
+    ) -> list[RunDTO]:
         """One page of the runs whose QA SSH grant is not proven released.
 
         Selected by the state of the record and ordered oldest first, so the
         sweep's work is every open grant rather than the ones belonging to a
-        recent run. The page bounds the response; the caller keeps asking until
-        a page comes back short.
+        recent run. The page bounds the response; the caller keeps asking from
+        the last record it handled until a page comes back short.
+
+        `after` is that record, and the cursor is its `(created_at, id)`. It is
+        a position in the order, not a count of rows, so records the caller has
+        already released — and which therefore leave the selection — cannot
+        move the unhandled ones out of reach behind it.
         """
-        data = await self._get_json(
-            "runs/qa-ssh-grants/held",
-            params={"limit": limit, "offset": offset},
-        )
+        params: dict = {"limit": limit}
+        if after is not None:
+            params["after_created_at"] = after.created_at.isoformat()
+            params["after_id"] = after.id
+        data = await self._get_json("runs/qa-ssh-grants/held", params=params)
         return [RunDTO.model_validate(run) for run in data]
 
     async def start_run(self, run_id: str) -> DeployRunStart:

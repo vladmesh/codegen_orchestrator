@@ -43,38 +43,81 @@ def _grant(**overrides) -> QASshGrant:
     return QASshGrant(**base)
 
 
-def _run(grant: QASshGrant | None, run_id: str = "qa-run-1") -> SimpleNamespace:
+EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _run(
+    grant: QASshGrant | None, run_id: str = "qa-run-1", created_at: datetime | None = None
+) -> SimpleNamespace:
     metadata = {"qa_handoff": {"kept": True}}
     if grant is not None:
         metadata[QA_SSH_GRANT_KEY] = grant.model_dump(mode="json")
-    return SimpleNamespace(id=run_id, run_metadata=metadata)
+    return SimpleNamespace(
+        id=run_id, run_metadata=metadata, created_at=created_at or datetime.now(UTC)
+    )
+
+
+def _holders(count: int) -> list[SimpleNamespace]:
+    """`count` runs each holding an open grant, oldest first and distinctly aged."""
+    return [
+        _run(_grant(), run_id=f"qa-run-{i}", created_at=EPOCH + timedelta(minutes=i))
+        for i in range(count)
+    ]
 
 
 class _Api:
     """The API surface the sweep uses, recording what it wrote.
 
-    The selection it stands in for is the real one: runs holding an unreleased
-    grant, oldest first, handed out a page at a time. Nothing here knows when a
-    run started, because the endpoint the sweep calls does not select on that.
+    The selection it stands in for is the real one, and it is live: runs whose
+    grant record is not `RELEASED`, ordered `(created_at, id)` ascending, cut
+    at the requested cursor. A `patch` writing `RELEASED` takes that run out of
+    the selection immediately, exactly as the endpoint's predicate does — so
+    handling a page here really changes what the next request returns, which is
+    the condition the walk has to survive.
     """
 
     def __init__(self, runs, ssh_key="fleet-key", conflict=False):
-        self._runs = runs
+        self._runs = list(runs)
         self._ssh_key = ssh_key
         self._conflict = conflict
         self.patches: list[tuple[str, dict]] = []
         self.pages: list[dict] = []
         self.get_server_ssh_key = AsyncMock(return_value=ssh_key)
 
-    async def list_runs_holding_qa_ssh_grant(self, *, limit, offset):
-        self.pages.append({"limit": limit, "offset": offset})
-        return self._runs[offset : offset + limit]
+    def _selected(self) -> list[SimpleNamespace]:
+        """The endpoint's predicate: a grant record that is not proven released.
+
+        A record whose state cannot be read has no `state` at all, and it is
+        selected for the same reason the endpoint selects it — unreadable is
+        not released.
+        """
+        held = [
+            run
+            for run in self._runs
+            if QA_SSH_GRANT_KEY in run.run_metadata
+            and run.run_metadata[QA_SSH_GRANT_KEY].get("state") != QASshGrantState.RELEASED.value
+        ]
+        return sorted(held, key=lambda run: (run.created_at, run.id))
+
+    async def list_runs_holding_qa_ssh_grant(self, *, limit, after=None):
+        self.pages.append({"limit": limit, "after": None if after is None else after.id})
+        rows = self._selected()
+        if after is not None:
+            cursor = (after.created_at, after.id)
+            rows = [run for run in rows if (run.created_at, run.id) > cursor]
+        return rows[:limit]
 
     async def patch(self, path, json):
         self.patches.append((path, json))
         if self._conflict and "result" in json:
             response = httpx.Response(409, request=httpx.Request("PATCH", "http://api/" + path))
             raise httpx.HTTPStatusError("settled", request=response.request, response=response)
+        # The API merges run_metadata, and the merged record is what the next
+        # request selects on.
+        if "run_metadata" in json:
+            run_id = path.split("/")[1]
+            [run] = [r for r in self._runs if r.id == run_id]
+            run.run_metadata.update(json["run_metadata"])
         return {}
 
     def recorded_grant(self) -> QASshGrant:
@@ -215,6 +258,13 @@ class TestNoOpenRecordIsOutOfReach:
     the last 24 hours, so an outage longer than that put the record — and the
     `authorized_keys` line it stands for — permanently beyond the only process
     that removes it.
+
+    Selecting by state alone is only half of reach, though. The other half is
+    that the walk over that selection has to survive the selection changing
+    under it, because the walk is what changes it: closing a record removes it,
+    and a cursor counted in rows then steps over the records behind it. So the
+    fake below is live — a revoke really does change what the next request
+    returns — and one cycle owes every record that was open when it passed.
     """
 
     async def test_a_grant_older_than_any_window_is_still_revoked(self):
@@ -253,7 +303,7 @@ class TestNoOpenRecordIsOutOfReach:
             await sweep_qa_ssh_grants()
 
         # One page, asked for from the top, with no time bound anywhere in it.
-        assert api.pages == [{"limit": GRANT_SWEEP_PAGE, "offset": 0}]
+        assert api.pages == [{"limit": GRANT_SWEEP_PAGE, "after": None}]
 
     async def test_a_record_nothing_can_read_does_not_stop_the_ones_behind_it(self):
         """The selection keeps a malformed record forever, so it cannot be a poison pill.
@@ -265,8 +315,14 @@ class TestNoOpenRecordIsOutOfReach:
         unreadable = SimpleNamespace(
             id="qa-run-unreadable",
             run_metadata={QA_SSH_GRANT_KEY: {"marker": MARKER, "from": "a schema we lost"}},
+            created_at=EPOCH,
         )
-        api = _Api([unreadable, _run(_grant(), run_id="qa-run-behind-it")])
+        api = _Api(
+            [
+                unreadable,
+                _run(_grant(), run_id="qa-run-behind-it", created_at=EPOCH + timedelta(minutes=1)),
+            ]
+        )
         revoke = AsyncMock(return_value=None)
 
         with _sweep(api, revoke)[0], _sweep(api, revoke)[1]:
@@ -277,7 +333,17 @@ class TestNoOpenRecordIsOutOfReach:
         assert [p for p, _ in api.patches] == ["runs/qa-run-behind-it"]
 
     async def test_a_record_past_the_first_page_is_not_left_behind(self):
-        holders = [_run(_grant(), run_id=f"qa-run-{i}") for i in range(GRANT_SWEEP_PAGE + 1)]
+        """The selection shrinks under the walk, and the walk still presents all of it.
+
+        Every record on the first page is revoked, so by the time the second
+        request goes out those rows are `RELEASED` and the fake — like the
+        endpoint — no longer selects them. A count-based cursor would ask for
+        the rows after the first hundred of a selection that now holds one, get
+        nothing back, and end the cycle having left a live key on a target. The
+        cursor names the last record handled instead, so the survivor is still
+        ahead of it.
+        """
+        holders = _holders(GRANT_SWEEP_PAGE + 1)
         api = _Api(holders)
         revoke = AsyncMock(return_value=None)
 
@@ -285,11 +351,44 @@ class TestNoOpenRecordIsOutOfReach:
             counts = await sweep_qa_ssh_grants()
 
         assert counts["revoked"] == GRANT_SWEEP_PAGE + 1
-        assert api.pages == [
-            {"limit": GRANT_SWEEP_PAGE, "offset": 0},
-            {"limit": GRANT_SWEEP_PAGE, "offset": GRANT_SWEEP_PAGE},
-        ]
         assert {p.split("/")[1] for p, _ in api.patches} == {r.id for r in holders}
+        assert api.pages == [
+            {"limit": GRANT_SWEEP_PAGE, "after": None},
+            {"limit": GRANT_SWEEP_PAGE, "after": holders[GRANT_SWEEP_PAGE - 1].id},
+        ]
+        # Nothing is left holding a key: the cycle drained the whole selection.
+        assert await api.list_runs_holding_qa_ssh_grant(limit=GRANT_SWEEP_PAGE) == []
+
+    async def test_a_record_that_cannot_be_closed_does_not_stall_the_cycle(self):
+        """A cursor moves over what it presented, whether or not that record closed.
+
+        An unreadable record is never released, so it is selected on every
+        cycle. If the cursor only advanced past records the sweep managed to
+        close, the page would come back with that same record at its head
+        forever and nothing behind it would ever be reached.
+        """
+        unreadable = [
+            SimpleNamespace(
+                id=f"qa-run-unreadable-{i}",
+                run_metadata={QA_SSH_GRANT_KEY: {"marker": MARKER, "from": "a schema we lost"}},
+                created_at=EPOCH + timedelta(minutes=i),
+            )
+            for i in range(GRANT_SWEEP_PAGE)
+        ]
+        behind = _run(
+            _grant(),
+            run_id="qa-run-behind-them",
+            created_at=EPOCH + timedelta(minutes=GRANT_SWEEP_PAGE),
+        )
+        api = _Api([*unreadable, behind])
+        revoke = AsyncMock(return_value=None)
+
+        with _sweep(api, revoke)[0], _sweep(api, revoke)[1]:
+            counts = await sweep_qa_ssh_grants()
+
+        assert counts["unreadable"] == GRANT_SWEEP_PAGE
+        assert counts["revoked"] == 1
+        assert [p for p, _ in api.patches] == ["runs/qa-run-behind-them"]
 
 
 @pytest.mark.parametrize("state", [QASshGrantState.ISSUING, QASshGrantState.OPEN])

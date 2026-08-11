@@ -19,6 +19,9 @@ outage longer than the window left the record — and the `authorized_keys` line
 it stands for — permanently outside the reach of the only process that removes
 it. Age neither closes a record nor excuses skipping one; the only bound is how
 many rows come back at once, and the sweep walks the pages until they run out.
+It walks them by cursor rather than by offset, because the selection shrinks
+under the walk that drains it, and only a position in the order — not a count
+of rows — keeps what is still open ahead of where the walk has reached.
 
 While a record cannot be closed, the run says so. After
 `GRANT_SWEEP_ESCALATE_AFTER` failed attempts the run's outcome is replaced with
@@ -56,7 +59,8 @@ logger = structlog.get_logger(__name__)
 GRANT_SWEEP_INTERVAL = 300  # 5 minutes
 # How many unreleased records one request brings back. This bounds the response,
 # not the work: a full page means there is another one, and the cycle keeps
-# asking. Nothing is dropped for being past the end of a page.
+# asking from the last record it handled. Nothing is dropped for being past the
+# end of a page, and nothing is skipped for having been released behind it.
 GRANT_SWEEP_PAGE = 100
 # Attempts before the residual access stops being a retry and becomes the run's
 # reported outcome. Escalating does not close the record: it stays selected, and
@@ -168,17 +172,30 @@ async def _reconcile(run_id: str, grant: QASshGrant) -> str:
 async def sweep_qa_ssh_grants() -> dict[str, int]:
     """Drive every unreleased grant towards removal, however old its run is.
 
-    Pages are walked to the end, oldest record first. A record the API returns
-    but that has meanwhile been released is simply skipped; a record missed
-    because the page shifted under a release is picked up by the next cycle,
-    because it is still selected while it is still open.
+    Pages are walked to the end, oldest record first, and one cycle presents
+    every record that was open when it passed. The walk has to survive the
+    selection changing underneath it, because the walk is what changes it: a
+    successful revoke writes `RELEASED` and the record leaves the selection
+    while the cycle is still running. Under an offset the rows behind the
+    cursor closing would pull the unhandled ones back past it — a whole first
+    page released puts `offset=GRANT_SWEEP_PAGE` beyond the end of what is
+    left, the response comes back short, and the cycle stops with open records
+    it never asked for.
+
+    So the page is asked for by cursor: strictly after the `(created_at, id)`
+    of the last record handled, in that same order. A position in the order
+    cannot be moved by rows leaving behind it, so what is ahead of the cursor
+    stays ahead of it. The cursor advances over every record the page
+    contained, including the ones this cycle skipped — a released or unreadable
+    record is passed, not re-asked for, so a record that cannot be closed still
+    cannot stall the cycle on itself.
     """
     counts = {"seen": 0, "revoked": 0, "failed": 0, "escalated": 0, "unreadable": 0}
-    offset = 0
+    after = None
     while True:
-        runs = await api_client.list_runs_holding_qa_ssh_grant(
-            limit=GRANT_SWEEP_PAGE, offset=offset
-        )
+        runs = await api_client.list_runs_holding_qa_ssh_grant(limit=GRANT_SWEEP_PAGE, after=after)
+        if runs:
+            after = runs[-1]
         for run in runs:
             try:
                 grant = _open_grant(run.run_metadata)
@@ -196,7 +213,6 @@ async def sweep_qa_ssh_grants() -> dict[str, int]:
             counts[await _reconcile(run.id, grant)] += 1
         if len(runs) < GRANT_SWEEP_PAGE:
             break
-        offset += len(runs)
     if counts["seen"] or counts["unreadable"]:
         logger.info("qa_grant_sweep_cycle", **counts)
     return counts

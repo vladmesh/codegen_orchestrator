@@ -1203,12 +1203,24 @@ writes the run's outcome as a `qa_cleanup_failed` blocker so residual access rea
 Escalating does not close the record: it stays selected until a readback proves the key gone.
 
 The sweep reads its work from `GET /api/runs/qa-ssh-grants/held` (internal/admin), which selects on
-the record and on nothing else: every run whose `qa_ssh_grant` is not `released`, oldest first, one
-page at a time. Age is not a selection key — a record written before an outage of any length is
-still returned afterwards — and a page bounds the response, not the coverage: the caller walks
-pages until one comes back short. A record the current schema cannot parse is still returned, since
-unreadable is not released; the sweep logs it as `qa_grant_sweep_unreadable_record` and carries on
-with the rest rather than letting it end the cycle.
+the record and on nothing else: every run whose `qa_ssh_grant` is not `released`, ordered
+`(created_at, id)` ascending, one page at a time. Age is not a selection key — a record written
+before an outage of any length is still returned afterwards — and a page bounds the response, not
+the coverage: the caller walks pages until one comes back short.
+
+Pages are taken by cursor, never by offset: `after_created_at` and `after_id` name the last record
+the caller handled, the two are one position and must be given together (`422` otherwise), and the
+next page is strictly after it in that order. The selection shrinks while it is walked, because
+handling a record is what releases it — under an offset the unhandled records slide backwards past
+the cursor and a cycle can finish while open records remain, which is exactly the reconciliation
+this endpoint exists to guarantee. A cursor names a position in the order rather than a count of
+rows, so rows leaving behind it move nothing ahead of it, and one cycle presents every record that
+was open when it passed.
+
+A record the current schema cannot parse is still returned, since unreadable is not released; the
+sweep logs it as `qa_grant_sweep_unreadable_record` and carries on with the rest rather than letting
+it end the cycle. The cursor advances over it too — it is passed, not re-asked for — so a record
+that can never be closed cannot stall a cycle on itself.
 
 This is not a second `temporary_access`: that grant hands a Telegram identity to a deployed bot and
 is settled by deploys, a different subject with a different lifecycle. What is reused from it is the

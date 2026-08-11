@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-08-11 (8)
+
+- Made the QA grant sweep's walk survive the selection it is draining. The pages
+  were taken by `offset` over a selection that shrinks while it is walked: a
+  successful revoke writes `RELEASED` and the row leaves the predicate, so the
+  records still open slide backwards past the cursor. With a whole first page
+  released, `offset=100` lands past the end of what is left, the response comes
+  back short, and the cycle stops with an unreconciled grant — a live
+  `authorized_keys` line — that it claimed to have walked to.
+- `GET /api/runs/qa-ssh-grants/held` now pages by cursor: `after_created_at` and
+  `after_id` name the last record handled, the next page is strictly after it in
+  the `(created_at, id)` order, and half a cursor is a `422` rather than a
+  silent restart from the top. `offset` is gone from the route and the client
+  rather than kept as a second mode. A position in the order cannot be moved by
+  rows closing behind it, so one cycle presents every record that was open when
+  it passed.
+
 ## 2026-08-11 (7)
 
 - Stopped selecting the QA grant sweep's work by time. It read QA runs started
