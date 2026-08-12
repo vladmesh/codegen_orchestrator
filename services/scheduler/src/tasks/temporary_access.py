@@ -1313,10 +1313,10 @@ async def _record_revoke_failure(
 
     It is a cleanup incident and not a product verdict. The story the access was
     borrowed for is routed on what QA said about the product and has usually
-    finished long before this; nothing here reopens it. What the escalation still
-    does is write the named cleanup failure on the QA run, so the run that
-    borrowed the identity is where the incident is recorded, and stamp the grant
-    so the report is made once rather than every tick.
+    finished long before this; nothing here reopens it. The escalation records
+    the incident on the grant and stamps it so the report is made once rather
+    than every tick. If QA is still live, the API records the named cleanup
+    failure on that run; a settled QA verdict remains authoritative.
     """
     exhausted = _retries_are_spent(grant) and grant.escalated_at is None
     log.error(

@@ -23,7 +23,6 @@ import pytest
 from shared.config_store import ConfigStore
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantCreate,
@@ -336,10 +335,10 @@ async def test_a_cleanup_that_gave_up_calls_a_human_and_leaves_the_story_alone(
 ):
     """The risk this card is really about: delivered early, cleanup lost.
 
-    The revokes run out. The incident is written on the QA run that borrowed the
-    identity and an administrator is called by name — story, project, run and
-    grant. The delivered story is not reopened by any of it, no engineering work
-    is created from it, and the owner is not told a second time.
+    The revokes run out. An administrator is called by name — story, project,
+    run and grant — while the completed QA verdict stays authoritative. The
+    delivered story is not reopened, no engineering work is created from it,
+    and the owner is not told a second time.
     """
     from src.tasks.supervisor import supervise_testing_stories
     from src.tasks.temporary_access import supervise_temporary_access
@@ -367,9 +366,10 @@ async def test_a_cleanup_that_gave_up_calls_a_human_and_leaves_the_story_alone(
     assert qa_run_id in alerted
     assert f"tempaccess-{qa_run_id}" in alerted
 
-    # The incident is on the QA run, and the grant says a human has been called.
+    # The grant says a human has been called without replacing the QA verdict.
     run = await api_client.get_run(qa_run_id)
-    assert run.result.blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
+    assert run.status is RunStatus.COMPLETED
+    assert run.result.qa_outcome is QAOutcome.PASSED
     escalated = await api_client.get_live_temporary_access_grant_for_run(qa_run_id)
     assert escalated is not None
     assert escalated.escalated_at is not None
