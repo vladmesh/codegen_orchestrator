@@ -9,6 +9,7 @@ given instead is one command, which is its only route to the deployment.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -343,8 +344,88 @@ class TestTheOneCommandItIsGiven:
         with pytest.raises(RuntimeError, match="QA capability command"):
             await qa_worker(docker=wrapper)
 
+    async def test_missing_first_turn_material_fails_without_publishing_ready(self, qa_worker):
+        manager_holder: dict = {}
+
+        with pytest.raises(RuntimeError, match="requires instructions and task_content"):
+            await qa_worker(instructions=None, manager_holder=manager_holder)
+
+        manager = manager_holder["manager"]
+        assert await manager.redis.hget("worker:status:qa-1", "status") == WorkerStatus.FAILED
+
+    async def test_qa_readiness_is_published_only_after_every_first_turn_material(self, qa_worker):
+        """A fast wrapper cannot be told to accept a turn halfway through setup."""
+        observed_statuses: list[WorkerStatus | None] = []
+        wrapper = _docker_mock()
+        manager_holder: dict = {}
+
+        async def exec_in_container(container_id, command, **kwargs):
+            status = await manager_holder["manager"].redis.hget("worker:status:qa-1", "status")
+            observed_statuses.append(status)
+            return 0, "ok"
+
+        wrapper.exec_in_container = AsyncMock(side_effect=exec_in_container)
+        with patch("src.codex_auth.validate_codex_host_session"):
+            await qa_worker(
+                docker=wrapper,
+                manager_holder=manager_holder,
+                agent_type=AgentType.CODEX,
+            )
+
+        assert observed_statuses
+        assert observed_statuses[-1] != WorkerStatus.RUNNING
+        assert await manager_holder["manager"].redis.hget("worker:status:qa-1", "status") == WorkerStatus.RUNNING
+
+    async def test_codex_first_turn_sees_all_materials_after_real_creation_readiness(self, qa_worker, tmp_path):
+        """Interleave immediate readiness polling with creation, then execute the first turn."""
+        wrapper = _docker_mock()
+        manager_holder: dict = {}
+        workspace = tmp_path / f"{workspace_mod.QA_WORKSPACE_PREFIX}qa-1"
+        first_turn: asyncio.Task | None = None
+        verdict: dict[str, object] | None = None
+
+        async def consume_first_turn_after_ready():
+            nonlocal verdict
+            while await manager_holder["manager"].redis.hget("worker:status:qa-1", "status") != WorkerStatus.RUNNING:
+                await asyncio.sleep(0)
+
+            assert (workspace / "AGENTS.md").read_text() == "# QA executor"
+            assert (workspace / "TASK.md").read_text() == "run the regression test"
+            assert (workspace / "qa").is_file()
+            assert (workspace / "qa").stat().st_mode & 0o111
+            verdict = {"pass": True, "checks": [], "summary": "submitted through capability endpoint"}
+
+        async def run_container(**kwargs):
+            nonlocal first_turn
+            first_turn = asyncio.create_task(consume_first_turn_after_ready())
+            return MagicMock(id="container-id")
+
+        async def exec_in_container(container_id, command, **kwargs):
+            if "/workspace/AGENTS.md" in command:
+                (workspace / "AGENTS.md").write_text("# QA executor")
+            elif "/workspace/TASK.md" in command:
+                (workspace / "TASK.md").write_text("run the regression test")
+            elif QA_PROBE_PATH in command:
+                probe = workspace / "qa"
+                probe.write_text("#!/bin/sh\n")
+                probe.chmod(0o700)
+            return 0, "ok"
+
+        wrapper.run_container = AsyncMock(side_effect=run_container)
+        wrapper.exec_in_container = AsyncMock(side_effect=exec_in_container)
+        with patch("src.codex_auth.validate_codex_host_session"):
+            await qa_worker(
+                docker=wrapper,
+                manager_holder=manager_holder,
+                agent_type=AgentType.CODEX,
+            )
+
+        assert first_turn is not None
+        await first_turn
+        assert verdict == {"pass": True, "checks": [], "summary": "submitted through capability endpoint"}
+
     async def test_a_half_built_executor_is_failed_and_still_owned(self, qa_worker, tmp_path):
-        """The container is already RUNNING by then, so two things have to be true.
+        """The container is already started but not ready, so two things have to be true.
 
         The status must say failed — a client polling it would otherwise send a
         run into a container that has to improvise a route to the deployment —

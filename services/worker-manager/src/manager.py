@@ -181,6 +181,7 @@ class WorkerManager:
         workspace_path: Optional[str] = None,
         container_config: Optional[WorkerContainerConfig] = None,
         allow_host_network: bool = False,
+        publish_ready: bool = True,
     ) -> str:
         """
         Create and start a new worker container.
@@ -190,6 +191,8 @@ class WorkerManager:
             create_dev_network: If True, also create a dev_proj_<worker_id> network and
                                 connect the container to it as a second network.
             workspace_path: Host path to the worker workspace (stored in Redis metadata).
+            publish_ready: mark the worker RUNNING after the container starts. QA
+                workers defer this until their injected turn materials are ready.
         """
         env_vars = env_vars or {}
         network_name = network_name or settings.WORKER_NETWORK
@@ -253,7 +256,8 @@ class WorkerManager:
                 meta["workspace_path"] = workspace_path
             await self.redis.hset(f"worker:meta:{worker_id}", mapping=meta)
 
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
+            if publish_ready:
+                await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
 
             return container.id
 
@@ -574,6 +578,8 @@ class WorkerManager:
         env_vars = env_vars or {}
 
         try:
+            if is_qa_worker and (not instructions or not task_content):
+                raise RuntimeError("a QA executor requires instructions and task_content before it can become ready")
             image_tag = await self.ensure_or_build_image(
                 capabilities=capabilities,
                 base_image=base_image,
@@ -691,6 +697,11 @@ class WorkerManager:
                 workspace_path=str(ws_path),
                 container_config=config,
                 allow_host_network=allow_host_network,
+                # A QA container starts before its injected files exist. Keep
+                # it STARTING until AGENTS/CLAUDE, TASK and /workspace/qa are
+                # all usable, so the central runner cannot publish its turn to
+                # a partial workspace.
+                publish_ready=not is_qa_worker,
             )
             if is_qa_worker:
                 # Proof, not intent: whatever was asked for, this is what Docker
@@ -765,6 +776,8 @@ class WorkerManager:
 
             if is_qa_worker:
                 await self._inject_qa_probe(container_id, worker_id)
+                await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
+                logger.info("qa_executor_ready", worker_id=worker_id)
 
             return worker_id
         except Exception as exc:

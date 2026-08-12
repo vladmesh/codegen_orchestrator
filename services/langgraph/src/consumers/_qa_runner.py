@@ -12,8 +12,8 @@ started for it. What that probe did establish is handed to the executor as given
 
 Only then does an executor run, and the order there is fixed:
 
-1. the assigned subscription coding agent — Claude Code unless something
-   assigned Codex — started centrally through the existing worker runtime on the
+1. the assigned subscription coding agent — Codex unless `QA_EXECUTOR_AGENT_TYPE`
+   explicitly selects Claude Code — started centrally through the existing worker runtime on the
    management host, reaching the deployment only through this run's capability
    endpoint;
 2. only if that executor genuinely did not run, the optional `QA_LLM_*` API
@@ -101,8 +101,8 @@ _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 class QARuntimeConfig:
     """What a QA run is performed with, before anything is known about failing.
 
-    `executor_agent_type` is the coding agent assigned to testing — Claude Code
-    unless something assigned Codex explicitly. Its subscription session is a
+    `executor_agent_type` is the coding agent assigned to testing — Codex by
+    default, with Claude Code as an explicit override. Its subscription session is a
     directory on the management host that worker-manager mounts into the
     executor container; neither this process nor any deploy target ever holds
     it.
