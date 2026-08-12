@@ -56,7 +56,7 @@ async def create_project(
     title: str,
     modules: str = "backend",
     description: str = "",
-    agent_type: str = AgentType.CLAUDE.value,
+    agent_type: str | None = None,
     *,
     config: RunnableConfig,
 ) -> str:
@@ -66,7 +66,7 @@ async def create_project(
         title: Human-readable project title.
         modules: Comma-separated modules: backend, tg_bot, notifications, frontend.
         description: What the project should do.
-        agent_type: Developer worker: claude, factory, or codex.
+        agent_type: Optional developer-worker override: claude, factory, or codex.
     """
     modules_list = [m.strip() for m in modules.split(",") if m.strip()]
 
@@ -75,7 +75,7 @@ async def create_project(
         available = ", ".join(sorted(AVAILABLE_MODULES))
         return f"Error: invalid modules: {', '.join(invalid)}. Available: {available}"
 
-    if agent_type not in AVAILABLE_DEVELOPER_AGENTS:
+    if agent_type is not None and agent_type not in AVAILABLE_DEVELOPER_AGENTS:
         available = ", ".join(sorted(AVAILABLE_DEVELOPER_AGENTS))
         return f"Error: invalid agent_type: {agent_type}. Available: {available}"
 
@@ -87,8 +87,9 @@ async def create_project(
         "modules": modules_list,
         "description": description,
         "title": title,
-        "agent_type": agent_type,
     }
+    if agent_type is not None:
+        proj_config["agent_type"] = agent_type
 
     payload = {
         "id": project_id,

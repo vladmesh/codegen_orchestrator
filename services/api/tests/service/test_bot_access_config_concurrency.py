@@ -51,6 +51,7 @@ async def test_bot_access_endpoint_records_each_contract_audience(
     project = await async_client.get(f"/api/projects/{project_id}")
     assert project.status_code == status.HTTP_200_OK
     assert project.json()["config"] == {
+        "agent_type": "claude",
         "bot_access": {"mode": mode, "allowed_telegram_ids": audience},
         "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": audience},
     }
@@ -90,6 +91,7 @@ async def test_bot_access_and_generic_config_update_do_not_lose_the_audience(
     project = await async_client.get(f"/api/projects/{project_id}")
     assert project.status_code == status.HTTP_200_OK
     assert project.json()["config"] == {
+        "agent_type": "claude",
         "tree": "src/",
         "bot_access": {"mode": "only_me", "allowed_telegram_ids": str(telegram_id)},
         "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": str(telegram_id)},

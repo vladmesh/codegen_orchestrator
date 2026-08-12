@@ -2,6 +2,11 @@
 
 ## 2026-08-12
 
+- **Resolve project worker default at the API boundary (`codegen-orchestrator-1177`)**:
+  PO project creation no longer injects Claude when the caller omits a developer
+  agent. The API now records its current `DEFAULT_AGENT_TYPE` at creation time,
+  preserves explicit supported choices, and leaves existing project records unchanged.
+
 - Kept a central QA worker in `STARTING` until worker-manager has installed its agent instruction, `TASK.md` and `/workspace/qa`. The wrapper independently waits for those files before leasing its first turn, closing the creation-to-first-turn race without widening the capability or credential boundary.
 - Made Codex the default central exploratory-QA executor. Its intentionally empty ephemeral QA workspace now uses Codex's native `--skip-git-repo-check` mode, while `claude` remains an explicit override and the existing capability-only, isolated-egress execution path is unchanged.
 

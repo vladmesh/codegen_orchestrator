@@ -73,6 +73,14 @@ async def po_clients(po_api_client, stream_client):
 
 
 @pytest.fixture
+async def factory_api_client():
+    """API runtime whose default changed to factory after earlier projects existed."""
+    client = InternalAPIClient("http://api-factory:8000")
+    yield client
+    await client.close()
+
+
+@pytest.fixture
 async def test_user(api_client):
     """Ensure a test user exists in the API, return telegram_id."""
     resp = await api_client.get(f"/api/users/by-telegram/{TEST_TELEGRAM_ID}")

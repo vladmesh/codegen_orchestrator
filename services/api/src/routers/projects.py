@@ -20,6 +20,7 @@ from shared.contracts.dto.telegram import (
     TokenVerdictStatus,
 )
 from shared.contracts.queues.deploy import DeployTrigger
+from shared.contracts.vocab import AgentType
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import (
     AnalyticsDaily,
@@ -122,6 +123,24 @@ async def _load_locked_project(db: AsyncSession, project_id: uuid.UUID) -> Proje
     return project
 
 
+def _initial_project_config(config: dict) -> dict:
+    """Resolve the developer agent exactly once, when a project is created."""
+    resolved = dict(config)
+    explicit_agent_type = resolved.get("agent_type")
+    if explicit_agent_type is None:
+        resolved["agent_type"] = get_settings().default_agent_type.value
+        return resolved
+
+    try:
+        resolved["agent_type"] = AgentType(explicit_agent_type).value
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unsupported agent_type: {explicit_agent_type}",
+        ) from exc
+    return resolved
+
+
 @router.post("/", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 async def create_project(
     request: Request,
@@ -168,7 +187,7 @@ async def create_project(
             title=project_in.title,
             slug=generate_project_slug(project_in.title, project_id),
             status=project_in.status.value,
-            config=_vet_config_write(project_in.config, None),
+            config=_vet_config_write(_initial_project_config(project_in.config), None),
             owner_id=owner_id,
         )
         db.add(project)
@@ -439,6 +458,9 @@ def _vet_config_write(config: dict, project: Project | None) -> dict:
     if stored:
         vetted["secrets"] = stored
     stored_config = project.config if project is not None else {}
+    stored_agent_type = stored_config.get("agent_type") if isinstance(stored_config, dict) else None
+    if stored_agent_type is not None and vetted.get("agent_type") is None:
+        vetted["agent_type"] = stored_agent_type
     stored_access = stored_config.get("bot_access") if isinstance(stored_config, dict) else None
     stored_overrides = (
         stored_config.get("env_overrides", {}) if isinstance(stored_config, dict) else {}

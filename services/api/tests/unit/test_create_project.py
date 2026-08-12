@@ -1,6 +1,7 @@
 """Unit tests for POST /api/projects/ ownership enforcement."""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
@@ -8,8 +9,10 @@ from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
 
+from shared.contracts.vocab import AgentType
 from src.database import get_async_session
 from src.main import app
+from src.routers import projects
 
 PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
 
@@ -106,6 +109,91 @@ async def test_create_project_with_header_sets_owner():
     assert project.owner_id == 5  # noqa: PLR2004
     assert project.title == "My Project"
     assert project.slug == "my-proj-00000000000000000000000000000001"
+
+
+@pytest.mark.asyncio
+async def test_create_project_uses_current_runtime_default_agent_when_omitted(monkeypatch):
+    """An omitted selection is resolved by the API when the project is created."""
+    user = _make_user(user_id=5, telegram_id=42000)
+    session = _mock_session(existing_project=None, resolve_user=user)
+    monkeypatch.setattr(
+        projects, "get_settings", lambda: SimpleNamespace(default_agent_type=AgentType.CODEX)
+    )
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post(
+            "/api/projects/",
+            json=PROJECT_PAYLOAD,
+            headers={"X-Telegram-ID": "42000"},
+        )
+
+    assert resp.status_code == 201  # noqa: PLR2004
+    project = session.add.call_args[0][0]
+    assert project.config["agent_type"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_create_project_preserves_explicit_agent_over_runtime_default(monkeypatch):
+    """A supported caller selection wins over the API runtime default."""
+    user = _make_user(user_id=5, telegram_id=42000)
+    session = _mock_session(existing_project=None, resolve_user=user)
+    monkeypatch.setattr(
+        projects, "get_settings", lambda: SimpleNamespace(default_agent_type=AgentType.FACTORY)
+    )
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    payload = PROJECT_PAYLOAD | {"config": {"modules": ["backend"], "agent_type": "codex"}}
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post(
+            "/api/projects/",
+            json=payload,
+            headers={"X-Telegram-ID": "42000"},
+        )
+
+    assert resp.status_code == 201  # noqa: PLR2004
+    project = session.add.call_args[0][0]
+    assert project.config["agent_type"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_unsupported_explicit_agent_type():
+    """Explicit agent types stay subject to the canonical AgentType contract."""
+    user = _make_user(user_id=5, telegram_id=42000)
+    session = _mock_session(existing_project=None, resolve_user=user)
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    payload = PROJECT_PAYLOAD | {"config": {"modules": ["backend"], "agent_type": "mystery"}}
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post(
+            "/api/projects/",
+            json=payload,
+            headers={"X-Telegram-ID": "42000"},
+        )
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    session.add.assert_not_called()
 
 
 @pytest.mark.asyncio
