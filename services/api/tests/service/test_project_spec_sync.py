@@ -78,7 +78,7 @@ async def test_patch_project_spec_leaves_config_alone(async_client: AsyncClient,
     resp = await async_client.patch(f"/api/projects/{project['id']}", json={"project_spec": SPEC})
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["config"] == {"modules": ["backend"]}
+    assert resp.json()["config"] == {"modules": ["backend"], "agent_type": "claude"}
 
 
 @pytest.mark.asyncio

@@ -458,6 +458,9 @@ def _vet_config_write(config: dict, project: Project | None) -> dict:
     if stored:
         vetted["secrets"] = stored
     stored_config = project.config if project is not None else {}
+    stored_agent_type = stored_config.get("agent_type") if isinstance(stored_config, dict) else None
+    if stored_agent_type is not None and vetted.get("agent_type") is None:
+        vetted["agent_type"] = stored_agent_type
     stored_access = stored_config.get("bot_access") if isinstance(stored_config, dict) else None
     stored_overrides = (
         stored_config.get("env_overrides", {}) if isinstance(stored_config, dict) else {}
