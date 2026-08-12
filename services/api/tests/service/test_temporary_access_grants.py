@@ -568,6 +568,7 @@ async def test_escalation_fails_a_qa_run_that_already_passed(async_client: Async
     run = await async_client.get(f"/api/runs/{run_id}")
     assert run.json()["status"] == "failed"
     assert run.json()["result"]["blocker"]["category"] == "qa_cleanup_failed"
+    assert run.json()["completed_at"] is not None
 
 
 @pytest.mark.asyncio

@@ -150,11 +150,58 @@ async def test_repeating_an_outcome_after_a_lost_response_is_not_a_conflict(
     payload = {"status": "completed", "result": {"qa_outcome": "passed", "report": "all good"}}
 
     first = await async_client.patch(f"/api/runs/{run_id}", json=payload)
-    second = await async_client.patch(f"/api/runs/{run_id}", json=payload)
+    first_completed_at = first.json()["completed_at"]
+    second = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={**payload, "completed_at": "2030-01-01T00:00:00Z"},
+    )
 
     assert first.status_code == status.HTTP_200_OK
     assert second.status_code == status.HTTP_200_OK
     assert second.json()["result"]["qa_outcome"] == "passed"
+    assert first_completed_at is not None
+    assert second.json()["completed_at"] == first_completed_at
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_status", "expected_outcome"),
+    [
+        (
+            {"status": "completed", "result": {"qa_outcome": "passed"}},
+            "completed",
+            "passed",
+        ),
+        (
+            {
+                "status": "completed",
+                "result": {
+                    "qa_outcome": "failed",
+                    "failed_checks": [{"name": "GET /health", "detail": "returned 503"}],
+                },
+            },
+            "completed",
+            "failed",
+        ),
+        ({"status": "cancelled"}, "cancelled", None),
+    ],
+    ids=("success", "failed_verdict", "cancellation"),
+)
+async def test_first_qa_terminal_transition_stamps_completion_time(
+    async_client: AsyncClient,
+    payload: dict,
+    expected_status: str,
+    expected_outcome: str | None,
+):
+    """The API commits a QA verdict and its completion timestamp together."""
+    run_id = await _run(async_client)
+
+    settled = await async_client.patch(f"/api/runs/{run_id}", json=payload)
+
+    assert settled.status_code == status.HTTP_200_OK
+    assert settled.json()["status"] == expected_status
+    assert settled.json()["completed_at"] is not None
+    assert (settled.json()["result"] or {}).get("qa_outcome") == expected_outcome
 
 
 @pytest.mark.asyncio

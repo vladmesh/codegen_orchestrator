@@ -2,6 +2,10 @@
 
 ## 2026-08-12
 
+- QA run terminal transitions now record `completed_at` atomically with their
+  verdict, including cancellation. Repeated deliveries preserve the first
+  timestamp, as do dispatch cancellation and QA-access cleanup failure paths.
+
 - **Resolve project worker default at the API boundary (`codegen-orchestrator-1177`)**:
   PO project creation no longer injects Claude when the caller omits a developer
   agent. The API now records its current `DEFAULT_AGENT_TYPE` at creation time,

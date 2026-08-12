@@ -301,6 +301,12 @@ async def _lock_run(run_id: str, db: AsyncSession) -> Run:
     return run
 
 
+def _record_first_terminal_completion(run: Run) -> None:
+    """Stamp a terminal run once, in the transaction that records its outcome."""
+    if run.completed_at is None:
+        run.completed_at = datetime.now(UTC)
+
+
 @router.patch("/{run_id}", response_model=RunRead)
 async def update_run(
     run_id: str,
@@ -346,6 +352,13 @@ async def update_run(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Run {run_id} is {run.status} and cannot go back to {requested_status}",
         )
+
+    # The API owns a run's terminal timestamp. It is written in the same
+    # transaction as the first terminal state/result, and subsequent deliveries
+    # preserve it even if their payload carries a different client timestamp.
+    if requested_status in _TERMINAL_RUN_STATUSES:
+        _record_first_terminal_completion(run)
+        update_data.pop("completed_at", None)
 
     # A terminal run that already carries a result has said what happened, and
     # that answer is what everything downstream reads. Refusing only the move
@@ -552,6 +565,7 @@ async def supersede_run_dispatch(
         return _answer(DispatchSupersede.LEASE_LIVE)
 
     run.status = RunStatus.CANCELLED.value
+    _record_first_terminal_completion(run)
     if reason:
         run.error_message = reason
     run.run_metadata = {
@@ -596,6 +610,7 @@ async def withdraw_run_dispatch(
         )
 
     run.status = RunStatus.CANCELLED.value
+    _record_first_terminal_completion(run)
     if reason:
         run.error_message = reason
     await db.commit()
