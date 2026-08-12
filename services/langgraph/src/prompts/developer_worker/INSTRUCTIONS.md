@@ -105,7 +105,7 @@ waiting for CI. Fix any failures before proceeding.
 make lint
 
 # 2. Unit tests (no infrastructure needed)
-make tests unit
+make tests
 ```
 
 If lint fails — run `make format` and review the changes. If tests fail — fix the code.
@@ -119,7 +119,7 @@ curl -sf -X POST http://localhost:9090/infra/compose \
   -d '{"args":["up","-d","--wait","db","redis"],"timeout":120}'
 
 # Run integration tests
-make tests integration
+make test-integration
 ```
 
 ## Commit & Push
@@ -251,7 +251,7 @@ make format
 make generate-from-spec
 
 # Unit tests (run natively, no infrastructure needed)
-make tests unit
+make tests
 
 # Integration tests (require infrastructure — start db/redis first)
 curl -sf -X POST http://localhost:9090/infra/compose \
