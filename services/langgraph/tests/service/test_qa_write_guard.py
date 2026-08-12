@@ -62,6 +62,10 @@ ALLOWED_PORT = 8000
 NEIGHBOUR_PORT = 9000
 OWN_CONTAINER = "app-backend-1"
 NEIGHBOUR_CONTAINER = "other-project-web-1"
+RUNNING_STATE = (
+    '{"Status":"running","Running":true,"Restarting":false,"ExitCode":0,'
+    '"Health":{"Status":"healthy"}}'
+)
 
 
 class _LocalShellConn:
@@ -323,6 +327,11 @@ class _FakeTargetConn:
             return SimpleNamespace(exit_status=0, stdout="/opt/services/app\n", stderr="")
         if "qa-docker ps" in command:
             return SimpleNamespace(exit_status=0, stdout=f"{OWN_CONTAINER}\n", stderr="")
+        # The deterministic container-state probe the runner runs before the
+        # executor. This deployment is up; what is under test here is the write
+        # guard over what the executor then does.
+        if "qa-docker inspect" in command:
+            return SimpleNamespace(exit_status=0, stdout=RUNNING_STATE, stderr="")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 
     async def __aenter__(self):
@@ -412,6 +421,7 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
             grant_journal=_Journal(),
             provisioning_journal=_ProvisioningJournal(),
             settings=_NO_API_FALLBACK,
+            established_facts=[],
         )
 
     assert result.passed is False

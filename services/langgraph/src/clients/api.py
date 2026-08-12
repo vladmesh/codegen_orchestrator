@@ -17,8 +17,19 @@ from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.contracts.dto.telegram import BotLiveness
 from shared.contracts.dto.user import UserDTO
 from src.config.settings import get_settings
+
+
+def bot_liveness_path(project_id: str) -> str:
+    """The internal surface that answers "is this project's bot live?".
+
+    Named here rather than inlined because a QA blocker has to say by which path
+    the answer was obtained: the token stays in the API, and this is the whole of
+    what the QA runtime asks it.
+    """
+    return f"projects/{project_id}/telegram/liveness"
 
 
 class LanggraphAPIClient(InternalAPIClient):
@@ -255,6 +266,15 @@ class LanggraphAPIClient(InternalAPIClient):
             if e.response.status_code == HTTPStatus.NOT_FOUND:
                 return None
             raise
+
+    async def get_bot_liveness(self, project_id: str) -> BotLiveness:
+        """Ask whether this project's bot answers `getMe` right now.
+
+        The API holds the token and asks Telegram on this caller's behalf, so a
+        QA run learns that the bot is live without the token entering its
+        runtime — see `bot_liveness_path` for the surface this is the client of.
+        """
+        return BotLiveness.model_validate(await self._get_json(bot_liveness_path(project_id)))
 
     async def merge_secrets(
         self, project_id: str, secrets: dict[str, str], env_hints: dict[str, str] | None = None

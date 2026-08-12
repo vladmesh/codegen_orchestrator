@@ -151,6 +151,20 @@ class QABlockerCategory(StrEnum):
     # CLI agent and the API triplet became an optional fallback.
     QA_EXECUTOR_UNAVAILABLE = "qa_executor_unavailable"
     DEPLOYED_URL_UNREACHABLE = "deployed_url_unreachable"
+    # A deterministic pre-agent probe could not be performed at all: the target's
+    # container runtime did not answer, or the platform API that holds the bot
+    # token did not. Neither says anything about the product, and neither is
+    # `server_unavailable` — that one means the run never got onto the host and
+    # is repaired by looking at the host or its provisioning, while this one
+    # means the platform is on the host (or on its own API) and the thing it
+    # asked did not answer. Conflating them would make both unactionable.
+    QA_PROBE_UNAVAILABLE = "qa_probe_unavailable"
+    # Telegram answered, and the bot this deployment is bound to is not live:
+    # the token was revoked, replaced or never bound. Distinct from
+    # `telegram_access_denied`, which is a live bot refusing the QA account and
+    # is repaired by the temporary-access mechanism; this one is repaired by
+    # binding a working token, and no amount of test access changes it.
+    BOT_NOT_LIVE = "bot_not_live"
     TELEGRAM_ACCESS_DENIED = "telegram_access_denied"
     SERVER_UNAVAILABLE = "server_unavailable"
     QA_CLEANUP_FAILED = "qa_cleanup_failed"

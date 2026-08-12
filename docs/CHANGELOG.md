@@ -1,5 +1,75 @@
 # Changelog
 
+## 2026-08-12 (3)
+
+- The deterministic QA probes classify a dependency that did not answer by what
+  was unavailable, not by which call happened to meet it first. Two places got
+  that wrong.
+- Telegram rate limiting a `getMe` is no longer read as a dead bot. Only HTTP
+  401 and 404 are the Bot API refusing this token, and only those are
+  `bot_not_live`; HTTP 429 and every other non-OK answer are Telegram declining
+  to answer, which establishes nothing about the bot. They travel the
+  infrastructure route instead: bounded retries, `qa_probe_unavailable`, one
+  administrator alert. When Telegram sends `parameters.retry_after` it comes
+  back on `BotLiveness.retry_after` and the probe waits that long rather than
+  its own guess — up to `BOT_LIVENESS_MAX_RETRY_DELAY`, past which it stops and
+  reports the same outcome naming the window Telegram asked for, so the budget
+  stays bounded. Before this, a flood-controlled request blocked the run for a
+  human as though the token had been revoked.
+- Docker not answering on the target now ends at the same outcome from both
+  calls that read it. The `docker ps` in `resolve_capabilities` runs before a
+  session exists and used to raise a bare `QACapabilityError`, which
+  `run_qa_centrally` merged with a failed SSH grant into `server_unavailable` —
+  no retries, and no administrator alert, for exactly the condition the later
+  `docker inspect` retries and alerts on. It raises `QAContainerRuntimeError`
+  now, retries `CONTAINER_PROBE_ATTEMPTS` times like every other read of that
+  runtime, and is classified by `container_runtime_unavailable()`, the one
+  function both paths come to. `server_unavailable` keeps its meaning: the run
+  never got onto the host, or the deployment directory does not resolve — cases
+  in which no docker call was made at all.
+
+## 2026-08-12 (2)
+
+- Container state and "is the bot alive" are established deterministically now,
+  before the exploratory QA executor starts. Both were the odd ones out among
+  the five facts QA needs: container state was reachable only through the
+  agent's own `container_inspect` tool, so a dead container cost a model call to
+  discover, and bot liveness at QA time was not checked at all — the only `getMe`
+  in the system ran when the token was bound, possibly weeks earlier, and deploy
+  smoke's runs at deploy time.
+- `run_container_state_checks` reads `docker inspect` for every container of the
+  run's compose project over the session the run already holds — no new access
+  path, the same call the agent had. A container that is exited, restarting or
+  unhealthy fails QA as a product defect with one failed check naming it, and no
+  executor is started for it.
+- Bot liveness is asked of the API, which holds the token: `GET
+  /api/projects/{id}/telegram/liveness` (internal or admin) calls `getMe` and
+  answers `BotLiveness` — a state, the username Telegram reported, a detail
+  line. The token enters neither the QA runtime nor the deploy target, which is
+  the whole reason the question is asked this way rather than by lending the
+  credential to QA. A bot Telegram refuses is a blocker for a human, not a fix
+  task: no engineering worker can re-issue a revoked token.
+- The infrastructure half reuses what was already there rather than growing a
+  second mechanism. `QAInfrastructureFailure` now carries the blocker it becomes,
+  so a probe that could not be performed travels the same path a missing
+  executor does: bounded retries, a typed QA-infrastructure outcome, and one
+  administrator alert. `QA_INFRASTRUCTURE_BLOCKERS` in the consumer is the list;
+  `_alert_admins_no_executor` became `_alert_admins_qa_infrastructure` and names
+  the category it is alerting about.
+- Two blocker categories are added because the existing ones would have made the
+  repair ambiguous. `qa_probe_unavailable` is "we are on the host, or on our own
+  API, and what we asked did not answer" — distinct from `server_unavailable`,
+  which is never having got onto the host. `bot_not_live` is Telegram refusing
+  the stored token — distinct from `telegram_access_denied`, a live bot refusing
+  the QA account, which the temporary-access mechanism repairs.
+- What the probes established is handed to the executor as given, so the run is
+  not spent asking again: `build_qa_prompt` takes `established_facts`, states
+  them under "Already established", and replaces the container line in the
+  checklist with one saying not to re-check it. The tool set, the read-only
+  rules and the result JSON are unchanged, and `QAResult` gains no field —
+  `services/langgraph/tests/unit/test_qa_runner.py` pins that the only line
+  which leaves the prompt is the checklist item now answered.
+
 ## 2026-08-12 (1)
 
 - A terminal story outcome can no longer be observed without the owner's message

@@ -45,6 +45,10 @@ TARGET = QATarget(
 )
 PHYSICAL_ROOT = "/srv/deployments/weather-bot"
 CONTAINER = "weather-bot-backend-1"
+RUNNING_STATE = (
+    '{"Status":"running","Running":true,"Restarting":false,"ExitCode":0,'
+    '"Health":{"Status":"healthy"}}'
+)
 PASSING_JSON = '{"pass": true, "checks": [], "summary": "OK"}'
 
 CLAUDE_RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
@@ -87,6 +91,11 @@ class FakeConn:
             return SimpleNamespace(exit_status=0, stdout=f"{PHYSICAL_ROOT}\n", stderr="")
         if " ps " in command:
             return SimpleNamespace(exit_status=0, stdout=f"{CONTAINER}\n", stderr="")
+        # The container-state probe the runner performs before any executor
+        # starts. This deployment is up, so who runs QA is what these tests are
+        # left deciding.
+        if " inspect " in command:
+            return SimpleNamespace(exit_status=0, stdout=RUNNING_STATE, stderr="")
         if "grep -c -F" in command:
             return SimpleNamespace(exit_status=0, stdout="0\n", stderr="")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
@@ -174,6 +183,7 @@ async def _invoke(runtime, settings):
         grant_journal=Journal(),
         provisioning_journal=ProvisioningJournal(),
         settings=settings,
+        established_facts=[],
     )
 
 

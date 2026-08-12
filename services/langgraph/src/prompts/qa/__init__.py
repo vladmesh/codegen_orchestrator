@@ -11,8 +11,15 @@ one as LangChain tools — so the rules below are written once and only the
 The rules themselves are unchanged from the on-target Claude Code run they
 replaced: test the running application, never read implementation for evidence,
 never write to the application, report the same JSON.
+
+What a run may carry now is a short list of facts the QA runner established
+deterministically before the executor started — container state, and whether the
+bot answered `getMe`. They are stated as given and struck off the checklist, so
+the run is not spent rediscovering them. The tools, the rules and the result JSON
+are the same whether or not that list is there.
 """
 
+from collections.abc import Sequence
 from enum import StrEnum
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
@@ -103,6 +110,32 @@ def _bot_section(bot_username: str, executor: QAExecutorKind) -> str:
 """
 
 
+def _established_section(facts: Sequence[str]) -> str:
+    """What the runner already knows, told to the executor as given.
+
+    These facts were read by the QA runner itself, deterministically, against
+    this same deployment and moments before this prompt was built. Repeating
+    them here is what makes the checklist below able to stop asking for them:
+    the run is for the checks only an exploratory tester can make.
+    """
+    if not facts:
+        return ""
+    body = "\n".join(facts)
+    return f"""
+## Already established (checked by the QA runner, not by you)
+{body}
+Treat these as given. Do not re-check them, and do not report them as your own
+checks — they are already in this run's result.
+"""
+
+
+def _container_checklist_item(facts: Sequence[str]) -> str:
+    """Ask for container state only when nobody has established it yet."""
+    if facts:
+        return "Container state — already established above; do not check it again"
+    return "Containers running and healthy (no restart loops)"
+
+
 def _report_section(executor: QAExecutorKind) -> str:
     if executor is QAExecutorKind.CENTRAL_AGENT:
         return f"""\
@@ -175,6 +208,7 @@ def build_qa_prompt(
     bot_username: str | None = None,
     *,
     executor: QAExecutorKind = QAExecutorKind.IN_PROCESS_TOOLS,
+    established_facts: Sequence[str] = (),
 ) -> str:
     """Build the QA prompt for the executor that will carry out this run.
 
@@ -184,6 +218,10 @@ def build_qa_prompt(
         bot_username: Telegram bot username (if applicable).
         executor: which executor is being prompted. It changes only how the
             calls are spelled, never what they are or what is allowed.
+        established_facts: what the runner already established about this
+            deployment without an LLM. They are stated as given and taken off
+            the checklist; nothing else about the run changes, and the result
+            JSON the executor must return is the same either way.
     """
     central = executor is QAExecutorKind.CENTRAL_AGENT
     bot_section = _bot_section(bot_username, executor) if bot_username else ""
@@ -225,12 +263,12 @@ CRITICAL RULES:
 
 ## Deployment
 - URL: {deployed_url}
-{bot_section}
+{bot_section}{_established_section(established_facts)}
 {_PROBE_SECTION if central else _TOOL_SECTION}
 ## Checklist
 1. Health endpoint responds with 200
 2. Every check from acceptance criteria — execute and verify
-3. Containers running and healthy (no restart loops)
+3. {_container_checklist_item(established_facts)}
 4. Edge cases — empty input, missing parameters, invalid values
 
 {_report_section(executor)}
