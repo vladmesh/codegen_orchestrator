@@ -14,7 +14,7 @@ dependencies = [
     "aiohttp>=3.14.3",
 
     # Redis (for stream communication)
-    "redis[hiredis]>=8.0.0",
+    "redis[hiredis]>=8.1.0",
 
     # Utils
     "structlog>=25.1.0",
@@ -26,7 +26,7 @@ dependencies = [
 
     # LangGraph PostgreSQL checkpointer (psycopg[binary] needed for slim images)
     "langgraph-checkpoint-postgres>=2.0.0",
-    "psycopg[binary]>=3.1.0",
+    "psycopg[binary]>=3.3.4",
 
     # Conversation summarization (SummarizationNode for context management)
     "langmem>=0.0.30",
