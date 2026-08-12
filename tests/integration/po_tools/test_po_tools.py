@@ -18,6 +18,7 @@ from src.agents.po.tools import (
     list_stories,
     set_project_secret,
 )
+from src.agents.po.tools_shared import init_po_clients
 
 from .conftest import make_config
 
@@ -49,6 +50,41 @@ class TestCreateProjectIntegration:
         )
         assert "Error" in result
         assert "invalid_module" in result
+
+    async def test_telegram_creation_uses_current_default_without_rewriting_existing_projects(
+        self, api_client, factory_api_client, stream_client
+    ):
+        """PO requests inherit each API runtime default only when they omit a choice."""
+        first_result = await create_project.ainvoke(
+            {"title": "default-codex", "modules": "backend"},
+            config=make_config(),
+        )
+        explicit_result = await create_project.ainvoke(
+            {"title": "explicit-claude", "modules": "backend", "agent_type": "claude"},
+            config=make_config(),
+        )
+
+        first_id = first_result.split("ID: ")[1].split(",")[0]
+        explicit_id = explicit_result.split("ID: ")[1].split(",")[0]
+        assert (await api_client.get(f"/api/projects/{first_id}")).json()["config"][
+            "agent_type"
+        ] == "codex"
+        assert (await api_client.get(f"/api/projects/{explicit_id}")).json()["config"][
+            "agent_type"
+        ] == "claude"
+
+        init_po_clients(factory_api_client, stream_client)
+        later_result = await create_project.ainvoke(
+            {"title": "default-factory", "modules": "backend"},
+            config=make_config(),
+        )
+        later_id = later_result.split("ID: ")[1].split(",")[0]
+        assert (await api_client.get(f"/api/projects/{later_id}")).json()["config"][
+            "agent_type"
+        ] == "factory"
+        assert (await api_client.get(f"/api/projects/{first_id}")).json()["config"][
+            "agent_type"
+        ] == "codex"
 
 
 @pytest.mark.usefixtures("po_clients", "test_user")

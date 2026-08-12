@@ -15,6 +15,7 @@ services:
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - DEFAULT_AGENT_TYPE=codex
     depends_on:
       db:
         condition: service_healthy
@@ -64,6 +65,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      api-factory:
+        condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
@@ -71,3 +74,28 @@ services:
       - ../../../services:/app/services
       - ../../../shared:/app/shared
       - ../../../packages:/app/packages
+
+  # The later runtime shares persisted data but receives a changed environment.
+  # It proves the PO path resolves the default at creation instead of retaining
+  # the earlier project's agent selection.
+  api-factory:
+    image: codegen-orchestrator/api:test
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=test
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - LK_JWT_SECRET=test-lk-jwt-secret
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - DEFAULT_AGENT_TYPE=factory
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

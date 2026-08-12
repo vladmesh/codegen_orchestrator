@@ -11,10 +11,12 @@ from pydantic import Field
 from shared.config import (
     BaseSettings,
     database_url_field,
+    default_agent_type_field,
     internal_api_key_field,
     redis_url_field,
     telegram_token_field,
 )
+from shared.contracts.vocab import AgentType
 
 
 class Settings(BaseSettings):
@@ -33,6 +35,10 @@ class Settings(BaseSettings):
 
     # Internal service token — sent by workers, scheduler, langgraph as X-Internal-Key
     internal_api_key: str = internal_api_key_field()
+
+    # Project creation resolves this at request time, so deployments can change
+    # the developer-worker default without changing the PO request contract.
+    default_agent_type: AgentType = default_agent_type_field()
 
 
 @lru_cache

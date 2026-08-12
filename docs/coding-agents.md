@@ -93,8 +93,9 @@ The Developer node in the Engineering Subgraph uses coding agents through the `w
 When creating a project the PO passes the chosen developer worker in
 `create_project(agent_type="claude" | "factory" | "codex")`. The value is stored
 in `project.config.agent_type` and applies to the engineering tasks of that project.
-If no choice is given, `claude` is used. An unknown value is rejected before
-the project is created.
+If no choice is given, the API resolves the current runtime
+`DEFAULT_AGENT_TYPE` when the project is created. An unknown value is rejected
+before the project is created.
 
 1. Worker-manager creates a container from a worker-base image
 2. Mounts the pre-scaffolded workspace (`/data/workspaces/{repo_id}/`) — the code is already in place
