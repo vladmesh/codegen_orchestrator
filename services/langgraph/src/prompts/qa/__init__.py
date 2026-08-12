@@ -1,71 +1,237 @@
 """QA tester prompt — black-box regression testing of a deployed project.
 
-The QA tester is not an in-graph LLM node: it runs a standalone Claude Code CLI
-on the target server (see ``consumers/_qa_runner.run_qa_on_server``). This module
-holds the prompt that drives that run, kept here for consistency with the other
-agent prompts (``architect``, ``po``, ``developer_worker``).
+Exploratory QA is performed by a central ephemeral coding agent on the
+management host (see ``clients/qa_worker`` and ``consumers/_qa_runner``), and by
+an in-process ReactAgent when no subscription session is available and the
+optional API triplet is (see ``agents/qa/graph``). The two reach the deployment
+through the same closed set of calls — one over the run's capability endpoint,
+one as LangChain tools — so the rules below are written once and only the
+"how you call them" section differs.
+
+The rules themselves are unchanged from the on-target Claude Code run they
+replaced: test the running application, never read implementation for evidence,
+never write to the application, report the same JSON.
+
+What a run may carry now is a short list of facts the QA runner established
+deterministically before the executor started — container state, and whether the
+bot answered `getMe`. They are stated as given and struck off the checklist, so
+the run is not spent rediscovering them. The tools, the rules and the result JSON
+are the same whether or not that list is there.
 """
 
+from collections.abc import Sequence
+from enum import StrEnum
+
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID
+from shared.qa_probe_cli import QA_PROBE_NAME, QA_PROBE_USAGE
 
-__all__ = ["QA_TEST_TELEGRAM_ID", "TELETHON_ENV_FILE", "build_qa_prompt"]
+__all__ = [
+    "QA_TEST_TELEGRAM_ID",
+    "QAExecutorKind",
+    "build_qa_instructions",
+    "build_qa_prompt",
+]
 
-# Written by the qa_runner Ansible role into the QA user's home
-# (services/infra-service/ansible/roles/qa_runner). The runner sources it into
-# the QA command's environment (consumers/_qa_runner), so the agent gets
-# TELETHON_* without doing anything.
-TELETHON_ENV_FILE = "$HOME/.qa-telethon.env"
+
+class QAExecutorKind(StrEnum):
+    """Which executor is being prompted, and therefore how calls are spelled."""
+
+    # A coding agent in its own container, calling the run's capability endpoint
+    # through the injected `qa` command.
+    CENTRAL_AGENT = "central_agent"
+    # The in-process ReactAgent fallback, calling LangChain tools.
+    IN_PROCESS_TOOLS = "in_process_tools"
+
+
+_TOOL_SECTION = """\
+## Your tools
+- `http_get(path)` — request a path on the deployed URL. Returns status,
+  headers and body.
+- `localhost_http_get(port, path)` — the same, from inside the target, for a
+  service that is not published publicly.
+- `container_inspect(container)` — is the container running, healthy, restarting?
+- `container_logs(container, tail)` — what the container logged.
+- `remote_exec(command)` — one read-only command as an argument vector, e.g.
+  `["docker", "ps", "-a"]`. No shell, no pipes, no redirection.
+- `remote_read(path)` — read a file from the deployment directory.
+- `write_qa_report(markdown)` — store the report.
+"""
+
+_PROBE_SECTION = f"""\
+## Your tools
+
+You have a shell, and it reaches nothing. This container holds no SSH key, no
+server address, no Telegram session and no credential of any kind. The single
+command below is your whole reach into the deployment; it posts a named call to
+the QA runtime on the management host, which performs it against the one
+deployment this run is bound to and prints the JSON answer.
+
+```
+{QA_PROBE_USAGE}
+```
+
+- Run `{QA_PROBE_NAME} capabilities` first. It tells you the deployment's public
+  URL, the loopback ports you may reach, the containers you may name and the
+  directory you may read. A call outside that set is refused, and a refusal is
+  not a product failure — choose another check.
+- There is no form of any of these calls that writes. `{QA_PROBE_NAME} http_get`
+  and `{QA_PROBE_NAME} localhost_http_get` take no method; `{QA_PROBE_NAME}
+  remote_exec` takes read-only docker sub-commands against your own containers
+  and nothing else.
+- There is no other way to reach the application, so do not spend the run
+  looking for one. This container is on a network with no route to the
+  deployment, to the fleet or to the internet: curl, a script you write and any
+  package you install all reach nothing. The runner also scans everything this
+  run produced for a direct write and blocks the run when it finds one,
+  whatever the verdict said.
+- Your workspace is a scratch directory that is destroyed with this container.
+  Nothing you write there is delivered anywhere; the report and the result are
+  delivered by `{QA_PROBE_NAME} report` and `{QA_PROBE_NAME} finish`.
+"""
+
+
+def _bot_section(bot_username: str, executor: QAExecutorKind) -> str:
+    call = (
+        f"`{QA_PROBE_NAME} telegram_probe <message>`"
+        if executor is QAExecutorKind.CENTRAL_AGENT
+        else "the `telegram_probe` tool"
+    )
+    return f"""
+### Telegram bot
+- Bot: @{bot_username}
+- Use {call}. It sends your message to the bot as the
+  platform's QA Telegram account and returns the bot's replies.
+- You never hold the account's credentials, and there is no other way to reach Telegram.
+- Every Telegram check is either pass or fail, decided by sending the message.
+  "Blocked", "skipped" and "cannot test" are not allowed results: if you have not
+  sent the message, you have no result to report. Do not substitute code reading.
+- If it returns an error, try once more, then report the Telegram
+  checks as failed and paste the error as the detail.
+"""
+
+
+def _established_section(facts: Sequence[str]) -> str:
+    """What the runner already knows, told to the executor as given.
+
+    These facts were read by the QA runner itself, deterministically, against
+    this same deployment and moments before this prompt was built. Repeating
+    them here is what makes the checklist below able to stop asking for them:
+    the run is for the checks only an exploratory tester can make.
+    """
+    if not facts:
+        return ""
+    body = "\n".join(facts)
+    return f"""
+## Already established (checked by the QA runner, not by you)
+{body}
+Treat these as given. Do not re-check them, and do not report them as your own
+checks — they are already in this run's result.
+"""
+
+
+def _container_checklist_item(facts: Sequence[str]) -> str:
+    """Ask for container state only when nobody has established it yet."""
+    if facts:
+        return "Container state — already established above; do not check it again"
+    return "Containers running and healthy (no restart loops)"
+
+
+def _report_section(executor: QAExecutorKind) -> str:
+    if executor is QAExecutorKind.CENTRAL_AGENT:
+        return f"""\
+## Report
+Write the Markdown below to a file and store it with
+`{QA_PROBE_NAME} report <file>`.\
+"""
+    return """\
+## Report
+Call `write_qa_report` with the Markdown below.\
+"""
+
+
+def _output_section(executor: QAExecutorKind) -> str:
+    if executor is QAExecutorKind.CENTRAL_AGENT:
+        return f"""\
+## Output
+After storing the report, write this JSON to a file and submit it with
+`{QA_PROBE_NAME} finish <file>`. That call ends the run — make it exactly once,
+and only after every check is done.
+{_RESULT_JSON}
+The run is judged from what `{QA_PROBE_NAME} finish` received. A run that never
+calls it has no result, and is reported to a human as unverified rather than as
+a passing or failing product.\
+"""
+    return f"""\
+## Output
+After calling `write_qa_report`, return ONLY this JSON as your final message:
+{_RESULT_JSON}\
+"""
+
+
+_RESULT_JSON = """\
+{
+  "pass": true/false,
+  "checks": [{"name": "check name", "pass": true/false, "detail": "one-line summary"}],
+  "summary": "brief summary"
+}
+"""
+
+
+def build_qa_instructions() -> str:
+    """The static rules written into a central QA executor's instruction file.
+
+    Kept apart from the run's prompt because it is what the container is built
+    with, not what this run asks for: it says what kind of agent this is and
+    what it must never do, and it is identical for every QA run.
+    """
+    return f"""\
+# QA executor
+
+You are the platform's QA tester. You are not a developer: there is no
+repository in this container, nothing you write here is kept, and you must never
+try to change the application you are testing.
+
+- The task for this run is in `/workspace/TASK.md`.
+- `{QA_PROBE_NAME}` is your only route to the deployment. Run
+  `{QA_PROBE_NAME} help` to see the calls, and `{QA_PROBE_NAME} capabilities` to
+  see what this run may reach.
+- Never attempt to reach the application other than through `{QA_PROBE_NAME}`,
+  and never attempt any request to it that is not a GET.
+- Finish by storing a report with `{QA_PROBE_NAME} report` and submitting the
+  result JSON with `{QA_PROBE_NAME} finish`. Nothing else you do is delivered.
+"""
 
 
 def build_qa_prompt(
     acceptance_criteria: str,
     deployed_url: str,
     bot_username: str | None = None,
+    *,
+    executor: QAExecutorKind = QAExecutorKind.IN_PROCESS_TOOLS,
+    established_facts: Sequence[str] = (),
 ) -> str:
-    """Build the QA prompt for Claude Code on the server.
+    """Build the QA prompt for the executor that will carry out this run.
 
     Args:
         acceptance_criteria: Full regression test criteria from the repository.
         deployed_url: URL where the application is deployed.
         bot_username: Telegram bot username (if applicable).
+        executor: which executor is being prompted. It changes only how the
+            calls are spelled, never what they are or what is allowed.
+        established_facts: what the runner already established about this
+            deployment without an LLM. They are stated as given and taken off
+            the checklist; nothing else about the run changes, and the result
+            JSON the executor must return is the same either way.
     """
-    bot_section = ""
-    if bot_username:
-        bot_section = f"""
-### Telegram bot
-- Bot: @{bot_username}
-- You write to the bot as a real Telegram user. TELETHON_API_ID,
-  TELETHON_API_HASH and TELETHON_SESSION (an authorized StringSession) are
-  already exported in your shell. Do not source anything, do not look for a
-  session file, and never print the values or paste them into the report.
-- Test via Telethon (pre-installed in /opt/qa-runner/venv). Run this verbatim —
-  the python body must stay unindented or python3 -c raises IndentationError:
-
-```bash
-/opt/qa-runner/venv/bin/python3 -c "
-import os, time
-from telethon.sync import TelegramClient
-from telethon.sessions import StringSession
-client = TelegramClient(
-    StringSession(os.environ['TELETHON_SESSION']),
-    int(os.environ['TELETHON_API_ID']),
-    os.environ['TELETHON_API_HASH'],
-)
-client.start()
-client.send_message('@{bot_username}', '/start')
-time.sleep(3)
-for m in client.get_messages('@{bot_username}', limit=3):
-    print(m.text)
-client.disconnect()
-"
-```
-- Every Telegram check is either pass or fail, decided by running the snippet
-  above. "Blocked", "skipped" and "cannot test" are not allowed results: if you
-  have not run the snippet, you have no result to report. Do not substitute code
-  reading, and do not fall back to a session file path.
-- If the snippet errors, run it once more, then report the Telegram checks as
-  failed and paste the traceback's last line as the detail.
-"""
+    central = executor is QAExecutorKind.CENTRAL_AGENT
+    bot_section = _bot_section(bot_username, executor) if bot_username else ""
+    write_rule = (
+        f"`{QA_PROBE_NAME} http_get` and `{QA_PROBE_NAME} localhost_http_get` send GET only, "
+        f"and `{QA_PROBE_NAME} remote_exec` refuses anything that is not a read-only command"
+        if central
+        else "The HTTP tools send GET\n  only, and `remote_exec` refuses anything that is not "
+        "a read-only command"
+    )
 
     return f"""\
 You are a QA tester doing REGRESSION testing of a deployed project.
@@ -77,50 +243,37 @@ not just a check of the latest feature.
 
 CRITICAL RULES:
 - You are testing a DEPLOYED APPLICATION, not reviewing source code.
-- Do NOT read source code, do NOT docker exec into containers, do NOT inspect
-  implementation. You are a BLACK-BOX tester.
+- Do NOT read source code for evidence, do NOT reason from implementation.
+  You are a BLACK-BOX tester.
 - Every check MUST be based on an actual request/response you performed.
 - "Code inspection confirms X" is NOT a valid test result.
 - If a test requires sending a Telegram command, you MUST actually send it
   and verify the bot's response — not read the handler code.
-- Never send POST, PUT, PATCH, or DELETE to the application API. This includes
-  creating a test user, changing privileges, and calling any write endpoint
-  through curl, Python, a browser, or another tool. The runner detects a write
-  attempt and blocks the run with a durable trace. QA may send Telegram messages
-  and make HTTP GET requests only. The deterministic QA identity is
-  `telegram_id={QA_TEST_TELEGRAM_ID}`; do not create it merely to obtain access
-  to a private bot. Access is provided by the platform's temporary test mechanism.
+- You cannot write to the application, and must not try. {write_rule}.
+  Creating a test user, changing privileges or calling any write endpoint is
+  outside what QA does; the runner records any write it detects and blocks the
+  run. The deterministic QA identity is `telegram_id={QA_TEST_TELEGRAM_ID}`; do
+  not try to create it to obtain access to a private bot. Access is provided by
+  the platform's temporary test mechanism.
+- You reach exactly one deployment: the one below. A call naming anything
+  else is refused, and that refusal is not a product failure.
 
 ## Acceptance Criteria (what the application must do)
 {acceptance_criteria}
 
 ## Deployment
 - URL: {deployed_url}
-- Compose (status only): see "Container health" below
-{bot_section}
-## How to test
-
-### REST API — use curl:
-```bash
-curl -sf {deployed_url}/health | jq .
-curl -sf {deployed_url}/api/<endpoint> | jq .
-```
-
-### Container health — check status only (no exec):
-```bash
-cd infra && docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml ps -a
-```
-
+{bot_section}{_established_section(established_facts)}
+{_PROBE_SECTION if central else _TOOL_SECTION}
 ## Checklist
 1. Health endpoint responds with 200
 2. Every check from acceptance criteria — execute and verify
-3. Containers running and healthy (ps, no restart loops)
+3. {_container_checklist_item(established_facts)}
 4. Edge cases — empty input, missing parameters, invalid values
 
-## Report
-Write QA_REPORT.md in the project root (NOT in infra/).
-In each check, describe WHAT YOU DID and WHAT YOU RECEIVED — paste actual
-curl output or bot response. Do not describe code.
+{_report_section(executor)}
+In each check, describe WHAT YOU DID and WHAT YOU RECEIVED — paste the actual
+output you got. Do not describe code.
 
 ```markdown
 # QA Report
@@ -133,19 +286,13 @@ curl output or bot response. Do not describe code.
 
 ### 1. <check name>
 - **Result**: pass / fail
-- **Detail**: <exact command you ran and response you got>
+- **Detail**: <exact call you made and response you got>
 
 ## Issues Encountered
 (any problems found, or "None")
 ```
 
-## Output
-After writing QA_REPORT.md, return ONLY this JSON:
-{{
-  "pass": true/false,
-  "checks": [{{"name": "check name", "pass": true/false, "detail": "one-line summary"}}],
-  "summary": "brief summary"
-}}
+{_output_section(executor)}
 
 Do not claim cleanup results in this JSON. The QA runner records any detected
 residual state itself; it does not attempt a generic rollback.

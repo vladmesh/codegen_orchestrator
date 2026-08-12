@@ -25,7 +25,7 @@ class TestScaffoldMessage:
             ScaffoldMessage(
                 project_id="p",
                 repository_id="r",
-                user_id="u",
+                telegram_chat_id="u",
                 template_repo="gh:vladmesh/service-template",
                 project_name="project",
                 modules="backend",
@@ -37,7 +37,7 @@ class TestScaffoldMessage:
             ScaffoldMessage(
                 project_id="p",
                 repository_id="r",
-                user_id="u",
+                telegram_chat_id="u",
                 template_repo="gh:vladmesh/service-template",
                 template_ref=template_ref,
                 project_name="project",
@@ -48,7 +48,7 @@ class TestScaffoldMessage:
         msg = ScaffoldMessage(
             project_id="proj-123",
             repository_id="repo-456",
-            user_id="user-1",
+            telegram_chat_id="user-1",
             template_repo="gh:vladmesh/service-template",
             template_ref="0.3.0",
             project_name="my-project",
@@ -66,7 +66,7 @@ class TestScaffoldMessage:
         msg = ScaffoldMessage(
             project_id="p",
             repository_id="r",
-            user_id="u",
+            telegram_chat_id="u",
             template_repo="gh:vladmesh/service-template",
             template_ref="0.3.0",
             project_name="n",
@@ -78,7 +78,7 @@ class TestScaffoldMessage:
         msg = ScaffoldMessage(
             project_id="p",
             repository_id="r",
-            user_id="u",
+            telegram_chat_id="u",
             template_repo="gh:vladmesh/service-template",
             template_ref="0.3.0",
             project_name="n",

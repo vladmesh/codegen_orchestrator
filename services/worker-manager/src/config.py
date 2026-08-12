@@ -47,6 +47,18 @@ class WorkerManagerSettings(BaseSettings):
     # Isolated network for worker containers (no access to orchestrator infra)
     WORKER_NETWORK: str = "codegen_worker"
 
+    # The QA executor's own network. It must be declared `internal: true`: a QA
+    # executor is attached to this and to nothing else, so the deployment under
+    # test is unreachable from its container rather than merely forbidden to it.
+    # Worker creation fails closed if this network is missing or not internal.
+    QA_EGRESS_NETWORK: str = "codegen_qa_egress"
+
+    # The only destinations a QA run's egress proxy opens, per assigned agent.
+    # Empty means the built-in defaults in `qa_egress.DEFAULT_MODEL_BACKENDS`.
+    # Entries are comma-separated `host` or `host:port` (port defaults to 443).
+    QA_CLAUDE_BACKEND_HOSTS: str = ""
+    QA_CODEX_BACKEND_HOSTS: str = ""
+
     # Host-backed artifacts survive worker container deletion. Operators set
     # retention explicitly; cleanup is best-effort and never blocks work.
     WORKER_TRANSCRIPT_STORAGE_PATH: str = "/data/worker-transcripts"

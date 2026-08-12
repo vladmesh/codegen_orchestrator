@@ -38,7 +38,7 @@ class EngineeringSuccessParams:
     redis: RedisStreamClient
     skip_deploy: bool
     developer_started_at: datetime | None = None
-    user_id: str = ""
+    telegram_chat_id: str = ""
     action: str = "create"
     planning_task_id: str | None = None
     story_id: str | None = None
@@ -143,7 +143,7 @@ async def handle_worker_gave_up(
     planning_task_id: str | None,
     story_id: str | None,
     reason: str,
-    user_id: str,
+    telegram_chat_id: str,
     redis: RedisStreamClient,
     worker_observability: dict | None = None,
 ) -> dict:
@@ -222,16 +222,18 @@ async def handle_worker_gave_up(
         project_id=project_id,
     )
 
-    if user_id:
+    if telegram_chat_id:
         try:
             await publish_story_event(
                 redis,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 event="story_blocked",
                 text=(
                     f"Task hit a blocker: {reason[:200]}. "
                     "Our specialist is reviewing — work will continue once resolved."
                 ),
+                story_id=story_id or "",
+                project_id=project_id or "",
             )
         except Exception:
             logger.warning("po_notify_on_gave_up_failed", task_id=task_id, exc_info=True)
@@ -253,7 +255,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
     callback_stream = params.callback_stream
     redis = params.redis
     skip_deploy = params.skip_deploy
-    user_id = params.user_id
+    telegram_chat_id = params.telegram_chat_id
     action = params.action
     planning_task_id = params.planning_task_id
     story_id = params.story_id
@@ -279,7 +281,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
             "failed",
             task_id,
             "Development completed but no code was committed",
-            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
             project_id=project_id,
         )
         return live_work_unsettled(
@@ -356,7 +358,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
             "completed",
             task_id,
             "Engineering task completed",
-            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
             project_id=project_id,
         )
     else:
@@ -366,7 +368,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
             "progress",
             task_id,
             "Task completed, deploying...",
-            user_id=user_id,
+            telegram_chat_id=telegram_chat_id,
             project_id=project_id,
         )
 
@@ -386,7 +388,12 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
             deploy_msg = DeployMessage(
                 task_id=deploy_task_id,
                 project_id=project_id,
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
+                # The deploy inherits the engineering task's recipient. Engineering
+                # work that arrived without one stays unaddressed, and says so.
+                unaddressed_reason=(
+                    "" if telegram_chat_id else "engineering task carried no recipient"
+                ),
                 callback_stream=callback_stream,
                 triggered_by=DeployTrigger.ENGINEERING,
                 action=action,
@@ -412,7 +419,7 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
                 "failed",
                 task_id,
                 f"CI passed but deploy trigger failed: {e}",
-                user_id=user_id,
+                telegram_chat_id=telegram_chat_id,
                 project_id=project_id,
             )
     else:

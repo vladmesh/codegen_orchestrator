@@ -65,7 +65,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     """Process a single architect job by running the Architect ReAct agent.
 
     Args:
-        job_data: Job data from Redis queue (story_id, project_id, user_id).
+        job_data: Job data from Redis queue (story_id, project_id, telegram_chat_id).
         redis: Redis client (unused but required by base worker signature).
 
     Returns:
@@ -155,7 +155,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             "messages": [{"role": "user", "content": user_content}],
             "story_id": msg.story_id,
             "project_id": msg.project_id,
-            "user_id": msg.user_id,
+            "telegram_chat_id": msg.telegram_chat_id,
         }
 
         config = {

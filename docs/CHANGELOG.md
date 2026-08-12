@@ -1,6 +1,709 @@
 # Changelog
 
+## 2026-08-12 (3)
+
+- The deterministic QA probes classify a dependency that did not answer by what
+  was unavailable, not by which call happened to meet it first. Two places got
+  that wrong.
+- Telegram rate limiting a `getMe` is no longer read as a dead bot. Only HTTP
+  401 and 404 are the Bot API refusing this token, and only those are
+  `bot_not_live`; HTTP 429 and every other non-OK answer are Telegram declining
+  to answer, which establishes nothing about the bot. They travel the
+  infrastructure route instead: bounded retries, `qa_probe_unavailable`, one
+  administrator alert. When Telegram sends `parameters.retry_after` it comes
+  back on `BotLiveness.retry_after` and the probe waits that long rather than
+  its own guess — up to `BOT_LIVENESS_MAX_RETRY_DELAY`, past which it stops and
+  reports the same outcome naming the window Telegram asked for, so the budget
+  stays bounded. Before this, a flood-controlled request blocked the run for a
+  human as though the token had been revoked.
+- Docker not answering on the target now ends at the same outcome from both
+  calls that read it. The `docker ps` in `resolve_capabilities` runs before a
+  session exists and used to raise a bare `QACapabilityError`, which
+  `run_qa_centrally` merged with a failed SSH grant into `server_unavailable` —
+  no retries, and no administrator alert, for exactly the condition the later
+  `docker inspect` retries and alerts on. It raises `QAContainerRuntimeError`
+  now, retries `CONTAINER_PROBE_ATTEMPTS` times like every other read of that
+  runtime, and is classified by `container_runtime_unavailable()`, the one
+  function both paths come to. `server_unavailable` keeps its meaning: the run
+  never got onto the host, or the deployment directory does not resolve — cases
+  in which no docker call was made at all.
+
+## 2026-08-12 (2)
+
+- Container state and "is the bot alive" are established deterministically now,
+  before the exploratory QA executor starts. Both were the odd ones out among
+  the five facts QA needs: container state was reachable only through the
+  agent's own `container_inspect` tool, so a dead container cost a model call to
+  discover, and bot liveness at QA time was not checked at all — the only `getMe`
+  in the system ran when the token was bound, possibly weeks earlier, and deploy
+  smoke's runs at deploy time.
+- `run_container_state_checks` reads `docker inspect` for every container of the
+  run's compose project over the session the run already holds — no new access
+  path, the same call the agent had. A container that is exited, restarting or
+  unhealthy fails QA as a product defect with one failed check naming it, and no
+  executor is started for it.
+- Bot liveness is asked of the API, which holds the token: `GET
+  /api/projects/{id}/telegram/liveness` (internal or admin) calls `getMe` and
+  answers `BotLiveness` — a state, the username Telegram reported, a detail
+  line. The token enters neither the QA runtime nor the deploy target, which is
+  the whole reason the question is asked this way rather than by lending the
+  credential to QA. A bot Telegram refuses is a blocker for a human, not a fix
+  task: no engineering worker can re-issue a revoked token.
+- The infrastructure half reuses what was already there rather than growing a
+  second mechanism. `QAInfrastructureFailure` now carries the blocker it becomes,
+  so a probe that could not be performed travels the same path a missing
+  executor does: bounded retries, a typed QA-infrastructure outcome, and one
+  administrator alert. `QA_INFRASTRUCTURE_BLOCKERS` in the consumer is the list;
+  `_alert_admins_no_executor` became `_alert_admins_qa_infrastructure` and names
+  the category it is alerting about.
+- Two blocker categories are added because the existing ones would have made the
+  repair ambiguous. `qa_probe_unavailable` is "we are on the host, or on our own
+  API, and what we asked did not answer" — distinct from `server_unavailable`,
+  which is never having got onto the host. `bot_not_live` is Telegram refusing
+  the stored token — distinct from `telegram_access_denied`, a live bot refusing
+  the QA account, which the temporary-access mechanism repairs.
+- What the probes established is handed to the executor as given, so the run is
+  not spent asking again: `build_qa_prompt` takes `established_facts`, states
+  them under "Already established", and replaces the container line in the
+  checklist with one saying not to re-check it. The tool set, the read-only
+  rules and the result JSON are unchanged, and `QAResult` gains no field —
+  `services/langgraph/tests/unit/test_qa_runner.py` pins that the only line
+  which leaves the prompt is the checklist item now answered.
+
+## 2026-08-12 (1)
+
+- A terminal story outcome can no longer be observed without the owner's message
+  being either published or durably owed. The supervisor committed the
+  transition and then published to `po:input` — an `xadd` with nothing behind it
+  — and the commit is precisely what takes the story out of `TESTING`, the only
+  status that loop scans. A transient failure of the publish, or of the
+  recipient lookup in front of it, lost the message permanently: the owner's
+  product was finished, deployed and verified, and nobody ever told them. Worse
+  in practice, the exception escaped `supervise_testing_stories` and ended the
+  rest of the dispatcher tick with it.
+- `shared/contracts/dto/owner_notification.py` is the record that closes the
+  gap, written into the run's `run_metadata` under `owner_notification`
+  *before* the transition is committed — the same shape the QA SSH grant already
+  uses for access, and for the same reason. `OWED` is work; `DELIVERED` is the
+  stream having accepted the event; `UNADDRESSABLE` is a recipient with no
+  Telegram chat, which is an answer rather than a failure and is never retried;
+  `ABANDONED` is three transient failures, after which an admin alert names the
+  event, story, project and run.
+- Because the record is written first, it is not evidence that the transition
+  it was written for happened, and it is not read as such: it carries the
+  `terminal_status` that transition produces, and nothing is published until the
+  story is read back and found in it. Without that check the seam would have
+  traded a lost message for a false one — a record committed on a run whose
+  story transition then failed would tell the owner their product is finished
+  while it is still in testing, and a story that never transitioned would be
+  announced as complete. A record whose transition is not there is `VOIDED`:
+  nothing is published, no attempt is spent, and the obligation is written again
+  from scratch if routing later does reach that ending. The same check covers
+  the opposite failure for free — a transition that committed and lost its
+  response leaves the story terminal, so its message is delivered.
+- `services/scheduler/src/tasks/owner_notifications.py` is the single seam, and
+  all three terminal paths in `supervise_testing_stories` go through it: QA
+  passed, an unverifiable application quarantined, and QA fix attempts
+  exhausted. The last of those told administrators only; the owner now hears
+  about it too, under the `story_quarantined` event PO already routes, because
+  that transition ends the story for its owner exactly as a quarantine does. The
+  admin alert on that path is unchanged.
+- The supervisor's two remaining terminal owner notifications take the same
+  seam, and both used to publish behind `except Exception: log.warning` — the
+  same loss, with the failure recorded as a warning.
+  `_escalate_refused_deploy` with `tell_owner` (`story_impossible_capacity`)
+  parks the story for a human, and `_park_task_waiting_resources` on
+  `HUMAN_REVIEW_WITH_OWNER_NOTICE` (`task_impossible_capacity`) parks a failed
+  engineering task *and its parent story* for one. The second is about the task,
+  so the record keeps the task id and PO is still told which task it is; the
+  record itself lives on the engineering run. A refusal escalated with
+  `tell_owner=False` is still admin-only and owes nothing.
+- The four publishes left in `supervisor.py` are the non-terminal ones —
+  `task_waiting_resources`, `task_waiting_infrastructure`,
+  `task_resources_resumed` and `story_waiting_user_secret`. They stay direct and
+  they stay best effort, outside this guarantee: no scan re-derives them.
+  `_notify_resources_resumed_via_po` fires once on the `backlog → todo` move and
+  never again for a task in `todo`, the first wait messages are published only
+  under `is_new_wait`, and the `waiting_user_secret` scan redispatches the story
+  once the secret arrives rather than re-sending the request for it. A publish
+  lost there means the owner does not get that message at all, and the bounded
+  retry and admin alert here do not extend to it.
+- `supervise_owed_owner_notifications` re-attempts what a committed transition
+  still owes, reading its work from the new `GET /api/runs/owner-notifications/owed`
+  — selected by the state of the record, ordered oldest first, bounded by a page,
+  with age deliberately not a selection key so an outage cannot put a message out
+  of reach. It runs before story routing in the cycle, so a record owed by this
+  tick gets exactly the one in-tick attempt routing makes. `supervisor_cycle`
+  gained `owner_notify_recovered`, `owner_notify_retrying`,
+  `owner_notify_exhausted`, `owner_notify_unaddressable` and
+  `owner_notify_voided`, which is what tells "still being chased" apart from
+  "given up on and handed to a human" apart from "there was nothing to say".
+- Delivery is at-least-once and bounded to the publish leg. A process that dies
+  between the publish landing and the record being marked delivered republishes;
+  what is guaranteed is that a settled record is never published twice and an
+  owed one is never forgotten. The transport leg to Telegram keeps its own
+  bounded retry and admin alert in `services/telegram_bot/src/proactive.py`.
+- Regressions:
+  `services/scheduler/tests/unit/test_owner_notification_durability.py` drives
+  the real ordering — transition committed, publish refused, next cycle delivers
+  — against a store that keeps what the API would keep, along with both ways the
+  two requests come apart (a transition that never committed publishes nothing
+  and is voided; one that committed and lost its answer delivers exactly once)
+  and the impossible-placement task notice taking the same route, and
+  `services/api/tests/service/test_owner_notification_selection.py` holds the
+  selection: a month-old owed record is still work, a delivered or settled one is
+  not, and the page bounds the answer.
+
+## 2026-08-11 (16)
+
+- The QA executor's CLI can reach its model backend again. worker-manager put
+  the run's egress proxy into the container environment, but the wrapper starts
+  the agent with an explicit replacement environment whose allowlist did not
+  name `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` or `no_proxy` — so the child
+  process, on a container attached to exactly one internal network, had no
+  address for its backend at all and every run ended as
+  `qa_executor_unavailable`. `QA_EGRESS_PROXY_ENV` in
+  `packages/worker-wrapper/src/worker_wrapper/wrapper.py` now passes exactly
+  those four to a QA executor's agent and nothing else; a developer agent, which
+  has an ordinary network and no proxy, is unchanged. The boundary is not
+  weakened: it is the same allowlisted CONNECT-only proxy, and the internal
+  network is still the thing that holds it.
+- The regression test is at the boundary the defect lived on — the environment
+  `create_subprocess_exec` is actually called with, not the container's — and
+  `services/worker-manager/tests/unit/test_qa_egress.py` now asserts that the
+  variables worker-manager sets are exactly the ones the wrapper forwards, so
+  the two lists cannot drift apart again.
+- Workers created before this branch survive the rollout. Both control-plane
+  boundaries now decide from a recorded `worker_type`, and records written by
+  the previous release have none — a developer worker still running when the
+  control plane is replaced would have lost its lease, status, session, result
+  and Compose routes mid-turn, because worker containers and their Redis state
+  are not Compose services. `shared/worker_type_cutover.py` marks those records
+  `developer` once, at startup, in the broker (`worker:broker:*`) and in
+  worker-manager (`worker:meta:*`). It is a proof and not a guess: the QA
+  executor and the recorded type arrive in the same change, so a typeless record
+  cannot be a QA worker. The request path keeps no fallback — a typeless record
+  appearing later is still refused everything — and the migration is due for
+  deletion once no pre-cutover worker can exist, since these records die with
+  their worker.
+- `services/worker-manager/tests/service/test_control_plane_rollout.py` is the
+  rollout regression: a pre-cutover record written into the real Redis is
+  refused before the restart, the real broker and worker-manager containers are
+  restarted the way a deploy restarts them, and afterwards the old credential
+  runs its whole turn over real HTTP and keeps Compose at both hops while the QA
+  credential is still refused at both. Both services are recreated by the same
+  `docker compose up -d` in `docs/DEPLOY.md` and the deploy workflow; DEPLOY.md
+  now says so explicitly, because rolling out the broker alone would make an old
+  worker-manager's registrations fail.
+
+## 2026-08-11 (15)
+
+- A QA executor now has no control-plane authority beyond the protocol of its
+  own turn. Its broker token cannot be hidden from the agent — the CLI runs as
+  the same user as the wrapper that holds it, so `/proc/<ppid>/environ` gives it
+  up — so the token itself was worth a `POST /v1/workers/{id}/infra/compose`,
+  and `docker compose build` of an agent-written Dockerfile executes arbitrary
+  `RUN` instructions on the management host's builder, outside the QA
+  executor's internal network and its proxy.
+- The refusal is an allowlist per worker type, not a patch on one endpoint:
+  `shared/contracts/worker_control_plane.py` names every operation a worker
+  credential can ask for and grants a `qa` worker the turn protocol
+  (`input.lease`, `output.submit`, `status.update`, `session` read/write/clear)
+  and nothing else. Adding an operation to the enum without classifying it as
+  turn-protocol or Docker-daemon fails a test, so a future route is refused to
+  QA until someone decides otherwise.
+- It is enforced at both boundaries that already duplicate the token check —
+  `services/worker-broker/src/main.py` (every worker route now states the
+  operation it authorizes, so a new route cannot inherit permissions silently)
+  and `services/worker-manager/src/routers/compose.py`, which is reachable
+  directly with the same token. Both read the worker type from a server-side
+  record written before the credential existed (`worker:broker:{id}` at
+  registration, `worker:meta:{id}` at creation); nothing in the request says
+  what kind of worker is calling, and an unrecorded type is refused. Developer
+  workers are unchanged and keep every operation.
+- `services/worker-manager/tests/service/test_qa_control_plane_boundary.py` is
+  the end-to-end regression against a real broker, a real worker-manager and a
+  real Docker daemon: a developer worker's token really does cause a host-side
+  build (the image exists and carries a marker only a `RUN` on that daemon could
+  write), while a QA worker with the identical workspace and request is refused
+  by both boundaries, produces no image and no compose plan, and still runs its
+  own turn. Worker-manager's unit doubles moved to `tests/unit/conftest.py`, so
+  a service test can no longer be handed a mocked broker registration.
+
+## 2026-08-11 (14)
+
+- "Exploratory QA cannot write to the application" is now a property of the
+  executor's network instead of a rule in its prompt. The QA executor container
+  is attached to `codegen_qa_egress` — declared `internal: true` — and to
+  nothing else, so the deployment's public URL, the fleet and the internet are
+  unreachable from it rather than forbidden to it. Reachable on that network are
+  the run's capability endpoint (`qa-worker`), the worker broker, and one
+  per-run egress proxy. The public URL stays reachable only through the typed,
+  GET-only `http_get` the runtime performs. Developer workers are untouched:
+  they keep `codegen_worker` and its ordinary connectivity.
+- The proxy (`services/worker-manager/src/qa_egress_proxy.py`) speaks HTTP
+  `CONNECT` and nothing else, to the assigned CLI's model backend and nothing
+  else (`QA_CLAUDE_BACKEND_HOSTS` / `QA_CODEX_BACKEND_HOSTS`, defaulting per
+  agent). It cannot be used as a forward proxy, so it cannot carry a `POST`, and
+  a `CONNECT` to the deployment is refused with `403` by the same code that
+  refuses any other host. It is created with the run and removed with it,
+  including by orphan GC.
+- Fail-closed, in `services/worker-manager/src/qa_egress.py`: worker-manager
+  proves the network is internal before anything is created, proves the proxy is
+  listening before the executor exists, and proves the started container is
+  attached to that single network. Any of those failing fails worker creation,
+  which the QA runtime already turns into the typed `qa_executor_unavailable`
+  QA-infrastructure outcome — never a silent start with an unrestricted
+  container and never a product defect.
+- The runner's transcript/tool-trace write scan is unchanged and is now a second
+  layer over an enforced boundary rather than the boundary itself.
+- `services/worker-manager/tests/service/test_qa_egress_boundary.py` proves it
+  against a real Docker daemon: a recording application, a real executor
+  container built by the production policy, `POST`/`PUT`/`PATCH`/`DELETE` from
+  `curl` and from a Python client with the proxy variables stripped, and zero
+  write requests in the application's ledger — with positive controls that the
+  ledger records, that the capability endpoint answers, and that an allowlisted
+  tunnel carries a request and a response.
+
+## 2026-08-11 (13)
+
+- Exploratory QA is performed by the assigned subscription coding agent again —
+  Claude Code by default, Codex when `QA_EXECUTOR_AGENT_TYPE` says so — started
+  centrally on the management host through the existing worker runtime. There is
+  no second mechanism for starting agents: `clients/qa_worker.py` sends the same
+  `worker:commands` create/status/delete a developer worker is started with, and
+  asks for a `qa` worker, which has no repository, no git credentials, an empty
+  scratch workspace deleted with the container, and one injected command.
+- That command (`shared/qa_probe_cli.py`, installed at `/workspace/qa`) is the
+  container's only route to the deployment. It posts named calls to a per-run
+  capability endpoint served by `qa-worker`
+  (`agents/qa/capability_service.py`), which dispatches into exactly the tool
+  set the in-process agent used — `agents/qa/tools.build_qa_callables`, now the
+  single boundary behind both front-ends. The SSH identity, the fleet key and
+  the Telegram session stay in `qa-worker`; the container holds a URL and a
+  token that stop working when the run ends.
+- `QA_LLM_*` is an optional API fallback, read only after the assigned executor
+  has actually failed to run, and never at startup or at the beginning of a run.
+  Empty values are a supported production configuration. A transient executor
+  failure is retried once (`QA_EXECUTOR_ATTEMPTS`); a missing or broken session
+  is not retried.
+- With no executor and no complete fallback, the run ends as
+  `qa_executor_unavailable` with an administrator alert through
+  `notify_admins_best_effort` carrying story, project, run and what is missing.
+  `QABlockerCategory.CLAUDE_UNAVAILABLE` is removed: it had come to mean only
+  "no LLM API key", which stopped being true.
+- The write guard now also scans what the executor's container reported, since
+  that container has a shell. `qa-worker` joins the `codegen_worker` network so
+  the endpoint is reachable from the executor; see `docs/DEPLOY.md` for what the
+  container can and cannot reach, path by path.
+- Exploratory QA runs on `claude` or `codex` and on nothing else, enforced in
+  both places the executor is named: `QA_EXECUTOR_AGENT_TYPE` fails validation
+  when the service reads its configuration, and a `qa` create command carrying
+  another agent is refused by the `WorkerConfig` contract worker-manager
+  validates every command against, before a container exists. `factory` would
+  run QA on a provider API key and `noop` performs no testing at all. Developer
+  workers keep the full `AgentType`.
+
+## 2026-08-11 (12)
+
+- Delivering the product no longer waits for the temporary QA access to be
+  handed back. `supervise_testing_stories` used to skip any story whose QA run
+  still held a live grant, so a story that deploy, smoke and QA had all passed
+  stayed in TESTING for as long as the revoke kept being retried — and the user
+  heard nothing at all in the meantime. It now routes on the QA outcome and
+  nothing else: a passed run completes its story on the next supervisor tick.
+- The owner is told in the same tick. A `story_completed` event goes to
+  `po:input` with the address of the deployment QA tested — URL, and the bot's
+  `@username` when there is one — read off the handoff stored on the QA run.
+  Nothing published that event before; the QA consumer stopped sending it when it
+  was decoupled from the story lifecycle, and the supervisor never picked it up.
+- The cleanup is unchanged and still finishes on its own: the same sweep revokes,
+  reads the running service back, retries within its bounds, and when they are
+  spent writes the `qa_cleanup_failed` blocker on the QA run and alerts an
+  administrator — now naming the story, project, QA run and grant, so the
+  incident can be picked up from the message alone.
+- A leftover test identity is a cleanup incident, not a failed product. A
+  completed story is never reopened by anything the grant does afterwards
+  (only TESTING stories are routed at all), and story routing now runs *before*
+  the access sweep in the dispatcher cycle, so a cleanup that ran out of attempts
+  during an outage cannot write its incident onto a QA run before the story
+  behind it has been routed.
+- Being stuck is visible without a dashboard: the sweep's counts separate
+  `revoke_failed` (an attempt that will be retried) from `escalated` (given up
+  on, a human called), and both are on the `supervisor_cycle` log line.
+  `qa_waiting_for_access` is gone with the wait it counted.
+
+## 2026-08-11 (11)
+
+- An admission refusal is no longer told as a memory shortage. A live acceptance
+  run placed work while its only managed host was still provisioning: the
+  allocator refused correctly, then named the reason `insufficient_free_memory`
+  on an empty 4 GB machine. The search path only kept its own reason for the two
+  provisioning rejections, so a host in a non-admitting status — or one that
+  stopped being managed — fell through to the last line of the search.
+- The reason a refusal carries now lives beside the rejections themselves, as
+  `shared/server_admission.py::ADMISSION_FAILURE_REASON`. It is one constant, not
+  a rejection-to-reason table: no admission rejection is a statement about how
+  much memory was asked for, so there is nothing to branch on. Both placement
+  paths — the search for a new host and the re-admission of a bound one — raise
+  it, and `test_both_placement_paths_refuse_with_the_same_reason` compares the two
+  paths against each other for every refusing state, so the drift that happened
+  here is not expressible again.
+- No new vocabulary member: `SERVER_NOT_PROVISIONED` still describes it, so its
+  consumers (`shared/allocation_disposition.py`, the supervisor's PO event
+  choice) are untouched and the disposition stays `INFRASTRUCTURE_WAIT` — a
+  bounded wait that ends with a human, never a message to the owner about
+  capacity and never a failed story. Capacity reasons stay reachable only for
+  hosts that passed admission and then ran out of room.
+- One thing still outranks the admission reason in the search path, and now says
+  so out loud: a request no managed server could fit even fully admitted stays
+  `IMPOSSIBLE_CAPACITY` with `OPERATOR_REVIEW`. Waiting out provisioning does not
+  make a small host bigger, so an infrastructure wait there would park the request
+  on an event that never arrives, while an operator can be told at once that the
+  fleet has no machine of the required size. That is not a host's state retold as
+  a memory shortage; it is a separate durable fact. The order is now a property of
+  the code — a comment at the check, a pair of tests one fixture apart that draw
+  the line between "not ready yet" and "would never fit", and a cross-path test
+  naming the one question only the search can ask.
+
+## 2026-08-11 (10)
+
+- The QA identity is now proved on the target before anything records that a
+  host has one. An account named `qa-observer` that this role did not create can
+  carry `uid 0`, a rule in somebody else's `/etc/sudoers.d` file or an ACL on the
+  docker socket, and none of the role's tasks took those away — so ownership is
+  established first, by a root-owned marker the role itself writes
+  (`/etc/codegen-qa-identity/qa-observer`), and an account found without it is
+  refused rather than adopted or repaired. Nobody else's sudoers file is deleted:
+  that is an administrator's policy, and losing it silently would be worse than
+  stopping.
+- After the account is configured, the role asks the machine what came of it
+  (`roles/qa_identity/files/qa-identity-proof`): `uid != 0`, no privileged group,
+  everything `sudo -l -U` grants is exactly the one wrapper rule, and the account
+  itself cannot open `/var/run/docker.sock` — which answers group, mode and ACL
+  together. A failed proof fails the phase, so the label is never written and the
+  host keeps refusing QA, visibly.
+- A target that lost the account after a successful provisioning is journalled
+  like one that never had it. The install script already separated "no such
+  account / no `authorized_keys`" from every other failure; that now reaches the
+  provisioning journal as `qa_identity_absent_on_target` against the server
+  handle, with the retrofit command. Other central-QA failures are deliberately
+  not provisioning facts and stay out of it.
+- A retrofit the role refuses is recorded as a `provisioning_failed` incident
+  against the handle instead of only failing the command, and the per-host report
+  now names, for each thing left in place, why it stayed and the command that
+  removes it — including `/swapfile`, which this playbook still does not touch
+  because the old runner's swap and an administrator's own are the same file.
+
+## 2026-08-11 (9)
+
+- Gave a QA run an identity that provisioning creates. The `qa_identity` role
+  makes `qa-observer` on every target, from the same phase that records
+  `provisioning_phase=complete`, and that completion write now records
+  `labels.qa_ssh_user` in the same call — so a host cannot read as provisioned
+  and lend no account. The account's primary group is its own, stated explicitly,
+  and its supplementary list is exactly empty, so neither membership can be
+  `docker` (which is root on the host) even on a host where somebody had already
+  made the account inside it. It has one sudo rule, and reads the deployment tree
+  through an ACL entry rather than by joining the group that can write it.
+- The QA runtime trusts `labels.qa_ssh_user` for *whether* a host was
+  provisioned, not for *whose* `authorized_keys` to write into. `servers.labels`
+  is an untyped dict the server API will PATCH, so only the name provisioning
+  itself writes is accepted; any other value is refused as
+  `qa_identity_not_attested` before anything connects to the target. Editing a
+  server row is not a way to point a QA run at an existing privileged account.
+- Moved the "what may this account do with docker" boundary onto the target.
+  `/usr/local/bin/qa-docker` allows `diff, inspect, logs, port, ps, stats, top`
+  and refuses `exec`, `run`, `cp`, `build`, `commit` and the rest before docker
+  is reached; the QA account may run that command and nothing else. Which
+  containers a run may name is still the run's capability set, in the
+  orchestrator. The runtime's docker calls go through `sudo -n qa-docker`.
+- The QA runtime takes the run's identity from the server row, not from
+  `ssh_user`. The fleet key and the administrative account are used only to
+  append the run's one-shot key to `qa-observer`'s `authorized_keys` and to
+  remove it; the run itself connects as `qa-observer`. The runtime creates no
+  account and no file — a target missing either refuses the install — and
+  `QASshGrant` now records both accounts, because the sweep has to connect as
+  one and clean the other's file.
+- A fresh host provisioned the ordinary way now passes exploratory QA. Before
+  this, a server row created by `server_sync` (no `ssh_user`, so `root`) was
+  refused with `server_unavailable`, which was the accepted cost of moving QA
+  into the orchestrator.
+- A target with no QA account is still refused, but visibly: the refusal is
+  journalled as a `provisioning_failed` incident against that `server_handle`
+  with `details.step = qa_identity`, so it reaches an administrator through the
+  existing mechanism and the host stops taking new applications until repaired.
+- Added the retrofit for hosts provisioned before this:
+  `python -m src.provisioner.qa_identity_retrofit <handle>` in infra-service. It
+  creates the same identity from the same role and removes only what is
+  positively the old runner's: `~/.local/bin/claude`,
+  `~/.claude/.credentials.json`, `~/.qa-telethon.env` and `/opt/qa-runner`. The
+  cleanup runs in the administrative account's home, which is also a person's
+  home, so `~/.claude`, `~/.local/share/claude` and `/swapfile` are left alone —
+  the CLI directories are equally an administrator's own, and `/swapfile` cannot
+  be told from swap somebody else made, where removing 2GB from a live host is an
+  outage rather than cleanup. The label is written only after the playbook
+  succeeds, and the run reports per host both what it removed and what it left.
+- `docs/DEPLOY.md` said "servers provisioned by the current Ansible have a deploy
+  user and are unaffected". They did not: the role configured the account named
+  by `deploy_user`, which was `root`, and put it in the `docker` group.
+
+## 2026-08-11 (8)
+
+- Made the QA grant sweep's walk survive the selection it is draining. The pages
+  were taken by `offset` over a selection that shrinks while it is walked: a
+  successful revoke writes `RELEASED` and the row leaves the predicate, so the
+  records still open slide backwards past the cursor. With a whole first page
+  released, `offset=100` lands past the end of what is left, the response comes
+  back short, and the cycle stops with an unreconciled grant — a live
+  `authorized_keys` line — that it claimed to have walked to.
+- `GET /api/runs/qa-ssh-grants/held` now pages by cursor: `after_created_at` and
+  `after_id` name the last record handled, the next page is strictly after it in
+  the `(created_at, id)` order, and half a cursor is a `422` rather than a
+  silent restart from the top. `offset` is gone from the route and the client
+  rather than kept as a second mode. A position in the order cannot be moved by
+  rows closing behind it, so one cycle presents every record that was open when
+  it passed.
+
+## 2026-08-11 (7)
+
+- Stopped selecting the QA grant sweep's work by time. It read QA runs started
+  in the last 24 hours, so an outage longer than the window put an unreleased
+  record permanently out of reach: no revoke, no readback, no `qa_cleanup_failed`
+  escalation, and the `authorized_keys` line it stands for left on the target
+  for good. The window was the wrong key — a record is work while it is
+  unreleased, whether that became true a minute ago or a month ago — and
+  `GRANT_SWEEP_LOOKBACK` is gone rather than widened.
+- Added `GET /api/runs/qa-ssh-grants/held` (internal/admin) so the selection can
+  be made on the record: every run whose `qa_ssh_grant` is not `released`,
+  oldest first, `limit`/`offset`. The page bounds the response and not the
+  coverage — `sweep_qa_ssh_grants` walks pages until one comes back short, so
+  nothing is dropped for being past the end of one.
+- Kept an unparsable record visible instead of hiding or crashing on it.
+  Unreadable is not released, so it is still selected; the sweep counts it,
+  logs `qa_grant_sweep_unreadable_record` and continues, because ending the
+  cycle on it would make every record behind it unreachable — the same failure
+  from the other side.
+
+## 2026-08-11 (6)
+
+- Gave a central QA run one explicit capability set and made every tool derive
+  its boundary from it. Before, each tool invented its own rule and three of
+  them were wrong on a shared host: `docker ps`/`images`/`stats` listed the
+  machine, `localhost_http_get` accepted any port in 1..65535, and path
+  containment was lexical, so a symlink in the deployed tree read a neighbour's
+  `.env` while still looking "inside". The set is resolved once per run from
+  deployment data — physical root via `readlink -f` on the target, containers
+  via the compose project label docker itself stamps, the application's
+  allocated ports, the public URL — and a tool whose boundary cannot come from
+  it is gone rather than patched.
+- Removed the host-wide command surface for that reason. `remote_exec` is now
+  read-only docker sub-commands (`diff`, `inspect`, `logs`, `port`, `stats`,
+  `top`) that must name a container in the set; `docker ps`, `docker images`,
+  `df`, `uptime` and `journalctl` describe the machine and no capability can
+  bound them.
+- Made path containment physical: the read resolves on the target and checks
+  membership of the physical root after resolution, in the same command, so a
+  symlink cannot widen it and a separate resolve cannot answer about a path the
+  read no longer uses. The secret-name check stays on top of that, not instead
+  of it.
+- Made the fact of a target grant durable. `QASshGrant`
+  (`shared/contracts/dto/qa_ssh_grant.py`) is written to the QA run's
+  `run_metadata` **before** the key install is attempted, so an append that
+  lands while its answer is lost still leaves a record; `RELEASED` is written
+  only after the target is read back. `sweep_qa_ssh_grants` in `qa-worker`
+  reconciles every unreleased record, and after three failed attempts writes the
+  run's outcome as a `qa_cleanup_failed` blocker. Residual access now also
+  reaches the run's result on the early-return path where the install itself
+  failed, which previously reported only `server_unavailable`.
+- Stopped the revoke from being able to empty `authorized_keys`. It rewrites the
+  file the fleet key itself is authorized by, and the old form copied the filter
+  result over it unconditionally — a filter that came back empty would have
+  taken the orchestrator's own line with it and locked the target out for good.
+  It now refuses to install an empty result, which leaves the marker readable
+  and hands the grant to the sweep instead of closing it.
+- Refused exploratory QA on a target whose run identity would be root. AC4 asked
+  for an unprivileged identity and `ServerCreate.ssh_user` defaults to `root`,
+  which made the two impossible to satisfy at once on such a host; the run is
+  now blocked as `server_unavailable` rather than performed privileged. Health-
+  only criteria are unaffected — they never SSH — and servers provisioned by the
+  current Ansible have a deploy user.
+
+## 2026-08-11 (5)
+
+- Moved exploratory QA off the deploy target. It used to be a Claude Code CLI
+  living on the tested server, driven over SSH with the fleet's own server key,
+  fed OAuth credentials the runner pushed and refreshed there, and a Telethon
+  session Ansible wrote into the deploy user's home. QA is now a ReactAgent in
+  `qa-worker`: the LLM and the QA Telegram account are the orchestrator's, and a
+  clean target — no `claude` in PATH, no LLM credentials, no Telethon session —
+  passes a full exploratory run.
+- Replaced the agent's shell with a closed set of typed tools bound to one run
+  (`services/langgraph/src/agents/qa/tools.py`): public GET, loopback GET, a file
+  read scoped to the deployment directory, an allowlisted read-only command,
+  container logs/inspect, and a Telegram probe. Every path, container and port is
+  checked against the one `QATarget` the run owns, so naming another deployment
+  is refused rather than answered.
+- Made the identity one-shot. Each run mints an ed25519 key, installs it in the
+  target's `authorized_keys` with `restrict` and an `expiry-time` using the fleet
+  key — held by the runner, never by the agent — and removes it in `finally` on
+  every path out, then reads the file back to prove it is gone. The run also gets
+  an isolated central workspace, destroyed the same way. Anything that survives
+  becomes a `qa_cleanup_failed` blocker instead of a green run.
+- Kept the write guard by removing what it guarded. The old guarantee was a
+  Claude `PreToolUse` hook filtering Bash command lines for writes to the
+  application; there is no Bash now, and no tool takes an HTTP method, so a write
+  is inexpressible. The runner-owned trace of every tool call is still scanned
+  with the same `_forbidden_application_write`, and a write found in any evidence
+  the runner owns still quarantines the run with a residual state trace.
+- Dropped the `qa_runner` Ansible role from provisioning, along with the 2GB swap
+  it needed to unpack the CLI, the copied `.credentials.json`, the
+  `/opt/qa-runner` venv and `~/.qa-telethon.env`. New servers get none of it.
+  Servers provisioned earlier still carry it; nothing reads it, and removing it
+  is a separate task (see `docs/DEPLOY.md`, "QA runtime (central)").
+- Removed `credential_refresh_loop`, which kept a Claude OAuth token alive on
+  every managed server. There is no token out there to refresh.
+- Added the `qa` LLM env group (`QA_LLM_MODEL` / `QA_LLM_BASE_URL` /
+  `QA_LLM_API_KEY`). Missing config blocks exploratory QA with the existing
+  `claude_unavailable` category rather than producing a verdict; health-only
+  criteria still run over HTTP and spend no LLM. `QAResult`, `QABlocker` and
+  `QABlockerCategory` are unchanged, and the prompt and result parsing keep their
+  meaning.
+
+## 2026-08-11 (4)
+
+- Closed the last way past admission: reuse. A project already bound to a server
+  skipped the rule entirely — `ensure_project_allocations()` fetched the bound
+  host, read no incidents, and handed back its allocations or took a fresh port
+  on it for a newly declared module. So a redeploy landed on a host whose
+  provisioning had restarted or broken, which is the placement the rule exists to
+  refuse. The bound host now passes the same `shared/server_admission.py`
+  predicate over the same snapshot of active incidents, before any allocation is
+  returned and before any port is taken.
+- Refused reuse through the existing typed `AllocationError` with the admission
+  budget, so it travels the route every other refusal travels — a bounded
+  infrastructure wait — instead of reaching the deploy path as a `GIVE_UP` that
+  would fail the user's story. No new contract, reason or outcome.
+- Bounded the resume-and-refuse cycle that reuse makes reachable: resuming asks
+  whether any server is admissible, while a bound project is refused by the one
+  it sits on, so a fleet with one healthy host and one broken host the project is
+  pinned to would re-dispatch and be refused forever. The deploy wait now checks
+  `supervisor.resource_wait_timeout_minutes` before admissibility, as the
+  engineering wait already did, and the story reaches a human.
+- Extended the shared admission matrix to the reuse shapes — existing
+  allocations returned whole, and a new module taking a port on the bound host —
+  so all placement paths are checked against the same state table.
+
+## 2026-08-11 (3)
+
+- Gave every refusal disposition its own behaviour on both routing paths. The
+  deploy path answered all of them with one infrastructure wait, so a request
+  larger than any managed server — classified `OPERATOR_REVIEW` precisely
+  because waiting is pointless — sat in DEPLOYING being re-polled forever with
+  no human told and no way out. `shared/allocation_disposition.py` now carries
+  `REFUSAL_ROUTING`, a disposition × path table with exactly one behaviour per
+  cell and no behaviour repeated within a path, and both routers branch on it:
+  `_route_refused_deploy` in the scheduler's deploy routing and
+  `_park_task_waiting_resources` on the engineering side. A disposition that
+  starts routing like its neighbour now fails a suite.
+- Routed `OPERATOR_REVIEW` to the human-review queue on the deploy path, the
+  same queue a quarantined QA story reaches and entered the same way: the reason
+  is recorded on the story, the `human-review` action moves it, operators are
+  alerted, and the owner is told the request needs an operator rather than being
+  left watching a wait. `StoryStatus.DEPLOYING → WAITING_HUMAN_REVIEW` is now a
+  valid transition, which is what that route needed; `fail_story` remains out of
+  reach for every infrastructure disposition.
+- Named `TECHNICAL_FAILURE`'s behaviour instead of leaving it a leftover: a fleet
+  the platform cannot see is escalated to a human with an operator alert and no
+  message to the owner, on both paths. It does not wait (the wait's own re-check
+  needs the missing metrics) and no longer spends engineering iterations on a run
+  the allocator will refuse at the same point.
+- Bounded the deploy infrastructure wait with
+  `supervisor.resource_wait_timeout_minutes`, the bound the engineering wait
+  already had, and carried the wait's start across re-dispatches in
+  `run_metadata`. A refused deploy with no `head_sha` — which no wait can supply
+  — goes to a human immediately instead of polling forever.
+- Fixed story escalations that reached nobody: the supervisor posted
+  `waiting_human_review` as a story transition, which is a status value and not
+  a route, so the API answered 404. Every escalation now uses the `human-review`
+  action endpoint.
+
+## 2026-08-11 (2)
+
+- Stopped an allocation refusal from terminating a user's story on the deploy
+  path. A deploy that could not be placed used to have its typed reason
+  flattened into an error string and recorded as `GIVE_UP`, which the scheduler
+  turns into a failed story and a product-failure alert — so an unfinished host
+  build reached the owner as a broken project. The classification now survives
+  the boundary: `DeployOutcome.WAITING_INFRASTRUCTURE` carries the
+  `AllocationFailureReason` and the admission budget the attempt asked for, and
+  the contract refuses that outcome without them. The story stays DEPLOYING and
+  the deploy is re-dispatched once the shared admission rule accepts a target
+  again.
+- Put the rule that decides this in one place, `shared/allocation_disposition.py`.
+  Every allocation reason is classified there explicitly as infrastructure —
+  a wait, an operator review, or a technical failure — and the precedence is
+  stated once: an allocation refusal outranks a product failure seen in the same
+  attempt. Both routing paths call it and neither keeps a reason list of its own,
+  so the engineering wait and the deploy wait cannot drift apart the way they
+  just did. `shared/tests/allocation_routing_cases.py` pins the wire shape both
+  sides agree on.
+
+## 2026-08-11
+
+- Made a server's provisioning state part of admission, so a project application
+  can no longer be placed on a host that has not finished (or has failed) its
+  software installation. `provisioning_phase` — written by the provisioner into
+  `servers.labels` and until now read by nobody — is required to be `complete`,
+  and a server carrying an active `PROVISIONING_FAILED` incident is refused even
+  when it is. The rule is fail-closed: a missing, empty or unknown phase counts
+  as unfinished, because an unknown provisioning state is not readiness. It
+  lives once, in `shared/server_admission.py`, and both decision points now call
+  it — the allocator that picks the host (`_find_suitable_server`) and the
+  scheduler rule that lets a capacity-parked task resume (`_resources_available`)
+  — so "resources became available" can no longer mean something different from
+  "this server may take an application". One shared state matrix
+  (`shared/tests/server_admission_cases.py`) is asserted against the predicate
+  and both paths, so a future divergence fails a suite.
+- Kept an unfinished host build an infrastructure situation rather than a
+  product defect. Admission that fails for this reason raises the new
+  `AllocationFailureReason.SERVER_NOT_PROVISIONED` instead of collapsing into a
+  memory shortage; the task parks in `waiting_resources` on the existing wait
+  path — no engineering retry, no story failure, no admin product-failure alert
+  — and the owner is told through a new `task_waiting_infrastructure` PO event
+  that says the machine is still being prepared, never that capacity ran out.
+
 ## 2026-08-10
+
+- Separated the internal user id from the Telegram chat id in every queue and PO
+  contract. `user_id` — which meant a Telegram id from the bot and a `User.id`
+  from the scheduler — is gone; messages now carry `telegram_chat_id` (the
+  destination) and, where it matters, `owner_user_id` (identification only).
+  Scheduler and API producers resolve `Project.owner_id` → `User.telegram_id`
+  *before* publishing, including the sites that used to publish `user_id=""`
+  with a "StoryDTO has no user_id field" comment, and a recipient that cannot be
+  resolved raises an admin alert instead of vanishing. PO keys its thread on the
+  chat (`po-chat-{id}`), so a user's message and a pipeline event about their
+  project share one conversation, and it refuses to answer a user-facing event
+  that arrives without a recipient. The bot's proactive delivery moved to
+  `telegram_bot/src/proactive.py`: bounded retries, distinguishable
+  success/exhaustion logs, and an admin alert naming story, project and event
+  when the attempts run out.
+
+- Made that separation fail closed. A payload still carrying the removed
+  `user_id` is now rejected by every addressable contract instead of validating
+  with its recipient silently dropped; the consumers that see the rejection log
+  it and alert admins with story, project and event
+  (`shared/contracts/recipient.py`). `DeployMessage` requires either
+  `telegram_chat_id` or an explicit `unaddressed_reason`, so admin-initiated
+  application actions and temporary-access deploys state why they report to
+  nobody rather than leaving an empty field; an owner-requested project teardown
+  resolves the owner's chat like any other user-facing lifecycle message. The
+  bot's proactive listener no longer auto-acks: it claims the pending entries of
+  its previous incarnation on startup and bounds retries by the consumer group's
+  delivery count, so a delivery interrupted by a restart is retried and
+  eventually alerted about instead of sitting in the PEL forever. The API's
+  unresolved-recipient alert now names the story as well as the project.
 
 - Restricted live cleanup and write-ahead deployment recovery to API server
   rows authorized by the existing managed Time4VPS provisioning policy.

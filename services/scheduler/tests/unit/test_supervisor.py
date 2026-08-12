@@ -13,14 +13,36 @@ from unittest.mock import AsyncMock, patch
 from _run_routing_factories import _make_repo, _make_story, _make_task
 import pytest
 
+from shared.contracts.dto.server import ServerDTO
+from shared.tests.allocation_routing_cases import (
+    REFUSAL_ROUTING_CASES,
+    REFUSED_DEPLOY_MIN_DISK_MB,
+    REFUSED_DEPLOY_REQUIRED_RAM_MB,
+)
+from shared.tests.server_admission_cases import (
+    ADMISSION_CASES,
+    admission_case_incidents,
+    admission_case_server,
+)
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
+def _provisioned_server() -> ServerDTO:
+    """A managed host that finished provisioning — the only kind admission takes."""
+    case = next(candidate for candidate in ADMISSION_CASES if candidate.admitted)
+    return admission_case_server(case, last_health_check=datetime.now(UTC))
+
+
 @pytest.fixture
 def api_client():
     client = AsyncMock()
+    # The story as the API holds it once an escalation has committed. The seam
+    # that publishes a terminal owner notice reads the story back before it
+    # publishes, so the double has to answer that read like the API would.
+    client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
     return client
 
 
@@ -391,8 +413,18 @@ class TestSuperviseFailedTasks:
         api_client.update_task.assert_awaited_once_with("task-1", {"current_iteration": 2})
 
     @pytest.mark.asyncio
-    async def test_no_fresh_metrics_keeps_technical_retry_path(self, api_client, redis_client):
-        """Observability failures are never presented as user-visible capacity waits."""
+    async def test_no_fresh_metrics_escalates_without_spending_an_iteration(
+        self, api_client, redis_client
+    ):
+        """A fleet the platform cannot see is an operator's problem, not the code's.
+
+        This replaces `test_no_fresh_metrics_keeps_technical_retry_path`, which
+        asserted that the same refusal went back to the engineering worker. It
+        cannot: the allocator refuses at the same point every time, so the retry
+        spends the user's iteration budget on the platform's blind spot and ends
+        in this queue anyway. Its other claim — that the owner never hears a
+        capacity message for it — is kept below.
+        """
         from shared.contracts.dto.engineering import EngineeringStatus
         from shared.contracts.dto.run_result import (
             AllocationFailureReason,
@@ -412,10 +444,20 @@ class TestSuperviseFailedTasks:
             )
         ]
 
-        result = await supervise_failed_tasks(api_client, redis_client)
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_failed_tasks(api_client, redis_client)
 
-        assert result == {"retried": 1, "escalated": 0}
+        assert result == {"retried": 0, "escalated": 0}
+        api_client.transition_task.assert_awaited_once_with(
+            "task-1", "waiting_human_review", "supervisor"
+        )
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        notify.assert_awaited_once()
+        # No user-facing message: there is nothing for the owner to decide.
         redis_client.publish_flat.assert_not_awaited()
+        api_client.update_task.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_impossible_capacity_escalates_without_retry(self, api_client, redis_client):
@@ -430,11 +472,15 @@ class TestSuperviseFailedTasks:
             _make_task(id="task-1", story_id="story-1", status="failed")
         ]
         api_client.list_runs.return_value = [
+            # The engineering run carries the owner notice this escalation owes,
+            # so the double carries what a run has: an id and its metadata.
             SimpleNamespace(
+                id="eng-run-1",
+                run_metadata={},
                 result=EngineeringRunResult(
                     engineering_status=EngineeringStatus.FAILED,
                     allocation_failure_reason=AllocationFailureReason.IMPOSSIBLE_CAPACITY,
-                )
+                ),
             )
         ]
         api_client.get_project.return_value = SimpleNamespace(owner_id=42)
@@ -446,8 +492,72 @@ class TestSuperviseFailedTasks:
         api_client.transition_task.assert_awaited_once_with(
             "task-1", "waiting_human_review", "supervisor"
         )
-        api_client.transition_story.assert_awaited_once_with("story-1", "waiting_human_review")
+        # The action endpoint, not the status value: posting the status is a 404,
+        # so the escalation used to reach nobody.
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
         redis_client.publish_flat.assert_awaited_once()
+
+
+class TestEngineeringRefusalRouting:
+    """Each disposition gets its own behaviour on the engineering path.
+
+    The expectations come from `shared.tests.allocation_routing_cases`, the same
+    matrix the deploy suite drives, and each case carries its own — so two
+    dispositions that start behaving identically fail here instead of being
+    recorded as the contract.
+    """
+
+    @staticmethod
+    def _failed_run(reason):
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run_result import EngineeringRunResult
+
+        return SimpleNamespace(
+            id="eng-run-1",
+            run_metadata={},
+            result=EngineeringRunResult(
+                engineering_status=EngineeringStatus.FAILED,
+                allocation_failure_reason=reason,
+                allocation_required_ram_mb=REFUSED_DEPLOY_REQUIRED_RAM_MB,
+                allocation_min_disk_mb=REFUSED_DEPLOY_MIN_DISK_MB,
+            ),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", REFUSAL_ROUTING_CASES, ids=lambda case: case.reason.value)
+    async def test_each_disposition_routes_the_way_the_matrix_says(
+        self, api_client, redis_client, case
+    ):
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        expected = case.engineering
+        api_client.get_tasks_by_status.return_value = [
+            _make_task(id="task-1", story_id="story-1", status="failed")
+        ]
+        api_client.list_runs.return_value = [self._failed_run(case.reason)]
+        api_client.get_project.return_value = SimpleNamespace(owner_id=42)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_failed_tasks(api_client, redis_client)
+
+        # Handled here, so the caller's code-retry path never sees it.
+        assert result == {"retried": 0, "escalated": 0}
+        assert [call.args for call in api_client.transition_task.call_args_list] == [
+            ("task-1", expected.task_status.value, "supervisor")
+        ]
+        if expected.story_action is None:
+            api_client.transition_story.assert_not_awaited()
+        else:
+            api_client.transition_story.assert_awaited_once_with("story-1", expected.story_action)
+        assert notify.await_count == (1 if expected.admin_alerted else 0)
+        published = [call.args[1] for call in redis_client.publish_flat.call_args_list]
+        assert [event["event"] for event in published] == (
+            [] if expected.owner_event is None else [expected.owner_event]
+        )
+        # The story is never terminated by an allocation refusal.
+        api_client.fail_story.assert_not_called()
 
 
 class TestSuperviseWaitingResourceTasks:
@@ -460,17 +570,8 @@ class TestSuperviseWaitingResourceTasks:
             failure_metadata={"allocation_required_ram_mb": 768, "allocation_min_disk_mb": 1024},
         )
         api_client.get_tasks_by_status.return_value = [task]
-        api_client.get_servers.return_value = [
-            SimpleNamespace(
-                handle="server-1",
-                is_managed=True,
-                status="ready",
-                capacity_ram_mb=2048,
-                capacity_disk_mb=4096,
-                used_ram_mb=0,
-                last_health_check=datetime.now(UTC),
-            )
-        ]
+        api_client.get_servers.return_value = [_provisioned_server()]
+        api_client.list_active_incidents.return_value = []
         api_client.get_applications.return_value = []
         api_client.get_project.return_value = SimpleNamespace(owner_id=42)
 
@@ -514,17 +615,8 @@ class TestSuperviseWaitingResourceTasks:
             [task] if status in {"failed", "waiting_resources", "todo"} else []
         )
         api_client.list_runs.return_value = [old_run]
-        api_client.get_servers.return_value = [
-            SimpleNamespace(
-                handle="server-1",
-                is_managed=True,
-                status="ready",
-                capacity_ram_mb=2048,
-                capacity_disk_mb=4096,
-                used_ram_mb=0,
-                last_health_check=datetime.now(UTC),
-            )
-        ]
+        api_client.get_servers.return_value = [_provisioned_server()]
+        api_client.list_active_incidents.return_value = []
         api_client.get_applications.return_value = []
         api_client.get_project.return_value = SimpleNamespace(
             owner_id=42,
@@ -618,6 +710,112 @@ class TestSuperviseWaitingResourceTasks:
         )
         api_client.create_task_event.assert_awaited_once()
         notify.assert_awaited_once()
+
+
+class TestProvisioningAdmissionInResourceWait:
+    """The wait may only release a task towards a host the allocator would take.
+
+    The states come from `shared.tests.server_admission_cases`, the same table the
+    allocator is checked against, so a rule that starts differing between the two
+    admission paths fails here.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ADMISSION_CASES, ids=lambda case: case.name)
+    async def test_wait_releases_exactly_the_shared_matrix(self, case, api_client, redis_client):
+        from src.tasks.supervisor import supervise_waiting_resource_tasks
+
+        now = datetime.now(UTC)
+        task = _make_task(
+            status="waiting_resources",
+            failure_metadata={
+                "allocation_required_ram_mb": 768,
+                "allocation_min_disk_mb": 1024,
+            },
+        )
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.get_servers.return_value = [admission_case_server(case, last_health_check=now)]
+        api_client.list_active_incidents.return_value = admission_case_incidents(
+            case, detected_at=now
+        )
+        api_client.get_applications.return_value = []
+        api_client.get_project.return_value = SimpleNamespace(owner_id=42)
+
+        result = await supervise_waiting_resource_tasks(api_client, redis_client)
+
+        assert result == {"resumed": 1 if case.admitted else 0, "expired": 0}
+
+    @pytest.mark.asyncio
+    async def test_unprovisioned_host_parks_the_task_as_infrastructure(
+        self, api_client, redis_client
+    ):
+        """An unfinished machine is not the project's defect and not a shortage."""
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run_result import (
+            AllocationFailureReason,
+            EngineeringRunResult,
+        )
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        task = _make_task(id="task-1", story_id="story-1", status="failed")
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason.SERVER_NOT_PROVISIONED,
+                    allocation_required_ram_mb=768,
+                    allocation_min_disk_mb=1024,
+                )
+            )
+        ]
+        api_client.get_project.return_value = SimpleNamespace(owner_id=42)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_failed_tasks(api_client, redis_client)
+
+        # No retry, no escalation: the code was never the problem.
+        assert result == {"retried": 0, "escalated": 0}
+        api_client.transition_task.assert_awaited_once_with(
+            "task-1", "waiting_resources", "supervisor"
+        )
+        api_client.transition_story.assert_not_awaited()
+        notify.assert_not_awaited()
+        published = redis_client.publish_flat.await_args.args[1]
+        assert published["event"] == "task_waiting_infrastructure"
+        assert "capacity" not in published["text"]
+
+    @pytest.mark.asyncio
+    async def test_capacity_shortage_keeps_its_own_user_message(self, api_client, redis_client):
+        """The two waits must stay distinguishable to the owner, not just in logs."""
+        from shared.contracts.dto.engineering import EngineeringStatus
+        from shared.contracts.dto.run_result import (
+            AllocationFailureReason,
+            EngineeringRunResult,
+        )
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _make_task(id="task-1", story_id="story-1", status="failed")
+        ]
+        api_client.list_runs.return_value = [
+            SimpleNamespace(
+                result=EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED,
+                    allocation_failure_reason=AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+                    allocation_required_ram_mb=768,
+                    allocation_min_disk_mb=1024,
+                )
+            )
+        ]
+        api_client.get_project.return_value = SimpleNamespace(owner_id=42)
+
+        await supervise_failed_tasks(api_client, redis_client)
+
+        published = redis_client.publish_flat.await_args.args[1]
+        assert published["event"] == "task_waiting_resources"
 
 
 class TestSuperviseStuckTasks:

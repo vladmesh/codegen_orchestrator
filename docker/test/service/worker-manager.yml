@@ -16,8 +16,13 @@ services:
       - 'WORKER_DOCKER_LABELS={"com.codegen.environment": "test"}'
       - WORKER_IMAGE_PREFIX=worker-test
       - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
+      - SCAFFOLDED_WORKSPACE_PATH=/data/workspaces
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Shared with the test runner so a test can put a workspace where this
+      # service would really find one. The control-plane boundary test writes a
+      # buildable project here and checks who is allowed to build it.
+      - workspaces:/data/workspaces
     depends_on:
       redis:
         condition: service_healthy
@@ -26,6 +31,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # The control plane in front of worker-manager. A worker's token is only ever
+  # accepted here and there, so the boundary test drives the real pair.
+  worker-broker:
+    image: codegen-orchestrator/worker-broker:test
+    build:
+      context: ../../..
+      dockerfile: services/worker-broker/Dockerfile
+      args:
+        SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
+      - WORKER_MANAGER_URL=http://worker-manager:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/docs')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   # Infrastructure
   redis:
@@ -49,10 +76,22 @@ services:
       - WORKER_MANAGER_URL=http://worker-manager:8000
       - REDIS_URL=redis://redis:6379/0
       - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
+      # The QA egress boundary is a property of real Docker networking, so the
+      # test that proves it builds real containers on the host daemon.
+      - QA_EGRESS_TEST_IMAGE=codegen-orchestrator/worker-manager:test
+      - WORKER_BROKER_URL=http://worker-broker:8001
+      - SCAFFOLDED_WORKSPACE_PATH=/data/workspaces
     depends_on:
       worker-manager:
+        condition: service_healthy
+      worker-broker:
         condition: service_healthy
     volumes:
       - ../../../services/worker-manager/src:/app/src
       - ../../../services/worker-manager/tests:/app/tests
       - ../../../shared:/app/shared
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workspaces:/data/workspaces
+
+volumes:
+  workspaces:

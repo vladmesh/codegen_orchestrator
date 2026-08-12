@@ -150,6 +150,17 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("GET", "runs/", params=params)
         return [RunDTO.model_validate(r) for r in resp.json()]
 
+    async def list_runs_owing_owner_notification(self, *, limit: int) -> list[RunDTO]:
+        """One page of the runs whose owner has not been told their story ended.
+
+        Selected by the state of the record and ordered oldest first, so the
+        recovery sweep's work is every message still owed rather than the ones
+        belonging to a story that happens to still be in a status it scans — a
+        terminal transition takes the story out of every such status.
+        """
+        resp = await self.request("GET", "runs/owner-notifications/owed", params={"limit": limit})
+        return [RunDTO.model_validate(row) for row in resp.json()]
+
     async def update_run(self, run_id: str, data: dict) -> None:
         """Patch run fields (status, error_message, result)."""
         await self.request("PATCH", f"runs/{run_id}", json=data)
@@ -297,13 +308,15 @@ class SchedulerAPIClient(InternalAPIClient):
     ) -> TemporaryAccessGrantDTO:
         """Give up on a quiet revoke: the QA run carries the failure, in one write.
 
-        The run's own verdict is superseded here, and deliberately so. A run that
-        borrowed a test identity has not finished while the identity is still
-        out, so a worker's pass is provisional until the access is settled; if
-        the sweep spends its attempts, the named cleanup failure is what the run
-        says. Doing this through the ordinary run patch would be refused, and
-        rightly — that path is where a stale worker verdict would overwrite a
-        supervisor's.
+        The run that borrowed the identity is where the cleanup incident is
+        recorded, so the record of what happened to the access is next to the run
+        it was lent to rather than in a log line. It is not what decides the
+        story: by the time the sweep runs out of attempts the story has been
+        routed on the product verdict QA gave, and a completed one is not
+        reopened by anything written here.
+
+        Doing this through the ordinary run patch would be refused, and rightly —
+        that path is where a stale worker verdict would overwrite a supervisor's.
         """
         resp = await self.request(
             "POST",

@@ -53,7 +53,7 @@ def _qa_message(run_id: str = "qa-1") -> QAMessage:
     return QAMessage(
         story_id="story-1",
         project_id=PROJECT_ID,
-        user_id="",
+        telegram_chat_id="",
         deployed_url="https://example.com",
         application_id=42,
         acceptance_criteria="the bot answers /start",
@@ -305,7 +305,14 @@ def _published_deploy(redis_client) -> DeployMessage:
 
 def _no_action() -> dict[str, int]:
     """A sweep that decided nothing this tick."""
-    return {"dispatched": 0, "released": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
+    return {
+        "dispatched": 0,
+        "released": 0,
+        "revoked": 0,
+        "expired": 0,
+        "revoke_failed": 0,
+        "escalated": 0,
+    }
 
 
 def _grant_updates(api_client) -> list:
@@ -524,6 +531,7 @@ class TestGrantInFlight:
             "revoked": 0,
             "expired": 0,
             "revoke_failed": 0,
+            "escalated": 0,
         }
         redis_client.publish_message.assert_not_called()
         api_client.update_temporary_access_grant.assert_not_called()
@@ -743,6 +751,7 @@ class TestRevocationTriggers:
             "revoked": 0,
             "expired": 0,
             "revoke_failed": 0,
+            "escalated": 0,
         }
         redis_client.publish_message.assert_not_called()
         api_client.update_temporary_access_grant.assert_not_called()
@@ -869,6 +878,7 @@ class TestRevokeInFlight:
             "revoked": 0,
             "expired": 0,
             "revoke_failed": 0,
+            "escalated": 0,
         }
         redis_client.publish_message.assert_not_called()
 
@@ -1060,6 +1070,7 @@ class TestRevokedGrants:
             "revoked": 0,
             "expired": 0,
             "revoke_failed": 0,
+            "escalated": 0,
         }
         api_client.get_run_if_missing_returns_none.assert_not_called()
         redis_client.publish_message.assert_not_called()

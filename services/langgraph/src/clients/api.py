@@ -10,14 +10,26 @@ import httpx
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployDispatchClaim, DeployRunStart
+from shared.contracts.dto.incident import IncidentCreate, IncidentDTO, IncidentType
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.contracts.dto.telegram import BotLiveness
 from shared.contracts.dto.user import UserDTO
 from src.config.settings import get_settings
+
+
+def bot_liveness_path(project_id: str) -> str:
+    """The internal surface that answers "is this project's bot live?".
+
+    Named here rather than inlined because a QA blocker has to say by which path
+    the answer was obtained: the token stays in the API, and this is the whole of
+    what the QA runtime asks it.
+    """
+    return f"projects/{project_id}/telegram/liveness"
 
 
 class LanggraphAPIClient(InternalAPIClient):
@@ -119,6 +131,28 @@ class LanggraphAPIClient(InternalAPIClient):
         data = await self._get_json(f"runs/{run_id}")
         return RunDTO.model_validate(data)
 
+    async def list_runs_holding_qa_ssh_grant(
+        self, *, limit: int, after: RunDTO | None = None
+    ) -> list[RunDTO]:
+        """One page of the runs whose QA SSH grant is not proven released.
+
+        Selected by the state of the record and ordered oldest first, so the
+        sweep's work is every open grant rather than the ones belonging to a
+        recent run. The page bounds the response; the caller keeps asking from
+        the last record it handled until a page comes back short.
+
+        `after` is that record, and the cursor is its `(created_at, id)`. It is
+        a position in the order, not a count of rows, so records the caller has
+        already released — and which therefore leave the selection — cannot
+        move the unhandled ones out of reach behind it.
+        """
+        params: dict = {"limit": limit}
+        if after is not None:
+            params["after_created_at"] = after.created_at.isoformat()
+            params["after_id"] = after.id
+        data = await self._get_json("runs/qa-ssh-grants/held", params=params)
+        return [RunDTO.model_validate(run) for run in data]
+
     async def start_run(self, run_id: str) -> DeployRunStart:
         """Take the run to RUNNING as one locked decision, or learn it is over."""
         data = await self._post_json(f"runs/{run_id}/start")
@@ -171,8 +205,24 @@ class LanggraphAPIClient(InternalAPIClient):
     async def create_incident(self, payload: dict) -> dict:
         return await self._post_json("incidents/", json=payload)
 
-    async def list_active_incidents(self) -> list[dict]:
-        return await self._get_json("incidents/active")
+    async def record_provisioning_failure(self, incident: IncidentCreate) -> IncidentDTO:
+        """Record a provisioning failure in its one active episode for that server.
+
+        The endpoint upserts, so a fact rediscovered on every QA run of a broken
+        host stays one journal entry with a rising attempt count instead of a row
+        per run.
+        """
+        if incident.incident_type is not IncidentType.PROVISIONING_FAILED:
+            raise ValueError("record_provisioning_failure requires provisioning_failed")
+        data = await self._post_json(
+            "incidents/provisioning-failure", json=incident.model_dump(mode="json")
+        )
+        return IncidentDTO.model_validate(data)
+
+    async def list_active_incidents(self) -> list[IncidentDTO]:
+        """Return detected and recovering incidents, typed for admission checks."""
+        incidents = await self._get_json("incidents/active")
+        return [IncidentDTO.model_validate(incident) for incident in incidents]
 
     async def list_incidents(self, params: dict) -> list[dict]:
         return await self._get_json("incidents/", params=params)
@@ -216,6 +266,15 @@ class LanggraphAPIClient(InternalAPIClient):
             if e.response.status_code == HTTPStatus.NOT_FOUND:
                 return None
             raise
+
+    async def get_bot_liveness(self, project_id: str) -> BotLiveness:
+        """Ask whether this project's bot answers `getMe` right now.
+
+        The API holds the token and asks Telegram on this caller's behalf, so a
+        QA run learns that the bot is live without the token entering its
+        runtime — see `bot_liveness_path` for the surface this is the client of.
+        """
+        return BotLiveness.model_validate(await self._get_json(bot_liveness_path(project_id)))
 
     async def merge_secrets(
         self, project_id: str, secrets: dict[str, str], env_hints: dict[str, str] | None = None

@@ -22,7 +22,9 @@ class QAMessage(BaseMessage):
 
     story_id: str = ""
     project_id: str
-    user_id: str
+    # Telegram chat of the project owner, resolved by the producer. Empty when
+    # the work was started by the system and has no user to report back to.
+    telegram_chat_id: str = ""
     deployed_url: str
     application_id: int
     # What QA tests the deployment against, resolved from the repository by the
@@ -36,9 +38,27 @@ class QAMessage(BaseMessage):
 
 @dataclass(frozen=True)
 class QAServerInfo:
-    """Resolved server connection info for QA testing."""
+    """Resolved server connection info for QA testing.
+
+    `allocated_ports` is deployment data, not a runtime observation: it is what
+    the platform gave this application, and it is what bounds the loopback probe
+    a central QA run may make. A port nobody allocated to this deployment is not
+    this deployment's, whatever happens to be listening on it.
+    """
 
     server_ip: str
+    # The administrative account the stored key opens. QA uses it to install and
+    # remove the run's own key, and for nothing else.
     ssh_user: SSHUser
+    # The unprivileged account provisioning created for QA runs on this host,
+    # read from the server row. Empty when this host lends none — which is a
+    # refusal, not a reason to fall back to `ssh_user`.
+    qa_ssh_user: str
     ssh_key: str
     project_name: str
+    server_handle: str = ""
+    allocated_ports: frozenset[int] = frozenset()
+    # Why this host lends no QA identity, when it lends none. Exactly one of this
+    # and `qa_ssh_user` is set: the reason travels with the resolution so the
+    # refusal can be journalled where it is decided rather than re-derived.
+    qa_identity_rejection: str = ""

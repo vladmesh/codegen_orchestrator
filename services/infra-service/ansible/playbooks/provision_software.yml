@@ -94,6 +94,16 @@
         name: deploy_target
       tags: [deploy_target]
 
+    # The QA run identity belongs to this phase and not to a later one: the
+    # provisioner writes `provisioning_phase=complete` only when this playbook
+    # succeeds, so a host that is recorded complete is a host on which this role
+    # ran. "Provisioned but with no account for QA to borrow" is not a state
+    # this path can produce.
+    - name: Create the QA run identity
+      ansible.builtin.include_role:
+        name: qa_identity
+      tags: [qa_identity]
+
     # ========================================
     # 4. Monitoring (node_exporter + cadvisor)
     # ========================================
@@ -137,15 +147,7 @@
       tags: [system]
 
     # ========================================
-    # 6. QA Runner (Claude Code + QA deps)
-    # ========================================
-    - name: Include QA runner role
-      ansible.builtin.include_role:
-        name: qa_runner
-      tags: [qa]
-
-    # ========================================
-    # 7. Verification
+    # 6. Verification
     # ========================================
     - name: Verify Docker is running
       command: docker --version

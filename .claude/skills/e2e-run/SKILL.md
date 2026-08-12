@@ -533,7 +533,7 @@ Story goes through: `pr_review` → `deploying` → `testing` → `completed` (o
 
 After deploy succeeds, the deploy-worker publishes a `QAMessage` to `qa:queue` and
 transitions the story to `testing`. The QA consumer (`qa-worker` container) SSHes to the
-prod server and runs Claude Code CLI to test the deployed project as a real user would.
+the QA agent centrally and reaches the deployed project through typed read-only tools.
 
 ```bash
 # Check story entered testing
@@ -560,10 +560,18 @@ curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/
 **Timeouts**: QA has a 20-minute timeout per run. Poll story status every 30s.
 
 **If QA fails**: Check qa-worker logs for the reason. Common issues:
-- SSH connection failed (server unreachable, credentials expired)
-- Claude Code not installed on server (run `qa_runner` Ansible role)
-- Claude Code session expired (re-copy `.credentials.json`)
-- QA prompt produced unparseable output (non-JSON response)
+- `server_unavailable` — the target is unreachable, the run's one-shot identity could not be
+  installed, its deployment directory does not resolve, or the server's `ssh_user` is `root`
+  (exploratory QA does not run privileged)
+- `qa_executor_unavailable` — the assigned subscription executor did not run (no session,
+  expired session, broken CLI, container never started) and no complete `QA_LLM_*` fallback is
+  configured. This is a platform failure, not a product one: it alerts administrators and sends
+  the story to human review. Check the qa-worker logs for `qa_executor_unavailable` and the
+  worker-manager logs for the container that did not start
+- `missing_telethon_credentials` — `TELETHON_*` not set, so a bot project cannot be tested
+- QA agent produced unparseable output (non-JSON final message)
+- `qa_cleanup_failed` — the run's workspace or target access could not be proven gone; check the
+  `qa_ssh_grant` record on the run and the `qa_grant_sweep_*` logs in qa-worker
 
 **If QA is stuck**: Check if the qa:queue message was consumed:
 ```bash

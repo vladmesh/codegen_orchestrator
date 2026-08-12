@@ -64,7 +64,7 @@ def _grant_payload(project_id: str, run_id: str, **overrides) -> dict:
         "qa_message": {
             "story_id": "story-1",
             "project_id": project_id,
-            "user_id": "",
+            "telegram_chat_id": "",
             "deployed_url": "https://example.com",
             "application_id": 42,
             "acceptance_criteria": "the bot answers /start",

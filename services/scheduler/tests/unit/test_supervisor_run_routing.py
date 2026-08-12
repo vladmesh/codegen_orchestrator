@@ -6,6 +6,7 @@ Shared DTO factories live in `_run_routing_factories`.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, patch
 
@@ -22,10 +23,21 @@ import pytest
 from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.user import UserDTO
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 from shared.queues import DEPLOY_QUEUE, PO_INPUT_QUEUE
+from shared.tests.allocation_routing_cases import (
+    REFUSAL_ROUTING_CASES,
+    refused_deploy_result,
+)
+from shared.tests.server_admission_cases import (
+    ADMISSION_CASES,
+    admission_case_incidents,
+    admission_case_server,
+)
 
 _WAITING_SECRET_RESULT = {
     "deploy_outcome": DeployOutcome.WAITING_FOR_USER_SECRET.value,
@@ -36,6 +48,36 @@ _WAITING_SECRET_RESULT = {
 }
 
 
+def _resolved_user(user_id: int) -> UserDTO:
+    """A user whose Telegram chat id is deliberately nothing like their User.id."""
+    return UserDTO(
+        id=user_id,
+        telegram_id=900000000 + user_id,
+        is_admin=False,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def _qa_handoff_plan(**overrides) -> dict:
+    """The handoff a QA run carries, as it is stored in `run_metadata`.
+
+    The supervisor reads the deployment's address back off it when the story is
+    completed, so the user is given the deployment QA actually tested.
+    """
+    message = {
+        "story_id": "story-1",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "telegram_chat_id": "",
+        "deployed_url": "https://example.com",
+        "application_id": 42,
+        "acceptance_criteria": BASELINE_ACCEPTANCE_CRITERIA,
+        "bot_username": "palindrome_bot",
+        "run_id": "qa-1",
+    }
+    message.update(overrides)
+    return QAHandoffPlan(qa_message=message).model_dump(mode="json")
+
+
 @pytest.fixture
 def api_client():
     client = AsyncMock()
@@ -43,6 +85,13 @@ def api_client():
     client.get_primary_repository.return_value = _make_repo()
     # Most stories borrow no temporary access; the ones that do say so.
     client.get_live_temporary_access_grant_for_run.return_value = None
+    # The owner's internal id is not their Telegram chat: resolution goes
+    # through the users API, and the two numbers must never be confused.
+    client.get_user.side_effect = _resolved_user
+    # A terminal owner notice is published only once the story has been read
+    # back and found in the status the transition put it in, so the double
+    # answers that read the way the API would after the escalation committed.
+    client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
     return client
 
 
@@ -512,6 +561,7 @@ class TestSuperviseDeployingStories:
             "retried": 0,
             "redispatched": 0,
             "waiting": 0,
+            "escalated": 0,
             "failed": 0,
         }
         api_client.transition_story.assert_not_called()
@@ -533,6 +583,7 @@ class TestSuperviseDeployingStories:
             "retried": 0,
             "redispatched": 0,
             "waiting": 0,
+            "escalated": 0,
             "failed": 0,
         }
 
@@ -595,6 +646,7 @@ class TestSuperviseDeployingStories:
             "retried": 0,
             "redispatched": 0,
             "waiting": 0,
+            "escalated": 0,
             "failed": 0,
         }
         api_client.fail_story.assert_not_called()
@@ -631,7 +683,9 @@ class TestSuperviseDeployingStories:
         assert len(po_calls) == 1
         fields = po_calls[0][0][1]
         assert fields["event"] == "story_waiting_user_secret"
-        assert fields["user_id"] == "555"
+        # owner_id 555 is a User.id; the event carries the chat it resolves to.
+        assert fields["telegram_chat_id"] == "900000555"
+        assert fields["owner_user_id"] == "555"
         assert "TELEGRAM_BOT_TOKEN" in fields["text"]
         assert "Telegram bot token" in fields["text"]
 
@@ -769,6 +823,9 @@ class TestSuperviseTestingStories:
         api_client.get_latest_run_by_story.return_value = _make_run(
             id="qa-1",
             type=RunType.QA,
+            # Every QA run carries the handoff it was dispatched with; it is
+            # written with the run, before the story leaves DEPLOYING.
+            run_metadata={QA_HANDOFF_KEY: _qa_handoff_plan()},
             result={
                 "qa_outcome": QAOutcome.PASSED.value,
                 "deployed_url": "https://example.com",
@@ -841,7 +898,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 0,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
         api_client.create_task.assert_not_awaited()
@@ -896,7 +952,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 1,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
         api_client.create_task.assert_not_awaited()
@@ -1003,7 +1058,8 @@ class TestSuperviseTestingStories:
         api_client.fail_story.assert_not_called()
         event = redis_client.publish_flat.await_args.args[1]
         assert event["event"] == "story_quarantined"
-        assert event["user_id"] == "100713"
+        assert event["telegram_chat_id"] == "900100713"
+        assert event["owner_user_id"] == "100713"
 
     @pytest.mark.asyncio
     async def test_error_quarantines_application(self, api_client, redis_client):
@@ -1157,7 +1213,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 0,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
 
@@ -1174,7 +1229,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 0,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
 
@@ -1194,7 +1248,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 0,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
 
@@ -1237,3 +1290,284 @@ class TestSuperviseTestingStories:
         assert result["failed"] == 1
         api_client.fail_story.assert_called_once_with("story-1")
         mock_notify.assert_called_once()
+
+
+class TestDeployRefusedByAdmission:
+    """A deploy the platform could not place must never terminate the story, and
+    each refusal disposition must get its own behaviour.
+
+    The run result these feed to the real routing is the one
+    `shared.tests.allocation_routing_cases` describes, and the langgraph suite
+    asserts the deploy consumer writes exactly that — so this is the receiving
+    end of the same boundary, not a restatement of it. The expected behaviour
+    travels with each case, so a path that answers two dispositions the same way
+    fails here. The previous version of this class expected one identical wait
+    for every reason, which is why it could not see the deploy path collapsing
+    `IMPOSSIBLE_CAPACITY` into an endless poll.
+    """
+
+    @staticmethod
+    def _refused_run(reason=AllocationFailureReason.SERVER_NOT_PROVISIONED, **overrides):
+        run_metadata = {"head_sha": "b" * 40}
+        run_metadata.update(overrides.pop("run_metadata", {}))
+        return _make_run(
+            status=RunStatus.FAILED,
+            run_metadata=run_metadata,
+            result=refused_deploy_result(reason).model_dump(mode="json"),
+            **overrides,
+        )
+
+    @staticmethod
+    def _fleet(api_client, *, admissible: bool):
+        """The fleet the wait re-checks: one host, admissible or still installing."""
+        case = next(
+            candidate
+            for candidate in ADMISSION_CASES
+            if candidate.admitted is admissible
+            and (admissible or candidate.name == "active_while_installing_software")
+        )
+        now = datetime.now(UTC)
+        api_client.get_servers.return_value = [admission_case_server(case, last_health_check=now)]
+        api_client.list_active_incidents.return_value = admission_case_incidents(
+            case, detected_at=now
+        )
+        api_client.get_applications.return_value = []
+
+    @staticmethod
+    def _published_events(redis_client) -> list[str]:
+        return [call.args[1]["event"] for call in redis_client.publish_flat.call_args_list]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", REFUSAL_ROUTING_CASES, ids=lambda case: case.reason.value)
+    async def test_each_disposition_routes_the_way_the_matrix_says(
+        self, api_client, redis_client, case
+    ):
+        """With no admissible target: one behaviour per disposition, all distinct."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        expected = case.deploy
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._refused_run(case.reason)
+        api_client.get_project.return_value = SimpleNamespace(owner_id=555)
+        self._fleet(api_client, admissible=False)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result[expected.counter] == 1
+        assert sum(result.values()) == 1
+        # No refusal ever terminates the story.
+        assert result["failed"] == 0
+        api_client.fail_story.assert_not_called()
+
+        assert mock_notify.await_count == (1 if expected.admin_alerted else 0)
+        if expected.story_action is None:
+            api_client.transition_story.assert_not_called()
+        else:
+            api_client.transition_story.assert_awaited_once_with("story-1", expected.story_action)
+        assert self._published_events(redis_client) == (
+            [] if expected.owner_event is None else [expected.owner_event]
+        )
+        # Nothing is re-run: either the platform has no admissible target, or a
+        # target would not help.
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", REFUSAL_ROUTING_CASES, ids=lambda case: case.reason.value)
+    async def test_only_the_wait_resumes_when_a_target_becomes_admissible(
+        self, api_client, redis_client, case
+    ):
+        """A refusal a server cannot answer must not be resumed by one appearing."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        expected = case.deploy
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._refused_run(case.reason)
+        api_client.get_project.return_value = SimpleNamespace(owner_id=555)
+        self._fleet(api_client, admissible=True)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        api_client.fail_story.assert_not_called()
+        if expected.resumes_when_target_admissible:
+            assert result["redispatched"] == 1
+            mock_notify.assert_not_called()
+            api_client.create_run.assert_called_once()
+            published = redis_client.publish_message.call_args
+            assert published.args[0] == DEPLOY_QUEUE
+            assert published.args[1].head_sha == "b" * 40
+            assert published.args[1].story_id == "story-1"
+        else:
+            assert result["escalated"] == 1
+            assert result["redispatched"] == 0
+            api_client.create_run.assert_not_called()
+            redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_wait_that_never_ends_reaches_a_human(self, api_client, redis_client):
+        """The bound the engineering wait always had, on the deploy path too.
+
+        Without it a fleet that never recovers leaves the story in DEPLOYING for
+        good: polled every tick, visible to nobody.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        started = datetime.now(UTC) - timedelta(minutes=61)
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._refused_run(
+            run_metadata={"infrastructure_wait_started_at": started.isoformat()}
+        )
+        self._fleet(api_client, admissible=False)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["escalated"] == 1
+        assert result["waiting"] == 0
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        mock_notify.assert_awaited_once()
+        api_client.fail_story.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_wait_its_own_server_keeps_refusing_reaches_a_human(
+        self, api_client, redis_client
+    ):
+        """The resume-and-refuse cycle is bounded by the same clock as the wait.
+
+        A project already bound to a host is refused by *that* host — the reuse
+        path in `services/langgraph/src/allocations.py` applies admission to the
+        server the application sits on. Resuming, though, asks whether *any*
+        server is admissible. So a fleet with one healthy host and one broken
+        host the project is pinned to satisfies the resume condition on every
+        tick and is refused again on every tick.
+
+        This pins that the cycle ends: the elapsed-time bound is checked before
+        admissibility, the stamp survives each re-dispatch, and the story reaches
+        a human instead of spinning. Without it the deploy would be re-dispatched
+        here forever with nobody told — and it would still never fail the story,
+        which is exactly what makes an unbounded spin invisible.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        started = datetime.now(UTC) - timedelta(minutes=61)
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._refused_run(
+            run_metadata={"infrastructure_wait_started_at": started.isoformat()}
+        )
+        # Another host is perfectly admissible; the project's own host is not.
+        self._fleet(api_client, admissible=True)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["escalated"] == 1
+        assert result["redispatched"] == 0
+        assert result["waiting"] == 0
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        mock_notify.assert_awaited_once()
+        api_client.fail_story.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_wait_keeps_its_start_across_a_redispatch(self, api_client, redis_client):
+        """Resuming and being refused again must not reset the bound to zero."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        started = datetime.now(UTC) - timedelta(minutes=30)
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._refused_run(
+            run_metadata={"infrastructure_wait_started_at": started.isoformat()}
+        )
+        self._fleet(api_client, admissible=True)
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 1
+        created = api_client.create_run.call_args.args[0]
+        assert created["run_metadata"]["infrastructure_wait_started_at"] == started.isoformat()
+
+    @pytest.mark.asyncio
+    async def test_a_wait_that_cannot_resume_reaches_a_human(self, api_client, redis_client):
+        """A refused run with no head_sha has nothing to wait for."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={},
+            result=refused_deploy_result().model_dump(mode="json"),
+        )
+        self._fleet(api_client, admissible=True)
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["escalated"] == 1
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        mock_notify.assert_awaited_once()
+        api_client.fail_story.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_misclassified_refusal_reaches_a_human_instead_of_hanging(
+        self, api_client, redis_client
+    ):
+        """The fail-safe: a table that ever called a refusal the project's fault.
+
+        Waiting would hide it forever and failing the story would charge the
+        platform's own mistake to the user, so it goes to a human, loudly.
+        """
+        from shared.allocation_disposition import ALLOCATION_DISPOSITIONS, AttemptDisposition
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = self._refused_run()
+        self._fleet(api_client, admissible=False)
+
+        with (
+            patch.dict(
+                ALLOCATION_DISPOSITIONS,
+                {
+                    AllocationFailureReason.SERVER_NOT_PROVISIONED: (
+                        AttemptDisposition.PRODUCT_FAILURE
+                    )
+                },
+            ),
+            patch(
+                "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            ) as mock_notify,
+        ):
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["escalated"] == 1
+        assert result["waiting"] == 0
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        mock_notify.assert_awaited_once()
+        api_client.fail_story.assert_not_called()

@@ -44,7 +44,10 @@ def test_missing_codex_home_fails_fast(tmp_path):
 async def test_manager_rejects_missing_codex_session_before_image_resolution(tmp_path):
     docker = MagicMock()
     docker.image_exists = AsyncMock()
-    manager = WorkerManager(redis=MagicMock(), docker_client=docker)
+    # Creation records what kind of worker this is before it validates anything
+    # about the agent, so the Redis double has to be awaitable. The claim under
+    # test is unchanged: no image is resolved for a broken Codex session.
+    manager = WorkerManager(redis=AsyncMock(), docker_client=docker)
 
     with pytest.raises(RuntimeError, match="HOST_CODEX_HOME"):
         await manager.create_worker_with_capabilities(

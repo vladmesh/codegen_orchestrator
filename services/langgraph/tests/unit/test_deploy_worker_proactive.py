@@ -76,11 +76,11 @@ def mock_devops_subgraph():
         yield graph
 
 
-def _job(*, callback_stream=None, user_id="12345", triggered_by=DeployTrigger.WEBHOOK):
+def _job(*, callback_stream=None, telegram_chat_id="12345", triggered_by=DeployTrigger.WEBHOOK):
     return {
         "task_id": "deploy-wh-abc",
         "project_id": "proj-1",
-        "user_id": user_id,
+        "telegram_chat_id": telegram_chat_id,
         "callback_stream": callback_stream or "",
         "triggered_by": triggered_by.value,
         "head_sha": "a" * 40,

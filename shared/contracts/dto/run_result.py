@@ -26,6 +26,13 @@ class AllocationFailureReason(StrEnum):
     INSUFFICIENT_RESERVED_MEMORY = "insufficient_reserved_memory"
     IMPOSSIBLE_CAPACITY = "impossible_capacity"
     NO_FRESH_METRICS = "no_fresh_metrics"
+    # No candidate host was an admissible target: an unfinished or broken build,
+    # a status that does not admit, a host that is not managed. Whichever it was,
+    # it is the platform's own state and not a capacity shortage, and the
+    # scheduler must not describe it to a user as one — see
+    # `shared/server_admission.py::ADMISSION_FAILURE_REASON`, the one reason every
+    # admission refusal carries.
+    SERVER_NOT_PROVISIONED = "server_not_provisioned"
 
 
 class EngineeringRunResult(BaseModel):
@@ -64,6 +71,13 @@ class DeployRunResult(BaseModel):
     and `smoke_result` are opaque diagnostic blobs from the DevOps subgraph; they
     are stored for observability and never routed on. `missing_user_secrets` is
     the structured list the scheduler reads on a WAITING_FOR_USER_SECRET outcome.
+
+    A deploy that could not place the application carries the allocation
+    classification across this boundary instead of erasing it into an error
+    string: `allocation_failure_reason` and the admission budget the attempt
+    asked for are what let the scheduler tell "the platform could not host this
+    yet" from "this project is broken", and re-check admission before it tries
+    again.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -83,6 +97,36 @@ class DeployRunResult(BaseModel):
     action: DeployAction | None = None
     deployment_result: dict | None = None
     smoke_result: dict | None = None
+    allocation_failure_reason: AllocationFailureReason | None = None
+    allocation_required_ram_mb: int | None = None
+    allocation_min_disk_mb: int | None = None
+
+    @model_validator(mode="after")
+    def _infrastructure_wait_carries_its_classification(self) -> DeployRunResult:
+        """A wait the scheduler cannot re-check is not a wait, it is a stall.
+
+        `WAITING_INFRASTRUCTURE` exists so an allocation refusal keeps its type
+        past this boundary. A producer that sets the outcome without the reason
+        and the admission budget leaves the scheduler holding a story it can
+        neither resume nor distinguish from a broken project, so the contract
+        refuses it here rather than letting it be discovered in a supervisor tick.
+        """
+        if self.deploy_outcome is not DeployOutcome.WAITING_INFRASTRUCTURE:
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("allocation_failure_reason", self.allocation_failure_reason),
+                ("allocation_required_ram_mb", self.allocation_required_ram_mb),
+                ("allocation_min_disk_mb", self.allocation_min_disk_mb),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                f"{DeployOutcome.WAITING_INFRASTRUCTURE.value} requires {', '.join(missing)}"
+            )
+        return self
 
 
 class QAFailedCheck(BaseModel):
@@ -99,8 +143,28 @@ class QABlockerCategory(StrEnum):
 
     MISSING_BOT_USERNAME = "missing_bot_username"
     MISSING_TELETHON_CREDENTIALS = "missing_telethon_credentials"
-    CLAUDE_UNAVAILABLE = "claude_unavailable"
+    # No executor could be started for exploratory QA: the assigned coding
+    # agent's subscription session is missing, expired or broken, and the
+    # optional API fallback is not configured either. This replaced
+    # `claude_unavailable`, which had come to mean only "no LLM API key" — a
+    # meaning that stopped being true once the executor became a subscription
+    # CLI agent and the API triplet became an optional fallback.
+    QA_EXECUTOR_UNAVAILABLE = "qa_executor_unavailable"
     DEPLOYED_URL_UNREACHABLE = "deployed_url_unreachable"
+    # A deterministic pre-agent probe could not be performed at all: the target's
+    # container runtime did not answer, or the platform API that holds the bot
+    # token did not. Neither says anything about the product, and neither is
+    # `server_unavailable` — that one means the run never got onto the host and
+    # is repaired by looking at the host or its provisioning, while this one
+    # means the platform is on the host (or on its own API) and the thing it
+    # asked did not answer. Conflating them would make both unactionable.
+    QA_PROBE_UNAVAILABLE = "qa_probe_unavailable"
+    # Telegram answered, and the bot this deployment is bound to is not live:
+    # the token was revoked, replaced or never bound. Distinct from
+    # `telegram_access_denied`, which is a live bot refusing the QA account and
+    # is repaired by the temporary-access mechanism; this one is repaired by
+    # binding a working token, and no amount of test access changes it.
+    BOT_NOT_LIVE = "bot_not_live"
     TELEGRAM_ACCESS_DENIED = "telegram_access_denied"
     SERVER_UNAVAILABLE = "server_unavailable"
     QA_CLEANUP_FAILED = "qa_cleanup_failed"

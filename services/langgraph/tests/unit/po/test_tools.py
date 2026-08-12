@@ -65,9 +65,12 @@ def _make_response(data, status_code: int = 200) -> MagicMock:
     return resp
 
 
-def _make_config(user_id: str = "test-user", retry_story_id: str = "") -> dict:
-    """Create a RunnableConfig with user_id."""
-    configurable = {"thread_id": f"po-user-{user_id}", "user_id": user_id}
+def _make_config(telegram_chat_id: str = "test-user", retry_story_id: str = "") -> dict:
+    """Create a RunnableConfig with telegram_chat_id."""
+    configurable = {
+        "thread_id": f"po-chat-{telegram_chat_id}",
+        "telegram_chat_id": telegram_chat_id,
+    }
     if retry_story_id:
         configurable["retry_story_id"] = retry_story_id
     return {"configurable": configurable}
@@ -725,7 +728,7 @@ class TestCreateStory:
         assert isinstance(arch_msg, ArchitectMessage)
         assert arch_msg.story_id == "story-xxx"
         assert arch_msg.project_id == "abc"
-        assert arch_msg.user_id == "user-42"
+        assert arch_msg.telegram_chat_id == "user-42"
 
     @pytest.mark.asyncio
     async def test_no_run_created(self, mock_api_client, mock_stream_client):
@@ -863,7 +866,7 @@ class TestCreateStory:
 
         arch_msg = mock_stream_client.publish_message.call_args[0][1]
         assert isinstance(arch_msg, ArchitectMessage)
-        assert arch_msg.user_id == "user-777"
+        assert arch_msg.telegram_chat_id == "user-777"
 
     @pytest.mark.asyncio
     async def test_queues_story_when_active_story_exists(self, mock_api_client, mock_stream_client):
@@ -1026,7 +1029,7 @@ class TestSetReminder:
 
     @pytest.mark.asyncio
     async def test_uses_user_id_from_config(self, mock_stream_client):
-        """user_id should come from RunnableConfig, not LLM arguments."""
+        """telegram_chat_id should come from RunnableConfig, not LLM arguments."""
         await set_reminder.ainvoke(
             {"delay_minutes": 5, "reason": "check story story-second"},
             config=_make_config("user-777"),
@@ -1036,14 +1039,14 @@ class TestSetReminder:
         import json
 
         reminder = json.loads(reminder_json)
-        assert reminder["user_id"] == "user-777"
+        assert reminder["telegram_chat_id"] == "user-777"
         assert reminder["story_id"] == "story-second"
 
 
 class TestNotifyUser:
     @pytest.mark.asyncio
     async def test_writes_to_proactive_stream(self, mock_stream_client):
-        """Should publish_flat to po:proactive with user_id and text."""
+        """Should publish_flat to po:proactive with telegram_chat_id and text."""
         result = await notify_user.ainvoke(
             {"message": "Your project is ready!"},
             config=_make_config("user-123"),
@@ -1054,18 +1057,18 @@ class TestNotifyUser:
         call_args = mock_stream_client.publish_flat.call_args
         assert call_args[0][0] == "po:proactive"
         assert call_args[0][1]["text"] == "Your project is ready!"
-        assert call_args[0][1]["user_id"] == "user-123"
+        assert call_args[0][1]["telegram_chat_id"] == "user-123"
 
     @pytest.mark.asyncio
     async def test_uses_user_id_from_config(self, mock_stream_client):
-        """user_id should come from RunnableConfig."""
+        """telegram_chat_id should come from RunnableConfig."""
         await notify_user.ainvoke(
             {"message": "test"},
             config=_make_config("user-456"),
         )
 
         fields = mock_stream_client.publish_flat.call_args[0][1]
-        assert fields["user_id"] == "user-456"
+        assert fields["telegram_chat_id"] == "user-456"
 
 
 class TestWebSearch:

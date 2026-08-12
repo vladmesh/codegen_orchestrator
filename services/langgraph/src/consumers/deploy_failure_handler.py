@@ -29,7 +29,7 @@ async def _handle_deploy_failure(
     error_msg: str,
     story_id: str,
     callback_stream: str,
-    user_id: str,
+    telegram_chat_id: str,
     redis: RedisStreamClient,
     deploy_outcome: DeployOutcome = DeployOutcome.RETRY,
     deploy_fix_attempt: int = 0,
@@ -63,7 +63,7 @@ async def _handle_deploy_failure(
         "failed",
         task_id,
         error_msg,
-        user_id=user_id,
+        telegram_chat_id=telegram_chat_id,
         project_id=project_id or "",
     )
 

@@ -136,15 +136,38 @@ services:
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: qa-worker
+      # Exploratory QA is performed by a central ephemeral coding agent started
+      # through worker-manager on this host. Its subscription session is
+      # HOST_CLAUDE_DIR / HOST_CODEX_HOME, mounted into that container by
+      # worker-manager — this service never holds it, and no deploy target ever
+      # sees it.
+      QA_EXECUTOR_AGENT_TYPE: ${QA_EXECUTOR_AGENT_TYPE:-claude}
+      # How that container addresses this service's per-run capability endpoint.
+      # It must be this service's name on the worker network below.
+      QA_CAPABILITY_HOST: ${QA_CAPABILITY_HOST:-qa-worker}
+      # Optional API fallback, read only after the assigned executor has failed.
+      # Empty is a valid production configuration.
+      QA_LLM_MODEL: ${QA_LLM_MODEL:-}
+      QA_LLM_BASE_URL: ${QA_LLM_BASE_URL:-}
+      QA_LLM_API_KEY: ${QA_LLM_API_KEY:-}
+      # The QA Telegram account lives here and nowhere else.
+      TELETHON_API_ID: ${TELETHON_API_ID:-}
+      TELETHON_API_HASH: ${TELETHON_API_HASH:-}
+      TELETHON_SESSION: ${TELETHON_SESSION:-}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ~/.claude/.credentials.json:/secrets/claude-credentials.json:ro
     depends_on:
       - api
       - redis
     networks:
+      # `internal` is how this service reaches the API and Redis. `qa_egress` is
+      # the only thing the QA executor's container can see of the platform: one
+      # per-run endpoint, on an ephemeral port, holding no credential of its own.
+      # That network has no route off itself, so the endpoint is the executor's
+      # only way to the deployment — see the `qa_egress` definition below.
       - internal
+      - qa_egress
     restart: unless-stopped
     deploy:
       replicas: 1
@@ -300,6 +323,13 @@ services:
       SCAFFOLDED_WORKSPACE_PATH: /data/workspaces
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
+      # The QA executor's network, and the only destinations its per-run egress
+      # proxy opens. Empty backend lists mean the built-in defaults for the
+      # assigned CLI. Worker creation fails closed if this network is not
+      # internal — a QA run never starts with an unrestricted container.
+      QA_EGRESS_NETWORK: codegen_qa_egress
+      QA_CLAUDE_BACKEND_HOSTS: ${QA_CLAUDE_BACKEND_HOSTS:-}
+      QA_CODEX_BACKEND_HOSTS: ${QA_CODEX_BACKEND_HOSTS:-}
       # This is both the Docker-host source path and the manager-visible path.
       # Keep them identical because worker containers are created through the
       # host Docker socket.
@@ -352,6 +382,11 @@ services:
     networks:
       - internal
       - worker
+      # Developer workers reach the broker on `worker`; a QA executor reaches it
+      # on `qa_egress`, because that is the only network it is on. The broker is
+      # the runtime's own control channel — it carries the run's prompt and the
+      # container's output — and it is not a route to the deployment.
+      - qa_egress
     restart: unless-stopped
 
   scheduler:
@@ -605,6 +640,17 @@ networks:
     name: codegen_internal
   worker:
     name: codegen_worker
+  # The QA executor's whole world. `internal: true` is not decoration: it is
+  # what makes "exploratory QA cannot write to the application" a fact about
+  # routing rather than a rule in a prompt. A container attached to this and to
+  # nothing else cannot reach the deployment's public URL, the fleet, or the
+  # internet — only the two services attached here, and the run's own egress
+  # proxy, which opens the assigned CLI's model backend and nothing else.
+  # worker-manager refuses to start a QA executor if this network is missing or
+  # is not internal.
+  qa_egress:
+    name: codegen_qa_egress
+    internal: true
 
 volumes:
   db_data:

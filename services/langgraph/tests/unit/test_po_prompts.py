@@ -79,8 +79,8 @@ class TestSystemPrompt:
         assert 'mode="invite"' not in SYSTEM_PROMPT
 
     def test_mentions_user_context(self):
-        """Prompt should reference user context (user_id, user_name) from message prefix."""
-        assert "user_id" in SYSTEM_PROMPT
+        """Prompt should reference the user context prefix (chat id, user name)."""
+        assert "telegram_chat_id" in SYSTEM_PROMPT
         assert "context" in SYSTEM_PROMPT.lower()
 
     def test_story_based_workflow(self):

@@ -28,6 +28,7 @@ from ..schemas.story import (
     StoryTransition,
     StoryUpdate,
 )
+from ._recipients import resolve_project_chat_id
 
 logger = structlog.get_logger()
 
@@ -430,7 +431,9 @@ async def send_to_architect(
     msg = ArchitectMessage(
         story_id=story.id,
         project_id=str(story.project_id),
-        user_id="",
+        telegram_chat_id=await resolve_project_chat_id(
+            db, story.project_id, event="story_sent_to_architect", story_id=story.id
+        ),
         is_reopen=is_reopen,
         user_report=story.user_report if is_reopen else None,
     )

@@ -13,6 +13,8 @@ from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult, T
 from shared.contracts.dto.repository import RepositoryRole
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.telegram import (
+    BotLiveness,
+    BotLivenessState,
     TelegramTokenValidateRequest,
     TelegramTokenVerdict,
     TokenVerdictStatus,
@@ -46,7 +48,12 @@ from shared.redis.client import RedisStreamClient
 
 from ..config import get_settings
 from ..database import get_async_session
-from ..dependencies import get_redis_client, is_internal_service, resolve_actor
+from ..dependencies import (
+    get_redis_client,
+    is_internal_service,
+    require_internal_or_admin,
+    resolve_actor,
+)
 from ..schemas import (
     BotAccessRequest,
     MergeSecretsRequest,
@@ -55,7 +62,8 @@ from ..schemas import (
     ProjectUpdate,
 )
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
-from ..utils.telegram_token import looks_like_bot_token, validate_telegram_token
+from ..utils.telegram_token import bot_liveness, looks_like_bot_token, validate_telegram_token
+from ._recipients import resolve_project_recipient
 from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
 
 logger = structlog.get_logger()
@@ -627,6 +635,48 @@ async def bind_telegram_token(
     return verdict
 
 
+@router.get("/{project_id}/telegram/liveness", response_model=BotLiveness)
+async def check_telegram_bot_liveness(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+    _internal_or_admin: None = Depends(require_internal_or_admin),
+) -> BotLiveness:
+    """Ask Telegram whether this project's bot is live, without lending the token.
+
+    QA has to know that the deployed bot answers at the moment it tests it, and
+    the token that proves it belongs here: it is stored encrypted in this
+    project's secrets and this service holds the key. So the question is asked
+    here and only the answer travels — a state, the username Telegram reported,
+    and a detail line. Handing the token to the QA runtime instead would put a
+    live credential in a runtime whose whole design is that it holds none.
+
+    Internal or admin only: it spends a call on Telegram's API using a secret the
+    caller cannot see, which is a platform action, not a project read.
+    """
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    stored = (project.config or {}).get("secrets") or {}
+    token = decrypt_dict(stored).get(TELEGRAM_TOKEN_KEY) if stored else None
+    if not token:
+        return BotLiveness(
+            state=BotLivenessState.NO_TOKEN,
+            detail=f"project {project_id} holds no {TELEGRAM_TOKEN_KEY}",
+        )
+
+    liveness = await bot_liveness(token)
+    logger.info(
+        "telegram_bot_liveness_checked",
+        project_id=str(project_id),
+        state=liveness.state.value,
+        bot_username=liveness.bot_username,
+    )
+    return liveness
+
+
 @router.delete("/{project_id}/config/secrets/{key}")
 async def delete_secret(
     project_id: uuid.UUID,
@@ -805,6 +855,10 @@ async def teardown_project(
         project_id, x_telegram_id, db, is_internal=_is_internal
     )
 
+    # The owner asked for this teardown, so its deploys are addressed to them:
+    # resolved once, before anything is published.
+    teardown_recipient = await resolve_project_recipient(db, project_id, event="project_teardown")
+
     messages = []
     staged = set()
     for application in applications:
@@ -817,7 +871,13 @@ async def teardown_project(
             )
             if not failed:
                 continue
-        _run, msg = stage_undeploy(application, project_id, db, triggered_by=DeployTrigger.PO)
+        _run, msg = stage_undeploy(
+            application,
+            project_id,
+            db,
+            triggered_by=DeployTrigger.PO,
+            recipient=teardown_recipient,
+        )
         messages.append(msg)
         staged.add(application.id)
 

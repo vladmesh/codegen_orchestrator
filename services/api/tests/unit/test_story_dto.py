@@ -128,6 +128,15 @@ class TestStoryTransitions:
     def test_deploying_can_wait_for_user_secret(self):
         assert StoryStatus.WAITING_USER_SECRET in VALID_TRANSITIONS[StoryStatus.DEPLOYING]
 
+    def test_deploying_can_go_to_human_review(self):
+        """An infrastructure refusal no wait resolves has to reach a person.
+
+        A deploy the platform cannot place — a request no managed server fits, a
+        fleet it cannot see — is not the project's defect, so it must not be
+        failed; without this edge it had nowhere to go but an endless wait.
+        """
+        assert StoryStatus.WAITING_HUMAN_REVIEW in VALID_TRANSITIONS[StoryStatus.DEPLOYING]
+
     def test_waiting_user_secret_transitions(self):
         allowed = VALID_TRANSITIONS[StoryStatus.WAITING_USER_SECRET]
         assert StoryStatus.DEPLOYING in allowed  # secret arrived → redeploy

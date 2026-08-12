@@ -14,7 +14,13 @@ import structlog
 
 from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB, ApplicationStatus
 from shared.contracts.dto.run_result import AllocationFailureReason
-from shared.contracts.dto.server import ServerDTO, ServerStatus
+from shared.contracts.dto.server import ServerDTO
+from shared.server_admission import (
+    ADMISSION_FAILURE_REASON,
+    ServerAdmissionRejection,
+    provisioning_failed_server_handles,
+    server_admission_rejection,
+)
 
 from .clients.api import api_client
 from .config.settings import get_settings
@@ -26,10 +32,24 @@ DEFAULT_ALLOCATION_MIN_DISK_MB = 1024
 
 
 class AllocationError(Exception):
-    """Raised when resource allocation fails."""
+    """Raised when resource allocation fails.
 
-    def __init__(self, reason: AllocationFailureReason, message: str | None = None) -> None:
+    Carries the admission budget the refused attempt asked for, so every caller
+    can record what has to become available again without recomputing it — and
+    so the classification cannot be reduced to a message on the way out.
+    """
+
+    def __init__(
+        self,
+        reason: AllocationFailureReason,
+        *,
+        required_ram_mb: int,
+        min_disk_mb: int,
+        message: str | None = None,
+    ) -> None:
         self.reason = reason
+        self.required_ram_mb = required_ram_mb
+        self.min_disk_mb = min_disk_mb
         super().__init__(message or f"No suitable server found: {reason.value}")
 
 
@@ -49,6 +69,13 @@ async def ensure_project_allocations(
     3. If yes, returns existing allocations
     4. If no, finds a suitable server and allocates ports
 
+    Both branches pass ``shared.server_admission``: a newly chosen host through
+    :func:`_find_suitable_server`, an already bound host through
+    :func:`_refuse_inadmissible_target`. Reuse is placement too — a redeploy runs
+    the application on that host again and a newly declared module takes a fresh
+    port on it — so the same predicate decides both, and neither can admit what
+    the other refuses.
+
     Args:
         project_id: Project ID (for finding server/repo)
         repo_id: Repository ID for the Application
@@ -66,13 +93,21 @@ async def ensure_project_allocations(
     if modules is None:
         modules = ["backend"]
 
-    # A placement already exists for this repository. Reuse it before admission:
-    # its reservation and observed memory are already included in server load.
+    # A placement already exists for this repository. Its reservation and observed
+    # memory are already included in server load, so reuse skips the *capacity*
+    # budget — but never admission: the bound host still has to be a legal target
+    # before it takes this project's workload again.
     existing_apps = await api_client.list_applications({"repo_id": repo_id})
     if existing_apps:
         app = existing_apps[0]
         server_handle = app["server_handle"]
         server = await api_client.get_server(server_handle)
+        _refuse_inadmissible_target(
+            server,
+            provisioning_failed_server_handles(await api_client.list_active_incidents()),
+            min_ram_mb=min_ram_mb,
+            min_disk_mb=min_disk_mb,
+        )
     else:
         server = await _find_suitable_server(min_ram_mb, min_disk_mb)
         server_handle = server.handle
@@ -158,27 +193,91 @@ async def ensure_project_allocations(
     return allocated
 
 
+def _refuse_inadmissible_target(
+    server: ServerDTO,
+    provisioning_failed_handles: frozenset[str],
+    *,
+    min_ram_mb: int,
+    min_disk_mb: int,
+) -> None:
+    """Refuse to put more of a project on a server that may not host one.
+
+    This is the admission decision for an already bound host, and it is the same
+    decision `_find_suitable_server` makes for a new one: `server_admission_rejection`
+    from `shared.server_admission`, over the same snapshot of active incidents.
+    A binding made while the host was legal is not a licence to keep placing work
+    on it after its provisioning restarted or broke.
+
+    The refusal is the existing typed `AllocationError` carrying the admission
+    budget, so it travels the route every other refusal travels
+    (`shared.allocation_disposition`): a bounded infrastructure wait that ends
+    with a human, never a capacity message to the owner and never a story
+    failure.
+
+    Every rejection is reported as `shared.server_admission.ADMISSION_FAILURE_REASON`,
+    the constant the search path raises too — the reasoning for one reason
+    covering all four lives there, next to the rejections themselves.
+    """
+    admission = server_admission_rejection(server, provisioning_failed_handles)
+    if admission is None:
+        return
+    logger.info(
+        "server_admission_rejected",
+        server=server.handle,
+        status=server.status.value,
+        reason=admission.value,
+        placement="reuse",
+    )
+    raise AllocationError(
+        ADMISSION_FAILURE_REASON,
+        required_ram_mb=allocation_required_ram_mb(min_ram_mb),
+        min_disk_mb=min_disk_mb,
+        message=(f"Bound server {server.handle} may not host an application: {admission.value}"),
+    )
+
+
 async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
     """Find a server that can admit the requested RAM allocation conservatively.
 
-    Admission reserves ``min_ram_mb + ALLOCATION_RAM_RESERVE_MB``. It compares that
-    budget against both the persisted sum of application reservations and fresh
-    observed RAM use, then uses the larger value. Metrics older than
+    A candidate first has to be an admissible target at all: managed, operational,
+    software provisioning recorded complete, and free of an open provisioning
+    failure. That rule lives in ``shared.server_admission`` and is shared with the
+    scheduler's resource wait, so the two cannot diverge. A host that fails it is
+    never described as a capacity problem — whichever rejection it was, the
+    refusal carries ``shared.server_admission.ADMISSION_FAILURE_REASON``. The one
+    thing that outranks it is a request no managed server could fit at all; the
+    comment at that check says why it is asked first.
+
+    Admission then reserves ``min_ram_mb + ALLOCATION_RAM_RESERVE_MB``. It compares
+    that budget against both the persisted sum of application reservations and
+    fresh observed RAM use, then uses the larger value. Metrics older than
     ``ALLOCATION_METRICS_FRESHNESS_SECONDS`` (or absent) are unknown and reject the
-    server. A rejection reports whether every candidate lacked capacity, fresh
-    metrics, or observed free memory.
+    server. A rejection reports whether every candidate was unprovisioned, or
+    lacked capacity, fresh metrics, or observed free memory.
     """
     all_managed_servers = await api_client.list_servers(is_managed=True)
     settings = get_settings()
     required_ram_mb = allocation_required_ram_mb(min_ram_mb)
-
-    # Filter to only active/ready/in_use servers
-    active_statuses = (ServerStatus.ACTIVE, ServerStatus.READY, ServerStatus.IN_USE)
-    servers = [s for s in all_managed_servers if s.status in active_statuses]
+    provisioning_failed_handles = provisioning_failed_server_handles(
+        await api_client.list_active_incidents()
+    )
 
     suitable: list[tuple[ServerDTO, int]] = []
     rejection_reasons: set[str] = set()
-    for srv in servers:
+    admission_rejections: set[ServerAdmissionRejection] = set()
+    for srv in all_managed_servers:
+        admission = server_admission_rejection(srv, provisioning_failed_handles)
+        if admission is not None:
+            admission_rejections.add(admission)
+            logger.info(
+                "server_admission_rejected",
+                server=srv.handle,
+                status=srv.status.value,
+                reason=admission.value,
+                placement="search",
+            )
+            continue
+
         if srv.capacity_disk_mb < min_disk_mb:
             rejection_reasons.add("insufficient_capacity")
             continue
@@ -206,14 +305,39 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
         suitable.append((srv, srv.capacity_ram_mb - effective_used_ram_mb))
 
     if not suitable:
+        budget = {"required_ram_mb": required_ram_mb, "min_disk_mb": min_disk_mb}
+        # Fleet-wide impossibility is answered before the admission refusal below,
+        # and that order is deliberate. This holds only when no managed server
+        # would fit the request even fully admitted, so finishing a host's
+        # provisioning cannot change the answer — the host that turns `complete`
+        # is still too small. Calling that an infrastructure wait would park the
+        # request on something that by definition never arrives; `IMPOSSIBLE_CAPACITY`
+        # calls a human at once and names the real blocker. It is not the masking
+        # this rule exists against either: no host's state is being retold as a
+        # memory shortage, a different and durable fact about the fleet is reported.
         if _request_exceeds_every_server(all_managed_servers, required_ram_mb, min_disk_mb):
-            raise AllocationError(AllocationFailureReason.IMPOSSIBLE_CAPACITY)
+            raise AllocationError(AllocationFailureReason.IMPOSSIBLE_CAPACITY, **budget)
+        # A host that may not take an application is infrastructure, not capacity,
+        # whichever of the rejections it was: a build still running, a build that
+        # broke, a host that left the admitting statuses, a host that stopped being
+        # managed. None of them is a statement about how much memory was asked
+        # for, so none of them may fall through to a memory reason below.
+        if admission_rejections:
+            refused = ", ".join(sorted(rejection.value for rejection in admission_rejections))
+            raise AllocationError(
+                ADMISSION_FAILURE_REASON,
+                **budget,
+                message=(
+                    "No server may host an application: "
+                    f"{ADMISSION_FAILURE_REASON.value} ({refused})"
+                ),
+            )
         # Unknown metrics cannot truthfully be described to a user as capacity.
         if "no_fresh_metrics" in rejection_reasons:
-            raise AllocationError(AllocationFailureReason.NO_FRESH_METRICS)
+            raise AllocationError(AllocationFailureReason.NO_FRESH_METRICS, **budget)
         if "insufficient_reserved_memory" in rejection_reasons:
-            raise AllocationError(AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY)
-        raise AllocationError(AllocationFailureReason.INSUFFICIENT_FREE_MEMORY)
+            raise AllocationError(AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY, **budget)
+        raise AllocationError(AllocationFailureReason.INSUFFICIENT_FREE_MEMORY, **budget)
 
     # Prefer the most remaining RAM after the conservative admission budget.
     return max(suitable, key=lambda candidate: candidate[1])[0]

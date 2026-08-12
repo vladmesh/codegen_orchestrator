@@ -34,6 +34,7 @@ class TestDeployMessageAction:
         msg = DeployMessage(
             task_id="deploy-123",
             project_id="proj-abc",
+            telegram_chat_id="987654321",
         )
         assert msg.action == DeployAction.CREATE
 
@@ -43,6 +44,7 @@ class TestDeployMessageAction:
             msg = DeployMessage(
                 task_id="deploy-123",
                 project_id="proj-abc",
+                telegram_chat_id="987654321",
                 action=action,
                 application_id=5 if action in LIFECYCLE_ACTIONS else None,
             )
@@ -54,6 +56,7 @@ class TestDeployMessageAction:
             msg = DeployMessage(
                 task_id="deploy-123",
                 project_id="proj-abc",
+                telegram_chat_id="987654321",
                 action=action_str,
                 application_id=5 if action_str in ("stop", "undeploy") else None,
             )
@@ -65,6 +68,7 @@ class TestDeployMessageAction:
             DeployMessage(
                 task_id="deploy-123",
                 project_id="proj-abc",
+                telegram_chat_id="987654321",
                 action="invalid",
             )
 
@@ -73,6 +77,7 @@ class TestDeployMessageAction:
         msg = DeployMessage(
             task_id="deploy-123",
             project_id="proj-abc",
+            telegram_chat_id="987654321",
             action=DeployAction.FEATURE,
             triggered_by=DeployTrigger.WEBHOOK,
         )
@@ -87,6 +92,7 @@ class TestDeployMessageAction:
             msg = DeployMessage(
                 task_id="deploy-123",
                 project_id="proj-abc",
+                telegram_chat_id="987654321",
                 action=action,
                 application_id=5,
             )
@@ -102,6 +108,7 @@ class TestDeployMessageAction:
                 DeployMessage(
                     task_id="deploy-123",
                     project_id="proj-abc",
+                    telegram_chat_id="987654321",
                     action=action,
                 )
 
@@ -110,6 +117,7 @@ class TestDeployMessageAction:
         data = {
             "task_id": "deploy-old",
             "project_id": "proj-abc",
+            "telegram_chat_id": "987654321",
         }
         msg = DeployMessage.model_validate(data)
         assert msg.action == DeployAction.CREATE
@@ -119,7 +127,46 @@ class TestDeployMessageAction:
         data = {
             "task_id": "deploy-old",
             "project_id": "proj-abc",
+            "telegram_chat_id": "987654321",
             "action": "feature",
         }
         msg = DeployMessage.model_validate(data)
         assert msg.action == DeployAction.FEATURE
+
+
+class TestDeployMessageRecipient:
+    """A deploy either names the chat it reports to, or says why it reports to nobody."""
+
+    def test_a_recipient_is_accepted(self):
+        msg = DeployMessage(
+            task_id="deploy-123",
+            project_id="proj-abc",
+            telegram_chat_id="987654321",
+        )
+
+        assert msg.telegram_chat_id == "987654321"
+        assert msg.unaddressed_reason == ""
+
+    def test_a_stated_reason_is_accepted_instead(self):
+        msg = DeployMessage(
+            task_id="deploy-123",
+            project_id="proj-abc",
+            unaddressed_reason="temporary QA access deploy, not requested by the owner",
+        )
+
+        assert msg.telegram_chat_id == ""
+        assert msg.unaddressed_reason
+
+    def test_neither_is_rejected(self):
+        """An empty recipient with no reason is a producer that forgot to resolve one."""
+        with pytest.raises(ValidationError, match="unaddressed_reason"):
+            DeployMessage(task_id="deploy-123", project_id="proj-abc")
+
+    def test_both_is_rejected(self):
+        with pytest.raises(ValidationError, match="never both"):
+            DeployMessage(
+                task_id="deploy-123",
+                project_id="proj-abc",
+                telegram_chat_id="987654321",
+                unaddressed_reason="admin-initiated",
+            )

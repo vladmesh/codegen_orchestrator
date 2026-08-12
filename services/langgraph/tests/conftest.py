@@ -44,7 +44,7 @@ class TestHarness:
         message = EngineeringMessage(
             task_id=task_id,
             project_id=project_id,
-            user_id=123,
+            telegram_chat_id=123,
         )
         await self.redis.xadd("engineering:queue", {"data": message.model_dump_json()})
         return task_id
@@ -57,7 +57,7 @@ class TestHarness:
         message = DeployMessage(
             task_id=task_id,
             project_id=project_id,
-            user_id=123,
+            telegram_chat_id=123,
         )
         await self.redis.xadd("deploy:queue", {"data": message.model_dump_json()})
         return task_id

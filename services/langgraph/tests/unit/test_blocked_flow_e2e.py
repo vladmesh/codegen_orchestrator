@@ -88,7 +88,7 @@ class TestBlockedFlowEndToEnd:
             planning_task_id="task-1",
             story_id="story-1",
             reason="56/78 image URLs return 404",
-            user_id="u-1",
+            telegram_chat_id="u-1",
             redis=redis,
         )
 

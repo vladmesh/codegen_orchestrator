@@ -70,11 +70,11 @@ def mock_devops_subgraph():
         yield graph
 
 
-def _job(*, story_id="story-1", user_id="12345"):
+def _job(*, story_id="story-1", telegram_chat_id="12345"):
     return {
         "task_id": "deploy-qa-1",
         "project_id": "proj-1",
-        "user_id": user_id,
+        "telegram_chat_id": telegram_chat_id,
         "story_id": story_id,
         "callback_stream": "",
         "triggered_by": DeployTrigger.ENGINEERING.value,

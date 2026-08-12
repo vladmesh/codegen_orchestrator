@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.clients.time4vps import Time4VPSClient
+from shared.contracts.dto.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     provider_ip_matches,
@@ -15,7 +16,14 @@ from shared.provisioning_policy import (
 
 from ..config.constants import Provisioning, Timeouts
 from .ansible_runner import AnsibleRunner
-from .api_client import get_server_info, get_server_ssh_key, update_server_labels
+from .api_client import (
+    get_server_info,
+    get_server_ssh_key,
+    mark_provisioning_complete,
+    record_qa_identity,
+    update_server_labels,
+)
+from .incidents import create_incident, resolve_active_incidents
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
@@ -67,6 +75,69 @@ async def provision_monitoring_baseline(
     )
     logger.info("monitoring_baseline_complete", server_handle=server_handle)
     return True, "Monitoring baseline applied successfully"
+
+
+async def retrofit_qa_identity(
+    server_handle: str,
+    ansible_runner: AnsibleRunner,
+) -> tuple[bool, str]:
+    """Give an already-provisioned host the QA identity a fresh one comes with.
+
+    Hosts provisioned before the QA account existed are recorded
+    `provisioning_phase=complete` and still lend no identity, so exploratory QA
+    refuses them. Re-running the whole software phase to fix that would reinstall
+    docker and reboot the world for one account; this runs the one playbook that
+    creates the account and clears what the target-local QA agent left behind.
+
+    The label is written after the playbook, never before: the server row is
+    supposed to mean "this host has the account", and a row that says so while
+    the playbook failed is exactly the state the QA runtime cannot see through.
+    Repeating the call is safe — the playbook is a set of states, and the label
+    write is idempotent.
+    """
+    server = await get_server_info(server_handle)
+    if not server_is_provisioning_allowed(server):
+        return False, "Server is not authorized for provisioning"
+
+    server_ip = server.public_ip or server.host
+    if not server_ip:
+        return False, "Server has no public IP address"
+
+    ssh_private_key = await get_server_ssh_key(server_handle)
+    if not ssh_private_key:
+        return False, "Server has no stored SSH key"
+
+    success, output = ansible_runner.run_playbook(
+        server_ip=server_ip,
+        server_handle=server.handle,
+        playbook_name="qa_identity_retrofit.yml",
+        deploy_user=server.ssh_user,
+        ssh_user=server.ssh_user,
+        ssh_private_key=ssh_private_key,
+        timeout=Timeouts.PROVISIONING,
+    )
+    if not success:
+        logger.error("qa_identity_retrofit_failed", server_handle=server_handle)
+        # A host that cannot be given the identity is a host QA will keep
+        # refusing, so the failure is journalled where the refusal already is:
+        # against this handle, in the provisioning journal an administrator
+        # reads. The role refuses rather than repairs when it finds an account
+        # of that name it did not create, and that refusal arrives here as
+        # playbook output — which is why the output travels with the entry.
+        await create_incident(
+            server_handle,
+            IncidentType.PROVISIONING_FAILED,
+            {"step": "qa_identity", "server_handle": server_handle, "output": output[:500]},
+        )
+        return False, f"QA identity retrofit failed: {output[:500]}"
+
+    await record_qa_identity(server_handle)
+    # The refusal this repairs is journalled as a provisioning failure by the QA
+    # runtime, so the repair closes it the same way a successful provisioning run
+    # does. Nothing else here writes to that journal.
+    await resolve_active_incidents(server_handle)
+    logger.info("qa_identity_retrofit_complete", server_handle=server_handle)
+    return True, f"QA identity provisioned on {server_handle}"
 
 
 async def reset_server_password(
@@ -259,7 +330,7 @@ async def reinstall_and_provision(  # noqa: PLR0913
         )
 
         if success_soft:
-            await update_server_labels(server_handle, {"provisioning_phase": "complete"})
+            await mark_provisioning_complete(server_handle)
             return True, "Provisioning (Access + Software) completed successfully"
         else:
             return False, f"Phase 2 (Software) failed: {output_soft[:500]}"

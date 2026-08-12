@@ -27,6 +27,8 @@ from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
+from ._recipients import resolve_project_recipient
+from .owner_notifications import supervise_owed_owner_notifications
 from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
@@ -192,10 +194,13 @@ async def _create_and_publish_run(
     )
 
     action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="task_dispatch", story_id=story_id or ""
+    )
     eng_msg = EngineeringMessage(
         task_id=run_id,
         project_id=project_id,
-        user_id="",  # StoryDTO has no user_id field
+        telegram_chat_id=recipient.telegram_chat_id,
         action=action,
         description=description,
         skip_deploy=True,  # Deploy handled at story level
@@ -368,11 +373,25 @@ async def task_dispatcher_loop() -> None:
                 waiting_secret = await supervise_waiting_user_secret_stories(
                     api_client, redis_client
                 )
-                # Access is settled before stories are routed on their QA runs:
-                # a story must not reach a terminal outcome in the same cycle
-                # that still has the test identity admitted by its bot.
-                temporary_access = await supervise_temporary_access(api_client, redis_client)
+                # Messages a committed terminal transition still owes are
+                # re-attempted before the routing that owes new ones. Ordered
+                # this way round, a record written by this tick's routing gets
+                # exactly the one in-tick attempt routing makes; the other way
+                # round the sweep would immediately spend a second attempt of
+                # the bound on it, in the same second.
+                owner_notifications = await supervise_owed_owner_notifications(
+                    api_client, redis_client
+                )
+                # Stories are routed on their QA runs before the access sweep
+                # runs, and that order is the delivery guarantee: a product QA
+                # has passed is handed to its owner on the tick that reads the
+                # verdict, and the cleanup of the identity it borrowed happens
+                # afterwards. Sweeping first would let a cleanup that ran out of
+                # attempts during a gap in this loop write its incident on the QA
+                # run before the story had been routed, turning a passed product
+                # into a quarantine over a leftover test user.
                 testing = await supervise_testing_stories(api_client, redis_client)
+                temporary_access = await supervise_temporary_access(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -394,6 +413,7 @@ async def task_dispatcher_loop() -> None:
                     + deploying.get("retried", 0)
                     + deploying.get("redispatched", 0)
                     + deploying.get("waiting", 0)
+                    + deploying.get("escalated", 0)
                     + deploying.get("failed", 0)
                     + waiting_secret.get("redispatched", 0)
                     + waiting_secret.get("failed", 0)
@@ -404,6 +424,12 @@ async def task_dispatcher_loop() -> None:
                     + temporary_access.get("released", 0)
                     + temporary_access.get("revoked", 0)
                     + temporary_access.get("revoke_failed", 0)
+                    + temporary_access.get("escalated", 0)
+                    + owner_notifications["delivered"]
+                    + owner_notifications["retrying"]
+                    + owner_notifications["exhausted"]
+                    + owner_notifications["unaddressable"]
+                    + owner_notifications["voided"]
                 )
                 if supervisor_active:
                     logger.info(
@@ -417,18 +443,32 @@ async def task_dispatcher_loop() -> None:
                         deploy_retried=deploying.get("retried", 0),
                         deploy_redispatched=deploying.get("redispatched", 0),
                         deploy_waiting_user_secret=deploying.get("waiting", 0),
+                        deploy_escalated=deploying.get("escalated", 0),
                         deploy_failed=deploying.get("failed", 0),
                         user_secret_redispatched=waiting_secret.get("redispatched", 0),
                         user_secret_failed=waiting_secret.get("failed", 0),
                         qa_completed=testing.get("completed", 0),
                         qa_redispatched=testing.get("redispatched", 0),
                         qa_failed=testing.get("failed", 0),
-                        qa_waiting_for_access=testing.get("waiting_for_access", 0),
                         temporary_access_dispatched=temporary_access.get("dispatched", 0),
                         temporary_access_released=temporary_access.get("released", 0),
                         temporary_access_revoked=temporary_access.get("revoked", 0),
                         temporary_access_expired=temporary_access.get("expired", 0),
+                        # Still being chased vs. given up on and handed to a human.
                         temporary_access_revoke_failed=temporary_access.get("revoke_failed", 0),
+                        temporary_access_escalated=temporary_access.get("escalated", 0),
+                        # Owner notifications recovered from a committed
+                        # terminal transition whose publish did not land. Still
+                        # being chased vs. given up on and handed to a human vs.
+                        # refused because the owner has no chat to write to.
+                        owner_notify_recovered=owner_notifications["delivered"],
+                        owner_notify_retrying=owner_notifications["retrying"],
+                        owner_notify_exhausted=owner_notifications["exhausted"],
+                        owner_notify_unaddressable=owner_notifications["unaddressable"],
+                        # A record whose transition never committed: nothing was
+                        # sent, nothing was spent, and the ending is owed again
+                        # if routing does reach it.
+                        owner_notify_voided=owner_notifications["voided"],
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")

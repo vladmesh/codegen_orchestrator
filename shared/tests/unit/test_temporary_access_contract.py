@@ -36,7 +36,7 @@ def _grant(**overrides) -> dict:
         "grant_run_id": "deploy-grant-1",
         "qa_message": QAMessage(
             project_id=PROJECT_ID,
-            user_id="",
+            telegram_chat_id="",
             deployed_url="https://example.com",
             application_id=42,
             acceptance_criteria="the bot answers /start",

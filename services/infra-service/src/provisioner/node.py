@@ -27,6 +27,7 @@ from ..nodes import FunctionalNode, log_node_execution
 from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
+    mark_provisioning_complete,
     reserve_provisioning_attempt,
     update_server_labels,
     update_server_status,
@@ -285,7 +286,7 @@ class ProvisionerNode(FunctionalNode):
         )
 
         if success_soft:
-            await update_server_labels(server_handle, {"provisioning_phase": "complete"})
+            await mark_provisioning_complete(server_handle)
             return await handle_provisioning_success(
                 server_handle,
                 server_ip,

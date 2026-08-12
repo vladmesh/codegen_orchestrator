@@ -1,0 +1,64 @@
+#!/bin/sh
+# What this target says about the QA account, asked after the role configured it
+# and before anything records that this host has a QA identity.
+#
+# The role's tasks are statements of intent: this primary group, this sudoers
+# file, no docker group. An account that was already on the host when the role
+# arrived can carry things the role never wrote and does not remove — `uid 0`, a
+# rule in somebody else's file under `/etc/sudoers.d`, a POSIX ACL straight onto
+# the docker socket. None of those are visible in what the role declares, and
+# all of them mean the account can become root. So the seat is not assumed from
+# the tasks that ran; it is asked of the machine, with the same tools somebody
+# looking for a way up would use.
+#
+# Whatever cannot be proved here is a failure. The role fails with it, the
+# provisioner never records the identity, and the host stays one exploratory QA
+# refuses — which is the honest state for a host whose QA account might be root.
+#
+# Everything is asked of the running system rather than of files: `sudo -l -U`
+# is sudo's own computation over every sudoers file on the host, and `test -r`
+# run as the account is the kernel's answer over mode, group and ACL together.
+
+set -eu
+
+user=${1:?the account to prove}
+wrapper=${2:?the one command it may run through sudo}
+socket=${3:?the docker socket it must not reach}
+
+fail() {
+    echo "qa-identity-proof: $user $1" >&2
+    exit 1
+}
+
+getent passwd "$user" >/dev/null || fail "does not exist on this target"
+
+uid=$(id -u "$user")
+[ "$uid" -ne 0 ] || fail "has uid 0: it is root under another name"
+
+groups=$(id -nG "$user")
+for group in $groups; do
+    case "$group" in
+        docker) fail "is in the docker group, which is root on this host" ;;
+        root | sudo | wheel | adm) fail "is in the $group group" ;;
+    esac
+done
+
+# What sudo itself grants, not what this role wrote down. A rule for this
+# account in a file this role never touched counts here and nowhere else, which
+# is the whole reason the question is put to sudo.
+listing=$(sudo -n -l -U "$user") || fail "has sudo rules sudo cannot report"
+granted=$(printf '%s\n' "$listing" |
+    sed -n '/may run the following commands/,$p' |
+    sed -e '1d' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' |
+    grep -v '^$' || true)
+expected="(root) NOPASSWD: $wrapper"
+[ "$granted" = "$expected" ] || fail "may run more through sudo than $wrapper: [$granted]"
+
+# Asked as the account, so mode, group and ACL are all answered at once: an ACL
+# entry granting this account the socket leaves no trace in its group list.
+if [ -e "$socket" ]; then
+    ! runuser -u "$user" -- test -r "$socket" || fail "can read $socket"
+    ! runuser -u "$user" -- test -w "$socket" || fail "can write $socket"
+fi
+
+echo "qa-identity-proof: $user uid=$uid groups=[$groups] sudo=[$granted] $socket=unreachable"

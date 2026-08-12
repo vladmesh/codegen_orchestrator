@@ -1,6 +1,9 @@
 pytest==9.1.1
 pytest-asyncio==1.4.0
 httpx==0.28.1
+# shared.notifications talks to the Telegram Bot API over aiohttp; importing it
+# is how the recipient tests reach the admin-alert path.
+aiohttp==3.14.3
 redis==8.1.0
 sqlalchemy==2.0.51
 asyncpg==0.31.0

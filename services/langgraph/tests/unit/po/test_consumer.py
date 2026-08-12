@@ -78,7 +78,9 @@ class TestHandleMessage:
             "story_failed",
             "story_quarantined",
             "task_waiting_resources",
+            "task_waiting_infrastructure",
             "task_impossible_capacity",
+            "story_impossible_capacity",
             "task_resources_resumed",
         ],
     )
@@ -132,7 +134,7 @@ class TestHandleMessage:
         await _handle_message(mock_graph, mock_client, "user-42", data)
 
         config = mock_graph.ainvoke.call_args[1]["config"]
-        assert config["configurable"]["thread_id"] == "po-user-user-42"
+        assert config["configurable"]["thread_id"] == "po-chat-user-42"
 
     @pytest.mark.asyncio
     async def test_writes_response_with_request_id(self, mock_graph, mock_client):
@@ -148,7 +150,7 @@ class TestHandleMessage:
         call_args = mock_client.publish_flat.call_args
         assert call_args[0][0] == "po:response:req-123"
         assert call_args[0][1]["text"] == "Hello! How can I help?"
-        assert call_args[0][1]["user_id"] == "user-1"
+        assert call_args[0][1]["telegram_chat_id"] == "user-1"
 
     @pytest.mark.asyncio
     async def test_no_request_id_forwards_to_proactive(self, mock_graph, mock_client):
@@ -161,7 +163,7 @@ class TestHandleMessage:
         call_args = mock_client.publish_flat.call_args
         assert call_args[0][0] == "po:proactive"
         assert call_args[0][1]["text"] == "Hello! How can I help?"
-        assert call_args[0][1]["user_id"] == "user-1"
+        assert call_args[0][1]["telegram_chat_id"] == "user-1"
 
     @pytest.mark.asyncio
     async def test_empty_response_uses_fallback(self, mock_graph, mock_client):
@@ -193,27 +195,27 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     async def test_user_message_includes_user_id_in_config(self, mock_graph, mock_client):
-        """user_id should be passed in configurable for tools to read."""
+        """telegram_chat_id should be passed in configurable for tools to read."""
         data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
 
         await _handle_message(mock_graph, mock_client, "user-42", data)
 
         config = mock_graph.ainvoke.call_args[1]["config"]
-        assert config["configurable"]["user_id"] == "user-42"
+        assert config["configurable"]["telegram_chat_id"] == "user-42"
 
     @pytest.mark.asyncio
     async def test_reminder_includes_user_id_in_config(self, mock_graph, mock_client):
-        """Reminders should pass user_id in config."""
+        """Reminders should pass telegram_chat_id in config."""
         data = {
             "type": "reminder",
             "text": "check story story-abc12345",
-            "user_id": "user-99",
+            "telegram_chat_id": "user-99",
         }
 
         await _handle_message(mock_graph, mock_client, "user-99", data)
 
         config = mock_graph.ainvoke.call_args[1]["config"]
-        assert config["configurable"]["user_id"] == "user-99"
+        assert config["configurable"]["telegram_chat_id"] == "user-99"
 
     @pytest.mark.asyncio
     async def test_empty_response_without_request_id_stays_silent(self, mock_graph, mock_client):
@@ -266,7 +268,7 @@ class TestHandleMessage:
         data = {
             "type": "user_message",
             "text": "hello",
-            "user_id": "42",
+            "telegram_chat_id": "42",
             "user_name": "Vlad",
             "request_id": "req-1",
             "timestamp": "2026-01-01T00:00:00",
@@ -283,7 +285,7 @@ class TestHandleMessage:
         data = {
             "type": "user_message",
             "text": "hello",
-            "user_id": "42",
+            "telegram_chat_id": "42",
             "request_id": "req-1",
         }
 
@@ -294,11 +296,11 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     async def test_user_message_includes_context_prefix(self, mock_graph, mock_client):
-        """User messages should include context prefix with user_id and user_name."""
+        """User messages should include context prefix with telegram_chat_id and user_name."""
         data = {
             "type": "user_message",
             "text": "hello",
-            "user_id": "42",
+            "telegram_chat_id": "42",
             "user_name": "Vlad",
             "request_id": "req-1",
             "timestamp": "2026-01-01T00:00:00",
@@ -308,7 +310,7 @@ class TestHandleMessage:
 
         messages = mock_graph.ainvoke.call_args[0][0]["messages"]
         content = messages[0].content
-        assert "user_id=42" in content
+        assert "telegram_chat_id=42" in content
         assert "user_name=Vlad" in content
 
 
@@ -317,7 +319,7 @@ class TestProcessMessage:
     async def test_acks_message_on_success(self, mock_graph, mock_client):
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
-        data = {"type": "user_message", "text": "hi", "user_id": "u1", "request_id": "r1"}
+        data = {"type": "user_message", "text": "hi", "telegram_chat_id": "u1", "request_id": "r1"}
 
         await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
 
@@ -328,7 +330,7 @@ class TestProcessMessage:
         mock_graph.ainvoke.side_effect = RuntimeError("LLM API down")
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
-        data = {"type": "user_message", "text": "hi", "user_id": "u1", "request_id": "r1"}
+        data = {"type": "user_message", "text": "hi", "telegram_chat_id": "u1", "request_id": "r1"}
 
         await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
 
@@ -340,7 +342,7 @@ class TestProcessMessage:
         mock_graph.ainvoke.side_effect = RuntimeError("boom")
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
-        data = {"type": "user_message", "text": "hi", "user_id": "u1", "request_id": "r1"}
+        data = {"type": "user_message", "text": "hi", "telegram_chat_id": "u1", "request_id": "r1"}
 
         await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
 
@@ -360,7 +362,7 @@ class TestProcessMessage:
         data = {
             "type": "unknown_kind",
             "text": sentinel,
-            "user_id": "u1",
+            "telegram_chat_id": "u1",
             "request_id": sentinel,
             "task_id": sentinel,
         }
@@ -415,8 +417,8 @@ class TestProcessMessage:
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
 
-        data1 = {"type": "user_message", "text": "m1", "user_id": "u1", "request_id": "r1"}
-        data2 = {"type": "user_message", "text": "m2", "user_id": "u1", "request_id": "r2"}
+        data1 = {"type": "user_message", "text": "m1", "telegram_chat_id": "u1", "request_id": "r1"}
+        data2 = {"type": "user_message", "text": "m2", "telegram_chat_id": "u1", "request_id": "r2"}
 
         # Run both concurrently — should be serialized for same user
         await asyncio.gather(
@@ -437,7 +439,7 @@ class TestRepairOrphanToolCalls:
         graph = AsyncMock()
         graph.aget_state.return_value = AsyncMock(values={})
 
-        result = await _repair_orphan_tool_calls(graph, "po-user-1")
+        result = await _repair_orphan_tool_calls(graph, "po-chat-1")
         assert result == 0
         graph.aupdate_state.assert_not_called()
 
@@ -455,7 +457,7 @@ class TestRepairOrphanToolCalls:
         graph = AsyncMock()
         graph.aget_state.return_value = state
 
-        result = await _repair_orphan_tool_calls(graph, "po-user-1")
+        result = await _repair_orphan_tool_calls(graph, "po-chat-1")
         assert result == 0
         graph.aupdate_state.assert_not_called()
 
@@ -472,13 +474,13 @@ class TestRepairOrphanToolCalls:
         graph = AsyncMock()
         graph.aget_state.return_value = state
 
-        result = await _repair_orphan_tool_calls(graph, "po-user-1")
+        result = await _repair_orphan_tool_calls(graph, "po-chat-1")
 
         assert result == 1
         graph.aupdate_state.assert_called_once()
         call_args = graph.aupdate_state.call_args
         config = call_args[0][0]
-        assert config["configurable"]["thread_id"] == "po-user-1"
+        assert config["configurable"]["thread_id"] == "po-chat-1"
         injected = call_args[0][1]["messages"]
         assert len(injected) == 1
         assert isinstance(injected[0], ToolMessage)
@@ -506,7 +508,7 @@ class TestRepairOrphanToolCalls:
         graph = AsyncMock()
         graph.aget_state.return_value = state
 
-        result = await _repair_orphan_tool_calls(graph, "po-user-1")
+        result = await _repair_orphan_tool_calls(graph, "po-chat-1")
 
         assert result == 2
         injected = graph.aupdate_state.call_args[0][1]["messages"]
@@ -528,7 +530,7 @@ class TestHandleMessageRecovery:
             data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
             await _handle_message(mock_graph, mock_client, "user-1", data)
 
-            mock_repair.assert_called_once_with(mock_graph, "po-user-user-1")
+            mock_repair.assert_called_once_with(mock_graph, "po-chat-user-1")
             mock_graph.ainvoke.assert_called_once()
 
     @pytest.mark.asyncio
