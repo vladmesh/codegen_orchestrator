@@ -31,6 +31,7 @@ can do to the machine it is testing:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -71,6 +72,17 @@ IDENTITY_KEYS_ABSENT = 4
 # Compose stamps this on every container it creates, and it is the deployment's
 # own name for its containers — not a naming convention this code assumes.
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+
+# How far docker on the target is retried before a run gives up on it. Both
+# calls that read the container runtime use this policy — the listing that builds
+# the capability set, here, and the `docker inspect` of each container in
+# `_qa_runner` — because a daemon that is mid-restart or a wrapper that lost a
+# race deserves the same second chance whichever call arrives first, and a
+# container may still be failing its first health check when QA starts. Nothing
+# about the retry makes a down container pass: it only stops a transient state
+# from being reported as one.
+CONTAINER_PROBE_ATTEMPTS = 3
+CONTAINER_PROBE_RETRY_DELAY = 5
 
 # How the QA account reaches docker. It is not in the `docker` group — that
 # group is root on the host — and cannot open the socket, so every docker call
@@ -187,6 +199,19 @@ class QACapabilityError(RuntimeError):
     """The run's capability set could not be resolved from the target."""
 
 
+class QAContainerRuntimeError(QACapabilityError):
+    """Docker on the target did not answer when this run's containers were listed.
+
+    Separated from every other capability failure because it is not a fact about
+    reaching the host — SSH worked and the deployment directory resolved — but
+    the same fact the later `docker inspect` of each container can meet: the
+    container runtime is not answering. The two calls must not be classified
+    differently just because one happens to run first, so this one is named and
+    routed to the container probe's own outcome instead of joining
+    "could not get onto the server".
+    """
+
+
 @dataclass(frozen=True)
 class QATarget:
     """Where the run's one deployment lives, and how to address it."""
@@ -292,6 +317,16 @@ async def resolve_capabilities(
     considers part of this compose project. Both are read once, with the run's
     own identity, before any tool exists — so every later check is a membership
     test against a fixed set rather than a rule a tool invented.
+
+    The listing is the run's first call into docker, so it is also the first
+    place a target whose container runtime is down can be found. It is retried
+    like every other read of that runtime, and what it raises says which of the
+    two failures happened: a deployment directory that does not resolve is a
+    capability failure, docker not answering is `QAContainerRuntimeError`.
+
+    Raises:
+        QACapabilityError: the deployment directory does not resolve on the target.
+        QAContainerRuntimeError: docker on the target did not answer the listing.
     """
     root = await conn.run(f"readlink -f -- {shlex.quote(target.service_dir)}", check=False)
     physical_root = (root.stdout or "").strip()
@@ -301,26 +336,40 @@ async def resolve_capabilities(
             f"{(root.stderr or '').strip()[:300] or 'no such directory'}"
         )
 
-    listing = await conn.run(
-        " ".join(
-            shlex.quote(part)
-            for part in [
-                *QA_DOCKER,
-                "ps",
-                "--all",
-                "--no-trunc",
-                "--filter",
-                f"label={COMPOSE_PROJECT_LABEL}={target.project_name}",
-                "--format",
-                "{{.Names}}",
-            ]
-        ),
-        check=False,
+    command = " ".join(
+        shlex.quote(part)
+        for part in [
+            *QA_DOCKER,
+            "ps",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            f"label={COMPOSE_PROJECT_LABEL}={target.project_name}",
+            "--format",
+            "{{.Names}}",
+        ]
     )
-    if listing.exit_status != 0:
-        raise QACapabilityError(
-            f"cannot list the containers of {target.project_name} on {target.server_ip}: "
-            f"{(listing.stderr or listing.stdout or '').strip()[:300]}"
+    listing = None
+    failure = ""
+    for attempt in range(CONTAINER_PROBE_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(CONTAINER_PROBE_RETRY_DELAY)
+        try:
+            listing = await conn.run(command, check=False)
+        except (OSError, asyncssh.Error) as exc:
+            failure = f"the target did not answer docker ps of {target.project_name}: {exc}"
+            continue
+        if listing.exit_status == 0:
+            failure = ""
+            break
+        failure = (
+            f"docker ps of {target.project_name} exited {listing.exit_status}: "
+            f"{(listing.stderr or listing.stdout or 'no output').strip()[:300]}"
+        )
+    if failure:
+        logger.error("qa_container_listing_unavailable", server_ip=target.server_ip, detail=failure)
+        raise QAContainerRuntimeError(
+            f"cannot list the containers of {target.project_name} on {target.server_ip}: {failure}"
         )
     containers = frozenset(
         name.strip() for name in (listing.stdout or "").splitlines() if name.strip()

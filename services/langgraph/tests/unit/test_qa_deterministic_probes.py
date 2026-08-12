@@ -41,8 +41,12 @@ from src.consumers._qa_runner import (
     read_container_state,
     run_qa_centrally,
 )
-from src.consumers._qa_target import QATarget
-from src.consumers.qa import BOT_LIVENESS_ATTEMPTS, process_qa_job
+from src.consumers._qa_target import CONTAINER_PROBE_ATTEMPTS, QATarget
+from src.consumers.qa import (
+    BOT_LIVENESS_ATTEMPTS,
+    BOT_LIVENESS_MAX_RETRY_DELAY,
+    process_qa_job,
+)
 
 TARGET = QATarget(
     server_ip="1.2.3.4",
@@ -82,18 +86,30 @@ class FakeConn:
         states: dict[str, str] | None = None,
         inspect_exit: int = 0,
         inspect_stderr: str = "",
+        ps_exit: int = 0,
+        ps_stderr: str = "",
+        readlink_exit: int = 0,
     ) -> None:
         self.commands: list[str] = []
         self.containers = containers
         self.states = states or dict.fromkeys(containers, HEALTHY)
         self.inspect_exit = inspect_exit
         self.inspect_stderr = inspect_stderr
+        self.ps_exit = ps_exit
+        self.ps_stderr = ps_stderr
+        self.readlink_exit = readlink_exit
 
     async def run(self, command, *, check=False, timeout=None):
         self.commands.append(command)
         if command.startswith("readlink -f --"):
+            if self.readlink_exit:
+                return SimpleNamespace(
+                    exit_status=self.readlink_exit, stdout="", stderr="no such directory"
+                )
             return SimpleNamespace(exit_status=0, stdout=f"{PHYSICAL_ROOT}\n", stderr="")
         if " ps " in command:
+            if self.ps_exit:
+                return SimpleNamespace(exit_status=self.ps_exit, stdout="", stderr=self.ps_stderr)
             return SimpleNamespace(
                 exit_status=0, stdout="".join(f"{c}\n" for c in self.containers), stderr=""
             )
@@ -118,6 +134,10 @@ class FakeConn:
     @property
     def inspected(self) -> list[str]:
         return [c for c in self.commands if " inspect " in c]
+
+    @property
+    def listed(self) -> list[str]:
+        return [c for c in self.commands if " ps " in c]
 
 
 class Journal:
@@ -165,6 +185,7 @@ async def _run_qa(conn: FakeConn, executor, tmp_path, established_facts=None):
         patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
         patch("src.consumers._qa_runner.run_qa_executor", executor),
         patch("src.consumers._qa_runner.CONTAINER_PROBE_RETRY_DELAY", 0),
+        patch("src.consumers._qa_target.CONTAINER_PROBE_RETRY_DELAY", 0),
     ):
         return await run_qa_centrally(
             target=TARGET,
@@ -274,6 +295,54 @@ class TestContainerStateIsEstablishedBeforeTheExecutor:
 
         assert len(conn.inspected) > 1
 
+    async def test_docker_not_answering_the_first_listing_is_the_same_outcome(self, tmp_path):
+        """The capability listing is a docker call too, and it fails the same way.
+
+        `docker ps` runs before a session exists, so it is the first call that can
+        find the daemon down. Classifying it as "the server is unavailable" —
+        which is what it used to become — would give the identical condition a
+        different category, no retries and no administrator alert purely because
+        of which call arrived first.
+        """
+        conn = FakeConn(ps_exit=1, ps_stderr="Cannot connect to the Docker daemon")
+        executor = _recording_executor()
+
+        result = await _run_qa(conn, executor, tmp_path)
+
+        assert executor.calls == []
+        assert result.passed is False
+        assert result.blocker is not None
+        assert result.blocker.category is QABlockerCategory.QA_PROBE_UNAVAILABLE
+        assert "Cannot connect to the Docker daemon" in result.blocker.received
+        # Nothing was read about any container, so nothing is claimed about the product.
+        assert result.checks == []
+        assert conn.inspected == []
+
+    async def test_the_first_listing_is_retried_like_every_other_docker_read(self, tmp_path):
+        conn = FakeConn(ps_exit=1, ps_stderr="daemon not ready")
+        executor = _recording_executor()
+
+        await _run_qa(conn, executor, tmp_path)
+
+        assert len(conn.listed) == CONTAINER_PROBE_ATTEMPTS
+
+    async def test_the_deployment_directory_not_resolving_is_not_a_docker_outage(self, tmp_path):
+        """The split cuts where the cause differs: this one never reaches docker.
+
+        A deployment directory that does not resolve says nothing about the
+        container runtime — no docker call was made — so it keeps the capability
+        failure it always had rather than being reported as a probe the platform
+        could not perform.
+        """
+        conn = FakeConn(readlink_exit=1)
+        executor = _recording_executor()
+
+        result = await _run_qa(conn, executor, tmp_path)
+
+        assert executor.calls == []
+        assert result.blocker.category is QABlockerCategory.SERVER_UNAVAILABLE
+        assert conn.listed == []
+
     async def test_a_deployment_with_no_containers_is_infrastructure(self, tmp_path):
         """Docker knowing no container of this compose project concludes nothing."""
         conn = FakeConn(containers=())
@@ -343,13 +412,23 @@ def api():
     return client
 
 
-async def _process(api, bot_message, redis, *, liveness_effect):
-    """Run one QA job with everything but the liveness probe held still."""
+async def _process(api, bot_message, redis, *, liveness_effect, sleeps=None):
+    """Run one QA job with everything but the liveness probe held still.
+
+    `sleeps` is an optional list the probe's waits are recorded into, for the
+    cases where how long it waited is the behaviour under test.
+    """
     api.get_bot_liveness = AsyncMock(**liveness_effect)
     with ExitStack() as stack:
         enter = stack.enter_context
         enter(patch("src.consumers.qa.api_client", api))
         enter(patch("src.consumers.qa.BOT_LIVENESS_RETRY_DELAY", 0))
+        if sleeps is not None:
+
+            async def _record(delay):
+                sleeps.append(delay)
+
+            enter(patch("src.consumers.qa.asyncio.sleep", _record))
         enter(
             patch(
                 "src.consumers.qa.check_deployed_url_reachable",
@@ -479,6 +558,67 @@ class TestBotLivenessIsEstablishedBeforeTheExecutor:
         run_centrally.assert_not_awaited()
         run_result = api.patch.await_args[1]["json"]["result"]
         assert run_result["blocker"]["category"] == QABlockerCategory.QA_PROBE_UNAVAILABLE.value
+        alert.assert_awaited_once()
+
+    async def test_being_rate_limited_is_infrastructure_and_waits_what_telegram_asked(
+        self, api, bot_message, redis
+    ):
+        """Flood control is not a dead bot, and the wait is Telegram's number.
+
+        HTTP 429 leaves the token untested: the API reports it as
+        `TELEGRAM_UNREACHABLE` carrying `retry_after`, so the probe retries on
+        that number and — when the window does not close — ends as the same QA
+        infrastructure outcome a missing executor gets, never as `bot_not_live`.
+        """
+        sleeps: list[int] = []
+        result, run_centrally, alert = await _process(
+            api,
+            bot_message,
+            redis,
+            liveness_effect={
+                "return_value": BotLiveness(
+                    state=BotLivenessState.TELEGRAM_UNREACHABLE,
+                    retry_after=7,
+                    detail="getMe returned HTTP 429: Too Many Requests: retry after 7",
+                )
+            },
+            sleeps=sleeps,
+        )
+
+        assert api.get_bot_liveness.await_count == BOT_LIVENESS_ATTEMPTS
+        assert sleeps == [7] * (BOT_LIVENESS_ATTEMPTS - 1)
+        assert result["status"] == "qa_blocked"
+        run_centrally.assert_not_awaited()
+        run_result = api.patch.await_args[1]["json"]["result"]
+        assert run_result["blocker"]["category"] == QABlockerCategory.QA_PROBE_UNAVAILABLE.value
+        alert.assert_awaited_once()
+
+    async def test_a_flood_window_longer_than_the_probe_waits_stops_instead_of_sitting_on_it(
+        self, api, bot_message, redis
+    ):
+        """Bounded means bounded: the budget is not spent waiting out an hour."""
+        sleeps: list[int] = []
+        result, run_centrally, alert = await _process(
+            api,
+            bot_message,
+            redis,
+            liveness_effect={
+                "return_value": BotLiveness(
+                    state=BotLivenessState.TELEGRAM_UNREACHABLE,
+                    retry_after=BOT_LIVENESS_MAX_RETRY_DELAY + 1,
+                    detail="getMe returned HTTP 429: Too Many Requests",
+                )
+            },
+            sleeps=sleeps,
+        )
+
+        assert api.get_bot_liveness.await_count == 1
+        assert sleeps == []
+        assert result["status"] == "qa_blocked"
+        run_centrally.assert_not_awaited()
+        run_result = api.patch.await_args[1]["json"]["result"]
+        assert run_result["blocker"]["category"] == QABlockerCategory.QA_PROBE_UNAVAILABLE.value
+        assert str(BOT_LIVENESS_MAX_RETRY_DELAY + 1) in run_result["blocker"]["received"]
         alert.assert_awaited_once()
 
     async def test_a_deployment_without_a_bot_asks_nothing(self, api, bot_message, redis):

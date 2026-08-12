@@ -65,6 +65,11 @@ QA_INFRASTRUCTURE_BLOCKERS = frozenset(
 # answer is retried exactly as far as a transient network hiccup deserves.
 BOT_LIVENESS_ATTEMPTS = 3
 BOT_LIVENESS_RETRY_DELAY = 5
+# The longest pause this probe sits through between attempts. Telegram's own
+# `retry_after` is honoured up to here; a flood-control window longer than this
+# is not waited out — the probe stops and reports the infrastructure outcome
+# with the number Telegram gave, which keeps the budget bounded either way.
+BOT_LIVENESS_MAX_RETRY_DELAY = 30
 
 
 async def _resolve_server_info(application_id: int, project_name: str) -> QAServerInfo | None:
@@ -209,18 +214,26 @@ async def _probe_bot_liveness(msg: QAMessage) -> tuple[str, QABlocker | None]:
     become a fix task. Telegram or the API not answering is retried, and then
     reported as QA infrastructure, which is what raises the admin alert.
 
+    "Telegram did not answer" includes being rate limited by it: the API reports
+    that as `TELEGRAM_UNREACHABLE` with the `retry_after` Telegram sent, and this
+    loop waits that long instead of its own guess — up to
+    `BOT_LIVENESS_MAX_RETRY_DELAY`, past which it stops rather than holding a
+    consumer slot open for a window it cannot outlast.
+
     Returns:
         The established fact for the executor, and the blocker if there is one.
     """
     path = bot_liveness_path(msg.project_id)
     detail = ""
+    delay = BOT_LIVENESS_RETRY_DELAY
     for attempt in range(BOT_LIVENESS_ATTEMPTS):
         if attempt:
-            await asyncio.sleep(BOT_LIVENESS_RETRY_DELAY)
+            await asyncio.sleep(delay)
         try:
             liveness = await api_client.get_bot_liveness(msg.project_id)
         except httpx.HTTPError as exc:
             detail = f"the platform API did not answer GET {path}: {exc}"
+            delay = BOT_LIVENESS_RETRY_DELAY
             logger.warning("qa_bot_liveness_api_failed", project_id=msg.project_id, error=str(exc))
             continue
         if liveness.state is BotLivenessState.ALIVE:
@@ -236,7 +249,19 @@ async def _probe_bot_liveness(msg: QAMessage) -> tuple[str, QABlocker | None]:
             ), None
         if liveness.state is BotLivenessState.TELEGRAM_UNREACHABLE:
             detail = f"GET {path} answered {liveness.state.value}: {liveness.detail}"
-            logger.warning("qa_bot_liveness_unreachable", project_id=msg.project_id, detail=detail)
+            logger.warning(
+                "qa_bot_liveness_unreachable",
+                project_id=msg.project_id,
+                detail=detail,
+                retry_after=liveness.retry_after,
+            )
+            delay = liveness.retry_after if liveness.retry_after else BOT_LIVENESS_RETRY_DELAY
+            if delay > BOT_LIVENESS_MAX_RETRY_DELAY:
+                detail = (
+                    f"{detail}; Telegram asked for {liveness.retry_after}s, longer than the "
+                    f"{BOT_LIVENESS_MAX_RETRY_DELAY}s this probe waits between attempts"
+                )
+                break
             continue
         logger.warning(
             "qa_bot_not_live",

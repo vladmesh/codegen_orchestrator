@@ -56,6 +56,14 @@ EXTERNAL_ACTIVITY_MESSAGE = (
 # BotFather tokens: numeric bot id, colon, then the secret part.
 BOT_TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
+# The only two ways the Bot API refuses a token on `getMe`: a revoked or wrong
+# secret is 401, and a token whose shape does not address a bot at all leaves the
+# request with no method to answer, which is 404. Those are statements about this
+# bot. Every other non-OK status is Telegram declining the request — flood
+# control most of all — and is not one, which is why this set is a closed
+# allow-list rather than "anything below 500".
+TOKEN_REFUSED_STATUSES = frozenset({HTTPStatus.UNAUTHORIZED, HTTPStatus.NOT_FOUND})
+
 
 def looks_like_bot_token(value: str) -> bool:
     """True if the value has the shape of a Telegram bot token."""
@@ -356,6 +364,24 @@ async def validate_telegram_token(
     )
 
 
+def _retry_after(data: dict) -> int | None:
+    """How long Telegram asked the caller to wait, if it asked at all.
+
+    `ResponseParameters.retry_after` — https://core.telegram.org/bots/api#responseparameters
+    — is what flood control sends back, and the whole reason a rate-limited
+    answer is retryable rather than a verdict. It is optional in the Bot API and
+    absent from most errors, so its absence is ordinary and reported as `None`
+    rather than guessed at.
+    """
+    parameters = data.get("parameters")
+    if not isinstance(parameters, dict):
+        return None
+    retry_after = parameters.get("retry_after")
+    if isinstance(retry_after, bool) or not isinstance(retry_after, int) or retry_after <= 0:
+        return None
+    return retry_after
+
+
 async def bot_liveness(token: str) -> BotLiveness:
     """Ask Telegram whether this token still opens a live bot, right now.
 
@@ -393,17 +419,30 @@ async def bot_liveness(token: str) -> BotLiveness:
 
     if resp.status_code != HTTPStatus.OK or not data.get("ok"):
         description = data.get("description", "no description")
-        # 5xx is Telegram being unwell, not this bot being dead. Only the Bot
-        # API's own refusal of the token is evidence about the bot.
-        if resp.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        # Only the Bot API's own refusal of the token is evidence about the bot,
+        # and refusal has these two spellings and no others. Everything else —
+        # 429 flood control, a 5xx while Telegram is unwell, a gateway answering
+        # for it — is Telegram declining to answer this request. A declined
+        # request establishes nothing about the bot behind the token, so it is
+        # never reported as one being dead.
+        if resp.status_code in TOKEN_REFUSED_STATUSES:
+            logger.info("telegram_bot_not_live", status=resp.status_code, description=description)
             return BotLiveness(
-                state=BotLivenessState.TELEGRAM_UNREACHABLE,
-                detail=f"getMe returned HTTP {resp.status_code}: {description}",
+                state=BotLivenessState.NOT_LIVE,
+                detail=f"Telegram refused the stored token: HTTP {resp.status_code}, {description}",
             )
-        logger.info("telegram_bot_not_live", status=resp.status_code, description=description)
+        retry_after = _retry_after(data)
+        logger.warning(
+            "telegram_bot_liveness_declined",
+            status=resp.status_code,
+            description=description,
+            retry_after=retry_after,
+        )
+        waited = f", and asked for {retry_after}s before a retry" if retry_after else ""
         return BotLiveness(
-            state=BotLivenessState.NOT_LIVE,
-            detail=f"Telegram refused the stored token: HTTP {resp.status_code}, {description}",
+            state=BotLivenessState.TELEGRAM_UNREACHABLE,
+            retry_after=retry_after,
+            detail=f"getMe returned HTTP {resp.status_code}: {description}{waited}",
         )
 
     bot_username = data.get("result", {}).get("username")

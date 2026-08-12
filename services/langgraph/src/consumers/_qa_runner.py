@@ -64,7 +64,10 @@ from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_exe
 from ..config.agent_llm_env import AGENT_LLM_ENV
 from ..prompts.qa import QAExecutorKind, build_qa_instructions, build_qa_prompt
 from ._qa_target import (
+    CONTAINER_PROBE_ATTEMPTS,
+    CONTAINER_PROBE_RETRY_DELAY,
     QACapabilityError,
+    QAContainerRuntimeError,
     QAGrantError,
     QAGrantJournal,
     QAGrantOutcome,
@@ -90,12 +93,6 @@ HEALTH_CHECK_TIMEOUT = 30
 HEALTH_CHECK_ATTEMPTS = 5
 HEALTH_CHECK_RETRY_DELAY = 5
 ACCESS_PROBE_TIMEOUT = 60
-# The container probe is retried for the same reason the GET checks are: a
-# container may be mid-restart or still failing its first health check when QA
-# starts. Nothing about the retry makes a down container pass — it only stops a
-# transient state from being reported as one.
-CONTAINER_PROBE_ATTEMPTS = 3
-CONTAINER_PROBE_RETRY_DELAY = 5
 CONTAINER_HEALTHY = "healthy"
 _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
@@ -536,6 +533,27 @@ async def _read_container_states(
     return states, ""
 
 
+def container_runtime_unavailable(*, sent: str, received: str) -> QAInfrastructureFailure:
+    """The one place that says what an unanswering container runtime is.
+
+    Two calls can meet that condition: the `docker ps` that builds the run's
+    capability set, and the `docker inspect` of each container this probe reads.
+    They are the same fact about the target, so they are classified here and only
+    here — a QA-infrastructure outcome with bounded retries already spent and an
+    administrator alert to follow, never a verdict about the product and never
+    "the server could not be reached", which means something else entirely.
+    """
+    return QAInfrastructureFailure(
+        summary="QA could not be performed: the target's container runtime did not answer",
+        blocker=QABlocker(
+            category=QABlockerCategory.QA_PROBE_UNAVAILABLE,
+            attempted="read the state of this deployment's containers before starting QA",
+            sent=sent,
+            received=received,
+        ),
+    )
+
+
 async def run_container_state_checks(session) -> QAResult:
     """Read the state of this deployment's containers. No LLM, no agent.
 
@@ -579,14 +597,9 @@ async def run_container_state_checks(session) -> QAResult:
             break
     if failure:
         logger.error("qa_container_probe_unavailable", server_ip=target.server_ip, detail=failure)
-        raise QAInfrastructureFailure(
-            summary="QA could not be performed: the target's container runtime did not answer",
-            blocker=QABlocker(
-                category=QABlockerCategory.QA_PROBE_UNAVAILABLE,
-                attempted="read the state of this deployment's containers before starting QA",
-                sent=f"docker inspect of {', '.join(containers)} on {target.server_ip}",
-                received=failure,
-            ),
+        raise container_runtime_unavailable(
+            sent=f"docker inspect of {', '.join(containers)} on {target.server_ip}",
+            received=failure,
         )
 
     checks = [state.as_check() for state in states]
@@ -1064,21 +1077,37 @@ async def run_qa_centrally(
             )
             if write:
                 qa_result = _block_forbidden_application_write(qa_result, write)
-    except QAInfrastructureFailure as exc:
+    except (QAInfrastructureFailure, QAContainerRuntimeError) as exc:
         # Either no executor ran, or a deterministic probe could not be
         # performed. Both are the platform's own failure and must not reach the
         # engineering loop or be recorded against the product: the consumer
         # turns these categories into an administrator alert, and the supervisor
         # already routes a blocked run to human review rather than to a fix task.
+        #
+        # A container runtime that did not answer arrives here whichever call
+        # found it. The `docker inspect` inside the probe raises the outcome
+        # itself; the `docker ps` that builds the capability set runs before a
+        # session exists, so it raises the typed error and is classified by the
+        # same function here. One condition, one outcome — and this clause is
+        # ahead of the grant one deliberately, so the subclass is never read as
+        # "could not get onto the server".
+        failure = (
+            exc
+            if isinstance(exc, QAInfrastructureFailure)
+            else container_runtime_unavailable(
+                sent=f"docker ps of compose project {target.project_name} on {target.server_ip}",
+                received=str(exc),
+            )
+        )
         logger.error(
             "qa_infrastructure_failure",
             server_ip=target.server_ip,
-            category=exc.blocker.category.value,
-            attempted=exc.blocker.attempted,
-            detail=exc.blocker.received,
+            category=failure.blocker.category.value,
+            attempted=failure.blocker.attempted,
+            detail=failure.blocker.received,
         )
         return _apply_cleanup_residue(
-            QAResult(passed=False, summary=exc.summary, blocker=exc.blocker),
+            QAResult(passed=False, summary=failure.summary, blocker=failure.blocker),
             _residues(grant, workspace),
         )
     except (QAGrantError, QACapabilityError) as exc:

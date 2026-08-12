@@ -97,6 +97,75 @@ async def test_a_telegram_server_error_is_unreachable_not_a_dead_bot():
 
 
 @pytest.mark.asyncio
+async def test_flood_control_is_unreachable_and_carries_the_wait_telegram_asked_for():
+    """429 is Telegram declining to answer, not the Bot API refusing the token.
+
+    A rate-limited request establishes nothing about the bot: the stored token
+    can be perfectly valid and the bot answering everyone else. Telegram says how
+    long to wait in `ResponseParameters.retry_after`, and that number is what the
+    caller retries on.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={
+                "ok": False,
+                "error_code": 429,
+                "description": "Too Many Requests: retry after 7",
+                "parameters": {"retry_after": 7},
+            },
+        )
+
+    with _patched_telegram(handler):
+        liveness = await bot_liveness(TOKEN)
+
+    assert liveness.state is BotLivenessState.TELEGRAM_UNREACHABLE
+    assert liveness.retry_after == 7
+    assert TOKEN not in liveness.detail
+
+
+@pytest.mark.asyncio
+async def test_flood_control_without_parameters_is_still_not_a_dead_bot():
+    """A 429 an intermediary sent has no `retry_after`, and is no more a verdict."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"ok": False, "description": "Too Many Requests"})
+
+    with _patched_telegram(handler):
+        liveness = await bot_liveness(TOKEN)
+
+    assert liveness.state is BotLivenessState.TELEGRAM_UNREACHABLE
+    assert liveness.retry_after is None
+
+
+@pytest.mark.asyncio
+async def test_a_bad_request_says_nothing_about_the_token_either():
+    """Only 401 and 404 are the Bot API refusing this token; 400 is not."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"ok": False, "description": "Bad Request"})
+
+    with _patched_telegram(handler):
+        liveness = await bot_liveness(TOKEN)
+
+    assert liveness.state is BotLivenessState.TELEGRAM_UNREACHABLE
+
+
+@pytest.mark.asyncio
+async def test_a_token_that_addresses_no_bot_is_a_dead_bot():
+    """404 on `/bot<token>/getMe` is the other spelling of "this token is refused"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"ok": False, "description": "Not Found"})
+
+    with _patched_telegram(handler):
+        liveness = await bot_liveness(TOKEN)
+
+    assert liveness.state is BotLivenessState.NOT_LIVE
+
+
+@pytest.mark.asyncio
 async def test_a_body_that_is_not_json_is_unreachable():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="<html>proxy error</html>")

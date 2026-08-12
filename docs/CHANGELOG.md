@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-08-12 (3)
+
+- The deterministic QA probes classify a dependency that did not answer by what
+  was unavailable, not by which call happened to meet it first. Two places got
+  that wrong.
+- Telegram rate limiting a `getMe` is no longer read as a dead bot. Only HTTP
+  401 and 404 are the Bot API refusing this token, and only those are
+  `bot_not_live`; HTTP 429 and every other non-OK answer are Telegram declining
+  to answer, which establishes nothing about the bot. They travel the
+  infrastructure route instead: bounded retries, `qa_probe_unavailable`, one
+  administrator alert. When Telegram sends `parameters.retry_after` it comes
+  back on `BotLiveness.retry_after` and the probe waits that long rather than
+  its own guess — up to `BOT_LIVENESS_MAX_RETRY_DELAY`, past which it stops and
+  reports the same outcome naming the window Telegram asked for, so the budget
+  stays bounded. Before this, a flood-controlled request blocked the run for a
+  human as though the token had been revoked.
+- Docker not answering on the target now ends at the same outcome from both
+  calls that read it. The `docker ps` in `resolve_capabilities` runs before a
+  session exists and used to raise a bare `QACapabilityError`, which
+  `run_qa_centrally` merged with a failed SSH grant into `server_unavailable` —
+  no retries, and no administrator alert, for exactly the condition the later
+  `docker inspect` retries and alerts on. It raises `QAContainerRuntimeError`
+  now, retries `CONTAINER_PROBE_ATTEMPTS` times like every other read of that
+  runtime, and is classified by `container_runtime_unavailable()`, the one
+  function both paths come to. `server_unavailable` keeps its meaning: the run
+  never got onto the host, or the deployment directory does not resolve — cases
+  in which no docker call was made at all.
+
 ## 2026-08-12 (2)
 
 - Container state and "is the bot alive" are established deterministically now,
