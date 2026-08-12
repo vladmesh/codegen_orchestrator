@@ -58,6 +58,26 @@ def _resolved_user(user_id: int) -> UserDTO:
     )
 
 
+def _qa_handoff_plan(**overrides) -> dict:
+    """The handoff a QA run carries, as it is stored in `run_metadata`.
+
+    The supervisor reads the deployment's address back off it when the story is
+    completed, so the user is given the deployment QA actually tested.
+    """
+    message = {
+        "story_id": "story-1",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "telegram_chat_id": "",
+        "deployed_url": "https://example.com",
+        "application_id": 42,
+        "acceptance_criteria": BASELINE_ACCEPTANCE_CRITERIA,
+        "bot_username": "palindrome_bot",
+        "run_id": "qa-1",
+    }
+    message.update(overrides)
+    return QAHandoffPlan(qa_message=message).model_dump(mode="json")
+
+
 @pytest.fixture
 def api_client():
     client = AsyncMock()
@@ -799,6 +819,9 @@ class TestSuperviseTestingStories:
         api_client.get_latest_run_by_story.return_value = _make_run(
             id="qa-1",
             type=RunType.QA,
+            # Every QA run carries the handoff it was dispatched with; it is
+            # written with the run, before the story leaves DEPLOYING.
+            run_metadata={QA_HANDOFF_KEY: _qa_handoff_plan()},
             result={
                 "qa_outcome": QAOutcome.PASSED.value,
                 "deployed_url": "https://example.com",
@@ -871,7 +894,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 0,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
         api_client.create_task.assert_not_awaited()
@@ -926,7 +948,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 1,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
         api_client.create_task.assert_not_awaited()
@@ -1188,7 +1209,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 0,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
 
@@ -1205,7 +1225,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 0,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
 
@@ -1225,7 +1244,6 @@ class TestSuperviseTestingStories:
             "completed": 0,
             "redispatched": 0,
             "failed": 0,
-            "waiting_for_access": 0,
             "recovered": 0,
         }
 

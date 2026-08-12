@@ -1,9 +1,10 @@
-"""The QA handoff runs through the durable grant, and stories wait for it.
+"""The QA handoff runs through the durable grant, and delivery does not wait for it.
 
 These cover the two seams between the supervisor and the temporary-access
 sweep: a deploy that succeeded hands QA over by recording a grant instead of
-publishing straight to the queue, and a story in TESTING does not reach a
-terminal outcome while its QA run still holds access on the deployed bot.
+publishing straight to the queue, and a story in TESTING is routed on what QA
+said about the product, with the state of the borrowed identity left to the
+sweep that owns it.
 """
 
 from __future__ import annotations
@@ -267,18 +268,42 @@ def _passed_qa_run():
         id="qa-1",
         type=RunType.QA,
         status=RunStatus.COMPLETED,
-        run_metadata={"application_id": 42},
+        run_metadata={
+            "application_id": 42,
+            QA_HANDOFF_KEY: QAHandoffPlan(
+                qa_message=QAMessage(
+                    story_id="story-1",
+                    project_id=PROJECT_ID,
+                    telegram_chat_id="",
+                    deployed_url="https://example.com",
+                    application_id=42,
+                    acceptance_criteria="the bot answers /start",
+                    bot_username="palindrome_bot",
+                    run_id="qa-1",
+                ),
+                access=TemporaryAccessRequest(
+                    env_key=TEST_IDENTITY_ENV_KEY,
+                    subject=str(QA_TEST_TELEGRAM_ID),
+                    head_sha=HEAD_SHA,
+                ),
+            ).model_dump(mode="json"),
+        },
         result={"qa_outcome": QAOutcome.PASSED.value},
     )
 
 
-class TestStoriesWaitForTheAccessToGoBack:
-    """A story is not finished while its bot still admits the test identity."""
+def _po_events(redis_client) -> list[dict]:
+    return [c.args[1] for c in redis_client.publish_flat.call_args_list]
+
+
+class TestDeliveryDoesNotWaitForTheCleanup:
+    """A product QA passed is handed over now; the identity is handed back later."""
 
     @pytest.mark.asyncio
-    async def test_passed_qa_does_not_complete_while_the_grant_is_live(
+    async def test_passed_qa_completes_while_the_grant_is_still_live(
         self, api_client, redis_client
     ):
+        """The card's whole point: a revoke still being worked on holds nothing up."""
         from src.tasks.supervisor import supervise_testing_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -286,41 +311,52 @@ class TestStoriesWaitForTheAccessToGoBack:
         ]
         api_client.get_latest_run_by_story.return_value = _passed_qa_run()
         api_client.get_live_temporary_access_grant_for_run.return_value = _live_grant()
+        api_client.get_project.return_value = _project("42")
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result == {
-            "completed": 0,
-            "redispatched": 0,
-            "failed": 0,
-            "waiting_for_access": 1,
-            "recovered": 0,
-        }
-        api_client.transition_story.assert_not_called()
+        assert result == {"completed": 1, "redispatched": 0, "failed": 0, "recovered": 0}
+        api_client.transition_story.assert_awaited_once_with("story-1", "complete")
+        # And not because the grant happened to look finished: the routing does
+        # not ask about it at all. A live grant is set above precisely so that
+        # reading it could only produce the old wait.
+        api_client.get_live_temporary_access_grant_for_run.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_passed_qa_completes_once_the_access_is_back(self, api_client, redis_client):
+    async def test_the_owner_is_told_where_their_bot_is_in_the_same_tick(
+        self, api_client, redis_client
+    ):
+        """Completion the user never hears about is not delivery."""
         from src.tasks.supervisor import supervise_testing_stories
 
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="testing")
         ]
         api_client.get_latest_run_by_story.return_value = _passed_qa_run()
-        api_client.get_live_temporary_access_grant_for_run.return_value = None
+        api_client.get_live_temporary_access_grant_for_run.return_value = _live_grant()
+        api_client.get_project.return_value = _project("42")
 
-        result = await supervise_testing_stories(api_client, redis_client)
+        await supervise_testing_stories(api_client, redis_client)
 
-        assert result["completed"] == 1
-        api_client.transition_story.assert_awaited_once_with("story-1", "complete")
+        events = _po_events(redis_client)
+        assert len(events) == 1
+        assert events[0]["event"] == "story_completed"
+        assert events[0]["story_id"] == "story-1"
+        assert "https://example.com" in events[0]["text"]
+        assert "palindrome_bot" in events[0]["text"]
+        # The owner's Telegram chat, not the internal user id.
+        assert events[0]["telegram_chat_id"] == str(900000000 + 100713)
 
     @pytest.mark.asyncio
-    async def test_access_that_cannot_be_revoked_ends_in_human_review(
+    async def test_a_run_blocked_on_its_cleanup_still_ends_in_human_review(
         self, api_client, redis_client
     ):
-        """The sweep failed the run and gave up on quiet retries; that is visible.
+        """A QA run whose only verdict is a cleanup failure verified no product.
 
-        The story must not read as a success next to a bot that still admits the
-        test identity, so it stops the application and asks for a human.
+        The sweep writes this outcome when it gives up, and a story still in
+        TESTING behind it has nothing that says the bot works — so it stops the
+        application and asks for a human. What changed is that a story whose QA
+        did pass has already been completed by then and is never seen here.
         """
         from src.tasks.supervisor import supervise_testing_stories
 
@@ -354,20 +390,18 @@ class TestStoriesWaitForTheAccessToGoBack:
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["failed"] == 1
-        assert result["waiting_for_access"] == 0
         api_client.stop_application.assert_awaited_once_with(42)
         api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
 
     @pytest.mark.asyncio
-    async def test_an_escalation_stamp_alone_does_not_publish_a_passed_story(
+    async def test_an_escalated_grant_does_not_hold_a_passed_run_back(
         self, api_client, redis_client
     ):
-        """The stamp landed, the QA run's failure did not — the story still waits.
+        """The sweep has given up on the access and the product is still delivered.
 
-        The sweep writes both together, so this is a state it cannot produce.
-        The guard stands anyway: routing on a run that still says `passed` would
-        complete a story whose bot may still admit the test identity, and that
-        must not depend on one caller getting its writes right.
+        The leftover test identity is an incident the sweep reports to an
+        administrator. Reading it as a verdict on the product is what this card
+        removed.
         """
         from src.tasks.supervisor import supervise_testing_stories
 
@@ -381,12 +415,13 @@ class TestStoriesWaitForTheAccessToGoBack:
             escalated_at=datetime.now(UTC),
             last_error="revoke deploy deploy-revoke-1 ended failed (give_up)",
         )
+        api_client.get_project.return_value = _project("42")
 
         result = await supervise_testing_stories(api_client, redis_client)
 
-        assert result["waiting_for_access"] == 1
-        assert result["completed"] == 0
-        api_client.transition_story.assert_not_called()
+        assert result["completed"] == 1
+        api_client.transition_story.assert_awaited_once_with("story-1", "complete")
+        api_client.stop_application.assert_not_called()
 
 
 class TestTheHandoffSurvivesARestart:

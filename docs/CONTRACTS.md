@@ -1174,9 +1174,20 @@ None of them is proof that the access is gone; they shorten the window in which 
 be written back. What says it is gone is the reading.
 
 A disagreement that outlives `supervisor.temporary_access_unrevoked_ttl_minutes` or
-`supervisor.temporary_access_max_revoke_attempts` stops being an internal retry: the QA run fails
-with `qa_cleanup_failed` naming the observed state, and the story goes to a human rather than
-waiting in TESTING.
+`supervisor.temporary_access_max_revoke_attempts` stops being an internal retry: the QA run carries
+a `qa_cleanup_failed` blocker naming the observed state, the grant is stamped `escalated_at`, and an
+admin alert names the story, project, QA run and grant.
+
+**Cleanup never holds the product back.** `supervise_testing_stories` routes a story on the QA
+outcome alone and does not read the grant: a passed run completes its story on the next supervisor
+tick, and the owner is told (`story_completed` on `po:input`, with the deployed address) whether or
+not the borrowed identity has been handed back yet. The sweep goes on revoking, reading and — when
+it gives up — escalating afterwards; a completed story is never reopened by what happens to the
+grant later, because only TESTING stories are routed at all. The two are told apart in the cycle
+counts: `temporary_access_revoke_failed` is an attempt that will be retried, and
+`temporary_access_escalated` is the sweep having given up and called a human. Story routing runs
+before the sweep in the dispatcher cycle, so a cleanup that runs out of attempts after an outage
+cannot write its incident onto a QA run before the story it belongs to has been routed.
 
 ### QA handoff plan
 
@@ -1272,7 +1283,7 @@ Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the
 
 The consumer parses the criteria *before* resolving anything else, and only the agent branch reads the server, its SSH key, and `bot_username`. A criteria block the deployed URL alone can answer must not fail over agent scaffolding it never uses.
 
-**Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or Claude Code on the prod server) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story.
+**Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or Claude Code on the prod server) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story and publish `story_completed` to `po:input` with the deployed address, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story. Routing reads the QA outcome and nothing else — temporary access held by the run is settled by its own sweep and never delays the completion or the notification.
 
 **Lifecycle operations:** `stop` and `undeploy` actions are handled by the `deploy_lifecycle` module, which SSHes to the server and runs `docker compose stop/down` directly — skipping the full DevOps subgraph.
 

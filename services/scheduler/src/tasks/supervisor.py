@@ -38,12 +38,10 @@ from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     DeployRunResult,
     EngineeringRunResult,
-    QABlockerCategory,
     QARunResult,
 )
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import (
     DeployAction,
@@ -1762,31 +1760,28 @@ async def supervise_testing_stories(
     """Poll TESTING stories and route based on QA run outcome.
 
     Reads run.result.qa_outcome set by the QA consumer:
-    - PASSED → story COMPLETED
+    - PASSED → story COMPLETED and the owner told, with the deployment's address
     - FAILED → create fix task, story IN_PROGRESS, redispatch to engineering
     - BLOCKED / EXHAUSTED / ERROR → stop the application and wait for human review
 
-    A story whose QA run still holds temporary access is not routed at all yet.
-    Completing it would publish a successful outcome while the test identity is
-    still admitted by the deployed bot, and a revoke that fails afterwards would
-    have nothing left to report against.
+    The temporary access the run borrowed is deliberately not consulted. Handing
+    the test identity back is the sweep's work and it runs on its own schedule:
+    it keeps revoking, keeps reading the running service, and calls an
+    administrator when it gives up. Making the product wait for that meant a
+    story that deploy, smoke and QA had all passed stayed unfinished for exactly
+    as long as a revoke kept being retried, and the user heard nothing. A test
+    identity left behind is a cleanup incident with its own owner, not a verdict
+    on the product, so it is reported there instead of held against the story.
 
     Returns dict with counts of actions taken.
     """
     stories = await api_client.get_stories_by_status(StoryStatus.TESTING)
     if not stories:
-        return {
-            "completed": 0,
-            "redispatched": 0,
-            "failed": 0,
-            "waiting_for_access": 0,
-            "recovered": 0,
-        }
+        return {"completed": 0, "redispatched": 0, "failed": 0, "recovered": 0}
 
     completed = 0
     redispatched = 0
     failed = 0
-    waiting_for_access = 0
     recovered = 0
 
     for story in stories:
@@ -1822,25 +1817,12 @@ async def supervise_testing_stories(
             log.info("qa_run_superseded_skip", run_id=run.id, run_status=run.status.value)
             continue
 
-        grant = await api_client.get_live_temporary_access_grant_for_run(run.id)
-        if grant is not None and not _access_failure_is_recorded(grant, run.result):
-            # The sweep is still working on the access. Once it either takes it
-            # back or reports that it cannot, this story routes on what the QA
-            # run says then — which for an unrevoked grant is a blocker.
-            log.info(
-                "qa_supervisor_waiting_for_access_revoke",
-                run_id=run.id,
-                grant_id=grant.id,
-                grant_status=grant.status.value,
-            )
-            waiting_for_access += 1
-            continue
-
         outcome = run.result.qa_outcome
 
         if outcome == QAOutcome.PASSED:
             await api_client.transition_story(story_id, "complete")
             log.info("qa_supervisor_completed", run_id=run.id)
+            await _notify_story_completed(api_client, redis_client, story_id, project_id, run, log)
             completed += 1
 
         elif outcome == QAOutcome.FAILED:
@@ -1868,9 +1850,53 @@ async def supervise_testing_stories(
         "completed": completed,
         "redispatched": redispatched,
         "failed": failed,
-        "waiting_for_access": waiting_for_access,
         "recovered": recovered,
     }
+
+
+async def _notify_story_completed(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Hand the finished product to its owner, in the tick that completed it.
+
+    The address comes from the handoff the QA run carries, which is the one
+    deployment QA was pointed at: what the user is given is what was verified,
+    not whatever the project happens to be running now. PO writes the words.
+
+    Nothing here waits for the borrowed test identity to be handed back. That is
+    the sweep's business, and it is finished — or escalated to an administrator —
+    on its own schedule.
+    """
+    qa_message = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY]).qa_message
+    recipient = await resolve_project_recipient(
+        api_client, project_id, event="story_completed", story_id=story_id
+    )
+    if not recipient.is_addressable:
+        log.warning("qa_completed_unaddressable", project_id=project_id)
+        return
+
+    address = qa_message.deployed_url
+    if qa_message.bot_username:
+        address = f"{address} (Telegram bot @{qa_message.bot_username})"
+    event = POSystemEvent(
+        event="story_completed",
+        text=(
+            "The story is finished: it is deployed and QA passed. Tell the user the good "
+            f"news and give them the address: {address}"
+        ),
+        task_id=story_id,
+        story_id=story_id,
+        telegram_chat_id=recipient.telegram_chat_id,
+        owner_user_id=recipient.owner_user_id,
+        project_id=project_id,
+    )
+    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
+    log.info("qa_supervisor_completion_delivered", deployed_url=qa_message.deployed_url)
 
 
 async def _recover_qa_handoff(
@@ -1916,23 +1942,6 @@ async def _recover_qa_handoff(
     )
     await _execute_qa_handoff(api_client, redis_client, run.id, plan, log)
     return True
-
-
-def _access_failure_is_recorded(grant: TemporaryAccessGrantDTO, result: QARunResult) -> bool:
-    """Whether a live grant may stop holding its story back.
-
-    Only one thing lets a story past an unrevoked grant: the sweep gave up on
-    the access *and* wrote that up on the QA run itself. The sweep does both in
-    one call, so the two agreeing is the ordinary case; requiring both here is
-    what keeps a story from being completed on the strength of half of it,
-    whatever writes the record in future. The blocker alone belongs to a revoke
-    that is still being retried.
-    """
-    if grant.escalated_at is None:
-        return False
-    return result.blocker is not None and result.blocker.category is (
-        QABlockerCategory.QA_CLEANUP_FAILED
-    )
 
 
 def _qa_quarantine_reason(result: QARunResult) -> dict:

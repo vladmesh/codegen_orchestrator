@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-08-11 (12)
+
+- Delivering the product no longer waits for the temporary QA access to be
+  handed back. `supervise_testing_stories` used to skip any story whose QA run
+  still held a live grant, so a story that deploy, smoke and QA had all passed
+  stayed in TESTING for as long as the revoke kept being retried — and the user
+  heard nothing at all in the meantime. It now routes on the QA outcome and
+  nothing else: a passed run completes its story on the next supervisor tick.
+- The owner is told in the same tick. A `story_completed` event goes to
+  `po:input` with the address of the deployment QA tested — URL, and the bot's
+  `@username` when there is one — read off the handoff stored on the QA run.
+  Nothing published that event before; the QA consumer stopped sending it when it
+  was decoupled from the story lifecycle, and the supervisor never picked it up.
+- The cleanup is unchanged and still finishes on its own: the same sweep revokes,
+  reads the running service back, retries within its bounds, and when they are
+  spent writes the `qa_cleanup_failed` blocker on the QA run and alerts an
+  administrator — now naming the story, project, QA run and grant, so the
+  incident can be picked up from the message alone.
+- A leftover test identity is a cleanup incident, not a failed product. A
+  completed story is never reopened by anything the grant does afterwards
+  (only TESTING stories are routed at all), and story routing now runs *before*
+  the access sweep in the dispatcher cycle, so a cleanup that ran out of attempts
+  during an outage cannot write its incident onto a QA run before the story
+  behind it has been routed.
+- Being stuck is visible without a dashboard: the sweep's counts separate
+  `revoke_failed` (an attempt that will be retried) from `escalated` (given up
+  on, a human called), and both are on the `supervisor_cycle` log line.
+  `qa_waiting_for_access` is gone with the wait it counted.
+
 ## 2026-08-11 (11)
 
 - An admission refusal is no longer told as a memory shortage. A live acceptance
