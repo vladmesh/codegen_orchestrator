@@ -38,12 +38,10 @@ from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     DeployRunResult,
     EngineeringRunResult,
-    QABlockerCategory,
     QARunResult,
 )
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import (
     DeployAction,
@@ -73,6 +71,7 @@ if TYPE_CHECKING:
 
 from .. import startup
 from ._recipients import resolve_project_recipient
+from .owner_notifications import deliver_owed_notification, owe_owner_notification
 from .temporary_access import grant_temporary_access
 
 logger = structlog.get_logger(__name__)
@@ -346,15 +345,30 @@ async def _park_task_waiting_resources(
     disposition = attempt_disposition(reason, product_failure=True)
     routing = refusal_routing(PlacementPath.ENGINEERING, disposition)
     if routing is RefusalRouting.HUMAN_REVIEW_WITH_OWNER_NOTICE:
+        # The same seam as the story-level endings, and for the same reason:
+        # `_escalate_task_to_human_review` below commits the parent story's
+        # human-review transition, after which no loop scans it, so the notice
+        # is written on this engineering run before the transition rather than
+        # published behind the `except Exception: log.warning` that used to
+        # swallow it. The task id is kept on the record because this ending is
+        # about the task, and that is what PO answers about.
+        owed = await owe_owner_notification(
+            api_client,
+            run,
+            event="task_impossible_capacity",
+            text=IMPOSSIBLE_CAPACITY_TASK_TEXT,
+            story_id=task.story_id,
+            project_id=str(task.project_id),
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            task_id=task.id,
+            log=log,
+        )
         await _escalate_task_to_human_review(
             api_client,
             task,
             "allocation request exceeds every managed server's capacity",
         )
-        try:
-            await _request_impossible_capacity_via_po(api_client, redis_client, task, log)
-        except Exception:
-            log.warning("impossible_capacity_request_failed", exc_info=True)
+        await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
         log.warning("task_allocation_impossible")
         return True
     if routing is RefusalRouting.HUMAN_REVIEW_PLATFORM_ALERT:
@@ -420,32 +434,14 @@ async def _escalate_task_to_human_review(
     await _notify_admin_failure(task.id, str(task.project_id), detail)
 
 
-async def _request_impossible_capacity_via_po(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    task,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Ask PO to explain that the requested deployment cannot fit managed capacity."""
-    recipient = await resolve_project_recipient(
-        api_client, str(task.project_id), event="task_impossible_capacity", story_id=task.story_id
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event="task_impossible_capacity",
-        text=(
-            "Engineering cannot place this project on any managed server. Tell the user that "
-            "the request needs operator review."
-        ),
-        task_id=task.id,
-        story_id=task.story_id or "",
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=str(task.project_id),
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-    log.info("impossible_capacity_requested")
+#: What the owner is told when engineering cannot be placed anywhere at all.
+#: Terminal, unlike the two waits below it: nothing frees up that makes this
+#: request fit, so the task and its story stop for an operator instead of
+#: waiting, and the message says that rather than promising a resumption.
+IMPOSSIBLE_CAPACITY_TASK_TEXT = (
+    "Engineering cannot place this project on any managed server. Tell the user that "
+    "the request needs operator review."
+)
 
 
 async def _request_resources_via_po(
@@ -1338,51 +1334,38 @@ async def _escalate_refused_deploy(
             }
         },
     )
+    # Owed before the transition for the same reason the QA paths owe theirs:
+    # this line takes the story out of DEPLOYING, and nothing scans it
+    # afterwards. A refusal nobody is told about was previously one swallowed
+    # exception away — the publish used to sit behind `except Exception: log`.
+    owed = None
+    if tell_owner:
+        owed = await owe_owner_notification(
+            api_client,
+            run,
+            event="story_impossible_capacity",
+            text=IMPOSSIBLE_CAPACITY_TEXT,
+            story_id=story_id,
+            project_id=project_id,
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            log=log,
+        )
     await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
     await _notify_admin_failure(run.id, project_id, detail)
-    if tell_owner:
-        try:
-            await _request_impossible_capacity_for_story(
-                api_client, redis_client, story_id, project_id, log
-            )
-        except Exception:
-            log.warning("deploy_impossible_capacity_request_failed", exc_info=True)
+    if owed is not None:
+        await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
     log.warning("deploy_refusal_escalated", run_id=run.id, detail=detail, told_owner=tell_owner)
 
 
-async def _request_impossible_capacity_for_story(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    story_id: str,
-    project_id: str,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Tell the owner their deploy needs an operator, not that we ran out of room.
-
-    Deliberately not the capacity-wait message: nothing will free up that makes
-    this request fit, and the project is not at fault, so the owner is told what
-    is actually happening instead of being left to watch a wait that never ends.
-    """
-    recipient = await resolve_project_recipient(
-        api_client, project_id, event="story_impossible_capacity", story_id=story_id
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event="story_impossible_capacity",
-        text=(
-            "Deploying this project needs more capacity than any managed server can provide. "
-            "Tell the user that our operators have been asked to review it, and that this is "
-            "our infrastructure, not a problem with their project."
-        ),
-        task_id=story_id,
-        story_id=story_id,
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=project_id,
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-    log.info("deploy_impossible_capacity_requested")
+#: What the owner is told when their deploy needs an operator rather than room.
+#: Deliberately not the capacity-wait message: nothing will free up that makes
+#: this request fit, and the project is not at fault, so the owner is told what
+#: is actually happening instead of being left to watch a wait that never ends.
+IMPOSSIBLE_CAPACITY_TEXT = (
+    "Deploying this project needs more capacity than any managed server can provide. "
+    "Tell the user that our operators have been asked to review it, and that this is "
+    "our infrastructure, not a problem with their project."
+)
 
 
 def _infrastructure_wait_started_at(run) -> datetime:
@@ -1762,31 +1745,28 @@ async def supervise_testing_stories(
     """Poll TESTING stories and route based on QA run outcome.
 
     Reads run.result.qa_outcome set by the QA consumer:
-    - PASSED → story COMPLETED
+    - PASSED → story COMPLETED and the owner told, with the deployment's address
     - FAILED → create fix task, story IN_PROGRESS, redispatch to engineering
     - BLOCKED / EXHAUSTED / ERROR → stop the application and wait for human review
 
-    A story whose QA run still holds temporary access is not routed at all yet.
-    Completing it would publish a successful outcome while the test identity is
-    still admitted by the deployed bot, and a revoke that fails afterwards would
-    have nothing left to report against.
+    The temporary access the run borrowed is deliberately not consulted. Handing
+    the test identity back is the sweep's work and it runs on its own schedule:
+    it keeps revoking, keeps reading the running service, and calls an
+    administrator when it gives up. Making the product wait for that meant a
+    story that deploy, smoke and QA had all passed stayed unfinished for exactly
+    as long as a revoke kept being retried, and the user heard nothing. A test
+    identity left behind is a cleanup incident with its own owner, not a verdict
+    on the product, so it is reported there instead of held against the story.
 
     Returns dict with counts of actions taken.
     """
     stories = await api_client.get_stories_by_status(StoryStatus.TESTING)
     if not stories:
-        return {
-            "completed": 0,
-            "redispatched": 0,
-            "failed": 0,
-            "waiting_for_access": 0,
-            "recovered": 0,
-        }
+        return {"completed": 0, "redispatched": 0, "failed": 0, "recovered": 0}
 
     completed = 0
     redispatched = 0
     failed = 0
-    waiting_for_access = 0
     recovered = 0
 
     for story in stories:
@@ -1822,30 +1802,30 @@ async def supervise_testing_stories(
             log.info("qa_run_superseded_skip", run_id=run.id, run_status=run.status.value)
             continue
 
-        grant = await api_client.get_live_temporary_access_grant_for_run(run.id)
-        if grant is not None and not _access_failure_is_recorded(grant, run.result):
-            # The sweep is still working on the access. Once it either takes it
-            # back or reports that it cannot, this story routes on what the QA
-            # run says then — which for an unrevoked grant is a blocker.
-            log.info(
-                "qa_supervisor_waiting_for_access_revoke",
-                run_id=run.id,
-                grant_id=grant.id,
-                grant_status=grant.status.value,
-            )
-            waiting_for_access += 1
-            continue
-
         outcome = run.result.qa_outcome
 
         if outcome == QAOutcome.PASSED:
+            # Owed before the transition, delivered after it: the story leaves
+            # TESTING here and this loop never sees it again, so a message that
+            # only existed as a publish attempt would be lost with the attempt.
+            owed = await owe_owner_notification(
+                api_client,
+                run,
+                event="story_completed",
+                text=_story_completed_text(run),
+                story_id=story_id,
+                project_id=project_id,
+                terminal_status=StoryStatus.COMPLETED,
+                log=log,
+            )
             await api_client.transition_story(story_id, "complete")
             log.info("qa_supervisor_completed", run_id=run.id)
+            await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
             completed += 1
 
         elif outcome == QAOutcome.FAILED:
             dispatched = await _handle_qa_failed(
-                api_client, redis_client, story_id, project_id, run.id, run.result, log
+                api_client, redis_client, story_id, project_id, run, log
             )
             if dispatched:
                 redispatched += 1
@@ -1868,9 +1848,29 @@ async def supervise_testing_stories(
         "completed": completed,
         "redispatched": redispatched,
         "failed": failed,
-        "waiting_for_access": waiting_for_access,
         "recovered": recovered,
     }
+
+
+def _story_completed_text(run) -> str:
+    """What the owner is told about a product QA passed.
+
+    The address comes from the handoff the QA run carries, which is the one
+    deployment QA was pointed at: what the user is given is what was verified,
+    not whatever the project happens to be running now. PO writes the words.
+
+    Nothing here waits for the borrowed test identity to be handed back. That is
+    the sweep's business, and it is finished — or escalated to an administrator —
+    on its own schedule.
+    """
+    qa_message = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY]).qa_message
+    address = qa_message.deployed_url
+    if qa_message.bot_username:
+        address = f"{address} (Telegram bot @{qa_message.bot_username})"
+    return (
+        "The story is finished: it is deployed and QA passed. Tell the user the good "
+        f"news and give them the address: {address}"
+    )
 
 
 async def _recover_qa_handoff(
@@ -1918,23 +1918,6 @@ async def _recover_qa_handoff(
     return True
 
 
-def _access_failure_is_recorded(grant: TemporaryAccessGrantDTO, result: QARunResult) -> bool:
-    """Whether a live grant may stop holding its story back.
-
-    Only one thing lets a story past an unrevoked grant: the sweep gave up on
-    the access *and* wrote that up on the QA run itself. The sweep does both in
-    one call, so the two agreeing is the ordinary case; requiring both here is
-    what keeps a story from being completed on the strength of half of it,
-    whatever writes the record in future. The blocker alone belongs to a revoke
-    that is still being retried.
-    """
-    if grant.escalated_at is None:
-        return False
-    return result.blocker is not None and result.blocker.category is (
-        QABlockerCategory.QA_CLEANUP_FAILED
-    )
-
-
 def _qa_quarantine_reason(result: QARunResult) -> dict:
     """Keep the terminal QA evidence with the story without reclassifying it."""
     reason = {"qa_outcome": result.qa_outcome.value}
@@ -1967,46 +1950,33 @@ async def _quarantine_unverified_application(
     await api_client.stop_application(application_id)
     reason = _qa_quarantine_reason(run.result)
     await api_client.update_story(story_id, {"quarantine_reason": reason})
-    await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
-    await _notify_quarantine_owner(api_client, redis_client, story_id, project_id, reason, log)
-
-
-async def _notify_quarantine_owner(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    story_id: str,
-    project_id: str,
-    reason: dict,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Ask the project owner to decide what to do with a stopped bot."""
-    recipient = await resolve_project_recipient(
-        api_client, project_id, event="story_quarantined", story_id=story_id
+    owed = await owe_owner_notification(
+        api_client,
+        run,
+        event="story_quarantined",
+        text=_quarantine_text(reason),
+        story_id=story_id,
+        project_id=project_id,
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+        log=log,
     )
-    if not recipient.is_addressable:
-        log.warning("qa_quarantine_unaddressable", project_id=project_id)
-        return
+    await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+    await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
 
+
+def _quarantine_text(reason: dict) -> str:
+    """Ask the project owner to decide what to do with a stopped bot."""
     outcome = reason["qa_outcome"]
     blocker = reason.get("blocker")
     if blocker:
         detail = f"{blocker['category']}: {blocker['received']}"
     else:
         detail = reason.get("summary") or reason.get("error") or outcome
-    event = POSystemEvent(
-        event="story_quarantined",
-        text=(
-            "QA could not confirm that the bot works. The bot has been stopped, "
-            f"but its Telegram token remains assigned to this project. Reason: {detail}. "
-            "Please decide whether to fix and redeploy it."
-        ),
-        task_id=story_id,
-        story_id=story_id,
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=project_id,
+    return (
+        "QA could not confirm that the bot works. The bot has been stopped, "
+        f"but its Telegram token remains assigned to this project. Reason: {detail}. "
+        "Please decide whether to fix and redeploy it."
     )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
 
 
 async def _handle_qa_failed(
@@ -2014,8 +1984,7 @@ async def _handle_qa_failed(
     redis_client: RedisStreamClient,
     story_id: str,
     project_id: str,
-    qa_run_id: str,
-    result: QARunResult,
+    run,
     log: structlog.stdlib.BoundLogger,
 ) -> bool | None:
     """Create a bounded, fingerprinted fix task for a confirmed QA defect.
@@ -2023,6 +1992,8 @@ async def _handle_qa_failed(
     Returns True if a fix task was created, False if escalation is required,
     and None when an existing task was recovered or had already been handled.
     """
+    qa_run_id = run.id
+    result = run.result
     summary = result.summary or "QA testing failed"
     failed_checks = result.failed_checks
 
@@ -2049,12 +2020,29 @@ async def _handle_qa_failed(
     }
 
     if attempt > _qa_failure_limit() or total_attempt > _qa_fix_limit():
+        exhausted_limit = _qa_failure_limit() if attempt > _qa_failure_limit() else _qa_fix_limit()
         await api_client.update_story(
             story_id,
             {"quarantine_reason": {"qa_outcome": QAOutcome.FAILED.value, "qa_failure": evidence}},
         )
+        # The owner is told here, not only the administrators. This transition
+        # ends the story for them exactly as a quarantine does — their product
+        # stops moving until a human looks at it — and an ending they are not
+        # told about is the silence this seam exists to remove. It goes through
+        # the same record for the same reason: the story leaves TESTING on the
+        # next line and nothing scans it afterwards.
+        owed = await owe_owner_notification(
+            api_client,
+            run,
+            event="story_quarantined",
+            text=_fix_attempts_exhausted_text(summary, exhausted_limit),
+            story_id=story_id,
+            project_id=project_id,
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            log=log,
+        )
         await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
-        exhausted_limit = _qa_failure_limit() if attempt > _qa_failure_limit() else _qa_fix_limit()
+        await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
         await notify_admins_best_effort(
             f"QA failure {fingerprint} exhausted {exhausted_limit} fix attempts "
             f"for story {story_id}",
@@ -2104,6 +2092,21 @@ async def _handle_qa_failed(
         fix_attempt=total_attempt,
     )
     return True
+
+
+def _fix_attempts_exhausted_text(summary: str, exhausted_limit: int) -> str:
+    """What the owner is told when QA kept failing and the fixes ran out.
+
+    Deliberately the same event PO already routes for a quarantine: from the
+    owner's side this *is* the quarantine case — the product is stopped and a
+    human has to decide — and inventing a second event name would only mean PO
+    dropping it as unknown.
+    """
+    return (
+        f"QA kept finding the same problem after {exhausted_limit} attempts to fix it, "
+        "so work on this story has stopped and a specialist has been asked to look at it. "
+        f"The last thing QA reported: {summary}"
+    )
 
 
 def _qa_failure_metadata(task: object) -> dict | None:

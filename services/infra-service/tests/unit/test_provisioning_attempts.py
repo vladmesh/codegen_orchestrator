@@ -378,6 +378,8 @@ async def test_existing_access_success_stores_key_resets_attempts_and_marks_read
     )
     monkeypatch.setattr("src.provisioner.node.update_server_status", AsyncMock())
     monkeypatch.setattr("src.provisioner.node.update_server_labels", AsyncMock())
+    complete = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.mark_provisioning_complete", complete)
     monkeypatch.setattr(node, "_init_time4vps_client", AsyncMock(return_value=MagicMock()))
 
     # The DB stand-in the API endpoints write through.
@@ -401,6 +403,9 @@ async def test_existing_access_success_stores_key_resets_attempts_and_marks_read
 
     assert result["provisioning_result"]["status"] == "success"
     assert db == {"ssh_key": "PRIVATE-KEY", "attempts": 0, "episode_id": None, "status": "ready"}
+    # A green software phase records itself complete, and with it the QA identity
+    # that phase created — one write, so the two facts cannot come apart.
+    complete.assert_awaited_once_with("srv-1")
 
 
 @pytest.mark.asyncio
@@ -426,6 +431,8 @@ async def test_key_persistence_failure_never_leaves_an_active_server_without_an_
         AsyncMock(return_value=(1, "episode-1")),
     )
     monkeypatch.setattr("src.provisioner.node.update_server_labels", AsyncMock())
+    complete = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.mark_provisioning_complete", complete)
     monkeypatch.setattr(node, "_init_time4vps_client", AsyncMock(return_value=MagicMock()))
 
     db = {"ssh_key": None, "attempts": 1, "status": "pending_setup", "incidents": []}

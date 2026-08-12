@@ -291,7 +291,8 @@ created → in_progress → pr_review → deploying → testing → completed
 ```
 `pr_review` — all tasks done, PR created from story branch to main. Waiting for CI + auto-merge.
 `deploying` is a deploy gate — story waits for successful deploy before QA.
-`testing` — deployed service being tested by QA consumer (Claude Code on prod server).
+`testing` — deployed service being tested by the QA consumer through a central ephemeral QA worker
+on the management host (Claude Code, or Codex when assigned).
 `waiting_human_review` — developer reported a blocker; pipeline is paused until admin resolves.
 
 ### Task

@@ -81,6 +81,52 @@ class TestBuildQAPrompt:
         assert "@" not in prompt
 
 
+class TestEstablishedFactsKeepTheContract:
+    """Facts the runner established are stated, and nothing else changes.
+
+    The executor is told what is already known so it does not spend the run
+    asking again. What it may call, what it must not do, and the JSON it has to
+    return are the same prompt either way — that is the contract, and this is
+    where it is checked rather than asserted in prose.
+    """
+
+    FACT = "- Container state, read from the target with docker inspect: web — running."
+
+    def _prompts(self) -> tuple[str, str]:
+        plain = build_qa_prompt("- GET /health returns 200", "https://api.example.com")
+        with_facts = build_qa_prompt(
+            "- GET /health returns 200",
+            "https://api.example.com",
+            established_facts=[self.FACT],
+        )
+        return plain, with_facts
+
+    def test_the_established_fact_replaces_the_checklist_item_it_answers(self):
+        plain, with_facts = self._prompts()
+
+        assert self.FACT in with_facts
+        assert "Already established (checked by the QA runner, not by you)" in with_facts
+        assert "3. Container state — already established above; do not check it again" in with_facts
+        assert "3. Containers running and healthy (no restart loops)" in plain
+
+    def test_nothing_else_of_the_prompt_changes(self):
+        """The only line that leaves the prompt is the one now answered."""
+        plain, with_facts = self._prompts()
+
+        dropped = [line for line in plain.splitlines() if line not in with_facts.splitlines()]
+
+        assert dropped == ["3. Containers running and healthy (no restart loops)"]
+
+    def test_the_result_contract_is_the_same_either_way(self):
+        plain, with_facts = self._prompts()
+
+        for prompt in (plain, with_facts):
+            assert '"pass": true/false' in prompt
+            assert '"checks": [{"name": "check name", "pass": true/false' in prompt
+            assert '"summary": "brief summary"' in prompt
+            assert "write_qa_report" in prompt
+
+
 class TestParseQAResult:
     def test_valid_pass_result(self):
         raw = (

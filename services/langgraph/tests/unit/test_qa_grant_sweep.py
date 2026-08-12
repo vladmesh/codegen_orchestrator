@@ -35,7 +35,8 @@ def _grant(**overrides) -> QASshGrant:
         "marker": MARKER,
         "server_handle": "vps-1",
         "server_ip": "1.2.3.4",
-        "ssh_user": "deploy",
+        "ssh_user": "root",
+        "qa_ssh_user": "qa-observer",
         "state": QASshGrantState.ISSUING,
         "issued_at": datetime.now(UTC),
     }
@@ -146,7 +147,11 @@ class TestAmbiguousGrantsAreRecovered:
 
         assert counts["revoked"] == 1
         assert revoke.await_args.kwargs["marker"] == MARKER
-        assert revoke.await_args.kwargs["ssh_user"] == "deploy"
+        # The fleet key opens the administrative account; the file it cleans is
+        # the QA account's. A record naming only one of the two could not say
+        # which file to read back.
+        assert revoke.await_args.kwargs["ssh_user"] == "root"
+        assert revoke.await_args.kwargs["qa_ssh_user"] == "qa-observer"
         assert api.recorded_grant().state is QASshGrantState.RELEASED
 
     async def test_the_handoff_beside_the_record_is_not_disturbed(self):

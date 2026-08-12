@@ -1,0 +1,45 @@
+---
+# The account a central QA run borrows on this target. Kept equal to
+# `shared/qa_identity.py::QA_SSH_USER`, which is what the provisioner writes
+# into `servers.labels.qa_ssh_user`; a unit test holds the two together, because
+# a role that creates one name while the runtime looks for another produces a
+# host that is provisioned and still refuses QA.
+qa_ssh_user: qa-observer
+qa_ssh_home: "/home/{{ qa_ssh_user }}"
+
+# The account's own primary group, named explicitly rather than left to whatever
+# the account already had. `ansible.builtin.user` splits the two memberships:
+# `groups` + `append: false` makes the *supplementary* list exact, while the
+# primary group is only ever what `group:` says. Without this a retrofit over an
+# account somebody created inside `docker` would leave it there — primary
+# membership of `docker` opens the socket just as well as secondary, and that is
+# root on this host.
+qa_ssh_group: "{{ qa_ssh_user }}"
+
+# The one command the QA account may run through sudo. The allowlist is inside
+# the script, not in sudoers: a wrapper can refuse a sub-command, and a sudoers
+# wildcard over `docker *` cannot.
+qa_docker_wrapper: /usr/local/bin/qa-docker
+qa_sudoers_file: "/etc/sudoers.d/{{ qa_ssh_user }}"
+
+# The socket the account must not be able to reach by any route. Named here
+# because the proof below asks the account itself whether it can open it — group
+# membership is only one of the ways in, and a POSIX ACL is invisible in `id`.
+qa_docker_socket: /var/run/docker.sock
+
+# Where this role says, on the target, that the account of that name is its own.
+# One file per account name, root-owned, under a root-owned directory: the QA
+# account cannot write it, and it cannot be inherited by a differently-named
+# account later. Ownership has to be a fact on the machine rather than a row in
+# the platform's database, because the question it answers is "did anything else
+# create this account before we got here" — and only the machine knows that.
+qa_identity_marker_dir: /etc/codegen-qa-identity
+qa_identity_marker: "{{ qa_identity_marker_dir }}/{{ qa_ssh_user }}"
+
+# `authorized_keys` for this account holds run keys and nothing else, so after a
+# run's key is removed it would be empty — and an empty file is what a failed
+# filter also produces. This comment line is never a key and never matches a run
+# marker, so "the filter kept nothing" stays a failure the runtime can refuse to
+# copy over the file.
+qa_authorized_keys_sentinel: >-
+  # codegen-qa: one-shot run keys are added and removed here by the orchestrator

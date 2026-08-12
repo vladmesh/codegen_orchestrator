@@ -12,12 +12,17 @@ can do to the machine it is testing:
   and from nothing else. A tool whose boundary cannot be derived from it does
   not exist here — that is why there is no `docker ps`, no `docker images` and
   no host diagnostics: those enumerate the machine, not the deployment.
-* **a one-shot SSH identity**, minted per run and removed when the run ends. It
-  is not the fleet key and it is not root — the fleet key is used by the runner
-  only, to write the run's own public key into the target's `authorized_keys`
-  and to take it back out. The agent never holds either key. That the key may be
-  out there is written down before it is installed (`QASshGrant`), so an
-  ambiguous failure leaves a record the sweep can act on.
+* **a one-shot SSH key into an account it does not own.** The account is
+  `QATarget.qa_ssh_user`: an unprivileged account provisioning created on the
+  target for exactly this, recorded on the server row, and never the
+  administrative account the fleet key opens. The runner's whole power over it
+  is to append one `restrict`ed, expiring key to the `authorized_keys` the
+  provisioning role opened, and to take that key back out; it creates no
+  account, no directory and no file, so a target that was not provisioned for QA
+  refuses the install instead of being made to admit a run. The agent holds
+  neither key. That a key may be out there is written down before it is
+  installed (`QASshGrant`), so an ambiguous failure leaves a record the sweep can
+  act on.
 * **a closed set of typed operations.** There is no "run this shell command"
   here: every method below names what it does, checks its arguments against the
   capability set, and refuses anything else. The write guard is the absence of a
@@ -26,6 +31,7 @@ can do to the machine it is testing:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -48,8 +54,6 @@ GRANT_MARKER_PREFIX = "codegen-qa-run"
 # The runner's `finally` is the primary removal and the sweep is the second one;
 # this is what stops a forgotten key from outliving the machine.
 GRANT_LIFETIME_S = 3600
-GRANT_LOCK = "$HOME/.ssh/.codegen-qa.lock"
-AUTHORIZED_KEYS = "$HOME/.ssh/authorized_keys"
 REMOTE_EXEC_TIMEOUT = 60
 LOCALHOST_PROBE_TIMEOUT = 30
 MAX_REMOTE_OUTPUT = 8000
@@ -59,14 +63,35 @@ STATUS_MARKER = "<<qa-http-status:"
 # from a read that simply found nothing.
 READ_UNRESOLVABLE = 3
 READ_OUTSIDE_ROOT = 4
+# Exit statuses `_INSTALL_GRANT` answers with when the identity itself is not on
+# the target: no such account, and no `authorized_keys` to append to. Both say
+# the same thing about the host, and both are the provisioner's business rather
+# than this run's — see :class:`QAIdentityAbsentError`.
+IDENTITY_ABSENT = 3
+IDENTITY_KEYS_ABSENT = 4
 # Compose stamps this on every container it creates, and it is the deployment's
 # own name for its containers — not a naming convention this code assumes.
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 
-# Accounts a run identity may not be. A target that offers no unprivileged
-# account is refused exploratory QA rather than tested as root: the run's
-# identity is supposed to be weaker than the fleet's, and root is not.
-PRIVILEGED_SSH_USERS = frozenset({"root"})
+# How far docker on the target is retried before a run gives up on it. Both
+# calls that read the container runtime use this policy — the listing that builds
+# the capability set, here, and the `docker inspect` of each container in
+# `_qa_runner` — because a daemon that is mid-restart or a wrapper that lost a
+# race deserves the same second chance whichever call arrives first, and a
+# container may still be failing its first health check when QA starts. Nothing
+# about the retry makes a down container pass: it only stops a transient state
+# from being reported as one.
+CONTAINER_PROBE_ATTEMPTS = 3
+CONTAINER_PROBE_RETRY_DELAY = 5
+
+# How the QA account reaches docker. It is not in the `docker` group — that
+# group is root on the host — and cannot open the socket, so every docker call
+# goes through the wrapper provisioning installed, which refuses on the target
+# every sub-command that writes or escapes. The membership test below still
+# decides *which* containers a run may name; this decides what may be done to
+# any of them, and it is enforced by the machine rather than by the caller.
+QA_DOCKER_WRAPPER = "/usr/local/bin/qa-docker"
+QA_DOCKER = ("sudo", "-n", QA_DOCKER_WRAPPER)
 
 # Read-only docker sub-commands that name a container. Each one is bounded by
 # the run's container capability: the container it names must be in the set.
@@ -104,6 +129,51 @@ esac
 head -c "$limit" -- "$resolved"
 """
 
+# Append one run key to an account that already exists, and to nothing else.
+# The account name arrives as $1 and the entry as $2, so nothing is interpolated
+# into this text. Every path out that is not "the key was appended" is an error:
+# an absent account or an absent `authorized_keys` means this target was never
+# provisioned for QA, and creating either here would be the runtime minting
+# itself access instead of borrowing what provisioning laid out.
+_INSTALL_GRANT = """
+set -eu
+user=$1; entry=$2
+home=$(getent passwd "$user" | cut -d: -f6)
+[ -n "$home" ] || { echo "no such account: $user" >&2; exit 3; }
+keys=$home/.ssh/authorized_keys
+[ -f "$keys" ] || { echo "no authorized_keys for $user" >&2; exit 4; }
+exec 9>"$home/.ssh/.codegen-qa.lock"
+flock 9
+printf '%s\\n' "$entry" >> "$keys"
+"""
+
+# Remove one run's key from that account and print how many of its lines are
+# still there. An account or a file that is not there holds no key, so both
+# answer zero rather than failing: this runs for records that may never have
+# installed anything.
+#
+# The rewrite refuses to copy an empty filter result over the file. The QA
+# account's `authorized_keys` is opened by provisioning with a comment line that
+# is never a key and never carries a run marker, so a filter that kept nothing
+# did not find only our key — it failed, and copying that would leave a file the
+# next run cannot append to under a lock it cannot take. Leaving it alone makes
+# the readback report the marker as still there, which is the residue the sweep
+# is for.
+_REVOKE_GRANT = """
+set -eu
+user=$1; marker=$2
+home=$(getent passwd "$user" | cut -d: -f6)
+[ -n "$home" ] || { echo 0; exit 0; }
+keys=$home/.ssh/authorized_keys
+[ -f "$keys" ] || { echo 0; exit 0; }
+exec 9>"$home/.ssh/.codegen-qa.lock"
+flock 9
+grep -v -F "$marker" "$keys" > "$keys.qa-tmp" || true
+if [ -s "$keys.qa-tmp" ]; then cat "$keys.qa-tmp" > "$keys"; fi
+rm -f "$keys.qa-tmp"
+grep -c -F "$marker" "$keys" || true
+"""
+
 
 class QATargetError(RuntimeError):
     """A QA tool was asked for something outside the run's capability set."""
@@ -113,8 +183,33 @@ class QAGrantError(RuntimeError):
     """The one-shot identity for this run could not be issued."""
 
 
+class QAIdentityAbsentError(QAGrantError):
+    """The account provisioning was supposed to leave here is not on the target.
+
+    Told apart from every other grant failure because it is not a fact about
+    this run: the row says the host has a QA identity and the host says it has
+    none. Nothing here creates it — that is provisioning's job and the reason
+    this runtime holds no power to make accounts — so the run ends, and the
+    caller reports it where a missing identity is already reported: against the
+    server, in the provisioning journal.
+    """
+
+
 class QACapabilityError(RuntimeError):
     """The run's capability set could not be resolved from the target."""
+
+
+class QAContainerRuntimeError(QACapabilityError):
+    """Docker on the target did not answer when this run's containers were listed.
+
+    Separated from every other capability failure because it is not a fact about
+    reaching the host — SSH worked and the deployment directory resolved — but
+    the same fact the later `docker inspect` of each container can meet: the
+    container runtime is not answering. The two calls must not be classified
+    differently just because one happens to run first, so this one is named and
+    routed to the container probe's own outcome instead of joining
+    "could not get onto the server".
+    """
 
 
 @dataclass(frozen=True)
@@ -122,7 +217,14 @@ class QATarget:
     """Where the run's one deployment lives, and how to address it."""
 
     server_ip: str
+    # The administrative account the fleet key opens — `root` on a server row
+    # `server_sync` created. It is used twice per run, by the runner only, to put
+    # the run's key into the QA account and to take it out. No run is ever
+    # performed as this account.
     ssh_user: str
+    # The unprivileged account provisioning made for QA runs on this host, taken
+    # from the server row. This is who the run is.
+    qa_ssh_user: str
     server_handle: str
     project_name: str
     deployed_url: str
@@ -184,6 +286,18 @@ class QAGrantJournal(Protocol):
     async def write(self, grant: QASshGrant) -> None: ...
 
 
+def _on_target(argv: list[str]) -> list[str]:
+    """How this argv is actually spelled on the target.
+
+    Everything but docker runs as the QA account itself. Docker runs through the
+    wrapper, because the account has no other way to reach the daemon — and that
+    is the point: the target, not this process, is what refuses `docker exec`.
+    """
+    if argv and argv[0] == "docker":
+        return [*QA_DOCKER, *argv[1:]]
+    return argv
+
+
 def _reject_secret_path(path: str) -> None:
     for pattern in SECRET_FILE_PATTERNS:
         if pattern.search(path):
@@ -203,6 +317,16 @@ async def resolve_capabilities(
     considers part of this compose project. Both are read once, with the run's
     own identity, before any tool exists — so every later check is a membership
     test against a fixed set rather than a rule a tool invented.
+
+    The listing is the run's first call into docker, so it is also the first
+    place a target whose container runtime is down can be found. It is retried
+    like every other read of that runtime, and what it raises says which of the
+    two failures happened: a deployment directory that does not resolve is a
+    capability failure, docker not answering is `QAContainerRuntimeError`.
+
+    Raises:
+        QACapabilityError: the deployment directory does not resolve on the target.
+        QAContainerRuntimeError: docker on the target did not answer the listing.
     """
     root = await conn.run(f"readlink -f -- {shlex.quote(target.service_dir)}", check=False)
     physical_root = (root.stdout or "").strip()
@@ -212,16 +336,40 @@ async def resolve_capabilities(
             f"{(root.stderr or '').strip()[:300] or 'no such directory'}"
         )
 
-    listing = await conn.run(
-        "docker ps --all --no-trunc "
-        f"--filter {shlex.quote(f'label={COMPOSE_PROJECT_LABEL}={target.project_name}')} "
-        "--format {{.Names}}",
-        check=False,
+    command = " ".join(
+        shlex.quote(part)
+        for part in [
+            *QA_DOCKER,
+            "ps",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            f"label={COMPOSE_PROJECT_LABEL}={target.project_name}",
+            "--format",
+            "{{.Names}}",
+        ]
     )
-    if listing.exit_status != 0:
-        raise QACapabilityError(
-            f"cannot list the containers of {target.project_name} on {target.server_ip}: "
-            f"{(listing.stderr or listing.stdout or '').strip()[:300]}"
+    listing = None
+    failure = ""
+    for attempt in range(CONTAINER_PROBE_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(CONTAINER_PROBE_RETRY_DELAY)
+        try:
+            listing = await conn.run(command, check=False)
+        except (OSError, asyncssh.Error) as exc:
+            failure = f"the target did not answer docker ps of {target.project_name}: {exc}"
+            continue
+        if listing.exit_status == 0:
+            failure = ""
+            break
+        failure = (
+            f"docker ps of {target.project_name} exited {listing.exit_status}: "
+            f"{(listing.stderr or listing.stdout or 'no output').strip()[:300]}"
+        )
+    if failure:
+        logger.error("qa_container_listing_unavailable", server_ip=target.server_ip, detail=failure)
+        raise QAContainerRuntimeError(
+            f"cannot list the containers of {target.project_name} on {target.server_ip}: {failure}"
         )
     containers = frozenset(
         name.strip() for name in (listing.stdout or "").splitlines() if name.strip()
@@ -282,7 +430,7 @@ class QATargetSession:
         return port
 
     async def _run(self, argv: list[str], *, timeout: int) -> RemoteResult:
-        command = " ".join(shlex.quote(part) for part in argv)
+        command = " ".join(shlex.quote(part) for part in _on_target(argv))
         result = await self._conn.run(command, check=False, timeout=timeout)
         return RemoteResult(
             exit_status=result.exit_status if result.exit_status is not None else -1,
@@ -411,28 +559,48 @@ async def _connect(server_ip: str, ssh_user: str, key: object) -> asyncssh.SSHCl
     )
 
 
+def _script(body: str, *args: str) -> str:
+    """One shell script with its arguments passed as arguments, never inlined."""
+    return " ".join(shlex.quote(part) for part in ["sh", "-c", body, "_", *args])
+
+
 async def _install_grant(target: QATarget, fleet_key: str, entry: str) -> None:
-    """Write the run's public key into the target's authorized_keys."""
-    append = f"printf '%s\\n' {shlex.quote(entry)} >> {AUTHORIZED_KEYS}"
-    install = (
-        f"mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && touch {AUTHORIZED_KEYS} && "
-        f"chmod 600 {AUTHORIZED_KEYS} && flock {GRANT_LOCK} -c {shlex.quote(append)}"
-    )
+    """Write the run's public key into the QA account's authorized_keys.
+
+    The connection is the administrative one — writing another account's
+    `authorized_keys` needs it — and it is the only thing that connection is used
+    for. The account written into is the QA one, so the key the run holds admits
+    it to that account and to no other.
+    """
     try:
         async with await _connect(target.server_ip, target.ssh_user, _import(fleet_key)) as admin:
-            result = await admin.run(install, check=False)
+            result = await admin.run(
+                _script(_INSTALL_GRANT, target.qa_ssh_user, entry), check=False
+            )
     except (OSError, asyncssh.Error) as exc:
         raise QAGrantError(
             f"could not reach {target.server_ip} to issue a QA identity: {exc}"
         ) from exc
+    detail = (result.stderr or result.stdout or "").strip()[:500]
+    # The install script separates "this host has no such identity" from every
+    # other way an append can fail, and the difference matters to the caller:
+    # one is a fact about the host's provisioning that an administrator has to
+    # see, the other is this run's bad luck.
+    if result.exit_status in (IDENTITY_ABSENT, IDENTITY_KEYS_ABSENT):
+        raise QAIdentityAbsentError(
+            f"{target.server_handle} records a QA account but {target.server_ip} has none: "
+            f"{detail or f'{target.qa_ssh_user} is not on the target'}"
+        )
     if result.exit_status != 0:
         raise QAGrantError(
-            f"could not install the run identity on {target.server_ip}: "
-            f"{(result.stderr or result.stdout or '').strip()[:500]}"
+            f"could not install the run identity into {target.qa_ssh_user}@{target.server_ip}: "
+            f"{detail}"
         )
 
 
-async def revoke_grant(*, server_ip: str, ssh_user: str, fleet_key: str, marker: str) -> str | None:
+async def revoke_grant(
+    *, server_ip: str, ssh_user: str, qa_ssh_user: str, fleet_key: str, marker: str
+) -> str | None:
     """Remove one run's key and prove it is gone. Returns residual evidence.
 
     A revoke that is not read back is a revoke that was hoped for. The count is
@@ -440,26 +608,20 @@ async def revoke_grant(*, server_ip: str, ssh_user: str, fleet_key: str, marker:
     returned as the residue it is. Removing a marker that was never installed is
     a no-op that reads back zero, which is what makes this safe to repeat — the
     sweep calls it for records that may never have installed anything.
-
-    The rewrite refuses to install an empty result over the file. This
-    connection was authorized by that same file, so it holds at least the fleet's
-    own line; a filter that kept nothing did not find only our key, it failed.
-    Copying that over the file would lock the orchestrator out of the target for
-    good. Leaving it alone instead makes the readback report the marker as still
-    there, which is the residue the sweep is for.
     """
-    remove = shlex.quote(
-        f"grep -v -F {shlex.quote(marker)} {AUTHORIZED_KEYS} > {AUTHORIZED_KEYS}.qa-tmp || true; "
-        f"test -s {AUTHORIZED_KEYS}.qa-tmp && cat {AUTHORIZED_KEYS}.qa-tmp > {AUTHORIZED_KEYS}; "
-        f"rm -f {AUTHORIZED_KEYS}.qa-tmp"
-    )
-    verify = f"grep -c -F {shlex.quote(marker)} {AUTHORIZED_KEYS} || true"
     async with await _connect(server_ip, ssh_user, _import(fleet_key)) as admin:
-        await admin.run(f"flock {GRANT_LOCK} -c {remove}", check=False)
-        check = await admin.run(verify, check=False)
-    remaining = (check.stdout or "").strip()
-    if remaining and remaining != "0":
-        return f"{remaining} authorized_keys line(s) matching {marker} survived revocation"
+        check = await admin.run(_script(_REVOKE_GRANT, qa_ssh_user, marker), check=False)
+    lines = (check.stdout or "").strip().splitlines()
+    count = lines[-1].strip() if lines else ""
+    # No answer is not "the key is gone". Only a count read back off the file
+    # closes a grant; anything else is residue for the sweep to keep working on.
+    if check.exit_status != 0 or not count.isdigit():
+        return (
+            f"the target did not report whether {marker} is gone: "
+            f"{(check.stderr or check.stdout or '').strip()[:300] or 'no answer'}"
+        )
+    if count != "0":
+        return f"{count} authorized_keys line(s) matching {marker} survived revocation"
     return None
 
 
@@ -488,6 +650,7 @@ def new_grant(target: QATarget, marker: str) -> QASshGrant:
         server_handle=target.server_handle,
         server_ip=target.server_ip,
         ssh_user=target.ssh_user,
+        qa_ssh_user=target.qa_ssh_user,
         state=QASshGrantState.ISSUING,
         issued_at=dt.datetime.now(dt.UTC),
     )
@@ -539,12 +702,12 @@ async def qa_target_grant(
     logger.info(
         "qa_target_grant_issued",
         server_ip=target.server_ip,
-        ssh_user=target.ssh_user,
+        ssh_user=target.qa_ssh_user,
         marker=outcome.marker,
     )
     try:
         try:
-            conn = await _connect(target.server_ip, target.ssh_user, run_key)
+            conn = await _connect(target.server_ip, target.qa_ssh_user, run_key)
         except (OSError, asyncssh.Error) as exc:
             raise QAGrantError(
                 f"the run identity could not connect to {target.server_ip}: {exc}"
@@ -557,6 +720,7 @@ async def qa_target_grant(
             outcome.residual = await revoke_grant(
                 server_ip=target.server_ip,
                 ssh_user=target.ssh_user,
+                qa_ssh_user=target.qa_ssh_user,
                 fleet_key=fleet_ssh_key,
                 marker=outcome.marker,
             )

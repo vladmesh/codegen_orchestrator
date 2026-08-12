@@ -104,7 +104,7 @@ cannot poison-loop the reclaim.
 |-------|-------|-----|-----------|----------|---------|
 | `engineering:queue` | `capability-workers` | EngineeringMessage | Task Dispatcher (scheduler) | langgraph | Start development task |
 | `deploy:queue` | `capability-workers` | DeployMessage | Task Dispatcher (scheduler) / PO | langgraph | Start deploy task |
-| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA: HTTP checks for GET-only criteria, else Claude Code on prod server |
+| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA: HTTP checks for GET-only criteria, else a central ephemeral `qa` worker on the management host (Claude Code, or Codex when assigned) |
 
 ---
 
@@ -156,7 +156,7 @@ cannot poison-loop the reclaim.
 > ```
 > Developer Worker (AI Agent) → curl localhost:9090 → worker-wrapper → worker-broker → Redis
 > ```
-> The HTTP server in worker-wrapper validates agent results locally; the authenticated broker owns stream, status, session and Compose transport.
+> The HTTP server in worker-wrapper validates agent results locally; the authenticated broker owns stream, status, session and Compose transport. Authentication is not authorization: the broker and worker-manager each authorize the operation against the worker type recorded server-side (`shared/contracts/worker_control_plane.py`), and a `qa` worker gets the turn protocol only — Compose is refused to it at both hops, because its token is readable by the agent it runs.
 
 ### Actor Roles
 
@@ -1174,9 +1174,20 @@ None of them is proof that the access is gone; they shorten the window in which 
 be written back. What says it is gone is the reading.
 
 A disagreement that outlives `supervisor.temporary_access_unrevoked_ttl_minutes` or
-`supervisor.temporary_access_max_revoke_attempts` stops being an internal retry: the QA run fails
-with `qa_cleanup_failed` naming the observed state, and the story goes to a human rather than
-waiting in TESTING.
+`supervisor.temporary_access_max_revoke_attempts` stops being an internal retry: the QA run carries
+a `qa_cleanup_failed` blocker naming the observed state, the grant is stamped `escalated_at`, and an
+admin alert names the story, project, QA run and grant.
+
+**Cleanup never holds the product back.** `supervise_testing_stories` routes a story on the QA
+outcome alone and does not read the grant: a passed run completes its story on the next supervisor
+tick, and the owner is told (`story_completed` on `po:input`, with the deployed address) whether or
+not the borrowed identity has been handed back yet. The sweep goes on revoking, reading and — when
+it gives up — escalating afterwards; a completed story is never reopened by what happens to the
+grant later, because only TESTING stories are routed at all. The two are told apart in the cycle
+counts: `temporary_access_revoke_failed` is an attempt that will be retried, and
+`temporary_access_escalated` is the sweep having given up and called a human. Story routing runs
+before the sweep in the dispatcher cycle, so a cleanup that runs out of attempts after an outage
+cannot write its incident onto a QA run before the story it belongs to has been routed.
 
 ### QA handoff plan
 
@@ -1227,6 +1238,109 @@ is settled by deploys, a different subject with a different lifecycle. What is r
 shape — a durable record, a sweep that reconciles from state rather than from the happy path, and a
 failure that lands on the run rather than in a log line.
 
+### Terminal owner notification
+
+`shared/contracts/dto/owner_notification.py`. **The invariant: a terminal story transition cannot be
+observed without the owner's message being either already published to `po:input` or durably owed.**
+The record lives in `run_metadata` under `owner_notification`, on the run that produced the outcome
+— the QA run for the story's own endings, the engineering run for the impossible-capacity task
+notice — and is written **before** the transition is committed, for the same reason the SSH grant
+above is written before the key is installed: publishing after the commit has a gap, and committing
+is exactly what takes the subject out of the status whose scan would otherwise come back to it. For
+the three endings owed inside `supervise_testing_stories` that status is `TESTING`; the other two
+paths leave the statuses their own loops scan. The endings are not one ending — the five paths
+produce different terminal statuses, which is why the record carries the `terminal_status` it
+expects instead of assuming one — but the gap has the same shape in all of them, and a publish lost
+in it used to be lost permanently.
+
+`OwnerNotification` carries the `POSystemEvent` name PO routes on, the text to publish, the story,
+the project, the `terminal_status` the intended transition produces, an optional `task_id`, `state`,
+`owed_at`, `attempts` and `detail`. The words are stored rather than recomputed, so a later tick
+publishes what the tick that owed it decided; the recipient is *not* stored, because resolving it is
+one of the two things that can fail transiently and must be retried.
+
+**Nothing is published until the story proves the transition committed.** The record is written
+first, so it cannot be evidence of its own transition: the transition is a separate request and can
+fail after the record is durable. Delivery therefore reads the story and publishes only if it is in
+the record's `terminal_status` — recorded rather than inferred, so the check is the ending that was
+intended and not "any status but the one it started from". Without it this record would trade a lost
+message for a false one, and a false "your product is finished" is worse than a missing one: the
+owner sees it and believes it. The same check closes the opposite case with the same rule — a
+transition that committed and lost its response leaves the story terminal, so its message goes out.
+Reading the story is itself an API call, so a failed *read* is treated as the transient failure it
+is, not as proof that the transition is missing.
+
+`services/scheduler/src/tasks/owner_notifications.py` is the only seam. All three terminal paths in
+`supervise_testing_stories` reach it — QA passed (`story_completed`), an unverifiable application
+quarantined (`story_quarantined`), and QA fix attempts exhausted (`story_quarantined`) — and so do
+the supervisor's other two terminal owner notifications, whose publishes both previously sat behind
+a swallowed exception: `_escalate_refused_deploy` with `tell_owner` (`story_impossible_capacity`),
+and `_park_task_waiting_resources` on the `HUMAN_REVIEW_WITH_OWNER_NOTICE` routing
+(`task_impossible_capacity`), which parks a failed engineering task *and* its parent story for a
+human. That last one is about the task, so its record keeps `task_id` and PO is still told which
+task; the record lives on the engineering run, since the record belongs to whatever run produced the
+outcome. Each path owes the message, commits the transition, then spends its first delivery attempt.
+A refusal escalated with `tell_owner=False` stays admin-only and owes nothing: there is no decision
+for the owner to make, and the seam does not invent a message.
+
+The publishes that remain direct in `supervisor.py` are the non-terminal ones, and that is the whole
+list: `task_waiting_resources` and `task_waiting_infrastructure`, `task_resources_resumed`, and
+`story_waiting_user_secret`. **They are best effort and outside this guarantee**, and not because a
+later scan would re-derive them — it would not. `_notify_resources_resumed_via_po` is called once,
+on the `backlog → todo` move that admits the task, and nothing calls it again for a task in `todo`.
+The first wait messages are published only under `is_new_wait`, so a later pass over a task still
+sitting in `waiting_resources` does not repeat them. The `waiting_user_secret` scan exists to
+redispatch the story once the secret arrives, not to re-send the request that asked for it. Losing
+one of these publishes therefore means the owner does not get that message at all; the bounded retry
+and admin alert described in this section do not cover them. Making them durable would mean an
+outbox for producers beyond the supervisor's terminal notifications, which is deliberately not what
+this record is.
+
+The exhausted-fix path among those three is a decision, not an omission: it used to alert
+administrators only. It ends the story for its owner exactly as a quarantine does, so the owner is
+told too, through the same seam, under the event PO already routes — a new event name would only be
+dropped by PO as unknown. The admin alert on that path is unchanged and still fires.
+
+Five states, and four of them are terminal. `OWED` is work. `DELIVERED` is the stream having
+accepted the event, and nothing publishes it again. `UNADDRESSABLE` is a recipient that resolved to
+no Telegram chat — an answer, not a failure, so it is logged and alerted once and never retried.
+`ABANDONED` is `OWNER_NOTIFICATION_MAX_ATTEMPTS` (3) transient failures, after which an admin alert
+names the event, story, project and run. `VOIDED` is the intended transition not being in the story:
+fail-closed, so nothing is published and no attempt is spent — an ending that did not happen is not
+a delivery that failed — and the obligation is written again from scratch, with a fresh attempt
+budget, when routing does reach that ending. Only `owe_owner_notification` may replace a record, and
+only a voided one; the other three endings stop the message for good.
+
+`supervise_owed_owner_notifications` is the recovery pass, and it reads its work from
+`GET /api/runs/owner-notifications/owed` (internal/admin): every run whose `owner_notification.state`
+is `owed`, ordered `(created_at, id)` ascending, bounded by `limit`. Age is not a selection key, so
+a story finished during an outage is still served afterwards; no cursor is needed, unlike the grant
+selection, because every visit either delivers the record or spends one of its bounded attempts, so
+nothing can sit at the head of the page indefinitely. A selected record that does not parse raises
+rather than being skipped — unreadable is not delivered, and this module is its only writer.
+
+The pass runs **before** story routing in the dispatcher cycle, so a record owed by this tick's
+routing gets exactly the one in-tick attempt routing makes; the other order would spend a second
+attempt of the bound in the same second. That order is also what makes a voided record self-healing:
+the sweep settles it before routing looks at the story it belongs to, so the same tick can owe the
+ending again. Its outcomes are visible in `supervisor_cycle` as `owner_notify_recovered`,
+`owner_notify_retrying`, `owner_notify_exhausted`, `owner_notify_unaddressable` and
+`owner_notify_voided` — "still being chased" told apart from "given up on and handed to a human"
+told apart from "there is no chat to write to" told apart from "there was nothing to say yet".
+
+Bounds of the guarantee. Delivery is at-least-once, not exactly-once: a process that dies between
+the publish landing and the record being marked delivered republishes on the next tick. What is
+guaranteed is that a *settled* record is never published again and that an owed one is never
+forgotten. The record covers the publish leg only, `scheduler → po:input`; the transport leg to
+Telegram has its own bounded retry and admin alert in `services/telegram_bot/src/proactive.py`. And
+it covers the supervisor's terminal owner notifications only — it is not an outbox for every
+producer in the project.
+
+One boundary is worth naming: the proof is the story's status at the moment of delivery, not a
+transition log. A story that reaches its terminal status and is then moved on by a human before the
+sweep runs voids the record rather than delivering it. That is the fail-closed side of the same
+rule, and it costs a message only in the window where a person is already looking at the story.
+
 
 ---
 
@@ -1266,13 +1380,38 @@ Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the
 
 **Bot username:** `Repository.bot_username` is the stored source. `POST /api/projects/{id}/telegram/token` writes it there from the `getMe` response in the same transaction that stores the token, and both producers read it off the same record they read the criteria from. A project without a primary repository gets 409 instead of a half-bound token. The deploy smoke check also reports a `bot_username` on `DeployRunResult`; the supervisor uses it only when the repository has none. A tg_bot project reaching QA without a username errors the run, so a write that silently does nothing turns a working bot into a failed story — the endpoint refuses instead.
 
-**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to the central QA agent instead (`run_qa_centrally`), which reaches the deployment through typed read-only tools bounded by the run's capability set, over a one-shot unprivileged identity issued for that run.
+**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to the central QA executor instead (`run_qa_centrally`): an ephemeral coding-agent container started on the management host through worker-manager, which reaches the deployment only through this run's capability endpoint — the same typed read-only calls bounded by the run's capability set, performed by `qa-worker` over a one-shot unprivileged identity issued for that run. "Only" is enforced by the network: that container is attached to the `internal` `codegen_qa_egress` network alone, with one per-run `CONNECT`-only proxy for the assigned CLI's model backend, and worker-manager fails the run closed rather than starting a container whose egress policy did not establish. If that executor cannot be started at all, the optional `QA_LLM_*` triplet runs the same calls as an in-process agent; with no triplet the run ends as `qa_executor_unavailable`, which is a platform outcome and never a product verdict.
 
 `returns <status>` means the path itself answers that status, so the checks do not follow redirects: a criterion naming a redirect is checked against the redirect, and a criterion naming 200 is not satisfied by a path that redirects to a 200. Checks are retried while the service is still coming up.
 
 The consumer parses the criteria *before* resolving anything else, and only the agent branch reads the server, its SSH key, and `bot_username`. A criteria block the deployed URL alone can answer must not fail over agent scaffolding it never uses.
 
-**Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or Claude Code on the prod server) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story.
+**Deterministic probes, and the order they run in.** On the exploratory path, everything below is decided before an executor container exists. Each one is a plain read — no model is asked, and a probe that answers terminally ends the run where it stands.
+
+| # | Probe | Where | Holds | Product is at fault | Infrastructure did not answer |
+|---|-------|-------|-------|---------------------|-------------------------------|
+| 1 | `check_deployed_url_reachable` | QA consumer, over HTTP | continue | (a response, any status, is reachability) | blocker `deployed_url_unreachable` |
+| 2 | bot liveness — `_probe_bot_liveness` → `GET /api/projects/{id}/telegram/liveness` → Telegram `getMe` | API asks; QA gets a state | continue, and the fact is told to the executor | blocker `bot_not_live`, and only when the Bot API refused the token itself (HTTP 401 or 404) | every other non-OK answer, rate limiting included: retried `BOT_LIVENESS_ATTEMPTS` times, then blocker `qa_probe_unavailable` + admin alert |
+| 3 | `preflight_bot_access` | QA runtime's Telegram account | continue | — | blockers `missing_telethon_credentials` / `telegram_access_denied` |
+| 4 | `run_container_state_checks`, preceded by the `docker ps` in `resolve_capabilities` that lists the run's containers | run's own SSH session, `docker ps` then `docker inspect` | continue, and the fact is told to the executor | QA **fails** with one failed check per container that is down, restarting or unhealthy — no blocker, so the engineering loop gets it | either docker call: retried `CONTAINER_PROBE_ATTEMPTS` times, then blocker `qa_probe_unavailable` + admin alert |
+| 5 | exploratory executor | worker-manager container | product verdict | product verdict | blocker `qa_executor_unavailable` + admin alert |
+
+The bot token never leaves the API. QA asks the liveness endpoint (internal or admin only) and gets back `BotLiveness` — a state, the username Telegram itself reported, and a detail line; the credential enters neither the QA runtime nor the target. The endpoint answers `no_token` for a project that never bound one, and 404 for a project that does not exist.
+
+Two categories are new with these probes, and they are not interchangeable with what they sit next to. `qa_probe_unavailable` means a deterministic probe could not be performed at all — docker did not answer on a host the run is already on, or the platform API did not; it is not `server_unavailable`, which means the run never got onto the host and is repaired by looking at the host or its provisioning. `bot_not_live` means Telegram answered and refused the stored token; it is not `telegram_access_denied`, which is a live bot refusing the QA account and is repaired by the temporary-access mechanism. Both infrastructure categories go through the mechanism that already existed for a missing executor: retry, a typed QA-infrastructure outcome, and one administrator alert (`QA_INFRASTRUCTURE_BLOCKERS` in `consumers/qa.py`). None of them is ever a product verdict, and none reaches the engineering loop.
+
+**One condition, one classification, whichever call found it.** A dependency that did not answer is classified by what was unavailable, never by which call happened to meet it first.
+
+* *Docker on the target.* Two calls read it: the `docker ps` in `resolve_capabilities` that builds the run's container capability, and the `docker inspect` of each container in `run_container_state_checks`. Both retry `CONTAINER_PROBE_ATTEMPTS` times with `CONTAINER_PROBE_RETRY_DELAY` between attempts, and both end at `container_runtime_unavailable()` in `consumers/_qa_runner.py`, which is the single place that turns "the container runtime did not answer" into `qa_probe_unavailable` + alert. The listing runs before a session exists, so it raises `QAContainerRuntimeError` and `run_qa_centrally` classifies it there; the inspect raises the outcome directly. A compose project docker knows no container for is the same category with a different reason: nothing was read, so nothing about the product is claimed.
+* *Not docker.* A deployment directory that does not resolve, and every failure to open or grant the run's SSH identity, stay `server_unavailable`: no docker call was made, so nothing is known about the container runtime. That distinction is the reason the two are separate categories at all.
+* *Telegram, at QA time.* Only HTTP 401 and 404 on `getMe` are the Bot API refusing this token, and only those become `bot_not_live`. Flood control (HTTP 429), a 5xx, a non-JSON body from something in front of Telegram, a transport error, and the platform API not answering are all `telegram_unreachable` / a failed call, and all end at the same retried `qa_probe_unavailable` + alert. When Telegram sends `parameters.retry_after` (https://core.telegram.org/bots/api#responseparameters) it travels on `BotLiveness.retry_after` and the probe waits exactly that long — up to `BOT_LIVENESS_MAX_RETRY_DELAY`; a longer window is not waited out, the probe stops and reports the same infrastructure outcome naming the number Telegram gave. `no_token` is not a dependency failure and keeps its terminal, human-facing route.
+* *The exploratory agent's own `container_inspect`.* It runs only after probe 4 has already succeeded, and its result goes to the model unchanged — that is the exploratory contract and it is not a deterministic classification.
+
+Deploy smoke (`subgraphs/devops/smoke.py`) checks the bot's `getMe` and the `tg_bot` container at deploy time and is a separate step — it is not re-run or duplicated here. What probes 2 and 4 add is *at QA time*, on the containers of the whole compose project rather than the one bot service, over the QA run's own unprivileged identity rather than the deploy's access.
+
+**What the executor is told.** Probes 2 and 4 hand their result to `build_qa_prompt(..., established_facts=[...])`, which states them under "Already established" and replaces checklist item 3 (container state) with a line saying not to check it again. Nothing else about the prompt changes: the tool set, the read-only rules and the result JSON (`pass` / `checks` / `summary`) are identical with or without facts, and `QAResult` gains no field.
+
+**Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or the central QA executor) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story and publish `story_completed` to `po:input` with the deployed address, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story. Routing reads the QA outcome and nothing else — temporary access held by the run is settled by its own sweep and never delays the completion or the notification.
 
 **Lifecycle operations:** `stop` and `undeploy` actions are handled by the `deploy_lifecycle` module, which SSHes to the server and runs `docker compose stop/down` directly — skipping the full DevOps subgraph.
 
@@ -1341,7 +1480,7 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 | Queue | Initiator | Consumer | Purpose |
 |-------|-----------|----------|---------|
 | `worker:commands` | LangGraph | worker-manager | Command to Create/Delete worker container. |
-| `worker:responses:developer` | worker-manager | langgraph | Responses for Developer worker commands (e.g. "Developer container created"). |
+| `worker:responses:developer` | worker-manager | langgraph | Responses for worker commands (e.g. "Developer container created"). The name is historical: `qa` worker create/delete acks ride the same stream, because there is one worker-command mechanism and one response stream for it. |
 
 ## WorkerCommand / WorkerResponse
 
@@ -1358,6 +1497,8 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 
 # AgentType is the canonical enum (shared/contracts/vocab.py), re-exported here.
 from shared.contracts.vocab import AgentType  # claude / factory / codex / noop
+# QA_EXECUTOR_AGENT_TYPES is the subset a `qa` worker may run on: claude / codex.
+from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES
 
 
 class WorkerCapability(StrEnum):
@@ -1376,7 +1517,10 @@ class WorkerChannels(StrEnum):
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
     name: str
-    worker_type: Literal["developer"]         # Worker type for queue naming
+    # "developer" writes code in a pre-scaffolded repository workspace;
+    # "qa" is the central exploratory-QA executor (no repository, no git
+    # credentials, nothing to commit — see `qa:queue` above).
+    worker_type: Literal["developer", "qa"]
     agent_type: AgentType                     # Which AI agent to use
     instructions: str                         # Content for instruction file (CLAUDE.md / AGENTS.md)
     task_content: str | None = None           # Content for TASK.md (optional, for task-driven workers)
@@ -1385,7 +1529,23 @@ class WorkerConfig(BaseModel):
     env_vars: dict[str, str] = {}
     auth_mode: Literal["host_session", "api_key"] = "host_session"
     host_claude_dir: str | None = None
+    host_codex_home: str | None = None
     api_key: str | None = None
+    project_id: str | None = None             # Workspace persistence (developer)
+    repo_id: str | None = None                # Mount pre-scaffolded workspace (developer)
+    scaffold_config: ScaffoldConfig | None = None
+    branch: str | None = None                 # Story branch to checkout
+
+    @model_validator(mode="after")
+    def _qa_runs_on_an_assigned_subscription_agent(self) -> "WorkerConfig":
+        # A `qa` worker may only be claude or codex — both subscription CLIs
+        # whose session stays on the management host. `factory` runs on a
+        # provider API key and `noop` performs no testing, so a `qa` create
+        # carrying either is refused where worker-manager validates the command,
+        # before any container exists. Developer workers keep the full AgentType.
+        if self.worker_type == "qa" and self.agent_type not in QA_EXECUTOR_AGENT_TYPES:
+            raise ValueError(...)
+        return self
 
 
 class CreateWorkerCommand(QueueMeta):
@@ -1507,7 +1667,7 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 
 **Delivery of `po:proactive`**: the bot consumes without auto-ack and claims the pending entries of its previous incarnation on startup, so a delivery interrupted by a restart is picked up rather than lost. `telegram_bot/src/proactive.py::process_proactive_entry` is the single place that settles an entry: it acks only after the message was delivered or its attempts ran out, and the attempt bound is the group's PEL delivery count, which survives the restart (`PROACTIVE_MAX_ATTEMPTS` inside one delivery, `PROACTIVE_MAX_DELIVERIES` across them). Exhaustion raises an admin alert with story, project and event; success and exhaustion are distinct log events (`proactive_message_sent` / `proactive_message_delivery_exhausted`).
 
-**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`. User-facing resource lifecycle events are `task_waiting_resources`, `task_waiting_infrastructure`, `task_impossible_capacity`, `story_impossible_capacity` (the deploy path's equivalent, emitted when a deploy is escalated to operators), and `task_resources_resumed`; the scheduler supplies context, PO writes the user text. `task_waiting_infrastructure` is the non-capacity member of that set: it is emitted when admission refused every server because its software provisioning is unfinished or failed (`AllocationFailureReason.SERVER_NOT_PROVISIONED`), and it must not be worded as a capacity shortage or as a defect in the user's project.
+**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`. User-facing resource lifecycle events are `task_waiting_resources`, `task_waiting_infrastructure`, `task_impossible_capacity`, `story_impossible_capacity` (the deploy path's equivalent, emitted when a deploy is escalated to operators), and `task_resources_resumed`; the scheduler supplies context, PO writes the user text. `task_waiting_infrastructure` is the non-capacity member of that set: it is emitted when admission refused every server — an unfinished or broken host build, a status that does not admit, a host that stopped being managed (`AllocationFailureReason.SERVER_NOT_PROVISIONED`, the single reason every admission refusal carries), and it must not be worded as a capacity shortage or as a defect in the user's project.
 
 ---
 

@@ -15,6 +15,7 @@ from shared.redis import decode_redis_fields
 
 from .config import settings
 from .docker_ops import DockerClientWrapper
+from . import qa_egress
 from . import workspace as workspace_mod
 
 logger = structlog.get_logger()
@@ -79,6 +80,24 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
                         worker_id=worker_id,
                         error=str(e),
                     )
+
+    # --- Orphaned QA egress proxies ---
+    # A QA run's proxy holds the second network leg its executor is not allowed
+    # to have. If the run's own cleanup never happened, the proxy is exactly the
+    # kind of thing that must not be left running.
+    try:
+        proxies = await docker.list_containers(
+            filters={"label": f"com.codegen.type={qa_egress.PROXY_TYPE_LABEL}"}, all=True
+        )
+    except Exception as e:
+        logger.error("orphan_gc_list_proxies_failed", error=str(e))
+        proxies = []
+
+    for proxy in proxies:
+        worker_id = proxy.labels.get("com.codegen.worker.id")
+        if worker_id and worker_id not in known_ids:
+            logger.info("orphan_gc_removing_qa_egress_proxy", worker_id=worker_id)
+            await qa_egress.tear_down(docker, worker_id)
 
     # --- Orphaned networks ---
     try:

@@ -1,14 +1,21 @@
 """The complete reach of a central QA run.
 
-Every tool here is built for one run and closes over that run's target session,
+Every call here is built for one run and closes over that run's target session,
 workspace and Telegram credentials. There is no module-level state and no
 parameter naming a host, so an agent cannot address a second deployment: the
-only target it can reach is the one the runner bound these tools to.
+only target it can reach is the one the runner bound these calls to.
 
-None of these can write to the application. The HTTP tools take no method, the
-remote tools take an allowlist-checked argument vector, and the Telegram tool
-sends a message the platform's own test account is entitled to send. That is
-the write guard — the old one filtered a shell the agent no longer has.
+None of these can write to the application. The HTTP calls take no method, the
+remote calls take an allowlist-checked argument vector, and the Telegram call
+sends a message the platform's own test account is entitled to send.
+
+There are two front-ends over one boundary, and only one boundary.
+:func:`build_qa_callables` is it. :func:`build_qa_tools` wraps the callables as
+LangChain tools for the in-process fallback agent, and
+``agents/qa/capability_service`` serves the same dictionary over HTTP to the
+central executor container. Neither front-end may add an operation, widen an
+argument, or decide anything the capability set does not decide — a call the
+executor makes is the same call the fallback agent makes.
 
 A refused call comes back as an ``error`` field rather than an exception: the
 agent has to be able to read "that is out of scope" and choose another check,
@@ -125,20 +132,25 @@ def _remote_tools(session: QATargetSession, record, refuse) -> dict:
     }
 
 
-def build_qa_tools(
+def build_qa_callables(
     *,
     session: QATargetSession,
     workspace: QAWorkspace,
     telethon_env: dict[str, str] | None = None,
     probe_runner: Callable[..., object] | None = None,
-) -> list[StructuredTool]:
-    """Build the tool set for exactly one QA run.
+) -> dict[str, Callable]:
+    """Build the whole reach of exactly one QA run, keyed by call name.
+
+    This is the boundary. Whatever front-end an executor speaks — LangChain
+    tools in this process, or the HTTP capability endpoint a container calls —
+    it dispatches into this dictionary and can neither add to it nor reach past
+    it.
 
     Args:
-        session: the run's single target. Every remote tool goes through it.
+        session: the run's single target. Every remote call goes through it.
         workspace: the run's scratch directory; holds the report and the trace.
         telethon_env: QA account credentials, present only when the deployment
-            has a bot to talk to. The agent never sees them.
+            has a bot to talk to. No executor ever sees them.
         probe_runner: override for the Telegram child process, for tests.
     """
     capabilities = session.capabilities
@@ -174,17 +186,36 @@ def build_qa_tools(
         workspace.write_report(markdown)
         return f"QA report stored ({len(markdown)} characters)."
 
-    tools = _describe(
-        session.capabilities,
-        _remote_tools(session, record, refuse),
-        write_qa_report,
-    )
+    callables: dict[str, Callable] = dict(_remote_tools(session, record, refuse))
+    callables["write_qa_report"] = write_qa_report
     if capabilities.bot_username:
         if not telethon_env:
             raise ValueError("a bot target needs the QA account's Telethon credentials")
+        callables["telegram_probe"] = telegram_probe
+    return callables
+
+
+def build_qa_tools(
+    *,
+    session: QATargetSession,
+    workspace: QAWorkspace,
+    telethon_env: dict[str, str] | None = None,
+    probe_runner: Callable[..., object] | None = None,
+) -> list[StructuredTool]:
+    """Wrap this run's callables as LangChain tools for the in-process agent."""
+    callables = build_qa_callables(
+        session=session,
+        workspace=workspace,
+        telethon_env=telethon_env,
+        probe_runner=probe_runner,
+    )
+    capabilities = session.capabilities
+    remote = {name: fn for name, fn in callables.items() if name in _descriptions(capabilities)}
+    tools = _describe(capabilities, remote, callables["write_qa_report"])
+    if "telegram_probe" in callables:
         tools.append(
             StructuredTool.from_function(
-                coroutine=telegram_probe,
+                coroutine=callables["telegram_probe"],
                 name="telegram_probe",
                 description=(
                     f"Send a message to @{capabilities.bot_username} as the platform's QA "

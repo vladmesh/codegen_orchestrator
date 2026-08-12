@@ -179,9 +179,14 @@ class DockerClientWrapper:
         """List all Docker networks."""
         return await self._run(self._client.networks.list)
 
-    async def create_network(self, name: str, driver: str = "bridge") -> Any:
-        """Create a Docker network."""
-        return await self._run(self._client.networks.create, name, driver=driver)
+    async def create_network(self, name: str, driver: str = "bridge", internal: bool = False) -> Any:
+        """Create a Docker network. `internal` means no route off the network."""
+        return await self._run(self._client.networks.create, name, driver=driver, internal=internal)
+
+    async def inspect_network(self, name: str) -> Dict[str, Any]:
+        """Read a network's attributes, including whether it is internal."""
+        network = await self._run(self._client.networks.get, name)
+        return network.attrs
 
     async def remove_network(self, name: str) -> None:
         """Remove a Docker network, ignoring NotFound."""
@@ -191,10 +196,10 @@ class DockerClientWrapper:
         except docker.errors.NotFound:
             pass
 
-    async def connect_network(self, network_name: str, container_id: str) -> None:
+    async def connect_network(self, network_name: str, container_id: str, aliases: List[str] | None = None) -> None:
         """Connect a container to a network."""
         network = await self._run(self._client.networks.get, network_name)
-        await self._run(network.connect, container_id)
+        await self._run(network.connect, container_id, aliases=aliases)
 
     async def disconnect_network(self, network_name: str, container_id: str) -> None:
         """Disconnect a container from a network, ignoring NotFound."""
