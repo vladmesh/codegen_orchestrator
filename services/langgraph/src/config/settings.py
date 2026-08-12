@@ -49,12 +49,12 @@ class Settings(BaseSettings):
     architect_llm_base_url: str | None = None
     architect_llm_api_key: str | None = None
 
-    # Who performs exploratory QA. Claude Code on the management host's isolated
-    # subscription session by default; Codex only when assigned explicitly. The
+    # Who performs exploratory QA. Codex on the management host's isolated
+    # subscription session by default; Claude Code remains an explicit override. The
     # type is the narrow one on purpose: `factory` would run QA on a provider
     # API key and `noop` would run no QA at all, so both are refused when the
     # configuration is read rather than at the far end of a started run.
-    qa_executor_agent_type: QAExecutorAgentType = AgentType.CLAUDE
+    qa_executor_agent_type: QAExecutorAgentType = AgentType.CODEX
     # How the QA executor's container addresses this runtime's per-run
     # capability endpoint. It is a name on the worker network, not a URL: the
     # port is chosen per run and the token with it.

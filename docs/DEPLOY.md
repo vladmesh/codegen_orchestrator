@@ -281,14 +281,15 @@ Exploratory QA is performed on the management host by an ephemeral coding agent 
 Deploy targets carry nothing for it: no CLI, no LLM credentials, no Telethon session.
 
 **What the QA runtime needs** (all in the orchestrator `.env`):
-- `QA_EXECUTOR_AGENT_TYPE` — who performs the run. `claude` by default; `codex` only to assign
-  Codex explicitly, and nothing else: `factory` (provider API key) and `noop` (no testing at all)
+- `QA_EXECUTOR_AGENT_TYPE` — who performs the run. `codex` by default; `claude` remains an explicit
+  subscription-agent override, and nothing else: `factory` (provider API key) and `noop` (no testing at all)
   are refused when the configuration is read, and a `qa` worker command carrying either is refused
   by worker-manager before a container exists. The session itself is `HOST_CLAUDE_DIR` /
   `HOST_CODEX_HOME`, which worker-manager mounts into the ephemeral QA container.
 - `QA_CAPABILITY_HOST` — how that container addresses `qa-worker`'s per-run capability endpoint.
   It is the service's name on the `codegen_worker` network and only changes if the service is
-  renamed. `qa-worker` is attached to that network for this and for nothing else.
+  renamed. `qa-worker` is attached to that network for this and for nothing else. Codex QA invokes
+  its documented `--skip-git-repo-check` mode because its ephemeral workspace intentionally has no Git repository.
 - `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION` — the QA Telegram account, needed only
   for projects with a bot.
 - `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — **optional**. An API fallback consulted only

@@ -188,13 +188,15 @@ async def _invoke(runtime, settings):
 
 
 class TestTheAssignedExecutorGoesFirst:
-    async def test_claude_is_the_default_executor(self, tmp_path):
+    async def test_codex_is_the_default_executor(self, tmp_path):
         executor = _submitting_executor()
 
-        result = await _run(executor=executor, settings=NO_FALLBACK, tmp_path=tmp_path)
+        result = await _run(
+            executor=executor, settings=NO_FALLBACK, runtime=CODEX_RUNTIME, tmp_path=tmp_path
+        )
 
         assert result.passed is True
-        assert executor.calls[0]["agent_type"] is AgentType.CLAUDE
+        assert executor.calls[0]["agent_type"] is AgentType.CODEX
 
     async def test_codex_runs_when_it_is_the_one_assigned(self, tmp_path):
         executor = _submitting_executor()
@@ -207,6 +209,19 @@ class TestTheAssignedExecutorGoesFirst:
         )
 
         assert executor.calls[0]["agent_type"] is AgentType.CODEX
+
+    async def test_a_codex_executor_never_hands_its_profile_or_key_to_the_target(self, tmp_path):
+        executor = _submitting_executor()
+
+        await _run(
+            executor=executor, settings=NO_FALLBACK, runtime=CODEX_RUNTIME, tmp_path=tmp_path
+        )
+
+        handed_to_executor = json.dumps(
+            {key: str(value) for key, value in executor.calls[0].items()}
+        )
+        for credential in ("CODEX_HOME", "auth.json", "OPENAI_API_KEY", "CODEX_API_KEY"):
+            assert credential not in handed_to_executor
 
     async def test_a_working_executor_never_reads_the_api_triplet(self, tmp_path):
         """AC2: the triplet is not read because a run happened."""
@@ -341,8 +356,8 @@ class TestOnlyAnAssignedSubscriptionAgentCanBeConfigured:
     the configuration is read, so neither can turn into a run.
     """
 
-    def test_claude_code_is_the_default(self):
-        assert Settings().qa_executor_agent_type is AgentType.CLAUDE
+    def test_codex_is_the_default(self):
+        assert Settings().qa_executor_agent_type is AgentType.CODEX
 
     @pytest.mark.parametrize("assigned", ["claude", "codex"])
     def test_an_assigned_subscription_agent_is_accepted(self, assigned, monkeypatch):

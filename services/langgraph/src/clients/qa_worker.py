@@ -107,8 +107,8 @@ async def run_qa_executor(
     """Run one exploratory QA pass on a central ephemeral coding agent.
 
     Args:
-        agent_type: the assigned executor. Claude Code unless something assigned
-            Codex explicitly.
+        agent_type: the assigned executor. Codex by default, with Claude Code
+            available as an explicit override.
         capability_url: this run's capability endpoint, the container's only
             route to the deployment.
         capability_token: the run-scoped credential for that endpoint. It grants

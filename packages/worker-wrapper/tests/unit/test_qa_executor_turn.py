@@ -10,10 +10,12 @@ end the run before any testing happened.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from worker_wrapper.broker import BrokerMessage
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper, build_agent_subprocess_env
 
@@ -128,6 +130,64 @@ class TestWhatAQaTurnSkips:
             await wrapper._publish_result("msg-1", {}, None, "completed", None)
 
         resume.assert_not_awaited()
+
+    async def test_an_immediate_turn_waits_for_every_manager_injected_qa_material(self, tmp_path):
+        """The container may start first, but must not lease before preparation finishes."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        wrapper = _wrapper(agent_type="codex")
+        wrapper.config.poll_interval_ms = 1
+        leased = asyncio.Event()
+        verdict_submitted = asyncio.Event()
+        submitted_verdict: dict[str, object] | None = None
+        turns = 0
+
+        async def lease_input():
+            nonlocal turns
+            leased.set()
+            turns += 1
+            if turns == 1:
+                return BrokerMessage(
+                    message_id="first-turn", data={"prompt": "test the deployment"}
+                )
+            wrapper._running = False
+            return None
+
+        wrapper.broker.lease_input = AsyncMock(side_effect=lease_input)
+
+        async def execute_agent(_data):
+            nonlocal submitted_verdict
+            assert (workspace / "AGENTS.md").read_text() == "# QA executor"
+            assert (workspace / "TASK.md").read_text() == "test the deployment"
+            assert (workspace / "qa").is_file()
+            submitted_verdict = {"pass": True, "checks": [], "summary": "ready"}
+            verdict_submitted.set()
+
+        with (
+            patch("worker_wrapper.wrapper.WORKSPACE_DIR", str(workspace)),
+            patch("worker_wrapper.wrapper.TASK_MD_PATH", str(workspace / "TASK.md")),
+            patch.object(wrapper, "execute_agent", side_effect=execute_agent),
+            patch.object(wrapper, "_prepare_workspace", new_callable=AsyncMock),
+            patch.object(wrapper, "_publish_result", new_callable=AsyncMock),
+        ):
+            run = asyncio.create_task(wrapper.run())
+            await asyncio.sleep(0)
+            assert not leased.is_set()
+
+            (workspace / "AGENTS.md").write_text("# QA executor")
+            await asyncio.sleep(0)
+            assert not leased.is_set()
+
+            (workspace / "TASK.md").write_text("test the deployment")
+            (workspace / "qa").write_text("#!/bin/sh\n")
+            await asyncio.sleep(0)
+            assert not leased.is_set()
+            (workspace / "qa").chmod(0o700)
+            await asyncio.wait_for(verdict_submitted.wait(), timeout=1)
+            await run
+
+        assert wrapper.broker.lease_input.await_count == 2
+        assert submitted_verdict == {"pass": True, "checks": [], "summary": "ready"}
 
 
 class TestWhatAQaExecutorIsGiven:
@@ -248,3 +308,24 @@ class TestTheQaAgentChildProcessCanReachItsBackend:
 
         for name in ("HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"):
             assert name not in env
+
+    async def test_a_codex_qa_turn_uses_the_non_git_workspace_mode(self):
+        wrapper = _wrapper(agent_type="codex")
+        captured: dict = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured["cmd"] = args
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            proc.returncode = 0
+            return proc
+
+        with (
+            patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch.dict(os.environ, _QA_CONTAINER_ENV, clear=True),
+        ):
+            await wrapper.execute_agent(
+                {"prompt": "Read AGENTS.md and TASK.md, then submit a verdict."}
+            )
+
+        assert "--skip-git-repo-check" in captured["cmd"]

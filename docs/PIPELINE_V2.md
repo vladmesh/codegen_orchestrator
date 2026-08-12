@@ -225,9 +225,9 @@ If the developer agent encounters an unsolvable problem:
 3. Otherwise the run is exploratory. A target whose `ssh_user` is `root` is refused here — QA does not run privileged
 4. The consumer creates an isolated central workspace, writes a durable `qa_ssh_grant` record on the QA run, then mints a one-shot SSH identity on the target (`restrict`, `expiry-time`), installed and removed with the fleet key by the runner
 5. The run's capability set is resolved from deployment data: physical root of the deployment directory (`readlink -f` on the target), containers of this compose project (`docker ps --filter label=com.docker.compose.project=...`), the application's allocated ports, the public URL
-6. A QA ReactAgent runs **in `qa-worker`**, prompted with the acceptance criteria and deployed URL. Every tool it has is bounded by one element of that set: public GET, loopback GET on an allocated port, a read contained in the physical root, read-only docker sub-commands against a container of this deployment, container logs/inspect, Telegram probe. No shell, no server key, no host-wide view
+6. A central Codex QA worker runs from an intentionally empty ephemeral non-Git workspace, prompted with the acceptance criteria and deployed URL. It reads its injected `AGENTS.md` and `TASK.md`, uses Codex's native `--skip-git-repo-check` mode, and reaches the deployment only through the typed capability endpoint. The endpoint bounds every call to one element of the set: public GET, loopback GET on an allocated port, a read contained in the physical root, read-only docker sub-commands against a container of this deployment, container logs/inspect, Telegram probe. The target receives no Codex profile, credential or API key.
 7. Telegram bots are tested by the runtime, which sends the agent's message as the QA account and returns the replies. The agent never holds the session
-8. The agent writes `QA_REPORT.md` into the central workspace and returns JSON: `{"pass": bool, "checks": [...], "summary": "..."}`
+8. The agent submits a structured terminal verdict through the capability endpoint.
 9. Workspace and target grant are destroyed on every path out, including a failed or interrupted run; anything that survives is reported as a `qa_cleanup_failed` blocker. A grant the run could not settle stays on the record for the `qa-worker` sweep
 10. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR)
 11. QA consumer does NOT transition stories or create tasks — it is a pure technical worker
@@ -242,10 +242,11 @@ If the developer agent encounters an unsolvable problem:
 **Inflight deduplication**: Uses `application_id` for dedup when no story (standalone E2E triggers). Story-based runs use `story_id`.
 
 **Target prerequisites**: none beyond a reachable SSH account and a running deployment. QA installs
-nothing on the target and needs no Claude CLI, LLM credentials or Telethon session there.
+nothing on the target and needs no coding-agent CLI, LLM credentials or Telethon session there.
 
 **QA runtime prerequisites** (orchestrator `.env`, read by `qa-worker`):
-- `QA_LLM_MODEL` / `QA_LLM_BASE_URL` / `QA_LLM_API_KEY` — without them exploratory QA is blocked
+- `QA_EXECUTOR_AGENT_TYPE` — optional override, `codex` by default and `claude` supported explicitly
+- `QA_LLM_MODEL` / `QA_LLM_BASE_URL` / `QA_LLM_API_KEY` — optional API fallback, read only after the assigned subscription executor is unavailable
 - `TELETHON_API_ID` / `TELETHON_API_HASH` / `TELETHON_SESSION` — only for projects with a bot
 
 **Outputs**: `QAOutcome` in run.result for supervisor
@@ -292,7 +293,7 @@ created → in_progress → pr_review → deploying → testing → completed
 `pr_review` — all tasks done, PR created from story branch to main. Waiting for CI + auto-merge.
 `deploying` is a deploy gate — story waits for successful deploy before QA.
 `testing` — deployed service being tested by the QA consumer through a central ephemeral QA worker
-on the management host (Claude Code, or Codex when assigned).
+on the management host (Codex by default, with Claude Code as an explicit `QA_EXECUTOR_AGENT_TYPE=claude` override).
 `waiting_human_review` — developer reported a blocker; pipeline is paused until admin resolves.
 
 ### Task

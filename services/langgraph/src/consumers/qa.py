@@ -150,8 +150,8 @@ def _resolve_qa_runtime() -> QARuntimeConfig:
     """Say who performs this run and how they reach this runtime.
 
     Nothing here can fail, and nothing here reads `QA_LLM_*`. The executor is
-    the coding agent assigned to testing — Claude Code by default, Codex when
-    `QA_EXECUTOR_AGENT_TYPE` names it — and its subscription session is a
+    the coding agent assigned to testing — Codex by default, Claude Code when
+    `QA_EXECUTOR_AGENT_TYPE=claude` explicitly selects it — and its subscription session is a
     directory on the management host that worker-manager mounts into the
     executor container. The API triplet is an optional fallback and is read only
     after that executor has actually failed, which is why an unset triplet is a

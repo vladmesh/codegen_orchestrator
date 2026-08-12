@@ -141,7 +141,7 @@ services:
       # HOST_CLAUDE_DIR / HOST_CODEX_HOME, mounted into that container by
       # worker-manager — this service never holds it, and no deploy target ever
       # sees it.
-      QA_EXECUTOR_AGENT_TYPE: ${QA_EXECUTOR_AGENT_TYPE:-claude}
+      QA_EXECUTOR_AGENT_TYPE: ${QA_EXECUTOR_AGENT_TYPE:-codex}
       # How that container addresses this service's per-run capability endpoint.
       # It must be this service's name on the worker network below.
       QA_CAPABILITY_HOST: ${QA_CAPABILITY_HOST:-qa-worker}

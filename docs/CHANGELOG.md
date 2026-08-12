@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-12
+
+- Kept a central QA worker in `STARTING` until worker-manager has installed its agent instruction, `TASK.md` and `/workspace/qa`. The wrapper independently waits for those files before leasing its first turn, closing the creation-to-first-turn race without widening the capability or credential boundary.
+- Made Codex the default central exploratory-QA executor. Its intentionally empty ephemeral QA workspace now uses Codex's native `--skip-git-repo-check` mode, while `claude` remains an explicit override and the existing capability-only, isolated-egress execution path is unchanged.
+
 ## 2026-08-12 (4)
 
 - Worker bind mounts are prepared in the Docker daemon's mount namespace when the daemon is

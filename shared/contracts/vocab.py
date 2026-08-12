@@ -20,7 +20,7 @@ class AgentType(StrEnum):
 
 # Who may perform exploratory QA. The owner-set contract names exactly two
 # executors, and both are subscription CLIs whose session lives on the
-# management host: Claude Code by default, Codex when assigned explicitly.
+# management host: Codex by default, Claude Code when assigned explicitly.
 # `factory` is excluded because it runs on a provider API key, and `noop`
 # because it performs no testing at all — a QA run started on either is not a
 # QA run, so both are refused where they are configured rather than allowed to

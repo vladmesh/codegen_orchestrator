@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Mapping
 import json
 import os
+from pathlib import Path
 import subprocess
 from typing import Any
 
@@ -174,6 +175,8 @@ class WorkerWrapper:
         )
 
         try:
+            if self.is_qa_executor:
+                await self._await_qa_materials()
             while self._running:
                 message = await self.broker.lease_input()
                 if not self._running:
@@ -194,6 +197,34 @@ class WorkerWrapper:
             if self._owns_broker:
                 await self.broker.close()
                 logger.info("worker_wrapper_stopped")
+
+    async def _await_qa_materials(self) -> None:
+        """Wait until worker-manager has finished preparing a QA workspace.
+
+        A QA container starts before worker-manager can inject its instruction,
+        task and capability command. It must not lease an input during that
+        interval: the first input would otherwise let Codex run against a
+        partial scratch directory. The manager publishes RUNNING only after the
+        same files exist, but this local gate also protects the container from a
+        direct or prematurely queued turn.
+        """
+        instruction_name = "AGENTS.md" if self.config.agent_type == AgentType.CODEX else "CLAUDE.md"
+        instruction_path = Path(WORKSPACE_DIR, instruction_name)
+        task_path = Path(WORKSPACE_DIR, "TASK.md")
+        command_path = Path(WORKSPACE_DIR, "qa")
+        while self._running:
+            missing = [
+                str(path)
+                for path in (instruction_path, task_path)
+                if not path.is_file() or not os.access(path, os.R_OK)
+            ]
+            if not command_path.is_file() or not os.access(command_path, os.X_OK):
+                missing.append(str(command_path))
+            if not missing:
+                logger.info("qa_workspace_prepared", worker_id=self.config.worker_id)
+                return
+            logger.debug("qa_workspace_not_ready", worker_id=self.config.worker_id, missing=missing)
+            await asyncio.sleep(self.config.poll_interval_ms / 1000)
 
     async def process_message(self, msg_id: str, data: dict):
         """Process a single task message."""
@@ -733,7 +764,7 @@ class WorkerWrapper:
         elif self.config.agent_type == AgentType.FACTORY:
             runner = FactoryRunner()
         elif self.config.agent_type == AgentType.CODEX:
-            runner = CodexRunner()
+            runner = CodexRunner(allow_non_git_workspace=self.is_qa_executor)
         elif self.config.agent_type == AgentType.NOOP:
             runner = NoopRunner()
         else:

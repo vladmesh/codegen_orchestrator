@@ -74,6 +74,22 @@ class TestCodexRunner:
             "Read TASK.md and AGENTS.md",
         ]
 
+    def test_build_command_allows_the_qa_scratch_workspace_to_be_non_git(self):
+        cmd = CodexRunner(allow_non_git_workspace=True).build_command(
+            prompt="Read TASK.md and AGENTS.md"
+        )
+
+        assert cmd == [
+            "codex",
+            "exec",
+            "--sandbox",
+            "workspace-write",
+            "--config",
+            "sandbox_workspace_write.network_access=true",
+            "--skip-git-repo-check",
+            "Read TASK.md and AGENTS.md",
+        ]
+
 
 class TestNoopRunner:
     def test_pushes_checked_out_branch_and_reports_success_over_http(self):
