@@ -335,8 +335,8 @@ async for msg in client.consume(
     stream="engineering:queue",
     group="capability-workers",
     consumer="worker-1",
-    auto_ack=False,  # False = caller must call ack() after processing
-    claim_pending=True,  # Recover PEL (crashed messages) on startup
+    auto_ack=False,          # False = caller must call ack() after processing
+    claim_pending=True,      # Recover PEL (crashed messages) on startup
     pending_timeout_ms=60_000,  # Min idle time before re-claiming pending message
 ):
     await process(msg.data)
@@ -385,7 +385,6 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
-
 class ProjectStatus(StrEnum):
     """Project lifecycle status.
 
@@ -405,7 +404,6 @@ class ServiceModule(StrEnum):
 
     Must match module names in service-template/copier.yml.
     """
-
     BACKEND = "backend"
     TG_BOT = "tg_bot"
     NOTIFICATIONS = "notifications"
@@ -417,7 +415,6 @@ class ServiceModule(StrEnum):
 # description live inside config.
 class ProjectCreate(BaseModel):
     """Create project request."""
-
     id: uuid.UUID | None = None
     title: str
     status: ProjectStatus = ProjectStatus.DRAFT
@@ -426,7 +423,6 @@ class ProjectCreate(BaseModel):
 
 class ProjectUpdate(BaseModel):
     """Update project request, for both PUT and PATCH."""
-
     title: str | None = None
     status: ProjectStatus | None = None
     config: dict[str, Any] | None = None
@@ -435,7 +431,6 @@ class ProjectUpdate(BaseModel):
 
 class ProjectDTO(BaseModel):
     """Project response."""
-
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -454,7 +449,6 @@ class ProjectDTO(BaseModel):
 ```python
 # shared/contracts/dto/task.py, re-exported by services/api/src/schemas/task.py
 
-
 class TaskStatus(StrEnum):
     BACKLOG = "backlog"
     TODO = "todo"
@@ -468,17 +462,14 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
-
 class TaskType(StrEnum):
     CREATE = "create"
     FEATURE = "feature"
     FIX = "fix"
     REFACTOR = "refactor"
 
-
 class TaskRead(BaseModel):
     """Schema for reading a task."""
-
     id: str
     project_id: str
     type: str
@@ -504,7 +495,6 @@ class TaskRead(BaseModel):
 ```python
 # shared/contracts/dto/task.py, re-exported by services/api/src/schemas/task.py
 
-
 class TaskEventType(StrEnum):
     STATUS_CHANGE = "status_change"
     ITERATION_START = "iteration_start"
@@ -512,10 +502,8 @@ class TaskEventType(StrEnum):
     NOTE = "note"
     COMMENT = "comment"  # Jira-style discussion on a task
 
-
 class TaskEventRead(BaseModel):
     """Schema for reading a task event."""
-
     id: int
     task_id: str
     event_type: str
@@ -536,7 +524,6 @@ from enum import StrEnum
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
-
 class RunStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -553,7 +540,6 @@ class RunType(StrEnum):
 
 class RunCreate(BaseModel):
     """Create run request."""
-
     project_id: str
     type: RunType
     spec: str | None = None
@@ -568,7 +554,7 @@ class RunDTO(TimestampedDTO):
     status: RunStatus
     story_id: str | None = None
     spec: str | None = None
-    result: RunResult | None = None  # typed per `type`, see below
+    result: RunResult | None = None   # typed per `type`, see below
 ```
 
 ### Typed `Run.result` (`shared/contracts/dto/run_result.py`)
@@ -623,12 +609,10 @@ Rules (all enforced by validation, tested in `shared/tests/unit/test_run_result.
 
 from pydantic import BaseModel, ConfigDict
 
-
 class UserDTO(BaseModel):
     """User response."""
-
     model_config = ConfigDict(from_attributes=True)
-
+    
     id: int
     telegram_id: int
 
@@ -648,7 +632,6 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
-
 class ServerStatus(StrEnum):
     NEW = "new"
     PENDING_SETUP = "pending_setup"
@@ -663,7 +646,6 @@ class ServerStatus(StrEnum):
 
 class ServerCreate(BaseModel):
     """Create server request."""
-
     handle: str
     host: str
     public_ip: str
@@ -676,7 +658,6 @@ class ServerCreate(BaseModel):
 
 class ServerUpdate(BaseModel):
     """Update server request."""
-
     handle: str | None = None
     host: str | None = None
     public_ip: str | None = None
@@ -697,7 +678,6 @@ class ServerUpdate(BaseModel):
 
 class ServerDTO(BaseModel):
     """Server response."""
-
     model_config = ConfigDict(from_attributes=True)
 
     handle: str
@@ -725,10 +705,8 @@ class ServerDTO(BaseModel):
 
 from enum import StrEnum
 
-
 class ApplicationStatus(StrEnum):
     """Runtime state of an application on a server."""
-
     NOT_DEPLOYED = "not_deployed"
     DEPLOYING = "deploying"
     RUNNING = "running"
@@ -741,7 +719,6 @@ class ApplicationStatus(StrEnum):
 
 class ApplicationDTO(TimestampedDTO):
     """Application response from API."""
-
     id: int
     repo_id: str
     server_handle: str
@@ -761,22 +738,17 @@ class ApplicationDTO(TimestampedDTO):
 
 from enum import StrEnum
 
-
 class DeploymentResult(StrEnum):
     """Outcome of a deployment attempt. Immutable after completion."""
-
     PENDING = "pending"
     SUCCESS = "success"
     FAILED = "failed"
     CANCELED = "canceled"
 
-
 # services/api/src/schemas/service_deployment.py
-
 
 class DeploymentRead(TimestampedDTO):
     """Immutable record of a deployment attempt."""
-
     id: int
     application_id: int | None = None
     project_id: str
@@ -794,16 +766,12 @@ class DeploymentRead(TimestampedDTO):
 ```python
 # shared/contracts/dto/base.py
 
-
 class BaseDTO(BaseModel):
     """Base DTO for all entities."""
-
     model_config = ConfigDict(from_attributes=True)
-
 
 class TimestampedDTO(BaseDTO):
     """Base DTO with timestamps."""
-
     created_at: datetime
     updated_at: datetime | None = None
 ```
@@ -817,12 +785,10 @@ from pydantic import BaseModel, ConfigDict
 
 from shared.contracts.vocab import AgentType
 
-
 class AgentConfigDTO(BaseModel):
     """Agent configuration response."""
-
     model_config = ConfigDict(from_attributes=True)
-
+    
     id: int
     name: str
     type: AgentType
@@ -836,10 +802,8 @@ class AgentConfigDTO(BaseModel):
 ```python
 # shared/contracts/dto/api_key.py
 
-
 class APIKeyDTO(BaseModel):
     """API Key response."""
-
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -857,14 +821,12 @@ from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 from typing import Literal, Any
 
-
 class TaskExecutionDTO(BaseModel):
     """Worker execution record."""
-
     model_config = ConfigDict(from_attributes=True)
-
-    id: str  # request_id from worker
-    task_id: str | None = None  # Optional link to high-level task
+    
+    id: str                                    # request_id from worker
+    task_id: str | None = None                 # Optional link to high-level task
     worker_id: str
     started_at: datetime
     finished_at: datetime
@@ -892,7 +854,6 @@ import uuid
 
 class QueueMeta(BaseModel):
     """Metadata for all queue messages."""
-
     version: Literal["1"] = "1"
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: datetime = Field(default_factory=datetime.utcnow)
@@ -900,14 +861,12 @@ class QueueMeta(BaseModel):
 
 class BaseMessage(QueueMeta):
     """Base class for queue messages."""
-
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     callback_stream: str | None = None
 
 
 class BaseResult(BaseModel):
     """Base result for async operations."""
-
     request_id: str
     status: ResultStatus  # shared.contracts.vocab
     error: str | None = None
@@ -925,7 +884,6 @@ class BaseResult(BaseModel):
 ```python
 # shared/contracts/queues/scaffold.py
 
-
 class ScaffoldMessage(BaseMessage):
     """Trigger scaffolding for a project repository.
 
@@ -935,13 +893,12 @@ class ScaffoldMessage(BaseMessage):
         full: Full scaffold — copier + make setup + git push (new projects).
         ensure: Verify workspace exists; if missing, clone + setup (existing projects).
     """
-
     project_id: str
     repository_id: str
-    telegram_chat_id: str = ""  # resolved by the producer; never an internal User.id
-    template_repo: str  # e.g. "gh:vladmesh/service-template"
-    project_name: str  # sanitized name for copier
-    modules: str  # comma-separated, e.g. "backend,tg_bot"
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
+    template_repo: str    # e.g. "gh:vladmesh/service-template"
+    project_name: str     # sanitized name for copier
+    modules: str          # comma-separated, e.g. "backend,tg_bot"
     task_description: str = ""
     mode: Literal["full", "ensure"] = "full"
 ```
@@ -961,15 +918,13 @@ class ScaffoldMessage(BaseMessage):
 ```python
 # shared/contracts/queues/architect.py
 
-
 class ArchitectMessage(BaseMessage):
     """Trigger story decomposition into tasks."""
-
     story_id: str
     project_id: str
-    telegram_chat_id: str = ""  # resolved by the producer; never an internal User.id
-    is_reopen: bool = False  # True when story is being reopened (not first decomposition)
-    user_report: str | None = None  # User feedback on what's wrong (for reopened stories)
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
+    is_reopen: bool = False          # True when story is being reopened (not first decomposition)
+    user_report: str | None = None   # User feedback on what's wrong (for reopened stories)
 ```
 
 **Flow:** PO creates Story → publishes ArchitectMessage → Architect Consumer calls LLM to decompose story into N tasks with `blocked_by_task_id` dependency chains → Task Dispatcher picks up unblocked tasks and publishes EngineeringMessages.
@@ -987,13 +942,11 @@ class ArchitectMessage(BaseMessage):
 ```python
 # shared/contracts/queues/engineering.py
 
-
 class EngineeringMessage(BaseMessage):
     """Start engineering task."""
-
     task_id: str
     project_id: str
-    telegram_chat_id: str = ""  # resolved by the producer; never an internal User.id
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     action: ActionType = ActionType.CREATE  # shared.contracts.vocab
     description: str | None = None
     skip_deploy: bool = False
@@ -1005,7 +958,6 @@ class EngineeringMessage(BaseMessage):
 
 class EngineeringResult(BaseResult):
     """Engineering task result."""
-
     files_changed: list[str] | None = None
     commit_sha: str | None = None
     branch: str | None = None
@@ -1031,10 +983,8 @@ class EngineeringResult(BaseResult):
 ```python
 # shared/contracts/queues/deploy.py
 
-
 class DeployTrigger(StrEnum):
     """Origin of a deploy request."""
-
     ENGINEERING = "engineering"
     WEBHOOK = "webhook"
     PO = "po"
@@ -1043,7 +993,6 @@ class DeployTrigger(StrEnum):
 
 class DeployAction(StrEnum):
     """Type of deploy operation."""
-
     CREATE = "create"
     FEATURE = "feature"
     FIX = "fix"
@@ -1053,7 +1002,6 @@ class DeployAction(StrEnum):
 
 class DeployOutcome(StrEnum):
     """Outcome stored in run.result for dispatcher consumption."""
-
     SUCCESS = "success"
     SMOKE_FAILURE = "smoke_failure"
     CODE_FIX = "code_fix"
@@ -1070,10 +1018,9 @@ class DeployOutcome(StrEnum):
 
 class DeployMessage(BaseMessage):
     """Start deploy task."""
-
     task_id: str
     project_id: str
-    telegram_chat_id: str = ""  # resolved by the producer; never an internal User.id
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     # Why this deploy reports to nobody (admin action, temporary-access
     # machinery). Exactly one of it and telegram_chat_id is set.
     unaddressed_reason: str = ""
@@ -1099,7 +1046,6 @@ class DeployMessage(BaseMessage):
 
 class DeployResult(BaseResult):
     """Deploy task result."""
-
     deployed_url: str | None = None
     server_ip: str | None = None
     port: int | None = None
@@ -1407,10 +1353,8 @@ rule, and it costs a message only in the window where a person is already lookin
 ```python
 # shared/contracts/queues/qa.py
 
-
 class QAOutcome(StrEnum):
     """Outcome stored in run.result for dispatcher consumption."""
-
     PASSED = "passed"
     FAILED = "failed"
     EXHAUSTED = "exhausted"
@@ -1419,13 +1363,12 @@ class QAOutcome(StrEnum):
 
 class QAMessage(BaseMessage):
     """Trigger QA testing for a deployed project."""
-
     story_id: str = ""
     project_id: str
-    telegram_chat_id: str = ""  # resolved by the producer; never an internal User.id
+    telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     deployed_url: str
     application_id: int
-    acceptance_criteria: str  # resolved by the producer, never by the consumer
+    acceptance_criteria: str      # resolved by the producer, never by the consumer
     run_id: str = ""
     bot_username: str | None = None
     qa_attempt: int = 0
@@ -1479,31 +1422,25 @@ Deploy smoke (`subgraphs/devops/smoke.py`) checks the bot's `getMe` and the `tg_
 ```python
 # shared/contracts/queues/workflow.py
 
-
 class WorkflowTriggerRequest(BaseModel):
     """Request to trigger GitHub Actions workflow."""
-
     project_id: str
-    repo_full_name: str  # "org/repo"
+    repo_full_name: str           # "org/repo"
     workflow_file: str = "main.yml"
-    inputs: dict[str, str] = {}  # workflow_dispatch inputs
-
+    inputs: dict[str, str] = {}   # workflow_dispatch inputs
 
 class WorkflowStatusResult(BaseResult):
     """
     Result of workflow execution.
     Derived from: shared.clients.github.WorkflowRun (GitHub API response).
     """
-
     run_id: int | None = None
     run_url: str | None = None
     deployed_url: str | None = None
     conclusion: Literal["success", "failure", "cancelled", "skipped"] | None = None
 
-
 class WorkflowStatusEvent(BaseModel):
     """Progress event for workflow execution."""
-
     project_id: str
     run_id: int
     status: Literal["queued", "in_progress", "completed"]
@@ -1560,7 +1497,6 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 
 # AgentType is the canonical enum (shared/contracts/vocab.py), re-exported here.
 from shared.contracts.vocab import AgentType  # claude / factory / codex / noop
-
 # QA_EXECUTOR_AGENT_TYPES is the subset a `qa` worker may run on: claude / codex.
 from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES
 
@@ -1573,7 +1509,6 @@ class WorkerCapability(StrEnum):
 
 class WorkerChannels(StrEnum):
     """Redis stream channels and patterns."""
-
     COMMANDS = "worker:commands"
     INPUT_PATTERN = "worker:{worker_id}:input"
     OUTPUT_PATTERN = "worker:{worker_id}:output"
@@ -1581,26 +1516,25 @@ class WorkerChannels(StrEnum):
 
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
-
     name: str
     # "developer" writes code in a pre-scaffolded repository workspace;
     # "qa" is the central exploratory-QA executor (no repository, no git
     # credentials, nothing to commit — see `qa:queue` above).
     worker_type: Literal["developer", "qa"]
-    agent_type: AgentType  # Which AI agent to use
-    instructions: str  # Content for instruction file (CLAUDE.md / AGENTS.md)
-    task_content: str | None = None  # Content for TASK.md (optional, for task-driven workers)
-    allowed_commands: list[str]  # ["project.*", "engineering.start"]
-    capabilities: list[WorkerCapability]  # ["git", "copier"]
+    agent_type: AgentType                     # Which AI agent to use
+    instructions: str                         # Content for instruction file (CLAUDE.md / AGENTS.md)
+    task_content: str | None = None           # Content for TASK.md (optional, for task-driven workers)
+    allowed_commands: list[str]               # ["project.*", "engineering.start"]
+    capabilities: list[WorkerCapability]      # ["git", "copier"]
     env_vars: dict[str, str] = {}
     auth_mode: Literal["host_session", "api_key"] = "host_session"
     host_claude_dir: str | None = None
     host_codex_home: str | None = None
     api_key: str | None = None
-    project_id: str | None = None  # Workspace persistence (developer)
-    repo_id: str | None = None  # Mount pre-scaffolded workspace (developer)
+    project_id: str | None = None             # Workspace persistence (developer)
+    repo_id: str | None = None                # Mount pre-scaffolded workspace (developer)
     scaffold_config: ScaffoldConfig | None = None
-    branch: str | None = None  # Story branch to checkout
+    branch: str | None = None                 # Story branch to checkout
 
     @model_validator(mode="after")
     def _qa_runs_on_an_assigned_subscription_agent(self) -> "WorkerConfig":
@@ -1616,16 +1550,14 @@ class WorkerConfig(BaseModel):
 
 class CreateWorkerCommand(QueueMeta):
     """Create new worker."""
-
     command: Literal["create"] = "create"
     request_id: str
     config: WorkerConfig
-    context: dict[str, str] = {}  # Additional context (user_id, task_id, etc.)
+    context: dict[str, str] = {}   # Additional context (user_id, task_id, etc.)
 
 
 class DeleteWorkerCommand(QueueMeta):
     """Delete worker."""
-
     command: Literal["delete"] = "delete"
     request_id: str
     worker_id: str
@@ -1634,7 +1566,6 @@ class DeleteWorkerCommand(QueueMeta):
 
 class StatusWorkerCommand(QueueMeta):
     """Get worker status."""
-
     command: Literal["status"] = "status"
     request_id: str
     worker_id: str
@@ -1645,7 +1576,6 @@ WorkerCommand = CreateWorkerCommand | DeleteWorkerCommand | StatusWorkerCommand
 
 class CreateWorkerResponse(BaseModel):
     """Response to create command."""
-
     request_id: str
     success: bool
     worker_id: str | None = None
@@ -1654,7 +1584,6 @@ class CreateWorkerResponse(BaseModel):
 
 class DeleteWorkerResponse(BaseModel):
     """Response to delete command."""
-
     request_id: str
     success: bool
     error: str | None = None
@@ -1662,7 +1591,6 @@ class DeleteWorkerResponse(BaseModel):
 
 class StatusWorkerResponse(BaseModel):
     """Response to status command."""
-
     request_id: str
     success: bool
     status: Literal["starting", "running", "stopped", "failed"] | None = None
@@ -1680,7 +1608,6 @@ WorkerResponse = CreateWorkerResponse | DeleteWorkerResponse | StatusWorkerRespo
 ```python
 # shared/contracts/dto/worker.py
 
-
 class WorkerStatus(StrEnum):
     STARTING = "STARTING"
     RUNNING = "RUNNING"
@@ -1688,7 +1615,7 @@ class WorkerStatus(StrEnum):
     DEAD = "DEAD"
     FAILED = "FAILED"
     STOPPED = "STOPPED"
-    GONE = "GONE"  # Stale Redis entry, container no longer exists
+    GONE = "GONE"       # Stale Redis entry, container no longer exists
     UNKNOWN = "UNKNOWN"
 ```
 
@@ -1701,7 +1628,6 @@ Used across worker-manager (manager, events, introspect router) and langgraph (w
 
 ```python
 # shared/contracts/dto/engineering.py
-
 
 class EngineeringStatus(StrEnum):
     """Status of the engineering subgraph execution.
@@ -1781,10 +1707,10 @@ class DeveloperWorkerInput(BaseModel):
     """Task for Developer Worker from LangGraph."""
 
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    task_id: str  # Engineering task ID
-    project_id: str  # Project UUID
-    prompt: str  # Task specification
-    timeout: int = 1800  # Max execution time (seconds)
+    task_id: str                    # Engineering task ID
+    project_id: str                 # Project UUID
+    prompt: str                     # Task specification
+    timeout: int = 1800             # Max execution time (seconds)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -1792,9 +1718,9 @@ class DeveloperWorkerOutput(BaseResult):
     """Result from Developer Worker to LangGraph."""
 
     # request_id, status, error, duration_ms inherited from BaseResult
-    task_id: str  # Engineering task ID
-    commit_sha: str | None = None  # Commit SHA if code was written
-    pr_url: str | None = None  # PR URL if created
+    task_id: str                    # Engineering task ID
+    commit_sha: str | None = None   # Commit SHA if code was written
+    pr_url: str | None = None       # PR URL if created
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 ```
 
@@ -1813,11 +1739,9 @@ class DeveloperWorkerOutput(BaseResult):
 ```python
 # shared/contracts/queues/provisioner.py
 
-
 class ProvisionerMessage(BaseMessage):
     """Provision server."""
-
-    server_handle: str  # Cloud provider ID (Droplet ID) or unique identifier
+    server_handle: str       # Cloud provider ID (Droplet ID) or unique identifier
     is_recovery: bool = False
 
 
@@ -1827,7 +1751,6 @@ class ProvisionerResult(BaseResult):
     Stream: provisioner:results
     Consumers: scheduler (update DB), telegram-bot (notify admin)
     """
-
     server_handle: str
     server_ip: str | None = None
     services_redeployed: int = 0
@@ -1849,13 +1772,11 @@ are. The reading changes nothing, so repeating it is free.
 ```python
 # shared/contracts/queues/env_observation.py
 
-
 class EnvObservationRequest(BaseMessage):
     """Read one environment slot of one deployed service."""
-
     project_id: str
-    server_handle: str  # where the service runs
-    service_slug: str  # the directory the deploy put it under
+    server_handle: str      # where the service runs
+    service_slug: str       # the directory the deploy put it under
     env_key: str
 
 
@@ -1868,11 +1789,10 @@ class EnvObservationOutcome(StrEnum):
 
 class EnvObservationResult(BaseModel):
     """What the running service has, or why it could not be asked."""
-
     request_id: str
     outcome: EnvObservationOutcome
     env_key: str
-    present: bool | None = None  # None when nothing was read
+    present: bool | None = None   # None when nothing was read
     containers: int = 0
     detail: str = ""
 ```
@@ -1903,10 +1823,8 @@ must treat it as the absence of an answer: not a confirmation, not a failure.
 ```python
 # shared/contracts/events.py
 
-
 class ProgressEvent(BaseModel):
     """Task progress notification."""
-
     type: TaskProgressKind  # LifecycleEvent slice: started/progress/completed/failed
     request_id: str
     task_id: str | None = None

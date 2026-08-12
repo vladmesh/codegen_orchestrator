@@ -135,7 +135,6 @@ def test_create_task_returns_dict():
     assert "id" in result
     assert result["status"] == "backlog"
 
-
 # RIGHT — tests behavior through the real pipeline
 async def test_task_creation_and_dispatch(api_client, redis):
     # Create task via API (real DB)

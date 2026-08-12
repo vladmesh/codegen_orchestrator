@@ -60,7 +60,6 @@ if not api_key:
 ```python
 from shared.log_config import setup_logging
 import structlog
-
 setup_logging(service_name="my_service")
 logger = structlog.get_logger()
 ```
