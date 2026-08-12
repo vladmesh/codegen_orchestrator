@@ -372,11 +372,16 @@ async def task_dispatcher_loop() -> None:
                 waiting_secret = await supervise_waiting_user_secret_stories(
                     api_client, redis_client
                 )
-                # Access is settled before stories are routed on their QA runs:
-                # a story must not reach a terminal outcome in the same cycle
-                # that still has the test identity admitted by its bot.
-                temporary_access = await supervise_temporary_access(api_client, redis_client)
+                # Stories are routed on their QA runs before the access sweep
+                # runs, and that order is the delivery guarantee: a product QA
+                # has passed is handed to its owner on the tick that reads the
+                # verdict, and the cleanup of the identity it borrowed happens
+                # afterwards. Sweeping first would let a cleanup that ran out of
+                # attempts during a gap in this loop write its incident on the QA
+                # run before the story had been routed, turning a passed product
+                # into a quarantine over a leftover test user.
                 testing = await supervise_testing_stories(api_client, redis_client)
+                temporary_access = await supervise_temporary_access(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -409,6 +414,7 @@ async def task_dispatcher_loop() -> None:
                     + temporary_access.get("released", 0)
                     + temporary_access.get("revoked", 0)
                     + temporary_access.get("revoke_failed", 0)
+                    + temporary_access.get("escalated", 0)
                 )
                 if supervisor_active:
                     logger.info(
@@ -429,12 +435,13 @@ async def task_dispatcher_loop() -> None:
                         qa_completed=testing.get("completed", 0),
                         qa_redispatched=testing.get("redispatched", 0),
                         qa_failed=testing.get("failed", 0),
-                        qa_waiting_for_access=testing.get("waiting_for_access", 0),
                         temporary_access_dispatched=temporary_access.get("dispatched", 0),
                         temporary_access_released=temporary_access.get("released", 0),
                         temporary_access_revoked=temporary_access.get("revoked", 0),
                         temporary_access_expired=temporary_access.get("expired", 0),
+                        # Still being chased vs. given up on and handed to a human.
                         temporary_access_revoke_failed=temporary_access.get("revoke_failed", 0),
+                        temporary_access_escalated=temporary_access.get("escalated", 0),
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")
