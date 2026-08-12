@@ -1096,9 +1096,10 @@ repeat is accepted as the no-op it is, and fields that are not the outcome (meta
 accounting) are still writable. Two writers race for one run whenever a supervisor ends a run its
 worker is still inside — the temporary-access sweep failing a QA run whose borrowed identity
 expired — and terminal-to-terminal is the same overwrite as terminal-to-live. Filling the result of
-a terminal run that has none is not a second outcome: a cancelled run is marked terminal by whoever
-cancelled it, and the worker that owned it records what it did afterwards, which is what settles
-`already_dispatched` above.
+a cancelled deploy run that has none is not a second outcome: deploy cancellation closes the
+dispatch boundary, while the worker that owned it may still need to record what happened outside,
+which is what settles `already_dispatched` above. QA cancellation is itself the first outcome and
+is immutable even without a typed result, so a late central QA verdict cannot replace it.
 
 ### Temporary access: the boundary of the guarantee
 

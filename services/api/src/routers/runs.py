@@ -25,7 +25,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotificationState,
 )
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.models import Run, User
 
 from ..database import get_async_session
@@ -41,8 +41,8 @@ _TERMINAL_RUN_STATUSES = frozenset(
     {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
 )
 
-# What a run says happened. The first terminal transition owns these fields,
-# even if cancellation has no typed result.
+# What a run says happened. The first recorded outcome owns these fields; QA
+# cancellation is an outcome even without a typed result.
 _OUTCOME_FIELDS = ("status", "result", "error_message")
 
 # Largest page the QA grant selection will hand out at once. The page bounds one
@@ -307,6 +307,19 @@ def _record_first_terminal_completion(run: Run) -> None:
         run.completed_at = datetime.now(UTC)
 
 
+def _has_recorded_outcome(run: Run) -> bool:
+    """Whether a terminal row already owns its immutable outcome fields.
+
+    QA cancellation is itself a final verdict: a central QA worker returning
+    later must not replace it. Deploy cancellation is a dispatch boundary and
+    intentionally carries no typed result; its worker may still be alive and
+    must be allowed to record the first account of what happened outside.
+    """
+    return run.result is not None or (
+        run.type == RunType.QA.value and run.status in _TERMINAL_RUN_STATUSES
+    )
+
+
 @router.patch("/{run_id}", response_model=RunRead)
 async def update_run(
     run_id: str,
@@ -362,14 +375,14 @@ async def update_run(
         _record_first_terminal_completion(run)
         update_data.pop("completed_at", None)
 
-    # A terminal run has said what happened, and that answer is what everything
-    # downstream reads. Cancellation is an outcome too, even though it has no
-    # typed result. Refusing only terminal runs that carry a result lets a late
-    # QA verdict replace cancellation with completion.
+    # A terminal run that has recorded its outcome owns that answer. For QA,
+    # cancellation is an outcome even without a typed result, so a late central
+    # verdict cannot replace it. A cancelled deploy without a result is the
+    # dispatch-boundary exception described in `_has_recorded_outcome`.
     #
     # A writer repeating its own answer after a lost response is not racing
     # anybody, so an identical write is accepted as the no-op it is.
-    if run.status in _TERMINAL_RUN_STATUSES:
+    if run.status in _TERMINAL_RUN_STATUSES and _has_recorded_outcome(run):
         rewritten = [
             field
             for field in _OUTCOME_FIELDS
@@ -540,7 +553,7 @@ async def supersede_run_dispatch(
             lease_expires_at=lease_expires_at,
         )
 
-    if run.status in _TERMINAL_RUN_STATUSES:
+    if run.status in _TERMINAL_RUN_STATUSES and _has_recorded_outcome(run):
         if (run.run_metadata or {}).get(DISPATCH_SUPERSEDED_AT_KEY):
             await db.commit()
             return _answer(DispatchSupersede.SUPERSEDED)

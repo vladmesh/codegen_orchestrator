@@ -2,6 +2,9 @@
 
 ## 2026-08-12
 
+- Preserve cancelled QA outcomes without breaking the deploy dispatch boundary: a cancelled deploy
+  without a result may still record its worker's first outcome or be superseded after its lease.
+
 - QA run terminal transitions now record `completed_at` atomically with their
   verdict, including cancellation. Repeated deliveries preserve the first
   timestamp, as do dispatch cancellation and QA-access cleanup failure paths.
