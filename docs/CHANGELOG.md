@@ -2,6 +2,9 @@
 
 ## 2026-08-12
 
+- Updated developer-worker test guidance to use the generated project's supported
+  `make tests` and `make test-integration` targets.
+
 - Preserve cancelled QA outcomes without breaking the deploy dispatch boundary: a cancelled deploy
   without a result may still record its worker's first outcome or be superseded after its lease.
 

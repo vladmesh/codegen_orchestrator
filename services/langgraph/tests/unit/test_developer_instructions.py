@@ -35,3 +35,9 @@ class TestDeveloperInstructions:
     def test_requires_env_contract_update_with_env_changes(self):
         assert "env.contract.yaml" in self.content
         assert "same commit" in self.content
+
+    def test_uses_generated_project_test_commands(self):
+        assert self.content.count("make tests") == 2
+        assert "make test-integration" in self.content
+        assert "make tests unit" not in self.content
+        assert "make tests integration" not in self.content
