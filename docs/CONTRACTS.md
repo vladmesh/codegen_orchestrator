@@ -1238,6 +1238,64 @@ is settled by deploys, a different subject with a different lifecycle. What is r
 shape — a durable record, a sweep that reconciles from state rather than from the happy path, and a
 failure that lands on the run rather than in a log line.
 
+### Terminal owner notification
+
+`shared/contracts/dto/owner_notification.py`. **The invariant: a terminal story transition cannot be
+observed without the owner's message being either already published to `po:input` or durably owed.**
+The record lives in the QA run's `run_metadata` under `owner_notification` and is written **before**
+the transition is committed, for the same reason the SSH grant above is written before the key is
+installed: publishing after the commit has a gap, and the story is out of `TESTING` — out of every
+status the supervisor scans — from the moment the commit lands. A publish lost in that gap used to
+be lost permanently.
+
+`OwnerNotification` carries the `POSystemEvent` name PO routes on, the text to publish, the story,
+the project, `state`, `owed_at`, `attempts` and `detail`. The words are stored rather than
+recomputed, so a later tick publishes what the tick that owed it decided; the recipient is *not*
+stored, because resolving it is one of the two things that can fail transiently and must be retried.
+
+`services/scheduler/src/tasks/owner_notifications.py` is the only seam. All three terminal paths in
+`supervise_testing_stories` reach it — QA passed (`story_completed`), an unverifiable application
+quarantined (`story_quarantined`), and QA fix attempts exhausted (`story_quarantined`) — and so does
+the supervisor's fourth terminal owner notification, `_escalate_refused_deploy` with `tell_owner`
+(`story_impossible_capacity`), whose publish previously sat behind a swallowed exception. Each one
+owes the message, commits the transition, then spends its first delivery attempt. A refusal escalated
+with `tell_owner=False` stays admin-only and owes nothing: there is no decision for the owner to
+make, and the seam does not invent a message.
+
+The last of those three is a decision, not an omission: the exhausted-fix path used to alert
+administrators only. It ends the story for its owner exactly as a quarantine does, so the owner is
+told too, through the same seam, under the event PO already routes — a new event name would only be
+dropped by PO as unknown. The admin alert on that path is unchanged and still fires.
+
+Four states, and three of them are terminal. `OWED` is work. `DELIVERED` is the stream having
+accepted the event, and nothing publishes it again. `UNADDRESSABLE` is a recipient that resolved to
+no Telegram chat — an answer, not a failure, so it is logged and alerted once and never retried.
+`ABANDONED` is `OWNER_NOTIFICATION_MAX_ATTEMPTS` (3) transient failures, after which an admin alert
+names the event, story, project and run.
+
+`supervise_owed_owner_notifications` is the recovery pass, and it reads its work from
+`GET /api/runs/owner-notifications/owed` (internal/admin): every run whose `owner_notification.state`
+is `owed`, ordered `(created_at, id)` ascending, bounded by `limit`. Age is not a selection key, so
+a story finished during an outage is still served afterwards; no cursor is needed, unlike the grant
+selection, because every visit either delivers the record or spends one of its bounded attempts, so
+nothing can sit at the head of the page indefinitely. A selected record that does not parse raises
+rather than being skipped — unreadable is not delivered, and this module is its only writer.
+
+The pass runs **before** story routing in the dispatcher cycle, so a record owed by this tick's
+routing gets exactly the one in-tick attempt routing makes; the other order would spend a second
+attempt of the bound in the same second. Its outcomes are visible in `supervisor_cycle` as
+`owner_notify_recovered`, `owner_notify_retrying`, `owner_notify_exhausted` and
+`owner_notify_unaddressable` — "still being chased" told apart from "given up on and handed to a
+human" told apart from "there is no chat to write to".
+
+Bounds of the guarantee. Delivery is at-least-once, not exactly-once: a process that dies between
+the publish landing and the record being marked delivered republishes on the next tick. What is
+guaranteed is that a *settled* record is never published again and that an owed one is never
+forgotten. The record covers the publish leg only, `scheduler → po:input`; the transport leg to
+Telegram has its own bounded retry and admin alert in `services/telegram_bot/src/proactive.py`. And
+it covers the supervisor's terminal owner notifications only — it is not an outbox for every
+producer in the project.
+
 
 ---
 

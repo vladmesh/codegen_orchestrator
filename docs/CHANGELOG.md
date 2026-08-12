@@ -1,5 +1,59 @@
 # Changelog
 
+## 2026-08-12 (1)
+
+- A terminal story outcome can no longer be observed without the owner's message
+  being either published or durably owed. The supervisor committed the
+  transition and then published to `po:input` — an `xadd` with nothing behind it
+  — and the commit is precisely what takes the story out of `TESTING`, the only
+  status that loop scans. A transient failure of the publish, or of the
+  recipient lookup in front of it, lost the message permanently: the owner's
+  product was finished, deployed and verified, and nobody ever told them. Worse
+  in practice, the exception escaped `supervise_testing_stories` and ended the
+  rest of the dispatcher tick with it.
+- `shared/contracts/dto/owner_notification.py` is the record that closes the
+  gap, written into the QA run's `run_metadata` under `owner_notification`
+  *before* the transition is committed — the same shape the QA SSH grant already
+  uses for access, and for the same reason. `OWED` is work; `DELIVERED` is the
+  stream having accepted the event; `UNADDRESSABLE` is a recipient with no
+  Telegram chat, which is an answer rather than a failure and is never retried;
+  `ABANDONED` is three transient failures, after which an admin alert names the
+  event, story, project and run.
+- `services/scheduler/src/tasks/owner_notifications.py` is the single seam, and
+  all three terminal paths in `supervise_testing_stories` go through it: QA
+  passed, an unverifiable application quarantined, and QA fix attempts
+  exhausted. The last of those told administrators only; the owner now hears
+  about it too, under the `story_quarantined` event PO already routes, because
+  that transition ends the story for its owner exactly as a quarantine does. The
+  admin alert on that path is unchanged.
+- The supervisor's fourth terminal owner notification takes the same seam:
+  `_escalate_refused_deploy` with `tell_owner` (`story_impossible_capacity`)
+  parks the story for a human and its publish used to sit behind
+  `except Exception: log.warning` — the same loss, with the failure recorded as a
+  warning. A refusal escalated with `tell_owner=False` is still admin-only and
+  owes nothing.
+- `supervise_owed_owner_notifications` re-attempts what a committed transition
+  still owes, reading its work from the new `GET /api/runs/owner-notifications/owed`
+  — selected by the state of the record, ordered oldest first, bounded by a page,
+  with age deliberately not a selection key so an outage cannot put a message out
+  of reach. It runs before story routing in the cycle, so a record owed by this
+  tick gets exactly the one in-tick attempt routing makes. `supervisor_cycle`
+  gained `owner_notify_recovered`, `owner_notify_retrying`,
+  `owner_notify_exhausted` and `owner_notify_unaddressable`, which is what tells
+  "still being chased" apart from "given up on and handed to a human".
+- Delivery is at-least-once and bounded to the publish leg. A process that dies
+  between the publish landing and the record being marked delivered republishes;
+  what is guaranteed is that a settled record is never published twice and an
+  owed one is never forgotten. The transport leg to Telegram keeps its own
+  bounded retry and admin alert in `services/telegram_bot/src/proactive.py`.
+- Regressions:
+  `services/scheduler/tests/unit/test_owner_notification_durability.py` drives
+  the real ordering — transition committed, publish refused, next cycle delivers
+  — against a store that keeps what the API would keep, and
+  `services/api/tests/service/test_owner_notification_selection.py` holds the
+  selection: a month-old owed record is still work, a delivered or settled one is
+  not, and the page bounds the answer.
+
 ## 2026-08-11 (16)
 
 - The QA executor's CLI can reach its model backend again. worker-manager put

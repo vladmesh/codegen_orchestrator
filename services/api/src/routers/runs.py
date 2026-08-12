@@ -20,6 +20,10 @@ from shared.contracts.dto.deploy_dispatch import (
     DispatchSupersede,
     DispatchWithdrawal,
 )
+from shared.contracts.dto.owner_notification import (
+    OWNER_NOTIFICATION_KEY,
+    OwnerNotificationState,
+)
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus
 from shared.models import Run, User
@@ -45,6 +49,11 @@ _OUTCOME_FIELDS = ("status", "result", "error_message")
 # response, never the coverage: the caller walks pages from a cursor until one
 # comes back short, so no unreleased record falls off the end of the selection.
 QA_SSH_GRANT_PAGE_MAX = 500
+
+# Largest page of runs owing an owner notification. The selection drains by
+# itself — every attempt either delivers the message or spends one of a bounded
+# number of tries — so a page is all the bound the recovery sweep needs.
+OWNER_NOTIFICATION_PAGE_MAX = 500
 
 
 async def _check_run_access(
@@ -232,6 +241,42 @@ async def list_runs_holding_qa_ssh_grants(
     if after_created_at is not None:
         query = query.where(tuple_(Run.created_at, Run.id) > tuple_(after_created_at, after_id))
     query = query.order_by(Run.created_at.asc(), Run.id.asc()).limit(limit)
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+@router.get("/owner-notifications/owed", response_model=list[RunRead])
+async def list_runs_owing_owner_notification(
+    limit: int = Query(100, ge=1, le=OWNER_NOTIFICATION_PAGE_MAX),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> list[Run]:
+    """Every run whose owner has not been told its story ended, oldest first.
+
+    The supervisor writes this record before it commits a terminal transition,
+    which is what makes the message recoverable at all: the moment the story
+    leaves TESTING it is invisible to the loop that routed it, so the work has
+    to be selected by the state of the record instead of by the story's status.
+
+    Age is not part of the selection. A record is work while it is owed, whether
+    the publish behind it failed a minute ago or during an outage last week —
+    the same reason the QA grant selection above dropped its time window. What
+    bounds the answer is the page, and the order is oldest first so the owner
+    who has been waiting longest is served first.
+
+    No cursor is needed here, unlike the grant selection: every visit to a
+    record either delivers it or spends one of its bounded attempts, so a record
+    cannot stay in the selection across more ticks than that bound, and the head
+    of the page cannot wedge behind it.
+    """
+    notification = Run.run_metadata[OWNER_NOTIFICATION_KEY]
+    state = Run.run_metadata[(OWNER_NOTIFICATION_KEY, "state")].as_string()
+    query = (
+        select(Run)
+        .where(notification.is_not(None), state == OwnerNotificationState.OWED.value)
+        .order_by(Run.created_at.asc(), Run.id.asc())
+        .limit(limit)
+    )
     result = await db.execute(query)
     return list(result.scalars().all())
 
