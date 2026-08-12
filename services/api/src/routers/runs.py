@@ -25,7 +25,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotificationState,
 )
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.models import Run, User
 
 from ..database import get_async_session
@@ -41,8 +41,8 @@ _TERMINAL_RUN_STATUSES = frozenset(
     {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
 )
 
-# What a run says happened. Once a terminal run carries a result, these are the
-# fields nothing may rewrite.
+# What a run says happened. The first recorded outcome owns these fields; QA
+# cancellation is an outcome even without a typed result.
 _OUTCOME_FIELDS = ("status", "result", "error_message")
 
 # Largest page the QA grant selection will hand out at once. The page bounds one
@@ -301,6 +301,25 @@ async def _lock_run(run_id: str, db: AsyncSession) -> Run:
     return run
 
 
+def _record_first_terminal_completion(run: Run) -> None:
+    """Stamp a terminal run once, in the transaction that records its outcome."""
+    if run.completed_at is None:
+        run.completed_at = datetime.now(UTC)
+
+
+def _has_recorded_outcome(run: Run) -> bool:
+    """Whether a terminal row already owns its immutable outcome fields.
+
+    QA cancellation is itself a final verdict: a central QA worker returning
+    later must not replace it. Deploy cancellation is a dispatch boundary and
+    intentionally carries no typed result; its worker may still be alive and
+    must be allowed to record the first account of what happened outside.
+    """
+    return run.result is not None or (
+        run.type == RunType.QA.value and run.status in _TERMINAL_RUN_STATUSES
+    )
+
+
 @router.patch("/{run_id}", response_model=RunRead)
 async def update_run(
     run_id: str,
@@ -329,8 +348,10 @@ async def update_run(
             detail="Only system and admins can update runs",
         )
 
-    # Update fields
+    # Update fields. The API owns completed_at, not callers: a non-terminal
+    # update cannot pre-seed a timestamp for a later terminal transition.
     update_data = run_update.model_dump(exclude_unset=True)
+    update_data.pop("completed_at", None)
 
     # A terminal run has produced its outcome and nothing may start work for it
     # again. Letting a blind write take it back to QUEUED or RUNNING is how a
@@ -347,22 +368,21 @@ async def update_run(
             detail=f"Run {run_id} is {run.status} and cannot go back to {requested_status}",
         )
 
-    # A terminal run that already carries a result has said what happened, and
-    # that answer is what everything downstream reads. Refusing only the move
-    # back to a live status is not enough: terminal-to-terminal is the same
-    # overwrite. Two writers race for one run whenever a supervisor ends a run
-    # the worker is still inside — a QA run failed for losing its temporary
-    # access, say — and the worker's later "passed" would replace the named
-    # failure with a success the story then publishes.
-    #
-    # The result may still be filled in on a terminal run that has none. That is
-    # not a second outcome, it is the first one: a cancelled deploy is marked
-    # terminal by whoever cancelled it and the worker that owned it records what
-    # it actually did afterwards, which is the only proof its dispatch is over.
+    # The API owns a run's terminal timestamp. It is written in the same
+    # transaction as the first terminal state/result, and subsequent deliveries
+    # preserve it even if their payload carries a different client timestamp.
+    if requested_status in _TERMINAL_RUN_STATUSES:
+        _record_first_terminal_completion(run)
+        update_data.pop("completed_at", None)
+
+    # A terminal run that has recorded its outcome owns that answer. For QA,
+    # cancellation is an outcome even without a typed result, so a late central
+    # verdict cannot replace it. A cancelled deploy without a result is the
+    # dispatch-boundary exception described in `_has_recorded_outcome`.
     #
     # A writer repeating its own answer after a lost response is not racing
     # anybody, so an identical write is accepted as the no-op it is.
-    if run.status in _TERMINAL_RUN_STATUSES and run.result is not None:
+    if run.status in _TERMINAL_RUN_STATUSES and _has_recorded_outcome(run):
         rewritten = [
             field
             for field in _OUTCOME_FIELDS
@@ -533,7 +553,10 @@ async def supersede_run_dispatch(
             lease_expires_at=lease_expires_at,
         )
 
-    if run.status in _TERMINAL_RUN_STATUSES and run.result is not None:
+    if run.status in _TERMINAL_RUN_STATUSES and _has_recorded_outcome(run):
+        if (run.run_metadata or {}).get(DISPATCH_SUPERSEDED_AT_KEY):
+            await db.commit()
+            return _answer(DispatchSupersede.SUPERSEDED)
         await db.commit()
         return _answer(DispatchSupersede.ALREADY_SETTLED)
     if claimed_at is None:
@@ -552,6 +575,7 @@ async def supersede_run_dispatch(
         return _answer(DispatchSupersede.LEASE_LIVE)
 
     run.status = RunStatus.CANCELLED.value
+    _record_first_terminal_completion(run)
     if reason:
         run.error_message = reason
     run.run_metadata = {
@@ -596,6 +620,7 @@ async def withdraw_run_dispatch(
         )
 
     run.status = RunStatus.CANCELLED.value
+    _record_first_terminal_completion(run)
     if reason:
         run.error_message = reason
     await db.commit()

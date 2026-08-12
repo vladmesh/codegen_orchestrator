@@ -30,6 +30,10 @@ from ..schemas import (
 
 router = APIRouter(prefix="/temporary-access-grants", tags=["temporary-access"])
 
+_TERMINAL_RUN_STATUSES = frozenset(
+    {RunStatus.COMPLETED.value, RunStatus.FAILED.value, RunStatus.CANCELLED.value}
+)
+
 
 async def _load(grant_id: str, db: AsyncSession, *, lock: bool = False) -> TemporaryAccessGrant:
     """Read a grant, optionally with its row locked for the rest of the transaction.
@@ -219,29 +223,16 @@ async def escalate_grant(
     """Record that the access could not be taken back, on the grant and on its run.
 
     The QA run is where a borrowed identity's fate belongs, so when the sweep
-    runs out of revoke attempts this writes the named cleanup failure onto the
-    run even if the worker already recorded a pass: the run says what became of
-    the identity it was lent, and the grant carries the stamp that says a human
-    has been called. What it does not do is decide a story. The story is routed
-    on the product verdict, on the tick that reads it, and is normally completed
-    and delivered long before this; a completed story is not reopened by this
-    write, and a leftover test user is an incident for an administrator rather
-    than a failure reported to the user.
-
-    This is the one writer allowed the last word on a QA run's outcome, and only
-    this one thing. Everything else that reaches ``PATCH /runs/{id}`` is still
-    refused once a terminal run carries a result — that guard exists to stop a
-    worker's late verdict from erasing a supervisor's, and it holds in that
-    direction unchanged. A worker reporting after this escalation is refused, so
-    the two orders end in the same place.
+    runs out of revoke attempts it records a named cleanup failure if the run is
+    still live. A terminal run already has its authoritative outcome; the grant
+    still records that a human has been called, but it cannot rewrite the run.
 
     Both writes commit together, and both rows are locked before either is read.
-    Being allowed the last word is not the same as getting it: a QA worker's
-    ``PATCH`` that read the run as still running would otherwise commit after
-    this one and put its pass back over the named cleanup failure. Under the lock
-    that ``PATCH`` reads the failure this wrote and is refused by the ordinary
-    outcome rule. Repeating this call is the same state again: the escalation
-    moment is stamped once and the run's outcome is rewritten to the same values.
+    A QA worker's ``PATCH`` that read the run as still running could otherwise
+    commit after this one and put its pass back over the named cleanup failure.
+    Under the lock that ``PATCH`` reads the failure this wrote and is refused by
+    the ordinary outcome rule. Repeating this call is the same state again: the
+    escalation moment is stamped once and the terminal outcome is preserved.
     """
     grant = await _load(grant_id, db, lock=True)
     if grant.status == TemporaryAccessStatus.REVOKED.value:
@@ -251,7 +242,7 @@ async def escalate_grant(
         )
 
     run = await db.get(Run, grant.qa_run_id, with_for_update=True)
-    if run is not None:
+    if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
         run.status = RunStatus.FAILED.value
         run.error_message = escalation.run_error_message
         run.result = escalation.run_result.model_dump(mode="json")

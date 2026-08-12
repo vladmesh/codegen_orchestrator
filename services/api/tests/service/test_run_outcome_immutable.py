@@ -1,4 +1,4 @@
-"""A run that recorded how it ended keeps that answer.
+"""A run that reached a terminal state keeps that answer.
 
 Refusing only the move back to a live status leaves the interleaving that
 matters open: a supervisor ends a run the worker is still inside, and the
@@ -6,10 +6,9 @@ worker's own terminal write lands afterwards. Both writes are terminal, so
 nothing stops the later one from replacing a named failure with a pass — and the
 story supervisor reads whatever is there.
 
-The rule cannot be "terminal runs are frozen" either. A cancelled deploy is
-marked terminal by whoever cancelled it, and the worker that owned it records
-what it actually did afterwards; that record is the only proof its dispatch is
-over.
+Cancellation is an outcome even when it has no typed result. A worker that
+finishes after it was cancelled has a stale verdict, not permission to replace
+the cancellation.
 """
 
 import asyncio
@@ -116,29 +115,31 @@ async def test_the_first_terminal_outcome_wins_whichever_it_is(async_client: Asy
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_run_may_still_record_what_its_worker_did(async_client: AsyncClient):
-    """Cancelling names no outcome, so the worker's result is the first one."""
-    run_id = await _run(async_client, run_type="deploy")
+async def test_a_cancelled_run_refuses_a_late_worker_verdict(async_client: AsyncClient):
+    """The central QA PATCH cannot replace a cancellation it outlived."""
+    run_id = await _run(async_client)
 
-    withdrawn = await async_client.post(
-        f"/api/runs/{run_id}/dispatch-withdraw",
-        params={"reason": "temporary access grant was abandoned"},
+    cancelled = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"status": "cancelled", "error_message": "temporary access grant was abandoned"},
     )
-    assert withdrawn.json()["run_status"] == "cancelled"
+    assert cancelled.status_code == status.HTTP_200_OK
+    first_completed_at = cancelled.json()["completed_at"]
 
-    recorded = await async_client.patch(
+    late_verdict = await async_client.patch(
         f"/api/runs/{run_id}",
         json={
-            "status": "cancelled",
-            "error_message": "Deploy was cancelled before it could finish",
-            "result": {"deploy_outcome": "cancelled"},
+            "status": "completed",
+            "result": {"qa_outcome": "passed", "summary": "all good"},
         },
     )
 
-    assert recorded.status_code == status.HTTP_200_OK
+    assert late_verdict.status_code == status.HTTP_409_CONFLICT
     run = await async_client.get(f"/api/runs/{run_id}")
-    assert run.json()["result"]["deploy_outcome"] == "cancelled"
-    assert run.json()["error_message"] == "Deploy was cancelled before it could finish"
+    assert run.json()["status"] == "cancelled"
+    assert run.json()["result"] is None
+    assert run.json()["error_message"] == "temporary access grant was abandoned"
+    assert run.json()["completed_at"] == first_completed_at
 
 
 @pytest.mark.asyncio
@@ -150,11 +151,82 @@ async def test_repeating_an_outcome_after_a_lost_response_is_not_a_conflict(
     payload = {"status": "completed", "result": {"qa_outcome": "passed", "report": "all good"}}
 
     first = await async_client.patch(f"/api/runs/{run_id}", json=payload)
-    second = await async_client.patch(f"/api/runs/{run_id}", json=payload)
+    first_completed_at = first.json()["completed_at"]
+    second = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={**payload, "completed_at": "2030-01-01T00:00:00Z"},
+    )
 
     assert first.status_code == status.HTTP_200_OK
     assert second.status_code == status.HTTP_200_OK
     assert second.json()["result"]["qa_outcome"] == "passed"
+    assert first_completed_at is not None
+    assert second.json()["completed_at"] == first_completed_at
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_status", "expected_outcome"),
+    [
+        (
+            {"status": "completed", "result": {"qa_outcome": "passed"}},
+            "completed",
+            "passed",
+        ),
+        (
+            {
+                "status": "completed",
+                "result": {
+                    "qa_outcome": "failed",
+                    "failed_checks": [{"name": "GET /health", "detail": "returned 503"}],
+                },
+            },
+            "completed",
+            "failed",
+        ),
+        ({"status": "cancelled"}, "cancelled", None),
+    ],
+    ids=("success", "failed_verdict", "cancellation"),
+)
+async def test_first_qa_terminal_transition_stamps_completion_time(
+    async_client: AsyncClient,
+    payload: dict,
+    expected_status: str,
+    expected_outcome: str | None,
+):
+    """The API commits a QA verdict and its completion timestamp together."""
+    run_id = await _run(async_client)
+
+    settled = await async_client.patch(f"/api/runs/{run_id}", json=payload)
+
+    assert settled.status_code == status.HTTP_200_OK
+    assert settled.json()["status"] == expected_status
+    assert settled.json()["completed_at"] is not None
+    assert (settled.json()["result"] or {}).get("qa_outcome") == expected_outcome
+
+
+@pytest.mark.asyncio
+async def test_a_preterminal_client_completion_time_is_ignored(async_client: AsyncClient):
+    """Only the terminal transition may write the completion timestamp."""
+    run_id = await _run(async_client)
+    supplied_at = "2030-01-01T00:00:00Z"
+
+    updated = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"run_metadata": {"stage": "QA in progress"}, "completed_at": supplied_at},
+    )
+
+    assert updated.status_code == status.HTTP_200_OK
+    assert updated.json()["completed_at"] is None
+
+    settled = await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={"status": "completed", "result": {"qa_outcome": "passed"}},
+    )
+
+    assert settled.status_code == status.HTTP_200_OK
+    assert settled.json()["completed_at"] is not None
+    assert settled.json()["completed_at"] != supplied_at
 
 
 @pytest.mark.asyncio

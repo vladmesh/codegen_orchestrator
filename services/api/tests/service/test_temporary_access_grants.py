@@ -539,14 +539,8 @@ def _cleanup_failure(error: str = "revoke deploy deploy-revoke-1 ended failed (g
 
 
 @pytest.mark.asyncio
-async def test_escalation_fails_a_qa_run_that_already_passed(async_client: AsyncClient):
-    """The hole this endpoint exists to close.
-
-    The worker inside the QA run finished and recorded `passed` long before the
-    revokes ran out. A run that borrowed a test identity has not finished while
-    the identity is still admitted, so the cleanup failure is that run's outcome
-    — otherwise the story publishes a success with the identity still out.
-    """
+async def test_escalation_preserves_a_qa_run_that_already_passed(async_client: AsyncClient):
+    """The grant records its incident without replacing an earlier QA verdict."""
     project_id, run_id = await _project_with_run(async_client)
     grant = await async_client.post(
         "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
@@ -566,8 +560,9 @@ async def test_escalation_fails_a_qa_run_that_already_passed(async_client: Async
     assert escalated.json()["status"] == "revoke_failed"
 
     run = await async_client.get(f"/api/runs/{run_id}")
-    assert run.json()["status"] == "failed"
-    assert run.json()["result"]["blocker"]["category"] == "qa_cleanup_failed"
+    assert run.json()["status"] == "completed"
+    assert run.json()["result"]["qa_outcome"] == "passed"
+    assert run.json()["completed_at"] is not None
 
 
 @pytest.mark.asyncio
@@ -597,19 +592,11 @@ async def test_a_late_worker_verdict_cannot_undo_the_escalation(async_client: As
 
 
 @pytest.mark.asyncio
-async def test_a_worker_verdict_landing_mid_escalation_still_loses(
+async def test_a_worker_verdict_landing_mid_escalation_keeps_the_first_outcome(
     async_client: AsyncClient,
     db_engine,
 ):
-    """The two orders above are sequential; the real one overlaps.
-
-    The escalation and the worker's verdict are decided by different processes at
-    the same moment, so "the escalation gets the last word" only holds if it
-    takes the rows before it reads them. Here the escalation is held at the grant
-    while the worker's pass commits underneath it. Without the lock the two would
-    interleave the other way round and the story would read a success on a run
-    whose test identity is still admitted.
-    """
+    """The escalation cannot replace a verdict committed while it waited."""
     project_id, run_id = await _project_with_run(async_client)
     grant = await async_client.post(
         "/api/temporary-access-grants/", json=_grant_payload(project_id, run_id)
@@ -644,8 +631,8 @@ async def test_a_worker_verdict_landing_mid_escalation_still_loses(
     assert escalated.status_code == status.HTTP_200_OK
 
     run = await async_client.get(f"/api/runs/{run_id}")
-    assert run.json()["status"] == "failed"
-    assert run.json()["result"]["blocker"]["category"] == "qa_cleanup_failed"
+    assert run.json()["status"] == "completed"
+    assert run.json()["result"]["qa_outcome"] == "passed"
 
 
 @pytest.mark.asyncio

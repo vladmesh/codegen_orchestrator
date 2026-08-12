@@ -77,6 +77,7 @@ async def test_a_cancelled_run_cannot_be_started(async_client: AsyncClient):
 
     run = await async_client.get(f"/api/runs/{run_id}")
     assert run.json()["status"] == "cancelled"
+    assert run.json()["completed_at"] is not None
     claimed = await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
     assert claimed.json()["granted"] is False
 
@@ -253,6 +254,7 @@ async def test_an_expired_claim_is_taken_back_and_can_never_dispatch(async_clien
     assert run.json()["status"] == "cancelled"
     assert run.json()["error_message"] == "grant abandoned"
     assert run.json()["run_metadata"][DISPATCH_SUPERSEDED_AT_KEY]
+    assert run.json()["completed_at"] is not None
 
     reclaimed = await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
     assert reclaimed.json()["granted"] is False
@@ -311,7 +313,8 @@ async def test_a_superseded_claim_still_lets_its_worker_say_what_it_did(
     """Taking the wait back is not a verdict on the deploy.
 
     If the worker turns out to be alive, its own result is still the account of
-    what happened outside, and it has to be able to write it.
+    what happened outside, and it has to be able to write it. QA cancellation
+    is different: it is itself the first and final QA outcome.
     """
     run_id = await _deploy_run(async_client)
 
@@ -325,4 +328,6 @@ async def test_a_superseded_claim_still_lets_its_worker_say_what_it_did(
     )
 
     assert recorded.status_code == status.HTTP_200_OK
-    assert recorded.json()["result"]["deploy_outcome"] == "cancelled"
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "cancelled"
+    assert run.json()["result"]["deploy_outcome"] == "cancelled"

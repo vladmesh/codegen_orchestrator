@@ -182,15 +182,14 @@ async def _grant(
 
 
 @pytest.mark.asyncio
-async def test_a_passed_qa_run_still_ends_in_a_named_cleanup_failure(
+async def test_a_passed_qa_run_keeps_its_verdict_when_cleanup_escalates(
     api_client, redis_client, config
 ):
     """Exhausted revokes on a run that already passed.
 
     The QA worker finished and recorded `passed`; only afterwards did the
-    revokes run out. Reading the run back must not find `passed` next to a bot
-    that still admits the test identity — the run says why cleanup failed, and
-    the grant carries the stamp that lets the story stop waiting.
+    revokes run out. The grant carries the escalation and administrator alert,
+    but cannot replace the QA run's first terminal outcome.
     """
     from src.tasks.temporary_access import supervise_temporary_access
 
@@ -222,9 +221,8 @@ async def test_a_passed_qa_run_still_ends_in_a_named_cleanup_failure(
     await supervise_temporary_access(api_client, redis_client)
 
     run = await api_client.get_run(qa_run_id)
-    assert run.status is RunStatus.FAILED
-    assert run.result.qa_outcome is QAOutcome.BLOCKED
-    assert run.result.blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
+    assert run.status is RunStatus.COMPLETED
+    assert run.result.qa_outcome is QAOutcome.PASSED
 
     settled = await api_client.get_live_temporary_access_grant_for_run(qa_run_id)
     assert settled is not None

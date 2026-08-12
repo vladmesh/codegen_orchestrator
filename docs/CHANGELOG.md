@@ -2,6 +2,16 @@
 
 ## 2026-08-12
 
+- Preserve cancelled QA outcomes without breaking the deploy dispatch boundary: a cancelled deploy
+  without a result may still record its worker's first outcome or be superseded after its lease.
+
+- QA run terminal transitions now record `completed_at` atomically with their
+  verdict, including cancellation. Repeated deliveries preserve the first
+  timestamp, as do dispatch cancellation and QA-access cleanup failure paths.
+- A first QA terminal state is now authoritative even when cancellation has no
+  result, and `PATCH /runs/{id}` ignores caller-supplied completion timestamps
+  until it records that terminal state itself.
+
 - **Resolve project worker default at the API boundary (`codegen-orchestrator-1177`)**:
   PO project creation no longer injects Claude when the caller omits a developer
   agent. The API now records its current `DEFAULT_AGENT_TYPE` at creation time,
