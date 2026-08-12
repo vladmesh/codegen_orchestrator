@@ -148,6 +148,7 @@ async def _reconcile(run_id: str, grant: QASshGrant) -> str:
         residual = await revoke_grant(
             server_ip=grant.server_ip,
             ssh_user=grant.ssh_user,
+            qa_ssh_user=grant.qa_ssh_user,
             fleet_key=ssh_key,
             marker=grant.marker,
         )

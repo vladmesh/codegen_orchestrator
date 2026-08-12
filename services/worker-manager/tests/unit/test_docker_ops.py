@@ -149,7 +149,8 @@ class TestDockerNetworks:
         result = await wrapper.create_network("dev_proj_worker1")
 
         assert result == network_mock
-        client_mock.networks.create.assert_called_once_with("dev_proj_worker1", driver="bridge")
+        # A dev network routes off itself; only the QA egress network does not.
+        client_mock.networks.create.assert_called_once_with("dev_proj_worker1", driver="bridge", internal=False)
 
     @pytest.mark.asyncio
     async def test_remove_network(self, mock_docker):
@@ -191,7 +192,7 @@ class TestDockerNetworks:
         await wrapper.connect_network("dev_proj_worker1", "container-abc")
 
         client_mock.networks.get.assert_called_once_with("dev_proj_worker1")
-        network_mock.connect.assert_called_once_with("container-abc")
+        network_mock.connect.assert_called_once_with("container-abc", aliases=None)
 
     @pytest.mark.asyncio
     async def test_list_networks(self, mock_docker):

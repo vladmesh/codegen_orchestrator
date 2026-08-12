@@ -27,6 +27,7 @@ logger = structlog.get_logger(__name__)
 QA_WORKSPACE_ROOT = "/tmp/qa-runs"  # noqa: S108 — container-local, one dir per run
 REPORT_NAME = "QA_REPORT.md"
 TRACE_NAME = "tool-trace.jsonl"
+VERDICT_NAME = "verdict.json"
 
 
 @dataclass
@@ -36,6 +37,7 @@ class QAWorkspace:
     path: Path
     destroyed: bool = False
     residual: str | None = None
+    verdict: str | None = None
     _trace: list[dict] = field(default_factory=list)
 
     @property
@@ -45,6 +47,22 @@ class QAWorkspace:
     @property
     def trace_path(self) -> Path:
         return self.path / TRACE_NAME
+
+    @property
+    def verdict_path(self) -> Path:
+        return self.path / VERDICT_NAME
+
+    def submit_verdict(self, raw: str) -> None:
+        """Keep the executor's final result JSON, whoever the executor was.
+
+        A verdict submitted through the capability endpoint lands here rather
+        than travelling on the worker output stream: the developer-worker result
+        contract describes a commit, and a QA run has none. The runtime holding
+        the verdict in its own workspace also means the run is judged from what
+        the runner received, not from a container's exit status.
+        """
+        self.verdict = raw
+        self.verdict_path.write_text(raw, encoding="utf-8")
 
     def record(self, tool: str, request: str, response: str) -> None:
         """Append one runner-owned line of evidence about what the agent did.

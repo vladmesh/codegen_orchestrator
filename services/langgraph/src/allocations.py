@@ -16,7 +16,7 @@ from shared.contracts.dto.application import DEFAULT_APPLICATION_RESERVED_RAM_MB
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.server import ServerDTO
 from shared.server_admission import (
-    PROVISIONING_REJECTIONS,
+    ADMISSION_FAILURE_REASON,
     ServerAdmissionRejection,
     provisioning_failed_server_handles,
     server_admission_rejection,
@@ -214,12 +214,9 @@ def _refuse_inadmissible_target(
     with a human, never a capacity message to the owner and never a story
     failure.
 
-    All four rejections raise `SERVER_NOT_PROVISIONED`. Two of them — the bound
-    host stopped being managed, or left the admitting statuses — are not literally
-    an unfinished build, and the reason vocabulary has no member for them; they
-    are still the platform's own state rather than the project's, and the
-    alternative to reusing the closest infrastructure reason is describing them
-    to the owner as a capacity shortage, which is worse and false.
+    Every rejection is reported as `shared.server_admission.ADMISSION_FAILURE_REASON`,
+    the constant the search path raises too — the reasoning for one reason
+    covering all four lives there, next to the rejections themselves.
     """
     admission = server_admission_rejection(server, provisioning_failed_handles)
     if admission is None:
@@ -232,7 +229,7 @@ def _refuse_inadmissible_target(
         placement="reuse",
     )
     raise AllocationError(
-        AllocationFailureReason.SERVER_NOT_PROVISIONED,
+        ADMISSION_FAILURE_REASON,
         required_ram_mb=allocation_required_ram_mb(min_ram_mb),
         min_disk_mb=min_disk_mb,
         message=(f"Bound server {server.handle} may not host an application: {admission.value}"),
@@ -246,8 +243,10 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
     software provisioning recorded complete, and free of an open provisioning
     failure. That rule lives in ``shared.server_admission`` and is shared with the
     scheduler's resource wait, so the two cannot diverge. A host that fails it is
-    never described as a capacity problem — it raises
-    ``AllocationFailureReason.SERVER_NOT_PROVISIONED``.
+    never described as a capacity problem — whichever rejection it was, the
+    refusal carries ``shared.server_admission.ADMISSION_FAILURE_REASON``. The one
+    thing that outranks it is a request no managed server could fit at all; the
+    comment at that check says why it is asked first.
 
     Admission then reserves ``min_ram_mb + ALLOCATION_RAM_RESERVE_MB``. It compares
     that budget against both the persisted sum of application reservations and
@@ -270,13 +269,13 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
         admission = server_admission_rejection(srv, provisioning_failed_handles)
         if admission is not None:
             admission_rejections.add(admission)
-            if admission in PROVISIONING_REJECTIONS:
-                logger.info(
-                    "server_admission_rejected",
-                    server=srv.handle,
-                    status=srv.status.value,
-                    reason=admission.value,
-                )
+            logger.info(
+                "server_admission_rejected",
+                server=srv.handle,
+                status=srv.status.value,
+                reason=admission.value,
+                placement="search",
+            )
             continue
 
         if srv.capacity_disk_mb < min_disk_mb:
@@ -307,13 +306,32 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO:
 
     if not suitable:
         budget = {"required_ram_mb": required_ram_mb, "min_disk_mb": min_disk_mb}
+        # Fleet-wide impossibility is answered before the admission refusal below,
+        # and that order is deliberate. This holds only when no managed server
+        # would fit the request even fully admitted, so finishing a host's
+        # provisioning cannot change the answer — the host that turns `complete`
+        # is still too small. Calling that an infrastructure wait would park the
+        # request on something that by definition never arrives; `IMPOSSIBLE_CAPACITY`
+        # calls a human at once and names the real blocker. It is not the masking
+        # this rule exists against either: no host's state is being retold as a
+        # memory shortage, a different and durable fact about the fleet is reported.
         if _request_exceeds_every_server(all_managed_servers, required_ram_mb, min_disk_mb):
             raise AllocationError(AllocationFailureReason.IMPOSSIBLE_CAPACITY, **budget)
-        # An unfinished or broken host build is infrastructure, not capacity: it
-        # resolves by itself when provisioning completes, so it must keep its own
-        # reason instead of collapsing into a memory shortage.
-        if admission_rejections & PROVISIONING_REJECTIONS:
-            raise AllocationError(AllocationFailureReason.SERVER_NOT_PROVISIONED, **budget)
+        # A host that may not take an application is infrastructure, not capacity,
+        # whichever of the rejections it was: a build still running, a build that
+        # broke, a host that left the admitting statuses, a host that stopped being
+        # managed. None of them is a statement about how much memory was asked
+        # for, so none of them may fall through to a memory reason below.
+        if admission_rejections:
+            refused = ", ".join(sorted(rejection.value for rejection in admission_rejections))
+            raise AllocationError(
+                ADMISSION_FAILURE_REASON,
+                **budget,
+                message=(
+                    "No server may host an application: "
+                    f"{ADMISSION_FAILURE_REASON.value} ({refused})"
+                ),
+            )
         # Unknown metrics cannot truthfully be described to a user as capacity.
         if "no_fresh_metrics" in rejection_reasons:
             raise AllocationError(AllocationFailureReason.NO_FRESH_METRICS, **budget)

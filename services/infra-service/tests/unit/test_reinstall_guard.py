@@ -139,6 +139,9 @@ async def test_rate_limited_poll_still_yields_the_new_root_password(monkeypatch)
     monkeypatch.setattr(operations_module, "asyncio", clock)
     monkeypatch.setattr(operations_module, "notify_admins_best_effort", AsyncMock())
     monkeypatch.setattr(operations_module, "update_server_labels", AsyncMock())
+    # The completion write is its own call now: the phase and the QA identity it
+    # created are recorded together, by one function.
+    monkeypatch.setattr(operations_module, "mark_provisioning_complete", AsyncMock())
 
     transport = _ScriptedTransport(
         [

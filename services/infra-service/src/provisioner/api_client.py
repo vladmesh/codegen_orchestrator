@@ -2,6 +2,7 @@
 
 from shared.contracts.dto.server import ServerDTO
 from shared.log_config import get_logger
+from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL, provisioning_complete_labels
 
 from ..clients.api import DeploymentRecord, api_client
 
@@ -36,6 +37,30 @@ async def update_server_labels(server_handle: str, labels: dict) -> None:
     final_labels = dict(current.labels or {}) | labels
     await api_client.update_server(server_handle, {"labels": final_labels})
     logger.info("api_server_labels_updated", server_handle=server_handle, labels=final_labels)
+
+
+async def mark_provisioning_complete(server_handle: str) -> None:
+    """Record a finished software phase, and the QA identity that phase created.
+
+    One write, from one function, because the two facts are one fact. The
+    software playbook is what creates the QA account; `provisioning_phase`
+    reaching `complete` is what says that playbook succeeded. If the identity
+    were recorded anywhere else — a later step, a second call site — there would
+    be a window in which a host reads as fully provisioned and lends no identity
+    to a QA run, and the QA runtime would have to guess which of the two it was
+    looking at.
+    """
+    await update_server_labels(server_handle, provisioning_complete_labels())
+
+
+async def record_qa_identity(server_handle: str) -> None:
+    """Record the QA identity on a host that was provisioned before it existed.
+
+    The retrofit path's half of :func:`mark_provisioning_complete`: the phase is
+    already complete on these hosts and is not re-run, so only the identity is
+    written — and only after the playbook that creates the account succeeded.
+    """
+    await update_server_labels(server_handle, {QA_SSH_USER_LABEL: QA_SSH_USER})
 
 
 async def save_server_ssh_key(server_handle: str, ssh_key: str) -> None:

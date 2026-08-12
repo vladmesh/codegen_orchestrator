@@ -1,13 +1,34 @@
 """QA runners — HTTP checks for criteria we can decide, a central agent for the rest.
 
 Criteria that only state GET expectations are run directly against the deployed
-URL by `run_health_checks`. Anything else goes to `run_qa_centrally`, which runs
-the QA agent here, in the orchestrator, and lets it reach the deployment only
-through the typed tools in `agents/qa/tools`.
+URL by `run_health_checks`: no executor, no LLM, no agent of any kind.
 
-Nothing in this module puts an agent, an LLM credential or a Telegram session on
-the deploy target. The target sees one short-lived SSH identity issued for the
-run and a closed set of read-only calls; see `_qa_target`.
+Anything else goes to `run_qa_centrally`, which first establishes what it can
+without an agent: `run_container_state_checks` reads the state of this
+deployment's containers over the run's own session. A deployment whose
+containers are down has failed its regression test there, and no executor is
+started for it. What that probe did establish is handed to the executor as given
+(`container_state_fact`), so the run is not spent asking again.
+
+Only then does an executor run, and the order there is fixed:
+
+1. the assigned subscription coding agent — Claude Code unless something
+   assigned Codex — started centrally through the existing worker runtime on the
+   management host, reaching the deployment only through this run's capability
+   endpoint;
+2. only if that executor genuinely did not run, the optional `QA_LLM_*` API
+   triplet, as the in-process ReactAgent this used to be;
+3. if neither, a typed QA-infrastructure outcome. That is not a product verdict
+   and must never be turned into one.
+
+The triplet is read at step 2 and nowhere earlier. Empty values are a valid
+production configuration: a run whose subscription executor works never looks at
+them, and their absence blocks nothing.
+
+Nothing in this module puts an agent, an LLM credential, a subscription session
+or a Telegram session on the deploy target. The target sees one short-lived SSH
+identity issued for the run and a closed set of read-only calls; see
+`_qa_target`.
 """
 
 from __future__ import annotations
@@ -16,8 +37,10 @@ import asyncio
 from dataclasses import dataclass, field
 import json
 import re
+from typing import Protocol
 import uuid
 
+import asyncssh
 import httpx
 import structlog
 
@@ -26,20 +49,29 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
 )
+from shared.contracts.vocab import AgentType
+from shared.qa_identity import QAIdentityRejection
 from shared.telegram_access_probe import (
     build_access_probe_script,
     classify_access_probe,
     run_probe_script,
 )
 
+from ..agents.qa.capability_service import QACapabilityService
 from ..agents.qa.graph import create_qa_graph
-from ..agents.qa.tools import build_qa_tools
-from ..prompts.qa import build_qa_prompt
+from ..agents.qa.tools import build_qa_callables, build_qa_tools
+from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
+from ..config.agent_llm_env import AGENT_LLM_ENV
+from ..prompts.qa import QAExecutorKind, build_qa_instructions, build_qa_prompt
 from ._qa_target import (
+    CONTAINER_PROBE_ATTEMPTS,
+    CONTAINER_PROBE_RETRY_DELAY,
     QACapabilityError,
+    QAContainerRuntimeError,
     QAGrantError,
     QAGrantJournal,
     QAGrantOutcome,
+    QAIdentityAbsentError,
     QATarget,
     new_grant_marker,
     qa_target_grant,
@@ -50,26 +82,90 @@ logger = structlog.get_logger(__name__)
 
 QA_TIMEOUT = 1200  # 20 minutes
 QA_MAX_STEPS = 200
+# How many times a transient executor failure is retried before the run is
+# reported as a QA-infrastructure outcome. Two attempts, named here, is the
+# whole of the retry policy: a container that lost a race with a busy host
+# deserves one more try, and nothing deserves an unbounded loop. A missing or
+# broken subscription session is not transient and is never retried — a second
+# attempt cannot make a session exist.
+QA_EXECUTOR_ATTEMPTS = 2
 HEALTH_CHECK_TIMEOUT = 30
 HEALTH_CHECK_ATTEMPTS = 5
 HEALTH_CHECK_RETRY_DELAY = 5
 ACCESS_PROBE_TIMEOUT = 60
+CONTAINER_HEALTHY = "healthy"
 _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
 
 @dataclass(frozen=True)
 class QARuntimeConfig:
-    """What the central QA agent needs to exist: an LLM, and a QA Telegram account.
+    """What a QA run is performed with, before anything is known about failing.
 
-    `telethon_env` is the QA account's credentials. They live in the QA
-    runtime's environment and are handed to a probe child process; the agent
-    never receives them and no deploy target holds a copy.
+    `executor_agent_type` is the coding agent assigned to testing — Claude Code
+    unless something assigned Codex explicitly. Its subscription session is a
+    directory on the management host that worker-manager mounts into the
+    executor container; neither this process nor any deploy target ever holds
+    it.
+
+    `capability_host` is how that container addresses this runtime. It is the
+    only address the container is given, and it stops answering with the run.
+
+    `telethon_env` is the QA Telegram account's credentials. They live in this
+    runtime's environment and are handed to a probe child process; no executor
+    and no deploy target receives them.
+
+    There is deliberately no LLM configuration here. The API triplet is a
+    fallback, and a fallback that is read before the primary is attempted is a
+    requirement wearing a different name — see `api_fallback`.
     """
+
+    executor_agent_type: AgentType
+    capability_host: str
+    telethon_env: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class QAApiFallback:
+    """The optional API triplet, resolved only after the assigned executor failed."""
 
     model: str
     base_url: str
     api_key: str
-    telethon_env: dict[str, str] | None = None
+
+
+class QAInfrastructureFailure(Exception):
+    """This QA pass could not be performed, and that is not the product's fault.
+
+    It carries the blocker it becomes, because what was unavailable decides what
+    an administrator has to repair: no executor for the exploratory part, or the
+    infrastructure a deterministic probe reads. One mechanism, two categories —
+    the caller turns either into a typed QA-infrastructure outcome and never
+    into a product verdict.
+    """
+
+    def __init__(self, *, summary: str, blocker: QABlocker) -> None:
+        super().__init__(blocker.received)
+        self.summary = summary
+        self.blocker = blocker
+
+
+def api_fallback(settings) -> QAApiFallback | None:
+    """Read the optional `QA_LLM_*` triplet, at the only moment it is allowed to matter.
+
+    Called after the assigned subscription executor has actually failed, never
+    before. A complete triplet continues the run through the API; an incomplete
+    or absent one is a normal production configuration and simply means there is
+    no second executor.
+    """
+    model, base_url, api_key = (getattr(settings, name.lower()) for name in AGENT_LLM_ENV["qa"])
+    if model and base_url and api_key:
+        return QAApiFallback(model=model, base_url=base_url, api_key=api_key)
+    return None
+
+
+def missing_api_fallback_env(settings) -> list[str]:
+    """Which of the fallback triplet's names carry no value, for the admin alert."""
+    return [name for name in AGENT_LLM_ENV["qa"] if not getattr(settings, name.lower())]
 
 
 @dataclass
@@ -83,6 +179,9 @@ class QAResult:
     report: str = ""
     blocker: QABlocker | None = None
     state_changes: list[dict] = field(default_factory=list)
+    # What the executor's own container reported about the run. Runner-owned
+    # evidence like the tool trace, and scanned for forbidden writes with it.
+    executor_evidence: str = ""
 
 
 def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
@@ -365,6 +464,176 @@ async def _run_health_check(
     return {"name": name, "pass": False, "detail": detail}, transport_error
 
 
+@dataclass(frozen=True)
+class _ContainerState:
+    """One container of this deployment, as docker reported it."""
+
+    name: str
+    ok: bool
+    detail: str
+
+    def as_check(self) -> dict:
+        return {"name": f"container {self.name} is running", "pass": self.ok, "detail": self.detail}
+
+
+class _ContainerStateUnreadable(Exception):
+    """Docker did not answer with a container state. Says nothing about the product."""
+
+
+def read_container_state(name: str, payload: str) -> _ContainerState:
+    """Decide one container's state from `docker inspect --format {{json .State}}`.
+
+    The rules are the ones a human would apply to that output and nothing more:
+    a container that is restarting is in a restart loop, one that is not running
+    is down, and one whose image declares a health check has to be `healthy`.
+    Containers without a health check have no `Health` key at all — that is
+    docker's schema, not a missing value, which is why it is the only field read
+    conditionally.
+
+    Raises:
+        _ContainerStateUnreadable: the payload is not a docker container state.
+    """
+    try:
+        state = json.loads(payload)
+        status = state["Status"]
+        running = state["Running"]
+        restarting = state["Restarting"]
+        exit_code = state["ExitCode"]
+        health = state["Health"]["Status"] if "Health" in state else ""
+    except (ValueError, TypeError, KeyError) as exc:
+        raise _ContainerStateUnreadable(
+            f"docker inspect of {name} did not answer with a container state: {payload[:300]!r}"
+        ) from exc
+    if restarting:
+        return _ContainerState(name, False, f"restarting (last exit code {exit_code})")
+    if not running:
+        return _ContainerState(name, False, f"{status} (exit code {exit_code})")
+    if health and health != CONTAINER_HEALTHY:
+        return _ContainerState(name, False, f"running, health {health}")
+    return _ContainerState(name, True, f"running{f', health {health}' if health else ''}")
+
+
+async def _read_container_states(
+    session, containers: list[str]
+) -> tuple[list[_ContainerState], str]:
+    """Inspect every container of this deployment once. Returns states and a failure."""
+    states: list[_ContainerState] = []
+    for name in containers:
+        try:
+            remote = await session.container_inspect(name)
+        except (OSError, asyncssh.Error) as exc:
+            return states, f"the target did not answer docker inspect of {name}: {exc}"
+        if remote.exit_status != 0:
+            detail = (remote.stderr or remote.stdout or "no output").strip()[:300]
+            return states, f"docker inspect of {name} exited {remote.exit_status}: {detail}"
+        try:
+            states.append(read_container_state(name, remote.stdout))
+        except _ContainerStateUnreadable as exc:
+            return states, str(exc)
+    return states, ""
+
+
+def container_runtime_unavailable(*, sent: str, received: str) -> QAInfrastructureFailure:
+    """The one place that says what an unanswering container runtime is.
+
+    Two calls can meet that condition: the `docker ps` that builds the run's
+    capability set, and the `docker inspect` of each container this probe reads.
+    They are the same fact about the target, so they are classified here and only
+    here — a QA-infrastructure outcome with bounded retries already spent and an
+    administrator alert to follow, never a verdict about the product and never
+    "the server could not be reached", which means something else entirely.
+    """
+    return QAInfrastructureFailure(
+        summary="QA could not be performed: the target's container runtime did not answer",
+        blocker=QABlocker(
+            category=QABlockerCategory.QA_PROBE_UNAVAILABLE,
+            attempted="read the state of this deployment's containers before starting QA",
+            sent=sent,
+            received=received,
+        ),
+    )
+
+
+async def run_container_state_checks(session) -> QAResult:
+    """Read the state of this deployment's containers. No LLM, no agent.
+
+    This is a fact about the deployment, so it is established the same way the
+    GET criteria are: by asking, here, before any executor exists. It uses the
+    run's own session and the same `container_inspect` the exploratory agent
+    would have called — the point is who asks, not a new way of asking.
+
+    A container that is down, looping or unhealthy is a failed QA check, which
+    is a product defect and is routed as one. Docker not answering is not: that
+    is infrastructure, and it is raised rather than returned.
+
+    Raises:
+        QAInfrastructureFailure: docker did not answer, or this deployment has
+            no containers at all — in both cases nothing about the product was
+            established, and the platform is what has to be repaired.
+    """
+    containers = sorted(session.capabilities.containers)
+    target = session.target
+    if not containers:
+        raise QAInfrastructureFailure(
+            summary="QA could not be performed: the deployment has no containers to inspect",
+            blocker=QABlocker(
+                category=QABlockerCategory.QA_PROBE_UNAVAILABLE,
+                attempted="read the state of this deployment's containers before starting QA",
+                sent=f"docker ps of compose project {target.project_name} on {target.server_ip}",
+                received=(
+                    "docker reports no container for this deployment, so its state cannot be "
+                    "read and nothing about the product can be concluded from it"
+                ),
+            ),
+        )
+
+    states: list[_ContainerState] = []
+    failure = ""
+    for attempt in range(CONTAINER_PROBE_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(CONTAINER_PROBE_RETRY_DELAY)
+        states, failure = await _read_container_states(session, containers)
+        if not failure and all(state.ok for state in states):
+            break
+    if failure:
+        logger.error("qa_container_probe_unavailable", server_ip=target.server_ip, detail=failure)
+        raise container_runtime_unavailable(
+            sent=f"docker inspect of {', '.join(containers)} on {target.server_ip}",
+            received=failure,
+        )
+
+    checks = [state.as_check() for state in states]
+    failed = [state for state in states if not state.ok]
+    summary = (
+        f"{len(states)} container(s) of {target.project_name} are running"
+        if not failed
+        else f"{len(failed)}/{len(states)} container(s) of {target.project_name} are not running"
+    )
+    logger.info(
+        "qa_container_state_probed",
+        server_ip=target.server_ip,
+        project_name=target.project_name,
+        passed=not failed,
+        failed=[state.name for state in failed],
+    )
+    return QAResult(
+        passed=not failed,
+        checks=checks,
+        summary=summary,
+        report="\n".join(f"- {check['name']}: {check['detail']}" for check in checks),
+    )
+
+
+def container_state_fact(probe: QAResult) -> str:
+    """What the container probe established, as a line the executor is told.
+
+    The exploratory agent is not asked to find this out again: it already
+    happened, deterministically, against the same deployment moments earlier.
+    """
+    containers = "; ".join(f"{check['name']} — {check['detail']}" for check in probe.checks)
+    return f"- Container state, read from the target with docker inspect: {containers}."
+
+
 async def preflight_bot_access(
     *, bot_username: str, telethon_env: dict[str, str] | None
 ) -> QABlocker | None:
@@ -456,20 +725,203 @@ async def _invoke_qa_agent(
     session,
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
+    established_facts: list[str],
+    timeout: int,
+    settings,
+) -> QAResult:
+    """Run this pass on the assigned executor, or say why no executor ran.
+
+    The capability endpoint is started first and stopped on every way out. It is
+    what both executors reach the target through — the central agent over HTTP,
+    the fallback agent through the very same callables in-process — so the
+    target's view of a run does not depend on who performed it.
+
+    Raises:
+        QAInfrastructureFailure: the assigned executor did not run and there is
+            no configured fallback. That is a platform fact, not a verdict.
+    """
+    calls = build_qa_callables(
+        session=session,
+        workspace=workspace,
+        telethon_env=runtime.telethon_env,
+    )
+    service = QACapabilityService(
+        calls=calls,
+        capabilities=session.capabilities.describe(),
+        submit_verdict=workspace.submit_verdict,
+        advertised_host=runtime.capability_host,
+    )
+    endpoint = await service.start()
+    try:
+        executor_run, executor_failure = await _run_central_executor(
+            target=target,
+            acceptance_criteria=acceptance_criteria,
+            runtime=runtime,
+            established_facts=established_facts,
+            endpoint=endpoint,
+            service=service,
+            timeout=timeout,
+        )
+        if executor_run is not None:
+            return _verdict_of(workspace, service, executor_run, timeout)
+    finally:
+        await service.stop()
+
+    fallback = api_fallback(settings)
+    if fallback is None:
+        missing = missing_api_fallback_env(settings)
+        raise QAInfrastructureFailure(
+            summary="QA could not be performed: no executor was available",
+            blocker=QABlocker(
+                category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+                attempted=(
+                    f"run exploratory QA on the assigned executor "
+                    f"({runtime.executor_agent_type.value})"
+                ),
+                sent=", ".join(missing) or "no API fallback configured",
+                received=(
+                    f"the assigned QA executor ({runtime.executor_agent_type.value}) did not run "
+                    f"({executor_failure.detail}), and no API fallback is configured"
+                ),
+            ),
+        )
+    logger.warning(
+        "qa_executor_fallback_to_api",
+        executor=runtime.executor_agent_type.value,
+        detail=executor_failure.detail,
+    )
+    return await _run_in_process_agent(
+        target=target,
+        workspace=workspace,
+        session=session,
+        acceptance_criteria=acceptance_criteria,
+        runtime=runtime,
+        established_facts=established_facts,
+        fallback=fallback,
+        timeout=timeout,
+    )
+
+
+async def _run_central_executor(
+    *,
+    target: QATarget,
+    acceptance_criteria: str,
+    runtime: QARuntimeConfig,
+    established_facts: list[str],
+    endpoint,
+    service: QACapabilityService,
+    timeout: int,
+) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None]:
+    """Try the assigned subscription executor, retrying only transient failures.
+
+    Returns the run once an executor has actually run — whether or not it
+    reached a verdict — or the failure that ended the attempts. An executor that
+    ran and said nothing is a QA run without an answer, which is a different
+    thing from a QA run without an executor, and only the second one may reach
+    for a fallback.
+    """
+    prompt = build_qa_prompt(
+        acceptance_criteria,
+        target.deployed_url,
+        target.bot_username,
+        executor=QAExecutorKind.CENTRAL_AGENT,
+        established_facts=established_facts,
+    )
+    last: QAExecutorUnavailable | None = None
+    for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
+        try:
+            run = await run_qa_executor(
+                agent_type=runtime.executor_agent_type,
+                capability_url=endpoint.url,
+                capability_token=endpoint.token,
+                instructions=build_qa_instructions(),
+                prompt=prompt,
+                verdict_received=service.verdict_received,
+                calls_served=lambda: service.calls_served,
+                timeout=timeout,
+            )
+        except QAExecutorUnavailable as exc:
+            last = exc
+            logger.warning(
+                "qa_executor_unavailable",
+                executor=runtime.executor_agent_type.value,
+                attempt=attempt,
+                attempts=QA_EXECUTOR_ATTEMPTS,
+                transient=exc.transient,
+                detail=exc.detail,
+            )
+            if not exc.transient:
+                break
+            continue
+        logger.info(
+            "qa_executor_finished",
+            executor=runtime.executor_agent_type.value,
+            verdict=run.verdict_submitted,
+            calls_served=run.calls_served,
+        )
+        return run, None
+    return None, last
+
+
+def _verdict_of(
+    workspace: QAWorkspace,
+    service: QACapabilityService,
+    executor_run: QAExecutorRun,
     timeout: int,
 ) -> QAResult:
-    """Run the agent against one target and turn its answer into a QAResult."""
+    """Turn what the executor submitted into a QAResult, or fail closed.
+
+    An executor that ran and submitted nothing has produced no product evidence.
+    That is an unknown blocker for a human, never a pass and never a failure the
+    engineering loop is asked to fix.
+    """
+    if workspace.verdict is None:
+        return QAResult(
+            passed=False,
+            summary=f"the QA executor did not submit a result within {timeout}s",
+            report=workspace.read_report(),
+            executor_evidence=executor_run.transcript,
+            blocker=_unknown_result_blocker(
+                attempted="run the central QA executor",
+                sent=f"{service.calls_served} capability call(s)",
+                received="the executor finished without submitting a result",
+            ),
+        )
+    qa_result = parse_qa_result(workspace.verdict)
+    qa_result.report = workspace.read_report()
+    qa_result.executor_evidence = executor_run.transcript
+    return qa_result
+
+
+async def _run_in_process_agent(
+    *,
+    target: QATarget,
+    workspace: QAWorkspace,
+    session,
+    acceptance_criteria: str,
+    runtime: QARuntimeConfig,
+    established_facts: list[str],
+    fallback: QAApiFallback,
+    timeout: int,
+) -> QAResult:
+    """The API fallback: the ReactAgent this used to be, over the same tool set."""
     tools = build_qa_tools(
         session=session,
         workspace=workspace,
         telethon_env=runtime.telethon_env,
     )
     graph = create_qa_graph(
-        model=runtime.model,
-        base_url=runtime.base_url,
-        api_key=runtime.api_key,
+        model=fallback.model,
+        base_url=fallback.base_url,
+        api_key=fallback.api_key,
         tools=tools,
-        prompt=build_qa_prompt(acceptance_criteria, target.deployed_url, target.bot_username),
+        prompt=build_qa_prompt(
+            acceptance_criteria,
+            target.deployed_url,
+            target.bot_username,
+            executor=QAExecutorKind.IN_PROCESS_TOOLS,
+            established_facts=established_facts,
+        ),
     )
     try:
         state = await asyncio.wait_for(
@@ -509,6 +961,20 @@ async def _invoke_qa_agent(
     return qa_result
 
 
+class QAProvisioningJournal(Protocol):
+    """Where "this host has no QA identity" is recorded against the server.
+
+    The same fact reaches this runtime two ways: off the server row, before
+    anything connects, and off the target itself, when the account the row
+    promised turns out not to be there. Both are provisioning facts about the
+    host and both belong in the same journal entry, so the runner is handed the
+    journal rather than deciding on its own that a failure it met halfway
+    through is only this run's problem.
+    """
+
+    async def missing_identity(self, *, reason: QAIdentityRejection, detail: str) -> None: ...
+
+
 async def run_qa_centrally(
     *,
     target: QATarget,
@@ -516,6 +982,9 @@ async def run_qa_centrally(
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
     grant_journal: QAGrantJournal,
+    provisioning_journal: QAProvisioningJournal,
+    settings,
+    established_facts: list[str],
     timeout: int = QA_TIMEOUT,
 ) -> QAResult:
     """Run exploratory QA from the orchestrator against one deployment.
@@ -533,9 +1002,18 @@ async def run_qa_centrally(
         fleet_ssh_key: the server key, used by this function only to issue and
             revoke the run's own identity. It is never given to the agent.
         acceptance_criteria: regression test criteria from the repository.
-        runtime: LLM configuration and the QA Telegram account credentials.
+        runtime: the assigned executor, how it addresses this runtime, and the
+            QA Telegram account credentials.
         grant_journal: where the durable record of the grant is written.
-        timeout: seconds the agent is given to reach a verdict.
+        provisioning_journal: where a target that turns out to have no QA
+            account is recorded, so drift after a finished provisioning is as
+            visible to an administrator as a host that was never provisioned.
+        settings: read only if the assigned executor fails, and only for the
+            optional API fallback.
+        established_facts: what the caller already established about this
+            deployment without an LLM. They are told to the executor as given,
+            so it does not spend the run asking again.
+        timeout: seconds the executor is given to reach a verdict.
     """
     grant = QAGrantOutcome(marker=new_grant_marker())
     workspace: QAWorkspace | None = None
@@ -553,24 +1031,97 @@ async def run_qa_centrally(
                     project_name=target.project_name,
                     timeout=timeout,
                 )
-                qa_result = await _invoke_qa_agent(
-                    target=target,
-                    workspace=workspace,
-                    session=session,
-                    acceptance_criteria=acceptance_criteria,
-                    runtime=runtime,
-                    timeout=timeout,
-                )
+                # The container state is decided here, deterministically, before
+                # an executor exists. A deployment whose containers are down has
+                # already failed its regression test, and starting an agent to
+                # rediscover that would spend a model on a fact this run holds.
+                container_state = await run_container_state_checks(session)
+                if not container_state.passed:
+                    logger.info(
+                        "qa_container_state_failed_before_agent",
+                        server_ip=target.server_ip,
+                        summary=container_state.summary,
+                    )
+                    qa_result = container_state
+                else:
+                    qa_result = await _invoke_qa_agent(
+                        target=target,
+                        workspace=workspace,
+                        session=session,
+                        acceptance_criteria=acceptance_criteria,
+                        runtime=runtime,
+                        established_facts=[
+                            *established_facts,
+                            container_state_fact(container_state),
+                        ],
+                        timeout=timeout,
+                        settings=settings,
+                    )
             # Everything the runner can see of the run: the calls it made on the
-            # agent's behalf, the report, and the agent's own account of itself.
+            # agent's behalf, the report, the agent's own account of itself, and
+            # — since the executor is a container with a shell now — everything
+            # that container reported.
+            #
+            # This scan is a second layer, not the boundary. The boundary is the
+            # executor's network: it is attached to one `internal` Docker
+            # network on which the deployment simply is not reachable, and the
+            # one door out of it opens the assigned CLI's model backend only
+            # (`services/worker-manager/src/qa_egress.py`). What the scan is
+            # still good for is a write that the endpoint's own typed calls
+            # could somehow express, and evidence for a human when something
+            # unexpected shows up in a transcript.
             write = _forbidden_application_write(
-                f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}",
+                f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}\n"
+                f"{qa_result.executor_evidence}",
                 target.deployed_url,
             )
             if write:
                 qa_result = _block_forbidden_application_write(qa_result, write)
+    except (QAInfrastructureFailure, QAContainerRuntimeError) as exc:
+        # Either no executor ran, or a deterministic probe could not be
+        # performed. Both are the platform's own failure and must not reach the
+        # engineering loop or be recorded against the product: the consumer
+        # turns these categories into an administrator alert, and the supervisor
+        # already routes a blocked run to human review rather than to a fix task.
+        #
+        # A container runtime that did not answer arrives here whichever call
+        # found it. The `docker inspect` inside the probe raises the outcome
+        # itself; the `docker ps` that builds the capability set runs before a
+        # session exists, so it raises the typed error and is classified by the
+        # same function here. One condition, one outcome — and this clause is
+        # ahead of the grant one deliberately, so the subclass is never read as
+        # "could not get onto the server".
+        failure = (
+            exc
+            if isinstance(exc, QAInfrastructureFailure)
+            else container_runtime_unavailable(
+                sent=f"docker ps of compose project {target.project_name} on {target.server_ip}",
+                received=str(exc),
+            )
+        )
+        logger.error(
+            "qa_infrastructure_failure",
+            server_ip=target.server_ip,
+            category=failure.blocker.category.value,
+            attempted=failure.blocker.attempted,
+            detail=failure.blocker.received,
+        )
+        return _apply_cleanup_residue(
+            QAResult(passed=False, summary=failure.summary, blocker=failure.blocker),
+            _residues(grant, workspace),
+        )
     except (QAGrantError, QACapabilityError) as exc:
         logger.error("qa_grant_failed", server_ip=target.server_ip, error=str(exc))
+        if isinstance(exc, QAIdentityAbsentError):
+            # The row says this host has an account and the host says otherwise.
+            # That is the same missing identity the label check refuses before a
+            # connection is opened, found one step later, so it goes to the same
+            # place: an administrator looking at this server sees one entry
+            # naming the handle and the repair, not a QA blocker in a log.
+            await provisioning_journal.missing_identity(
+                reason=QAIdentityRejection.ABSENT_ON_TARGET,
+                detail=str(exc),
+            )
         # The residue goes through the same path as every other exit: an
         # unconfirmed install is access this run may be holding, and a run that
         # reports only "server unavailable" hides it.

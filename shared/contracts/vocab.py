@@ -18,6 +18,32 @@ class AgentType(StrEnum):
     NOOP = "noop"  # No-op runner for E2E testing (empty commit + push)
 
 
+# Who may perform exploratory QA. The owner-set contract names exactly two
+# executors, and both are subscription CLIs whose session lives on the
+# management host: Claude Code by default, Codex when assigned explicitly.
+# `factory` is excluded because it runs on a provider API key, and `noop`
+# because it performs no testing at all — a QA run started on either is not a
+# QA run, so both are refused where they are configured rather than allowed to
+# become a container. Developer workers keep the full `AgentType`.
+QA_EXECUTOR_AGENT_TYPES: frozenset[AgentType] = frozenset({AgentType.CLAUDE, AgentType.CODEX})
+
+# The same restriction as a type, for fields that declare it rather than check it.
+QAExecutorAgentType = Literal[AgentType.CLAUDE, AgentType.CODEX]
+
+
+class WorkerType(StrEnum):
+    """What a worker container exists to do.
+
+    `WorkerConfig.worker_type` states the same two values as a `Literal` because
+    that is the wire; this enum is what code compares against and what the
+    control-plane allowlist is keyed by, so the spelling lives in one place.
+    `shared/tests/unit/test_vocab.py` fails if the two drift apart.
+    """
+
+    DEVELOPER = "developer"  # writes code in a pre-scaffolded repository workspace
+    QA = "qa"  # the central exploratory-QA executor: no repository, nothing to commit
+
+
 class WorkerCliKind(StrEnum):
     """CLI-agent wire identity reported on `worker:events`.
 
