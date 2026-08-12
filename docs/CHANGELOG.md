@@ -11,6 +11,9 @@
 - Failure to inject an agent instruction file or `TASK.md` now fails worker creation immediately.
   Previously worker-manager logged `PermissionError`, ACKed the create command and left callers to
   discover the dead worker through a sequence of 60-second timeouts.
+- The legacy DinD harness waits for asynchronous worker creation to finish instead of treating the
+  early acceptance response as readiness, tolerates cold worker-image builds, and supplies an
+  isolated test credential for Factory workers.
 
 ## 2026-08-12 (3)
 

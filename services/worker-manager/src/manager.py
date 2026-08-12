@@ -168,9 +168,7 @@ class WorkerManager:
                 mem_limit="64m",
             )
         except Exception as exc:
-            raise RuntimeError(
-                f"remote Docker daemon could not prepare worker mounts for {worker_id}: {exc}"
-            ) from exc
+            raise RuntimeError(f"remote Docker daemon could not prepare worker mounts for {worker_id}: {exc}") from exc
 
     async def create_worker(
         self,
