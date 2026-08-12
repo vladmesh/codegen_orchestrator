@@ -297,13 +297,15 @@ class SchedulerAPIClient(InternalAPIClient):
     ) -> TemporaryAccessGrantDTO:
         """Give up on a quiet revoke: the QA run carries the failure, in one write.
 
-        The run's own verdict is superseded here, and deliberately so. A run that
-        borrowed a test identity has not finished while the identity is still
-        out, so a worker's pass is provisional until the access is settled; if
-        the sweep spends its attempts, the named cleanup failure is what the run
-        says. Doing this through the ordinary run patch would be refused, and
-        rightly — that path is where a stale worker verdict would overwrite a
-        supervisor's.
+        The run that borrowed the identity is where the cleanup incident is
+        recorded, so the record of what happened to the access is next to the run
+        it was lent to rather than in a log line. It is not what decides the
+        story: by the time the sweep runs out of attempts the story has been
+        routed on the product verdict QA gave, and a completed one is not
+        reopened by anything written here.
+
+        Doing this through the ordinary run patch would be refused, and rightly —
+        that path is where a stale worker verdict would overwrite a supervisor's.
         """
         resp = await self.request(
             "POST",

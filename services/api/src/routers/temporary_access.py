@@ -218,13 +218,15 @@ async def escalate_grant(
 ) -> TemporaryAccessGrant:
     """Record that the access could not be taken back, on the grant and on its run.
 
-    A QA run that borrowed a test identity is not over when the worker inside it
-    has an opinion: the identity it was lent still has to be handed back, and
-    until that is settled the verdict is provisional. So when the sweep runs out
-    of revoke attempts, this writes the named cleanup failure onto the run even
-    if the worker already recorded a pass — the story would otherwise publish a
-    success while the identity is still admitted by the deployed bot, or, if
-    nothing dared write, wait in TESTING for a revoke that keeps failing.
+    The QA run is where a borrowed identity's fate belongs, so when the sweep
+    runs out of revoke attempts this writes the named cleanup failure onto the
+    run even if the worker already recorded a pass: the run says what became of
+    the identity it was lent, and the grant carries the stamp that says a human
+    has been called. What it does not do is decide a story. The story is routed
+    on the product verdict, on the tick that reads it, and is normally completed
+    and delivered long before this; a completed story is not reopened by this
+    write, and a leftover test user is an incident for an administrator rather
+    than a failure reported to the user.
 
     This is the one writer allowed the last word on a QA run's outcome, and only
     this one thing. Everything else that reaches ``PATCH /runs/{id}`` is still

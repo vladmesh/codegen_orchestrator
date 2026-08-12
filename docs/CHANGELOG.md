@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-08-11 (14)
+## 2026-08-11 (16)
 
 - The QA executor's CLI can reach its model backend again. worker-manager put
   the run's egress proxy into the container environment, but the wrapper starts
@@ -42,7 +42,7 @@
   now says so explicitly, because rolling out the broker alone would make an old
   worker-manager's registrations fail.
 
-## 2026-08-11 (13)
+## 2026-08-11 (15)
 
 - A QA executor now has no control-plane authority beyond the protocol of its
   own turn. Its broker token cannot be hidden from the agent — the CLI runs as
@@ -76,7 +76,7 @@
   own turn. Worker-manager's unit doubles moved to `tests/unit/conftest.py`, so
   a service test can no longer be handed a mocked broker registration.
 
-## 2026-08-11 (12)
+## 2026-08-11 (14)
 
 - "Exploratory QA cannot write to the application" is now a property of the
   executor's network instead of a rule in its prompt. The QA executor container
@@ -111,7 +111,7 @@
   ledger records, that the capability endpoint answers, and that an allowlisted
   tunnel carries a request and a response.
 
-## 2026-08-11 (11)
+## 2026-08-11 (13)
 
 - Exploratory QA is performed by the assigned subscription coding agent again —
   Claude Code by default, Codex when `QA_EXECUTOR_AGENT_TYPE` says so — started
@@ -149,6 +149,68 @@
   validates every command against, before a container exists. `factory` would
   run QA on a provider API key and `noop` performs no testing at all. Developer
   workers keep the full `AgentType`.
+
+## 2026-08-11 (12)
+
+- Delivering the product no longer waits for the temporary QA access to be
+  handed back. `supervise_testing_stories` used to skip any story whose QA run
+  still held a live grant, so a story that deploy, smoke and QA had all passed
+  stayed in TESTING for as long as the revoke kept being retried — and the user
+  heard nothing at all in the meantime. It now routes on the QA outcome and
+  nothing else: a passed run completes its story on the next supervisor tick.
+- The owner is told in the same tick. A `story_completed` event goes to
+  `po:input` with the address of the deployment QA tested — URL, and the bot's
+  `@username` when there is one — read off the handoff stored on the QA run.
+  Nothing published that event before; the QA consumer stopped sending it when it
+  was decoupled from the story lifecycle, and the supervisor never picked it up.
+- The cleanup is unchanged and still finishes on its own: the same sweep revokes,
+  reads the running service back, retries within its bounds, and when they are
+  spent writes the `qa_cleanup_failed` blocker on the QA run and alerts an
+  administrator — now naming the story, project, QA run and grant, so the
+  incident can be picked up from the message alone.
+- A leftover test identity is a cleanup incident, not a failed product. A
+  completed story is never reopened by anything the grant does afterwards
+  (only TESTING stories are routed at all), and story routing now runs *before*
+  the access sweep in the dispatcher cycle, so a cleanup that ran out of attempts
+  during an outage cannot write its incident onto a QA run before the story
+  behind it has been routed.
+- Being stuck is visible without a dashboard: the sweep's counts separate
+  `revoke_failed` (an attempt that will be retried) from `escalated` (given up
+  on, a human called), and both are on the `supervisor_cycle` log line.
+  `qa_waiting_for_access` is gone with the wait it counted.
+
+## 2026-08-11 (11)
+
+- An admission refusal is no longer told as a memory shortage. A live acceptance
+  run placed work while its only managed host was still provisioning: the
+  allocator refused correctly, then named the reason `insufficient_free_memory`
+  on an empty 4 GB machine. The search path only kept its own reason for the two
+  provisioning rejections, so a host in a non-admitting status — or one that
+  stopped being managed — fell through to the last line of the search.
+- The reason a refusal carries now lives beside the rejections themselves, as
+  `shared/server_admission.py::ADMISSION_FAILURE_REASON`. It is one constant, not
+  a rejection-to-reason table: no admission rejection is a statement about how
+  much memory was asked for, so there is nothing to branch on. Both placement
+  paths — the search for a new host and the re-admission of a bound one — raise
+  it, and `test_both_placement_paths_refuse_with_the_same_reason` compares the two
+  paths against each other for every refusing state, so the drift that happened
+  here is not expressible again.
+- No new vocabulary member: `SERVER_NOT_PROVISIONED` still describes it, so its
+  consumers (`shared/allocation_disposition.py`, the supervisor's PO event
+  choice) are untouched and the disposition stays `INFRASTRUCTURE_WAIT` — a
+  bounded wait that ends with a human, never a message to the owner about
+  capacity and never a failed story. Capacity reasons stay reachable only for
+  hosts that passed admission and then ran out of room.
+- One thing still outranks the admission reason in the search path, and now says
+  so out loud: a request no managed server could fit even fully admitted stays
+  `IMPOSSIBLE_CAPACITY` with `OPERATOR_REVIEW`. Waiting out provisioning does not
+  make a small host bigger, so an infrastructure wait there would park the request
+  on an event that never arrives, while an operator can be told at once that the
+  fleet has no machine of the required size. That is not a host's state retold as
+  a memory shortage; it is a separate durable fact. The order is now a property of
+  the code — a comment at the check, a pair of tests one fixture apart that draw
+  the line between "not ready yet" and "would never fit", and a cross-path test
+  naming the one question only the search can ask.
 
 ## 2026-08-11 (10)
 
