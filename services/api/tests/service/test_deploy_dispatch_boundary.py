@@ -307,14 +307,10 @@ async def test_a_run_nobody_claimed_has_nothing_to_take_back(async_client: Async
 
 
 @pytest.mark.asyncio
-async def test_a_superseded_claim_still_lets_its_worker_say_what_it_did(
+async def test_a_superseded_claim_refuses_a_late_worker_verdict(
     async_client: AsyncClient,
 ):
-    """Taking the wait back is not a verdict on the deploy.
-
-    If the worker turns out to be alive, its own result is still the account of
-    what happened outside, and it has to be able to write it.
-    """
+    """Taking the wait back is a cancellation, even without a typed result."""
     run_id = await _deploy_run(async_client)
 
     await async_client.post(f"/api/runs/{run_id}/dispatch-claim")
@@ -326,5 +322,7 @@ async def test_a_superseded_claim_still_lets_its_worker_say_what_it_did(
         json={"status": "cancelled", "result": {"deploy_outcome": "cancelled"}},
     )
 
-    assert recorded.status_code == status.HTTP_200_OK
-    assert recorded.json()["result"]["deploy_outcome"] == "cancelled"
+    assert recorded.status_code == status.HTTP_409_CONFLICT
+    run = await async_client.get(f"/api/runs/{run_id}")
+    assert run.json()["status"] == "cancelled"
+    assert run.json()["result"] is None

@@ -5,6 +5,9 @@
 - QA run terminal transitions now record `completed_at` atomically with their
   verdict, including cancellation. Repeated deliveries preserve the first
   timestamp, as do dispatch cancellation and QA-access cleanup failure paths.
+- A first QA terminal state is now authoritative even when cancellation has no
+  result, and `PATCH /runs/{id}` ignores caller-supplied completion timestamps
+  until it records that terminal state itself.
 
 - **Resolve project worker default at the API boundary (`codegen-orchestrator-1177`)**:
   PO project creation no longer injects Claude when the caller omits a developer
