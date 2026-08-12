@@ -14,7 +14,7 @@ import httpx
 from httpx import AsyncClient
 import pytest
 
-from shared.contracts.dto.telegram import BotLivenessState
+from shared.contracts.dto.telegram import BotLivenessState, TokenVerdictStatus
 
 TELEGRAM_ID = "100687"
 VALID_TOKEN = "987654322:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
@@ -53,13 +53,23 @@ def _getme_ok(username: str):
 
 
 @pytest.fixture
-async def bound_project(async_client: AsyncClient) -> str:
-    """A project whose bot token is bound the only way a token can be bound."""
+async def bound_project(async_client: AsyncClient) -> tuple[str, str]:
+    """A project whose bot token is bound the only way a token can be bound.
+
+    The username is fresh per test on purpose: a bot already held by another live
+    project is refused by the uniqueness layer, so a shared name would leave the
+    second test's project with no token at all and every assertion below would be
+    about that instead of about liveness. The verdict is asserted, not just the
+    status code — a rejected binding also answers 200.
+
+    Returns the project id and the username Telegram will report for it.
+    """
     await async_client.post(
         "/api/users/",
         json={"telegram_id": int(TELEGRAM_ID), "username": "liveness-tester"},
     )
     project_id = str(uuid.uuid4())
+    bot_username = f"liveness_bot_{uuid.uuid4().hex[:10]}"
     project_resp = await async_client.post(
         "/api/projects/",
         json={
@@ -83,39 +93,44 @@ async def bound_project(async_client: AsyncClient) -> str:
     )
     assert repo_resp.status_code == status.HTTP_201_CREATED, repo_resp.text
 
-    with _patched_telegram(_telegram(_getme_ok("liveness_bot"))):
+    with _patched_telegram(_telegram(_getme_ok(bot_username))):
         bind = await async_client.post(
             f"/api/projects/{project_id}/telegram/token",
             json={"token": VALID_TOKEN},
             headers={"X-Telegram-ID": TELEGRAM_ID},
         )
     assert bind.status_code == status.HTTP_200_OK, bind.text
-    return project_id
+    assert bind.json()["status"] == TokenVerdictStatus.OK.value, bind.text
+    return project_id, bot_username
 
 
 @pytest.mark.asyncio
 async def test_a_live_bot_is_reported_without_the_token(
-    async_client: AsyncClient, bound_project: str
+    async_client: AsyncClient, bound_project: tuple[str, str]
 ):
-    with _patched_telegram(_telegram(_getme_ok("liveness_bot"))):
-        resp = await async_client.get(f"/api/projects/{bound_project}/telegram/liveness")
+    project_id, bot_username = bound_project
+
+    with _patched_telegram(_telegram(_getme_ok(bot_username))):
+        resp = await async_client.get(f"/api/projects/{project_id}/telegram/liveness")
 
     assert resp.status_code == status.HTTP_200_OK, resp.text
     body = resp.json()
     assert body["state"] == BotLivenessState.ALIVE.value
-    assert body["bot_username"] == "liveness_bot"
+    assert body["bot_username"] == bot_username
     assert VALID_TOKEN not in resp.text
 
 
 @pytest.mark.asyncio
 async def test_a_revoked_token_is_reported_as_not_live(
-    async_client: AsyncClient, bound_project: str
+    async_client: AsyncClient, bound_project: tuple[str, str]
 ):
+    project_id, _ = bound_project
+
     def revoked(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
 
     with _patched_telegram(_telegram(revoked)):
-        resp = await async_client.get(f"/api/projects/{bound_project}/telegram/liveness")
+        resp = await async_client.get(f"/api/projects/{project_id}/telegram/liveness")
 
     assert resp.status_code == status.HTTP_200_OK, resp.text
     body = resp.json()
@@ -125,13 +140,15 @@ async def test_a_revoked_token_is_reported_as_not_live(
 
 @pytest.mark.asyncio
 async def test_telegram_not_answering_is_not_reported_as_a_dead_bot(
-    async_client: AsyncClient, bound_project: str
+    async_client: AsyncClient, bound_project: tuple[str, str]
 ):
+    project_id, _ = bound_project
+
     def unreachable(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
     with _patched_telegram(_telegram(unreachable)):
-        resp = await async_client.get(f"/api/projects/{bound_project}/telegram/liveness")
+        resp = await async_client.get(f"/api/projects/{project_id}/telegram/liveness")
 
     assert resp.status_code == status.HTTP_200_OK, resp.text
     assert resp.json()["state"] == BotLivenessState.TELEGRAM_UNREACHABLE.value
@@ -168,14 +185,16 @@ async def test_an_unknown_project_is_a_404(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_a_caller_without_the_internal_key_is_refused(bound_project: str):
+async def test_a_caller_without_the_internal_key_is_refused(bound_project: tuple[str, str]):
     """The endpoint spends a stored credential, so it is not an ordinary read."""
     from src.main import app
+
+    project_id, _ = bound_project
 
     async with AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as anonymous:
-        resp = await anonymous.get(f"/api/projects/{bound_project}/telegram/liveness")
+        resp = await anonymous.get(f"/api/projects/{project_id}/telegram/liveness")
 
     assert resp.status_code in (
         status.HTTP_401_UNAUTHORIZED,
