@@ -9,6 +9,7 @@ given instead is one command, which is its only route to the deployment.
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -137,6 +138,17 @@ class TestAQaExecutorNeedsNoRepository:
         workspace = tmp_path / f"{workspace_mod.QA_WORKSPACE_PREFIX}qa-1"
         assert workspace.is_dir()
         assert list(workspace.iterdir()) == []
+
+    async def test_a_codex_qa_worker_gets_its_instructions_and_task_before_execution(self, qa_worker):
+        """Creation writes the two files the non-Git Codex turn reads."""
+        with patch("src.codex_auth.validate_codex_host_session"):
+            wrapper, _, _ = await qa_worker(agent_type=AgentType.CODEX)
+
+        commands = [call.args[1] for call in wrapper.exec_in_container.await_args_list]
+        instructions = base64.b64encode(b"# QA executor").decode()
+        task = base64.b64encode(b"run the regression test").decode()
+        assert any("/workspace/AGENTS.md" in command and instructions in command for command in commands)
+        assert any("/workspace/TASK.md" in command and task in command for command in commands)
 
     async def test_it_carries_no_github_credential(self, qa_worker):
         wrapper, _, _ = await qa_worker()

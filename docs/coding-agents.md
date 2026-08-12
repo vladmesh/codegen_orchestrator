@@ -37,7 +37,7 @@ droid exec --prompt-file TASK.md --skip-permissions-unsafe
 
 ## OpenAI Codex CLI
 
-Codex is available only for developer workers. The image pins Codex CLI
+Codex is available for developer workers and is the default central exploratory-QA executor. The image pins Codex CLI
 `0.144.6`; the wrapper runs it non-interactively:
 
 ```bash
@@ -53,6 +53,11 @@ are neither accepted as the business result nor persisted for Codex workers.
 The per-run network override is required because `workspace-write` otherwise
 blocks the agent's localhost result call, dependency access, and Git push. The
 Docker worker network remains the outer isolation boundary.
+
+A central QA worker is intentionally different: it receives an empty ephemeral
+non-Git workspace, injected `AGENTS.md` and `TASK.md`, and invokes Codex with
+`--skip-git-repo-check`. Its deployment access is the QA capability endpoint
+only; the target never receives the mounted Codex profile or an API key.
 
 ### Dedicated ChatGPT session profile
 

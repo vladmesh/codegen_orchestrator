@@ -733,7 +733,7 @@ class WorkerWrapper:
         elif self.config.agent_type == AgentType.FACTORY:
             runner = FactoryRunner()
         elif self.config.agent_type == AgentType.CODEX:
-            runner = CodexRunner()
+            runner = CodexRunner(allow_non_git_workspace=self.is_qa_executor)
         elif self.config.agent_type == AgentType.NOOP:
             runner = NoopRunner()
         else:

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-12
+
+- Made Codex the default central exploratory-QA executor. Its intentionally empty ephemeral QA workspace now uses Codex's native `--skip-git-repo-check` mode, while `claude` remains an explicit override and the existing capability-only, isolated-egress execution path is unchanged.
+
 ## 2026-08-12 (4)
 
 - Worker bind mounts are prepared in the Docker daemon's mount namespace when the daemon is
