@@ -28,7 +28,10 @@ async def test_claude_cli_installed(redis_client, docker_client, scaffolded_work
         instructions="Test instructions",
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT, WorkerCapability.CURL],
-        auth_mode="host_session",  # Default
+        # This test verifies the binary, not host-session persistence. The DinD fixture has no
+        # real subscription session, so keep the wrapper alive with its isolated test key.
+        auth_mode="api_key",
+        api_key="sk-ant-test-claude-key",
         repo_id=scaffolded_workspace,
     )
 

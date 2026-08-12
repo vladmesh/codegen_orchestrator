@@ -13,7 +13,8 @@
   discover the dead worker through a sequence of 60-second timeouts.
 - The legacy DinD harness waits for asynchronous worker creation to finish instead of treating the
   early acceptance response as readiness, tolerates cold worker-image builds, and supplies an
-  isolated test credential for Factory workers.
+  isolated test credential for Factory workers. CLI-presence coverage uses a non-production Claude
+  test key rather than pretending the empty DinD session mount contains a subscription session.
 
 ## 2026-08-12 (3)
 
