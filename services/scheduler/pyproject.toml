@@ -14,13 +14,13 @@ dependencies = [
     "aiohttp>=3.14.3",
     
     # Redis (for pub/sub)
-    "redis[hiredis]>=8.0.0",
+    "redis[hiredis]>=8.1.0",
     
     # Utils
     "structlog>=25.1.0",
     "pyjwt[crypto]>=2.13.0",
     "pydantic>=2.13.4",
-    "pydantic-settings>=2.0.0",
+    "pydantic-settings>=2.15.0",
     "PyYAML>=6.0.0",
     "tiktoken>=0.12.0",
 

@@ -257,15 +257,15 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pgvector", specifier = ">=0.2.5" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
     { name = "pynacl", specifier = ">=1.5.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "redis", extras = ["hiredis"], specifier = ">=8.0.0" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=8.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
     { name = "structlog", specifier = ">=25.1.0" },
     { name = "tiktoken", specifier = ">=0.12.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.51.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.1" },
 ]
 
 [[package]]
@@ -631,7 +631,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "api", editable = "services/api" },
-    { name = "copier", specifier = ">=9.4.0" },
+    { name = "copier", specifier = ">=9.17.1" },
     { name = "fakeredis", specifier = ">=2.34.1" },
     { name = "httpx" },
     { name = "infra-service", editable = "services/infra-service" },
@@ -663,7 +663,7 @@ wheels = [
 
 [[package]]
 name = "copier"
-version = "9.17.0"
+version = "9.17.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama" },
@@ -680,9 +680,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "questionary" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/08/6a/73ccc2ce53c17a29d650246a625df6342f74cb9d4f15b78a77d311fc6007/copier-9.17.0.tar.gz", hash = "sha256:d966b043a15c74595f7904a6af89f3291135682f8313c4b71ef368811ed554f2", size = 645743, upload-time = "2026-07-13T14:33:04.838Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/65/11c8635a27ce06ef525946bb02b1d5271b0f11e5acf9c5ab6d242512598e/copier-9.17.1.tar.gz", hash = "sha256:778e85f1c2de86824a72ddf4a34140744921d6354450c427c4c8a475371b1bda", size = 647338, upload-time = "2026-08-04T09:15:04.826Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/2c/68dec88ee26f96af2d4d8ee9d8567313a0826f4fd6bc5ae4527be670d354/copier-9.17.0-py3-none-any.whl", hash = "sha256:fe4e7b59faf4c0e1386eccbb79c6797e6df33ca20d5de49a8372571d8669f2ad", size = 65954, upload-time = "2026-07-13T14:33:03.301Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/bf/3adcb9b3091b36de729dad91c107179c8c7c51adb2b08c31177bb540bef1/copier-9.17.1-py3-none-any.whl", hash = "sha256:f6a48f296e2e536c635213e1000ea71099f9f58f3b464a60f2f0fd386e343628", size = 66364, upload-time = "2026-08-04T09:15:03.026Z" },
 ]
 
 [[package]]
@@ -1281,11 +1281,11 @@ requires-dist = [
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pgvector", specifier = ">=0.2.5" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
     { name = "pynacl", specifier = ">=1.5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "redis", extras = ["hiredis"], specifier = ">=8.0.0" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=8.1.0" },
     { name = "structlog", specifier = ">=25.1.0" },
 ]
 
@@ -1597,12 +1597,12 @@ requires-dist = [
     { name = "langgraph-checkpoint-postgres", specifier = ">=2.0.0" },
     { name = "langmem", specifier = ">=0.0.30" },
     { name = "pgvector", specifier = ">=0.2.5" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.1.0" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
     { name = "pynacl", specifier = ">=1.5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "redis", extras = ["hiredis"], specifier = ">=8.0.0" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=8.1.0" },
     { name = "structlog", specifier = ">=25.1.0" },
     { name = "telethon", specifier = ">=1.36.0" },
 ]
@@ -2557,16 +2557,16 @@ wheels = [
 
 [[package]]
 name = "pydantic-settings"
-version = "2.14.2"
+version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5c/b5/8f48e906c3e0205276e8bd8cb7512217a87b2685304d64be27cad5b3019f/pydantic_settings-2.14.2.tar.gz", hash = "sha256:c19dd64b19097f1de80184f0cc7b0272a13ae6e170cbf240a3e27e381ed14a5f", size = 237700, upload-time = "2026-06-19T13:44:56.324Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/ca/31c57507b13119d7d3cfa1576dad2911a4861e3be07b579395f4e9d393f9/pydantic_settings-2.15.0.tar.gz", hash = "sha256:694b793e84f766ba76a90ebdefc01d0a9a045dab0382bee70393da93712ad117", size = 261253, upload-time = "2026-08-07T09:24:57.419Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/77/c1/6e422f34e569cf8e18df68d1939c81c099d2b61e4f7d9621c8a77560799c/pydantic_settings-2.14.2-py3-none-any.whl", hash = "sha256:a20c97b37910b6550d5ea50fbcc2d4187defe58cd57070b73863d069419c9440", size = 61715, upload-time = "2026-06-19T13:44:55.02Z" },
+    { url = "https://files.pythonhosted.org/packages/30/a4/2bffa9f8e804325a09867f0e9d30795c80ea9f8d62560bd1b6ad6220eb2f/pydantic_settings-2.15.0-py3-none-any.whl", hash = "sha256:0ba092c291c94baceb5eff768aa0d56400a457585bc0175925a5a5510303da42", size = 69413, upload-time = "2026-08-07T09:24:55.839Z" },
 ]
 
 [[package]]
@@ -3101,11 +3101,11 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pgvector", specifier = ">=0.2.5" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", specifier = ">=2.13.0" },
     { name = "pynacl", specifier = ">=1.5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "redis", extras = ["hiredis"], specifier = ">=8.0.0" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=8.1.0" },
     { name = "structlog", specifier = ">=25.1.0" },
 ]
 
@@ -3138,11 +3138,11 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pgvector", specifier = ">=0.4.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
     { name = "pynacl", specifier = ">=1.5.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "redis", extras = ["hiredis"], specifier = ">=8.0.0" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=8.1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
     { name = "structlog", specifier = ">=25.1.0" },
     { name = "tiktoken", specifier = ">=0.12.0" },
@@ -3264,12 +3264,12 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pgvector", specifier = ">=0.2.5" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
     { name = "pynacl", specifier = ">=1.5.0" },
     { name = "python-telegram-bot", specifier = ">=22.8" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "redis", extras = ["hiredis"], specifier = ">=8.0.0" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=8.1.0" },
     { name = "structlog", specifier = ">=25.1.0" },
 ]
 
@@ -3713,7 +3713,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pgvector", specifier = ">=0.2.5" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
     { name = "pynacl", specifier = ">=1.5.0" },
     { name = "pyyaml", specifier = ">=6.0" },

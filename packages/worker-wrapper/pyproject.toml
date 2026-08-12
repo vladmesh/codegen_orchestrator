@@ -5,7 +5,7 @@ description = "Generic wrapper for executing worker agents"
 authors = [{name = "Antigravity", email = "antigravity@gemini.google.com"}]
 dependencies = [
     "pydantic>=2.13.4",
-    "pydantic-settings>=2.0.0",
+    "pydantic-settings>=2.15.0",
     "structlog>=24.1.0",
 
     # Dependencies of the broker client and the shared contracts/logging modules
