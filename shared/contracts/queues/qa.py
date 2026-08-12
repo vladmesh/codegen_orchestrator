@@ -47,8 +47,18 @@ class QAServerInfo:
     """
 
     server_ip: str
+    # The administrative account the stored key opens. QA uses it to install and
+    # remove the run's own key, and for nothing else.
     ssh_user: SSHUser
+    # The unprivileged account provisioning created for QA runs on this host,
+    # read from the server row. Empty when this host lends none — which is a
+    # refusal, not a reason to fall back to `ssh_user`.
+    qa_ssh_user: str
     ssh_key: str
     project_name: str
     server_handle: str = ""
     allocated_ports: frozenset[int] = frozenset()
+    # Why this host lends no QA identity, when it lends none. Exactly one of this
+    # and `qa_ssh_user` is set: the reason travels with the resolution so the
+    # refusal can be journalled where it is decided rather than re-derived.
+    qa_identity_rejection: str = ""

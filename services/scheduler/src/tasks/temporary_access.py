@@ -34,6 +34,14 @@ grant and is revoked again. What the system promises is therefore not "the
 access can never come back" but "the access does not outlive one reconciliation
 interval after it is seen".
 
+None of this holds a finished product back. The story the access was borrowed
+for is routed on what QA said about the product, and it completes on the tick
+that reads that verdict whether or not the identity has been handed back. The
+sweep keeps working afterwards on its own schedule, and when it runs out of
+attempts it says so to an administrator instead of to the user — a test identity
+left behind is a cleanup incident, and the counts below are what tells one still
+being chased from one that has been given up on.
+
 That promise is made at two speeds, because the writer it is meant to handle is
 not bounded by our windows. The cooling-off window above is the fast one, paced
 in minutes and worth an ssh that often. Under it runs the slow one: the slot the
@@ -104,7 +112,22 @@ _UNOBSERVABLE_ERROR = "temporary access cannot be observed"
 
 
 def _empty_counts() -> dict[str, int]:
-    return {"dispatched": 0, "released": 0, "revoked": 0, "expired": 0, "revoke_failed": 0}
+    """What this tick did, split so a stuck cleanup can be seen for what it is.
+
+    ``revoke_failed`` is an attempt that did not land and will be tried again —
+    the cleanup is still working. ``escalated`` is the sweep giving up on a grant
+    and calling a human. They are counted apart on purpose: the story the access
+    was borrowed for no longer waits for either, so these counts are what says
+    whether a test identity is still being chased or has been left to somebody.
+    """
+    return {
+        "dispatched": 0,
+        "released": 0,
+        "revoked": 0,
+        "expired": 0,
+        "revoke_failed": 0,
+        "escalated": 0,
+    }
 
 
 def _grant_ttl_minutes() -> int:
@@ -1275,27 +1298,25 @@ async def _record_revoke_failure(
     counts: dict[str, int],
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Keep an unfinished revoke retryable, and stop hiding it once retries run long.
+    """Keep an unfinished revoke retryable, and call a human once retries run out.
 
     Two things arrive here: a revoke deploy that failed, and a revoke deploy that
     succeeded while the server still shows the value. They are the same problem —
     the access is still out — and they are handled the same way. A single one is
     retried quietly: the access is still marked as held and the next sweep
     dispatches again. Once the attempts are spent, or the grant has outlived the
-    age at which an unrevoked one stops being a hiccup, the failure stops being
-    an internal retry and becomes the QA run's, which is what lets the story
-    reach a visible outcome instead of waiting on a revoke that keeps failing.
-    The reason travels with it, so a story handed to a human says whether the
-    deploy failed or whether we are looking at a value that should not be there.
+    age at which an unrevoked one stops being a hiccup, retrying quietly stops
+    being honest and the incident is handed to an administrator, named by the
+    story, the project, the QA run and the grant it belongs to. That message is
+    the point of the escalation: a test identity nobody took back is somebody's
+    work, and this is where it stops being the sweep's alone.
 
-    The QA run's outcome and the escalation stamp are one write. They have to be:
-    the stamp is what stops the story waiting on this grant, and a run that still
-    reads `passed` behind an opened gate is a story publishing success with the
-    test identity still admitted. It is also why the run's own verdict gives way
-    here — a run that borrowed an identity has not finished while the identity is
-    out, so a worker's pass is provisional until the access is settled. Without
-    that, a run the worker had already passed could never be told, and the story
-    behind it would sit in TESTING for good.
+    It is a cleanup incident and not a product verdict. The story the access was
+    borrowed for is routed on what QA said about the product and has usually
+    finished long before this; nothing here reopens it. What the escalation still
+    does is write the named cleanup failure on the QA run, so the run that
+    borrowed the identity is where the incident is recorded, and stamp the grant
+    so the report is made once rather than every tick.
     """
     exhausted = _retries_are_spent(grant) and grant.escalated_at is None
     log.error(
@@ -1315,13 +1336,18 @@ async def _record_revoke_failure(
         )
         return
 
+    counts["escalated"] += 1
     await notify_admins_best_effort(
-        f"Temporary access {grant.env_key} for project {grant.project_id} survived "
-        f"{grant.revoke_attempts} revoke attempts (grant {grant.id}); the test identity "
-        "may still have access",
+        f"Temporary access {grant.env_key} survived {grant.revoke_attempts} revoke attempts "
+        f"and needs a human: grant {grant.id}, project {grant.project_id}, "
+        f"story {grant.qa_message.story_id}, QA run {grant.qa_run_id}. "
+        f"The test identity {grant.subject} may still be admitted by the deployed bot. "
+        f"Last error: {error}",
         level="error",
         component="temporary_access",
         grant_id=grant.id,
+        story_id=grant.qa_message.story_id,
+        qa_run_id=grant.qa_run_id,
     )
     await api_client.escalate_temporary_access_grant(
         grant.id,

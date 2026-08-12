@@ -79,3 +79,45 @@ class TelegramTokenValidateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     token: str
+
+
+class BotLivenessState(StrEnum):
+    """What Telegram said about a bound bot when the platform last asked.
+
+    The three failures are told apart because they are repaired by different
+    people: `NOT_LIVE` is a token that has to be re-issued in @BotFather and
+    re-bound, `NO_TOKEN` is a project that never got one, and
+    `TELEGRAM_UNREACHABLE` is nobody's product being wrong — it is the platform
+    failing to ask, and the only one of the three a caller may retry.
+
+    `NOT_LIVE` is narrow on purpose: only the Bot API refusing this token is
+    evidence about the bot. Telegram answering "not now" — flood control (HTTP
+    429), a gateway, a 5xx — is `TELEGRAM_UNREACHABLE`, because a rate-limited
+    request says nothing at all about whether the bot behind the token is alive.
+    """
+
+    ALIVE = "alive"
+    NOT_LIVE = "not_live"
+    NO_TOKEN = "no_token"  # noqa: S105 — a state name, not a secret
+    TELEGRAM_UNREACHABLE = "telegram_unreachable"
+
+
+class BotLiveness(BaseModel):
+    """Whether a project's bot answers `getMe`, without handing out the token.
+
+    This is the whole answer the liveness endpoint gives. The token stays in the
+    API that already holds it: what leaves is a state, the username Telegram
+    itself reported, and a detail line safe to store in a QA result.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: BotLivenessState
+    bot_username: str | None = None
+    # What Telegram itself asked the caller to wait, in seconds, when it declined
+    # to answer: `ResponseParameters.retry_after`
+    # (https://core.telegram.org/bots/api#responseparameters). Set only with
+    # `TELEGRAM_UNREACHABLE`, and only when Telegram sent it — a caller that
+    # retries has a number from the service rather than a guess.
+    retry_after: int | None = None
+    detail: str

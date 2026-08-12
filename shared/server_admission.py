@@ -18,12 +18,16 @@ status is operational, its software provisioning is recorded complete, and it
 carries no open provisioning-failure incident. A ``provisioning_phase`` that is
 missing, empty or unknown counts as "not finished" — an unknown provisioning
 state is not readiness.
+
+How a refusal is *reported* lives here too, in :data:`ADMISSION_FAILURE_REASON`,
+because both placement paths have to report it the same way.
 """
 
 from collections.abc import Iterable
 from enum import StrEnum
 
 from shared.contracts.dto.incident import IncidentDTO, IncidentType
+from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.server import ServerDTO, ServerStatus
 
 # `provisioning_phase` lives in `servers.labels`. The infra-service provisioner is
@@ -48,14 +52,30 @@ class ServerAdmissionRejection(StrEnum):
     PROVISIONING_FAILED = "provisioning_failed"
 
 
-# Rejections that describe an unfinished or broken host build. They are an
-# infrastructure situation, never a capacity shortage and never a product defect.
-PROVISIONING_REJECTIONS: frozenset[ServerAdmissionRejection] = frozenset(
-    {
-        ServerAdmissionRejection.PROVISIONING_INCOMPLETE,
-        ServerAdmissionRejection.PROVISIONING_FAILED,
-    }
-)
+#: The one allocation reason any admission rejection is reported as.
+#:
+#: There is a single value rather than a rejection-to-reason table because the
+#: mapping has no branch to make: every member of `ServerAdmissionRejection` is a
+#: statement about the platform's own host, and none of them is evidence that the
+#: request was too large. Two of the four — the host is not managed, or its status
+#: does not admit — are not literally an unfinished build, and the reason
+#: vocabulary has no member for them; they are still platform state rather than
+#: the project's, and the alternative to reusing the closest infrastructure reason
+#: is describing them to the owner as a memory shortage, which is worse and false.
+#:
+#: Both placement paths in `services/langgraph/src/allocations.py` — the search
+#: for a new host and the re-admission of a bound one — raise this constant, so
+#: neither can report a rejection the other reports differently. A subset that
+#: only some rejections belonged to was exactly that divergence: a server merely
+#: in status `provisioning` fell out of it in the search path and left the
+#: refusal to be described as `insufficient_free_memory`.
+#:
+#: The search path asks one question before this one, which the bound path has no
+#: way to ask: whether any managed server could fit the request at all. That is a
+#: fact about the fleet rather than about a host's state, and no wait can resolve
+#: it, so it is reported as `IMPOSSIBLE_CAPACITY` and reaches an operator at once.
+#: The order and its reason are stated at the check in `allocations.py`.
+ADMISSION_FAILURE_REASON: AllocationFailureReason = AllocationFailureReason.SERVER_NOT_PROVISIONED
 
 
 def provisioning_failed_server_handles(incidents: Iterable[IncidentDTO]) -> frozenset[str]:

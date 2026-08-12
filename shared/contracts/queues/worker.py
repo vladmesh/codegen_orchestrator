@@ -1,14 +1,15 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from shared.contracts.base import QueueMeta
 from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
-from shared.contracts.vocab import AgentType
+from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES, AgentType
 
 __all__ = [
     "AgentType",
+    "QA_EXECUTOR_AGENT_TYPES",
     "WorkerCapability",
     "WorkerChannels",
     "ScaffoldConfig",
@@ -55,7 +56,11 @@ class WorkerConfig(BaseModel):
     """Worker container configuration."""
 
     name: str
-    worker_type: Literal["developer"]  # Worker type for queue naming
+    # "developer" writes code in a pre-scaffolded repository workspace.
+    # "qa" is the central exploratory-QA executor: an ephemeral container with
+    # no repository, no git credentials and nothing to commit, whose only reach
+    # into a deployment is the QA runtime's typed capability endpoint.
+    worker_type: Literal["developer", "qa"]
     agent_type: AgentType  # Which AI agent to use
     instructions: str  # Content for instruction file (CLAUDE.md / AGENTS.md)
     task_content: str | None = None  # Content for TASK.md (optional, for task-driven workers)
@@ -70,6 +75,26 @@ class WorkerConfig(BaseModel):
     repo_id: str | None = None  # Repository ID — mount pre-scaffolded workspace
     scaffold_config: ScaffoldConfig | None = None  # Scaffold phase config (copier + make setup)
     branch: str | None = None  # Story branch to checkout (e.g. "story/{story_id}")
+
+    @model_validator(mode="after")
+    def _qa_runs_on_an_assigned_subscription_agent(self) -> "WorkerConfig":
+        """A `qa` worker may only be Claude Code or Codex.
+
+        This is the second of the two places the executor is fixed — the first
+        being the setting that names it — and it is the one that guards the
+        wire: worker-manager validates every command against this model before
+        a container exists, so a `qa` create carrying `factory` (which runs on a
+        provider API key) or `noop` (which performs no testing) is refused on
+        arrival instead of becoming a run that cannot do QA. Developer workers
+        are unaffected and keep the full `AgentType`.
+        """
+        if self.worker_type == "qa" and self.agent_type not in QA_EXECUTOR_AGENT_TYPES:
+            allowed = ", ".join(sorted(agent.value for agent in QA_EXECUTOR_AGENT_TYPES))
+            raise ValueError(
+                f"a qa worker runs on an assigned subscription agent ({allowed}), "
+                f"not {self.agent_type.value}"
+            )
+        return self
 
 
 class CreateWorkerCommand(QueueMeta):
