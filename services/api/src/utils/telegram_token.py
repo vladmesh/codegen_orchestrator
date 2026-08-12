@@ -28,6 +28,8 @@ import structlog
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.telegram import (
+    BotLiveness,
+    BotLivenessState,
     TelegramTokenVerdict,
     TokenCheck,
     TokenCheckName,
@@ -351,4 +353,67 @@ async def validate_telegram_token(
         user_message=(f"Token is valid. Bot: @{bot_username} (https://t.me/{bot_username})."),
         bot_username=bot_username,
         checks=checks,
+    )
+
+
+async def bot_liveness(token: str) -> BotLiveness:
+    """Ask Telegram whether this token still opens a live bot, right now.
+
+    The same `getMe` the binding chain runs, asked on its own and for a different
+    question: binding asks whether a token may be accepted, this asks whether the
+    bot a caller is about to test answers at all. It is deliberately the only
+    layer here — a webhook or another poller is somebody using the bot, not the
+    bot being dead — and it returns a state rather than a verdict, because the
+    caller is the platform, not the user.
+
+    The token is read here and nowhere else. What comes back carries the username
+    Telegram reported and no credential.
+    """
+    async with httpx.AsyncClient() as http:
+        try:
+            resp = await http.get(
+                f"https://api.telegram.org/bot{token}/getMe",
+                timeout=TELEGRAM_API_TIMEOUT,
+            )
+        except httpx.HTTPError as e:
+            logger.warning("telegram_bot_liveness_unreachable", error=str(e))
+            return BotLiveness(
+                state=BotLivenessState.TELEGRAM_UNREACHABLE,
+                detail=f"getMe request failed: {e}",
+            )
+
+        try:
+            data = resp.json()
+        # A body the Bot API never sends, but a proxy in front of it might.
+        except ValueError:
+            return BotLiveness(
+                state=BotLivenessState.TELEGRAM_UNREACHABLE,
+                detail=f"getMe returned HTTP {resp.status_code} with a body that is not JSON",
+            )
+
+    if resp.status_code != HTTPStatus.OK or not data.get("ok"):
+        description = data.get("description", "no description")
+        # 5xx is Telegram being unwell, not this bot being dead. Only the Bot
+        # API's own refusal of the token is evidence about the bot.
+        if resp.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            return BotLiveness(
+                state=BotLivenessState.TELEGRAM_UNREACHABLE,
+                detail=f"getMe returned HTTP {resp.status_code}: {description}",
+            )
+        logger.info("telegram_bot_not_live", status=resp.status_code, description=description)
+        return BotLiveness(
+            state=BotLivenessState.NOT_LIVE,
+            detail=f"Telegram refused the stored token: HTTP {resp.status_code}, {description}",
+        )
+
+    bot_username = data.get("result", {}).get("username")
+    if not bot_username:
+        return BotLiveness(
+            state=BotLivenessState.NOT_LIVE,
+            detail="Telegram accepted the stored token but reported no bot username",
+        )
+    return BotLiveness(
+        state=BotLivenessState.ALIVE,
+        bot_username=bot_username,
+        detail=f"getMe answered as @{bot_username}",
     )

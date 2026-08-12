@@ -23,6 +23,7 @@ from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.telegram import BotLiveness, BotLivenessState
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
 from shared.contracts.vocab import AgentType
 from shared.qa_identity import QA_SSH_USER, QA_SSH_USER_LABEL
@@ -110,6 +111,16 @@ def mock_api_client():
             )
         )
         mock.get_application = AsyncMock(return_value=_application())
+        # The API holds the bot token and answers the liveness question with it.
+        # A live bot is the uninteresting case for the tests below; the ones
+        # about liveness itself override this.
+        mock.get_bot_liveness = AsyncMock(
+            return_value=BotLiveness(
+                state=BotLivenessState.ALIVE,
+                bot_username="weather_bot",
+                detail="getMe answered as @weather_bot",
+            )
+        )
         mock.get_server = AsyncMock(return_value=_server())
         mock.get_server_ssh_key = AsyncMock(
             return_value="-----BEGIN RSA KEY-----\nfake\n-----END RSA KEY-----"

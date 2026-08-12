@@ -75,6 +75,13 @@ OWN_CONTAINERS = ("weather-bot-backend-1", "weather-bot-db-1")
 OTHER_PROJECT_CONTAINER = "other-project-web-1"
 OTHER_PROJECT_PORT = 9000
 PHYSICAL_ROOT = "/srv/deployments/weather-bot"
+# What docker reports for a container of a deployment that is up. The runner
+# reads this deterministically before any executor starts, so every fake target
+# here has to be able to answer it.
+RUNNING_STATE = (
+    '{"Status":"running","Running":true,"Restarting":false,"ExitCode":0,'
+    '"Health":{"Status":"healthy"}}'
+)
 
 # Claude Code on the host's subscription session, addressing the runtime over
 # loopback because in a test the "container" is this process. No API triplet:
@@ -146,13 +153,20 @@ class FakeConn:
     """
 
     def __init__(
-        self, containers: tuple[str, ...] = OWN_CONTAINERS, *, provisioned: bool = True
+        self,
+        containers: tuple[str, ...] = OWN_CONTAINERS,
+        *,
+        provisioned: bool = True,
+        container_states: dict[str, str] | None = None,
     ) -> None:
         self.commands: list[str] = []
         self.authorized_keys: list[str] | None = [SENTINEL] if provisioned else None
         self.installed: list[str] = []
         self.written_as: list[str] = []
         self.containers = containers
+        # What `docker inspect --format {{json .State}}` answers per container.
+        # Every container of the deployment is up unless a test says otherwise.
+        self.container_states = container_states or dict.fromkeys(containers, RUNNING_STATE)
         self.closed = False
 
     @property
@@ -205,6 +219,9 @@ class FakeConn:
             return SimpleNamespace(
                 exit_status=0, stdout="".join(f"{name}\n" for name in self.containers), stderr=""
             )
+        if QA_DOCKER_WRAPPER in command and " inspect " in command:
+            name = shlex.split(command)[-1]
+            return SimpleNamespace(exit_status=0, stdout=self.container_states[name], stderr="")
         return SimpleNamespace(exit_status=0, stdout="", stderr="")
 
     async def __aenter__(self):
@@ -348,6 +365,7 @@ def central_run(tmp_path):
                 grant_journal=record,
                 provisioning_journal=provisioning_record,
                 settings=settings,
+                established_facts=[],
             )
         return result, connection, factory, record
 
@@ -414,6 +432,7 @@ class TestCleanTargetPassesExploratoryQA:
                 grant_journal=RecordingJournal(),
                 provisioning_journal=RecordingProvisioningJournal(),
                 settings=API_FALLBACK,
+                established_facts=[],
             )
 
         assert result.passed is True
@@ -455,6 +474,7 @@ class TestCleanTargetPassesExploratoryQA:
                 grant_journal=RecordingJournal(),
                 provisioning_journal=RecordingProvisioningJournal(),
                 settings=NO_API_FALLBACK,
+                established_facts=[],
             )
 
         admin_key, run_key, revoke_key = captured
@@ -502,6 +522,7 @@ class TestTheRunBorrowsTheAccountProvisioningMade:
                 grant_journal=RecordingJournal(),
                 provisioning_journal=RecordingProvisioningJournal(),
                 settings=NO_API_FALLBACK,
+                established_facts=[],
             )
 
         assert result.passed is True
@@ -910,6 +931,7 @@ class TestGrantIsDurableAndDestroyed:
                 grant_journal=journal,
                 provisioning_journal=RecordingProvisioningJournal(),
                 settings=NO_API_FALLBACK,
+                established_facts=[],
             )
 
         assert journal.states == [QASshGrantState.ISSUING]

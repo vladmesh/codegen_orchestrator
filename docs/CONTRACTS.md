@@ -1386,6 +1386,24 @@ Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the
 
 The consumer parses the criteria *before* resolving anything else, and only the agent branch reads the server, its SSH key, and `bot_username`. A criteria block the deployed URL alone can answer must not fail over agent scaffolding it never uses.
 
+**Deterministic probes, and the order they run in.** On the exploratory path, everything below is decided before an executor container exists. Each one is a plain read — no model is asked, and a probe that answers terminally ends the run where it stands.
+
+| # | Probe | Where | Holds | Product is at fault | Infrastructure did not answer |
+|---|-------|-------|-------|---------------------|-------------------------------|
+| 1 | `check_deployed_url_reachable` | QA consumer, over HTTP | continue | (a response, any status, is reachability) | blocker `deployed_url_unreachable` |
+| 2 | bot liveness — `_probe_bot_liveness` → `GET /api/projects/{id}/telegram/liveness` → Telegram `getMe` | API asks; QA gets a state | continue, and the fact is told to the executor | blocker `bot_not_live` | retried `BOT_LIVENESS_ATTEMPTS` times, then blocker `qa_probe_unavailable` + admin alert |
+| 3 | `preflight_bot_access` | QA runtime's Telegram account | continue | — | blockers `missing_telethon_credentials` / `telegram_access_denied` |
+| 4 | `run_container_state_checks` | run's own SSH session, `docker inspect` | continue, and the fact is told to the executor | QA **fails** with one failed check per container that is down, restarting or unhealthy — no blocker, so the engineering loop gets it | retried `CONTAINER_PROBE_ATTEMPTS` times, then blocker `qa_probe_unavailable` + admin alert |
+| 5 | exploratory executor | worker-manager container | product verdict | product verdict | blocker `qa_executor_unavailable` + admin alert |
+
+The bot token never leaves the API. QA asks the liveness endpoint (internal or admin only) and gets back `BotLiveness` — a state, the username Telegram itself reported, and a detail line; the credential enters neither the QA runtime nor the target. The endpoint answers `no_token` for a project that never bound one, and 404 for a project that does not exist.
+
+Two categories are new with these probes, and they are not interchangeable with what they sit next to. `qa_probe_unavailable` means a deterministic probe could not be performed at all — docker did not answer on a host the run is already on, or the platform API did not; it is not `server_unavailable`, which means the run never got onto the host and is repaired by looking at the host or its provisioning. `bot_not_live` means Telegram answered and refused the stored token; it is not `telegram_access_denied`, which is a live bot refusing the QA account and is repaired by the temporary-access mechanism. Both infrastructure categories go through the mechanism that already existed for a missing executor: retry, a typed QA-infrastructure outcome, and one administrator alert (`QA_INFRASTRUCTURE_BLOCKERS` in `consumers/qa.py`). None of them is ever a product verdict, and none reaches the engineering loop.
+
+Deploy smoke (`subgraphs/devops/smoke.py`) checks the bot's `getMe` and the `tg_bot` container at deploy time and is a separate step — it is not re-run or duplicated here. What probes 2 and 4 add is *at QA time*, on the containers of the whole compose project rather than the one bot service, over the QA run's own unprivileged identity rather than the deploy's access.
+
+**What the executor is told.** Probes 2 and 4 hand their result to `build_qa_prompt(..., established_facts=[...])`, which states them under "Already established" and replaces checklist item 3 (container state) with a line saying not to check it again. Nothing else about the prompt changes: the tool set, the read-only rules and the result JSON (`pass` / `checks` / `summary`) are identical with or without facts, and `QAResult` gains no field.
+
 **Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or the central QA executor) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story and publish `story_completed` to `po:input` with the deployed address, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story. Routing reads the QA outcome and nothing else — temporary access held by the run is settled by its own sweep and never delays the completion or the notification.
 
 **Lifecycle operations:** `stop` and `undeploy` actions are handled by the `deploy_lifecycle` module, which SSHes to the server and runs `docker compose stop/down` directly — skipping the full DevOps subgraph.

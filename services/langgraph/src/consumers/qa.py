@@ -9,6 +9,8 @@ Run standalone: python -m src.consumers.qa
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import structlog
 
@@ -17,6 +19,7 @@ from shared.contracts.dto.incident import IncidentCreate, IncidentType
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
+from shared.contracts.dto.telegram import BotLivenessState
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.notifications import notify_admins_best_effort
 from shared.qa_identity import (
@@ -29,7 +32,7 @@ from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 from shared.telegram_access_probe import TelethonCredentialsError, telethon_env
 
-from ..clients.api import api_client
+from ..clients.api import api_client, bot_liveness_path
 from ..config.settings import get_settings
 from ..runtime_identity import project_runtime_slug
 from ._base import run_queue_worker, validate_queued_message
@@ -49,6 +52,19 @@ logger = structlog.get_logger(__name__)
 
 MAX_QA_LOOPS = 2  # max QA→Engineering cycles before story is marked failed
 QA_INFLIGHT_TTL = 1500  # 25 min TTL for inflight marker
+# Blockers that say the platform could not run QA, rather than anything about
+# the product. Every one of them raises the same administrator alert, and none
+# of them may reach the engineering loop.
+QA_INFRASTRUCTURE_BLOCKERS = frozenset(
+    {
+        QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+        QABlockerCategory.QA_PROBE_UNAVAILABLE,
+    }
+)
+# The bot-liveness question is asked of the platform API, so a failure to get an
+# answer is retried exactly as far as a transient network hiccup deserves.
+BOT_LIVENESS_ATTEMPTS = 3
+BOT_LIVENESS_RETRY_DELAY = 5
 
 
 async def _resolve_server_info(application_id: int, project_name: str) -> QAServerInfo | None:
@@ -153,16 +169,19 @@ def _resolve_qa_runtime() -> QARuntimeConfig:
     )
 
 
-async def _alert_admins_no_executor(*, msg: QAMessage, blocker: QABlocker) -> None:
-    """Tell an administrator that QA has no executor, naming what is missing.
+async def _alert_admins_qa_infrastructure(*, msg: QAMessage, blocker: QABlocker) -> None:
+    """Tell an administrator that QA could not run, naming what was unavailable.
 
     A log line is not an alert. This is the same admin channel the rest of the
     platform's infrastructure failures use, and it carries the identifiers a
-    human needs to act: which story, which project, which run, and which of the
-    optional fallback variables carry no value.
+    human needs to act: which story, which project, which run, what was
+    attempted and what did not answer. One channel for every category in
+    `QA_INFRASTRUCTURE_BLOCKERS` — a missing executor and a probe that could not
+    be performed are the same kind of fact about the platform, and neither is a
+    statement about the product.
     """
     await notify_admins_best_effort(
-        f"QA has no executor — exploratory QA could not run.\n"
+        f"QA could not run — {blocker.category.value}.\n"
         f"story: {msg.story_id or '(none)'}\n"
         f"project: {msg.project_id}\n"
         f"run: {msg.run_id or '(none)'}\n"
@@ -173,6 +192,69 @@ async def _alert_admins_no_executor(*, msg: QAMessage, blocker: QABlocker) -> No
         story_id=msg.story_id,
         project_id=msg.project_id,
         run_id=msg.run_id,
+    )
+
+
+async def _probe_bot_liveness(msg: QAMessage) -> tuple[str, QABlocker | None]:
+    """Ask, deterministically, whether the deployed bot is live right now.
+
+    The token belongs to the API and stays there: this asks the API, which owns
+    it, and gets back a state. Nothing about this call puts a credential in the
+    QA runtime or on the deploy target, which is why the question is asked this
+    way rather than by handing QA the token.
+
+    Three answers, three destinations. Live is a fact the executor is told and
+    does not re-check. A bot Telegram refuses is a deterministic blocker for a
+    human — an engineering worker cannot fix a revoked token, so it must not
+    become a fix task. Telegram or the API not answering is retried, and then
+    reported as QA infrastructure, which is what raises the admin alert.
+
+    Returns:
+        The established fact for the executor, and the blocker if there is one.
+    """
+    path = bot_liveness_path(msg.project_id)
+    detail = ""
+    for attempt in range(BOT_LIVENESS_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(BOT_LIVENESS_RETRY_DELAY)
+        try:
+            liveness = await api_client.get_bot_liveness(msg.project_id)
+        except httpx.HTTPError as exc:
+            detail = f"the platform API did not answer GET {path}: {exc}"
+            logger.warning("qa_bot_liveness_api_failed", project_id=msg.project_id, error=str(exc))
+            continue
+        if liveness.state is BotLivenessState.ALIVE:
+            logger.info(
+                "qa_bot_liveness_confirmed",
+                project_id=msg.project_id,
+                bot_username=liveness.bot_username,
+            )
+            return (
+                f"- Telegram bot @{liveness.bot_username} answered getMe just before this run. "
+                f"The platform API asked on this run's behalf (GET {path}); the bot token stays "
+                "in the API and reaches neither this run nor the target."
+            ), None
+        if liveness.state is BotLivenessState.TELEGRAM_UNREACHABLE:
+            detail = f"GET {path} answered {liveness.state.value}: {liveness.detail}"
+            logger.warning("qa_bot_liveness_unreachable", project_id=msg.project_id, detail=detail)
+            continue
+        logger.warning(
+            "qa_bot_not_live",
+            project_id=msg.project_id,
+            state=liveness.state.value,
+            detail=liveness.detail,
+        )
+        return "", QABlocker(
+            category=QABlockerCategory.BOT_NOT_LIVE,
+            attempted=f"confirm @{msg.bot_username} is live before testing it",
+            sent=f"GET {path} — the API holds the token and called getMe with it",
+            received=f"{liveness.state.value}: {liveness.detail}",
+        )
+    return "", QABlocker(
+        category=QABlockerCategory.QA_PROBE_UNAVAILABLE,
+        attempted=f"confirm @{msg.bot_username} is live before testing it",
+        sent=f"GET {path} — the API holds the token and calls getMe with it",
+        received=f"no answer after {BOT_LIVENESS_ATTEMPTS} attempt(s): {detail}",
     )
 
 
@@ -278,7 +360,17 @@ async def _run_exploratory_qa(
 
     runtime = _resolve_qa_runtime()
 
+    established_facts: list[str] = []
     if msg.bot_username:
+        # Liveness first: a bot that is not live cannot admit anyone, and the
+        # access probe would blame the wrong thing for the same silence.
+        bot_fact, liveness_blocker = await _probe_bot_liveness(msg)
+        if liveness_blocker:
+            if liveness_blocker.category in QA_INFRASTRUCTURE_BLOCKERS:
+                await _alert_admins_qa_infrastructure(msg=msg, blocker=liveness_blocker)
+            return None, liveness_blocker
+        established_facts.append(bot_fact)
+
         access_blocker = await preflight_bot_access(
             bot_username=msg.bot_username,
             telethon_env=runtime.telethon_env,
@@ -307,12 +399,10 @@ async def _run_exploratory_qa(
         # the same handle, rather than ending as a blocked run nobody looks at.
         provisioning_journal=ServerProvisioningJournal(server_info),
         settings=get_settings(),
+        established_facts=established_facts,
     )
-    if (
-        qa_result.blocker is not None
-        and qa_result.blocker.category is QABlockerCategory.QA_EXECUTOR_UNAVAILABLE
-    ):
-        await _alert_admins_no_executor(msg=msg, blocker=qa_result.blocker)
+    if qa_result.blocker is not None and qa_result.blocker.category in QA_INFRASTRUCTURE_BLOCKERS:
+        await _alert_admins_qa_infrastructure(msg=msg, blocker=qa_result.blocker)
     return qa_result, None
 
 

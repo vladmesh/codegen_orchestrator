@@ -79,3 +79,34 @@ class TelegramTokenValidateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     token: str
+
+
+class BotLivenessState(StrEnum):
+    """What Telegram said about a bound bot when the platform last asked.
+
+    The three failures are told apart because they are repaired by different
+    people: `NOT_LIVE` is a token that has to be re-issued in @BotFather and
+    re-bound, `NO_TOKEN` is a project that never got one, and
+    `TELEGRAM_UNREACHABLE` is nobody's product being wrong — it is the platform
+    failing to ask, and the only one of the three a caller may retry.
+    """
+
+    ALIVE = "alive"
+    NOT_LIVE = "not_live"
+    NO_TOKEN = "no_token"  # noqa: S105 — a state name, not a secret
+    TELEGRAM_UNREACHABLE = "telegram_unreachable"
+
+
+class BotLiveness(BaseModel):
+    """Whether a project's bot answers `getMe`, without handing out the token.
+
+    This is the whole answer the liveness endpoint gives. The token stays in the
+    API that already holds it: what leaves is a state, the username Telegram
+    itself reported, and a detail line safe to store in a QA result.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: BotLivenessState
+    bot_username: str | None = None
+    detail: str
