@@ -276,14 +276,55 @@ would otherwise sign dashboard tokens with a known key.
 
 ## QA runtime (central)
 
-Exploratory QA runs in the orchestrator, in the `qa-worker` container. Deploy targets carry nothing
-for it: no Claude CLI, no LLM credentials, no Telethon session.
+Exploratory QA is performed on the management host by an ephemeral coding agent that
+`qa-worker` starts through worker-manager, on the same subscription session developer workers use.
+Deploy targets carry nothing for it: no CLI, no LLM credentials, no Telethon session.
 
 **What the QA runtime needs** (all in the orchestrator `.env`):
-- `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — the QA agent. Without them exploratory QA is
-  blocked with `claude_unavailable`; health-only criteria still run, since they use no LLM.
+- `QA_EXECUTOR_AGENT_TYPE` — who performs the run. `claude` by default; `codex` only to assign
+  Codex explicitly, and nothing else: `factory` (provider API key) and `noop` (no testing at all)
+  are refused when the configuration is read, and a `qa` worker command carrying either is refused
+  by worker-manager before a container exists. The session itself is `HOST_CLAUDE_DIR` /
+  `HOST_CODEX_HOME`, which worker-manager mounts into the ephemeral QA container.
+- `QA_CAPABILITY_HOST` — how that container addresses `qa-worker`'s per-run capability endpoint.
+  It is the service's name on the `codegen_worker` network and only changes if the service is
+  renamed. `qa-worker` is attached to that network for this and for nothing else.
 - `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION` — the QA Telegram account, needed only
   for projects with a bot.
+- `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — **optional**. An API fallback consulted only
+  after the assigned executor has actually failed to run (no session, expired session, broken CLI,
+  container never started). Leaving all three empty is a supported production configuration. If the
+  executor fails and there is no complete triplet, the run ends as `qa_executor_unavailable` — a
+  QA-infrastructure outcome that alerts administrators and sends the story to human review, never a
+  product defect. Health-only criteria run with no executor at all.
+
+**What the QA container can reach.** It has a shell, and that shell reaches nothing of the platform:
+no SSH key, no fleet key, no Telegram session, no provider key, no repository. Its whole route to
+the deployment is one injected command (`/workspace/qa`) that posts named calls to the per-run
+capability endpoint, which performs them from `qa-worker` with the run's borrowed `qa-observer`
+identity. The endpoint accepts GET-only HTTP calls, reads inside the deployment's physical root,
+and read-only docker sub-commands against the deployment's own containers — the same closed set as
+before.
+
+That the container *cannot* go around this is a property of its network, not of the prompt. The QA
+executor is attached to `codegen_qa_egress` and to nothing else, and that network is declared
+`internal: true`: it has no route to the deployment's public URL, to the fleet, or to the internet.
+Reachable on it are the run's capability endpoint (`qa-worker`), the worker broker — the runtime's
+own control channel — and one per-run egress proxy. That proxy speaks `CONNECT` only, to the
+assigned CLI's model backend and nothing else (`QA_CLAUDE_BACKEND_HOSTS` /
+`QA_CODEX_BACKEND_HOSTS`), so it can carry the model traffic the CLI needs and cannot carry a
+request to the application. `worker-manager` proves the network is internal before it creates
+anything, proves the proxy is listening before the executor exists, and proves the started
+container is attached to that single network — any of those failing fails the run closed as a
+QA-infrastructure outcome rather than starting an unrestricted container. Proxy variables are set
+in the executor's environment for the CLI's convenience; stripping them reaches less, not more.
+
+The runner's write scan over the tool trace and the container's transcript is still there, and it
+still fails the run closed with a residual-state record. It is now a second layer over an enforced
+boundary rather than the boundary itself. `services/worker-manager/tests/service/test_qa_egress_boundary.py`
+proves it against a real daemon: a recording application, a real executor container, `POST`/`PUT`/
+`PATCH`/`DELETE` from `curl` and from Python with the proxy configuration stripped, and zero write
+requests in the application's own ledger.
 
 **Which identity a run uses.** Not `servers.ssh_user`: that column is the administrative account the
 fleet key opens (`root` on every row `server_sync` creates), and a run holding it would have the
@@ -456,3 +497,13 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-o
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alembic upgrade head
 docker image prune -f
 ```
+
+`worker-manager` and `worker-broker` are one control plane and roll out
+together — which the command above does, and the deploy workflow does the same.
+Do not restart one alone. They share the worker authorization record: the
+manager writes the worker's type when it issues the credential and the broker
+authorizes every route from it, so a new broker in front of an old manager
+refuses registrations that carry no type, and worker creation fails until the
+manager catches up. Worker containers themselves are not Compose services and
+deliberately survive the rollout; each service migrates the pre-cutover records
+it authorizes on when it starts (`shared/worker_type_cutover.py`).

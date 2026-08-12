@@ -143,7 +143,13 @@ class QABlockerCategory(StrEnum):
 
     MISSING_BOT_USERNAME = "missing_bot_username"
     MISSING_TELETHON_CREDENTIALS = "missing_telethon_credentials"
-    CLAUDE_UNAVAILABLE = "claude_unavailable"
+    # No executor could be started for exploratory QA: the assigned coding
+    # agent's subscription session is missing, expired or broken, and the
+    # optional API fallback is not configured either. This replaced
+    # `claude_unavailable`, which had come to mean only "no LLM API key" — a
+    # meaning that stopped being true once the executor became a subscription
+    # CLI agent and the API triplet became an optional fallback.
+    QA_EXECUTOR_UNAVAILABLE = "qa_executor_unavailable"
     DEPLOYED_URL_UNREACHABLE = "deployed_url_unreachable"
     TELEGRAM_ACCESS_DENIED = "telegram_access_denied"
     SERVER_UNAVAILABLE = "server_unavailable"

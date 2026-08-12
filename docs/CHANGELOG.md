@@ -1,5 +1,155 @@
 # Changelog
 
+## 2026-08-11 (16)
+
+- The QA executor's CLI can reach its model backend again. worker-manager put
+  the run's egress proxy into the container environment, but the wrapper starts
+  the agent with an explicit replacement environment whose allowlist did not
+  name `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` or `no_proxy` — so the child
+  process, on a container attached to exactly one internal network, had no
+  address for its backend at all and every run ended as
+  `qa_executor_unavailable`. `QA_EGRESS_PROXY_ENV` in
+  `packages/worker-wrapper/src/worker_wrapper/wrapper.py` now passes exactly
+  those four to a QA executor's agent and nothing else; a developer agent, which
+  has an ordinary network and no proxy, is unchanged. The boundary is not
+  weakened: it is the same allowlisted CONNECT-only proxy, and the internal
+  network is still the thing that holds it.
+- The regression test is at the boundary the defect lived on — the environment
+  `create_subprocess_exec` is actually called with, not the container's — and
+  `services/worker-manager/tests/unit/test_qa_egress.py` now asserts that the
+  variables worker-manager sets are exactly the ones the wrapper forwards, so
+  the two lists cannot drift apart again.
+- Workers created before this branch survive the rollout. Both control-plane
+  boundaries now decide from a recorded `worker_type`, and records written by
+  the previous release have none — a developer worker still running when the
+  control plane is replaced would have lost its lease, status, session, result
+  and Compose routes mid-turn, because worker containers and their Redis state
+  are not Compose services. `shared/worker_type_cutover.py` marks those records
+  `developer` once, at startup, in the broker (`worker:broker:*`) and in
+  worker-manager (`worker:meta:*`). It is a proof and not a guess: the QA
+  executor and the recorded type arrive in the same change, so a typeless record
+  cannot be a QA worker. The request path keeps no fallback — a typeless record
+  appearing later is still refused everything — and the migration is due for
+  deletion once no pre-cutover worker can exist, since these records die with
+  their worker.
+- `services/worker-manager/tests/service/test_control_plane_rollout.py` is the
+  rollout regression: a pre-cutover record written into the real Redis is
+  refused before the restart, the real broker and worker-manager containers are
+  restarted the way a deploy restarts them, and afterwards the old credential
+  runs its whole turn over real HTTP and keeps Compose at both hops while the QA
+  credential is still refused at both. Both services are recreated by the same
+  `docker compose up -d` in `docs/DEPLOY.md` and the deploy workflow; DEPLOY.md
+  now says so explicitly, because rolling out the broker alone would make an old
+  worker-manager's registrations fail.
+
+## 2026-08-11 (15)
+
+- A QA executor now has no control-plane authority beyond the protocol of its
+  own turn. Its broker token cannot be hidden from the agent — the CLI runs as
+  the same user as the wrapper that holds it, so `/proc/<ppid>/environ` gives it
+  up — so the token itself was worth a `POST /v1/workers/{id}/infra/compose`,
+  and `docker compose build` of an agent-written Dockerfile executes arbitrary
+  `RUN` instructions on the management host's builder, outside the QA
+  executor's internal network and its proxy.
+- The refusal is an allowlist per worker type, not a patch on one endpoint:
+  `shared/contracts/worker_control_plane.py` names every operation a worker
+  credential can ask for and grants a `qa` worker the turn protocol
+  (`input.lease`, `output.submit`, `status.update`, `session` read/write/clear)
+  and nothing else. Adding an operation to the enum without classifying it as
+  turn-protocol or Docker-daemon fails a test, so a future route is refused to
+  QA until someone decides otherwise.
+- It is enforced at both boundaries that already duplicate the token check —
+  `services/worker-broker/src/main.py` (every worker route now states the
+  operation it authorizes, so a new route cannot inherit permissions silently)
+  and `services/worker-manager/src/routers/compose.py`, which is reachable
+  directly with the same token. Both read the worker type from a server-side
+  record written before the credential existed (`worker:broker:{id}` at
+  registration, `worker:meta:{id}` at creation); nothing in the request says
+  what kind of worker is calling, and an unrecorded type is refused. Developer
+  workers are unchanged and keep every operation.
+- `services/worker-manager/tests/service/test_qa_control_plane_boundary.py` is
+  the end-to-end regression against a real broker, a real worker-manager and a
+  real Docker daemon: a developer worker's token really does cause a host-side
+  build (the image exists and carries a marker only a `RUN` on that daemon could
+  write), while a QA worker with the identical workspace and request is refused
+  by both boundaries, produces no image and no compose plan, and still runs its
+  own turn. Worker-manager's unit doubles moved to `tests/unit/conftest.py`, so
+  a service test can no longer be handed a mocked broker registration.
+
+## 2026-08-11 (14)
+
+- "Exploratory QA cannot write to the application" is now a property of the
+  executor's network instead of a rule in its prompt. The QA executor container
+  is attached to `codegen_qa_egress` — declared `internal: true` — and to
+  nothing else, so the deployment's public URL, the fleet and the internet are
+  unreachable from it rather than forbidden to it. Reachable on that network are
+  the run's capability endpoint (`qa-worker`), the worker broker, and one
+  per-run egress proxy. The public URL stays reachable only through the typed,
+  GET-only `http_get` the runtime performs. Developer workers are untouched:
+  they keep `codegen_worker` and its ordinary connectivity.
+- The proxy (`services/worker-manager/src/qa_egress_proxy.py`) speaks HTTP
+  `CONNECT` and nothing else, to the assigned CLI's model backend and nothing
+  else (`QA_CLAUDE_BACKEND_HOSTS` / `QA_CODEX_BACKEND_HOSTS`, defaulting per
+  agent). It cannot be used as a forward proxy, so it cannot carry a `POST`, and
+  a `CONNECT` to the deployment is refused with `403` by the same code that
+  refuses any other host. It is created with the run and removed with it,
+  including by orphan GC.
+- Fail-closed, in `services/worker-manager/src/qa_egress.py`: worker-manager
+  proves the network is internal before anything is created, proves the proxy is
+  listening before the executor exists, and proves the started container is
+  attached to that single network. Any of those failing fails worker creation,
+  which the QA runtime already turns into the typed `qa_executor_unavailable`
+  QA-infrastructure outcome — never a silent start with an unrestricted
+  container and never a product defect.
+- The runner's transcript/tool-trace write scan is unchanged and is now a second
+  layer over an enforced boundary rather than the boundary itself.
+- `services/worker-manager/tests/service/test_qa_egress_boundary.py` proves it
+  against a real Docker daemon: a recording application, a real executor
+  container built by the production policy, `POST`/`PUT`/`PATCH`/`DELETE` from
+  `curl` and from a Python client with the proxy variables stripped, and zero
+  write requests in the application's ledger — with positive controls that the
+  ledger records, that the capability endpoint answers, and that an allowlisted
+  tunnel carries a request and a response.
+
+## 2026-08-11 (13)
+
+- Exploratory QA is performed by the assigned subscription coding agent again —
+  Claude Code by default, Codex when `QA_EXECUTOR_AGENT_TYPE` says so — started
+  centrally on the management host through the existing worker runtime. There is
+  no second mechanism for starting agents: `clients/qa_worker.py` sends the same
+  `worker:commands` create/status/delete a developer worker is started with, and
+  asks for a `qa` worker, which has no repository, no git credentials, an empty
+  scratch workspace deleted with the container, and one injected command.
+- That command (`shared/qa_probe_cli.py`, installed at `/workspace/qa`) is the
+  container's only route to the deployment. It posts named calls to a per-run
+  capability endpoint served by `qa-worker`
+  (`agents/qa/capability_service.py`), which dispatches into exactly the tool
+  set the in-process agent used — `agents/qa/tools.build_qa_callables`, now the
+  single boundary behind both front-ends. The SSH identity, the fleet key and
+  the Telegram session stay in `qa-worker`; the container holds a URL and a
+  token that stop working when the run ends.
+- `QA_LLM_*` is an optional API fallback, read only after the assigned executor
+  has actually failed to run, and never at startup or at the beginning of a run.
+  Empty values are a supported production configuration. A transient executor
+  failure is retried once (`QA_EXECUTOR_ATTEMPTS`); a missing or broken session
+  is not retried.
+- With no executor and no complete fallback, the run ends as
+  `qa_executor_unavailable` with an administrator alert through
+  `notify_admins_best_effort` carrying story, project, run and what is missing.
+  `QABlockerCategory.CLAUDE_UNAVAILABLE` is removed: it had come to mean only
+  "no LLM API key", which stopped being true.
+- The write guard now also scans what the executor's container reported, since
+  that container has a shell. `qa-worker` joins the `codegen_worker` network so
+  the endpoint is reachable from the executor; see `docs/DEPLOY.md` for what the
+  container can and cannot reach, path by path.
+- Exploratory QA runs on `claude` or `codex` and on nothing else, enforced in
+  both places the executor is named: `QA_EXECUTOR_AGENT_TYPE` fails validation
+  when the service reads its configuration, and a `qa` create command carrying
+  another agent is refused by the `WorkerConfig` contract worker-manager
+  validates every command against, before a container exists. `factory` would
+  run QA on a provider API key and `noop` performs no testing at all. Developer
+  workers keep the full `AgentType`.
+
 ## 2026-08-11 (12)
 
 - Delivering the product no longer waits for the temporary QA access to be

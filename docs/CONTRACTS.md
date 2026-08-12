@@ -104,7 +104,7 @@ cannot poison-loop the reclaim.
 |-------|-------|-----|-----------|----------|---------|
 | `engineering:queue` | `capability-workers` | EngineeringMessage | Task Dispatcher (scheduler) | langgraph | Start development task |
 | `deploy:queue` | `capability-workers` | DeployMessage | Task Dispatcher (scheduler) / PO | langgraph | Start deploy task |
-| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA: HTTP checks for GET-only criteria, else Claude Code on prod server |
+| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA: HTTP checks for GET-only criteria, else a central ephemeral `qa` worker on the management host (Claude Code, or Codex when assigned) |
 
 ---
 
@@ -156,7 +156,7 @@ cannot poison-loop the reclaim.
 > ```
 > Developer Worker (AI Agent) → curl localhost:9090 → worker-wrapper → worker-broker → Redis
 > ```
-> The HTTP server in worker-wrapper validates agent results locally; the authenticated broker owns stream, status, session and Compose transport.
+> The HTTP server in worker-wrapper validates agent results locally; the authenticated broker owns stream, status, session and Compose transport. Authentication is not authorization: the broker and worker-manager each authorize the operation against the worker type recorded server-side (`shared/contracts/worker_control_plane.py`), and a `qa` worker gets the turn protocol only — Compose is refused to it at both hops, because its token is readable by the agent it runs.
 
 ### Actor Roles
 
@@ -1277,13 +1277,13 @@ Producers (supervisor, admin `run-e2e`) resolve the criteria and put them on the
 
 **Bot username:** `Repository.bot_username` is the stored source. `POST /api/projects/{id}/telegram/token` writes it there from the `getMe` response in the same transaction that stores the token, and both producers read it off the same record they read the criteria from. A project without a primary repository gets 409 instead of a half-bound token. The deploy smoke check also reports a `bot_username` on `DeployRunResult`; the supervisor uses it only when the repository has none. A tg_bot project reaching QA without a username errors the run, so a write that silently does nothing turns a working bot into a failed story — the endpoint refuses instead.
 
-**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to the central QA agent instead (`run_qa_centrally`), which reaches the deployment through typed read-only tools bounded by the run's capability set, over a one-shot unprivileged identity issued for that run.
+**Health-only criteria:** criteria whose every line is a plain `- GET <path> returns <status>` are decided by the QA consumer over HTTP (`parse_health_only_criteria` → `run_health_checks`), with no SSH and no LLM. One prose line sends the whole block to the central QA executor instead (`run_qa_centrally`): an ephemeral coding-agent container started on the management host through worker-manager, which reaches the deployment only through this run's capability endpoint — the same typed read-only calls bounded by the run's capability set, performed by `qa-worker` over a one-shot unprivileged identity issued for that run. "Only" is enforced by the network: that container is attached to the `internal` `codegen_qa_egress` network alone, with one per-run `CONNECT`-only proxy for the assigned CLI's model backend, and worker-manager fails the run closed rather than starting a container whose egress policy did not establish. If that executor cannot be started at all, the optional `QA_LLM_*` triplet runs the same calls as an in-process agent; with no triplet the run ends as `qa_executor_unavailable`, which is a platform outcome and never a product verdict.
 
 `returns <status>` means the path itself answers that status, so the checks do not follow redirects: a criterion naming a redirect is checked against the redirect, and a criterion naming 200 is not satisfied by a path that redirects to a 200. Checks are retried while the service is still coming up.
 
 The consumer parses the criteria *before* resolving anything else, and only the agent branch reads the server, its SSH key, and `bot_username`. A criteria block the deployed URL alone can answer must not fail over agent scaffolding it never uses.
 
-**Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or Claude Code on the prod server) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story and publish `story_completed` to `po:input` with the deployed address, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story. Routing reads the QA outcome and nothing else — temporary access held by the run is settled by its own sweep and never delays the completion or the notification.
+**Flow:** Deploy succeeds → supervisor resolves criteria → transitions story to TESTING → creates QA run → publishes QAMessage → QA consumer runs the criteria (HTTP checks, or the central QA executor) → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story and publish `story_completed` to `po:input` with the deployed address, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story. Routing reads the QA outcome and nothing else — temporary access held by the run is settled by its own sweep and never delays the completion or the notification.
 
 **Lifecycle operations:** `stop` and `undeploy` actions are handled by the `deploy_lifecycle` module, which SSHes to the server and runs `docker compose stop/down` directly — skipping the full DevOps subgraph.
 
@@ -1352,7 +1352,7 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 | Queue | Initiator | Consumer | Purpose |
 |-------|-----------|----------|---------|
 | `worker:commands` | LangGraph | worker-manager | Command to Create/Delete worker container. |
-| `worker:responses:developer` | worker-manager | langgraph | Responses for Developer worker commands (e.g. "Developer container created"). |
+| `worker:responses:developer` | worker-manager | langgraph | Responses for worker commands (e.g. "Developer container created"). The name is historical: `qa` worker create/delete acks ride the same stream, because there is one worker-command mechanism and one response stream for it. |
 
 ## WorkerCommand / WorkerResponse
 
@@ -1369,6 +1369,8 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 
 # AgentType is the canonical enum (shared/contracts/vocab.py), re-exported here.
 from shared.contracts.vocab import AgentType  # claude / factory / codex / noop
+# QA_EXECUTOR_AGENT_TYPES is the subset a `qa` worker may run on: claude / codex.
+from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES
 
 
 class WorkerCapability(StrEnum):
@@ -1387,7 +1389,10 @@ class WorkerChannels(StrEnum):
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
     name: str
-    worker_type: Literal["developer"]         # Worker type for queue naming
+    # "developer" writes code in a pre-scaffolded repository workspace;
+    # "qa" is the central exploratory-QA executor (no repository, no git
+    # credentials, nothing to commit — see `qa:queue` above).
+    worker_type: Literal["developer", "qa"]
     agent_type: AgentType                     # Which AI agent to use
     instructions: str                         # Content for instruction file (CLAUDE.md / AGENTS.md)
     task_content: str | None = None           # Content for TASK.md (optional, for task-driven workers)
@@ -1396,7 +1401,23 @@ class WorkerConfig(BaseModel):
     env_vars: dict[str, str] = {}
     auth_mode: Literal["host_session", "api_key"] = "host_session"
     host_claude_dir: str | None = None
+    host_codex_home: str | None = None
     api_key: str | None = None
+    project_id: str | None = None             # Workspace persistence (developer)
+    repo_id: str | None = None                # Mount pre-scaffolded workspace (developer)
+    scaffold_config: ScaffoldConfig | None = None
+    branch: str | None = None                 # Story branch to checkout
+
+    @model_validator(mode="after")
+    def _qa_runs_on_an_assigned_subscription_agent(self) -> "WorkerConfig":
+        # A `qa` worker may only be claude or codex — both subscription CLIs
+        # whose session stays on the management host. `factory` runs on a
+        # provider API key and `noop` performs no testing, so a `qa` create
+        # carrying either is refused where worker-manager validates the command,
+        # before any container exists. Developer workers keep the full AgentType.
+        if self.worker_type == "qa" and self.agent_type not in QA_EXECUTOR_AGENT_TYPES:
+            raise ValueError(...)
+        return self
 
 
 class CreateWorkerCommand(QueueMeta):

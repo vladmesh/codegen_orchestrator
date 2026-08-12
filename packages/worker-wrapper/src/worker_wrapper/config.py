@@ -16,6 +16,15 @@ class WorkerWrapperConfig(BaseSettings):
         validation_alias="WORKER_ID", min_length=1, description="Worker identity"
     )
     agent_type: AgentType = Field(..., description="Which coding agent runs in this worker")
+    # What this worker is for, which decides what a turn consists of. A
+    # developer worker pulls a repository, checks the scaffold and commits; a
+    # `qa` executor has none of those things — an empty scratch workspace, one
+    # injected command, and a deployment to test through it.
+    worker_type: str = Field(
+        default="developer",
+        validation_alias="WORKER_TYPE",
+        description="developer | qa",
+    )
     auth_mode: str = Field(
         default="host_session",
         description="How the agent authenticates: host_session (mounted session) or api_key",

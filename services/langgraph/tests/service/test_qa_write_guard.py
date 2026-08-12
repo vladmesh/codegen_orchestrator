@@ -29,6 +29,7 @@ from threading import Thread
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
 
 os.environ.setdefault("API_BASE_URL", "http://localhost:8001")
@@ -36,7 +37,9 @@ os.environ.setdefault("INTERNAL_API_KEY", "test-key")
 
 from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAServerInfo
+from shared.contracts.vocab import AgentType
 from src.agents.qa.tools import build_qa_tools
+from src.clients.qa_worker import QAExecutorRun
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
     QACapabilities,
@@ -49,6 +52,11 @@ from src.consumers._qa_target import (
 )
 from src.consumers._qa_workspace import qa_workspace
 from src.consumers.qa import process_qa_job
+
+# The executor is the assigned subscription agent, addressing the runtime over
+# loopback because in a test the "container" is this process; no API fallback.
+_RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
+_NO_API_FALLBACK = SimpleNamespace(qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None)
 
 ALLOWED_PORT = 8000
 NEIGHBOUR_PORT = 9000
@@ -292,23 +300,11 @@ class TestANeighbourOnTheSameHost:
         assert conn.commands == []
 
 
-class _WritingAgent:
-    """An agent that claims a write in its own result — the fail-closed case."""
-
-    def __init__(self, deployed_url: str) -> None:
-        self.deployed_url = deployed_url
-
-    async def ainvoke(self, state, config=None):
-        return {
-            "messages": [
-                SimpleNamespace(
-                    content=(
-                        '{"pass": true, "checks": [{"name": "signup", "pass": true, "detail": '
-                        f'"POST {self.deployed_url}/users returned 201"}}], "summary": "OK"}}'
-                    )
-                )
-            ]
-        }
+def _claimed_write_verdict(deployed_url: str) -> str:
+    return (
+        '{"pass": true, "checks": [{"name": "signup", "pass": true, "detail": '
+        f'"POST {deployed_url}/users returned 201"}}], "summary": "OK"}}'
+    )
 
 
 class _FakeTargetConn:
@@ -354,11 +350,40 @@ class _ProvisioningJournal:
         self.entries.append((reason, detail))
 
 
-def _writing_graph(deployed_url: str):
-    def create(*, model, base_url, api_key, tools, prompt):
-        return _WritingAgent(deployed_url)
+def _writing_executor(deployed_url: str):
+    """A central executor that claims a write — the fail-closed case.
 
-    return create
+    It reaches the run the way the real container does: over HTTP, holding
+    nothing but the endpoint URL and this run's token.
+    """
+
+    async def run(
+        *,
+        agent_type,
+        capability_url,
+        capability_token,
+        instructions,
+        prompt,
+        verdict_received,
+        calls_served,
+        timeout,
+    ):
+        async with aiohttp.ClientSession() as session:
+            await session.post(
+                capability_url,
+                json={
+                    "tool": "submit_qa_result",
+                    "args": {"result": _claimed_write_verdict(deployed_url)},
+                },
+                headers={"Authorization": f"Bearer {capability_token}"},
+            )
+        return QAExecutorRun(
+            verdict_submitted=verdict_received.is_set(),
+            calls_served=calls_served(),
+            detail="test executor",
+        )
+
+    return run
 
 
 @pytest.mark.asyncio
@@ -369,7 +394,7 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
         patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
         patch("src.consumers._qa_target._import", lambda key: key),
         patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "runs")),
-        patch("src.consumers._qa_runner.create_qa_graph", _writing_graph("http://app.example")),
+        patch("src.consumers._qa_runner.run_qa_executor", _writing_executor("http://app.example")),
     ):
         result = await run_qa_centrally(
             target=QATarget(
@@ -383,9 +408,10 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
             ),
             fleet_ssh_key="fleet-key",
             acceptance_criteria="- read-only check",
-            runtime=QARuntimeConfig(model="m", base_url="u", api_key="k"),
+            runtime=_RUNTIME,
             grant_journal=_Journal(),
             provisioning_journal=_ProvisioningJournal(),
+            settings=_NO_API_FALLBACK,
         )
 
     assert result.passed is False
@@ -430,10 +456,14 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
         patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
         patch("src.consumers._qa_target._import", lambda key: key),
         patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "runs")),
-        patch("src.consumers._qa_runner.create_qa_graph", _writing_graph("http://app.example")),
+        patch("src.consumers._qa_runner.run_qa_executor", _writing_executor("http://app.example")),
     ):
         get_settings.return_value = SimpleNamespace(
-            qa_llm_model="m", qa_llm_base_url="u", qa_llm_api_key="k"
+            qa_executor_agent_type=AgentType.CLAUDE,
+            qa_capability_host="127.0.0.1",
+            qa_llm_model=None,
+            qa_llm_base_url=None,
+            qa_llm_api_key=None,
         )
         await process_qa_job(
             {

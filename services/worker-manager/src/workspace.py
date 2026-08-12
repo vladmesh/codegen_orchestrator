@@ -5,6 +5,12 @@ from pathlib import Path
 
 WORKER_OWNER = "1000:1000"
 
+# Where a QA executor's scratch directory lives. It is a direct child of the
+# workspace root like every other workspace, so the same containment check and
+# the same removal apply to it, but it is created empty for one run and deleted
+# with the container: a QA run has no repository and leaves nothing behind.
+QA_WORKSPACE_PREFIX = "qa-"
+
 
 def _resolve_direct_workspace_child(base_path: str, entry_id: str) -> Path:
     """Resolve one workspace entry and refuse paths outside its configured root."""
@@ -29,6 +35,21 @@ def get_scaffolded_workspace(base_path: str, repo_id: str) -> tuple[Path, bool]:
     """
     workspace_path = _resolve_direct_workspace_child(base_path, repo_id)
     return workspace_path, workspace_path.exists()
+
+
+def create_ephemeral_workspace(base_path: str, worker_id: str) -> Path:
+    """Create the empty scratch directory a QA executor runs in.
+
+    A QA executor has no repository to mount: it writes nothing that is kept and
+    commits nothing anywhere. It still needs a workspace, because that is where
+    its instruction file, its task and its one command live — so it gets a fresh
+    empty directory, named after the worker so `delete_worker` can remove
+    exactly it.
+    """
+    workspace_dir = _resolve_direct_workspace_child(base_path, f"{QA_WORKSPACE_PREFIX}{worker_id}")
+    shutil.rmtree(workspace_dir, ignore_errors=True)
+    workspace_dir.mkdir(parents=True)
+    return workspace_dir
 
 
 def remove_workspace(base_path: str, entry_id: str) -> None:

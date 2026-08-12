@@ -6,6 +6,12 @@ has no Claude CLI, no LLM credentials and no Telethon session, and a run that
 needed any of them would have to ask for it here, where every command is
 recorded.
 
+The executor is the assigned subscription coding agent, and it is stood in for
+the way the real one behaves: a separate process that holds nothing, reaching
+the run only by posting named calls to the capability endpoint over real HTTP.
+So the boundary these tests check is the one the container actually meets, not a
+Python closure it would never be given.
+
 The other half is the capability set. A run's boundary is one object resolved
 from deployment data — physical root, containers, loopback ports, public URL —
 and every refusal below is a membership test against it. Where a second project
@@ -19,11 +25,14 @@ import shlex
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
 
 from shared.contracts.dto.qa_ssh_grant import QASshGrantState
 from shared.contracts.dto.run_result import QABlockerCategory
+from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
+from src.clients.qa_worker import QAExecutorRun, QAExecutorUnavailable
 from src.consumers._qa_runner import QARuntimeConfig, run_qa_centrally
 from src.consumers._qa_target import (
     GRANT_MARKER_PREFIX,
@@ -67,7 +76,16 @@ OTHER_PROJECT_CONTAINER = "other-project-web-1"
 OTHER_PROJECT_PORT = 9000
 PHYSICAL_ROOT = "/srv/deployments/weather-bot"
 
-RUNTIME = QARuntimeConfig(model="m", base_url="http://llm.invalid/v1", api_key="k")
+# Claude Code on the host's subscription session, addressing the runtime over
+# loopback because in a test the "container" is this process. No API triplet:
+# `NO_API_FALLBACK` is the production configuration these runs must work in.
+RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
+NO_API_FALLBACK = SimpleNamespace(qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None)
+API_FALLBACK = SimpleNamespace(
+    qa_llm_model="m",
+    qa_llm_base_url="http://llm.invalid/v1",
+    qa_llm_api_key="sk-qa-fallback-not-real",
+)
 PASSING_JSON = (
     '{"pass": true, "checks": [{"name": "health", "pass": true, "detail": "200"}], "summary": "OK"}'
 )
@@ -217,24 +235,110 @@ def _graph_factory(behaviour):
     return create
 
 
+class RemoteCall:
+    """One named call, made the way the executor's container makes it."""
+
+    def __init__(self, harness, name: str) -> None:
+        self._harness = harness
+        self.name = name
+
+    async def ainvoke(self, args: dict):
+        return await self._harness.call(self.name, **args)
+
+
+class ExecutorHarness:
+    """The executor as it really is: a process holding a URL and a token.
+
+    It has no session, no key and no callable — it posts to the endpoint like
+    the injected `qa` command does, so every refusal a test sees here is one the
+    endpoint made, not one a Python closure made on the caller's behalf.
+    """
+
+    def __init__(self, url: str, token: str) -> None:
+        self._url = url
+        self._token = token
+        self.tools = _ToolLookup(self)
+
+    async def call(self, name: str, **args):
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                self._url,
+                json={"tool": name, "args": args},
+                headers={"Authorization": f"Bearer {self._token}"},
+            ) as response:
+                return await response.json()
+
+    async def submit(self, raw: str):
+        return await self.call("submit_qa_result", result=raw)
+
+
+class _ToolLookup:
+    def __init__(self, harness: ExecutorHarness) -> None:
+        self._harness = harness
+
+    def __getitem__(self, name: str) -> RemoteCall:
+        return RemoteCall(self._harness, name)
+
+
+def _executor_factory(behaviour, *, unavailable: QAExecutorUnavailable | None = None):
+    """Stand in for `run_qa_executor`, driving the endpoint as a container would."""
+
+    async def run(
+        *,
+        agent_type,
+        capability_url,
+        capability_token,
+        instructions,
+        prompt,
+        verdict_received,
+        calls_served,
+        timeout,
+    ):
+        run.prompt = prompt
+        run.instructions = instructions
+        run.agent_type = agent_type
+        if unavailable is not None:
+            raise unavailable
+        harness = ExecutorHarness(capability_url, capability_token)
+        raw = await behaviour(harness)
+        if raw is not None:
+            await harness.submit(raw)
+        return QAExecutorRun(
+            verdict_submitted=verdict_received.is_set(),
+            calls_served=calls_served(),
+            detail=f"{agent_type.value} executor (test)",
+        )
+
+    return run
+
+
 def _session(conn=None, capabilities: QACapabilities = CAPABILITIES) -> QATargetSession:
     return QATargetSession(TARGET, conn or FakeConn(), capabilities)
 
 
 @pytest.fixture
 def central_run(tmp_path):
-    """Run `run_qa_centrally` against a fake target with a scripted agent."""
+    """Run `run_qa_centrally` against a fake target with a scripted executor."""
 
-    async def _run(*, behaviour, conn=None, target=TARGET, journal=None, provisioning=None):
+    async def _run(
+        *,
+        behaviour,
+        conn=None,
+        target=TARGET,
+        journal=None,
+        provisioning=None,
+        settings=NO_API_FALLBACK,
+        unavailable=None,
+    ):
         connection = conn or FakeConn()
-        factory = _graph_factory(behaviour)
+        factory = _executor_factory(behaviour, unavailable=unavailable)
         record = journal or RecordingJournal()
         provisioning_record = provisioning or RecordingProvisioningJournal()
         with (
             patch("src.consumers._qa_target._connect", AsyncMock(return_value=connection)),
             patch("src.consumers._qa_target._import", lambda key: key),
             patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
-            patch("src.consumers._qa_runner.create_qa_graph", factory),
+            patch("src.consumers._qa_runner.run_qa_executor", factory),
         ):
             result = await run_qa_centrally(
                 target=target,
@@ -243,6 +347,7 @@ def central_run(tmp_path):
                 runtime=RUNTIME,
                 grant_journal=record,
                 provisioning_journal=provisioning_record,
+                settings=settings,
             )
         return result, connection, factory, record
 
@@ -266,6 +371,64 @@ class TestCleanTargetPassesExploratoryQA:
             for marker in ON_TARGET_AGENT_MARKERS:
                 assert marker not in command, f"{marker!r} was still asked of the target: {command}"
 
+    async def test_no_credential_of_any_kind_is_sent_to_the_target(self, tmp_path):
+        """AC6, from the target's side, with every credential this run has present.
+
+        The runtime holds the fleet key, the QA Telegram session and — in this
+        test — a configured API fallback as well. The target must see none of
+        them, whichever executor runs and whatever the executor asks for. The
+        assertion is over everything that crossed the SSH connection, which is
+        the whole of what the target can observe.
+        """
+        conn = FakeConn()
+        secrets = {
+            "TELETHON_API_ID": "12345",
+            "TELETHON_API_HASH": "hash-value-9f2",
+            "TELETHON_SESSION": "1BQANOTEuMTA4LjU2LjE",
+        }
+        runtime = QARuntimeConfig(
+            executor_agent_type=AgentType.CLAUDE,
+            capability_host="127.0.0.1",
+            telethon_env=secrets,
+        )
+
+        async def behaviour(harness):
+            # A run that asks for everything it is allowed to ask for.
+            await harness.tools["container_logs"].ainvoke({"container": OWN_CONTAINERS[0]})
+            await harness.tools["container_inspect"].ainvoke({"container": OWN_CONTAINERS[0]})
+            await harness.tools["remote_read"].ainvoke({"path": "infra/compose.yml"})
+            await harness.tools["localhost_http_get"].ainvoke({"port": 8000, "path": "/health"})
+            return PASSING_JSON
+
+        with (
+            patch("src.consumers._qa_target._connect", AsyncMock(return_value=conn)),
+            patch("src.consumers._qa_target._import", lambda key: key),
+            patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
+            patch("src.consumers._qa_runner.run_qa_executor", _executor_factory(behaviour)),
+        ):
+            result = await run_qa_centrally(
+                target=TARGET,
+                fleet_ssh_key="-----BEGIN OPENSSH PRIVATE KEY-----\nfleet\n-----END-----",
+                acceptance_criteria="- GET /health returns 200",
+                runtime=runtime,
+                grant_journal=RecordingJournal(),
+                provisioning_journal=RecordingProvisioningJournal(),
+                settings=API_FALLBACK,
+            )
+
+        assert result.passed is True
+        sent = "\n".join(conn.commands)
+        for secret in (
+            *secrets.values(),
+            "BEGIN OPENSSH PRIVATE KEY",
+            API_FALLBACK.qa_llm_api_key,
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
+            ".credentials.json",
+        ):
+            assert secret not in sent, f"{secret!r} reached the target"
+
     async def test_the_run_uses_its_own_identity_not_the_fleet_key(self, tmp_path):
         """The fleet key installs and removes a key; it is not what QA connects with."""
         captured: list = []
@@ -282,7 +445,7 @@ class TestCleanTargetPassesExploratoryQA:
             patch("src.consumers._qa_target._connect", connect),
             patch("src.consumers._qa_target._import", lambda key: key),
             patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
-            patch("src.consumers._qa_runner.create_qa_graph", _graph_factory(behaviour)),
+            patch("src.consumers._qa_runner.run_qa_executor", _executor_factory(behaviour)),
         ):
             await run_qa_centrally(
                 target=TARGET,
@@ -291,6 +454,7 @@ class TestCleanTargetPassesExploratoryQA:
                 runtime=RUNTIME,
                 grant_journal=RecordingJournal(),
                 provisioning_journal=RecordingProvisioningJournal(),
+                settings=NO_API_FALLBACK,
             )
 
         admin_key, run_key, revoke_key = captured
@@ -328,7 +492,7 @@ class TestTheRunBorrowsTheAccountProvisioningMade:
             patch("src.consumers._qa_target._connect", connect),
             patch("src.consumers._qa_target._import", lambda key: key),
             patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
-            patch("src.consumers._qa_runner.create_qa_graph", _graph_factory(behaviour)),
+            patch("src.consumers._qa_runner.run_qa_executor", _executor_factory(behaviour)),
         ):
             result = await run_qa_centrally(
                 target=TARGET,
@@ -337,6 +501,7 @@ class TestTheRunBorrowsTheAccountProvisioningMade:
                 runtime=RUNTIME,
                 grant_journal=RecordingJournal(),
                 provisioning_journal=RecordingProvisioningJournal(),
+                settings=NO_API_FALLBACK,
             )
 
         assert result.passed is True
@@ -735,7 +900,7 @@ class TestGrantIsDurableAndDestroyed:
             ),
             patch("src.consumers._qa_target._import", lambda key: key),
             patch("src.consumers._qa_workspace.QA_WORKSPACE_ROOT", str(tmp_path / "qa-runs")),
-            patch("src.consumers._qa_runner.create_qa_graph", _graph_factory(behaviour)),
+            patch("src.consumers._qa_runner.run_qa_executor", _executor_factory(behaviour)),
         ):
             result = await run_qa_centrally(
                 target=TARGET,
@@ -744,6 +909,7 @@ class TestGrantIsDurableAndDestroyed:
                 runtime=RUNTIME,
                 grant_journal=journal,
                 provisioning_journal=RecordingProvisioningJournal(),
+                settings=NO_API_FALLBACK,
             )
 
         assert journal.states == [QASshGrantState.ISSUING]

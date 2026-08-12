@@ -31,6 +31,7 @@ from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus
 from shared.contracts.queues.qa import QAOutcome
+from shared.contracts.vocab import AgentType
 from shared.qa_identity import (
     QA_SSH_USER,
     QA_SSH_USER_LABEL,
@@ -172,11 +173,14 @@ def redis():
 
 @pytest.fixture(autouse=True)
 def _runtime_configured():
+    """The assigned subscription executor, and no API fallback configured."""
     with patch("src.consumers.qa.get_settings") as get_settings:
         get_settings.return_value = SimpleNamespace(
-            qa_llm_model="m",
-            qa_llm_base_url="https://llm.example.com/v1",
-            qa_llm_api_key="k",
+            qa_executor_agent_type=AgentType.CLAUDE,
+            qa_capability_host="qa-worker",
+            qa_llm_model=None,
+            qa_llm_base_url=None,
+            qa_llm_api_key=None,
         )
         yield
 

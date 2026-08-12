@@ -1,13 +1,27 @@
 """QA runners — HTTP checks for criteria we can decide, a central agent for the rest.
 
 Criteria that only state GET expectations are run directly against the deployed
-URL by `run_health_checks`. Anything else goes to `run_qa_centrally`, which runs
-the QA agent here, in the orchestrator, and lets it reach the deployment only
-through the typed tools in `agents/qa/tools`.
+URL by `run_health_checks`: no executor, no LLM, no agent of any kind.
 
-Nothing in this module puts an agent, an LLM credential or a Telegram session on
-the deploy target. The target sees one short-lived SSH identity issued for the
-run and a closed set of read-only calls; see `_qa_target`.
+Anything else goes to `run_qa_centrally`, and the order there is fixed:
+
+1. the assigned subscription coding agent — Claude Code unless something
+   assigned Codex — started centrally through the existing worker runtime on the
+   management host, reaching the deployment only through this run's capability
+   endpoint;
+2. only if that executor genuinely did not run, the optional `QA_LLM_*` API
+   triplet, as the in-process ReactAgent this used to be;
+3. if neither, a typed QA-infrastructure outcome. That is not a product verdict
+   and must never be turned into one.
+
+The triplet is read at step 2 and nowhere earlier. Empty values are a valid
+production configuration: a run whose subscription executor works never looks at
+them, and their absence blocks nothing.
+
+Nothing in this module puts an agent, an LLM credential, a subscription session
+or a Telegram session on the deploy target. The target sees one short-lived SSH
+identity issued for the run and a closed set of read-only calls; see
+`_qa_target`.
 """
 
 from __future__ import annotations
@@ -27,6 +41,7 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
 )
+from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
 from shared.telegram_access_probe import (
     build_access_probe_script,
@@ -34,9 +49,12 @@ from shared.telegram_access_probe import (
     run_probe_script,
 )
 
+from ..agents.qa.capability_service import QACapabilityService
 from ..agents.qa.graph import create_qa_graph
-from ..agents.qa.tools import build_qa_tools
-from ..prompts.qa import build_qa_prompt
+from ..agents.qa.tools import build_qa_callables, build_qa_tools
+from ..clients.qa_worker import QAExecutorRun, QAExecutorUnavailable, run_qa_executor
+from ..config.agent_llm_env import AGENT_LLM_ENV
+from ..prompts.qa import QAExecutorKind, build_qa_instructions, build_qa_prompt
 from ._qa_target import (
     QACapabilityError,
     QAGrantError,
@@ -53,6 +71,13 @@ logger = structlog.get_logger(__name__)
 
 QA_TIMEOUT = 1200  # 20 minutes
 QA_MAX_STEPS = 200
+# How many times a transient executor failure is retried before the run is
+# reported as a QA-infrastructure outcome. Two attempts, named here, is the
+# whole of the retry policy: a container that lost a race with a busy host
+# deserves one more try, and nothing deserves an unbounded loop. A missing or
+# broken subscription session is not transient and is never retried — a second
+# attempt cannot make a session exist.
+QA_EXECUTOR_ATTEMPTS = 2
 HEALTH_CHECK_TIMEOUT = 30
 HEALTH_CHECK_ATTEMPTS = 5
 HEALTH_CHECK_RETRY_DELAY = 5
@@ -62,17 +87,66 @@ _WRITE_METHODS = "POST|PUT|PATCH|DELETE"
 
 @dataclass(frozen=True)
 class QARuntimeConfig:
-    """What the central QA agent needs to exist: an LLM, and a QA Telegram account.
+    """What a QA run is performed with, before anything is known about failing.
 
-    `telethon_env` is the QA account's credentials. They live in the QA
-    runtime's environment and are handed to a probe child process; the agent
-    never receives them and no deploy target holds a copy.
+    `executor_agent_type` is the coding agent assigned to testing — Claude Code
+    unless something assigned Codex explicitly. Its subscription session is a
+    directory on the management host that worker-manager mounts into the
+    executor container; neither this process nor any deploy target ever holds
+    it.
+
+    `capability_host` is how that container addresses this runtime. It is the
+    only address the container is given, and it stops answering with the run.
+
+    `telethon_env` is the QA Telegram account's credentials. They live in this
+    runtime's environment and are handed to a probe child process; no executor
+    and no deploy target receives them.
+
+    There is deliberately no LLM configuration here. The API triplet is a
+    fallback, and a fallback that is read before the primary is attempted is a
+    requirement wearing a different name — see `api_fallback`.
     """
+
+    executor_agent_type: AgentType
+    capability_host: str
+    telethon_env: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class QAApiFallback:
+    """The optional API triplet, resolved only after the assigned executor failed."""
 
     model: str
     base_url: str
     api_key: str
-    telethon_env: dict[str, str] | None = None
+
+
+class QAInfrastructureFailure(Exception):
+    """No executor could run this QA pass, and that is not the product's fault."""
+
+    def __init__(self, detail: str, *, missing: list[str]) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.missing = missing
+
+
+def api_fallback(settings) -> QAApiFallback | None:
+    """Read the optional `QA_LLM_*` triplet, at the only moment it is allowed to matter.
+
+    Called after the assigned subscription executor has actually failed, never
+    before. A complete triplet continues the run through the API; an incomplete
+    or absent one is a normal production configuration and simply means there is
+    no second executor.
+    """
+    model, base_url, api_key = (getattr(settings, name.lower()) for name in AGENT_LLM_ENV["qa"])
+    if model and base_url and api_key:
+        return QAApiFallback(model=model, base_url=base_url, api_key=api_key)
+    return None
+
+
+def missing_api_fallback_env(settings) -> list[str]:
+    """Which of the fallback triplet's names carry no value, for the admin alert."""
+    return [name for name in AGENT_LLM_ENV["qa"] if not getattr(settings, name.lower())]
 
 
 @dataclass
@@ -86,6 +160,9 @@ class QAResult:
     report: str = ""
     blocker: QABlocker | None = None
     state_changes: list[dict] = field(default_factory=list)
+    # What the executor's own container reported about the run. Runner-owned
+    # evidence like the tool trace, and scanned for forbidden writes with it.
+    executor_evidence: str = ""
 
 
 def _unknown_result_blocker(*, attempted: str, sent: str, received: str) -> QABlocker:
@@ -460,19 +537,184 @@ async def _invoke_qa_agent(
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
     timeout: int,
+    settings,
 ) -> QAResult:
-    """Run the agent against one target and turn its answer into a QAResult."""
+    """Run this pass on the assigned executor, or say why no executor ran.
+
+    The capability endpoint is started first and stopped on every way out. It is
+    what both executors reach the target through — the central agent over HTTP,
+    the fallback agent through the very same callables in-process — so the
+    target's view of a run does not depend on who performed it.
+
+    Raises:
+        QAInfrastructureFailure: the assigned executor did not run and there is
+            no configured fallback. That is a platform fact, not a verdict.
+    """
+    calls = build_qa_callables(
+        session=session,
+        workspace=workspace,
+        telethon_env=runtime.telethon_env,
+    )
+    service = QACapabilityService(
+        calls=calls,
+        capabilities=session.capabilities.describe(),
+        submit_verdict=workspace.submit_verdict,
+        advertised_host=runtime.capability_host,
+    )
+    endpoint = await service.start()
+    try:
+        executor_run, executor_failure = await _run_central_executor(
+            target=target,
+            acceptance_criteria=acceptance_criteria,
+            runtime=runtime,
+            endpoint=endpoint,
+            service=service,
+            timeout=timeout,
+        )
+        if executor_run is not None:
+            return _verdict_of(workspace, service, executor_run, timeout)
+    finally:
+        await service.stop()
+
+    fallback = api_fallback(settings)
+    if fallback is None:
+        raise QAInfrastructureFailure(
+            f"the assigned QA executor ({runtime.executor_agent_type.value}) did not run "
+            f"({executor_failure.detail}), and no API fallback is configured",
+            missing=missing_api_fallback_env(settings),
+        )
+    logger.warning(
+        "qa_executor_fallback_to_api",
+        executor=runtime.executor_agent_type.value,
+        detail=executor_failure.detail,
+    )
+    return await _run_in_process_agent(
+        target=target,
+        workspace=workspace,
+        session=session,
+        acceptance_criteria=acceptance_criteria,
+        runtime=runtime,
+        fallback=fallback,
+        timeout=timeout,
+    )
+
+
+async def _run_central_executor(
+    *,
+    target: QATarget,
+    acceptance_criteria: str,
+    runtime: QARuntimeConfig,
+    endpoint,
+    service: QACapabilityService,
+    timeout: int,
+) -> tuple[QAExecutorRun | None, QAExecutorUnavailable | None]:
+    """Try the assigned subscription executor, retrying only transient failures.
+
+    Returns the run once an executor has actually run — whether or not it
+    reached a verdict — or the failure that ended the attempts. An executor that
+    ran and said nothing is a QA run without an answer, which is a different
+    thing from a QA run without an executor, and only the second one may reach
+    for a fallback.
+    """
+    prompt = build_qa_prompt(
+        acceptance_criteria,
+        target.deployed_url,
+        target.bot_username,
+        executor=QAExecutorKind.CENTRAL_AGENT,
+    )
+    last: QAExecutorUnavailable | None = None
+    for attempt in range(1, QA_EXECUTOR_ATTEMPTS + 1):
+        try:
+            run = await run_qa_executor(
+                agent_type=runtime.executor_agent_type,
+                capability_url=endpoint.url,
+                capability_token=endpoint.token,
+                instructions=build_qa_instructions(),
+                prompt=prompt,
+                verdict_received=service.verdict_received,
+                calls_served=lambda: service.calls_served,
+                timeout=timeout,
+            )
+        except QAExecutorUnavailable as exc:
+            last = exc
+            logger.warning(
+                "qa_executor_unavailable",
+                executor=runtime.executor_agent_type.value,
+                attempt=attempt,
+                attempts=QA_EXECUTOR_ATTEMPTS,
+                transient=exc.transient,
+                detail=exc.detail,
+            )
+            if not exc.transient:
+                break
+            continue
+        logger.info(
+            "qa_executor_finished",
+            executor=runtime.executor_agent_type.value,
+            verdict=run.verdict_submitted,
+            calls_served=run.calls_served,
+        )
+        return run, None
+    return None, last
+
+
+def _verdict_of(
+    workspace: QAWorkspace,
+    service: QACapabilityService,
+    executor_run: QAExecutorRun,
+    timeout: int,
+) -> QAResult:
+    """Turn what the executor submitted into a QAResult, or fail closed.
+
+    An executor that ran and submitted nothing has produced no product evidence.
+    That is an unknown blocker for a human, never a pass and never a failure the
+    engineering loop is asked to fix.
+    """
+    if workspace.verdict is None:
+        return QAResult(
+            passed=False,
+            summary=f"the QA executor did not submit a result within {timeout}s",
+            report=workspace.read_report(),
+            executor_evidence=executor_run.transcript,
+            blocker=_unknown_result_blocker(
+                attempted="run the central QA executor",
+                sent=f"{service.calls_served} capability call(s)",
+                received="the executor finished without submitting a result",
+            ),
+        )
+    qa_result = parse_qa_result(workspace.verdict)
+    qa_result.report = workspace.read_report()
+    qa_result.executor_evidence = executor_run.transcript
+    return qa_result
+
+
+async def _run_in_process_agent(
+    *,
+    target: QATarget,
+    workspace: QAWorkspace,
+    session,
+    acceptance_criteria: str,
+    runtime: QARuntimeConfig,
+    fallback: QAApiFallback,
+    timeout: int,
+) -> QAResult:
+    """The API fallback: the ReactAgent this used to be, over the same tool set."""
     tools = build_qa_tools(
         session=session,
         workspace=workspace,
         telethon_env=runtime.telethon_env,
     )
     graph = create_qa_graph(
-        model=runtime.model,
-        base_url=runtime.base_url,
-        api_key=runtime.api_key,
+        model=fallback.model,
+        base_url=fallback.base_url,
+        api_key=fallback.api_key,
         tools=tools,
-        prompt=build_qa_prompt(acceptance_criteria, target.deployed_url, target.bot_username),
+        prompt=build_qa_prompt(
+            acceptance_criteria,
+            target.deployed_url,
+            target.bot_username,
+            executor=QAExecutorKind.IN_PROCESS_TOOLS,
+        ),
     )
     try:
         state = await asyncio.wait_for(
@@ -534,6 +776,7 @@ async def run_qa_centrally(
     runtime: QARuntimeConfig,
     grant_journal: QAGrantJournal,
     provisioning_journal: QAProvisioningJournal,
+    settings,
     timeout: int = QA_TIMEOUT,
 ) -> QAResult:
     """Run exploratory QA from the orchestrator against one deployment.
@@ -551,12 +794,15 @@ async def run_qa_centrally(
         fleet_ssh_key: the server key, used by this function only to issue and
             revoke the run's own identity. It is never given to the agent.
         acceptance_criteria: regression test criteria from the repository.
-        runtime: LLM configuration and the QA Telegram account credentials.
+        runtime: the assigned executor, how it addresses this runtime, and the
+            QA Telegram account credentials.
         grant_journal: where the durable record of the grant is written.
         provisioning_journal: where a target that turns out to have no QA
             account is recorded, so drift after a finished provisioning is as
             visible to an administrator as a host that was never provisioned.
-        timeout: seconds the agent is given to reach a verdict.
+        settings: read only if the assigned executor fails, and only for the
+            optional API fallback.
+        timeout: seconds the executor is given to reach a verdict.
     """
     grant = QAGrantOutcome(marker=new_grant_marker())
     workspace: QAWorkspace | None = None
@@ -581,15 +827,55 @@ async def run_qa_centrally(
                     acceptance_criteria=acceptance_criteria,
                     runtime=runtime,
                     timeout=timeout,
+                    settings=settings,
                 )
             # Everything the runner can see of the run: the calls it made on the
-            # agent's behalf, the report, and the agent's own account of itself.
+            # agent's behalf, the report, the agent's own account of itself, and
+            # — since the executor is a container with a shell now — everything
+            # that container reported.
+            #
+            # This scan is a second layer, not the boundary. The boundary is the
+            # executor's network: it is attached to one `internal` Docker
+            # network on which the deployment simply is not reachable, and the
+            # one door out of it opens the assigned CLI's model backend only
+            # (`services/worker-manager/src/qa_egress.py`). What the scan is
+            # still good for is a write that the endpoint's own typed calls
+            # could somehow express, and evidence for a human when something
+            # unexpected shows up in a transcript.
             write = _forbidden_application_write(
-                f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}",
+                f"{workspace.trace_text()}\n{qa_result.report}\n{qa_result.raw}\n"
+                f"{qa_result.executor_evidence}",
                 target.deployed_url,
             )
             if write:
                 qa_result = _block_forbidden_application_write(qa_result, write)
+    except QAInfrastructureFailure as exc:
+        # No executor ran. This is the platform's own failure and must not reach
+        # the engineering loop or be recorded against the product: the consumer
+        # turns this category into an administrator alert, and the supervisor
+        # already routes a blocked run to human review rather than to a fix task.
+        logger.error(
+            "qa_executor_infrastructure_failure",
+            server_ip=target.server_ip,
+            missing=exc.missing,
+            detail=exc.detail,
+        )
+        return _apply_cleanup_residue(
+            QAResult(
+                passed=False,
+                summary="QA could not be performed: no executor was available",
+                blocker=QABlocker(
+                    category=QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+                    attempted=(
+                        f"run exploratory QA on the assigned executor "
+                        f"({runtime.executor_agent_type.value})"
+                    ),
+                    sent=", ".join(exc.missing) or "no API fallback configured",
+                    received=exc.detail,
+                ),
+            ),
+            _residues(grant, workspace),
+        )
     except (QAGrantError, QACapabilityError) as exc:
         logger.error("qa_grant_failed", server_ip=target.server_ip, error=str(exc))
         if isinstance(exc, QAIdentityAbsentError):
