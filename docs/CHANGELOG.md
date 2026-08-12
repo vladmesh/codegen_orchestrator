@@ -50,10 +50,14 @@
   `tell_owner=False` is still admin-only and owes nothing.
 - The four publishes left in `supervisor.py` are the non-terminal ones —
   `task_waiting_resources`, `task_waiting_infrastructure`,
-  `task_resources_resumed` and `story_waiting_user_secret`. Each leaves its task
-  or story in a status a later cycle scans (`waiting_resources`, `todo`,
-  `waiting_user_secret`), so a lost publish there is re-derivable rather than
-  unreachable, and they stay direct.
+  `task_resources_resumed` and `story_waiting_user_secret`. They stay direct and
+  they stay best effort, outside this guarantee: no scan re-derives them.
+  `_notify_resources_resumed_via_po` fires once on the `backlog → todo` move and
+  never again for a task in `todo`, the first wait messages are published only
+  under `is_new_wait`, and the `waiting_user_secret` scan redispatches the story
+  once the secret arrives rather than re-sending the request for it. A publish
+  lost there means the owner does not get that message at all, and the bounded
+  retry and admin alert here do not extend to it.
 - `supervise_owed_owner_notifications` re-attempts what a committed transition
   still owes, reading its work from the new `GET /api/runs/owner-notifications/owed`
   — selected by the state of the record, ordered oldest first, bounded by a page,

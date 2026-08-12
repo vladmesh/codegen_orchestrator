@@ -1242,11 +1242,16 @@ failure that lands on the run rather than in a log line.
 
 `shared/contracts/dto/owner_notification.py`. **The invariant: a terminal story transition cannot be
 observed without the owner's message being either already published to `po:input` or durably owed.**
-The record lives in the QA run's `run_metadata` under `owner_notification` and is written **before**
-the transition is committed, for the same reason the SSH grant above is written before the key is
-installed: publishing after the commit has a gap, and the story is out of `TESTING` — out of every
-status the supervisor scans — from the moment the commit lands. A publish lost in that gap used to
-be lost permanently.
+The record lives in `run_metadata` under `owner_notification`, on the run that produced the outcome
+— the QA run for the story's own endings, the engineering run for the impossible-capacity task
+notice — and is written **before** the transition is committed, for the same reason the SSH grant
+above is written before the key is installed: publishing after the commit has a gap, and committing
+is exactly what takes the subject out of the status whose scan would otherwise come back to it. For
+the three endings owed inside `supervise_testing_stories` that status is `TESTING`; the other two
+paths leave the statuses their own loops scan. The endings are not one ending — the five paths
+produce different terminal statuses, which is why the record carries the `terminal_status` it
+expects instead of assuming one — but the gap has the same shape in all of them, and a publish lost
+in it used to be lost permanently.
 
 `OwnerNotification` carries the `POSystemEvent` name PO routes on, the text to publish, the story,
 the project, the `terminal_status` the intended transition produces, an optional `task_id`, `state`,
@@ -1279,14 +1284,19 @@ A refusal escalated with `tell_owner=False` stays admin-only and owes nothing: t
 for the owner to make, and the seam does not invent a message.
 
 The publishes that remain direct in `supervisor.py` are the non-terminal ones, and that is the whole
-list: `task_waiting_resources` and `task_waiting_infrastructure` (the task is in
-`waiting_resources`, which `supervise_waiting_resource_tasks` scans every cycle),
-`task_resources_resumed` (the task is back in `todo` and is dispatched from there) and
-`story_waiting_user_secret` (the story is in `waiting_user_secret`, which
-`supervise_waiting_user_secret_stories` scans every cycle). None of them takes its subject out of a
-scanned status, so a publish lost there is re-derivable on a later cycle rather than unreachable.
+list: `task_waiting_resources` and `task_waiting_infrastructure`, `task_resources_resumed`, and
+`story_waiting_user_secret`. **They are best effort and outside this guarantee**, and not because a
+later scan would re-derive them — it would not. `_notify_resources_resumed_via_po` is called once,
+on the `backlog → todo` move that admits the task, and nothing calls it again for a task in `todo`.
+The first wait messages are published only under `is_new_wait`, so a later pass over a task still
+sitting in `waiting_resources` does not repeat them. The `waiting_user_secret` scan exists to
+redispatch the story once the secret arrives, not to re-send the request that asked for it. Losing
+one of these publishes therefore means the owner does not get that message at all; the bounded retry
+and admin alert described in this section do not cover them. Making them durable would mean an
+outbox for producers beyond the supervisor's terminal notifications, which is deliberately not what
+this record is.
 
-The last of those three is a decision, not an omission: the exhausted-fix path used to alert
+The exhausted-fix path among those three is a decision, not an omission: it used to alert
 administrators only. It ends the story for its owner exactly as a quarantine does, so the owner is
 told too, through the same seam, under the event PO already routes — a new event name would only be
 dropped by PO as unknown. The admin alert on that path is unchanged and still fires.
