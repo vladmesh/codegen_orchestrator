@@ -125,6 +125,53 @@ class WorkerManager:
 
         return network_name, False
 
+    async def _prepare_remote_daemon_mounts(
+        self,
+        *,
+        image: str,
+        worker_id: str,
+        workspace_path: str,
+        transcript_path: str,
+    ) -> None:
+        """Prepare bind mounts in the namespace that will launch the worker.
+
+        With the host socket, worker-manager and Docker resolve a bind source to the same
+        filesystem, so ``prepare_worker_paths`` is authoritative. A TCP/SSH daemon may resolve
+        the same spelling in another mount namespace (the integration DinD daemon does), making
+        the manager-side chown irrelevant. In that topology a short, networkless helper on the
+        target daemon owns the two mounts before the non-root worker starts.
+        """
+        docker_host = os.getenv("DOCKER_HOST", "").strip()
+        if not docker_host or docker_host.startswith("unix://"):
+            return
+
+        helper_name = f"worker-mount-prep-{worker_id}"
+        await self.docker.remove_container(helper_name, force=True)
+        try:
+            await self.docker.run_container(
+                image,
+                name=helper_name,
+                entrypoint="/bin/chown",
+                command=["-R", "1000:1000", "/workspace", "/artifacts/worker-transcripts"],
+                user="root",
+                network_mode="none",
+                volumes={
+                    workspace_path: {"bind": "/workspace", "mode": "rw"},
+                    transcript_path: {"bind": "/artifacts/worker-transcripts", "mode": "rw"},
+                },
+                remove=True,
+                read_only=True,
+                cap_drop=["ALL"],
+                cap_add=["CHOWN", "DAC_OVERRIDE"],
+                security_opt=["no-new-privileges:true"],
+                pids_limit=32,
+                mem_limit="64m",
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"remote Docker daemon could not prepare worker mounts for {worker_id}: {exc}"
+            ) from exc
+
     async def create_worker(
         self,
         worker_id: str,
@@ -624,6 +671,12 @@ class WorkerManager:
                 workspace_path=config.workspace_host_path,
                 transcript_path=config.transcript_host_path,
             )
+            await self._prepare_remote_daemon_mounts(
+                image=image_tag,
+                worker_id=worker_id,
+                workspace_path=config.workspace_host_path,
+                transcript_path=config.transcript_host_path,
+            )
             volumes = config.to_volume_mounts()
 
             container_id = await self.create_worker(
@@ -688,6 +741,7 @@ class WorkerManager:
                         error=output,
                         container_logs=container_logs,
                     )
+                    raise RuntimeError(f"could not inject {target_path} for {worker_id}: {output}")
 
             if task_content:
                 task_path = "/workspace/TASK.md"
@@ -709,6 +763,7 @@ class WorkerManager:
                         error=output,
                         container_logs=container_logs,
                     )
+                    raise RuntimeError(f"could not inject {task_path} for {worker_id}: {output}")
 
             if is_qa_worker:
                 await self._inject_qa_probe(container_id, worker_id)
