@@ -5,6 +5,7 @@ Runs in DinD environment (DOCKER_HOST pointing to a DinD daemon).
 """
 
 import os
+from pathlib import Path
 import time
 from uuid import uuid4
 
@@ -18,7 +19,7 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
 )
 
-from .conftest import wait_for_create_response
+from .conftest import WORKSPACE_BASE_PATH, wait_for_create_response
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
@@ -97,7 +98,9 @@ class TestDevEnvIntegration:
         result = await wait_for_create_response(redis_client, REDIS_STREAM_DEV_RESPONSES, req_id)
         assert result.success, f"Worker creation failed: {result.error}"
 
-        # Write compose file with absolute volume mount inside the container
+        # Seed the source through the named workspace volume shared with worker-manager. Writing
+        # it only through the nested DinD bind proves the worker view, but is not guaranteed to be
+        # visible in the outer manager mount before this immediate broker request.
         container = docker_client.containers.get(f"worker-{worker_name}")
         compose_yml = (
             "services:\n"
@@ -106,14 +109,9 @@ class TestDevEnvIntegration:
             "    volumes:\n"
             "      - /etc/passwd:/etc/passwd\n"
         )
-        exit_code, _ = container.exec_run(
-            [
-                "sh",
-                "-c",
-                f"cat > /workspace/docker-compose.yml << 'EOFCOMPOSE'\n{compose_yml}EOFCOMPOSE",
-            ]
+        Path(WORKSPACE_BASE_PATH, scaffolded_workspace, "docker-compose.yml").write_text(
+            compose_yml
         )
-        assert exit_code == 0
 
         # Call through the authenticated broker, exactly as the localhost
         # worker-wrapper proxy does. The worker token is read from the real
