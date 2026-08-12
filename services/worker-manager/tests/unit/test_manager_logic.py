@@ -23,7 +23,93 @@ def _make_docker_mock():
     wrapper.remove_network = AsyncMock()
     wrapper.pause_container = AsyncMock()
     wrapper.unpause_container = AsyncMock()
+    wrapper.get_container_logs = AsyncMock(return_value="")
     return wrapper
+
+
+@pytest.mark.asyncio
+async def test_remote_docker_prepares_mounts_in_the_daemon_namespace(monkeypatch):
+    """A remote daemon must chown the paths it, rather than the manager container, mounts."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    monkeypatch.setenv("DOCKER_HOST", "tcp://docker:2375")
+
+    await manager._prepare_remote_daemon_mounts(
+        image="worker:latest",
+        worker_id="worker-1",
+        workspace_path="/data/workspaces/repo-1",
+        transcript_path="/data/worker-transcripts",
+    )
+
+    wrapper.run_container.assert_awaited_once_with(
+        "worker:latest",
+        name="worker-mount-prep-worker-1",
+        entrypoint="/bin/chown",
+        command=["-R", "1000:1000", "/workspace", "/artifacts/worker-transcripts"],
+        user="root",
+        network_mode="none",
+        volumes={
+            "/data/workspaces/repo-1": {"bind": "/workspace", "mode": "rw"},
+            "/data/worker-transcripts": {
+                "bind": "/artifacts/worker-transcripts",
+                "mode": "rw",
+            },
+        },
+        remove=True,
+        read_only=True,
+        cap_drop=["ALL"],
+        cap_add=["CHOWN", "DAC_OVERRIDE"],
+        security_opt=["no-new-privileges:true"],
+        pids_limit=32,
+        mem_limit="64m",
+    )
+
+
+@pytest.mark.asyncio
+async def test_instruction_injection_failure_aborts_worker_creation():
+    """A worker without its instruction file is failed now, not ACKed into a timeout."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    wrapper.exec_in_container = AsyncMock(return_value=(1, b"permission denied"))
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("src.manager.settings") as mock_settings,
+        patch.object(
+            manager,
+            "ensure_or_build_image",
+            new_callable=AsyncMock,
+            return_value="worker:latest",
+        ),
+        patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/data/ws/repo-1"), True),
+        ),
+    ):
+        mock_settings.ENVIRONMENT = "production"
+        mock_settings.DOCKER_NETWORK = ""
+        mock_settings.WORKER_NETWORK = "codegen_worker"
+        mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
+        mock_settings.WORKER_BROKER_URL = "http://worker-broker:8001"
+        mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+        mock_settings.WORKER_IMAGE_PREFIX = "worker"
+        mock_settings.WORKER_DOCKER_LABELS = "{}"
+        mock_settings.WORKER_TRANSCRIPT_STORAGE_PATH = "/data/worker-transcripts"
+        mock_settings.WORKER_TRANSCRIPT_MAX_BYTES = 5 * 1024 * 1024
+        mock_settings.WORKER_TRANSCRIPT_RETENTION_DAYS = 30
+
+        with pytest.raises(RuntimeError, match="could not inject /workspace/CLAUDE.md"):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-injection-failure",
+                capabilities=["git"],
+                base_image="worker-base:latest",
+                agent_type=AgentType.CLAUDE,
+                auth_mode="api_key",
+                api_key="test-api-key",
+                instructions="required instructions",
+                repo_id="repo-1",
+            )
 
 
 @pytest.mark.asyncio

@@ -8,12 +8,14 @@ import subprocess
 import time
 from uuid import uuid4
 
+from docker.errors import NotFound
 import pytest
 import redis.asyncio as redis
 
 import docker
 from scripts.shared_freshness import source_hash
 from shared.contracts.queues.worker import CreateWorkerResponse
+from shared.queues import WORKER_MANAGER_GROUP
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
@@ -70,9 +72,55 @@ async def wait_for_create_response(
         if parsed.get("request_id") != request_id:
             continue
 
-        return CreateWorkerResponse.model_validate(parsed)
+        response = CreateWorkerResponse.model_validate(parsed)
+        if response.success and response.worker_id:
+            await _wait_for_create_command_completion(
+                redis_client,
+                request_id=request_id,
+                worker_id=response.worker_id,
+                timeout=timeout,
+            )
+        return response
 
     raise TimeoutError(f"No response for request_id={request_id} on {stream} within {timeout}s")
+
+
+async def _wait_for_create_command_completion(
+    redis_client: redis.Redis, *, request_id: str, worker_id: str, timeout: int
+) -> None:
+    """Wait past the create command's early response until its stream entry is ACKed."""
+    command_id = None
+    for msg_id, fields in await redis_client.xrevrange(REDIS_STREAM_COMMANDS, count=100):
+        data = fields.get("data")
+        if data and json.loads(data).get("request_id") == request_id:
+            command_id = msg_id
+            break
+    if command_id is None:
+        raise RuntimeError(f"Create command not found for request_id={request_id}")
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pending = await redis_client.xpending_range(
+            REDIS_STREAM_COMMANDS,
+            WORKER_MANAGER_GROUP,
+            min=command_id,
+            max=command_id,
+            count=1,
+        )
+        if not pending:
+            status = await redis_client.hget(f"worker:status:{worker_id}", "status")
+            if status == "RUNNING":
+                return
+            error = await redis_client.get(f"worker:error:{worker_id}")
+            raise RuntimeError(
+                f"Worker {worker_id} finished creation with status={status!r}: "
+                f"{error or 'unknown error'}"
+            )
+        await asyncio.sleep(0.25)
+
+    raise TimeoutError(
+        f"Worker manager did not finish create command for {worker_id} within {timeout}s"
+    )
 
 
 async def wait_for_stream_message(
@@ -105,6 +153,25 @@ async def redis_client():
 @pytest.fixture
 def docker_client():
     client = docker.DockerClient(base_url=DOCKER_HOST)
+    original_get = client.containers.get
+    resolved_names: set[str] = set()
+
+    def get_after_create(container_id: str):
+        """Wait on the first lookup because create responses are acceptance ACKs."""
+        if container_id in resolved_names:
+            return original_get(container_id)
+        deadline = time.time() + 180
+        while True:
+            try:
+                container = original_get(container_id)
+                resolved_names.add(container_id)
+                return container
+            except NotFound:
+                if time.time() >= deadline:
+                    raise
+                time.sleep(0.25)
+
+    client.containers.get = get_after_create
     yield client
     client.close()
 

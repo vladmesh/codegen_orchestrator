@@ -99,6 +99,7 @@ services:
       - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
       - SCAFFOLDED_WORKSPACE_PATH=/tmp/codegen/workspaces
       - WORKER_TRANSCRIPT_STORAGE_PATH=/tmp/codegen/worker-transcripts
+      - FACTORY_API_KEY=sk-test-factory-key
       # Claude host_session workers must get a real bind mount for their config
       # directory; inside DIND that is the daemon-visible /host-claude.
       - HOST_CLAUDE_DIR=/host-claude

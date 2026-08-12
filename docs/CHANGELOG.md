@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-08-12 (4)
+
+- Worker bind mounts are prepared in the Docker daemon's mount namespace when the daemon is
+  remote. This repairs the manual backend DinD suite without weakening the production worker:
+  a short networkless helper gets only the capabilities needed to chown `/workspace` and the
+  transcript mount, then exits before the UID 1000 worker starts with its existing dropped
+  capabilities and `no-new-privileges` boundary. A local Unix-socket daemon keeps the direct
+  host-path preparation path.
+- Failure to inject an agent instruction file or `TASK.md` now fails worker creation immediately.
+  Previously worker-manager logged `PermissionError`, ACKed the create command and left callers to
+  discover the dead worker through a sequence of 60-second timeouts.
+- The legacy DinD harness waits for asynchronous worker creation to finish instead of treating the
+  early acceptance response as readiness, tolerates cold worker-image builds, and supplies an
+  isolated test credential for Factory workers. CLI-presence coverage uses a non-production Claude
+  test key rather than pretending the empty DinD session mount contains a subscription session.
+
 ## 2026-08-12 (3)
 
 - The deterministic QA probes classify a dependency that did not answer by what

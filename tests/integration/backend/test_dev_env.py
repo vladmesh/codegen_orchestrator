@@ -4,8 +4,8 @@ Tests workspace bind-mount, compose proxy, and cleanup via worker-manager.
 Runs in DinD environment (DOCKER_HOST pointing to a DinD daemon).
 """
 
-import json
 import os
+from pathlib import Path
 import time
 from uuid import uuid4
 
@@ -15,10 +15,11 @@ import pytest
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
-    CreateWorkerResponse,
     DeleteWorkerCommand,
     WorkerConfig,
 )
+
+from .conftest import WORKSPACE_BASE_PATH, wait_for_create_response
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
@@ -26,27 +27,6 @@ WORKER_MANAGER_URL = os.getenv("WORKER_MANAGER_URL", "http://worker-manager:8000
 
 REDIS_STREAM_COMMANDS = "worker:commands"
 REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
-
-
-async def wait_for_create_response(redis, request_id: str, timeout: int = 120):
-    """Wait for CreateWorkerResponse matching request_id."""
-    start = time.time()
-    current_id = "0"
-    while time.time() - start < timeout:
-        messages = await redis.xread({REDIS_STREAM_DEV_RESPONSES: current_id}, count=1, block=1000)
-        if not messages:
-            continue
-        msg_id = messages[0][1][0][0]
-        fields = messages[0][1][0][1]
-        current_id = msg_id
-        data_str = fields.get("data")
-        if not data_str:
-            continue
-        parsed = json.loads(data_str)
-        if parsed.get("request_id") != request_id:
-            continue
-        return CreateWorkerResponse.model_validate(parsed)
-    raise TimeoutError(f"No response for {request_id} within {timeout}s")
 
 
 @pytest.mark.integration
@@ -71,7 +51,7 @@ class TestDevEnvIntegration:
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
 
-        result = await wait_for_create_response(redis_client, req_id)
+        result = await wait_for_create_response(redis_client, REDIS_STREAM_DEV_RESPONSES, req_id)
         assert result.success, f"Worker creation failed: {result.error}"
 
         container = docker_client.containers.get(f"worker-{worker_name}")
@@ -115,10 +95,12 @@ class TestDevEnvIntegration:
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
 
-        result = await wait_for_create_response(redis_client, req_id)
+        result = await wait_for_create_response(redis_client, REDIS_STREAM_DEV_RESPONSES, req_id)
         assert result.success, f"Worker creation failed: {result.error}"
 
-        # Write compose file with absolute volume mount inside the container
+        # Seed the source through the named workspace volume shared with worker-manager. Writing
+        # it only through the nested DinD bind proves the worker view, but is not guaranteed to be
+        # visible in the outer manager mount before this immediate broker request.
         container = docker_client.containers.get(f"worker-{worker_name}")
         compose_yml = (
             "services:\n"
@@ -127,14 +109,9 @@ class TestDevEnvIntegration:
             "    volumes:\n"
             "      - /etc/passwd:/etc/passwd\n"
         )
-        exit_code, _ = container.exec_run(
-            [
-                "sh",
-                "-c",
-                f"cat > /workspace/docker-compose.yml << 'EOFCOMPOSE'\n{compose_yml}EOFCOMPOSE",
-            ]
+        Path(WORKSPACE_BASE_PATH, scaffolded_workspace, "docker-compose.yml").write_text(
+            compose_yml
         )
-        assert exit_code == 0
 
         # Call through the authenticated broker, exactly as the localhost
         # worker-wrapper proxy does. The worker token is read from the real
@@ -178,7 +155,7 @@ class TestDevEnvIntegration:
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
 
-        result = await wait_for_create_response(redis_client, req_id)
+        result = await wait_for_create_response(redis_client, REDIS_STREAM_DEV_RESPONSES, req_id)
         assert result.success, f"Worker creation failed: {result.error}"
 
         # Verify container exists
