@@ -345,15 +345,30 @@ async def _park_task_waiting_resources(
     disposition = attempt_disposition(reason, product_failure=True)
     routing = refusal_routing(PlacementPath.ENGINEERING, disposition)
     if routing is RefusalRouting.HUMAN_REVIEW_WITH_OWNER_NOTICE:
+        # The same seam as the story-level endings, and for the same reason:
+        # `_escalate_task_to_human_review` below commits the parent story's
+        # human-review transition, after which no loop scans it, so the notice
+        # is written on this engineering run before the transition rather than
+        # published behind the `except Exception: log.warning` that used to
+        # swallow it. The task id is kept on the record because this ending is
+        # about the task, and that is what PO answers about.
+        owed = await owe_owner_notification(
+            api_client,
+            run,
+            event="task_impossible_capacity",
+            text=IMPOSSIBLE_CAPACITY_TASK_TEXT,
+            story_id=task.story_id,
+            project_id=str(task.project_id),
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            task_id=task.id,
+            log=log,
+        )
         await _escalate_task_to_human_review(
             api_client,
             task,
             "allocation request exceeds every managed server's capacity",
         )
-        try:
-            await _request_impossible_capacity_via_po(api_client, redis_client, task, log)
-        except Exception:
-            log.warning("impossible_capacity_request_failed", exc_info=True)
+        await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
         log.warning("task_allocation_impossible")
         return True
     if routing is RefusalRouting.HUMAN_REVIEW_PLATFORM_ALERT:
@@ -419,32 +434,14 @@ async def _escalate_task_to_human_review(
     await _notify_admin_failure(task.id, str(task.project_id), detail)
 
 
-async def _request_impossible_capacity_via_po(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    task,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Ask PO to explain that the requested deployment cannot fit managed capacity."""
-    recipient = await resolve_project_recipient(
-        api_client, str(task.project_id), event="task_impossible_capacity", story_id=task.story_id
-    )
-    if not recipient.is_addressable:
-        return
-    event = POSystemEvent(
-        event="task_impossible_capacity",
-        text=(
-            "Engineering cannot place this project on any managed server. Tell the user that "
-            "the request needs operator review."
-        ),
-        task_id=task.id,
-        story_id=task.story_id or "",
-        telegram_chat_id=recipient.telegram_chat_id,
-        owner_user_id=recipient.owner_user_id,
-        project_id=str(task.project_id),
-    )
-    await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-    log.info("impossible_capacity_requested")
+#: What the owner is told when engineering cannot be placed anywhere at all.
+#: Terminal, unlike the two waits below it: nothing frees up that makes this
+#: request fit, so the task and its story stop for an operator instead of
+#: waiting, and the message says that rather than promising a resumption.
+IMPOSSIBLE_CAPACITY_TASK_TEXT = (
+    "Engineering cannot place this project on any managed server. Tell the user that "
+    "the request needs operator review."
+)
 
 
 async def _request_resources_via_po(
@@ -1350,6 +1347,7 @@ async def _escalate_refused_deploy(
             text=IMPOSSIBLE_CAPACITY_TEXT,
             story_id=story_id,
             project_id=project_id,
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
             log=log,
         )
     await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
@@ -1817,6 +1815,7 @@ async def supervise_testing_stories(
                 text=_story_completed_text(run),
                 story_id=story_id,
                 project_id=project_id,
+                terminal_status=StoryStatus.COMPLETED,
                 log=log,
             )
             await api_client.transition_story(story_id, "complete")
@@ -1958,6 +1957,7 @@ async def _quarantine_unverified_application(
         text=_quarantine_text(reason),
         story_id=story_id,
         project_id=project_id,
+        terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
         log=log,
     )
     await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
@@ -2038,6 +2038,7 @@ async def _handle_qa_failed(
             text=_fix_attempts_exhausted_text(summary, exhausted_limit),
             story_id=story_id,
             project_id=project_id,
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
             log=log,
         )
         await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)

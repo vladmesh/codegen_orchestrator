@@ -9,17 +9,29 @@ supervisor scans and no tick ever looks at it again. The owner's product is
 finished and nobody tells them, forever.
 
 So the message is not inferred from a successful publish. It is written down
-*before* the transition, on the QA run the outcome came from — the same place the
+*before* the transition, on the run the outcome came from — the same place the
 deploy already leaves its `qa_handoff` plan and the QA run its `qa_ssh_grant` —
 and from that moment the record owns the delivery. `OWED` means "the owner has
 not been told and must be"; only a publish that returned moves it to
 `DELIVERED`. Anything else stays for the sweep, which retries a bounded number
 of times and then alerts an administrator with the identifiers.
 
-Two endings are not retries and must not look like one. `UNADDRESSABLE` is a
+Written first, the record cannot be evidence that the transition happened, and
+that is the other half of the gap: a record committed on a run whose story
+transition never committed would otherwise let a later tick tell the owner their
+product is finished while the story is still being worked on. So the record
+carries the `terminal_status` the intended transition produces, and nothing is
+published until the story is read and found in it. That check is what makes both
+halves safe with one rule: a transition whose *response* was lost still leaves
+the story terminal, so its message is delivered.
+
+Three endings are not retries and must not look like one. `UNADDRESSABLE` is a
 recipient that resolved to no Telegram chat: a refusal that is logged and
 alerted once, because retrying it changes nothing. `ABANDONED` is a transient
 failure that used up its attempts: the system gave up and a human was called.
+`VOIDED` is the intended transition not being there — the obligation is settled
+without publishing anything and without spending an attempt, and it is owed
+again from scratch if routing later does finish the story.
 
 This is deliberately narrow. It is not an outbox for every producer in the
 project — it covers the terminal owner notifications the supervisor emits, which
@@ -32,6 +44,8 @@ from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from shared.contracts.dto.story import StoryStatus
 
 #: run_metadata key the record lives under, alongside `qa_handoff`.
 OWNER_NOTIFICATION_KEY = "owner_notification"
@@ -48,6 +62,10 @@ class OwnerNotificationState(StrEnum):
     UNADDRESSABLE = "unaddressable"
     #: Transient failures used up the bounded attempts; administrators were told.
     ABANDONED = "abandoned"
+    #: The transition this record was written for is not in the story. Nothing
+    #: was published and no attempt was spent; the obligation is owed again from
+    #: scratch when the story really does reach that ending.
+    VOIDED = "voided"
 
 
 class OwnerNotification(BaseModel):
@@ -67,6 +85,14 @@ class OwnerNotification(BaseModel):
     text: str
     story_id: str
     project_id: str
+    #: The status the story must be in for this message to be true. Recorded
+    #: rather than inferred so the check is the transition that was intended,
+    #: not "any status that is not the one it started from".
+    terminal_status: StoryStatus
+    #: What PO is told the message is about, when that is a task rather than the
+    #: story as a whole. `None` means the story is the subject, which is what
+    #: every story-level ending records.
+    task_id: str | None = None
     state: OwnerNotificationState
     owed_at: datetime
     #: Delivery attempts already spent. Bounded by the producer.

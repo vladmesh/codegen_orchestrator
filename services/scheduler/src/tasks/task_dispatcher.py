@@ -429,6 +429,7 @@ async def task_dispatcher_loop() -> None:
                     + owner_notifications["retrying"]
                     + owner_notifications["exhausted"]
                     + owner_notifications["unaddressable"]
+                    + owner_notifications["voided"]
                 )
                 if supervisor_active:
                     logger.info(
@@ -464,6 +465,10 @@ async def task_dispatcher_loop() -> None:
                         owner_notify_retrying=owner_notifications["retrying"],
                         owner_notify_exhausted=owner_notifications["exhausted"],
                         owner_notify_unaddressable=owner_notifications["unaddressable"],
+                        # A record whose transition never committed: nothing was
+                        # sent, nothing was spent, and the ending is owed again
+                        # if routing does reach it.
+                        owner_notify_voided=owner_notifications["voided"],
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")

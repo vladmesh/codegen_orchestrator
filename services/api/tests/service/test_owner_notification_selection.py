@@ -25,6 +25,7 @@ from shared.contracts.dto.owner_notification import (
     OwnerNotification,
     OwnerNotificationState,
 )
+from shared.contracts.dto.story import StoryStatus
 from shared.models import Run
 
 OWED_PATH = "/api/runs/owner-notifications/owed"
@@ -36,6 +37,7 @@ def _record(state: OwnerNotificationState, story_id: str, **overrides) -> dict:
         text="The story is finished: it is deployed and QA passed.",
         story_id=story_id,
         project_id=str(uuid.uuid4()),
+        terminal_status=StoryStatus.COMPLETED,
         state=state,
         owed_at=datetime.now(UTC) - timedelta(days=30),
         **overrides,
@@ -126,7 +128,7 @@ async def test_a_delivered_message_is_not_selected(
 async def test_a_settled_failure_is_not_selected(
     async_client: AsyncClient, db_session: AsyncSession
 ):
-    """Both endings that are not a retry leave the selection for good."""
+    """The three endings that are not a retry leave the selection for good."""
     abandoned = await _qa_run(
         async_client,
         db_session,
@@ -147,9 +149,23 @@ async def test_a_settled_failure_is_not_selected(
         age=timedelta(hours=1),
     )
 
+    voided = await _qa_run(
+        async_client,
+        db_session,
+        notification=_record(
+            OwnerNotificationState.VOIDED,
+            "story-uncommitted",
+            detail="story is testing, not completed",
+        ),
+        age=timedelta(hours=1),
+    )
+
     selected = await _owed(async_client)
     assert abandoned not in selected
     assert unaddressable not in selected
+    # A record whose transition never landed is settled too: it owes nothing
+    # until routing writes the obligation again.
+    assert voided not in selected
 
 
 @pytest.mark.asyncio

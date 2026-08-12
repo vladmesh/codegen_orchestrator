@@ -38,6 +38,7 @@ from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
+from shared.contracts.dto.story import StoryDTO, StoryStatus
 from shared.contracts.dto.user import UserDTO
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.tests.allocation_routing_cases import refused_deploy_result
@@ -104,21 +105,40 @@ def _refused_deploy_run(result):
     )
 
 
+#: What each story action the supervisor posts leaves the story in. The World
+#: applies these so a test that asks whether the transition committed is asking
+#: the question the seam asks — the story's own status — and not a mock's memory
+#: of having been called.
+_ACTION_RESULT = {
+    "complete": StoryStatus.COMPLETED,
+    "human-review": StoryStatus.WAITING_HUMAN_REVIEW,
+}
+
+
 class World:
     """What the API and the stream would still be holding after the tick.
 
     `publish_failures` is how many of the next publishes blow up, which is the
     only way to reproduce the ordering this card is about: the transition has
     already committed, and the publish behind it does not land.
+
+    `transition_failures` and `lost_transition_responses` are the two halves the
+    story status has to tell apart: a transition request that never committed,
+    and one that committed and lost its answer. They look identical to the
+    process that made the request and must not look identical to the recovery.
     """
 
     def __init__(self, run):
         self.run = run
         self.project = _project()
         self.owner: UserDTO | None = _owner()
+        self.story = _make_story(id="story-1", status=StoryStatus.TESTING)
         self.published: list[dict] = []
         self.publish_failures = 0
         self.resolve_failures = 0
+        self.story_read_failures = 0
+        self.transition_failures = 0
+        self.lost_transition_responses = 0
         self.transitions: list[tuple[str, str]] = []
         # Every write that reaches the API, in order, so a record written after
         # the transition it was supposed to protect is visible as such.
@@ -139,9 +159,26 @@ class World:
         self.journal.append(f"record:{record.state.value}:{record.attempts}")
 
     def _transition_story(self, story_id: str, action: str):
+        assert story_id == self.story.id
+        if self.transition_failures:
+            self.transition_failures -= 1
+            self.journal.append(f"transition_uncommitted:{action}")
+            raise ConnectionError("the API never committed the transition")
         self.transitions.append((story_id, action))
         self.journal.append(f"transition:{action}")
+        self.story = self.story.model_copy(update={"status": _ACTION_RESULT[action]})
+        if self.lost_transition_responses:
+            self.lost_transition_responses -= 1
+            self.journal.append(f"transition_response_lost:{action}")
+            raise TimeoutError("the transition committed but its answer never arrived")
         return {}
+
+    async def _get_story(self, story_id: str) -> StoryDTO:
+        assert story_id == self.story.id
+        if self.story_read_failures:
+            self.story_read_failures -= 1
+            raise TimeoutError("the API did not answer")
+        return self.story
 
     async def _publish_flat(self, queue: str, fields: dict) -> None:
         if self.publish_failures:
@@ -177,11 +214,16 @@ def world():
 @pytest.fixture
 def api_client(world, monkeypatch):
     client = AsyncMock()
+    # What the routing loop is given is set by each test, exactly as before:
+    # `world.story` is the *stored* story the seam reads back, not the loop's
+    # input, and the two are deliberately separate so a test can hold a story in
+    # the loop while its stored status says the transition never landed.
     client.get_stories_by_status.return_value = [_make_story(id="story-1", status="testing")]
     client.get_latest_run_by_story.return_value = world.run
     client.get_primary_repository.return_value = _make_repo(bot_username="palindrome_bot")
     client.get_project.side_effect = world._get_project
     client.get_user.side_effect = lambda user_id: world.owner
+    client.get_story.side_effect = world._get_story
     client.update_run.side_effect = world._update_run
     client.transition_story.side_effect = world._transition_story
     client.get_tasks_by_story.return_value = []
@@ -211,6 +253,117 @@ async def _tick(api_client, redis_client):
     counts = await supervise_owed_owner_notifications(api_client, redis_client)
     await supervise_testing_stories(api_client, redis_client)
     return counts
+
+
+class TestNothingIsPublishedUntilTheTransitionIsProven:
+    """The record is written first, so it is not evidence of its own transition.
+
+    Both halves are here, and they are the two ways the same pair of requests
+    can come apart. The transition that never committed must not produce a
+    message — the owner would be told their story ended while it is still being
+    worked on, and believing that is worse than never hearing. The transition
+    that committed and lost its answer must produce exactly one, which is the
+    loss this card exists to stop. The story's own status is what tells them
+    apart; the record cannot, because it was written before either happened.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_transition_that_never_committed_publishes_nothing(
+        self, world, api_client, redis_client
+    ):
+        from src.tasks.owner_notifications import supervise_owed_owner_notifications
+        from src.tasks.supervisor import supervise_testing_stories
+
+        world.transition_failures = 1
+        with pytest.raises(ConnectionError):
+            await supervise_testing_stories(api_client, redis_client)
+
+        # The obligation is on the run, and the story never left TESTING.
+        assert world.record.state is OwnerNotificationState.OWED
+        assert world.story.status is StoryStatus.TESTING
+
+        counts = await supervise_owed_owner_notifications(api_client, redis_client)
+
+        assert world.published == []
+        assert counts["voided"] == 1
+        assert counts["delivered"] == 0
+        # Settled, and settled without charging the bound: nothing failed here,
+        # there was simply nothing to say yet.
+        assert world.record.state is OwnerNotificationState.VOIDED
+        assert world.record.attempts == 0
+
+    @pytest.mark.asyncio
+    async def test_the_voided_obligation_comes_back_when_the_story_really_ends(
+        self, world, api_client, redis_client
+    ):
+        """Fail-closed is not fail-silent: the ending is owed again, once."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        world.transition_failures = 1
+        with pytest.raises(ConnectionError):
+            await supervise_testing_stories(api_client, redis_client)
+
+        # The next tick sweeps first, voids it, and then routes the story that
+        # is still sitting in TESTING — this time the transition commits.
+        await _tick(api_client, redis_client)
+
+        assert world.transitions == [("story-1", "complete")]
+        assert world.story.status is StoryStatus.COMPLETED
+        assert len(world.published) == 1
+        assert world.published[0]["event"] == "story_completed"
+        assert world.record.state is OwnerNotificationState.DELIVERED
+        # And the good news went out *after* the story was really finished, not
+        # from the sweep that ran before routing on a story still in TESTING.
+        assert world.journal.index("publish") > world.journal.index("transition:complete")
+
+    @pytest.mark.asyncio
+    async def test_a_committed_transition_whose_answer_was_lost_delivers_once(
+        self, world, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_testing_stories
+
+        world.lost_transition_responses = 1
+        with pytest.raises(TimeoutError):
+            await supervise_testing_stories(api_client, redis_client)
+
+        # The story is finished; the process that finished it never found out.
+        assert world.story.status is StoryStatus.COMPLETED
+        assert world.record.state is OwnerNotificationState.OWED
+        assert world.published == []
+
+        api_client.get_stories_by_status.return_value = []
+        first = await _tick(api_client, redis_client)
+        second = await _tick(api_client, redis_client)
+
+        assert first["delivered"] == 1
+        assert second["delivered"] == 0
+        assert len(world.published) == 1
+        assert world.published[0]["event"] == "story_completed"
+
+    @pytest.mark.asyncio
+    async def test_a_story_that_cannot_be_read_is_retried_rather_than_voided(
+        self, world, api_client, redis_client
+    ):
+        """A lookup that timed out says nothing about whether the story ended."""
+        from src.tasks.owner_notifications import supervise_owed_owner_notifications
+        from src.tasks.supervisor import supervise_testing_stories
+
+        world.publish_failures = 1
+        await supervise_testing_stories(api_client, redis_client)
+        api_client.get_stories_by_status.return_value = []
+
+        world.story_read_failures = 1
+        counts = await supervise_owed_owner_notifications(api_client, redis_client)
+
+        assert counts["retrying"] == 1
+        assert counts["voided"] == 0
+        assert world.record.state is OwnerNotificationState.OWED
+        assert world.record.attempts == 2
+
+        assert (await supervise_owed_owner_notifications(api_client, redis_client))[
+            "delivered"
+        ] == 1
+        assert len(world.published) == 1
 
 
 class TestTheRecordComesBeforeTheTransition:
@@ -351,6 +504,96 @@ class TestTheDeployRefusalTakesTheSameSeam:
         assert world.published == []
 
 
+class TestTheImpossibleEngineeringPlacementTakesTheSameSeam:
+    """The supervisor's fifth terminal owner notification does not go around it.
+
+    An engineering run refused by every managed server parks the task *and its
+    parent story* for a human and then tells the owner their request needs an
+    operator. That publish used to sit behind `except Exception: log.warning`
+    after both transitions had committed, which is the same permanent loss the
+    story-level paths had: nothing scans a story in human review, and nothing
+    scans a task in `waiting_human_review` looking for a message it owes.
+    """
+
+    @staticmethod
+    def _engineering_refusal(world, api_client):
+        """A failed engineering task whose placement no capacity can satisfy."""
+        task = _make_task(id="task-7", story_id="story-1", status="failed")
+        run = _make_run(
+            id="eng-1",
+            type=RunType.ENGINEERING,
+            status=RunStatus.FAILED,
+            result={
+                "engineering_status": "failed",
+                "allocation_failure_reason": AllocationFailureReason.IMPOSSIBLE_CAPACITY.value,
+            },
+        )
+        world.run = run
+        api_client.get_tasks_by_status.return_value = [task]
+        api_client.list_runs.return_value = [run]
+        return task
+
+    @pytest.mark.asyncio
+    async def test_it_owes_before_the_task_and_its_story_are_parked(
+        self, world, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        self._engineering_refusal(world, api_client)
+        world.publish_failures = 1
+
+        await supervise_failed_tasks(api_client, redis_client)
+
+        assert world.journal[0] == "record:owed:0"
+        assert world.journal[1] == "transition:human-review"
+        # The publish that failed is owed, not swallowed by the warning.
+        assert world.record.state is OwnerNotificationState.OWED
+        assert world.record.event == "task_impossible_capacity"
+        # And the task is kept, because that is the subject PO answers about.
+        assert world.record.task_id == "task-7"
+
+    @pytest.mark.asyncio
+    async def test_the_next_cycle_delivers_the_notice_the_publish_lost(
+        self, world, api_client, redis_client
+    ):
+        from src.tasks.owner_notifications import supervise_owed_owner_notifications
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        self._engineering_refusal(world, api_client)
+        world.publish_failures = 1
+        await supervise_failed_tasks(api_client, redis_client)
+
+        # The task left FAILED and the story left every status the loops scan.
+        api_client.get_tasks_by_status.return_value = []
+        counts = await supervise_owed_owner_notifications(api_client, redis_client)
+
+        assert counts["delivered"] == 1
+        assert len(world.published) == 1
+        assert world.published[0]["event"] == "task_impossible_capacity"
+        assert world.published[0]["task_id"] == "task-7"
+        assert world.published[0]["story_id"] == "story-1"
+        assert world.published[0]["telegram_chat_id"] == OWNER_CHAT_ID
+
+    @pytest.mark.asyncio
+    async def test_an_escalation_that_did_not_park_the_story_publishes_nothing(
+        self, world, api_client, redis_client
+    ):
+        """The same proof as the story paths: no transition, no message."""
+        from src.tasks.owner_notifications import supervise_owed_owner_notifications
+        from src.tasks.supervisor import supervise_failed_tasks
+
+        self._engineering_refusal(world, api_client)
+        world.transition_failures = 1
+
+        with pytest.raises(ConnectionError):
+            await supervise_failed_tasks(api_client, redis_client)
+
+        counts = await supervise_owed_owner_notifications(api_client, redis_client)
+
+        assert counts["voided"] == 1
+        assert world.published == []
+
+
 def _prior_failure(index: int) -> dict:
     """A recorded QA failure with the fingerprint of the one under test."""
     from src.tasks.supervisor import _qa_failure_fingerprint
@@ -440,6 +683,7 @@ class TestTheRetryIsBoundedAndItsEndIsLoud:
             "retrying": 1,
             "exhausted": 0,
             "unaddressable": 0,
+            "voided": 0,
             "skipped": 0,
         }
         assert world.admin_alerts == []
@@ -477,6 +721,7 @@ class TestTheRetryIsBoundedAndItsEndIsLoud:
             "retrying": 0,
             "exhausted": 0,
             "unaddressable": 0,
+            "voided": 0,
             "skipped": 0,
         }
         assert world.published == []
@@ -538,6 +783,7 @@ class TestAnUnaddressableOwnerIsRefusedNotChased:
             "retrying": 0,
             "exhausted": 0,
             "unaddressable": 0,
+            "voided": 0,
             "skipped": 0,
         }
 

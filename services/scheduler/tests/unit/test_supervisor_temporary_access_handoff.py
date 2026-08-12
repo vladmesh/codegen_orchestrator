@@ -104,6 +104,9 @@ def api_client():
     client.create_temporary_access_grant.side_effect = _stored_grant
     client.transition_story.return_value = {}
     client.get_user.side_effect = _resolved_user
+    # The completed story as the API holds it after the transition: the seam
+    # that hands the product over reads it back before it publishes anything.
+    client.get_story.return_value = _make_story(id="story-1", status="completed")
     return client
 
 

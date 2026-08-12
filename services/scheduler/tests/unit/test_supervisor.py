@@ -39,6 +39,10 @@ def _provisioned_server() -> ServerDTO:
 @pytest.fixture
 def api_client():
     client = AsyncMock()
+    # The story as the API holds it once an escalation has committed. The seam
+    # that publishes a terminal owner notice reads the story back before it
+    # publishes, so the double has to answer that read like the API would.
+    client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
     return client
 
 
@@ -468,11 +472,15 @@ class TestSuperviseFailedTasks:
             _make_task(id="task-1", story_id="story-1", status="failed")
         ]
         api_client.list_runs.return_value = [
+            # The engineering run carries the owner notice this escalation owes,
+            # so the double carries what a run has: an id and its metadata.
             SimpleNamespace(
+                id="eng-run-1",
+                run_metadata={},
                 result=EngineeringRunResult(
                     engineering_status=EngineeringStatus.FAILED,
                     allocation_failure_reason=AllocationFailureReason.IMPOSSIBLE_CAPACITY,
-                )
+                ),
             )
         ]
         api_client.get_project.return_value = SimpleNamespace(owner_id=42)
@@ -505,12 +513,14 @@ class TestEngineeringRefusalRouting:
         from shared.contracts.dto.run_result import EngineeringRunResult
 
         return SimpleNamespace(
+            id="eng-run-1",
+            run_metadata={},
             result=EngineeringRunResult(
                 engineering_status=EngineeringStatus.FAILED,
                 allocation_failure_reason=reason,
                 allocation_required_ram_mb=REFUSED_DEPLOY_REQUIRED_RAM_MB,
                 allocation_min_disk_mb=REFUSED_DEPLOY_MIN_DISK_MB,
-            )
+            ),
         )
 
     @pytest.mark.asyncio
