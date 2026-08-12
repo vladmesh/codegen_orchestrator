@@ -88,6 +88,10 @@ def api_client():
     # The owner's internal id is not their Telegram chat: resolution goes
     # through the users API, and the two numbers must never be confused.
     client.get_user.side_effect = _resolved_user
+    # A terminal owner notice is published only once the story has been read
+    # back and found in the status the transition put it in, so the double
+    # answers that read the way the API would after the escalation committed.
+    client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
     return client
 
 

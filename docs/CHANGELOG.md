@@ -1,5 +1,89 @@
 # Changelog
 
+## 2026-08-12 (1)
+
+- A terminal story outcome can no longer be observed without the owner's message
+  being either published or durably owed. The supervisor committed the
+  transition and then published to `po:input` — an `xadd` with nothing behind it
+  — and the commit is precisely what takes the story out of `TESTING`, the only
+  status that loop scans. A transient failure of the publish, or of the
+  recipient lookup in front of it, lost the message permanently: the owner's
+  product was finished, deployed and verified, and nobody ever told them. Worse
+  in practice, the exception escaped `supervise_testing_stories` and ended the
+  rest of the dispatcher tick with it.
+- `shared/contracts/dto/owner_notification.py` is the record that closes the
+  gap, written into the run's `run_metadata` under `owner_notification`
+  *before* the transition is committed — the same shape the QA SSH grant already
+  uses for access, and for the same reason. `OWED` is work; `DELIVERED` is the
+  stream having accepted the event; `UNADDRESSABLE` is a recipient with no
+  Telegram chat, which is an answer rather than a failure and is never retried;
+  `ABANDONED` is three transient failures, after which an admin alert names the
+  event, story, project and run.
+- Because the record is written first, it is not evidence that the transition
+  it was written for happened, and it is not read as such: it carries the
+  `terminal_status` that transition produces, and nothing is published until the
+  story is read back and found in it. Without that check the seam would have
+  traded a lost message for a false one — a record committed on a run whose
+  story transition then failed would tell the owner their product is finished
+  while it is still in testing, and a story that never transitioned would be
+  announced as complete. A record whose transition is not there is `VOIDED`:
+  nothing is published, no attempt is spent, and the obligation is written again
+  from scratch if routing later does reach that ending. The same check covers
+  the opposite failure for free — a transition that committed and lost its
+  response leaves the story terminal, so its message is delivered.
+- `services/scheduler/src/tasks/owner_notifications.py` is the single seam, and
+  all three terminal paths in `supervise_testing_stories` go through it: QA
+  passed, an unverifiable application quarantined, and QA fix attempts
+  exhausted. The last of those told administrators only; the owner now hears
+  about it too, under the `story_quarantined` event PO already routes, because
+  that transition ends the story for its owner exactly as a quarantine does. The
+  admin alert on that path is unchanged.
+- The supervisor's two remaining terminal owner notifications take the same
+  seam, and both used to publish behind `except Exception: log.warning` — the
+  same loss, with the failure recorded as a warning.
+  `_escalate_refused_deploy` with `tell_owner` (`story_impossible_capacity`)
+  parks the story for a human, and `_park_task_waiting_resources` on
+  `HUMAN_REVIEW_WITH_OWNER_NOTICE` (`task_impossible_capacity`) parks a failed
+  engineering task *and its parent story* for one. The second is about the task,
+  so the record keeps the task id and PO is still told which task it is; the
+  record itself lives on the engineering run. A refusal escalated with
+  `tell_owner=False` is still admin-only and owes nothing.
+- The four publishes left in `supervisor.py` are the non-terminal ones —
+  `task_waiting_resources`, `task_waiting_infrastructure`,
+  `task_resources_resumed` and `story_waiting_user_secret`. They stay direct and
+  they stay best effort, outside this guarantee: no scan re-derives them.
+  `_notify_resources_resumed_via_po` fires once on the `backlog → todo` move and
+  never again for a task in `todo`, the first wait messages are published only
+  under `is_new_wait`, and the `waiting_user_secret` scan redispatches the story
+  once the secret arrives rather than re-sending the request for it. A publish
+  lost there means the owner does not get that message at all, and the bounded
+  retry and admin alert here do not extend to it.
+- `supervise_owed_owner_notifications` re-attempts what a committed transition
+  still owes, reading its work from the new `GET /api/runs/owner-notifications/owed`
+  — selected by the state of the record, ordered oldest first, bounded by a page,
+  with age deliberately not a selection key so an outage cannot put a message out
+  of reach. It runs before story routing in the cycle, so a record owed by this
+  tick gets exactly the one in-tick attempt routing makes. `supervisor_cycle`
+  gained `owner_notify_recovered`, `owner_notify_retrying`,
+  `owner_notify_exhausted`, `owner_notify_unaddressable` and
+  `owner_notify_voided`, which is what tells "still being chased" apart from
+  "given up on and handed to a human" apart from "there was nothing to say".
+- Delivery is at-least-once and bounded to the publish leg. A process that dies
+  between the publish landing and the record being marked delivered republishes;
+  what is guaranteed is that a settled record is never published twice and an
+  owed one is never forgotten. The transport leg to Telegram keeps its own
+  bounded retry and admin alert in `services/telegram_bot/src/proactive.py`.
+- Regressions:
+  `services/scheduler/tests/unit/test_owner_notification_durability.py` drives
+  the real ordering — transition committed, publish refused, next cycle delivers
+  — against a store that keeps what the API would keep, along with both ways the
+  two requests come apart (a transition that never committed publishes nothing
+  and is voided; one that committed and lost its answer delivers exactly once)
+  and the impossible-placement task notice taking the same route, and
+  `services/api/tests/service/test_owner_notification_selection.py` holds the
+  selection: a month-old owed record is still work, a delivered or settled one is
+  not, and the page bounds the answer.
+
 ## 2026-08-11 (16)
 
 - The QA executor's CLI can reach its model backend again. worker-manager put

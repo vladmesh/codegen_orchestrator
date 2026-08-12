@@ -1238,6 +1238,109 @@ is settled by deploys, a different subject with a different lifecycle. What is r
 shape — a durable record, a sweep that reconciles from state rather than from the happy path, and a
 failure that lands on the run rather than in a log line.
 
+### Terminal owner notification
+
+`shared/contracts/dto/owner_notification.py`. **The invariant: a terminal story transition cannot be
+observed without the owner's message being either already published to `po:input` or durably owed.**
+The record lives in `run_metadata` under `owner_notification`, on the run that produced the outcome
+— the QA run for the story's own endings, the engineering run for the impossible-capacity task
+notice — and is written **before** the transition is committed, for the same reason the SSH grant
+above is written before the key is installed: publishing after the commit has a gap, and committing
+is exactly what takes the subject out of the status whose scan would otherwise come back to it. For
+the three endings owed inside `supervise_testing_stories` that status is `TESTING`; the other two
+paths leave the statuses their own loops scan. The endings are not one ending — the five paths
+produce different terminal statuses, which is why the record carries the `terminal_status` it
+expects instead of assuming one — but the gap has the same shape in all of them, and a publish lost
+in it used to be lost permanently.
+
+`OwnerNotification` carries the `POSystemEvent` name PO routes on, the text to publish, the story,
+the project, the `terminal_status` the intended transition produces, an optional `task_id`, `state`,
+`owed_at`, `attempts` and `detail`. The words are stored rather than recomputed, so a later tick
+publishes what the tick that owed it decided; the recipient is *not* stored, because resolving it is
+one of the two things that can fail transiently and must be retried.
+
+**Nothing is published until the story proves the transition committed.** The record is written
+first, so it cannot be evidence of its own transition: the transition is a separate request and can
+fail after the record is durable. Delivery therefore reads the story and publishes only if it is in
+the record's `terminal_status` — recorded rather than inferred, so the check is the ending that was
+intended and not "any status but the one it started from". Without it this record would trade a lost
+message for a false one, and a false "your product is finished" is worse than a missing one: the
+owner sees it and believes it. The same check closes the opposite case with the same rule — a
+transition that committed and lost its response leaves the story terminal, so its message goes out.
+Reading the story is itself an API call, so a failed *read* is treated as the transient failure it
+is, not as proof that the transition is missing.
+
+`services/scheduler/src/tasks/owner_notifications.py` is the only seam. All three terminal paths in
+`supervise_testing_stories` reach it — QA passed (`story_completed`), an unverifiable application
+quarantined (`story_quarantined`), and QA fix attempts exhausted (`story_quarantined`) — and so do
+the supervisor's other two terminal owner notifications, whose publishes both previously sat behind
+a swallowed exception: `_escalate_refused_deploy` with `tell_owner` (`story_impossible_capacity`),
+and `_park_task_waiting_resources` on the `HUMAN_REVIEW_WITH_OWNER_NOTICE` routing
+(`task_impossible_capacity`), which parks a failed engineering task *and* its parent story for a
+human. That last one is about the task, so its record keeps `task_id` and PO is still told which
+task; the record lives on the engineering run, since the record belongs to whatever run produced the
+outcome. Each path owes the message, commits the transition, then spends its first delivery attempt.
+A refusal escalated with `tell_owner=False` stays admin-only and owes nothing: there is no decision
+for the owner to make, and the seam does not invent a message.
+
+The publishes that remain direct in `supervisor.py` are the non-terminal ones, and that is the whole
+list: `task_waiting_resources` and `task_waiting_infrastructure`, `task_resources_resumed`, and
+`story_waiting_user_secret`. **They are best effort and outside this guarantee**, and not because a
+later scan would re-derive them — it would not. `_notify_resources_resumed_via_po` is called once,
+on the `backlog → todo` move that admits the task, and nothing calls it again for a task in `todo`.
+The first wait messages are published only under `is_new_wait`, so a later pass over a task still
+sitting in `waiting_resources` does not repeat them. The `waiting_user_secret` scan exists to
+redispatch the story once the secret arrives, not to re-send the request that asked for it. Losing
+one of these publishes therefore means the owner does not get that message at all; the bounded retry
+and admin alert described in this section do not cover them. Making them durable would mean an
+outbox for producers beyond the supervisor's terminal notifications, which is deliberately not what
+this record is.
+
+The exhausted-fix path among those three is a decision, not an omission: it used to alert
+administrators only. It ends the story for its owner exactly as a quarantine does, so the owner is
+told too, through the same seam, under the event PO already routes — a new event name would only be
+dropped by PO as unknown. The admin alert on that path is unchanged and still fires.
+
+Five states, and four of them are terminal. `OWED` is work. `DELIVERED` is the stream having
+accepted the event, and nothing publishes it again. `UNADDRESSABLE` is a recipient that resolved to
+no Telegram chat — an answer, not a failure, so it is logged and alerted once and never retried.
+`ABANDONED` is `OWNER_NOTIFICATION_MAX_ATTEMPTS` (3) transient failures, after which an admin alert
+names the event, story, project and run. `VOIDED` is the intended transition not being in the story:
+fail-closed, so nothing is published and no attempt is spent — an ending that did not happen is not
+a delivery that failed — and the obligation is written again from scratch, with a fresh attempt
+budget, when routing does reach that ending. Only `owe_owner_notification` may replace a record, and
+only a voided one; the other three endings stop the message for good.
+
+`supervise_owed_owner_notifications` is the recovery pass, and it reads its work from
+`GET /api/runs/owner-notifications/owed` (internal/admin): every run whose `owner_notification.state`
+is `owed`, ordered `(created_at, id)` ascending, bounded by `limit`. Age is not a selection key, so
+a story finished during an outage is still served afterwards; no cursor is needed, unlike the grant
+selection, because every visit either delivers the record or spends one of its bounded attempts, so
+nothing can sit at the head of the page indefinitely. A selected record that does not parse raises
+rather than being skipped — unreadable is not delivered, and this module is its only writer.
+
+The pass runs **before** story routing in the dispatcher cycle, so a record owed by this tick's
+routing gets exactly the one in-tick attempt routing makes; the other order would spend a second
+attempt of the bound in the same second. That order is also what makes a voided record self-healing:
+the sweep settles it before routing looks at the story it belongs to, so the same tick can owe the
+ending again. Its outcomes are visible in `supervisor_cycle` as `owner_notify_recovered`,
+`owner_notify_retrying`, `owner_notify_exhausted`, `owner_notify_unaddressable` and
+`owner_notify_voided` — "still being chased" told apart from "given up on and handed to a human"
+told apart from "there is no chat to write to" told apart from "there was nothing to say yet".
+
+Bounds of the guarantee. Delivery is at-least-once, not exactly-once: a process that dies between
+the publish landing and the record being marked delivered republishes on the next tick. What is
+guaranteed is that a *settled* record is never published again and that an owed one is never
+forgotten. The record covers the publish leg only, `scheduler → po:input`; the transport leg to
+Telegram has its own bounded retry and admin alert in `services/telegram_bot/src/proactive.py`. And
+it covers the supervisor's terminal owner notifications only — it is not an outbox for every
+producer in the project.
+
+One boundary is worth naming: the proof is the story's status at the moment of delivery, not a
+transition log. A story that reaches its terminal status and is then moved on by a human before the
+sweep runs voids the record rather than delivering it. That is the fail-closed side of the same
+rule, and it costs a message only in the window where a person is already looking at the story.
+
 
 ---
 

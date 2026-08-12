@@ -150,6 +150,17 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("GET", "runs/", params=params)
         return [RunDTO.model_validate(r) for r in resp.json()]
 
+    async def list_runs_owing_owner_notification(self, *, limit: int) -> list[RunDTO]:
+        """One page of the runs whose owner has not been told their story ended.
+
+        Selected by the state of the record and ordered oldest first, so the
+        recovery sweep's work is every message still owed rather than the ones
+        belonging to a story that happens to still be in a status it scans — a
+        terminal transition takes the story out of every such status.
+        """
+        resp = await self.request("GET", "runs/owner-notifications/owed", params={"limit": limit})
+        return [RunDTO.model_validate(row) for row in resp.json()]
+
     async def update_run(self, run_id: str, data: dict) -> None:
         """Patch run fields (status, error_message, result)."""
         await self.request("PATCH", f"runs/{run_id}", json=data)
