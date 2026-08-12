@@ -383,7 +383,11 @@ curl -H "X-Internal-Key: $INTERNAL_API_KEY" -s "http://localhost:8000/api/debug/
 - `server_unavailable` — the target is unreachable, the run's one-shot identity could not be
   installed, its deployment directory does not resolve, or the server's `ssh_user` is `root`
   (exploratory QA does not run privileged)
-- `claude_unavailable` — `QA_LLM_*` not set in the orchestrator `.env`, so no QA agent could start
+- `qa_executor_unavailable` — the assigned subscription executor did not run (no session,
+  expired session, broken CLI, container never started) and no complete `QA_LLM_*` fallback is
+  configured. This is a platform failure, not a product one: it alerts administrators and sends
+  the story to human review. Check the qa-worker logs for `qa_executor_unavailable` and the
+  worker-manager logs for the container that did not start
 - `missing_telethon_credentials` — `TELETHON_*` not set, so a bot project cannot be tested
 - QA agent produced unparseable output (non-JSON final message)
 - `qa_cleanup_failed` — the run's workspace or target access could not be proven gone; check the

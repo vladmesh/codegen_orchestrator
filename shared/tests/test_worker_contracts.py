@@ -1,10 +1,14 @@
 """Unit tests for worker queue contracts — ScaffoldConfig serialization."""
 
+from pydantic import TypeAdapter, ValidationError
+import pytest
+
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
     ScaffoldConfig,
     WorkerCapability,
+    WorkerCommand,
     WorkerConfig,
 )
 
@@ -80,3 +84,72 @@ class TestScaffoldConfig:
             modules="backend",
         )
         assert scaffold.task_description == ""
+
+
+class TestQARunsOnAnAssignedSubscriptionAgent:
+    """Only Claude Code or Codex may be a `qa` worker.
+
+    The executor contract names two agents, and both are subscription CLIs whose
+    session stays on the management host. `factory` runs on a provider API key
+    and `noop` performs no testing at all, so a `qa` create carrying either is
+    refused at the contract — which is the same validation worker-manager runs
+    on every command it takes off the stream, before any container exists.
+    """
+
+    def _qa_config(self, agent_type: AgentType) -> WorkerConfig:
+        return WorkerConfig(
+            name="qa-1",
+            worker_type="qa",
+            agent_type=agent_type,
+            instructions="# QA executor",
+            allowed_commands=["*"],
+            capabilities=[],
+        )
+
+    @pytest.mark.parametrize("agent_type", [AgentType.CLAUDE, AgentType.CODEX])
+    def test_an_assigned_subscription_agent_is_accepted(self, agent_type):
+        assert self._qa_config(agent_type).agent_type is agent_type
+
+    @pytest.mark.parametrize("agent_type", [AgentType.FACTORY, AgentType.NOOP])
+    def test_no_other_agent_can_be_a_qa_worker(self, agent_type):
+        with pytest.raises(ValidationError) as exc:
+            self._qa_config(agent_type)
+
+        assert agent_type.value in str(exc.value)
+
+    @pytest.mark.parametrize("agent_type", ["factory", "noop"])
+    def test_the_wire_refuses_it_too(self, agent_type):
+        """What worker-manager parses off `worker:commands` is this same model.
+
+        A payload that never validates is never dispatched: the consumer logs it
+        and ACKs it away, so the refusal happens before a container is built.
+        """
+        payload = {
+            "command": "create",
+            "request_id": "req-qa-1",
+            "config": {
+                "name": "qa-1",
+                "worker_type": "qa",
+                "agent_type": agent_type,
+                "instructions": "# QA executor",
+                "allowed_commands": ["*"],
+                "capabilities": [],
+            },
+        }
+
+        with pytest.raises(ValidationError):
+            TypeAdapter(WorkerCommand).validate_python(payload)
+
+    @pytest.mark.parametrize("agent_type", [AgentType.FACTORY, AgentType.NOOP])
+    def test_a_developer_worker_keeps_the_full_agent_set(self, agent_type):
+        """The restriction is on QA, not on the enum: developers are untouched."""
+        config = WorkerConfig(
+            name="dev-1",
+            worker_type="developer",
+            agent_type=agent_type,
+            instructions="Read TASK.md",
+            allowed_commands=["*"],
+            capabilities=[WorkerCapability.GIT],
+        )
+
+        assert config.agent_type is agent_type

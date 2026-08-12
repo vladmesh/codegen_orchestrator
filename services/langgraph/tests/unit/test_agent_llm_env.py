@@ -11,7 +11,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from shared.queues import PO_INPUT_QUEUE
-from src.config.agent_llm_env import AGENT_LLM_ENV, missing_llm_env
+from src.config.agent_llm_env import AGENT_LLM_ENV, OPTIONAL_LLM_ENV, missing_llm_env
 from src.config.settings import Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -54,11 +54,25 @@ class TestEnvExampleDocumentsGroups:
 
     @pytest.mark.parametrize("agent", sorted(AGENT_LLM_ENV))
     def test_group_is_explained_in_env_example(self, agent):
-        """Each group carries a comment saying the agent won't work without it."""
+        """Each group says what it is: a requirement, or an optional fallback.
+
+        An operator reading `.env.example` decides what to fill in from this
+        comment. Saying "required" over a group that is not one is how a
+        deployment ends up with a provider key it never needed — so the
+        optional groups have to say so in the same place, in as many words.
+        """
         text = ENV_EXAMPLE.read_text()
         first_var = AGENT_LLM_ENV[agent][0]
-        comment_block = text.split(f"\n{first_var}=", 1)[0].rsplit("\n\n", 1)[-1]
-        assert "required" in comment_block.lower()
+        comment_block = text.split(f"\n{first_var}=", 1)[0].rsplit("\n\n", 1)[-1].lower()
+        if agent in OPTIONAL_LLM_ENV:
+            assert "optional" in comment_block
+            assert "required" not in comment_block
+        else:
+            assert "required" in comment_block
+
+    def test_the_qa_triplet_is_documented_as_optional(self):
+        """The QA executor is a subscription session; the triplet is a fallback."""
+        assert "qa" in OPTIONAL_LLM_ENV
 
     def test_po_comment_names_the_stream_that_stalls(self):
         """An operator following this comment must land on a stream that exists."""

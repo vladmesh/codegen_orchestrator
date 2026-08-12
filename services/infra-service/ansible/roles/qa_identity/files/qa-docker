@@ -1,0 +1,45 @@
+#!/bin/sh
+# The target's own answer to "what may the QA account do with docker?".
+#
+# The QA account is not in the `docker` group and cannot reach the socket, on
+# purpose: membership of that group is root on this host, so an account that has
+# it is not an unprivileged one. It reaches docker through this command only,
+# and sudo lets it run this command only.
+#
+# The allowlist is here rather than in sudoers because this is the question
+# sudoers cannot answer. `docker exec` and `docker run` mount and write; `docker
+# cp` writes into a container; `docker build`, `commit` and `save` create host
+# state. A sudoers wildcard over `docker *` would allow every one of them, and a
+# per-sub-command sudoers wildcard matches arguments as one concatenated string,
+# which is not a boundary anybody can read. So the boundary is a list of names,
+# checked before docker is reached at all.
+#
+# What this does NOT decide is which containers a run may look at. That is the
+# run's capability set, resolved in the orchestrator from deployment data, and
+# it is what keeps one project's run out of another project's containers. This
+# script answers only the host's own question: this account never gets a write,
+# whatever the orchestrator sends.
+#
+# `docker` is resolved through PATH deliberately: sudo replaces the caller's
+# environment with `secure_path`, whose directories are root-owned, so the
+# lookup cannot be steered by the QA account.
+
+set -eu
+
+ALLOWED="diff inspect logs port ps stats top"
+
+if [ "$#" -eq 0 ]; then
+    echo "qa-docker: a docker sub-command is required; allowed: $ALLOWED" >&2
+    exit 2
+fi
+
+subcommand=$1
+
+for allowed in $ALLOWED; do
+    if [ "$subcommand" = "$allowed" ]; then
+        exec docker "$@"
+    fi
+done
+
+echo "qa-docker: docker $subcommand is refused on this host; allowed: $ALLOWED" >&2
+exit 2

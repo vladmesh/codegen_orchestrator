@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from shared.contracts.dto.incident import IncidentDTO, IncidentStatus, IncidentType
+from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.server import ServerDTO, ServerStatus
 from shared.server_admission import (
     PROVISIONING_PHASE_COMPLETE,
@@ -102,6 +103,25 @@ ADMISSION_CASES: tuple[AdmissionCase, ...] = (
         labels={PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
         is_managed=False,
     ),
+)
+
+
+#: Every state in which admission refuses. Kept next to the table so a new
+#: refusing state joins every "this is not a capacity shortage" assertion at
+#: once, instead of being listed by hand in one suite and forgotten in another.
+REFUSED_ADMISSION_CASES: tuple[AdmissionCase, ...] = tuple(
+    case for case in ADMISSION_CASES if not case.admitted
+)
+
+#: The reasons that say the request was larger than the platform's memory or
+#: hardware. No admission refusal may be reported as one of them: it describes a
+#: host that may not take work, not a request that did not fit.
+CAPACITY_REASONS: frozenset[AllocationFailureReason] = frozenset(
+    {
+        AllocationFailureReason.INSUFFICIENT_FREE_MEMORY,
+        AllocationFailureReason.INSUFFICIENT_RESERVED_MEMORY,
+        AllocationFailureReason.IMPOSSIBLE_CAPACITY,
+    }
 )
 
 

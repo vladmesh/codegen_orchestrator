@@ -276,27 +276,124 @@ would otherwise sign dashboard tokens with a known key.
 
 ## QA runtime (central)
 
-Exploratory QA runs in the orchestrator, in the `qa-worker` container. Deploy targets carry nothing
-for it: no Claude CLI, no LLM credentials, no Telethon session.
+Exploratory QA is performed on the management host by an ephemeral coding agent that
+`qa-worker` starts through worker-manager, on the same subscription session developer workers use.
+Deploy targets carry nothing for it: no CLI, no LLM credentials, no Telethon session.
 
 **What the QA runtime needs** (all in the orchestrator `.env`):
-- `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — the QA agent. Without them exploratory QA is
-  blocked with `claude_unavailable`; health-only criteria still run, since they use no LLM.
+- `QA_EXECUTOR_AGENT_TYPE` — who performs the run. `claude` by default; `codex` only to assign
+  Codex explicitly, and nothing else: `factory` (provider API key) and `noop` (no testing at all)
+  are refused when the configuration is read, and a `qa` worker command carrying either is refused
+  by worker-manager before a container exists. The session itself is `HOST_CLAUDE_DIR` /
+  `HOST_CODEX_HOME`, which worker-manager mounts into the ephemeral QA container.
+- `QA_CAPABILITY_HOST` — how that container addresses `qa-worker`'s per-run capability endpoint.
+  It is the service's name on the `codegen_worker` network and only changes if the service is
+  renamed. `qa-worker` is attached to that network for this and for nothing else.
 - `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION` — the QA Telegram account, needed only
   for projects with a bot.
+- `QA_LLM_MODEL`, `QA_LLM_BASE_URL`, `QA_LLM_API_KEY` — **optional**. An API fallback consulted only
+  after the assigned executor has actually failed to run (no session, expired session, broken CLI,
+  container never started). Leaving all three empty is a supported production configuration. If the
+  executor fails and there is no complete triplet, the run ends as `qa_executor_unavailable` — a
+  QA-infrastructure outcome that alerts administrators and sends the story to human review, never a
+  product defect. Health-only criteria run with no executor at all.
 
-**What the run does to the target**: for each run the runtime mints a one-shot ed25519 key, installs
-it in the deploy user's `authorized_keys` with `restrict` and an `expiry-time`, and removes it when
-the run ends — reading the file back to prove it is gone. The fact that a key may be installed is
-written to the QA run's `run_metadata` (`qa_ssh_grant`) *before* the install is attempted, so an
-install whose answer is lost still leaves a record; a sweep in `qa-worker` reconciles every
-unreleased record every 5 minutes and, after 3 failed attempts, replaces the run's outcome with a
-`qa_cleanup_failed` blocker.
+**What the QA container can reach.** It has a shell, and that shell reaches nothing of the platform:
+no SSH key, no fleet key, no Telegram session, no provider key, no repository. Its whole route to
+the deployment is one injected command (`/workspace/qa`) that posts named calls to the per-run
+capability endpoint, which performs them from `qa-worker` with the run's borrowed `qa-observer`
+identity. The endpoint accepts GET-only HTTP calls, reads inside the deployment's physical root,
+and read-only docker sub-commands against the deployment's own containers — the same closed set as
+before.
 
-**Exploratory QA does not run as root.** The run identity is an unprivileged account on the target,
-so a server whose `ssh_user` is `root` (the default for a server record created without one) is
-refused exploratory QA with `server_unavailable`. Health-only criteria still run — they never SSH.
-Servers provisioned by the current Ansible have a deploy user and are unaffected.
+That the container *cannot* go around this is a property of its network, not of the prompt. The QA
+executor is attached to `codegen_qa_egress` and to nothing else, and that network is declared
+`internal: true`: it has no route to the deployment's public URL, to the fleet, or to the internet.
+Reachable on it are the run's capability endpoint (`qa-worker`), the worker broker — the runtime's
+own control channel — and one per-run egress proxy. That proxy speaks `CONNECT` only, to the
+assigned CLI's model backend and nothing else (`QA_CLAUDE_BACKEND_HOSTS` /
+`QA_CODEX_BACKEND_HOSTS`), so it can carry the model traffic the CLI needs and cannot carry a
+request to the application. `worker-manager` proves the network is internal before it creates
+anything, proves the proxy is listening before the executor exists, and proves the started
+container is attached to that single network — any of those failing fails the run closed as a
+QA-infrastructure outcome rather than starting an unrestricted container. Proxy variables are set
+in the executor's environment for the CLI's convenience; stripping them reaches less, not more.
+
+The runner's write scan over the tool trace and the container's transcript is still there, and it
+still fails the run closed with a residual-state record. It is now a second layer over an enforced
+boundary rather than the boundary itself. `services/worker-manager/tests/service/test_qa_egress_boundary.py`
+proves it against a real daemon: a recording application, a real executor container, `POST`/`PUT`/
+`PATCH`/`DELETE` from `curl` and from Python with the proxy configuration stripped, and zero write
+requests in the application's own ledger.
+
+**Which identity a run uses.** Not `servers.ssh_user`: that column is the administrative account the
+fleet key opens (`root` on every row `server_sync` creates), and a run holding it would have the
+platform's own authority over the deployment it is testing. The run uses `qa-observer`, an account
+**provisioning** creates — the `qa_identity` role, included by `provision_software.yml`, which is the
+phase that writes `labels.provisioning_phase=complete`. The same completion write records
+`labels.qa_ssh_user`, and that label is what the QA runtime reads. A host recorded complete by the
+current provisioner therefore always has the account; a host that has neither ran an older one.
+
+The label answers *whether* this host was provisioned by an Ansible that creates the account — not
+*as whom*. `servers.labels` is an untyped dict that `PATCH /api/servers/{handle}` will write, so the
+runtime accepts only the one name provisioning writes (`qa-observer`); a label naming anything else
+is refused exactly like a missing one, with reason `qa_identity_not_attested`. Editing a server row
+is therefore not a way to point a QA run at some other existing account. One consequence worth
+knowing: renaming the account is fail-closed — hosts still carrying the old name lend nothing until
+the retrofit has run over them.
+
+**The account has to be provisioning's own, and that is checked on the target.** A host can already
+carry a local account called `qa-observer` that nobody here created, and the role's tasks would not
+take away what such an account might have — `uid 0`, a rule in somebody else's file under
+`/etc/sudoers.d`, an ACL straight on the docker socket. So the role establishes two things before
+anything records that this host has an identity:
+
+- **ownership.** `/etc/codegen-qa-identity/qa-observer` is a root-owned file the role writes when it
+  creates the account. An account of that name found *without* it was created by somebody else, and
+  the role fails there: it changes nothing, deletes nobody's sudoers file, and the host is left with
+  no QA identity. Rename or remove that account by hand and run provisioning again.
+- **the seat itself**, asked of the machine rather than assumed from the tasks that ran
+  (`roles/qa_identity/files/qa-identity-proof`, the role's last task): `uid != 0`, no `docker`,
+  `root`, `sudo` or `wheel` group, everything `sudo -l -U qa-observer` grants is exactly the one
+  wrapper rule, and the account itself cannot read or write `/var/run/docker.sock` (which answers
+  group, file mode and ACL in one question). Anything unproved fails the role.
+
+Because both run inside `provision_software.yml`, a failure is an ordinary provisioning failure: the
+phase does not complete, `labels.qa_ssh_user` is never written, and the host keeps refusing QA. On
+the retrofit path the same failure is recorded as a `provisioning_failed` incident against that
+handle with `details.step = qa_identity` and the playbook output that says what was found.
+
+That account cannot become root: its primary group is its own (`qa-observer`, set explicitly, so a
+retrofit moves an account somebody created inside `docker` out of it), it is in no secondary group
+either, it cannot open the docker socket, and its only sudo rule is
+`/usr/local/bin/qa-docker` — a wrapper that refuses every docker sub-command except
+`diff, inspect, logs, port, ps, stats, top`. `exec`, `run`, `cp`, `build`, `commit` and the rest are
+refused **by the target**, whatever the orchestrator sends. It reads the deployment tree through a
+named ACL entry (`u:qa-observer:rx` on `/opt/services`) and can write nothing under it.
+
+**What the run does to the target**: for each run the runtime mints a one-shot ed25519 key and
+appends it, with `restrict` and an `expiry-time`, to `qa-observer`'s `authorized_keys` — the file the
+provisioning role opened, with a comment line that is never a key. The runtime creates no account and
+no file: a target where either is missing refuses the install. The fleet key is used only for that
+append and for the removal, which reads the file back to prove the key is gone. The fact that a key
+may be installed is written to the QA run's `run_metadata` (`qa_ssh_grant`) *before* the install is
+attempted, so an install whose answer is lost still leaves a record; a sweep in `qa-worker`
+reconciles every unreleased record every 5 minutes and, after 3 failed attempts, replaces the run's
+outcome with a `qa_cleanup_failed` blocker.
+
+**A host with no QA account is refused, visibly.** The run is blocked with `server_unavailable`
+(human review; the story is not failed, and health-only criteria still run because they never SSH),
+and the reason is written to the provisioning journal as a `provisioning_failed` incident against
+that `server_handle` with `details.step = qa_identity`. Both ways of discovering it are journalled
+the same way, into the same upserted entry: the label check before anything connects
+(`qa_identity_not_provisioned`, `qa_identity_privileged`, `qa_identity_not_attested`) and drift found
+on the target afterwards — a row that correctly says `qa-observer` while the account or its
+`authorized_keys` has since been deleted (`qa_identity_absent_on_target`). Failures of the QA runtime
+itself (no LLM, an agent that dies, an unreachable host) are *not* provisioning facts and stay out of
+that journal. That is a normal provisioning incident, so
+the host also stops receiving *new* applications until it is repaired — which is the intent: a host
+where QA cannot run cannot finish the pipeline. Repair it with the retrofit below; the retrofit
+closes the incident.
 
 **What the agent can see** is one capability set, resolved per run from deployment data before any
 tool exists (`resolve_capabilities`): the physical root of the deployment directory as the target
@@ -306,13 +403,46 @@ this application, and the public URL. Every tool in
 else — public GET, loopback GET on an allocated port, a file read contained in the physical root,
 read-only docker sub-commands against a container of this deployment, container logs/inspect,
 Telegram probe. There is no host-wide command (`docker ps`, `df`, `journalctl`): those describe the
-machine, which nothing in the set can bound. The agent never holds the run key or the fleet key.
+machine, which nothing in the set can bound. (`docker ps` is allowed by the target-side wrapper —
+resolving the capability set is what needs it — and is exposed as no tool, which is the difference
+between the two boundaries: the host limits what may be done, the capability set limits what may be
+named.) The agent never holds the run key or the fleet key.
 
-**Already-provisioned servers**: the `qa_runner` role is gone, so nothing new is installed. Servers
-provisioned before this change still carry what it left behind — the Claude Code CLI under the
-deploy user's `~/.local/bin`, `~/.claude/.credentials.json`, `/opt/qa-runner` (venv and the old
-write-guard script), the 2GB swap file, and `~/.qa-telethon.env`. Nothing reads them any more.
-Removing them from existing hosts is a separate task.
+**Already-provisioned servers**: run the retrofit once per host, from the orchestrator:
+
+```bash
+docker compose exec infra-service python -m src.provisioner.qa_identity_retrofit vps-267179
+```
+
+It runs `playbooks/qa_identity_retrofit.yml`, which creates the same identity from the same
+`qa_identity` role a fresh host gets, and removes what the old on-target QA agent left behind in the
+administrative account's home.
+
+Cleanup deletes only paths the removed `qa_runner` role itself created, at names nothing else uses:
+`~/.local/bin/claude`, `~/.claude/.credentials.json` (the LLM credentials copied onto the target),
+`~/.qa-telethon.env`, and `/opt/qa-runner` (venv and the old write-guard script). It touches no
+application data and no deployment directory.
+
+Three things are deliberately **left in place**, because that home is also a person's home and they
+cannot be told apart from ordinary interactive data:
+
+- `~/.claude` and `~/.local/share/claude` — the Claude Code CLI's own directories, which anybody
+  running Claude Code on that host also writes to. Only the credentials file above is certainly the
+  platform's.
+- `/swapfile` — the old role made 2GB of swap there, but so does every guide an administrator
+  follows, and nothing in the file distinguishes them. Taking swap away from a live host running
+  user applications is an outage, not cleanup. The swap and its `fstab` entry stay.
+
+Remove those by hand if you know they are the platform's. The playbook's last task prints, per host,
+`identity_proof` (what the target said about the account), `removed_paths`, and `left_in_place` —
+each surviving path with the reason it survived and the exact command that removes it, e.g.
+`swapoff /swapfile && rm -f /swapfile && sed -i '\|^/swapfile|d' /etc/fstab`. A fleet-wide run is
+therefore readable per machine, and the decision the playbook refuses to make is handed over with
+everything needed to make it.
+
+Only after the playbook succeeds is `labels.qa_ssh_user` written and the host's provisioning-failure
+incident resolved — a label written earlier would be a server row telling the QA runtime something
+the host cannot back up. Every task is a state, so re-running it changes nothing.
 
 ## Deploying
 
@@ -367,3 +497,13 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-o
 docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alembic upgrade head
 docker image prune -f
 ```
+
+`worker-manager` and `worker-broker` are one control plane and roll out
+together — which the command above does, and the deploy workflow does the same.
+Do not restart one alone. They share the worker authorization record: the
+manager writes the worker's type when it issues the credential and the broker
+authorizes every route from it, so a new broker in front of an old manager
+refuses registrations that carry no type, and worker creation fails until the
+manager catches up. Worker containers themselves are not Compose services and
+deliberately survive the rollout; each service migrates the pre-cutover records
+it authorizes on when it starts (`shared/worker_type_cutover.py`).

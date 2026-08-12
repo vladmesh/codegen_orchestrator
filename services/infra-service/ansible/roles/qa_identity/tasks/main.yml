@@ -1,0 +1,191 @@
+---
+# The identity a central QA run borrows on this target.
+#
+# It is created here, by provisioning, and not by the runtime: a runtime that
+# could create accounts would be a runtime with root, and the whole point of
+# this account is that the thing testing a deployment is weaker than the thing
+# that deployed it. The runtime's only power over it is to append one key with
+# an `expiry-time` to the `authorized_keys` this role opens, and to remove it.
+#
+# Nothing here makes it possible to become root from this account: no `docker`
+# group, no shell-wide sudo, no docker socket, no write anywhere under the
+# deployment tree. What it can do is read the deployment and ask docker
+# read-only questions about it, which is what QA needs and where QA stops.
+
+- name: Refuse a QA identity that would not be its own unprivileged account
+  ansible.builtin.assert:
+    that:
+      - qa_ssh_user | length > 0
+      - qa_ssh_user != 'root'
+      - qa_ssh_user != deploy_user
+      - qa_ssh_group | length > 0
+      - qa_ssh_group not in ['docker', 'root', 'sudo']
+    fail_msg: >-
+      qa_ssh_user must name its own account: not root, and not the deploy user,
+      whose docker group membership is root on this host. Its primary group must
+      be its own too — a QA account whose primary group is docker, root or sudo
+      is root on this host. Provisioning fails rather than handing a QA run an
+      account that can rewrite the deployment.
+    quiet: true
+
+# An account of this name may already be on the target, and if this role did not
+# put it there, nothing here knows what it is. It can carry `uid 0`, somebody
+# else's rule in `/etc/sudoers.d`, an ACL straight onto the docker socket — none
+# of which the tasks below touch, and all of which survive them. Adopting it
+# would mean the runtime later writes a run key into an account that can become
+# root, which is the one thing this identity exists to prevent. So ownership is
+# established first, on the machine, before anything is configured.
+- name: Ask the target whether this account is already there
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ qa_ssh_user }}"
+    fail_key: false
+
+- name: Ask the target whether this role is what put it there
+  ansible.builtin.stat:
+    path: "{{ qa_identity_marker }}"
+  register: qa_identity_owned
+
+- name: Refuse an account of this name that this role did not create
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.getent_passwd[qa_ssh_user] is none or qa_identity_owned.stat.exists
+    fail_msg: >-
+      {{ qa_ssh_user }} already exists on this host and was not created by this
+      role ({{ qa_identity_marker }} is absent), so what it may do here is
+      unknown: it can hold uid 0, a sudo rule in somebody else's file, or an ACL
+      on the docker socket. Provisioning refuses it rather than lending a QA run
+      an account that might be root, and rather than deleting an administrator's
+      own policy to make it fit. Nothing else on this host is changed and no QA
+      identity is recorded for it. Repair it by hand — rename or remove that
+      account if it is not in use — and run this again.
+    quiet: true
+
+# Written before the account is created, not after: a run interrupted between
+# the two would otherwise come back to an account it made and refuse to own it.
+# The claim is only ever laid after the assertion above found no stranger.
+- name: Claim the account name this role is about to create
+  ansible.builtin.file:
+    path: "{{ qa_identity_marker_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Record that this account is provisioning's own
+  ansible.builtin.copy:
+    dest: "{{ qa_identity_marker }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Written by the qa_identity role of the codegen orchestrator.
+      # The local account named by this file is the unprivileged identity a
+      # central QA run borrows on this host. Its presence is how a later run of
+      # that role knows the account is its own rather than somebody else's;
+      # removing this file makes the role refuse the account it names.
+      {{ qa_ssh_user }}
+
+# Named and created here so the account below has a primary group of its own to
+# be moved into, on a host where it already exists inside somebody else's.
+- name: Create the QA account's own group
+  ansible.builtin.group:
+    name: "{{ qa_ssh_group }}"
+    state: present
+
+- name: Create the QA observation account
+  ansible.builtin.user:
+    name: "{{ qa_ssh_user }}"
+    shell: /bin/bash
+    create_home: true
+    home: "{{ qa_ssh_home }}"
+    # Both memberships are stated, because the module keeps them apart and only
+    # stating both is a repair. `group:` is the primary one — an existing account
+    # whose primary group is `docker` is moved out of it by this line and by
+    # nothing else. `groups: []` with `append: false` makes the supplementary
+    # list exactly empty, so an account widened by hand loses that too. `docker`
+    # is root on this host through either membership.
+    group: "{{ qa_ssh_group }}"
+    groups: []
+    append: false
+
+- name: Create the QA account's SSH directory
+  ansible.builtin.file:
+    path: "{{ qa_ssh_home }}/.ssh"
+    state: directory
+    owner: "{{ qa_ssh_user }}"
+    group: "{{ qa_ssh_group }}"
+    mode: "0700"
+
+# The file has to exist and be the account's own before a run key can be written
+# into it, and it has to hold a line that is not a key: see the sentinel's
+# comment in defaults/main.yml.
+- name: Open the QA account's authorized_keys with a line that is never a key
+  ansible.builtin.lineinfile:
+    path: "{{ qa_ssh_home }}/.ssh/authorized_keys"
+    line: "{{ qa_authorized_keys_sentinel }}"
+    create: true
+    owner: "{{ qa_ssh_user }}"
+    group: "{{ qa_ssh_group }}"
+    mode: "0600"
+
+- name: Install the read-only docker wrapper
+  ansible.builtin.copy:
+    src: qa-docker
+    dest: "{{ qa_docker_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+# One command, no password, nothing else. `visudo -cf` runs before the file is
+# put in place, so a broken rule can never be what locks sudo up on the host.
+- name: Allow the QA account that one command and nothing else
+  ansible.builtin.copy:
+    dest: "{{ qa_sudoers_file }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s
+    content: |
+      # Managed by the qa_identity role. The QA account observes containers
+      # through {{ qa_docker_wrapper }}, which refuses every docker sub-command
+      # that writes. There is deliberately no ALL=(ALL) rule here: this account
+      # must not be able to become root.
+      Defaults:{{ qa_ssh_user }} !requiretty
+      {{ qa_ssh_user }} ALL=(root) NOPASSWD: {{ qa_docker_wrapper }}
+
+- name: Install acl, so reads can be granted without a group that can write
+  ansible.builtin.apt:
+    name: acl
+    state: present
+
+# The deployment root is `root:{{ deploy_user }}` and group-writable, so putting
+# the QA account in that group would give it writes over every deployment. It
+# gets one named ACL entry instead: search on the root directory, which is all
+# it needs to resolve and read a project's own files (project directories under
+# it are created world-readable by the deploy). No default ACL is set — that
+# would change the creation mode of everything deployed afterwards, and QA is
+# not worth altering how applications' own files come out.
+- name: Let the QA account into the deployment tree without giving it a write
+  ansible.posix.acl:
+    path: "{{ services_root }}"
+    entity: "{{ qa_ssh_user }}"
+    etype: user
+    permissions: rx
+    state: present
+
+# Everything above states an intention. This asks the machine what came of it,
+# and it is the last word on whether this host has a QA identity at all: the
+# provisioner records the identity on the server row only when this playbook
+# succeeded, so a proof that fails is a host that keeps refusing QA — visibly,
+# as the provisioning failure it is, rather than as a run that quietly cannot
+# find an account.
+- name: Prove on the target that this account cannot become root
+  ansible.builtin.script:
+    cmd: >-
+      qa-identity-proof
+      {{ qa_ssh_user | quote }}
+      {{ qa_docker_wrapper | quote }}
+      {{ qa_docker_socket | quote }}
+  changed_when: false
+  register: qa_identity_proof

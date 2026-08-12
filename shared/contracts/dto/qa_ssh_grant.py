@@ -54,7 +54,13 @@ class QASshGrant(BaseModel):
     marker: str
     server_handle: str
     server_ip: str
+    # The administrative account the fleet key opens, used to install and remove
+    # the key — and the account whose `authorized_keys` the key was written into,
+    # which is not the same one. A record that named only one of them could not
+    # be reconciled: the sweep would either connect as an account that cannot
+    # write the file, or clean the wrong file and report the key gone.
     ssh_user: str
+    qa_ssh_user: str
     state: QASshGrantState
     issued_at: datetime
     revoke_attempts: int = Field(default=0, ge=0)
