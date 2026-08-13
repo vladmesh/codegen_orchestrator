@@ -15,9 +15,11 @@ cover: a five-second poll cannot see a container that lived for one second, so
 ownership cannot be observed after the fact. It has to have been written at
 creation.
 
-The dead containers are deliberately left in place until the stack is torn down:
-a removed container is gone from `docker ps -a` too, and what is proved here is
-that ownership survives the worker's death — not the container's deletion.
+A dead container is left where it fell for as long as each test needs it — the
+suite's own cleanup removes every `worker-*` container between tests, which is
+why a test that needs company on the daemon creates it. What is proved here is
+that ownership survives the worker's death, not the container's deletion: a
+container that has genuinely been removed is gone from `docker ps -a` too.
 """
 
 from uuid import uuid4
@@ -172,15 +174,25 @@ class TestOwnershipSurvivesTheWorker:
         on whatever a run-scoped query returns, and a query that swept up a
         neighbouring worker — or something that is not a worker at all — would
         take more than its own run down with it.
+
+        The neighbour is created here rather than assumed. This suite removes
+        every `worker-*` container before and after each test, so what earlier
+        tests left behind is not something this check may lean on — it has to
+        make the crowd it claims not to sweep up, or it is asking a question
+        about an empty daemon.
         """
         ownership = _fresh_ownership()
+        neighbour = _fresh_ownership()
 
         _, container_id = await _dead_owned_worker(
             redis_client, docker_client, scaffolded_workspace, ownership
         )
+        _, neighbour_container = await _dead_owned_worker(
+            redis_client, docker_client, scaffolded_workspace, neighbour
+        )
 
         everything = docker_client.containers.list(all=True)
-        assert len(everything) > 1, "the daemon has only this worker; the check would be vacuous"
+        assert {container_id, neighbour_container} <= {c.id for c in everything}
 
         selected = _by_labels(docker_client, **{WorkerLabel.RUN.value: ownership.run_id})
         assert [container.id for container in selected] == [container_id]
