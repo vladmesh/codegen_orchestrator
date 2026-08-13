@@ -38,6 +38,9 @@ logger = structlog.get_logger()
 # command that is its only route to the deployment under test.
 QA_WORKER_TYPE = "qa"
 
+# The workspace-lock holder fact, defined with the workspaces it guards.
+WORKSPACE_LOCK_FIELD = workspace_mod.WORKSPACE_LOCK_FIELD
+
 
 class WorkerManager:
     """
@@ -182,6 +185,52 @@ class WorkerManager:
         """
         await self.redis.hset(f"worker:meta:{worker_id}", mapping=ownership.as_redis_meta())
 
+    async def _acquire_workspace_lock(self, worker_id: str, project_id: str) -> str:
+        """Take the project's workspace lock for this worker, or refuse it.
+
+        The single writer of lock ownership. The `SADD` is the acquisition: it
+        returns 1 only for the worker that actually took the project, so two
+        creates that raced past `_check_project_lock` cannot both believe they
+        hold it. Only the winner gets the holder fact written, and only that
+        fact ever authorizes a release. Returns the project now held, so the
+        caller carries the same fact it wrote rather than re-deriving one.
+        """
+        acquired = await self.redis.sadd("workspace:active_projects", project_id)
+        if not acquired:
+            raise RuntimeError(f"Project {project_id} workspace lock was taken by a concurrent worker")
+        await self.redis.hset(f"worker:meta:{worker_id}", WORKSPACE_LOCK_FIELD, project_id)
+        return project_id
+
+    async def _release_workspace_lock(self, worker_id: str, held_project_id: str | None) -> None:
+        """Give the workspace back, if this worker is the one that took it.
+
+        The single reader of lock ownership. `held_project_id` comes from the
+        worker's own holder fact and from nowhere else — never from
+        `project_id`, which every worker carries as ownership whether or not it
+        ever acquired anything. Releasing on ownership alone frees a live
+        worker's checkout under it and lets a second worker start on it.
+        """
+        if not held_project_id:
+            return
+        logger.info("workspace_lock_released", project_id=held_project_id, worker_id=worker_id)
+        await self.redis.srem("workspace:active_projects", held_project_id)
+        # The release consumes the fact: this worker is no longer the holder, so
+        # nothing it does later can hand back a lock the next worker has taken.
+        await self.redis.hdel(f"worker:meta:{worker_id}", WORKSPACE_LOCK_FIELD)
+
+    async def _reject_worker(self, worker_id: str, exc: Exception) -> None:
+        """Mark a worker that was refused before it could take anything.
+
+        A refusal has to be terminal in Redis. The create command is ACKed early
+        and the caller then polls `worker:status`, so a rejected worker with no
+        status is one the caller waits out the full readiness timeout for and
+        then publishes a delete for — turning a refusal into a deletion that
+        would otherwise reach for someone else's lock.
+        """
+        logger.warning("worker_rejected", worker_id=worker_id, error=str(exc))
+        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+        await self.redis.set(f"worker:error:{worker_id}", str(exc))
+
     async def create_worker(
         self,
         worker_id: str,
@@ -303,7 +352,11 @@ class WorkerManager:
         meta = decode_redis_fields(await self.redis.hgetall(f"worker:meta:{worker_id}"))
         dev_network = meta.get("dev_network") if meta else None
         stored_workspace = meta.get("workspace_path") if meta else None
-        project_id = meta.get("project_id") if meta else None
+        # What this worker acquired, not who it belonged to. A worker rejected
+        # before acquisition — and a QA executor, which never takes the lock at
+        # all — carries `project_id` as ownership and no holder fact, and
+        # releases nothing here.
+        held_project_id = meta.get(WORKSPACE_LOCK_FIELD) if meta else None
         is_qa_worker = bool(meta) and meta.get("worker_type") == QA_WORKER_TYPE
 
         try:
@@ -350,16 +403,14 @@ class WorkerManager:
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
         finally:
             await self._unregister_broker_worker(worker_id)
-            # Only the worker that took the workspace lock releases it. A QA
-            # executor records the same project as its owner but never held the
-            # lock, and releasing one it does not hold would free a developer
-            # worker's workspace under it.
-            if project_id and not is_qa_worker:
-                logger.info("workspace_preserved", project_id=project_id, worker_id=worker_id)
-                await self.redis.srem("workspace:active_projects", project_id)
+            # Only the worker that took the workspace lock releases it, and the
+            # holder fact is the only thing that says so.
+            if held_project_id:
+                logger.info("workspace_preserved", project_id=held_project_id, worker_id=worker_id)
+                await self._release_workspace_lock(worker_id, held_project_id)
 
                 if reason:
-                    failure_key = f"workspace:{project_id}:failure_count"
+                    failure_key = f"workspace:{held_project_id}:failure_count"
                     if reason in ("failed", "timeout"):
                         await self.redis.incr(failure_key)
                         await self.redis.expire(failure_key, 48 * 3600)
@@ -517,16 +568,18 @@ class WorkerManager:
         Returns worker_id if locked, None if free.
         Auto-cleans stale Redis keys for workers in terminal states (DEAD/FAILED/STOPPED).
 
-        A QA executor records the same project — that is its ownership — but holds
-        no workspace, so it is not a lock holder and is skipped here.
+        The holder is found by the fact it wrote when it acquired, never by
+        ownership. Every worker of this project carries `project_id` — a QA
+        executor that holds no workspace, a developer worker refused before it
+        could acquire — and treating any of them as the holder either blocks the
+        project forever or, worse, cleans one of them up and releases a live
+        worker's lock along with it.
         """
         if not await self.redis.sismember("workspace:active_projects", project_id):
             return None
         async for key in self.redis.scan_iter(match="worker:meta:*"):
             meta = decode_redis_fields(await self.redis.hgetall(key))
-            if meta.get("worker_type") == QA_WORKER_TYPE:
-                continue
-            if meta.get("project_id") == project_id:
+            if meta.get(WORKSPACE_LOCK_FIELD) == project_id:
                 worker_id = key.split(":")[-1]
                 status = await self.redis.hget(f"worker:status:{worker_id}", "status")
                 if status in self._TERMINAL_STATUSES:
@@ -600,32 +653,51 @@ class WorkerManager:
         # worker that never reached a container is still one this run made.
         await self._stamp_ownership(worker_id, ownership)
 
-        network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
+        # Everything up to the lock is a refusal, not a failure of a worker that
+        # started: it took nothing, so nothing is released here. What it must
+        # leave behind is a terminal status, so the caller that was ACKed early
+        # stops polling now instead of timing out and deleting a worker that
+        # never held anything.
+        held_project_id: str | None = None
+        try:
+            network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
 
-        if agent_type == AgentType.CODEX and auth_mode == "host_session":
-            from .codex_auth import validate_codex_host_session
+            if agent_type == AgentType.CODEX and auth_mode == "host_session":
+                from .codex_auth import validate_codex_host_session
 
-            validation_path = settings.HOST_CODEX_VALIDATION_PATH or host_codex_home
-            validate_codex_host_session(validation_path)
+                validation_path = settings.HOST_CODEX_VALIDATION_PATH or host_codex_home
+                validate_codex_host_session(validation_path)
 
-        # The workspace lock is a developer-worker concern: it guards the one
-        # persistent checkout a project has. A QA executor owns the same project
-        # but touches no workspace of it, so it neither takes the lock nor is
-        # blocked by one — its ownership is a record, not a claim.
+            # The workspace lock is a developer-worker concern: it guards the one
+            # persistent checkout a project has. A QA executor owns the same project
+            # but touches no workspace of it, so it neither takes the lock nor is
+            # blocked by one — its ownership is a record, not a claim.
+            if not is_qa_worker:
+                existing_worker = await self._check_project_lock(project_id)
+                if existing_worker:
+                    raise RuntimeError(f"Project {project_id} already has active worker {existing_worker}")
+
+                failure_key = f"workspace:{project_id}:failure_count"
+                failure_count = int(await self.redis.get(failure_key) or 0)
+
+                if failure_count >= 3:
+                    raise RuntimeError(
+                        f"Max retries (3) exceeded for project {project_id}. Reset with: DEL {failure_key}"
+                    )
+
+                # Register the project lock early so the spawner gets worker_id before
+                # the image build. Ownership itself is already written, above; this is
+                # the separate fact that this worker is the one holding the workspace.
+                held_project_id = await self._acquire_workspace_lock(worker_id, project_id)
+        except Exception as exc:
+            # Acquisition is the last thing in the block, so this is a worker
+            # that took nothing — and the release path is asked, not assumed,
+            # rather than trusting that reading to stay true.
+            await self._release_workspace_lock(worker_id, held_project_id)
+            await self._reject_worker(worker_id, exc)
+            raise
+
         if not is_qa_worker:
-            existing_worker = await self._check_project_lock(project_id)
-            if existing_worker:
-                raise RuntimeError(f"Project {project_id} already has active worker {existing_worker}")
-
-            failure_key = f"workspace:{project_id}:failure_count"
-            failure_count = int(await self.redis.get(failure_key) or 0)
-
-            if failure_count >= 3:
-                raise RuntimeError(f"Max retries (3) exceeded for project {project_id}. Reset with: DEL {failure_key}")
-
-            # Register the project lock early so the spawner gets worker_id before
-            # the image build. Ownership itself is already written, above.
-            await self.redis.sadd("workspace:active_projects", project_id)
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.BUILDING})
 
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
@@ -850,10 +922,12 @@ class WorkerManager:
                 # that has to improvise. Say it failed.
                 await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
                 await self.redis.set(f"worker:error:{worker_id}", str(exc))
-            # Early lock was registered — clean it up on failure. A QA executor
-            # took no lock and must not release a developer worker's.
+            # Early lock was registered — clean it up on failure, reading the
+            # holder fact rather than assuming it, and before the metadata that
+            # holds it is deleted. A QA executor took no lock and must not
+            # release a developer worker's.
             if not is_qa_worker:
-                await self.redis.srem("workspace:active_projects", project_id)
+                await self._release_workspace_lock(worker_id, held_project_id)
                 await self.redis.delete(
                     f"worker:status:{worker_id}",
                     f"worker:meta:{worker_id}",

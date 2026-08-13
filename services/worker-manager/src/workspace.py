@@ -11,6 +11,16 @@ WORKER_OWNER = "1000:1000"
 # with the container: a QA run has no repository and leaves nothing behind.
 QA_WORKSPACE_PREFIX = "qa-"
 
+# The per-worker record of what a worker actually acquired: the project whose
+# workspace lock it holds, as a field of `worker:meta:<worker_id>`. It is a
+# different fact from ownership. Ownership says who a worker belonged to and is
+# stamped before anything can be created, so a worker that dies immediately is
+# still attributable; it is descriptive and says nothing about the mutex. This
+# field is written only by the SADD that took the lock, and it is the only thing
+# a release path may read. A worker that never acquired releases nothing,
+# however complete its ownership looks.
+WORKSPACE_LOCK_FIELD = "workspace_lock"
+
 
 def _resolve_direct_workspace_child(base_path: str, entry_id: str) -> Path:
     """Resolve one workspace entry and refuse paths outside its configured root."""
