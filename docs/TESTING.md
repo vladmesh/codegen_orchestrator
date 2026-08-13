@@ -27,7 +27,7 @@ make test-service SERVICE=api
 # Integration (Docker Compose, full stack)
 make test-integration          # All (auto-discovers docker/test/integration/*.yml)
 make test-integration-backend  # Backend tests without nested Docker
-make test-integration-backend-dind  # Worker-container tests; manual workflow only
+make test-integration-backend-dind  # Worker-container tests; CI runs these on pushes to main
 
 # Live pipeline (real services, no LLM — structured 3-tier)
 make test-live-smoke           # Scaffold phase only (~30s)
@@ -128,7 +128,10 @@ The backend integration suite (`docker/test/integration/backend.yml`) runs the A
 LangGraph paths that do not create worker containers. It runs on relevant pull requests.
 
 `docker/test/integration/backend-dind.yml` covers worker-container creation and execution with
-Docker-in-Docker. It remains manual because GitHub's nested daemon is not a reliable required gate.
+Docker-in-Docker. `.github/workflows/backend-integration.yml` runs it on every push to `main` and on
+hand dispatch; it stays out of pull requests, where a privileged nested-daemon suite costs more than
+it protects. It is a separate workflow from `Required CI Gate`, so it reports on `main` rather than
+blocking a merge.
 Until secretary-774 supplies host-side gates with a real Docker socket, worker-path coverage comes
 from `make test-live-engineering` (`tests/live/test_pipeline_engineering.py`). Use
 `make test-live-pipeline` for the broader scaffold, engineering and deploy path. The default

@@ -1,6 +1,12 @@
 name: Backend Docker-in-Docker Integration
 
 on:
+  # Every push to main runs this suite: it is the exact SHA a release is cut from,
+  # and worker ownership and run evidence are only proved against a real daemon here.
+  # Pull requests deliberately stay out — see docs/ci-gate-baseline.md.
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:

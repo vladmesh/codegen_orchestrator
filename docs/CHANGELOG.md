@@ -2,6 +2,17 @@
 
 ## 2026-08-13
 
+- The backend Docker-in-Docker suite runs on every push to `main`. The worker-ownership,
+  run-ownership-propagation and run-evidence-by-label tests are the only real-daemon proof that a
+  dead, unsampled worker is still attributable and that a run-scoped query excludes its neighbour,
+  and they only ran when someone remembered to dispatch them. `backend-integration.yml` now also
+  triggers on pushes to `main`; it stays dispatchable by hand and stays out of pull requests, where
+  a privileged nested-daemon suite costs more than it protects. Its job and test step remain
+  unconditional and are not advisory, so the run is red when the suite fails and cannot go green by
+  skipping. It is a separate workflow from `Required CI Gate`, so it reports on `main` and does not
+  block a merge — see `docs/ci-gate-baseline.md` for what changing that would take. The CI contract
+  asserts the trigger set, the branch and the non-advisory shape.
+
 - Whoever removes a worker captures its ending first. Before `delete_worker` removes a worker's
   container it reads that container's exit code, a bounded and redacted log tail, its image, its
   agent type and the host directory its transcript was retained in, and writes them to

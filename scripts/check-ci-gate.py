@@ -34,8 +34,11 @@ SERVICE_COMPOSE_ROOTS = {
     "worker-manager": "services/worker-manager",
 }
 # Integration compose files that deliberately stay out of the PR matrix.
-MANUAL_ONLY_INTEGRATION_SUITES = {
-    "backend-dind": "Docker-in-Docker suite, dispatched by hand via backend-integration.yml",
+OUT_OF_PR_INTEGRATION_SUITES = {
+    "backend-dind": (
+        "Docker-in-Docker suite, run by backend-integration.yml on pushes to main and "
+        "dispatchable by hand; too expensive to run on every pull request"
+    ),
 }
 
 # --- Test suite coverage ----------------------------------------------------
@@ -506,7 +509,7 @@ def claimed_test_paths(jobs: dict[str, Any]) -> dict[str, str]:
             claims.setdefault(resolved, f"make test-service SERVICE={service}")
 
     integration_suites = matrix_values(require_job(jobs, "test-integration"), "suite")
-    for suite in integration_suites | set(MANUAL_ONLY_INTEGRATION_SUITES):
+    for suite in integration_suites | set(OUT_OF_PR_INTEGRATION_SUITES):
         target = f"make test-integration-{suite}"
         compose_file = INTEGRATION_COMPOSE_DIR / f"{suite}.yml"
         for path in pytest_paths(compose_file):
@@ -835,14 +838,14 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
         != "needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'"
     ):
         fail("integration tests must require fast-checks and ci-contract")
-    expected_suites = compose_suites(INTEGRATION_COMPOSE_DIR) - set(MANUAL_ONLY_INTEGRATION_SUITES)
+    expected_suites = compose_suites(INTEGRATION_COMPOSE_DIR) - set(OUT_OF_PR_INTEGRATION_SUITES)
     if matrix_values(job, "suite") != expected_suites:
         fail("integration matrix does not match docker/test/integration")
-    for suite, reason in MANUAL_ONLY_INTEGRATION_SUITES.items():
+    for suite, reason in OUT_OF_PR_INTEGRATION_SUITES.items():
         if not (INTEGRATION_COMPOSE_DIR / f"{suite}.yml").is_file():
-            fail(f"MANUAL_ONLY_INTEGRATION_SUITES names {suite}, which has no compose file")
+            fail(f"OUT_OF_PR_INTEGRATION_SUITES names {suite}, which has no compose file")
         if not reason.strip():
-            fail(f"MANUAL_ONLY_INTEGRATION_SUITES entry {suite} has no reason")
+            fail(f"OUT_OF_PR_INTEGRATION_SUITES entry {suite} has no reason")
     job_if = job.get("if", "")
     if "run-integration-tests" in job_if:
         fail("integration tests must not depend on a PR label")
@@ -875,33 +878,51 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
             fail(f"backend integration matrix is missing trigger {output}")
 
 
-def assert_manual_backend_integration() -> None:
+def assert_backend_dind_integration() -> None:
+    """The Docker-in-Docker suite runs itself on every push to main.
+
+    It is out of the pull request matrix on cost grounds, so a push to main is the
+    only automatic run it gets: that trigger has to be in the tree, unconditional,
+    and unable to report green by skipping. Hand dispatch stays, because the suite
+    is also the thing an engineer reruns while chasing a worker-ownership failure.
+    """
     if not BACKEND_INTEGRATION_WORKFLOW.is_file():
-        fail("manual backend integration workflow is missing")
+        fail("backend Docker-in-Docker workflow is missing")
     with BACKEND_INTEGRATION_WORKFLOW.open() as f:
         workflow = yaml.safe_load(f)
     if not isinstance(workflow, dict):
-        fail("manual backend integration workflow root is not a mapping")
-    if set(workflow.get(True, {})) != {"workflow_dispatch"}:
-        fail("backend integration workflow must only run when manually dispatched")
+        fail("backend Docker-in-Docker workflow root is not a mapping")
+    triggers = workflow.get(True, {})
+    if set(triggers) != {"push", "workflow_dispatch"}:
+        fail(
+            "backend Docker-in-Docker workflow must run on pushes and stay dispatchable "
+            "by hand, and on nothing else"
+        )
+    push = triggers.get("push") or {}
+    if set(push) != {"branches"} or push["branches"] != ["main"]:
+        fail("backend Docker-in-Docker workflow must run on every push to main and no other push")
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict):
-        fail("manual backend integration workflow has no jobs mapping")
+        fail("backend Docker-in-Docker workflow has no jobs mapping")
     job = require_job(jobs, "test-backend-dind-integration")
     if job.get("if"):
-        fail("manual backend integration job must not be conditional")
+        fail("backend Docker-in-Docker job must not be conditional")
+    if job.get("continue-on-error"):
+        fail("backend Docker-in-Docker job must fail its run, not report advisory")
     run_step = step_by_id(job, "integration-tests")
     if run_step.get("run") != "make test-integration-backend-dind":
-        fail("manual backend integration workflow must run the Docker-in-Docker suite")
+        fail("backend Docker-in-Docker workflow must run the Docker-in-Docker suite")
     if run_step.get("if"):
-        fail("manual backend integration test step must not be conditional")
+        fail("backend Docker-in-Docker test step must not be conditional")
+    if run_step.get("continue-on-error"):
+        fail("backend Docker-in-Docker test step must fail the job it belongs to")
     assert_step = step_by_name(job, "Assert backend Docker-in-Docker integration test ran")
     if "always()" not in assert_step.get("if", ""):
-        fail("manual backend integration assertion must run with always()")
+        fail("backend Docker-in-Docker assertion must run with always()")
     if "steps.integration-tests.outcome" not in assert_step.get("run", ""):
-        fail("manual backend integration assertion must inspect the test outcome")
+        fail("backend Docker-in-Docker assertion must inspect the test outcome")
     if SIMULATED_REGISTRY_FAILURE_INPUT in BACKEND_INTEGRATION_WORKFLOW.read_text():
-        fail("registry retry simulation must not skip the manual backend suite")
+        fail("registry retry simulation must not skip the backend Docker-in-Docker suite")
 
 
 def assert_buildx_retry(job: dict[str, Any]) -> None:
@@ -997,7 +1018,7 @@ def main() -> None:
     assert_integration_tests(jobs)
     assert_test_suite_coverage(jobs)
     assert_pinned_base_images()
-    assert_manual_backend_integration()
+    assert_backend_dind_integration()
     assert_template_compatibility(jobs)
     assert_gate(jobs)
     print("CI gate contract ok")
