@@ -30,6 +30,7 @@ import pytest
 import structlog
 
 from shared import live_harness_cleanup
+from shared.contracts.acceptance import parse_health_only_criteria
 from shared.contracts.dto.project import ServiceModule
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.service_ports import (
@@ -1274,6 +1275,51 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
     assert ctx["repo_id"] == "repo-1"
     assert ctx["task_title"] == pipeline_helpers.LLM_BACKEND_TASK_TITLE
     assert ctx["task_description"] == pipeline_helpers.LLM_BACKEND_TASK_DESCRIPTION
+
+
+@pytest.mark.asyncio
+async def test_llm_matrix_project_selects_worker_and_forces_exploratory_qa(monkeypatch, tmp_path):
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        requests.append((request.method, request.url.path, body))
+        if request.url.path == "/api/projects/":
+            return httpx.Response(201, json={"id": "project", "slug": "matrix-slug"})
+        if request.method == "POST":
+            return httpx.Response(201, json={"id": "repo-1"})
+        return httpx.Response(200, json={"id": "repo-1", **body})
+
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    monkeypatch.setenv("LIVE_WORKER_AGENT_TYPE", "codex")
+    monkeypatch.setenv("LIVE_LLM_QA", "1")
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        ctx = await pipeline_helpers.create_llm_backend_project(api, api)
+
+    assert requests[0][2]["config"]["agent_type"] == "codex"
+    assert requests[2] == (
+        "PATCH",
+        "/api/repositories/repo-1",
+        {"acceptance_criteria": pipeline_helpers.LLM_QA_ACCEPTANCE_CRITERIA},
+    )
+    assert ctx["agent_type"] == "codex"
+    assert ctx["qa_requires_executor"] is True
+    assert parse_health_only_criteria(pipeline_helpers.LLM_QA_ACCEPTANCE_CRITERIA) is None
+
+
+def test_llm_matrix_rejects_unknown_worker(monkeypatch):
+    monkeypatch.setenv("LIVE_WORKER_AGENT_TYPE", "mystery")
+
+    with pytest.raises(RuntimeError, match="LIVE_WORKER_AGENT_TYPE"):
+        pipeline_helpers.live_worker_agent_type()
+
+
+def test_configured_qa_executor_is_read_from_live_service(monkeypatch):
+    completed = subprocess.CompletedProcess([], 0, stdout="codex\n", stderr="")
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", lambda *args, **kwargs: completed)
+
+    assert pipeline_helpers.configured_qa_executor() == "codex"
 
 
 @pytest.mark.asyncio
