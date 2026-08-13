@@ -1687,6 +1687,41 @@ def dump_debug(ctx: dict, test_name: str) -> None:
         lines.append("- none captured")
     lines.extend([""])
 
+    # Dynamic developer containers are removed by cleanup immediately after the
+    # fixture resumes. Capture their final stdout while ownership can still be
+    # resolved, otherwise an exit_code is all the post-mortem retains.
+    if ctx.get("manifest") is not None:
+        try:
+            capture_owned_workers(ctx)
+            for resource in ctx["manifest"].resources:
+                if resource.kind != "worker":
+                    continue
+                container = resource.metadata.get("container") or find_worker_container(
+                    resource.identifier
+                )
+                if not container:
+                    continue
+                result = subprocess.run(
+                    ["docker", "logs", "--tail=200", container],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=ORCHESTRATOR_ROOT,
+                )
+                output = "\n".join(part for part in (result.stdout, result.stderr) if part.strip())
+                if output:
+                    lines.extend(
+                        [
+                            f"## dynamic worker {resource.identifier} logs (last 200)",
+                            "```",
+                            output.strip()[-12000:],
+                            "```",
+                            "",
+                        ]
+                    )
+        except Exception as error:
+            lines.extend([f"- dynamic worker log capture failed: {type(error).__name__}", ""])
+
     # Collect docker logs from relevant services
     for service in ["scaffolder", "engineering-worker", "scheduler", "deploy-worker"]:
         try:

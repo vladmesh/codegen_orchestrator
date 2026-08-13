@@ -1124,6 +1124,29 @@ def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
     assert '"failed_steps": ["pytest"]' in text
 
 
+def test_debug_dump_captures_owned_dynamic_worker_before_cleanup(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    manifest = OwnershipManifest("project-1")
+    manifest.own("worker", "dev-project-1", container="worker-dev-project-1")
+    monkeypatch.setattr(pipeline_helpers, "capture_owned_workers", lambda ctx: None)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        stdout = "agent auth failed" if command[:2] == ["docker", "logs"] else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", run)
+
+    pipeline_helpers.dump_debug({"project_id": "project-1", "manifest": manifest}, "dynamic-worker")
+
+    artifact = next((tmp_path / "docs" / "e2e_results").glob("debug-dynamic-worker-*.md"))
+    text = artifact.read_text()
+    assert "dynamic worker dev-project-1 logs" in text
+    assert "agent auth failed" in text
+    assert ["docker", "logs", "--tail=200", "worker-dev-project-1"] in commands
+
+
 @pytest.mark.asyncio
 async def test_cleanup_guard_runs_when_qa_fails_before_fixture_yield(monkeypatch):
     monkeypatch.delenv(LIVE_NO_CLEANUP_ENV, raising=False)
