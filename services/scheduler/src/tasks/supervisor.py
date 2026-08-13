@@ -26,7 +26,11 @@ from shared.contracts.bot_access import (
     project_bot_audience,
 )
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.project import ProjectDTO
+from shared.contracts.dto.project import (
+    ProjectDTO,
+    ProjectPredatesRunOwnership,
+    require_initiating_run,
+)
 from shared.contracts.dto.qa_handoff import (
     QA_DISPATCHED_AT_KEY,
     QA_HANDOFF_KEY,
@@ -896,6 +900,23 @@ async def _handle_deploy_success_story(
         )
         return False
 
+    # A project that predates run ownership names no run, so its QA executor
+    # could not be attributed once it dies. Fail the story rather than create an
+    # unownable worker — the same refusal the API gives an admin.
+    try:
+        initiating_run_id = require_initiating_run(project)
+    except ProjectPredatesRunOwnership as exc:
+        log.error(
+            "qa_handoff_project_has_no_initiating_run", project_id=project_id, reason=str(exc)
+        )
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            story_id,
+            project_id,
+            "deploy succeeded but the project names no initiating run — cannot run QA",
+        )
+        return False
+
     grant_needed = _temporary_access_is_needed(project, result, log)
     if grant_needed and not head_sha:
         log.error("deploy_success_head_sha_missing_for_access_grant", run_id=run.id)
@@ -920,7 +941,7 @@ async def _handle_deploy_success_story(
     qa_message = QAMessage(
         story_id=story_id,
         project_id=project_id,
-        initiating_run_id=project.initiating_run_id,
+        initiating_run_id=initiating_run_id,
         telegram_chat_id=qa_recipient.telegram_chat_id,
         deployed_url=deployed_url,
         application_id=application_id,
@@ -1081,6 +1102,20 @@ async def _handle_deploy_code_fix(
         await _notify_admin_failure(run.id, project_id, "deploy fix needs a project that is gone")
         return False
 
+    # Same refusal as the QA handoff: no initiating run, no ownable worker, so
+    # the fix attempt is not started at all rather than started unattributable.
+    try:
+        initiating_run_id = require_initiating_run(project)
+    except ProjectPredatesRunOwnership as exc:
+        log.error(
+            "deploy_fix_project_has_no_initiating_run", project_id=project_id, reason=str(exc)
+        )
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            run.id, project_id, "deploy fix needs a project that names its initiating run"
+        )
+        return False
+
     attempt = result.deploy_fix_attempt
     if attempt >= _max_deploy_fix_attempts():
         log.warning(
@@ -1118,7 +1153,7 @@ async def _handle_deploy_code_fix(
     fix_msg = EngineeringMessage(
         task_id=fix_task_id,
         project_id=project_id,
-        initiating_run_id=project.initiating_run_id,
+        initiating_run_id=initiating_run_id,
         telegram_chat_id=fix_recipient.telegram_chat_id,
         action="fix",
         description=(

@@ -17,6 +17,7 @@ from ..dependencies import get_redis_client
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
+from ._ownership import initiating_run_or_conflict
 from ._recipients import resolve_project_chat_id
 from ._task_helpers import create_status_event, get_task, to_read, validate_transition
 
@@ -216,6 +217,9 @@ async def spawn_worker(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Project {task.project_id} not found",
         )
+    # Refused here, before the task is moved or a Run row exists: a project
+    # that predates run ownership must not leave a half-started attempt behind.
+    initiating_run_id = initiating_run_or_conflict(project)
 
     # Transition to IN_DEV if needed
     startable = {TaskStatus.BACKLOG, TaskStatus.TODO}
@@ -255,7 +259,7 @@ async def spawn_worker(
     msg = EngineeringMessage(
         task_id=run_id,
         project_id=str(task.project_id),
-        initiating_run_id=project.initiating_run_id,
+        initiating_run_id=initiating_run_id,
         telegram_chat_id=await resolve_project_chat_id(
             db,
             task.project_id,

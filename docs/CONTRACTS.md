@@ -1652,6 +1652,8 @@ class StatusWorkerResponse(BaseModel):
 WorkerResponse = CreateWorkerResponse | DeleteWorkerResponse | StatusWorkerResponse
 ```
 
+**`Project.initiating_run_id` and rows that predate it.** The column is nullable and the migration that added it does **not** backfill. A project created before run ownership existed was created by a run nobody recorded, and no value would be true: a project id, a minted id or a shared constant would all reach a container as `com.codegen.run.id` and make two unrelated later runs on that project answer the same run-scoped label query. So absence stays absent and is refused where a worker would be created. `require_initiating_run` (`shared/contracts/dto/project.py`) is the single read; it raises `ProjectPredatesRunOwnership`. The compatibility consequence: such a project can still be read, listed and archived, but it cannot dispatch engineering or QA work — 409 from `spawn-worker` and `run-e2e`, a skipped task in the dispatcher, a failed story in the deploy supervisor — until it is recreated by a run that names itself. Nothing assigns the run afterwards: ownership has one writer, at creation.
+
 > **Note:** Message passing goes **directly** to worker queues (`worker:{id}:input`, etc.),
 > NOT through worker-manager. The manager handles only container lifecycle.
 

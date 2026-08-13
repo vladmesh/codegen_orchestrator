@@ -299,6 +299,44 @@ class TestSuperviseDeployingStories:
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_success_on_a_project_without_an_initiating_run_fails_story(
+        self, api_client, redis_client
+    ):
+        """A project that predates run ownership gets no QA executor at all.
+
+        Its initiating run was never recorded, and nothing may be substituted for
+        it: a project id or a minted id would reach the executor's
+        `com.codegen.run.id` label as if it were the run that asked for the work.
+        So the handoff fails visibly instead, leaving no QA run and no message.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SUCCESS.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+            },
+        )
+        api_client.get_project.return_value = _make_project(initiating_run_id=None)
+        api_client.fail_story.return_value = {}
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        mock_notify.assert_called_once()
+        api_client.transition_story.assert_not_called()
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_success_without_application_id_fails_story(self, api_client, redis_client):
         """A success missing application_id can't reach QA → visible failure, no state change.
 

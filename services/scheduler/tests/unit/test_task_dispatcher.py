@@ -210,6 +210,39 @@ class TestDispatchTodoTasks:
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_legacy_project_without_an_initiating_run_is_not_dispatched(
+        self, api_client, redis_client
+    ):
+        """A project written before run ownership existed cannot own a worker.
+
+        Its initiating run was never recorded and cannot be reconstructed, so the
+        dispatcher refuses instead of substituting something that is not a run —
+        a project id, a fresh id — which would then be stamped on the container as
+        `com.codegen.run.id` and make unrelated runs answer the same label query.
+        """
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _task(
+                id="task-1",
+                title="Add user model",
+                description="Create User SQLAlchemy model",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id=None,
+                blocked_by_task_id=None,
+                status="todo",
+            )
+        ]
+        api_client.get_project.return_value.initiating_run_id = None
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 0
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_dispatches_unblocked_task(self, api_client, redis_client):
         """Task with no blocker gets a run created and published."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks

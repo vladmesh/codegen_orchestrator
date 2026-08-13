@@ -20,16 +20,20 @@ COLUMN = "initiating_run_id"
 
 
 def upgrade() -> None:
-    """Add the column, then make it required.
+    """Add the column. Rows that predate it keep NULL.
 
-    Rows that predate ownership have no run to name — the runs that made them
-    were never recorded. They are stamped with their own project id so the
-    column can be NOT NULL, which is what makes every project created from here
-    on carry a run supplied by whoever started it.
+    A project created before this migration was created by a run nobody wrote
+    down, and no value here can recover it. Backfilling one — the project id,
+    a minted id, a constant — would put a value that is not a run into
+    `com.codegen.run.id` on every worker such a project spawns from then on,
+    and two unrelated later runs on that project would answer the same
+    run-scoped label query. So the column is nullable and legacy rows stay
+    empty: absence is representable, and it is refused at the point where a
+    worker would be created (`require_initiating_run`) rather than papered
+    over. Every project created from here on carries a run supplied by
+    whoever started it, because `ProjectCreate.initiating_run_id` requires it.
     """
     op.add_column(TABLE, sa.Column(COLUMN, sa.String(length=64), nullable=True))
-    op.execute("UPDATE projects SET initiating_run_id = id::text WHERE initiating_run_id IS NULL")
-    op.alter_column(TABLE, COLUMN, existing_type=sa.String(length=64), nullable=False)
     op.create_index(f"ix_{TABLE}_{COLUMN}", TABLE, [COLUMN])
 
 

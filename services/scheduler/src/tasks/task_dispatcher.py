@@ -18,7 +18,12 @@ import uuid
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import (
+    ProjectDTO,
+    ProjectPredatesRunOwnership,
+    ProjectStatus,
+    require_initiating_run,
+)
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
@@ -259,6 +264,32 @@ async def _transition_to_in_dev(
     return True
 
 
+async def _project_and_initiating_run(
+    api_client: SchedulerAPIClient, project_id: str, log: structlog.BoundLogger
+) -> tuple[ProjectDTO, str] | None:
+    """The project and the run that will own its worker, or None to skip the task.
+
+    Both reasons to skip say the same thing — there is nothing to attribute the
+    worker to — so they are answered together. A project written before run
+    ownership existed names no run and none can be reconstructed for it, so it is
+    skipped loudly rather than dispatched into a worker nobody could attribute
+    after it dies.
+    """
+    project = await api_client.get_project(project_id)
+    if project is None:
+        log.error("task_skipped_project_missing", project_id=project_id)
+        return None
+    try:
+        return project, require_initiating_run(project)
+    except ProjectPredatesRunOwnership as exc:
+        log.error(
+            "task_skipped_project_has_no_initiating_run",
+            project_id=project_id,
+            reason=str(exc),
+        )
+        return None
+
+
 async def dispatch_todo_tasks(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -293,10 +324,10 @@ async def dispatch_todo_tasks(
         # The project is read once and kept: it decides whether this task may be
         # dispatched at all, and it carries the run that initiated the work,
         # which the message below has to hand on to the worker.
-        project = await api_client.get_project(project_id)
-        if project is None:
-            log.error("task_skipped_project_missing", project_id=project_id)
+        resolved = await _project_and_initiating_run(api_client, project_id, log)
+        if resolved is None:
             continue
+        project, initiating_run_id = resolved
 
         # Guard: don't dispatch until scaffold is complete and workspace is ready
         if project.status == ProjectStatus.DRAFT:
@@ -346,7 +377,7 @@ async def dispatch_todo_tasks(
             description = context + description
 
         run_id = await _create_and_publish_run(
-            api_client, redis_client, task, description, project.initiating_run_id, log
+            api_client, redis_client, task, description, initiating_run_id, log
         )
         if run_id is None:
             continue

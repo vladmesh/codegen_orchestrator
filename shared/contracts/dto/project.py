@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -110,5 +110,44 @@ class ProjectDTO(TimestampedDTO):
     owner_id: int
     project_spec: dict | None = None
     # The run that initiated this project's work. Consumers read it from here to
-    # stamp ownership on the workers they create.
-    initiating_run_id: str
+    # stamp ownership on the workers they create. `None` only for rows that
+    # predate run ownership — read it through `require_initiating_run`.
+    initiating_run_id: str | None = None
+
+
+class ProjectPredatesRunOwnership(RuntimeError):
+    """A project has no initiating run, so no worker may be created for it.
+
+    Raised only for rows written before run ownership existed. Their initiating
+    run was never recorded, so there is no truthful value to stamp on a worker:
+    a project id, a freshly minted id or a shared constant would each be a
+    non-run answering `com.codegen.run.id`, and would make unrelated runs on
+    that project indistinguishable under a run-scoped label query.
+
+    The compatibility consequence is deliberate and narrow: such a project can
+    still be read, listed and archived, but it cannot dispatch engineering or QA
+    work until it is recreated by a run that names itself. Nothing assigns the
+    run afterwards — ownership has one writer, at creation.
+    """
+
+
+class _HasInitiatingRun(Protocol):
+    id: Any
+    initiating_run_id: str | None
+
+
+def require_initiating_run(project: _HasInitiatingRun) -> str:
+    """The run that owns every worker created for `project`.
+
+    The single read of `initiating_run_id` on the producer side, so the refusal
+    is one rule in one place rather than a check each producer might forget.
+    Works on both the ORM row and `ProjectDTO`.
+    """
+    run_id = project.initiating_run_id
+    if not run_id:
+        raise ProjectPredatesRunOwnership(
+            f"Project {project.id} has no initiating run: it predates run ownership. "
+            "Workers cannot be created for it, because they could not be attributed "
+            "to any run once they die. Recreate the project from the run that needs it."
+        )
+    return run_id

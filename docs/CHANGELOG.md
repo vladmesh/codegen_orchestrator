@@ -33,6 +33,15 @@
 - The live harness names its run before it creates anything: `OwnershipManifest.run_id` is a fresh
   `live-…` identity (no longer the project id), it is what the project is created with, and the
   manifest file under `.live-manifests/` is named after it.
+- Projects that predate run ownership name no run and are never given one. The migration adding
+  `Project.initiating_run_id` does not backfill: the run that created such a project was never
+  recorded, and any substitute — its project id, a minted id, a shared constant — would be stamped
+  on its future workers as `com.codegen.run.id`, so a query scoped to one run would select workers
+  belonging to another. The column is nullable, absence is refused at the one place it is read
+  (`require_initiating_run`, raising `ProjectPredatesRunOwnership`), and nothing fills it in later.
+  Compatibility impact: such a project stays readable, listable and archivable but cannot dispatch
+  engineering or QA work — 409 from `spawn-worker` and `run-e2e`, a skipped task in the dispatcher,
+  a failed story in the deploy supervisor — until it is recreated by a run that names itself.
 
 - Worker base images are one immutable release chain keyed by the git SHA. Every green commit on
   `main` builds common and then the claude, codex and factory images from that exact common, and
