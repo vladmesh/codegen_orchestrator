@@ -173,3 +173,13 @@ jobs:
             printf '\n===== worker result contract failures (last 24h) =====\n'
             "${compose[@]}" logs --since 24h engineering-worker \
               | grep 'worker_result_invalid' || true
+
+            printf '\n===== remaining worker containers =====\n'
+            docker ps -a --filter label=com.codegen.type=worker \
+              --format '{{.ID}} {{.Names}} {{.Status}}'
+            docker ps -a -q --filter label=com.codegen.type=worker \
+              | while IFS= read -r container_id; do
+                  [ -n "$container_id" ] || continue
+                  printf '\n--- %s ---\n' "$container_id"
+                  docker logs --tail=200 "$container_id" 2>&1 || true
+                done
