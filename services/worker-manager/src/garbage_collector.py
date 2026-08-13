@@ -24,6 +24,17 @@ logger = structlog.get_logger()
 # Statuses that indicate the worker is no longer alive and can be cleaned up
 _TERMINAL_STATUSES = frozenset({WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED})
 
+# Docker container states in which the container is still alive. An orphan that
+# is still alive is not obviously garbage: Redis is the only thing this sweep
+# knows a worker by, so when Redis has lost `worker:status:*` a live container is
+# exactly what must not be taken away from a run that is still using it.
+_LIVE_CONTAINER_STATES = frozenset({"running", "paused", "restarting"})
+
+
+def _is_live(container) -> bool:
+    """True while the container is still executing, however Docker phrases it."""
+    return container.status in _LIVE_CONTAINER_STATES
+
 
 async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientWrapper, *, delete_worker_fn) -> None:
     """Find and remove orphaned containers, networks, and workspaces.
@@ -52,16 +63,30 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
 
     # Collect live container IDs for reverse check
     live_container_ids: set[str] = set()
+    # Worker ids this sweep refuses to touch although Redis does not know them,
+    # because something of theirs is still alive. Everything the sweep tears down
+    # alongside a worker is keyed on the same id and is protected with it.
+    protected_ids: set[str] = set()
     for container in containers:
         worker_id = container.labels.get(WorkerLabel.ID.value)
-        if worker_id and worker_id not in known_ids:
-            logger.info("orphan_gc_removing_container", worker_id=worker_id)
-            try:
-                await delete_worker_fn(worker_id)
-            except Exception as e:
-                logger.error("orphan_gc_delete_worker_failed", worker_id=worker_id, error=str(e))
-        elif worker_id:
+        if not worker_id:
+            continue
+        if worker_id in known_ids:
             live_container_ids.add(worker_id)
+            continue
+        if _is_live(container):
+            protected_ids.add(worker_id)
+            logger.info(
+                "orphan_gc_keeping_live_container",
+                worker_id=worker_id,
+                container_state=container.status,
+            )
+            continue
+        logger.info("orphan_gc_removing_container", worker_id=worker_id)
+        try:
+            await delete_worker_fn(worker_id)
+        except Exception as e:
+            logger.error("orphan_gc_delete_worker_failed", worker_id=worker_id, error=str(e))
 
     # --- Stale Redis entries (Redis says alive, but no container) ---
     for worker_id in known_ids:
@@ -96,9 +121,20 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
 
     for proxy in proxies:
         worker_id = proxy.labels.get(WorkerLabel.ID.value)
-        if worker_id and worker_id not in known_ids:
-            logger.info("orphan_gc_removing_qa_egress_proxy", worker_id=worker_id)
-            await qa_egress.tear_down(docker, worker_id)
+        if not worker_id or worker_id in known_ids:
+            continue
+        if worker_id in protected_ids or _is_live(proxy):
+            # Either the proxy itself is still serving, or its worker is: taking
+            # the proxy would cut the egress leg out from under a live QA run.
+            protected_ids.add(worker_id)
+            logger.info(
+                "orphan_gc_keeping_qa_egress_proxy",
+                worker_id=worker_id,
+                container_state=proxy.status,
+            )
+            continue
+        logger.info("orphan_gc_removing_qa_egress_proxy", worker_id=worker_id)
+        await qa_egress.tear_down(docker, worker_id)
 
     # --- Orphaned networks ---
     try:
@@ -111,6 +147,9 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
         name = network.name
         if name.startswith("dev_proj_"):
             worker_id = name[len("dev_proj_") :]
+            if worker_id in protected_ids:
+                logger.info("orphan_gc_keeping_network", network=name, worker_id=worker_id)
+                continue
             if worker_id not in known_ids:
                 logger.info("orphan_gc_removing_network", network=name, worker_id=worker_id)
                 try:

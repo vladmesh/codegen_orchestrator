@@ -587,6 +587,125 @@ async def test_gc_skips_known_workers():
     mock_rm_ws.assert_not_called()
 
 
+def _labelled_container(worker_id: str, status: str, type_label: str = "worker"):
+    """A container as the sweep sees it: labels plus the state Docker reports."""
+    container = MagicMock()
+    container.labels = {
+        "com.codegen.type": type_label,
+        "com.codegen.worker.id": worker_id,
+    }
+    container.status = status
+    return container
+
+
+@pytest.mark.asyncio
+async def test_gc_keeps_running_orphan_and_reclaims_exited_one():
+    """Redis knowing nothing is not evidence of garbage: a live container survives the sweep."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+
+    wrapper.list_containers = AsyncMock(
+        return_value=[
+            _labelled_container("running-orphan", "running"),
+            _labelled_container("exited-orphan", "exited"),
+        ]
+    )
+    wrapper.list_networks = AsyncMock(return_value=[])
+
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    manager.delete_worker = AsyncMock()
+
+    with patch("os.listdir", return_value=[]):
+        await manager.garbage_collect_orphaned_resources()
+
+    assert [call.args[0] for call in manager.delete_worker.await_args_list] == ["exited-orphan"]
+
+
+@pytest.mark.asyncio
+async def test_gc_keeps_network_and_proxy_of_a_running_orphan():
+    """What the sweep tears down alongside a worker is protected with that worker."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+
+    async def _list_containers(filters=None, all=False):
+        label = filters["label"]
+        if label.endswith("=worker"):
+            return [_labelled_container("running-orphan", "running")]
+        return [_labelled_container("running-orphan", "exited", type_label="qa-egress-proxy")]
+
+    wrapper.list_containers = AsyncMock(side_effect=_list_containers)
+
+    orphan_net = MagicMock()
+    orphan_net.name = "dev_proj_running-orphan"
+    wrapper.list_networks = AsyncMock(return_value=[orphan_net])
+
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    manager.delete_worker = AsyncMock()
+
+    with (
+        patch("os.listdir", return_value=[]),
+        patch("src.garbage_collector.qa_egress.tear_down", new=AsyncMock()) as mock_tear_down,
+    ):
+        await manager.garbage_collect_orphaned_resources()
+
+    manager.delete_worker.assert_not_awaited()
+    mock_tear_down.assert_not_awaited()
+    wrapper.remove_network.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gc_keeps_a_running_qa_egress_proxy():
+    """A proxy still serving is a live container too, whatever Redis knows."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+
+    async def _list_containers(filters=None, all=False):
+        label = filters["label"]
+        if label.endswith("=worker"):
+            return []
+        return [_labelled_container("proxy-orphan", "running", type_label="qa-egress-proxy")]
+
+    wrapper.list_containers = AsyncMock(side_effect=_list_containers)
+    wrapper.list_networks = AsyncMock(return_value=[])
+
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+    manager.delete_worker = AsyncMock()
+
+    with (
+        patch("os.listdir", return_value=[]),
+        patch("src.garbage_collector.qa_egress.tear_down", new=AsyncMock()) as mock_tear_down,
+    ):
+        await manager.garbage_collect_orphaned_resources()
+
+    mock_tear_down.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gc_still_tears_down_an_exited_orphan_proxy():
+    """The reclaim path is unchanged for anything that is no longer running."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+
+    async def _list_containers(filters=None, all=False):
+        label = filters["label"]
+        if label.endswith("=worker"):
+            return []
+        return [_labelled_container("proxy-orphan", "exited", type_label="qa-egress-proxy")]
+
+    wrapper.list_containers = AsyncMock(side_effect=_list_containers)
+    wrapper.list_networks = AsyncMock(return_value=[])
+
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("os.listdir", return_value=[]),
+        patch("src.garbage_collector.qa_egress.tear_down", new=AsyncMock()) as mock_tear_down,
+    ):
+        await manager.garbage_collect_orphaned_resources()
+
+    assert mock_tear_down.await_args.args[1] == "proxy-orphan"
+
+
 # --- Stale Worker Cleanup Tests ---
 
 
