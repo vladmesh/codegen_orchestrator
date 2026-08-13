@@ -1,6 +1,6 @@
 """Record the run that initiated a project's work
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: 7c19ab4de20f
 Revises: e8f9a0b1c2d3
 Create Date: 2026-08-13 15:10:00.000000
 """
@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "a1b2c3d4e5f6"
+revision: str = "7c19ab4de20f"
 down_revision: str | None = "e8f9a0b1c2d3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
