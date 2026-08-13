@@ -30,8 +30,14 @@ REDIS_STREAM_COMMANDS = "worker:commands"
 REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
 
 
-# Every worker is created for somebody; these tests are not about who.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
 
 
 @pytest.mark.integration
@@ -51,7 +57,7 @@ class TestDevEnvIntegration:
                 instructions="Test workspace",
                 allowed_commands=[],
                 capabilities=[],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -96,7 +102,7 @@ class TestDevEnvIntegration:
                 instructions="Test compose",
                 allowed_commands=[],
                 capabilities=[],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -157,7 +163,7 @@ class TestDevEnvIntegration:
                 instructions="Test delete",
                 allowed_commands=[],
                 capabilities=[],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )

@@ -10,6 +10,7 @@ This test extends Phase 4.5 (PO Worker) to test Developer Worker flow.
 import asyncio
 import json
 import time
+from uuid import uuid4
 
 import pytest
 from redis.asyncio import Redis
@@ -40,8 +41,14 @@ async def wait_for_stream_message(
     raise TimeoutError(f"No message on {stream} within {timeout}s")
 
 
-# Every worker is created for somebody; these tests are not about who.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
 
 
 class TestDeveloperWorkerMockAnthropic:
@@ -61,7 +68,7 @@ class TestDeveloperWorkerMockAnthropic:
                 api_key="test-key",
                 allowed_commands=[],
                 capabilities=["git"],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 env_vars={
                     "ANTHROPIC_BASE_URL": "http://172.30.0.40:8000",
                 },

@@ -78,8 +78,14 @@ async def wait_for_response(
 # --- Fixtures ---
 
 
-# Every worker is created for somebody; these tests are not about who.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
 
 
 @pytest.fixture
@@ -155,7 +161,7 @@ class TestWorkerLifecycle:
                 instructions="Smoke test worker. Do nothing.",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
             ),
         )
         await redis_client.xadd(WORKER_COMMANDS, {"data": command.model_dump_json()})

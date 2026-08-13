@@ -1,5 +1,6 @@
 import os
 import time
+from uuid import uuid4
 
 import pytest
 
@@ -15,8 +16,14 @@ from shared.redis.client import RedisStreamClient
 pytestmark = pytest.mark.asyncio
 
 
-# Every worker is created for somebody; these tests are not about who.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
 
 
 @pytest.fixture
@@ -87,7 +94,7 @@ async def test_claude_real_session_deterministic_answer(redis: RedisStreamClient
             host_claude_dir="/host-claude",
             allowed_commands=["*"],
             capabilities=[],
-            ownership=_OWNERSHIP,
+            ownership=_ownership(),
         ),
     )
     # Using raw xadd because CreateWorkerCommand might need to be wrapped or standardized
@@ -179,7 +186,7 @@ async def test_claude_real_session_memory(redis: RedisStreamClient, docker_clien
             host_claude_dir="/host-claude",
             allowed_commands=["*"],
             capabilities=[],
-            ownership=_OWNERSHIP,
+            ownership=_ownership(),
         ),
     )
     await redis.xadd("worker:commands", {"data": cmd.model_dump_json()})
@@ -273,7 +280,7 @@ async def test_factory_api_key_deterministic_answer(redis: RedisStreamClient, do
             env_vars={"FACTORY_API_KEY": os.getenv("FACTORY_API_KEY")},
             instructions="You are a helpful assistant.",
             capabilities=["git", "curl"],
-            ownership=_OWNERSHIP,
+            ownership=_ownership(),
             allowed_commands=["git", "curl", "droid"],
         ),
     )
@@ -344,7 +351,7 @@ async def test_factory_api_key_session_memory(redis: RedisStreamClient, docker_c
             instructions="You are a helpful assistant.",
             allowed_commands=["*"],
             capabilities=[],
-            ownership=_OWNERSHIP,
+            ownership=_ownership(),
         ),
     )
     await redis.xadd("worker:commands", {"data": cmd.model_dump_json()})

@@ -26,8 +26,14 @@ async def cleanup_worker(redis_client, worker_id: str | None):
     await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
 
 
-# Every worker is created for somebody; these tests are not about who.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
 
 
 @pytest.mark.integration
@@ -50,7 +56,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -101,7 +107,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )

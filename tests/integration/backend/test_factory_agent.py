@@ -1,4 +1,5 @@
 import uuid
+from uuid import uuid4
 
 import pytest
 from tenacity import retry, stop_after_delay, wait_fixed
@@ -13,8 +14,14 @@ from shared.contracts.queues.worker import (
 TEST_TIMEOUT = 60
 
 
-# Every worker is created for somebody; these tests are not about who.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
 
 
 @pytest.mark.integration
@@ -30,7 +37,7 @@ async def test_factory_cli_installed(redis_client, docker_client, scaffolded_wor
         instructions="Test",
         allowed_commands=["*"],
         capabilities=[],
-        ownership=_OWNERSHIP,
+        ownership=_ownership(),
         auth_mode="api_key",
         api_key="sk-test-factory-key",
         repo_id=scaffolded_workspace,

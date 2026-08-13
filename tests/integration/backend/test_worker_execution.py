@@ -20,8 +20,15 @@ from .conftest import (
     wait_for_stream_message,
 )
 
-# Every worker is created for somebody; these tests are not about who.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
+
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
 
 
 @pytest.mark.integration
@@ -44,7 +51,7 @@ class TestWorkerExecution:
                 instructions="You are a test assistant.",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -88,7 +95,7 @@ class TestWorkerExecution:
                 instructions="You are a Factory assistant.",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -132,7 +139,7 @@ class TestWorkerExecution:
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -155,7 +162,7 @@ class TestWorkerExecution:
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -206,7 +213,7 @@ class TestWorkerExecution:
                 instructions="Echo test agent",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
-                ownership=_OWNERSHIP,
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
