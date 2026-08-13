@@ -148,7 +148,12 @@ async def _delivered_story(api_client) -> tuple[str, str, str, str]:
     await api_client.request(
         "POST",
         "projects/",
-        json={"id": project_id, "title": "Delivered Project", "config": {}},
+        json={
+            "id": project_id,
+            "title": "Delivered Project",
+            "initiating_run_id": "test-run-1",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
 

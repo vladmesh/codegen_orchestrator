@@ -49,6 +49,7 @@ async def test_projects(client):
     new_project = {
         "id": project_id,
         "name": "E2E Test Project",
+        "initiating_run_id": f"e2e-{project_id}",
         "status": "draft",
         "config": {"description": "Created by E2E test"},
     }
