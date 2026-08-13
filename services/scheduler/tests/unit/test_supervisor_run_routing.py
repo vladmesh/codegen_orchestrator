@@ -13,6 +13,7 @@ from unittest.mock import ANY, AsyncMock, patch
 # Sibling test-helper module (not a test module); on sys.path via pytest prepend import mode.
 from _run_routing_factories import (
     _invalid_result_error,
+    _make_project,
     _make_repo,
     _make_run,
     _make_story,
@@ -67,6 +68,7 @@ def _qa_handoff_plan(**overrides) -> dict:
     message = {
         "story_id": "story-1",
         "project_id": "00000000-0000-0000-0000-000000000001",
+        "initiating_run_id": "live-1",
         "telegram_chat_id": "",
         "deployed_url": "https://example.com",
         "application_id": 42,
@@ -83,6 +85,9 @@ def api_client():
     client = AsyncMock()
     # QA runs the repository's criteria, so the deploy→QA handoff resolves them.
     client.get_primary_repository.return_value = _make_repo()
+    # The project the story belongs to: the deploy→QA and deploy→fix handoffs
+    # read the run that initiated the work off it.
+    client.get_project.return_value = _make_project()
     # Most stories borrow no temporary access; the ones that do say so.
     client.get_live_temporary_access_grant_for_run.return_value = None
     # The owner's internal id is not their Telegram chat: resolution goes
@@ -153,6 +158,11 @@ class TestSuperviseDeployingStories:
         assert qa_msg.deployed_url == "https://example.com"
         assert qa_msg.application_id == 42
         assert qa_msg.run_id  # run_id must be set
+        # The QA executor this message leads to belongs to the run that asked
+        # for the work — the project's, the same one the developer workers
+        # carried — and not to the QA run row, which is only this attempt.
+        assert qa_msg.initiating_run_id == "live-run-1"
+        assert qa_msg.initiating_run_id != qa_msg.run_id
         # The criteria travel on the message — QA does not resolve them itself.
         assert qa_msg.acceptance_criteria == BASELINE_ACCEPTANCE_CRITERIA
         metadata = api_client.create_run_if_absent.call_args.args[0]["run_metadata"]
@@ -284,6 +294,44 @@ class TestSuperviseDeployingStories:
         api_client.fail_story.assert_called_once_with("story-1")
         mock_notify.assert_called_once()
         # No partial state: no story transition, no QA run created, no QA message.
+        api_client.transition_story.assert_not_called()
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_success_on_a_project_without_an_initiating_run_fails_story(
+        self, api_client, redis_client
+    ):
+        """A project that predates run ownership gets no QA executor at all.
+
+        Its initiating run was never recorded, and nothing may be substituted for
+        it: a project id or a minted id would reach the executor's
+        `com.codegen.run.id` label as if it were the run that asked for the work.
+        So the handoff fails visibly instead, leaving no QA run and no message.
+        """
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SUCCESS.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+            },
+        )
+        api_client.get_project.return_value = _make_project(initiating_run_id=None)
+        api_client.fail_story.return_value = {}
+
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        mock_notify.assert_called_once()
         api_client.transition_story.assert_not_called()
         api_client.create_run.assert_not_called()
         redis_client.publish_message.assert_not_called()

@@ -12,7 +12,13 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 from src.docker_ops import DockerClientWrapper
 from src.manager import WorkerManager
+from shared.contracts.queues.worker import WorkerOwnership
 from src.image_builder import compute_image_hash
+
+# Every worker is created for somebody. These tests are not about who, so they
+# use one owner; the tests that are about ownership name their own.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
+
 
 BASE_SOURCE_HASH = "basehash0001"
 
@@ -74,7 +80,12 @@ class TestWorkerManagerBuildLogic:
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         redis.hset = AsyncMock()
+        redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
+        redis.sismember = AsyncMock(return_value=False)
+        redis.sadd = AsyncMock()
+        redis.srem = AsyncMock()
+        redis.delete = AsyncMock()
         return redis
 
     @pytest.fixture
@@ -237,7 +248,12 @@ class TestWorkerManagerCreateWithCapabilities:
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         redis.hset = AsyncMock()
+        redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
+        redis.sismember = AsyncMock(return_value=False)
+        redis.sadd = AsyncMock()
+        redis.srem = AsyncMock()
+        redis.delete = AsyncMock()
         return redis
 
     @pytest.fixture
@@ -270,6 +286,7 @@ class TestWorkerManagerCreateWithCapabilities:
             worker_id="test-worker-1",
             capabilities=["GIT", "CURL"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             repo_id="repo-1",
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
         )
@@ -295,6 +312,7 @@ class TestWorkerManagerCreateWithCapabilities:
             worker_id="factory-worker-1",
             capabilities=["GIT"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             agent_type="factory",
             repo_id="repo-1",
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
@@ -320,6 +338,7 @@ class TestWorkerManagerCreateWithCapabilities:
                 worker_id="factory-worker-1",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
+                ownership=_OWNERSHIP,
                 agent_type="factory",
                 repo_id="repo-1",
                 env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},

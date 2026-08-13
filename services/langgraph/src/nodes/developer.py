@@ -14,7 +14,7 @@ import structlog
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.queues.worker import AgentType
+from shared.contracts.queues.worker import AgentType, WorkerOwnership
 
 from ..clients.api import api_client
 from ..clients.worker_spawner import request_spawn, send_task_to_worker
@@ -105,6 +105,12 @@ class DeveloperNode(FunctionalNode):
         action = state.get("action", "create")
         feature_description = state.get("description")
         project_id = project_spec.get("id")
+        # Who the worker this node is about to ask for belongs to. It was
+        # decided before this node ran — the consumer built it from the message
+        # that started the work — and it is read, never rebuilt: one fact, one
+        # writer. A state without it is a bug, and KeyError says so here rather
+        # than a container carrying an empty label later.
+        ownership = state["ownership"]
 
         logger.info(
             "developer_node_start",
@@ -137,6 +143,7 @@ class DeveloperNode(FunctionalNode):
                 action=action,
                 feature_description=feature_description,
                 project_id=project_id,
+                ownership=ownership,
             )
         except Exception as e:
             logger.error(
@@ -194,6 +201,7 @@ class DeveloperNode(FunctionalNode):
         action: str,
         feature_description: str | None,
         project_id: str | None,
+        ownership: WorkerOwnership,
     ) -> dict:
         """Resolve repo, spawn (or reuse) worker, return state update."""
         # Get repository URL from Repository entity
@@ -236,7 +244,7 @@ class DeveloperNode(FunctionalNode):
             "task_content": task_message,
             "task_title": task_title,
             "timeout_seconds": Timeouts.WORKER_SPAWN,
-            "project_id": str(project_id) if project_id else None,
+            "ownership": ownership,
             "repo_id": str(repo_id) if repo_id else None,
             "agent_type": agent_type,
             "story_md": story_md,

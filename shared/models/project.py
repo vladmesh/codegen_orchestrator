@@ -22,6 +22,22 @@ class Project(Base):
 
     status: Mapped[str] = mapped_column(String(50), default=ProjectStatus.DRAFT.value)
 
+    # The run that initiated this project's work — a live harness run, a matrix
+    # combination, or the request the PO agent opened the project for. This is
+    # the single place a run identity enters the system: it is supplied by
+    # whoever starts the run, at creation, and is never derived or filled in
+    # later. Every engineering and QA message carries it from here, and every
+    # worker container is stamped with it as `com.codegen.run.id`.
+    #
+    # NULL means exactly one thing: a row that predates run ownership, whose
+    # initiating run was never recorded and cannot be reconstructed. Nothing
+    # writes NULL — `ProjectCreate` requires the field — and nothing fills it
+    # in afterwards. Such a project cannot create workers: every producer
+    # reads it through `require_initiating_run`, which refuses rather than
+    # inventing a run id that would then be stamped on containers as if it
+    # were one.
+    initiating_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
     config: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
 
     # Project specification from .project-spec.yaml (machine-readable)

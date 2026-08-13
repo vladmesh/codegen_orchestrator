@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.queues.worker import WorkerOwnership
 from tests.unit.factories import make_project, make_repository
 
 
@@ -54,6 +55,10 @@ class TestBlockedFlowEndToEnd:
                     "config": {"description": "Test", "modules": ["backend"]},
                 },
                 "action": "feature",
+                "run_id": "eng-1",
+                "ownership": WorkerOwnership(
+                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                ),
                 "description": "Add payment processing",
             }
         )

@@ -12,6 +12,7 @@ Uses conftest.py fixtures which handle:
 import asyncio
 import json
 import time
+from uuid import uuid4
 
 import pytest
 from redis.asyncio import Redis
@@ -21,6 +22,7 @@ from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 pytestmark = [pytest.mark.e2e, pytest.mark.asyncio]
@@ -41,6 +43,18 @@ async def wait_for_stream_message(
     raise TimeoutError(f"No message on {stream} within {timeout}s")
 
 
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(
+        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
+    )
+
+
 class TestWorkerMockAnthropic:
     """Tests for Worker integration with Mock Anthropic server."""
 
@@ -58,6 +72,7 @@ class TestWorkerMockAnthropic:
                 api_key="test-key",  # Mock server doesn't validate keys
                 allowed_commands=[],
                 capabilities=[],
+                ownership=_ownership(),
                 # Point worker to mock-anthropic server
                 env_vars={
                     "ANTHROPIC_BASE_URL": "http://172.30.0.40:8000",

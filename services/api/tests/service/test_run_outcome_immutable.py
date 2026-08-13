@@ -35,7 +35,12 @@ async def _run(async_client: AsyncClient, *, run_type: str = "qa") -> str:
 
     project = await async_client.post(
         "/api/projects/",
-        json={"id": project_id, "title": "Run Outcome", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": project_id,
+            "title": "Run Outcome",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert project.status_code == status.HTTP_201_CREATED

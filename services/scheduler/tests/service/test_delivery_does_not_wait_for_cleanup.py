@@ -148,7 +148,12 @@ async def _delivered_story(api_client) -> tuple[str, str, str, str]:
     await api_client.request(
         "POST",
         "projects/",
-        json={"id": project_id, "title": "Delivered Project", "config": {}},
+        json={
+            "id": project_id,
+            "title": "Delivered Project",
+            "initiating_run_id": "test-run-1",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
 
@@ -192,6 +197,7 @@ async def _delivered_story(api_client) -> tuple[str, str, str, str]:
     qa_message = QAMessage(
         story_id=story_id,
         project_id=project_id,
+        initiating_run_id="live-run-1",
         telegram_chat_id=str(telegram_id),
         deployed_url=DEPLOYED_URL,
         application_id=application_id,

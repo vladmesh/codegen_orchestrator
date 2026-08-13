@@ -45,6 +45,7 @@ def _project(audience: str | None) -> ProjectDTO:
         config["bot_access"] = {"mode": "custom", "allowed_telegram_ids": audience}
     return ProjectDTO(
         id=UUID(PROJECT_ID),
+        initiating_run_id="test-run-1",
         title="Test Project",
         slug="test-project",
         status=ProjectStatus.ACTIVE,
@@ -208,6 +209,7 @@ class TestHandoffThroughTheGrant:
         api_client.get_latest_run_by_story.return_value = _deploy_success_run(
             test_identity_slot=False
         )
+        api_client.get_project.return_value = _project("42")
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -249,6 +251,7 @@ def _live_grant(**overrides) -> TemporaryAccessGrantDTO:
         "qa_message": {
             "story_id": "story-1",
             "project_id": PROJECT_ID,
+            "initiating_run_id": "live-1",
             "telegram_chat_id": "",
             "deployed_url": "https://example.com",
             "application_id": 42,
@@ -277,6 +280,7 @@ def _passed_qa_run():
                 qa_message=QAMessage(
                     story_id="story-1",
                     project_id=PROJECT_ID,
+                    initiating_run_id="live-run-1",
                     telegram_chat_id="",
                     deployed_url="https://example.com",
                     application_id=42,
@@ -454,6 +458,7 @@ class TestTheHandoffSurvivesARestart:
             qa_message=QAMessage(
                 story_id="story-1",
                 project_id=PROJECT_ID,
+                initiating_run_id="live-run-1",
                 telegram_chat_id="",
                 deployed_url="https://example.com",
                 application_id=42,

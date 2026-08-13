@@ -33,6 +33,7 @@ from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
     WorkerConfig,
+    WorkerOwnership,
 )
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
@@ -96,6 +97,7 @@ def _classify_start_failure(detail: str) -> QAExecutorUnavailable:
 async def run_qa_executor(
     *,
     agent_type: AgentType,
+    ownership: WorkerOwnership,
     capability_url: str,
     capability_token: str,
     instructions: str,
@@ -109,6 +111,12 @@ async def run_qa_executor(
     Args:
         agent_type: the assigned executor. Codex by default, with Claude Code
             available as an explicit override.
+        ownership: the project under test and this QA run's id. A QA executor is
+            owned exactly as a developer worker is — worker-manager stamps it on
+            the container and writes it to the worker's Redis metadata at
+            creation — so an executor that dies immediately is still attributable
+            to the run that made it. It grants the container nothing: ownership
+            is a record, not a capability, and the isolation below is unchanged.
         capability_url: this run's capability endpoint, the container's only
             route to the deployment.
         capability_token: the run-scoped credential for that endpoint. It grants
@@ -148,6 +156,7 @@ async def run_qa_executor(
                 instructions=instructions,
                 task_content=prompt,
                 allowed_commands=["*"],
+                ownership=ownership,
                 # No git, no GitHub CLI, no HTTP client capability: a QA
                 # executor has no repository to touch and one way to reach the
                 # deployment, which needs nothing the base image lacks.

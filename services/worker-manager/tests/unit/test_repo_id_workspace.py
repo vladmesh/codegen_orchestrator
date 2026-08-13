@@ -7,8 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.contracts.queues.worker import AgentType, WorkerCapability, WorkerConfig
+from shared.contracts.queues.worker import AgentType, WorkerCapability, WorkerConfig, WorkerOwnership
 from src.workspace import get_scaffolded_workspace
+
+
+# Every worker is created for somebody. These tests are not about who, so they
+# use one owner; the tests that are about ownership name their own.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
 
 
 class TestWorkerConfigRepoId:
@@ -21,6 +26,7 @@ class TestWorkerConfigRepoId:
             instructions="test",
             allowed_commands=["*"],
             capabilities=[WorkerCapability.GIT],
+            ownership=_OWNERSHIP,
             repo_id="repo-abc123",
         )
         assert config.repo_id == "repo-abc123"
@@ -34,6 +40,7 @@ class TestWorkerConfigRepoId:
             instructions="test",
             allowed_commands=["*"],
             capabilities=[WorkerCapability.GIT],
+            ownership=_OWNERSHIP,
         )
         assert config.repo_id is None
 
@@ -46,6 +53,7 @@ class TestWorkerConfigRepoId:
             instructions="test",
             allowed_commands=["*"],
             capabilities=[WorkerCapability.GIT],
+            ownership=_OWNERSHIP,
             repo_id="repo-xyz",
         )
         data = config.model_dump()
@@ -136,6 +144,7 @@ class TestCreateWorkerWithRepoId:
                     worker_id="w-unsafe",
                     capabilities=["git"],
                     base_image="worker-base:latest",
+                    ownership=_OWNERSHIP,
                     env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
                     repo_id=repo_id,
                 )
@@ -168,8 +177,8 @@ class TestCreateWorkerWithRepoId:
             worker_id="w-1",
             capabilities=["git"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
-            project_id="proj-1",
             repo_id="repo-123",
         )
 
@@ -197,6 +206,7 @@ class TestCreateWorkerWithRepoId:
                 worker_id="w-1",
                 capabilities=["git"],
                 base_image="worker-base:latest",
+                ownership=_OWNERSHIP,
                 env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
                 repo_id="repo-999",
             )
@@ -224,8 +234,8 @@ class TestCreateWorkerWithRepoId:
             worker_id="w-1",
             capabilities=["git"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
-            project_id="proj-1",
             repo_id="repo-123",
         )
 
@@ -250,6 +260,6 @@ class TestCreateWorkerWithRepoId:
                 worker_id="w-1",
                 capabilities=["git"],
                 base_image="worker-base:latest",
+                ownership=_OWNERSHIP,
                 env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
-                project_id="proj-1",
             )

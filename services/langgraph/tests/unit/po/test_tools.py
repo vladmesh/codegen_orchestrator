@@ -93,6 +93,10 @@ class TestCreateProject:
         assert project_call[0][0] == "projects/"
         payload = project_call[1]["json"]
         assert payload["title"] == "My Bot"
+        # The project is created for a run, and the PO agent is what starts one
+        # here: a user request. Without it the project could produce workers
+        # nobody can attribute once they are dead, so the tool names it.
+        assert payload["initiating_run_id"]
         assert "backend" in payload["config"]["modules"]
         assert "tg_bot" in payload["config"]["modules"]
         assert "Project created" in result

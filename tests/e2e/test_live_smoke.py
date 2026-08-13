@@ -29,6 +29,7 @@ from shared.contracts.queues.worker import (
     WorkerCapability,
     WorkerChannels,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 # Service addresses inside codegen_internal network
@@ -75,6 +76,18 @@ async def wait_for_response(
 
 
 # --- Fixtures ---
+
+
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(
+        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
+    )
 
 
 @pytest.fixture
@@ -150,6 +163,7 @@ class TestWorkerLifecycle:
                 instructions="Smoke test worker. Do nothing.",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_ownership(),
             ),
         )
         await redis_client.xadd(WORKER_COMMANDS, {"data": command.model_dump_json()})

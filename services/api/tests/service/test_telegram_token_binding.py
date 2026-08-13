@@ -67,6 +67,7 @@ async def bot_project(async_client: AsyncClient) -> str:
         json={
             "id": project_id,
             "title": "Token Binding Bot",
+            "initiating_run_id": "test-run-1",
             "status": "draft",
             "config": {"modules": ["backend", "tg_bot"]},
         },
@@ -214,7 +215,12 @@ async def test_project_creation_cannot_carry_a_bot_token(
     project_id = str(uuid.uuid4())
     resp = await async_client.post(
         "/api/projects/",
-        json={"id": project_id, "title": "Sneaky Bot", "config": config},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": project_id,
+            "title": "Sneaky Bot",
+            "config": config,
+        },
         headers={"X-Telegram-ID": TELEGRAM_ID},
     )
 

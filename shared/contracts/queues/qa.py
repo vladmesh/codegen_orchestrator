@@ -22,6 +22,11 @@ class QAMessage(BaseMessage):
 
     story_id: str = ""
     project_id: str
+    # The run that asked for this work, exactly as on `EngineeringMessage`: the
+    # project's `initiating_run_id`, carried by the producer. A QA executor is
+    # owned by the same run as the developer workers of the same project, which
+    # is what lets one run account for every container it caused.
+    initiating_run_id: str = Field(min_length=1)
     # Telegram chat of the project owner, resolved by the producer. Empty when
     # the work was started by the system and has no user to report back to.
     telegram_chat_id: str = ""

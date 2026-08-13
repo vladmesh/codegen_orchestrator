@@ -37,6 +37,7 @@ os.environ.setdefault("INTERNAL_API_KEY", "test-key")
 
 from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAServerInfo
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from src.agents.qa.tools import build_qa_tools
 from src.clients.qa_worker import QAExecutorRun
@@ -58,6 +59,7 @@ from src.consumers.qa import process_qa_job
 _RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
 _NO_API_FALLBACK = SimpleNamespace(qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None)
 
+OWNERSHIP = WorkerOwnership(project_id="proj-app", run_id="qa-run-1", attempt_id="attempt-qa-run-1")
 ALLOWED_PORT = 8000
 NEIGHBOUR_PORT = 9000
 OWN_CONTAINER = "app-backend-1"
@@ -369,6 +371,7 @@ def _writing_executor(deployed_url: str):
     async def run(
         *,
         agent_type,
+        ownership,
         capability_url,
         capability_token,
         instructions,
@@ -415,6 +418,7 @@ async def test_a_claimed_write_blocks_the_run_with_a_residual_trace(tmp_path):
                 deployed_url="http://app.example",
                 allocated_ports=frozenset({ALLOWED_PORT}),
             ),
+            ownership=OWNERSHIP,
             fleet_ssh_key="fleet-key",
             acceptance_criteria="- read-only check",
             runtime=_RUNTIME,
@@ -479,6 +483,7 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
             {
                 "story_id": "story-1",
                 "project_id": "project-1",
+                "initiating_run_id": "live-1",
                 "telegram_chat_id": "1",
                 "deployed_url": "http://app.example",
                 "application_id": 1,

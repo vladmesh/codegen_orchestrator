@@ -68,6 +68,7 @@ async def _ensure_project(client: AsyncClient):
             json={
                 "id": TASK_TEST_PROJECT_ID,
                 "title": "Admin Actions Test",
+                "initiating_run_id": "test-run-1",
                 "status": "active",
                 "config": {},
             },
@@ -484,6 +485,7 @@ class TestListSecretKeys:
             json={
                 "id": fresh_pid,
                 "title": "No secrets project",
+                "initiating_run_id": "test-run-1",
                 "status": "active",
                 "config": {},
             },

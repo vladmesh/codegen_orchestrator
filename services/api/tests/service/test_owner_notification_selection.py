@@ -63,7 +63,12 @@ async def _qa_run(
     assert user.status_code == status.HTTP_201_CREATED
     project = await async_client.post(
         "/api/projects/",
-        json={"id": project_id, "title": "Owed notification selection", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": project_id,
+            "title": "Owed notification selection",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert project.status_code == status.HTTP_201_CREATED

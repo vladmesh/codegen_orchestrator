@@ -18,11 +18,16 @@ from fakeredis import aioredis
 import pytest
 
 from shared.contracts.dto.worker import WorkerStatus
-from shared.contracts.queues.worker import AgentType, WorkerConfig
+from shared.contracts.queues.worker import AgentType, WorkerConfig, WorkerOwnership
 from shared.qa_probe_cli import QA_PROBE_PATH
 from src import qa_egress
 from src import workspace as workspace_mod
 from src.manager import QA_WORKER_TYPE, WorkerManager
+
+
+# Every worker is created for somebody. These tests are not about who, so they
+# use one owner; the tests that are about ownership name their own.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
 
 
 QA_NETWORK = "codegen_qa_egress"
@@ -107,6 +112,9 @@ def qa_worker(tmp_path):
                 "worker_id": worker_id,
                 "capabilities": [],
                 "base_image": "worker-base:latest",
+                # A QA executor is owned like any other worker: a project under
+                # test and the QA run that made it.
+                "ownership": WorkerOwnership(project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"),
                 "agent_type": agent_type,
                 "worker_type": QA_WORKER_TYPE,
                 "instructions": "# QA executor",
@@ -312,6 +320,7 @@ class TestItCannotReachTheApplicationAtAll:
                 worker_id="dev-1",
                 capabilities=[],
                 base_image="worker-base:latest",
+                ownership=_OWNERSHIP,
                 agent_type=AgentType.CLAUDE,
                 repo_id="repo-1",
             )
@@ -504,6 +513,7 @@ class TestTheContract:
             instructions="# QA executor",
             allowed_commands=["*"],
             capabilities=[],
+            ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"),
         )
 
         assert config.repo_id is None

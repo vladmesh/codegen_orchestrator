@@ -1,5 +1,8 @@
 """Unit tests for shared.contracts.queues.engineering."""
 
+from pydantic import ValidationError
+import pytest
+
 from shared.contracts.queues.engineering import EngineeringMessage, EngineeringResult
 
 
@@ -8,6 +11,7 @@ class TestEngineeringMessage:
         msg = EngineeringMessage(
             task_id="eng-123",
             project_id="proj-456",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
         )
         assert msg.branch is None
@@ -16,6 +20,7 @@ class TestEngineeringMessage:
         msg = EngineeringMessage(
             task_id="eng-123",
             project_id="proj-456",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             branch="story/story-abc",
         )
@@ -25,6 +30,7 @@ class TestEngineeringMessage:
         msg = EngineeringMessage(
             task_id="eng-123",
             project_id="proj-456",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             branch="story/story-abc",
         )
@@ -37,10 +43,27 @@ class TestEngineeringMessage:
         data = {
             "task_id": "eng-123",
             "project_id": "proj-456",
+            "initiating_run_id": "live-run-1",
             "telegram_chat_id": "user-1",
         }
         msg = EngineeringMessage(**data)
         assert msg.branch is None
+
+    def test_a_message_without_an_initiating_run_is_refused(self):
+        """The run that asked for the work is not optional on the wire.
+
+        Every worker this message leads to is stamped with it, so a message that
+        carries none would produce a container nobody can attribute after it
+        dies. It is refused where it is built, not discovered later.
+        """
+        for missing in ({}, {"initiating_run_id": ""}):
+            with pytest.raises(ValidationError):
+                EngineeringMessage(
+                    task_id="eng-123",
+                    project_id="proj-456",
+                    telegram_chat_id="user-1",
+                    **missing,
+                )
 
 
 class TestEngineeringResult:

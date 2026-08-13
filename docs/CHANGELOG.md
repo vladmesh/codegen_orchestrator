@@ -2,6 +2,63 @@
 
 ## 2026-08-13
 
+- Every dynamic worker is stamped with its owner when it is created. `WorkerConfig` now carries a
+  required `WorkerOwnership` (project id and run id, both non-empty); worker-manager writes both to
+  the container's Docker labels — `com.codegen.project.id` and `com.codegen.run.id`, next to the
+  existing `com.codegen.worker.id` and `com.codegen.type` — and into `worker:meta:<worker_id>`,
+  before the container is created. A worker that dies in its first second and has its Redis metadata
+  deleted is still found and attributed with `docker ps -a --filter label=...`, which is what
+  label-based crash cleanup and per-run evidence will be built on. Ownership can no longer be
+  absent: a create command without it is refused by the contract, and `request_spawn` cannot be
+  called without it.
+- The QA executor is ownable on the same terms. `run_qa_executor` is handed the QA run's project and
+  run id (`QAMessage.project_id` / `QAMessage.run_id`) and worker-manager records them; the run's
+  egress proxy is labelled with the same run. The QA isolation boundary is unchanged: no git, no
+  GitHub token, no repository, the internal QA network only, and the capability endpoint as its one
+  route to the deployment. Because a QA executor now records a project, it is explicitly excluded
+  from the developer workspace mutex — it neither takes the lock, nor is blocked by one, nor
+  releases one when it is deleted.
+- A worker's run is the run that *initiated* the work, and it enters the system in exactly one
+  place: `Project.initiating_run_id`, supplied by whoever starts the run when the project is
+  created (`ProjectCreate.initiating_run_id`, required and non-empty). Every producer of engineering
+  and QA work reads it from the project and carries it on the message
+  (`EngineeringMessage.initiating_run_id`, `QAMessage.initiating_run_id`, both required), and
+  `WorkerOwnership.for_engineering` / `for_qa` — the only two places a worker's ownership is
+  derived — turn that message into the ownership worker-manager stamps. A live run therefore finds
+  its own dead workers with `docker ps -a --filter label=com.codegen.run.id=<manifest.run_id>`.
+- The attempt is carried too, and separately. `com.codegen.attempt.id` (`WorkerOwnership.attempt_id`)
+  is the engineering Run row a developer worker was spawned by, or the QA Run row its executor
+  serves; one initiating run may spawn many attempts, so a run-scoped query must not be answerable
+  only per attempt. `com.codegen.run.id` never carries an attempt id.
+- The live harness names its run before it creates anything: `OwnershipManifest.run_id` is a fresh
+  `live-…` identity (no longer the project id), it is what the project is created with, and the
+  manifest file under `.live-manifests/` is named after it.
+- Projects that predate run ownership name no run and are never given one. The migration adding
+  `Project.initiating_run_id` does not backfill: the run that created such a project was never
+  recorded, and any substitute — its project id, a minted id, a shared constant — would be stamped
+  on its future workers as `com.codegen.run.id`, so a query scoped to one run would select workers
+  belonging to another. The column is nullable, absence is refused at the one place it is read
+  (`require_initiating_run`, raising `ProjectPredatesRunOwnership`), and nothing fills it in later.
+  Compatibility impact: such a project stays readable, listable and archivable but cannot dispatch
+  engineering or QA work — 409 from `spawn-worker` and `run-e2e`, a skipped task in the dispatcher,
+  a failed story in the deploy supervisor — until it is recreated by a run that names itself.
+- Acquisition decides whether a developer worker exists at all; ownership describes a worker that
+  does. A developer worker's ownership is therefore stamped by the acquisition of the project's
+  workspace lock and nowhere earlier: the stamp goes in, then the `SADD` that takes the project, and
+  a worker that loses that `SADD` has its ownership withdrawn before it is refused. Nothing
+  describes a worker that was refused, so `project_id` in `worker:meta:<worker_id>` still means what
+  every release path reads it as — `delete_worker`, the create-failure cleanup, the stale-lock scan
+  in `_check_project_lock`, the workspace GC — and a refused worker releases nothing. The stamp is
+  ordered before the `SADD` because it is the evidence the workspace GC reads: a project can never
+  be in `workspace:active_projects` with its holder's metadata not yet visible, so that sweep cannot
+  take a workspace away from a worker mid-acquisition and let a second creator onto the same
+  checkout. The one worker that owns a project without holding its workspace is the QA executor,
+  which is excluded from the mutex by its worker type. Two creates that race past the lock check no
+  longer both proceed: the `SADD` result decides, and the loser is refused. A refusal is also
+  terminal in Redis now (`worker:status` FAILED plus `worker:error`), so the caller — which was
+  ACKed before the slow work and then polls status — fails fast instead of waiting out the
+  readiness timeout and publishing a delete for a worker that held nothing.
+
 - Worker base images are one immutable release chain keyed by the git SHA. Every green commit on
   `main` builds common and then the claude, codex and factory images from that exact common, and
   publishes all four to GHCR under that commit's SHA, recording the published digests, the SHA and

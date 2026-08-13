@@ -99,7 +99,13 @@ async def test_malformed_job_without_task_id_still_terminates():
 def test_unknown_extra_fields_are_ignored_and_defaults_apply():
     """Wire additions do not crash the boundary; omitted optional fields take defaults."""
     msg = EngineeringMessage.model_validate(
-        {"task_id": "t", "project_id": "p", "telegram_chat_id": "u", "surprise": "x"}
+        {
+            "task_id": "t",
+            "project_id": "p",
+            "initiating_run_id": "live-1",
+            "telegram_chat_id": "u",
+            "surprise": "x",
+        }
     )
     assert msg.task_id == "t"
     assert msg.action.value == "create"

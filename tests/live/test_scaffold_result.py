@@ -38,6 +38,8 @@ async def scaffolded_project(api, api_internal, compose_exec):
     suffix = secrets.token_hex(4)
     project_title = f"live-test-{suffix}"
     project_id = str(uuid.uuid4())
+    # This run's identity, minted before the project it creates.
+    manifest = OwnershipManifest(f"live-{uuid.uuid4().hex[:12]}")
 
     # 1. Create project
     resp = await api.post(
@@ -45,6 +47,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
         json={
             "id": project_id,
             "title": project_title,
+            "initiating_run_id": manifest.run_id,
             "status": ProjectStatus.DRAFT,
             "config": {"description": "live test scaffold"},
         },
@@ -53,7 +56,6 @@ async def scaffolded_project(api, api_internal, compose_exec):
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
     project_name = resp.json()["slug"]
     repo_name = project_name
-    manifest = OwnershipManifest(project_id)
     manifest.own("project", project_id)
     ctx = {
         "project_id": project_id,
@@ -65,7 +67,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
 
     # 2. Create repository record
     async with cleanup_on_error(lambda: cleanup_all(api_internal, None, ctx)):
-        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
         resp = await api.post(
             "/api/repositories/",
             json={
@@ -83,7 +85,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
     ):
         # 3. Publish ScaffoldMessage to scaffold:queue via redis
         manifest.own("github_repository", f"{GITHUB_ORG}/{repo_name}")
-        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
         scaffold_msg = {
             "project_id": project_id,
             "repository_id": repo_id,
@@ -116,7 +118,7 @@ async def scaffolded_project(api, api_internal, compose_exec):
         )
         assert result.returncode == 0, f"XADD failed: {result.stderr}"
         manifest.own("redis_entry", result.stdout.strip(), stream=SCAFFOLD_QUEUE)
-        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
 
         # 4. Wait for scaffold to complete
         # After ProjectStatus split (#22), scaffold success sets status to 'active'.

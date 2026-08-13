@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.contracts.queues.worker import WorkerOwnership
+
 
 def _mock_settings():
     """Minimal settings for spawner functions."""
@@ -380,6 +382,9 @@ class TestSpawnResultWorkerId:
             github_token="ghs_test",  # noqa: S106
             task_content="build it",
             timeout_seconds=5,
+            ownership=WorkerOwnership(
+                project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"
+            ),
         )
 
         assert result.success is True

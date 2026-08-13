@@ -152,13 +152,23 @@ async def test_project(api, api_internal):
 
 
 async def create_test_project_context(api):
-    """Create the common live project context with immediate ownership."""
+    """Create the common live project context with immediate ownership.
+
+    The run exists before the project does: this run's id is minted here and
+    handed to the platform as the project's `initiating_run_id`, which is the
+    one place a run identity enters the system. Every worker this run causes —
+    developer or QA — is stamped with it at creation, so `docker ps -a --filter
+    label=com.codegen.run.id=<manifest.run_id>` answers for this run alone, and
+    still answers once the workers are dead.
+    """
     project_id = str(uuid.uuid4())
+    manifest = OwnershipManifest(f"live-{uuid.uuid4().hex[:12]}")
     resp = await api.post(
         "/api/projects/",
         json={
             "id": project_id,
             "title": f"live-test-{secrets.token_hex(4)}",
+            "initiating_run_id": manifest.run_id,
             "status": ProjectStatus.DRAFT,
             "config": {"description": "live test project"},
         },
@@ -166,7 +176,6 @@ async def create_test_project_context(api):
     resp.raise_for_status()
     assert resp.status_code == 201, resp.text
     data = resp.json()
-    manifest = OwnershipManifest(project_id)
     manifest.own("project", project_id)
-    manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+    manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
     return data, {"project_id": project_id, "manifest": manifest}

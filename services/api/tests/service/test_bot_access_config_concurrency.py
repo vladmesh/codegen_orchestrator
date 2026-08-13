@@ -36,7 +36,12 @@ async def test_bot_access_endpoint_records_each_contract_audience(
 
     created = await async_client.post(
         "/api/projects/",
-        json={"id": str(project_id), "title": "Bot Access", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": str(project_id),
+            "title": "Bot Access",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert created.status_code == status.HTTP_201_CREATED
@@ -73,7 +78,12 @@ async def test_bot_access_and_generic_config_update_do_not_lose_the_audience(
 
     created = await async_client.post(
         "/api/projects/",
-        json={"id": str(project_id), "title": "Concurrent Bot Access", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": str(project_id),
+            "title": "Concurrent Bot Access",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert created.status_code == status.HTTP_201_CREATED
@@ -117,7 +127,12 @@ async def test_bot_access_selection_replaces_legacy_admin_secret(
     assert user.status_code == status.HTTP_201_CREATED
     created = await async_client.post(
         "/api/projects/",
-        json={"id": str(project_id), "title": "Legacy Bot Access", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": str(project_id),
+            "title": "Legacy Bot Access",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert created.status_code == status.HTTP_201_CREATED
@@ -157,7 +172,12 @@ async def test_legacy_admin_secret_cannot_be_deleted_without_a_contract_policy(
     assert user.status_code == status.HTTP_201_CREATED
     created = await async_client.post(
         "/api/projects/",
-        json={"id": str(project_id), "title": "Legacy Delete", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": str(project_id),
+            "title": "Legacy Delete",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert created.status_code == status.HTTP_201_CREATED

@@ -61,6 +61,7 @@ async def lk_user_and_project():
                 json={
                     "id": LK_TEST_PROJECT_ID,
                     "title": "LK Test Project",
+                    "initiating_run_id": "test-run-1",
                     "status": "active",
                     "config": {},
                 },
@@ -361,6 +362,7 @@ class TestProjectSummary:
             json={
                 "id": project2_id,
                 "title": "Empty Project",
+                "initiating_run_id": "test-run-1",
                 "status": "active",
                 "config": {},
             },
@@ -484,6 +486,7 @@ class TestCollectionHealth:
             json={
                 "id": project_id,
                 "title": "Quiet Project",
+                "initiating_run_id": "test-run-1",
                 "status": "active",
                 "config": {},
             },

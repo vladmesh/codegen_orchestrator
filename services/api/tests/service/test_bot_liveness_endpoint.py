@@ -75,6 +75,7 @@ async def bound_project(async_client: AsyncClient) -> tuple[str, str]:
         json={
             "id": project_id,
             "title": "Liveness Bot",
+            "initiating_run_id": "test-run-1",
             "status": "draft",
             "config": {"modules": ["backend", "tg_bot"]},
         },
@@ -163,7 +164,13 @@ async def test_a_project_with_no_bound_token_says_so(async_client: AsyncClient):
     project_id = str(uuid.uuid4())
     created = await async_client.post(
         "/api/projects/",
-        json={"id": project_id, "title": "No Bot", "status": "draft", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": project_id,
+            "title": "No Bot",
+            "status": "draft",
+            "config": {},
+        },
         headers={"X-Telegram-ID": TELEGRAM_ID},
     )
     assert created.status_code == status.HTTP_201_CREATED, created.text

@@ -1,4 +1,4 @@
-"""Tests for project_id passthrough from consumer to manager."""
+"""Tests for worker ownership passthrough from consumer to manager."""
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 from fakeredis import aioredis
+from pydantic import ValidationError
 
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
@@ -14,6 +15,7 @@ from shared.contracts.queues.worker import (
     DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
+    WorkerOwnership,
 )
 from shared.redis import decode_redis_fields
 
@@ -22,8 +24,13 @@ from src.consumer import WorkerCommandConsumer
 from src.manager import WorkerManager
 
 
-def _make_create_command(project_id: str | None = None, repo_id: str | None = None) -> CreateWorkerCommand:
-    """Build a CreateWorkerCommand with optional project_id and repo_id."""
+def _make_create_command(
+    project_id: str = "proj-123",
+    run_id: str = "live-123",
+    attempt_id: str = "eng-123",
+    repo_id: str | None = None,
+) -> CreateWorkerCommand:
+    """Build a CreateWorkerCommand with ownership and an optional repo_id."""
     config = WorkerConfig(
         name="test-worker",
         worker_type="developer",
@@ -31,7 +38,7 @@ def _make_create_command(project_id: str | None = None, repo_id: str | None = No
         instructions="test instructions",
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT],
-        project_id=project_id,
+        ownership=WorkerOwnership(project_id=project_id, run_id=run_id, attempt_id=attempt_id),
         repo_id=repo_id,
     )
     return CreateWorkerCommand(
@@ -86,14 +93,14 @@ async def test_consumer_passes_none_reason_when_missing():
 
 
 @pytest.mark.asyncio
-async def test_consumer_passes_project_id_to_manager(consumer):
-    """project_id from WorkerConfig should be forwarded to manager."""
-    cmd = _make_create_command(project_id="proj-123", repo_id="repo-123")
+async def test_consumer_passes_ownership_to_manager(consumer):
+    """Ownership from WorkerConfig should be forwarded to manager as one fact."""
+    cmd = _make_create_command(project_id="proj-123", run_id="live-777", attempt_id="eng-777", repo_id="repo-123")
     await consumer._handle_create(cmd)
 
     consumer.manager.create_worker_with_capabilities.assert_awaited_once()
     call_kwargs = consumer.manager.create_worker_with_capabilities.call_args.kwargs
-    assert call_kwargs["project_id"] == "proj-123"
+    assert call_kwargs["ownership"] == WorkerOwnership(project_id="proj-123", run_id="live-777", attempt_id="eng-777")
 
 
 @pytest.mark.asyncio
@@ -107,15 +114,37 @@ async def test_consumer_passes_repo_id_to_manager(consumer):
     assert call_kwargs["repo_id"] == "repo-123"
 
 
-@pytest.mark.asyncio
-async def test_consumer_passes_none_project_id_when_missing(consumer):
-    """When WorkerConfig has no project_id, None should be forwarded."""
-    cmd = _make_create_command(repo_id="repo-123")  # project_id defaults to None
-    await consumer._handle_create(cmd)
+def test_a_create_command_without_ownership_is_refused():
+    """A worker nobody owns is refused on the wire, not created and forgotten.
 
-    consumer.manager.create_worker_with_capabilities.assert_awaited_once()
-    call_kwargs = consumer.manager.create_worker_with_capabilities.call_args.kwargs
-    assert call_kwargs["project_id"] is None
+    Ownership has to be written when the worker is made — after it dies there is
+    nothing left to infer it from — so a create request that carries none never
+    becomes a container.
+    """
+    with pytest.raises(ValidationError):
+        WorkerConfig(
+            name="test-worker",
+            worker_type="developer",
+            agent_type=AgentType.CLAUDE,
+            instructions="test instructions",
+            allowed_commands=["*"],
+            capabilities=[WorkerCapability.GIT],
+        )
+
+
+@pytest.mark.parametrize(
+    "project_id, run_id, attempt_id",
+    [
+        ("", "live-1", "eng-1"),
+        ("proj-1", "", "eng-1"),
+        ("proj-1", "live-1", ""),
+        ("", "", ""),
+    ],
+)
+def test_ownership_rejects_an_empty_part(project_id, run_id, attempt_id):
+    """An empty label attributes nothing, so an empty part is not ownership."""
+    with pytest.raises(ValidationError):
+        WorkerOwnership(project_id=project_id, run_id=run_id, attempt_id=attempt_id)
 
 
 # --- Phase 2: Workspace by repo_id ---
@@ -152,8 +181,11 @@ class TestWorkspaceByRepoId:
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         redis.hset = AsyncMock()
+        redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sadd = AsyncMock()
+        redis.srem = AsyncMock()
+        redis.delete = AsyncMock()
         redis.sismember = AsyncMock(return_value=False)
         return redis
 
@@ -170,6 +202,7 @@ class TestWorkspaceByRepoId:
                 worker_id="w-1",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -185,6 +218,7 @@ class TestWorkspaceByRepoId:
                 worker_id="w-2",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id=None,
             )
 
@@ -204,6 +238,7 @@ class TestWorkspaceByRepoId:
                 worker_id="w-2b",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-missing",
             )
 
@@ -227,6 +262,7 @@ class TestWorkspaceByRepoId:
                 worker_id="w-3",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
                 env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "ghp_test"},
             )
@@ -255,6 +291,7 @@ class TestRepoIdRedisMeta:
                 worker_id="w-5",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -275,7 +312,7 @@ class TestRepoIdRedisMeta:
                 worker_id="w-5b",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -296,7 +333,7 @@ class TestRepoIdRedisMeta:
                 worker_id="w-6",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -321,6 +358,9 @@ class TestDeleteWorkerPreservation:
                 "dev_network": "dev_proj_w-7",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-7", mapping={"status": WorkerStatus.RUNNING})
@@ -414,6 +454,9 @@ class TestDeleteWorkerRemovesFromActiveSet:
                 "dev_network": "dev_proj_w-9",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-9", mapping={"status": WorkerStatus.RUNNING})
@@ -503,7 +546,10 @@ class TestWorkspaceGC:
 
         redis = aioredis.FakeRedis(decode_responses=True)
         await redis.sadd("workspace:active_projects", "active-proj")
-        await redis.hset("worker:meta:w1", mapping={"project_id": "active-proj"})
+        await redis.hset(
+            "worker:meta:w1",
+            mapping={"project_id": "active-proj"},
+        )
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
         old_mtime = time.time() - (48 * 3600)
@@ -616,7 +662,7 @@ class TestProjectMutex:
                 worker_id="w-first",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -631,7 +677,7 @@ class TestProjectMutex:
                 worker_id="w-second",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -649,7 +695,7 @@ class TestProjectMutex:
                 worker_id="w-first",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -668,7 +714,7 @@ class TestProjectMutex:
                 worker_id="w-second",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
             assert result == "w-second"
@@ -684,6 +730,9 @@ class TestProjectMutex:
                 "dev_network": "dev_proj_w-first",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-first", mapping={"status": WorkerStatus.RUNNING})
@@ -741,6 +790,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-10",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-10", mapping={"status": WorkerStatus.RUNNING})
@@ -766,6 +818,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-11",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-11", mapping={"status": WorkerStatus.RUNNING})
@@ -793,6 +848,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-12",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-12", mapping={"status": WorkerStatus.RUNNING})
@@ -819,6 +877,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-13",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-13", mapping={"status": WorkerStatus.RUNNING})
@@ -844,6 +905,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-14",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-14", mapping={"status": WorkerStatus.RUNNING})
@@ -873,8 +937,11 @@ class TestForceCleanAndReject:
         redis = MagicMock()
         redis.set = AsyncMock()
         redis.hset = AsyncMock()
+        redis.hdel = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sadd = AsyncMock()
+        redis.srem = AsyncMock()
+        redis.delete = AsyncMock()
         redis.sismember = AsyncMock(return_value=False)
         return redis
 
@@ -889,7 +956,7 @@ class TestForceCleanAndReject:
                 worker_id="w-16",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -907,7 +974,7 @@ class TestForceCleanAndReject:
                 worker_id="w-17",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -927,7 +994,7 @@ class TestForceCleanAndReject:
                 worker_id="w-18",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 

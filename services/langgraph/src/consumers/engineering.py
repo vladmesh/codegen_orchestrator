@@ -17,6 +17,7 @@ from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import AllocationFailureReason, EngineeringRunResult
 from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -236,6 +237,16 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "story_context": story_context,
             "story_md": story_md,
             "repo_id": repo_id,
+            # `msg.task_id` is the engineering run's id (task_dispatcher creates
+            # the run and names the message after it). It travels into the
+            # subgraph as what it is: one attempt inside the initiating run.
+            "run_id": task_id,
+            # Who every worker this subgraph asks for belongs to, derived once,
+            # here, from the message that started the work — the project, the
+            # run that initiated it, and this attempt. The nodes below stamp
+            # this value; none of them recomputes it, so nothing downstream can
+            # substitute a different identity.
+            "ownership": WorkerOwnership.for_engineering(msg),
             "commit_sha": None,
             "worker_id": existing_worker_id,
             "engineering_status": EngineeringStatus.IDLE,

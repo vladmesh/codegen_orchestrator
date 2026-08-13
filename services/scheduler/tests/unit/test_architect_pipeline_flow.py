@@ -7,11 +7,12 @@ Architect decomposition is now in langgraph service (tested separately).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
@@ -75,6 +76,14 @@ class TestDispatcherPipelineFlow:
     @pytest.fixture
     def api_client(self):
         client = AsyncMock()
+        # The dispatcher reads the project before it dispatches: it decides
+        # whether the task may go out at all, and it carries the run the work
+        # was initiated for onto the engineering message.
+        project = MagicMock()
+        project.status = ProjectStatus.ACTIVE.value
+        project.config = {"workspace_ready": True}
+        project.initiating_run_id = "live-run-1"
+        client.get_project.return_value = project
         return client
 
     @pytest.fixture

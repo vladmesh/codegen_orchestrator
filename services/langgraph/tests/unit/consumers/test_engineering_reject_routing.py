@@ -17,6 +17,7 @@ def _make_job_data(**overrides) -> dict:
     defaults = {
         "task_id": "eng-test-1",
         "project_id": "proj-1",
+        "initiating_run_id": "live-1",
         "telegram_chat_id": "123",
         "callback_stream": "cb:123",
         "action": "fix",

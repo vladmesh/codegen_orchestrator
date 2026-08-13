@@ -63,6 +63,7 @@ async def _make_project(client: AsyncClient, title: str) -> tuple[str, str]:
         json={
             "id": project_id,
             "title": title,
+            "initiating_run_id": "test-run-1",
             "status": ProjectStatus.ACTIVE.value,
             "config": {"modules": ["backend", "tg_bot"]},
         },

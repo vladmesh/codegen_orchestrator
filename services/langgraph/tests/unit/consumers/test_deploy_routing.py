@@ -41,6 +41,7 @@ class TestHandleDeploySuccess:
         mock_redis = AsyncMock()
         project = ProjectDTO(
             id="00000000-0000-0000-0000-000000000001",
+            initiating_run_id="test-run-1",
             title="test-project",
             slug="test-project-0000",
             status=ProjectStatus.ACTIVE,
@@ -82,6 +83,7 @@ class TestHandleDeploySuccess:
         mock_redis = AsyncMock()
         project = ProjectDTO(
             id="00000000-0000-0000-0000-000000000001",
+            initiating_run_id="test-run-1",
             title="test",
             slug="test-0000",
             status=ProjectStatus.ACTIVE,

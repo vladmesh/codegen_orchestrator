@@ -33,6 +33,7 @@ def _make_project(
 ) -> ProjectDTO:
     return ProjectDTO(
         id=project_id or PROJ_UUID,
+        initiating_run_id="test-run-1",
         title="test-project",
         slug="test-project-0000",
         status=ProjectStatus(status),

@@ -87,6 +87,7 @@ class TestLangGraphIntegration:
         msg = EngineeringMessage(
             task_id=run_id,
             project_id=project_id,
+            initiating_run_id="live-run-1",
             telegram_chat_id="test-user-1",
             action="create",
             description="Build a sample microservice",
@@ -149,6 +150,7 @@ class TestLangGraphIntegration:
         msg = EngineeringMessage(
             task_id=run_id,
             project_id=fake_project_id,
+            initiating_run_id="live-run-1",
             telegram_chat_id="test-user-2",
             action="create",
             planning_task_id=task["id"],
@@ -200,6 +202,7 @@ class TestLangGraphIntegration:
         msg = EngineeringMessage(
             task_id=run_id,
             project_id=project_id,
+            initiating_run_id="live-run-1",
             telegram_chat_id="test-user-3",
             action="create",
             planning_task_id=task["id"],

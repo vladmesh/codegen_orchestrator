@@ -8,6 +8,7 @@ import pytest
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.queues.worker import WorkerOwnership
 from src.clients.worker_spawner import SpawnResult
 
 _PROJECT_ID = uuid.uuid4()
@@ -66,6 +67,10 @@ class TestDeveloperNodeWorkerId:
             {
                 "project_spec": _project(status=ProjectStatus.ACTIVE.value),
                 "action": "create",
+                "run_id": "eng-1",
+                "ownership": WorkerOwnership(
+                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                ),
                 "errors": [],
             }
         )

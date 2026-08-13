@@ -12,6 +12,7 @@ from shared.contracts.queues.worker import (
     DeleteWorkerCommand,
     StatusWorkerCommand,
     WorkerConfig,
+    WorkerOwnership,
     AgentType,
     WorkerCapability,
     CreateWorkerResponse,
@@ -81,6 +82,7 @@ def _create_command() -> CreateWorkerCommand:
             instructions="Do work",
             allowed_commands=[],
             capabilities=[WorkerCapability.GIT],
+            ownership=WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
         ),
     )
 
@@ -227,6 +229,11 @@ def _qa_create_payload(agent_type: str) -> dict:
             "instructions": "# QA executor",
             "allowed_commands": ["*"],
             "capabilities": [],
+            "ownership": {
+                "project_id": "proj-qa",
+                "run_id": "live-run-1",
+                "attempt_id": "qa-run-1",
+            },
         },
     }
 

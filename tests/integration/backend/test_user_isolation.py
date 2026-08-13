@@ -40,6 +40,7 @@ async def user_projects(user_api_client, seed_users):
             "/api/projects/",
             json={
                 "title": name,
+                "initiating_run_id": "test-run-1",
                 "status": "draft",
                 "config": {"modules": ["backend"]},
             },
@@ -105,6 +106,7 @@ async def test_create_without_header_returns_400(api_client):
         "/api/projects/",
         json={
             "title": "no-owner",
+            "initiating_run_id": "test-run-1",
             "status": "draft",
             "config": {},
         },

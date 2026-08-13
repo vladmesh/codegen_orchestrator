@@ -18,7 +18,13 @@ async def test_create_and_get_project(api):
 
     resp = await api.post(
         "/api/projects/",
-        json={"id": project_id, "title": name, "status": ProjectStatus.DRAFT, "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": project_id,
+            "title": name,
+            "status": ProjectStatus.DRAFT,
+            "config": {},
+        },
     )
     resp.raise_for_status()
     assert resp.status_code == 201
@@ -45,6 +51,7 @@ async def test_create_story_for_project(api, test_project):
         json={
             "project_id": test_project["id"],
             "title": "Live test story",
+            "initiating_run_id": "test-run-1",
             "description": "Automated live test",
         },
     )

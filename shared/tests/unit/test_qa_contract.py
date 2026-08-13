@@ -15,6 +15,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
@@ -30,6 +31,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
@@ -46,6 +48,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
@@ -58,6 +61,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=1,
@@ -70,6 +74,7 @@ class TestQAMessage:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
@@ -96,6 +101,7 @@ class TestQAMessage:
             QAMessage(
                 story_id="story-abc",
                 project_id="proj-123",
+                initiating_run_id="live-run-1",
                 telegram_chat_id="user-1",
                 deployed_url="https://example.com",
                 application_id=17,
@@ -107,6 +113,7 @@ class TestQAMessage:
             QAMessage(
                 story_id="story-abc",
                 project_id="proj-123",
+                initiating_run_id="live-run-1",
                 telegram_chat_id="user-1",
                 deployed_url="https://example.com",
                 application_id=17,
@@ -144,6 +151,7 @@ class TestQAMessageRunId:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
@@ -156,6 +164,7 @@ class TestQAMessageRunId:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
@@ -172,6 +181,7 @@ class TestQAMessageOptionalStoryId:
         """QAMessage story_id defaults to empty string for standalone triggers."""
         msg = QAMessage(
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
@@ -183,6 +193,7 @@ class TestQAMessageOptionalStoryId:
         msg = QAMessage(
             story_id="story-abc",
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
@@ -194,6 +205,7 @@ class TestQAMessageOptionalStoryId:
         """QAMessage without story_id survives serialization."""
         msg = QAMessage(
             project_id="proj-123",
+            initiating_run_id="live-run-1",
             telegram_chat_id="user-1",
             deployed_url="https://example.com",
             application_id=17,
@@ -207,6 +219,7 @@ class TestQAMessageOptionalStoryId:
         """QAMessage works when story_id is missing from input dict."""
         data = {
             "project_id": "proj-123",
+            "initiating_run_id": "live-run-1",
             "telegram_chat_id": "user-1",
             "deployed_url": "https://example.com",
             "application_id": 17,

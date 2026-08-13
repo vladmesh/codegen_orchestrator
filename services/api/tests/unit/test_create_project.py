@@ -50,6 +50,7 @@ def _mock_session(existing_project=None, resolve_user="NOT_SET"):
 
 PROJECT_PAYLOAD = {
     "id": PROJECT_UUID,
+    "initiating_run_id": "test-run-1",
     "title": "My Project",
     "status": "draft",
     "config": {"modules": ["backend"]},

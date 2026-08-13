@@ -22,6 +22,7 @@ def _make_project():
     project.config = {}
     project.project_spec = None
     project.owner_id = 1
+    project.initiating_run_id = "test-run-1"
     project.created_at = datetime.now(UTC)
     project.updated_at = datetime.now(UTC)
     return project

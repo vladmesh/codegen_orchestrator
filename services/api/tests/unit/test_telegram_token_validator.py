@@ -35,7 +35,7 @@ class _EmptyResult:
 
 
 def _project() -> Project:
-    return Project(id=uuid.uuid4(), title="Palindrome", owner_id=1)
+    return Project(id=uuid.uuid4(), title="Palindrome", owner_id=1, initiating_run_id="test-run-1")
 
 
 # Captured before patching: the factory below must not call the patched name.

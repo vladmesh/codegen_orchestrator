@@ -96,6 +96,12 @@ async def create_project(
         "title": title,
         "status": ProjectStatus.DRAFT.value,
         "config": proj_config,
+        # The run this project's work is being done for. A user request is the
+        # run here — the PO agent is the thing that starts it, so it names it,
+        # once, at creation. Every worker created for this project later is
+        # stamped with this id. (An experiment matrix supplies its combination's
+        # run id in the same field instead of minting one.)
+        "initiating_run_id": f"po-{uuid.uuid4().hex[:12]}",
     }
 
     api = _get_api()

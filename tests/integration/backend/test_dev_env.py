@@ -17,6 +17,7 @@ from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 from .conftest import WORKSPACE_BASE_PATH, wait_for_create_response
@@ -27,6 +28,18 @@ WORKER_MANAGER_URL = os.getenv("WORKER_MANAGER_URL", "http://worker-manager:8000
 
 REDIS_STREAM_COMMANDS = "worker:commands"
 REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
+
+
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(
+        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
+    )
 
 
 @pytest.mark.integration
@@ -46,6 +59,7 @@ class TestDevEnvIntegration:
                 instructions="Test workspace",
                 allowed_commands=[],
                 capabilities=[],
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -90,6 +104,7 @@ class TestDevEnvIntegration:
                 instructions="Test compose",
                 allowed_commands=[],
                 capabilities=[],
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -150,6 +165,7 @@ class TestDevEnvIntegration:
                 instructions="Test delete",
                 allowed_commands=[],
                 capabilities=[],
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )

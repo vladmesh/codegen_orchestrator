@@ -32,6 +32,7 @@ class TestCreateProjectPayload:
         payload = {
             "id": project_id,
             "title": "My Bot",
+            "initiating_run_id": "po-run-1",
             "status": "draft",
             "config": {
                 "modules": ["backend", "tg_bot"],
@@ -48,6 +49,7 @@ class TestCreateProjectPayload:
         payload = {
             "id": str(uuid.uuid4()),
             "title": "Test",
+            "initiating_run_id": "po-run-1",
             "status": "draft",
             "config": {},
         }
@@ -59,6 +61,7 @@ class TestCreateProjectPayload:
         payload = {
             "id": "abc123",
             "title": "Test",
+            "initiating_run_id": "po-run-1",
             "status": "draft",
             "config": {},
         }
@@ -67,7 +70,12 @@ class TestCreateProjectPayload:
 
     def test_none_id_allowed(self):
         """ProjectCreate allows id=None (auto-generated)."""
-        payload = {"title": "Test", "status": "draft", "config": {}}
+        payload = {
+            "title": "Test",
+            "initiating_run_id": "po-run-1",
+            "status": "draft",
+            "config": {},
+        }
         schema = ProjectCreate.model_validate(payload)
         assert schema.id is None
 
@@ -76,6 +84,7 @@ class TestCreateProjectPayload:
         payload = {
             "id": str(uuid.uuid4()),
             "title": "Test",
+            "initiating_run_id": "po-run-1",
             "status": "draft",
             "config": {
                 "modules": ["backend"],

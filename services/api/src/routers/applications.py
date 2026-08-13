@@ -43,6 +43,7 @@ from ..schemas.actions import AdminAction
 from ..schemas.repository import RepositoryRead
 from ..schemas.run import RunRead
 from ..utils.telegram_binding import release_bot_binding
+from ._ownership import initiating_run_or_conflict
 from ._recipients import ProjectRecipient, resolve_project_chat_id
 
 logger = structlog.get_logger()
@@ -564,6 +565,18 @@ async def run_e2e(
             detail=f"Repository {repo.id} has no acceptance_criteria. Cannot run QA.",
         )
 
+    # The QA executor this leads to belongs to the run the project was created
+    # for, exactly as a developer worker does. Resolved before the Run row for
+    # the same reason as the criteria above: a project that cannot own a worker
+    # must not leave a QA run behind that nothing will ever pick up.
+    project = await db.get(Project, repo.project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {repo.project_id} not found",
+        )
+    initiating_run_id = initiating_run_or_conflict(project)
+
     # Create Run
     run_id = f"qa-{uuid.uuid4().hex[:12]}"
     run = Run(
@@ -577,9 +590,9 @@ async def run_e2e(
     await db.refresh(run)
     await db.refresh(app)
 
-    # Publish QA message
     msg = QAMessage(
         project_id=str(repo.project_id),
+        initiating_run_id=initiating_run_id,
         telegram_chat_id=await resolve_project_chat_id(db, repo.project_id, event="qa_run"),
         deployed_url=deployed_url,
         application_id=application_id,

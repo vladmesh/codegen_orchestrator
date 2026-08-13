@@ -139,7 +139,12 @@ async def _project(api_client) -> str:
     await api_client.request(
         "POST",
         "projects/",
-        json={"id": project_id, "title": "Temporary Access Sweep", "config": {}},
+        json={
+            "id": project_id,
+            "title": "Temporary Access Sweep",
+            "initiating_run_id": "test-run-1",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     return project_id
@@ -169,6 +174,7 @@ async def _grant(
             qa_message=QAMessage(
                 story_id="story-1",
                 project_id=project_id,
+                initiating_run_id="live-run-1",
                 telegram_chat_id="",
                 deployed_url="https://example.com",
                 # The deployment QA tested the borrowed identity on. The reading

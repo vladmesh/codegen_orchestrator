@@ -23,6 +23,7 @@ from pydantic import ValidationError
 import pytest
 
 from shared.contracts.dto.run_result import QABlockerCategory
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from src.clients.qa_worker import QAExecutorRun, QAExecutorUnavailable
 from src.config.settings import Settings
@@ -42,6 +43,9 @@ TARGET = QATarget(
     project_name="weather-bot",
     deployed_url="http://1.2.3.4:8000",
     allocated_ports=frozenset({8000}),
+)
+OWNERSHIP = WorkerOwnership(
+    project_id="proj-weather", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
 )
 PHYSICAL_ROOT = "/srv/deployments/weather-bot"
 CONTAINER = "weather-bot-backend-1"
@@ -177,6 +181,7 @@ async def _run(*, executor, settings, runtime=CLAUDE_RUNTIME, tmp_path, graph=No
 async def _invoke(runtime, settings):
     return await run_qa_centrally(
         target=TARGET,
+        ownership=OWNERSHIP,
         fleet_ssh_key="fleet-key",
         acceptance_criteria="- GET /health returns 200",
         runtime=runtime,

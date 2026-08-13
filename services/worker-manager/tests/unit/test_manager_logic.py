@@ -5,9 +5,15 @@ import uuid
 from fakeredis import aioredis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 from src.manager import WorkerManager
+
+
+# Every worker is created for somebody. These tests are not about who, so they
+# use one owner; the tests that are about ownership name their own.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
 
 
 def _make_docker_mock():
@@ -104,6 +110,7 @@ async def test_instruction_injection_failure_aborts_worker_creation():
                 worker_id="w-injection-failure",
                 capabilities=["git"],
                 base_image="worker-base:latest",
+                ownership=_OWNERSHIP,
                 agent_type=AgentType.CLAUDE,
                 auth_mode="api_key",
                 api_key="test-api-key",
@@ -123,7 +130,7 @@ async def test_create_worker_unit():
     manager = WorkerManager(redis=redis, docker_client=wrapper)
 
     worker_id = str(uuid.uuid4())
-    res = await manager.create_worker(worker_id, "worker:latest")
+    res = await manager.create_worker(worker_id, "worker:latest", ownership=_OWNERSHIP)
 
     assert res == "test-id"
     wrapper.run_container.assert_awaited_once()
@@ -157,6 +164,7 @@ async def test_network_selection_uses_worker_network():
             worker_id="w1",
             capabilities=["git"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             agent_type="claude",
             repo_id="repo-1",
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
@@ -202,6 +210,7 @@ async def test_production_launch_uses_hardened_container_config(agent_type):
             worker_id=f"w-{agent_type.value}",
             capabilities=["git"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             agent_type=agent_type,
             auth_mode="api_key",
             api_key="test-api-key",
@@ -248,6 +257,7 @@ async def test_production_launch_rejects_host_network_configuration():
                 worker_id="w-host-network",
                 capabilities=["git"],
                 base_image="worker-base:latest",
+                ownership=_OWNERSHIP,
                 agent_type=AgentType.CLAUDE,
                 auth_mode="api_key",
                 api_key="test-api-key",
@@ -286,6 +296,7 @@ async def test_dind_launch_keeps_explicit_test_host_network_compatibility():
             worker_id="w-dind-host-network",
             capabilities=["git"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             agent_type=AgentType.CLAUDE,
             auth_mode="api_key",
             api_key="test-api-key",
@@ -329,6 +340,7 @@ async def test_ownership_preparation_failure_aborts_before_container_launch():
                 worker_id="w-ownership-failure",
                 capabilities=["git"],
                 base_image="worker-base:latest",
+                ownership=_OWNERSHIP,
                 agent_type=AgentType.CLAUDE,
                 auth_mode="api_key",
                 api_key="test-api-key",
@@ -347,7 +359,9 @@ async def test_create_worker_creates_dev_network():
     manager = WorkerManager(redis=redis, docker_client=wrapper)
     worker_id = "worker-net-test"
 
-    await manager.create_worker(worker_id, "worker:latest", network_name="codegen_internal", create_dev_network=True)
+    await manager.create_worker(
+        worker_id, "worker:latest", ownership=_OWNERSHIP, network_name="codegen_internal", create_dev_network=True
+    )
 
     wrapper.create_network.assert_awaited_once_with(f"dev_proj_{worker_id}")
 
@@ -361,7 +375,9 @@ async def test_create_worker_connects_to_both_networks():
     manager = WorkerManager(redis=redis, docker_client=wrapper)
     worker_id = "worker-dual-net"
 
-    await manager.create_worker(worker_id, "worker:latest", network_name="codegen_internal", create_dev_network=True)
+    await manager.create_worker(
+        worker_id, "worker:latest", ownership=_OWNERSHIP, network_name="codegen_internal", create_dev_network=True
+    )
 
     # Should have been called to attach to the dev network
     wrapper.connect_network.assert_awaited_once_with(f"dev_proj_{worker_id}", "test-id")
@@ -379,6 +395,7 @@ async def test_create_worker_creates_workspace_dir():
     await manager.create_worker(
         worker_id,
         "worker:latest",
+        ownership=_OWNERSHIP,
         network_name="codegen_internal",
         create_dev_network=True,
         workspace_path="/tmp/codegen/workspaces/worker-ws-test/workspace",
@@ -585,7 +602,12 @@ async def test_check_project_lock_cleans_dead_worker():
 
     # Simulate stale state: project in active set, worker keys exist but status is DEAD
     await redis.sadd("workspace:active_projects", project_id)
-    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(
+        f"worker:meta:{worker_id}",
+        # The lock holder is the worker that acquired, and it says so itself.
+        # Ownership is on every worker of this project and never means this.
+        mapping={"project_id": project_id},
+    )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.DEAD})
 
     result = await manager._check_project_lock(project_id)
@@ -609,7 +631,12 @@ async def test_check_project_lock_cleans_failed_worker():
     worker_id = "worker-failed-456"
 
     await redis.sadd("workspace:active_projects", project_id)
-    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(
+        f"worker:meta:{worker_id}",
+        # The lock holder is the worker that acquired, and it says so itself.
+        # Ownership is on every worker of this project and never means this.
+        mapping={"project_id": project_id},
+    )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
 
     result = await manager._check_project_lock(project_id)
@@ -629,7 +656,12 @@ async def test_check_project_lock_cleans_stopped_worker():
     worker_id = "worker-stopped-789"
 
     await redis.sadd("workspace:active_projects", project_id)
-    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(
+        f"worker:meta:{worker_id}",
+        # The lock holder is the worker that acquired, and it says so itself.
+        # Ownership is on every worker of this project and never means this.
+        mapping={"project_id": project_id},
+    )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
 
     result = await manager._check_project_lock(project_id)
@@ -648,7 +680,12 @@ async def test_check_project_lock_keeps_running_worker():
     worker_id = "worker-running-abc"
 
     await redis.sadd("workspace:active_projects", project_id)
-    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(
+        f"worker:meta:{worker_id}",
+        # The lock holder is the worker that acquired, and it says so itself.
+        # Ownership is on every worker of this project and never means this.
+        mapping={"project_id": project_id},
+    )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
 
     result = await manager._check_project_lock(project_id)
@@ -670,7 +707,12 @@ async def test_check_project_lock_keeps_starting_worker():
     worker_id = "worker-starting-def"
 
     await redis.sadd("workspace:active_projects", project_id)
-    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(
+        f"worker:meta:{worker_id}",
+        # The lock holder is the worker that acquired, and it says so itself.
+        # Ownership is on every worker of this project and never means this.
+        mapping={"project_id": project_id},
+    )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": "STARTING"})
 
     result = await manager._check_project_lock(project_id)
@@ -712,6 +754,7 @@ async def test_checkout_branch_called_when_branch_provided():
             worker_id="w-branch-test",
             capabilities=["git"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             agent_type="claude",
             repo_id="repo-1",
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
@@ -770,6 +813,7 @@ async def test_no_checkout_branch_when_branch_is_none():
             worker_id="w-no-branch",
             capabilities=["git"],
             base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
             agent_type="claude",
             repo_id="repo-1",
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},

@@ -8,6 +8,7 @@ from shared.contracts.queues.worker import (
     DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 from .conftest import (
@@ -23,6 +24,18 @@ async def cleanup_worker(redis_client, worker_id: str | None):
         return
     cmd = DeleteWorkerCommand(request_id=f"cleanup-{worker_id}", worker_id=worker_id)
     await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
+
+
+def _ownership() -> WorkerOwnership:
+    """A distinct owner per worker; these tests are not about who.
+
+    Distinct on purpose: two workers of one project serialize on that project's
+    workspace lock, so every worker here is made for its own project and run.
+    """
+    token = uuid4().hex[:8]
+    return WorkerOwnership(
+        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
+    )
 
 
 @pytest.mark.integration
@@ -45,6 +58,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -95,6 +109,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_ownership(),
                 repo_id=scaffolded_workspace,
             ),
         )

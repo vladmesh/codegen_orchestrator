@@ -117,6 +117,7 @@ def qa_message():
         "application_id": 1,
         "acceptance_criteria": AGENT_CRITERIA,
         "run_id": "qa-run-1",
+        "initiating_run_id": "live-1",
         "bot_username": None,
         "qa_attempt": 0,
     }
@@ -130,6 +131,7 @@ def api(request):
         mock.get_project = AsyncMock(
             return_value=ProjectDTO(
                 id="116c9678-5872-4ce5-8332-9a267ab27604",
+                initiating_run_id="test-run-1",
                 title="weather_bot",
                 slug="weather-bot-0000",
                 status=ProjectStatus.ACTIVE,

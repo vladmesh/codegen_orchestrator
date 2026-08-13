@@ -254,8 +254,16 @@ async def seed_project(api_client):
         status: str = "draft",
         config: dict | None = None,
         repository_url: str | None = None,
+        initiating_run_id: str = "backend-integration-run",
     ) -> dict:
-        body = {"title": name, "status": status, "config": config or {}}
+        body = {
+            "title": name,
+            "status": status,
+            "config": config or {},
+            # Every project is created for a run — the seeded ones name this
+            # suite as theirs, so the workers they lead to are attributable.
+            "initiating_run_id": initiating_run_id,
+        }
         if repository_url:
             body["repository_url"] = repository_url
         resp = await api_client.post(

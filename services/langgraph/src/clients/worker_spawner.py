@@ -19,6 +19,7 @@ from shared.contracts.queues.worker import (
     DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
+    WorkerOwnership,
 )
 from shared.contracts.queues.worker_result import (
     WorkerBlockedResult,
@@ -342,7 +343,8 @@ async def request_spawn(
     task_content: str,
     task_title: str = "AI generated changes",
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
-    project_id: str | None = None,
+    *,
+    ownership: WorkerOwnership,
     repo_id: str | None = None,
     agent_type: AgentType = AgentType.CLAUDE,
     story_md: str | None = None,
@@ -351,6 +353,12 @@ async def request_spawn(
     """Request a coding worker spawn and wait for result.
 
     Uses worker-manager to create a developer worker container.
+
+    `ownership` is the project and the engineering run this worker is being made
+    for. It is required, and worker-manager writes it onto the container and into
+    the worker's Redis metadata at creation — this is the only moment the fact is
+    known for certain, and a worker that dies immediately is attributable from it
+    afterwards.
     """
     request_id = str(uuid.uuid4())
     settings = get_settings()
@@ -395,11 +403,11 @@ async def request_spawn(
                     "GITHUB_TOKEN": github_token,
                     "REPO_NAME": repo,
                 },
-                project_id=project_id,
+                ownership=ownership,
                 repo_id=repo_id,
                 branch=branch,
             ),
-            context={"source": "langgraph", "repo": repo, "project_id": project_id or ""},
+            context={"source": "langgraph", "repo": repo, "project_id": ownership.project_id},
         )
 
         await redis_client.xadd(WORKER_COMMANDS, {"data": create_cmd.model_dump_json()})

@@ -138,6 +138,7 @@ class TestEngineeringFlow:
             msg = EngineeringMessage(
                 task_id=task_id,
                 project_id=project_id,
+                initiating_run_id="live-run-1",
                 telegram_chat_id=1,  # Test user
             )
             await redis.xadd("engineering:queue", {"data": msg.model_dump_json()})

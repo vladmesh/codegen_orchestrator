@@ -38,7 +38,12 @@ async def _project_with_run(async_client: AsyncClient) -> tuple[str, str]:
 
     project = await async_client.post(
         "/api/projects/",
-        json={"id": project_id, "title": "Temporary Access", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": project_id,
+            "title": "Temporary Access",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert project.status_code == status.HTTP_201_CREATED
@@ -64,6 +69,7 @@ def _grant_payload(project_id: str, run_id: str, **overrides) -> dict:
         "qa_message": {
             "story_id": "story-1",
             "project_id": project_id,
+            "initiating_run_id": "live-1",
             "telegram_chat_id": "",
             "deployed_url": "https://example.com",
             "application_id": 42,
