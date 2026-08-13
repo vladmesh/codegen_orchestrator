@@ -1491,6 +1491,33 @@ def cleanup_server_container(ctx: dict) -> None:
             raise RuntimeError(result.stderr or result.stdout)
 
 
+async def fence_owned_work(api_internal: httpx.AsyncClient, ctx: dict) -> None:
+    """Stop this run from producing or using any more resources.
+
+    The first phase of cleaning a run, and a precondition of the three that
+    follow it (capture, remove, verify). Everything that can still create a
+    container, a network or a Redis key for this project is cancelled here and
+    then waited out, so that what a later capture reads is what the run ended
+    with rather than a moving target, and so that nothing is removed out from
+    under work that is still running.
+
+    It raises rather than returning a verdict: a caller that could not establish
+    the fence has no business removing anything, and must say so loudly.
+    """
+    # XDEL cannot cancel a claimed message. Fence the consumer and wait for any
+    # active scaffold job before deleting or verifying external resources.
+    require_unscoped_run_observer(api_internal)
+    cancel_owned_scaffold(ctx)
+    await cancel_owned_runs(api_internal, ctx)
+    await wait_for_owned_runs(api_internal, ctx)
+    cancel_owned_active_work(ctx)
+    cleanup_owned_capability_work(ctx)
+    # The consumer fence is what stops new runs from being produced, so prove
+    # run quiescence once more behind it: a run created while the first pass
+    # was still waiting would otherwise survive into external teardown.
+    await wait_for_owned_runs(api_internal, ctx)
+
+
 async def cleanup_all(
     api_internal: httpx.AsyncClient,
     api_observer: httpx.AsyncClient | None,
@@ -1499,19 +1526,8 @@ async def cleanup_all(
     """Delete owned resources using an unscoped internal run observer."""
     errors: list[str] = []
 
-    # XDEL cannot cancel a claimed message. Fence the consumer and wait for any
-    # active scaffold job before deleting or verifying external resources.
     try:
-        require_unscoped_run_observer(api_internal)
-        cancel_owned_scaffold(ctx)
-        await cancel_owned_runs(api_internal, ctx)
-        await wait_for_owned_runs(api_internal, ctx)
-        cancel_owned_active_work(ctx)
-        cleanup_owned_capability_work(ctx)
-        # The consumer fence is what stops new runs from being produced, so prove
-        # run quiescence once more behind it: a run created while the first pass
-        # was still waiting would otherwise survive into external teardown.
-        await wait_for_owned_runs(api_internal, ctx)
+        await fence_owned_work(api_internal, ctx)
     except Exception as exc:
         errors.append(f"active work cancellation fence: {exc}")
         raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors)) from exc

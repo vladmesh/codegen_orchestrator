@@ -43,6 +43,19 @@
   stated missed capture naming the worker and why its ending is unknown, which is an acceptable
   ending, and only that record authorises the removal. A silent disappearance is not an outcome the
   harness can produce.
+- Cleaning a run has four phases in this order: fence, capture, remove, verify. Losing the harness
+  stops nothing else — the API, the scheduler and worker-manager carry the project on — so a worker
+  carrying the target run's label can still be working when an operator recovers a crashed harness.
+  `scripts/clean_live_tests.py::recover_ownership_manifests` therefore establishes the pre-existing
+  cancellation and quiescence fence *first*, through the harness's own
+  `pipeline_helpers.fence_owned_work` (extracted from `cleanup_all`, which still uses it, so there is
+  one fence and not two), and only then takes the run-scoped label sweep and the `ctx` round-trip. A
+  sweep in front of the fence is not a faster cleanup, it is a cleanup racing the run it is cleaning:
+  it would capture a running worker, account it and force-remove it while its run was still live.
+  A manifest whose fence cannot be established is reported loudly and otherwise left alone — nothing
+  of that run is captured or removed — which is the only case where refusing to clean is correct.
+  `scripts/tests/test_clean_live_tests.py` drives the real recovery over a fake API and a fake daemon
+  whose worker keeps running until its run is cancelled, and holds the phase order and the refusal.
 
 - The backend Docker-in-Docker suite runs on every push to `main`. The worker-ownership,
   run-ownership-propagation and run-evidence-by-label tests are the only real-daemon proof that a
