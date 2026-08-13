@@ -2923,3 +2923,15 @@ def test_production_agent_matrix_exposes_only_an_ephemeral_api():
     assert "-p 127.0.0.1:8000:8000 api" in workflow
     assert "curl -fsS http://127.0.0.1:8000/health" in workflow
     assert "up -d --no-deps --force-recreate api" not in workflow
+
+
+def test_production_agent_matrix_preserves_failure_evidence_and_has_read_only_diagnostics():
+    root = resolve_repo_root(Path(__file__))
+    workflow = (root / ".github/workflows/agent-matrix.yml").read_text(encoding="utf-8")
+
+    assert "diagnostics_only:" in workflow
+    assert "if: ${{ !inputs.diagnostics_only }}" in workflow
+    assert "if: ${{ inputs.diagnostics_only }}" in workflow
+    assert "Debug dump for QA=%s worker=%s" in workflow
+    assert "matrix_api_sidecar=absent" in workflow
+    assert "head -n 4" in workflow
