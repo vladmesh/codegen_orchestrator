@@ -70,6 +70,11 @@ jobs:
 
             cleanup_matrix() {
               docker rm -f "$matrix_api_container" >/dev/null 2>&1 || true
+              docker ps -a -q \
+                --filter label=com.codegen.type=worker \
+                --filter status=exited \
+                --filter name=worker-dev-live-te- \
+                | xargs -r docker rm -f >/dev/null
               set_qa_executor codex || true
             }
             trap cleanup_matrix EXIT
@@ -79,6 +84,14 @@ jobs:
             for fallback_var in QA_LLM_MODEL QA_LLM_BASE_URL QA_LLM_API_KEY; do
               test -z "$("${compose[@]}" exec -T qa-worker printenv "$fallback_var")"
             done
+
+            # The production deploy consumes registry images, whose :latest may
+            # lag the exact orchestrator revision under test. Build the complete
+            # worker chain from this checkout so services and worker-wrapper are
+            # guaranteed to speak the same contracts during the experiment.
+            make rebuild-worker-images
+            make check-worker-images
+            cleanup_matrix
 
             # Production intentionally does not publish the API port. Start an
             # isolated second API process for the host-side live harness; it
