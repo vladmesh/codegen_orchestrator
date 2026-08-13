@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.events import DockerEventsListener, WORKER_DEAD_STATUS
+from shared.contracts.queues.worker_result import WorkerFailedResult, parse_worker_result
 
 
 class TestHandleEvent:
@@ -43,7 +44,8 @@ class TestHandleEvent:
         payload = json.loads(data["data"])
         assert payload["status"] == "failed"
         assert "137" in payload["error"]
-        assert payload["worker_id"] == "dev-todo-api-3f2f114f"
+        assert "worker_id" not in payload
+        assert isinstance(parse_worker_result(payload), WorkerFailedResult)
 
     @pytest.mark.asyncio
     async def test_marks_worker_status_as_dead(self):

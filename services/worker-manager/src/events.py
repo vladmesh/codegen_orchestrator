@@ -6,13 +6,14 @@ messages to the worker's output stream, unblocking any waiting consumers
 """
 
 import asyncio
-import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import docker
 import redis.asyncio as aioredis
 import structlog
+
+from shared.contracts.queues.worker_result import WorkerFailedResult
 
 from shared.contracts.dto.worker import WorkerStatus
 
@@ -137,13 +138,7 @@ class DockerEventsListener:
 
         # 1. Publish error to worker output stream (unblocks _wait_for_response)
         output_stream = f"worker:{worker_id}:output"
-        error_payload = json.dumps(
-            {
-                "status": "failed",
-                "error": f"Worker container died (exit_code={exit_code})",
-                "worker_id": worker_id,
-            }
-        )
+        error_payload = WorkerFailedResult(error=f"Worker container died (exit_code={exit_code})").model_dump_json()
         try:
             await self.redis.xadd(output_stream, {"data": error_payload})
             logger.info("worker_death_published", worker_id=worker_id, stream=output_stream)
