@@ -535,6 +535,10 @@ jobs:
   # the production deploy pulls exactly the tag of the revision it deploys and refuses
   # anything else (infra/scripts/pull-worker-images.sh). Nothing publishes a mutable
   # :latest: that is what put stale workers on a green deploy in GitHub #278.
+  #
+  # A rerun of this job for an already-published SHA re-verifies and records that
+  # release without pushing; it never rewrites a published tag. A SHA left half
+  # published by a failed push is refused rather than completed — see the script.
   publish-worker-images:
     name: Publish Worker Base Images
     runs-on: ubuntu-latest

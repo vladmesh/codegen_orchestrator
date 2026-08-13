@@ -460,12 +460,31 @@ Every green commit on `main` publishes the whole worker chain to GHCR under that
 (`publish-worker-images` in `.github/workflows/ci.yml`, via `infra/scripts/publish-worker-images.sh`).
 The tag is the SHA; nothing publishes a mutable `:latest`.
 
+A published SHA is written once. Before it builds anything, the publish job resolves every tag of
+the chain for that SHA:
+
+| what the registry has | what happens |
+| --- | --- |
+| nothing | build the chain, check each image's source hash, push all four, record the digests |
+| all four | already released: re-verify from the published digests, record, push nothing, exit 0 |
+| some | refused (exit 6), naming which tags exist and which are missing |
+
+The last row is what a push that fails mid-chain leaves behind. Completing it is a decision, not a
+retry: delete those package versions and rerun, or publish the next commit. Nothing in the script
+pushes over a tag that already resolves, so **rebuilding an already-published commit fails by
+design** — the digests published under that SHA are what a deploy verifies, and replacing them
+would change what an already-recorded release means.
+
 The deploy pulls exactly the tag of the revision it is deploying and checks that every image
 carries `org.codegen.worker_source_hash` equal to the source hash of that checkout
 (`infra/scripts/pull-worker-images.sh`). A SHA that was never published, an image without the
 label, or an image built from other sources fails the deploy — with the image, the expected hash
-and the found hash — before `compose up -d` touches what is running. The deploy run's summary and
-artifact record the deployed SHA and the digests it verified.
+and the found hash — before `compose up -d` touches what is running.
+
+The tag is resolved to a digest once, and the pull, the label check, the local retag and the
+record all name that `<repository>@sha256:…`. The pull writes its record on the host and the
+deploy copies that file back into the run summary and an artifact, so what is reported as deployed
+is the release that was verified rather than a second lookup of the same tag.
 
 So a commit can only be deployed once its CI publish job has run for it. Deploying an unpublished
 revision is a refusal, not a fallback to yesterday's workers: that fallback is what put stale
@@ -494,7 +513,11 @@ sudo systemctl enable --now orchestrator-backup.timer
 # 4. Verify timer
 systemctl list-timers orchestrator-backup
 
-# 5. Run first deploy from GitHub Actions
+# 5. Check that the deploy user can resolve a tag to a digest. The worker image
+#    verification resolves each published tag once and works from that digest.
+docker buildx imagetools inspect alpine:3.20 --format '{{.Manifest.Digest}}'
+
+# 6. Run first deploy from GitHub Actions
 ```
 
 ## DB Backup

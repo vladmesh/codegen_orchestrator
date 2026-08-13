@@ -6,6 +6,14 @@
   `main` builds common and then the claude, codex and factory images from that exact common, and
   publishes all four to GHCR under that commit's SHA, recording the published digests, the SHA and
   the source hash as a run artifact. Nothing publishes a mutable `:latest` any more.
+- A published SHA is never rewritten. The publish job resolves the whole chain in the registry
+  before it builds anything: an already-published SHA is re-verified and recorded without a push, a
+  half-published SHA is refused naming which tags exist and which are missing, and only a SHA with
+  nothing published is built and pushed. A rebuild of an already-published commit therefore fails
+  by design — the published digests are what a deploy verifies.
+- The deploy records the digests it actually verified. The pull half resolves each tag to a digest
+  once and then pulls, checks the source hash and retags from `<repository>@sha256:…`, writing that
+  record on the host; the deploy copies it back rather than looking the tags up a second time.
 - The production deploy pulls the worker images of the revision it deploys by exact tag — there is
   no default tag and no fallback — and verifies that each one carries the source hash of the
   checked-out revision. A missing image, a missing label or a stale label fails the deploy naming

@@ -212,20 +212,26 @@ jobs:
             GHCR_TOKEN='${{ secrets.GHCR_TOKEN }}' \
             GHCR_OWNER='${{ github.repository_owner }}' \
             WORKER_IMAGE_TAG='${{ github.sha }}' \
+            DIGEST_FILE='${{ env.DEPLOY_PATH }}/deployed-worker-images.json' \
             bash infra/scripts/pull-worker-images.sh
 
-      # What the deploy is made of, on the record: the revision and the digests the
-      # verified tags resolve to in the registry.
-      - name: Record deployed revision and worker image digests
+      # What the deploy is made of, on the record. This does not look the tags up
+      # again: it copies back the record the step above wrote from the digests it
+      # pulled and verified, so the recorded release is the one that was checked.
+      - name: Record deployed revision and verified worker image digests
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GHCR_OWNER: ${{ github.repository_owner }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
           GIT_SHA: ${{ github.sha }}
           DIGEST_FILE: ${{ runner.temp }}/deployed-worker-images.json
         run: |
           set -euo pipefail
-          SOURCE_HASH="$(python3 scripts/shared_freshness.py hash)" \
-            bash infra/scripts/record-worker-image-digests.sh
+          key="$(mktemp)"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${key}"
+          chmod 600 "${key}"
+          ssh -i "${key}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+            "deploy@${PROD_HOST}" \
+            "cat ${{ env.DEPLOY_PATH }}/deployed-worker-images.json" > "${DIGEST_FILE}"
           {
             echo "### Deployed revision ${GIT_SHA}"
             echo

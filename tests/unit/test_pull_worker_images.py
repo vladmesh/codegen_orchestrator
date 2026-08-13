@@ -12,6 +12,7 @@ that was published without a label, which is different again from an image built
 other sources.
 """
 
+import json
 from pathlib import Path
 import subprocess
 
@@ -20,15 +21,18 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PULL_SCRIPT = REPO_ROOT / "infra" / "scripts" / "pull-worker-images.sh"
 CHAIN = ("worker-base-common", "worker-base-claude", "worker-base-factory", "worker-base-codex")
+DEPLOYED_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 EXIT_USAGE = 1
 EXIT_MISSING_IMAGE = 3
 EXIT_MISSING_LABEL = 4
 EXIT_STALE_LABEL = 5
 
-# A fake docker. `pull` fails for FAKE_MISSING_IMAGE, `inspect` answers the label of
-# FAKE_LABEL_DEFAULT unless the image is FAKE_ODD_IMAGE, which answers FAKE_ODD_LABEL.
-# Every call is appended to FAKE_DOCKER_LOG so a test can see what the script did.
+# A fake docker. `buildx imagetools inspect` answers a digest per image and fails for
+# FAKE_MISSING_IMAGE the way a registry answers for an unpublished tag; `inspect`
+# answers the label FAKE_LABEL_DEFAULT unless the image is FAKE_ODD_IMAGE, which
+# answers FAKE_ODD_LABEL. Every call is appended to FAKE_DOCKER_LOG so a test can see
+# what the script did.
 FAKE_DOCKER = """#!/usr/bin/env bash
 set -uo pipefail
 command="$1"
@@ -37,6 +41,7 @@ echo "${command} $*" >> "${FAKE_DOCKER_LOG}"
 
 image_of() {
     local reference="${1##*/}"
+    reference="${reference%%@*}"
     echo "${reference%%:*}"
 }
 
@@ -44,11 +49,14 @@ case "${command}" in
     login)
         cat > /dev/null
         ;;
-    pull)
-        if [ "$(image_of "$1")" = "${FAKE_MISSING_IMAGE:-}" ]; then
-            echo "Error response from daemon: manifest unknown" >&2
+    buildx)
+        if [ "$(image_of "$3")" = "${FAKE_MISSING_IMAGE:-}" ]; then
+            echo "ERROR: $3: not found" >&2
             exit 1
         fi
+        echo "sha256:$(image_of "$3")"
+        ;;
+    pull)
         ;;
     inspect)
         if [ "$(image_of "$1")" = "${FAKE_ODD_IMAGE:-}" ]; then
@@ -89,6 +97,7 @@ def run_pull(tmp_path, tree_source_hash):
     fake_docker.chmod(0o755)
     log = tmp_path / "docker.log"
     log.touch()
+    record = tmp_path / "deployed-worker-images.json"
 
     def run(**overrides):
         environment = {
@@ -98,7 +107,8 @@ def run_pull(tmp_path, tree_source_hash):
             "FAKE_LABEL_DEFAULT": tree_source_hash,
             "GHCR_TOKEN": "test-token",
             "GHCR_OWNER": "test-owner",
-            "WORKER_IMAGE_TAG": "0123456789abcdef0123456789abcdef01234567",
+            "WORKER_IMAGE_TAG": DEPLOYED_SHA,
+            "DIGEST_FILE": str(record),
         }
         environment.update({key: value for key, value in overrides.items() if value is not None})
         for key, value in overrides.items():
@@ -111,17 +121,17 @@ def run_pull(tmp_path, tree_source_hash):
             env=environment,
             cwd=tmp_path,  # the script has to find its own repository, not use the cwd
         )
-        return result, log.read_text().splitlines()
+        return result, log.read_text().splitlines(), record
 
     return run
 
 
 def test_matching_release_is_accepted_and_retagged(run_pull):
-    result, calls = run_pull()
+    result, calls, _record = run_pull()
 
     assert result.returncode == 0, result.stderr
     for image in CHAIN:
-        assert any(call.startswith("pull ") and f"/{image}:" in call for call in calls), (
+        assert any(call.startswith("pull ") and f"/{image}@sha256:" in call for call in calls), (
             f"{image} was not pulled: {calls}"
         )
         assert any(
@@ -129,8 +139,40 @@ def test_matching_release_is_accepted_and_retagged(run_pull):
         ), f"{image} was not retagged for worker-manager: {calls}"
 
 
+def test_the_release_is_pulled_verified_and_recorded_as_one_resolved_digest(run_pull):
+    """The tag is resolved once; everything after that names the digest it resolved to.
+
+    A second lookup of the same tag can answer differently, and then what the deploy
+    records is not evidence about the images it verified. So the pull, the label check,
+    the local retag and the record all have to name the digest, not the tag.
+    """
+    result, calls, record = run_pull()
+
+    assert result.returncode == 0, result.stderr
+    written = json.loads(record.read_text())
+    assert written["git_sha"] == DEPLOYED_SHA
+    assert set(written["images"]) == set(CHAIN)
+
+    for image in CHAIN:
+        entry = written["images"][image]
+        assert entry["digest"] == f"sha256:{image}"
+        assert entry["reference"] == f"{entry['repository']}@{entry['digest']}"
+
+        resolutions = [
+            call for call in calls if call.startswith("buildx ") and f"/{image}:" in call
+        ]
+        assert len(resolutions) == 1, f"{image} was resolved more than once: {resolutions}"
+        for verb in ("pull", "inspect", "tag"):
+            assert any(
+                call.startswith(f"{verb} ") and call.split()[1].endswith(entry["reference"])
+                for call in calls
+            ), f"{verb} did not name the resolved digest of {image}: {calls}"
+
+
 def test_a_stale_source_hash_is_refused_naming_both_hashes(run_pull, tree_source_hash):
-    result, calls = run_pull(FAKE_ODD_IMAGE="worker-base-claude", FAKE_ODD_LABEL="dead0000dead0000")
+    result, calls, record = run_pull(
+        FAKE_ODD_IMAGE="worker-base-claude", FAKE_ODD_LABEL="dead0000dead0000"
+    )
 
     assert result.returncode == EXIT_STALE_LABEL, result.stderr
     assert "worker-base-claude" in result.stderr
@@ -139,27 +181,33 @@ def test_a_stale_source_hash_is_refused_naming_both_hashes(run_pull, tree_source
     assert not [call for call in calls if call.startswith("tag ")], (
         "a refused release must leave the local worker-base-*:latest names alone"
     )
+    assert not record.exists(), "a refused release is not recorded as deployed"
 
 
 def test_a_missing_source_hash_label_is_refused(run_pull, tree_source_hash):
-    result, calls = run_pull(FAKE_ODD_IMAGE="worker-base-codex", FAKE_ODD_LABEL="")
+    result, calls, record = run_pull(FAKE_ODD_IMAGE="worker-base-codex", FAKE_ODD_LABEL="")
 
     assert result.returncode == EXIT_MISSING_LABEL, result.stderr
     assert "worker-base-codex" in result.stderr
     assert tree_source_hash in result.stderr
     assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
 
 
 def test_an_unpublished_image_is_refused(run_pull):
-    result, calls = run_pull(FAKE_MISSING_IMAGE="worker-base-factory")
+    result, calls, record = run_pull(FAKE_MISSING_IMAGE="worker-base-factory")
 
     assert result.returncode == EXIT_MISSING_IMAGE, result.stderr
     assert "worker-base-factory" in result.stderr
     assert not [call for call in calls if call.startswith("tag ")]
+    assert not [
+        call for call in calls if call.startswith("pull ") and "worker-base-factory" in call
+    ], "a tag that does not resolve is never pulled"
+    assert not record.exists()
 
 
 def test_the_tag_has_no_default(run_pull):
-    result, calls = run_pull(WORKER_IMAGE_TAG=None)
+    result, calls, _record = run_pull(WORKER_IMAGE_TAG=None)
 
     assert result.returncode != 0
     assert "WORKER_IMAGE_TAG" in result.stderr
@@ -167,7 +215,7 @@ def test_the_tag_has_no_default(run_pull):
 
 
 def test_the_mutable_latest_tag_is_refused(run_pull):
-    result, calls = run_pull(WORKER_IMAGE_TAG="latest")
+    result, calls, _record = run_pull(WORKER_IMAGE_TAG="latest")
 
     assert result.returncode == EXIT_USAGE, result.stderr
     assert "latest" in result.stderr
