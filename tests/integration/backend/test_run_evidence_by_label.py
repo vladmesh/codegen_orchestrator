@@ -67,6 +67,12 @@ def _run_evidence():
         "run_evidence_for_integration", LIVE_TESTS / "run_evidence.py"
     )
     module = importlib.util.module_from_spec(spec)
+    # The module must be in sys.modules *before* it executes: it declares
+    # dataclasses under `from __future__ import annotations`, and @dataclass
+    # resolves those string annotations through sys.modules[cls.__module__].
+    # Unregistered, that lookup is None and the class body raises
+    # AttributeError from dataclasses itself.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
