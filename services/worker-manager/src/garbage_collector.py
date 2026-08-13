@@ -127,16 +127,17 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
     Scans SCAFFOLDED_WORKSPACE_PATH for old workspaces. Also cleans
     stale workspace:active_projects entries.
     """
-    # Clean stale active_projects entries — remove projects no worker still
-    # holds. The holder fact answers that, not ownership: a QA executor and a
-    # worker refused before it could acquire both carry the project as
-    # ownership, and neither of them keeps the workspace claimed.
+    # Clean stale active_projects entries — remove projects with no live worker.
+    # `project_id` in a worker's metadata is that evidence: the acquisition
+    # writes it before it makes the project active, so a project can never be in
+    # the set with its holder's metadata not yet visible here, and this sweep
+    # cannot take a workspace away from a worker that is mid-acquisition.
     active_projects = await redis.smembers("workspace:active_projects")
     for project_id in active_projects:
         has_worker = False
         async for key in redis.scan_iter(match="worker:meta:*"):
             meta = decode_redis_fields(await redis.hgetall(key))
-            if meta.get(workspace_mod.WORKSPACE_LOCK_FIELD) == project_id:
+            if meta.get("project_id") == project_id:
                 has_worker = True
                 break
         if not has_worker:

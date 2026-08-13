@@ -38,9 +38,6 @@ logger = structlog.get_logger()
 # command that is its only route to the deployment under test.
 QA_WORKER_TYPE = "qa"
 
-# The workspace-lock holder fact, defined with the workspaces it guards.
-WORKSPACE_LOCK_FIELD = workspace_mod.WORKSPACE_LOCK_FIELD
-
 
 class WorkerManager:
     """
@@ -175,48 +172,57 @@ class WorkerManager:
             raise RuntimeError(f"remote Docker daemon could not prepare worker mounts for {worker_id}: {exc}") from exc
 
     async def _stamp_ownership(self, worker_id: str, ownership: WorkerOwnership) -> None:
-        """Write who this worker belongs to, before it can do anything.
+        """Write who this worker belongs to, before the container exists.
 
-        The single writer of the fact. Both places that need it early — the
-        project lock in `create_worker_with_capabilities` and container creation
-        below — call this with the same required `ownership` value threaded down
-        from the create request, so the record cannot be half-written or
-        disagree with the container's labels.
+        The single writer of the fact. Every caller passes the same required
+        `ownership` value threaded down from the create request, so the record
+        cannot be half-written or disagree with the container's labels.
         """
         await self.redis.hset(f"worker:meta:{worker_id}", mapping=ownership.as_redis_meta())
 
-    async def _acquire_workspace_lock(self, worker_id: str, project_id: str) -> str:
+    async def _acquire_workspace_lock(self, worker_id: str, ownership: WorkerOwnership) -> str:
         """Take the project's workspace lock for this worker, or refuse it.
 
-        The single writer of lock ownership. The `SADD` is the acquisition: it
-        returns 1 only for the worker that actually took the project, so two
-        creates that raced past `_check_project_lock` cannot both believe they
-        hold it. Only the winner gets the holder fact written, and only that
-        fact ever authorizes a release. Returns the project now held, so the
-        caller carries the same fact it wrote rather than re-deriving one.
+        Acquisition decides whether a developer worker exists at all; ownership
+        describes a worker that does. Both happen here, in this order, and
+        nowhere else for a developer worker.
+
+        The ownership stamp goes in first because `project_id` is the evidence
+        the workspace garbage collector reads: it clears a project from
+        `workspace:active_projects` when no worker's metadata claims it, and it
+        is an independent task in this process. If the set membership became
+        visible before the metadata, that sweep could run in the window, judge
+        the project stale, and let a second creator onto the same checkout.
+
+        The `SADD` is then the acquisition — it returns 1 only for the worker
+        that actually took the project, so two creates that raced past
+        `_check_project_lock` cannot both proceed. The loser's ownership is
+        withdrawn before it is refused: nothing describes a worker that was
+        refused, and a worker carrying no `project_id` can never be mistaken
+        for this project's holder. Returns the project now held.
         """
-        acquired = await self.redis.sadd("workspace:active_projects", project_id)
+        await self._stamp_ownership(worker_id, ownership)
+        acquired = await self.redis.sadd("workspace:active_projects", ownership.project_id)
         if not acquired:
-            raise RuntimeError(f"Project {project_id} workspace lock was taken by a concurrent worker")
-        await self.redis.hset(f"worker:meta:{worker_id}", WORKSPACE_LOCK_FIELD, project_id)
-        return project_id
+            await self.redis.hdel(f"worker:meta:{worker_id}", *ownership.as_redis_meta())
+            raise RuntimeError(f"Project {ownership.project_id} workspace lock was taken by a concurrent worker")
+        return ownership.project_id
 
     async def _release_workspace_lock(self, worker_id: str, held_project_id: str | None) -> None:
         """Give the workspace back, if this worker is the one that took it.
 
-        The single reader of lock ownership. `held_project_id` comes from the
-        worker's own holder fact and from nowhere else — never from
-        `project_id`, which every worker carries as ownership whether or not it
-        ever acquired anything. Releasing on ownership alone frees a live
-        worker's checkout under it and lets a second worker start on it.
+        `held_project_id` is the project this worker acquired — either the
+        return of `_acquire_workspace_lock` or, once the worker is only a Redis
+        record, the `project_id` of a developer worker, which exists exactly
+        because that worker acquired. A QA executor and a worker refused before
+        acquisition are both excluded before they reach here: neither took the
+        workspace, and releasing on their behalf frees a live worker's checkout
+        under it.
         """
         if not held_project_id:
             return
         logger.info("workspace_lock_released", project_id=held_project_id, worker_id=worker_id)
         await self.redis.srem("workspace:active_projects", held_project_id)
-        # The release consumes the fact: this worker is no longer the holder, so
-        # nothing it does later can hand back a lock the next worker has taken.
-        await self.redis.hdel(f"worker:meta:{worker_id}", WORKSPACE_LOCK_FIELD)
 
     async def _reject_worker(self, worker_id: str, exc: Exception) -> None:
         """Mark a worker that was refused before it could take anything.
@@ -352,12 +358,13 @@ class WorkerManager:
         meta = decode_redis_fields(await self.redis.hgetall(f"worker:meta:{worker_id}"))
         dev_network = meta.get("dev_network") if meta else None
         stored_workspace = meta.get("workspace_path") if meta else None
-        # What this worker acquired, not who it belonged to. A worker rejected
-        # before acquisition — and a QA executor, which never takes the lock at
-        # all — carries `project_id` as ownership and no holder fact, and
-        # releases nothing here.
-        held_project_id = meta.get(WORKSPACE_LOCK_FIELD) if meta else None
         is_qa_worker = bool(meta) and meta.get("worker_type") == QA_WORKER_TYPE
+        # What this worker acquired. For a developer worker that is its
+        # `project_id`, which exists only because the worker acquired: one
+        # refused before acquisition carries none. A QA executor is the one
+        # worker that owns a project whose workspace it never took, so it is
+        # excluded here and releases nothing.
+        held_project_id = (meta.get("project_id") if meta else None) if not is_qa_worker else None
 
         try:
             # A QA executor's workspace is scratch created for one run: there is
@@ -568,18 +575,20 @@ class WorkerManager:
         Returns worker_id if locked, None if free.
         Auto-cleans stale Redis keys for workers in terminal states (DEAD/FAILED/STOPPED).
 
-        The holder is found by the fact it wrote when it acquired, never by
-        ownership. Every worker of this project carries `project_id` — a QA
-        executor that holds no workspace, a developer worker refused before it
-        could acquire — and treating any of them as the holder either blocks the
-        project forever or, worse, cleans one of them up and releases a live
-        worker's lock along with it.
+        A developer worker's `project_id` is written by the acquisition itself,
+        so it is also the holder fact: a worker refused before it could acquire
+        carries none. A QA executor is the exception — it owns the project and
+        holds no workspace of it — so it is skipped, or a running QA run would
+        look like the holder and, once it ended, be cleaned up here with the
+        live developer worker's lock released along with it.
         """
         if not await self.redis.sismember("workspace:active_projects", project_id):
             return None
         async for key in self.redis.scan_iter(match="worker:meta:*"):
             meta = decode_redis_fields(await self.redis.hgetall(key))
-            if meta.get(WORKSPACE_LOCK_FIELD) == project_id:
+            if meta.get("worker_type") == QA_WORKER_TYPE:
+                continue
+            if meta.get("project_id") == project_id:
                 worker_id = key.split(":")[-1]
                 status = await self.redis.hget(f"worker:status:{worker_id}", "status")
                 if status in self._TERMINAL_STATUSES:
@@ -627,8 +636,8 @@ class WorkerManager:
         `ownership` is the project, the run that asked for the work and the
         attempt inside it that the requester made this worker for. It is
         required — a worker nobody owns cannot be attributed once it is dead —
-        and it is written here, before any of the slow work, so a creation that
-        fails halfway still leaves an attributable record.
+        and it is written below, once this worker is one that will exist, and
+        always before a container of it can.
         """
         logger.info(
             "create_worker_with_capabilities",
@@ -648,10 +657,6 @@ class WorkerManager:
         # to exist before the credential does, because a request whose worker
         # type is unrecorded is refused.
         await self.redis.hset(f"worker:meta:{worker_id}", "worker_type", worker_type)
-        # And with it, who the worker is for. Written here rather than at
-        # container creation because everything between the two can fail, and a
-        # worker that never reached a container is still one this run made.
-        await self._stamp_ownership(worker_id, ownership)
 
         # Everything up to the lock is a refusal, not a failure of a worker that
         # started: it took nothing, so nothing is released here. What it must
@@ -685,14 +690,19 @@ class WorkerManager:
                         f"Max retries (3) exceeded for project {project_id}. Reset with: DEL {failure_key}"
                     )
 
-                # Register the project lock early so the spawner gets worker_id before
-                # the image build. Ownership itself is already written, above; this is
-                # the separate fact that this worker is the one holding the workspace.
-                held_project_id = await self._acquire_workspace_lock(worker_id, project_id)
+                # Take the project and, with it, stamp ownership — early, so the
+                # spawner gets worker_id before the image build, and long before
+                # anything can produce a container.
+                held_project_id = await self._acquire_workspace_lock(worker_id, ownership)
+            else:
+                # A QA executor takes no lock, so nothing gates its ownership:
+                # it is stamped as soon as this is known to be a worker that
+                # will exist, and still before any container of it does.
+                await self._stamp_ownership(worker_id, ownership)
         except Exception as exc:
-            # Acquisition is the last thing in the block, so this is a worker
-            # that took nothing — and the release path is asked, not assumed,
-            # rather than trusting that reading to stay true.
+            # Acquisition is the only thing in the block that takes anything,
+            # and it either succeeded or withdrew what it wrote — so the release
+            # path is asked with what was actually acquired, not assumed.
             await self._release_workspace_lock(worker_id, held_project_id)
             await self._reject_worker(worker_id, exc)
             raise

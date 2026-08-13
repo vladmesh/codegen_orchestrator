@@ -42,15 +42,19 @@
   Compatibility impact: such a project stays readable, listable and archivable but cannot dispatch
   engineering or QA work — 409 from `spawn-worker` and `run-e2e`, a skipped task in the dispatcher,
   a failed story in the deploy supervisor — until it is recreated by a run that names itself.
-- Holding the project workspace lock is a separate fact from carrying ownership, and it is written
-  by exactly one thing: the `SADD` that took the lock. Ownership is stamped on every worker before
-  anything is created — that is what makes a dead worker attributable — so `project_id` is now on
-  workers that hold nothing: a QA executor, and a developer worker refused because the project is
-  already taken. `worker:meta:<worker_id>.workspace_lock` records what a worker actually acquired,
-  and it is the only thing the release paths read (`delete_worker`, the create-failure cleanup, the
-  stale-lock scan in `_check_project_lock` and the workspace GC). A worker that never acquired
-  releases nothing, however complete its ownership looks. Two creates that race past the lock check
-  no longer both proceed: the `SADD` result decides, and the loser is refused. A refusal is also
+- Acquisition decides whether a developer worker exists at all; ownership describes a worker that
+  does. A developer worker's ownership is therefore stamped by the acquisition of the project's
+  workspace lock and nowhere earlier: the stamp goes in, then the `SADD` that takes the project, and
+  a worker that loses that `SADD` has its ownership withdrawn before it is refused. Nothing
+  describes a worker that was refused, so `project_id` in `worker:meta:<worker_id>` still means what
+  every release path reads it as — `delete_worker`, the create-failure cleanup, the stale-lock scan
+  in `_check_project_lock`, the workspace GC — and a refused worker releases nothing. The stamp is
+  ordered before the `SADD` because it is the evidence the workspace GC reads: a project can never
+  be in `workspace:active_projects` with its holder's metadata not yet visible, so that sweep cannot
+  take a workspace away from a worker mid-acquisition and let a second creator onto the same
+  checkout. The one worker that owns a project without holding its workspace is the QA executor,
+  which is excluded from the mutex by its worker type. Two creates that race past the lock check no
+  longer both proceed: the `SADD` result decides, and the loser is refused. A refusal is also
   terminal in Redis now (`worker:status` FAILED plus `worker:error`), so the caller — which was
   ACKed before the slow work and then polls status — fails fast instead of waiting out the
   readiness timeout and publishing a delete for a worker that held nothing.

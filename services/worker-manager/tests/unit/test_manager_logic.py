@@ -8,7 +8,7 @@ from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
-from src.manager import WORKSPACE_LOCK_FIELD, WorkerManager
+from src.manager import WorkerManager
 
 
 # Every worker is created for somebody. These tests are not about who, so they
@@ -606,7 +606,7 @@ async def test_check_project_lock_cleans_dead_worker():
         f"worker:meta:{worker_id}",
         # The lock holder is the worker that acquired, and it says so itself.
         # Ownership is on every worker of this project and never means this.
-        mapping={"project_id": project_id, WORKSPACE_LOCK_FIELD: project_id},
+        mapping={"project_id": project_id},
     )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.DEAD})
 
@@ -635,7 +635,7 @@ async def test_check_project_lock_cleans_failed_worker():
         f"worker:meta:{worker_id}",
         # The lock holder is the worker that acquired, and it says so itself.
         # Ownership is on every worker of this project and never means this.
-        mapping={"project_id": project_id, WORKSPACE_LOCK_FIELD: project_id},
+        mapping={"project_id": project_id},
     )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
 
@@ -660,7 +660,7 @@ async def test_check_project_lock_cleans_stopped_worker():
         f"worker:meta:{worker_id}",
         # The lock holder is the worker that acquired, and it says so itself.
         # Ownership is on every worker of this project and never means this.
-        mapping={"project_id": project_id, WORKSPACE_LOCK_FIELD: project_id},
+        mapping={"project_id": project_id},
     )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
 
@@ -684,7 +684,7 @@ async def test_check_project_lock_keeps_running_worker():
         f"worker:meta:{worker_id}",
         # The lock holder is the worker that acquired, and it says so itself.
         # Ownership is on every worker of this project and never means this.
-        mapping={"project_id": project_id, WORKSPACE_LOCK_FIELD: project_id},
+        mapping={"project_id": project_id},
     )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
 
@@ -711,7 +711,7 @@ async def test_check_project_lock_keeps_starting_worker():
         f"worker:meta:{worker_id}",
         # The lock holder is the worker that acquired, and it says so itself.
         # Ownership is on every worker of this project and never means this.
-        mapping={"project_id": project_id, WORKSPACE_LOCK_FIELD: project_id},
+        mapping={"project_id": project_id},
     )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": "STARTING"})
 

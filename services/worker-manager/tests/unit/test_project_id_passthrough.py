@@ -21,7 +21,7 @@ from shared.redis import decode_redis_fields
 
 from src.config import settings
 from src.consumer import WorkerCommandConsumer
-from src.manager import WORKSPACE_LOCK_FIELD, WorkerManager
+from src.manager import WorkerManager
 
 
 def _make_create_command(
@@ -358,9 +358,9 @@ class TestDeleteWorkerPreservation:
                 "dev_network": "dev_proj_w-7",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
-                # This worker acquired the workspace: ownership alone no longer
-                # says so, and only the holder fact authorizes a release.
-                WORKSPACE_LOCK_FIELD: "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-7", mapping={"status": WorkerStatus.RUNNING})
@@ -454,9 +454,9 @@ class TestDeleteWorkerRemovesFromActiveSet:
                 "dev_network": "dev_proj_w-9",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
-                # This worker acquired the workspace: ownership alone no longer
-                # says so, and only the holder fact authorizes a release.
-                WORKSPACE_LOCK_FIELD: "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-9", mapping={"status": WorkerStatus.RUNNING})
@@ -548,7 +548,7 @@ class TestWorkspaceGC:
         await redis.sadd("workspace:active_projects", "active-proj")
         await redis.hset(
             "worker:meta:w1",
-            mapping={"project_id": "active-proj", WORKSPACE_LOCK_FIELD: "active-proj"},
+            mapping={"project_id": "active-proj"},
         )
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -730,9 +730,9 @@ class TestProjectMutex:
                 "dev_network": "dev_proj_w-first",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
-                # This worker acquired the workspace: ownership alone no longer
-                # says so, and only the holder fact authorizes a release.
-                WORKSPACE_LOCK_FIELD: "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-first", mapping={"status": WorkerStatus.RUNNING})
@@ -790,9 +790,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-10",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
-                # This worker acquired the workspace: ownership alone no longer
-                # says so, and only the holder fact authorizes a release.
-                WORKSPACE_LOCK_FIELD: "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-10", mapping={"status": WorkerStatus.RUNNING})
@@ -818,9 +818,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-11",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
-                # This worker acquired the workspace: ownership alone no longer
-                # says so, and only the holder fact authorizes a release.
-                WORKSPACE_LOCK_FIELD: "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-11", mapping={"status": WorkerStatus.RUNNING})
@@ -848,9 +848,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-12",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
-                # This worker acquired the workspace: ownership alone no longer
-                # says so, and only the holder fact authorizes a release.
-                WORKSPACE_LOCK_FIELD: "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-12", mapping={"status": WorkerStatus.RUNNING})
@@ -877,9 +877,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-13",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
-                # This worker acquired the workspace: ownership alone no longer
-                # says so, and only the holder fact authorizes a release.
-                WORKSPACE_LOCK_FIELD: "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-13", mapping={"status": WorkerStatus.RUNNING})
@@ -905,9 +905,9 @@ class TestFailureCounter:
                 "dev_network": "dev_proj_w-14",
                 "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
-                # This worker acquired the workspace: ownership alone no longer
-                # says so, and only the holder fact authorizes a release.
-                WORKSPACE_LOCK_FIELD: "proj-1",
+                # A developer worker's `project_id` is written by the
+                # acquisition itself, so it is also what says it holds the
+                # workspace.
             },
         )
         await redis.hset("worker:status:w-14", mapping={"status": WorkerStatus.RUNNING})
