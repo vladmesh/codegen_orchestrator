@@ -25,7 +25,7 @@ import pytest
 
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 from shared.redis import decode_redis_fields
-from src.manager import QA_WORKER_TYPE, WorkerManager
+from src.manager import DEV_NETWORK_TYPE_LABEL, QA_WORKER_TYPE, WorkerManager
 
 pytestmark = pytest.mark.asyncio
 
@@ -74,6 +74,39 @@ async def test_the_container_is_labelled_with_its_project_and_run():
     assert labels[WorkerLabel.ATTEMPT.value] == "eng-alpha-1"
     assert labels[WorkerLabel.ID.value] == "w-labelled"
     assert labels[WorkerLabel.TYPE.value] == "worker"
+
+
+async def test_the_dev_network_carries_the_same_ownership_as_its_worker():
+    """A network is a separate object and has to name its owner itself.
+
+    `dev_proj_<worker_id>` is derived from a worker id, and a worker id is what
+    is unrecoverable once the container is removed and `worker:meta` is gone. So
+    run-scoped cleanup does not derive it: it asks
+    `docker network ls --filter label=com.codegen.run.id=<run>`, which only
+    answers because the network was labelled when it was made.
+    """
+    redis = aioredis.FakeRedis(decode_responses=True)
+    docker = _docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=docker)
+
+    await manager.create_worker(
+        "w-networked",
+        "worker:latest",
+        ownership=OWNERSHIP,
+        network_name="codegen_worker",
+        create_dev_network=True,
+    )
+
+    assert docker.create_network.await_args.args == ("dev_proj_w-networked",)
+    labels = docker.create_network.await_args.kwargs["labels"]
+    assert labels[WorkerLabel.PROJECT.value] == "proj-alpha"
+    assert labels[WorkerLabel.RUN.value] == "live-alpha"
+    assert labels[WorkerLabel.ATTEMPT.value] == "eng-alpha-1"
+    assert labels[WorkerLabel.ID.value] == "w-networked"
+    assert labels[WorkerLabel.TYPE.value] == DEV_NETWORK_TYPE_LABEL
+    # Not "worker": a sweep that removed containers by this label must not be
+    # handed a network to remove as if it were one.
+    assert labels[WorkerLabel.TYPE.value] != "worker"
 
 
 async def test_ownership_is_in_redis_before_the_container_is_asked_for():

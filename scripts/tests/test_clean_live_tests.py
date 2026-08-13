@@ -392,6 +392,11 @@ def test_recover_manifests_keeps_unproven_resources(monkeypatch, tmp_path):
         '{"run_id":"run","resources":[{"kind":"github_repository","identifier":"org/repo"}]}'
     )
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
+    # Recovery has two steps now: the run-scoped label sweep, which needs a
+    # daemon, and the manifest round-trip, which needs the live API. Both are
+    # stood in for; what is under test is that an unproven resource is reported
+    # and its manifest kept.
+    monkeypatch.setattr(clean_live_tests, "cleanup_run_scoped_resources", lambda run_id: [])
     monkeypatch.setattr(
         clean_live_tests,
         "cleanup_manifest_resources",
@@ -400,6 +405,33 @@ def test_recover_manifests_keeps_unproven_resources(monkeypatch, tmp_path):
 
     with pytest.raises(clean_live_tests.CleanupFailure, match="github_repository org/repo"):
         clean_live_tests.recover_ownership_manifests()
+    assert manifest.exists()
+
+
+def test_recover_manifests_sweeps_the_runs_label_before_its_context(monkeypatch, tmp_path):
+    """The label sweep runs for every manifest, and its failure is reported too.
+
+    It goes first because it needs nothing but the run id: a run whose context
+    cannot be reconstructed at all still has its containers, sidecars and
+    networks removed.
+    """
+    manifest = tmp_path / ".live-manifests" / "run.json"
+    manifest.parent.mkdir()
+    manifest.write_text('{"run_id":"live-abc","resources":[{"kind":"project","identifier":"p-1"}]}')
+    monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
+    swept: list[str] = []
+
+    def sweep(run_id):
+        swept.append(run_id)
+        return ["run live-abc cleanup failed: containers remain"]
+
+    monkeypatch.setattr(clean_live_tests, "cleanup_run_scoped_resources", sweep)
+    monkeypatch.setattr(clean_live_tests, "cleanup_manifest_resources", lambda data: [])
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="containers remain"):
+        clean_live_tests.recover_ownership_manifests()
+
+    assert swept == ["live-abc"]
     assert manifest.exists()
 
 

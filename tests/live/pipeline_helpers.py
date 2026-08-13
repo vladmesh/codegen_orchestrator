@@ -19,6 +19,8 @@ from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messa
 import httpx
 from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
 from pydantic import ValidationError
+import run_cleanup
+from run_evidence import RunEvidenceCollector
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
@@ -1311,30 +1313,34 @@ def evidence_pass(ctx: dict) -> None:
     collector.capture()
 
 
-def _wait_for_container_absence(
-    container: str,
-    *,
-    timeout: float = WORKER_REMOVAL_TIMEOUT,
-    poll_interval: float = WORKER_REMOVAL_POLL_INTERVAL,
-) -> str | None:
-    """Return None after confirmed absence, otherwise a safe failure reason."""
-    deadline = time.monotonic() + timeout
-    while True:
-        verify = subprocess.run(
-            ["docker", "inspect", container],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=ORCHESTRATOR_ROOT,
+def evidence_accounting(ctx: dict, ops: run_cleanup.CleanupOps) -> set[str]:
+    """The workers this run's evidence accounts for, established before removal.
+
+    A run that collected evidence of its own — every matrix run does, and its
+    artifact is written in the `finally` block that precedes teardown — is asked
+    for its records. A run that collected none takes one capture pass here and
+    retains it, because cleanup is about to remove the containers and the
+    metadata that pass is the last chance to read. Capture before cleanup in
+    both cases: the order this sprint established, and reversing it would
+    destroy the attributability the labels were added for.
+
+    The pass reads its ownership from the same retained `worker:meta` keys
+    cleanup is about to consider, so a worker whose removal record could not be
+    stored reaches the evidence as a stated missed capture — and only then is
+    its name a thing cleanup may take away.
+    """
+    collector = ctx.get("run_evidence")
+    if collector is None:
+        run_id = ctx["manifest"].run_id
+        collector = RunEvidenceCollector(
+            run_id=run_id, owned_workers=lambda: ops.meta_workers(run_id)
         )
-        if verify.returncode != 0:
-            inspect_error = f"{verify.stderr}\n{verify.stdout}".lower()
-            if any(marker in inspect_error for marker in ("no such container", "no such object")):
-                return None
-            return "Docker inspect failed"
-        if time.monotonic() >= deadline:
-            return "still exists after removal wait"
-        time.sleep(poll_interval)
+        collector.capture()
+        run_cleanup.retain_evidence(
+            collector,
+            ORCHESTRATOR_ROOT / ".live-manifests" / "evidence" / f"{collector.run_id}.json",
+        )
+    return run_cleanup.accounted_workers(collector)
 
 
 def cleanup_owned_workers(
@@ -1343,77 +1349,46 @@ def cleanup_owned_workers(
     *,
     timeout: float = WORKER_REMOVAL_TIMEOUT,
     poll_interval: float = WORKER_REMOVAL_POLL_INTERVAL,
+    ops: run_cleanup.CleanupOps | None = None,
 ) -> None:
-    """Remove run workers and verify their containers and Redis state are absent."""
+    """Remove everything this run's ownership label selects, and prove it is gone.
+
+    Driven by `com.codegen.run.id`, not by what the manifest happens to still
+    remember: a worker container this run caused, the QA-egress proxy beside it
+    and the `dev_proj_<worker_id>` network under it are all stamped with this run
+    at creation, so they are found and removed whether or not Redis still knows
+    them and whether or not anything recorded them while they lived.
+
+    The manifest is still refreshed first — it is the ownership source the run's
+    evidence reconciles against — but it no longer decides what is removed.
+    """
     try:
         capture_owned_workers(ctx)
     except Exception as exc:
         errors.append(f"worker ownership discovery: {exc}")
-        return
-    for resource in ctx["manifest"].resources:
-        if resource.kind != "worker":
-            continue
-        worker_id = resource.identifier
-        container = resource.metadata.get("container") or find_worker_container(worker_id)
-        if container:
-            removed = subprocess.run(
-                ["docker", "rm", "-f", container],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                cwd=ORCHESTRATOR_ROOT,
-            )
-            removal_reason = None
-            if removed.returncode != 0 and not any(
-                marker in removed.stderr for marker in ("No such container", "already in progress")
-            ):
-                removal_reason = "Docker removal failed"
-            absence_reason = _wait_for_container_absence(
-                container,
-                timeout=timeout,
-                poll_interval=poll_interval,
-            )
-            reason = removal_reason or absence_reason
-            if reason:
-                errors.append(f"worker {worker_id} container {container}: {reason}")
-        keys = [
-            f"worker:status:{worker_id}",
-            f"worker:meta:{worker_id}",
-            f"worker:error:{worker_id}",
-            f"worker:last_activity:{worker_id}",
-            f"worker:{worker_id}:input",
-            f"worker:{worker_id}:output",
-        ]
-        deleted = subprocess.run(
-            ["docker", "compose", "exec", "-T", "redis", "redis-cli", "DEL", *keys],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=ORCHESTRATOR_ROOT,
+    cleanup_ops = (
+        ops
+        if ops is not None
+        else run_cleanup.docker_cli_ops(
+            ORCHESTRATOR_ROOT, timeout=timeout, poll_interval=poll_interval
         )
-        if deleted.returncode != 0:
-            errors.append(f"worker {worker_id} Redis cleanup: {deleted.stderr.strip()}")
-        else:
-            remaining = subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "exec",
-                    "-T",
-                    "redis",
-                    "redis-cli",
-                    "EXISTS",
-                    *keys,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                cwd=ORCHESTRATOR_ROOT,
-            )
-            if remaining.returncode != 0 or remaining.stdout.strip() != "0":
-                errors.append(f"worker {worker_id} Redis cleanup: keys remain or verify failed")
-        # Capability images are deterministic hashes of agent type and capabilities.
-        # They contain no run input and are deliberately safe to reuse between runs.
+    )
+    try:
+        accounted = evidence_accounting(ctx, cleanup_ops)
+    except Exception as exc:
+        # Nothing is accounted for, so nothing that names a worker is deleted.
+        errors.append(f"run evidence accounting: {exc}")
+        accounted = set()
+    try:
+        report = run_cleanup.clean_run(
+            cleanup_ops, ctx["manifest"].run_id, accounted_workers=accounted
+        )
+    except run_cleanup.RunCleanupError as exc:
+        errors.append(str(exc))
+        return
+    ctx["run_cleanup"] = report.as_dict()
+    # Capability images are deterministic hashes of agent type and capabilities.
+    # They contain no run input and are deliberately safe to reuse between runs.
 
 
 def find_worker_container(worker_id: str) -> str | None:

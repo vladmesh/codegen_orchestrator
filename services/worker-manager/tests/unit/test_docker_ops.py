@@ -150,7 +150,20 @@ class TestDockerNetworks:
 
         assert result == network_mock
         # A dev network routes off itself; only the QA egress network does not.
-        client_mock.networks.create.assert_called_once_with("dev_proj_worker1", driver="bridge", internal=False)
+        client_mock.networks.create.assert_called_once_with(
+            "dev_proj_worker1", driver="bridge", internal=False, labels={}
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_network_applies_the_ownership_it_is_given(self, mock_docker):
+        """A network's labels are how a run finds it once its worker is gone."""
+        client_mock = MagicMock()
+        mock_docker.return_value = client_mock
+
+        wrapper = DockerClientWrapper()
+        await wrapper.create_network("dev_proj_worker1", labels={"com.codegen.run.id": "live-1"})
+
+        assert client_mock.networks.create.call_args.kwargs["labels"] == {"com.codegen.run.id": "live-1"}
 
     @pytest.mark.asyncio
     async def test_remove_network(self, mock_docker):

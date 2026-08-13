@@ -111,6 +111,38 @@ references by path only. `tests/live/test_run_evidence.py` covers the whole sche
 worker killed and forgotten by Redis before anything reads it, and with one taken through the whole
 ordinary delete path — container removed, metadata deleted — before anything observes it at all.
 
+## Run-scoped cleanup
+
+Teardown removes what this run's ownership label selects, not what its context still remembers.
+`tests/live/run_cleanup.py` is given one fact — the run id — and asks
+
+```
+docker ps -a       --filter label=com.codegen.run.id=<run id>
+docker network ls  --filter label=com.codegen.run.id=<run id>
+```
+
+That covers a run's worker containers, its QA-egress proxies and its `dev_proj_<worker_id>`
+networks, all of which worker-manager stamps with the run at creation. So a container nothing
+recorded, a network whose worker id is no longer knowable, and everything left by a harness that
+died mid-run are all found and removed. The label is the fence as well as the finder: a listed
+resource whose `com.codegen.run.id` is not this run is refused rather than removed, and the
+long-lived service containers carry no run label at all, so a cleanup scoped to one run cannot
+touch a neighbouring run or the stack. Running it twice is not an error — every removal treats
+"already absent" as success — and it verifies afterwards by asking the same two queries again,
+raising `RunCleanupError` if anything is still selected.
+
+`worker:meta:<id>` is the exception, and deliberately so. `delete_worker` retains that key when a
+worker's removal record could not be stored, because it is then the last thing that can name the
+worker to its run. Cleanup deletes such a key only for a worker this run's evidence already has a
+record for (`RunEvidenceCollector.accounted_workers`), and otherwise keeps it and says so in its
+report — expected residue, never swept as an anomaly. A run with no evidence of its own takes one
+capture pass first and retains it under `.live-manifests/evidence/<run id>.json`; capture always
+precedes removal. The run's removal records (`worker:evidence:removed:<run id>`) are evidence and
+are never deleted by cleanup — they expire on their own TTL.
+
+`scripts/clean_live_tests.py` starts its recovery of every manifest with exactly this sweep, so a
+run's Docker resources no longer depend on the reconstructed `ctx` round-trip that follows it.
+
 ## Bot access revocation
 
 `tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a

@@ -48,6 +48,15 @@ logger = structlog.get_logger()
 # command that is its only route to the deployment under test.
 QA_WORKER_TYPE = "qa"
 
+# What a `dev_proj_<worker_id>` network says it is, in `com.codegen.type`. A
+# network is created and destroyed with its worker but is a separate Docker
+# object, so it carries the worker's ownership itself: a run that has to remove
+# its own resources after a crash finds this network by
+# `com.codegen.run.id=<run>` alone, without knowing the worker id the name is
+# built from — which is exactly what is unrecoverable once the container and its
+# Redis metadata are gone.
+DEV_NETWORK_TYPE_LABEL = "worker-dev-network"
+
 
 class WorkerManager:
     """
@@ -321,7 +330,10 @@ class WorkerManager:
             await self.docker.remove_container(container_name, force=True)
 
             if create_dev_network:
-                await self.docker.create_network(dev_network)
+                await self.docker.create_network(
+                    dev_network,
+                    labels={**labels, WorkerLabel.TYPE.value: DEV_NETWORK_TYPE_LABEL},
+                )
 
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STARTING})
 

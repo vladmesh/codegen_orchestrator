@@ -2,6 +2,32 @@
 
 ## 2026-08-13
 
+- A run's cleanup is driven by its ownership labels, not by a reconstructed context.
+  `tests/live/run_cleanup.py` takes a run id and removes that run's worker containers, its
+  QA-egress sidecars and its dev networks with `docker ps -a`/`docker network ls --filter
+  label=com.codegen.run.id=<run>`, so resources are found whether or not Redis still knows them and
+  whether or not the harness that created them is alive. It is idempotent — "already absent" is a
+  success — and it verifies afterwards with the same two queries, raising `RunCleanupError` if
+  anything for that run remains. `scripts/clean_live_tests.py` runs it for every manifest before the
+  `ctx` round-trip it used to depend on (`issue:6b4cae67568ff1d8bf82`).
+- The label is the fence as well as the finder: a listed resource whose `com.codegen.run.id` is not
+  this run is refused rather than removed, and long-lived service containers carry no run label at
+  all, so a cleanup scoped to one run cannot take a neighbouring run's resources with it. Proved
+  with both runs present at once against a real daemon in
+  `tests/integration/backend/test_run_scoped_cleanup.py`.
+- `dev_proj_<worker_id>` networks now carry the same ownership labels as the worker they belong to,
+  plus `com.codegen.type=worker-dev-network`. A network's name is derived from a worker id, and a
+  worker id is exactly what is unrecoverable once the container and `worker:meta:<id>` are gone;
+  labelling the network at creation is what makes it findable by run afterwards.
+- `worker:meta:<id>` retained because a worker's removal record could not be stored is removed only
+  once that run's evidence accounts for the worker — that is, the run's evidence collector holds a
+  record for it (`RunEvidenceCollector.accounted_workers`), so the worker is in the artifact with its
+  ending or with the stated reason its ending was unreadable. Otherwise the key is kept and named in
+  the cleanup report as expected residue, never swept as an anomaly. A run with no evidence of its
+  own takes a capture pass and retains it under `.live-manifests/evidence/<run id>.json` before
+  anything is removed; `worker:evidence:removed:<run id>` is evidence and is never deleted by
+  cleanup.
+
 - The backend Docker-in-Docker suite runs on every push to `main`. The worker-ownership,
   run-ownership-propagation and run-evidence-by-label tests are the only real-daemon proof that a
   dead, unsampled worker is still attributable and that a run-scoped query excludes its neighbour,

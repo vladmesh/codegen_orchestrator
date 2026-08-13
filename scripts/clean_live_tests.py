@@ -235,6 +235,49 @@ def cleanup_manifest_resources(data: dict) -> list[str]:
     return []
 
 
+def cleanup_run_scoped_resources(run_id: str) -> list[str]:
+    """Remove every Docker resource this run's ownership label selects.
+
+    Recovery's first move, and the one that needs nothing but a run id: the
+    containers, QA-egress sidecars and dev networks this run created carry
+    `com.codegen.run.id` from creation, so they are found and removed without
+    reconstructing the context the harness had — the fragile round-trip below
+    (`issue:6b4cae67568ff1d8bf82`) no longer decides what Docker keeps.
+
+    Evidence first, as everywhere else: one capture pass over what is left of
+    the run is taken and retained before anything is removed, and it is that
+    pass which decides whether a `worker:meta` key retained for attribution may
+    finally be deleted.
+    """
+    live_path = str(Path(ORCHESTRATOR_ROOT) / "tests" / "live")
+    if live_path not in sys.path:
+        sys.path.insert(0, live_path)
+    from run_cleanup import (
+        RunCleanupError,
+        accounted_workers,
+        clean_run,
+        docker_cli_ops,
+        retain_evidence,
+    )
+    from run_evidence import RunEvidenceCollector
+
+    root = Path(ORCHESTRATOR_ROOT)
+    ops = docker_cli_ops(root)
+    collector = RunEvidenceCollector(run_id=run_id, owned_workers=lambda: ops.meta_workers(run_id))
+    try:
+        collector.capture()
+        retain_evidence(collector, root / ".live-manifests" / "evidence" / f"{run_id}.json")
+    except Exception as exc:
+        return [f"run {run_id} evidence capture: {exc}"]
+    try:
+        clean_run(ops, run_id, accounted_workers=accounted_workers(collector))
+    except RunCleanupError as exc:
+        return [str(exc)]
+    except Exception as exc:
+        return [f"run {run_id} cleanup: {type(exc).__name__}: {exc}"]
+    return []
+
+
 def recover_ownership_manifests() -> None:
     """Delete manifests only after owned resources are proven absent."""
     failures: list[str] = []
@@ -246,7 +289,8 @@ def recover_ownership_manifests() -> None:
             if not resources:
                 path.unlink()
                 continue
-            errors = cleanup_manifest_resources(data)
+            errors = cleanup_run_scoped_resources(str(data["run_id"]))
+            errors += cleanup_manifest_resources(data)
             if errors:
                 failures.extend(f"{path.name}: {error}" for error in errors)
             elif path.exists():
