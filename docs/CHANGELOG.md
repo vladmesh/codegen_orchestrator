@@ -57,6 +57,23 @@
   `scripts/tests/test_clean_live_tests.py` drives the real recovery over a fake API and a fake daemon
   whose worker keeps running until its run is cancelled, and holds the phase order and the refusal.
 
+- The cleanup adapter a crash recovery actually uses is now proved against a real daemon.
+  `scripts/clean_live_tests.py` and `tests/live/pipeline_helpers.py` build
+  `run_cleanup.docker_cli_ops`, which asks the daemon in Go templates and parses text back, while
+  every real-daemon case so far ran `docker_sdk_ops`; the CLI adapter's templates were answered only
+  by hand-written fixtures. `tests/integration/backend/test_run_scoped_cleanup_cli.py` runs the
+  run-scoped scenario through the CLI adapter against the Docker-in-Docker daemon: a container
+  carrying the run label listed with its name and labels, a container carrying the run label and
+  none of the others — which proves `{{.Label "…"}}` renders an absent label as an empty field
+  rather than a Go placeholder that would become a worker id — the `{{.Labels}}` `k=v,k=v` rendering
+  `_labels_from_pairs` splits for networks, and a whole run removed while a neighbouring run on the
+  same daemon survives. Without it a template that rendered differently on a real daemon would make
+  the sweep find nothing and the verification pass then report the run left nothing behind: a false
+  all-clear in the one check that exists to catch a failed cleanup. The integration runner image
+  carries the docker CLI at the daemon's own version for this. The adapter's Redis half is not
+  covered there: it reaches Redis as `docker compose exec -T redis redis-cli`, addressing the live
+  compose project, which the runner's CLI — pointed at the nested daemon — is not in.
+
 - The backend Docker-in-Docker suite runs on every push to `main`. The worker-ownership,
   run-ownership-propagation and run-evidence-by-label tests are the only real-daemon proof that a
   dead, unsampled worker is still attributable and that a run-scoped query excludes its neighbour,
