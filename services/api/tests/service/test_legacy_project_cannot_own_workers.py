@@ -14,9 +14,10 @@ refuses the request rather than inventing an owner for the worker.
 
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
+import os
 import uuid
 
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 import pytest
 from redis.asyncio import Redis
 from sqlalchemy import delete, select
@@ -25,6 +26,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.models import Project, Run, Task, TaskEvent, User
 
 LEGACY_TELEGRAM_ID = 999000877
+
+
+@pytest.fixture
+async def client() -> AsyncGenerator[AsyncClient, None]:
+    """ASGITransport skips the lifespan, so the app's Redis is opened by hand.
+
+    The refusal has to happen on the real spawn-worker path — the one that would
+    otherwise publish — so the route's Redis dependency must actually resolve.
+    """
+    from src.dependencies import close_redis, init_redis
+    from src.main import app
+
+    await init_redis()
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
+    ) as c:
+        yield c
+    await close_redis()
 
 
 @pytest.fixture
@@ -75,13 +96,13 @@ async def test_the_legacy_row_really_has_no_run(db_session: AsyncSession, legacy
 
 
 async def test_spawn_worker_is_refused_and_leaves_nothing_behind(
-    async_client: AsyncClient,
+    client: AsyncClient,
     db_session: AsyncSession,
     redis_client: Redis,
     legacy_project: Project,
 ):
     """No run to own the worker, so no message, no attempt row, no status move."""
-    resp = await async_client.post(
+    resp = await client.post(
         "/api/tasks/",
         json={
             "project_id": str(legacy_project.id),
@@ -94,7 +115,7 @@ async def test_spawn_worker_is_refused_and_leaves_nothing_behind(
     status_before = resp.json()["status"]
     queue_len_before = await redis_client.xlen("engineering:queue")
 
-    resp = await async_client.post(f"/api/tasks/{task_id}/spawn-worker", json={"actor": "test"})
+    resp = await client.post(f"/api/tasks/{task_id}/spawn-worker", json={"actor": "test"})
 
     assert resp.status_code == HTTPStatus.CONFLICT
     assert "initiating run" in resp.json()["detail"]
@@ -107,7 +128,7 @@ async def test_spawn_worker_is_refused_and_leaves_nothing_behind(
         .all()
     )
     assert runs == []
-    resp = await async_client.get(f"/api/tasks/{task_id}")
+    resp = await client.get(f"/api/tasks/{task_id}")
     assert resp.json()["status"] == status_before
 
 
