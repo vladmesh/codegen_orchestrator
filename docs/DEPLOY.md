@@ -460,33 +460,39 @@ Every green commit on `main` publishes the whole worker chain to GHCR under that
 (`publish-worker-images` in `.github/workflows/ci.yml`, via `infra/scripts/publish-worker-images.sh`).
 The tag is the SHA; nothing publishes a mutable `:latest`.
 
-A published SHA is written once. Before it builds anything, the publish job resolves every tag of
-the chain for that SHA:
+**The release is the marker, not the tags.** Four tag pushes cannot be one registry transaction, so
+a pushed tag does not mean a commit was released. After all four images resolve, the publish job
+writes one more object — `worker-base-release:<sha>`, carrying the digest record of that release
+(git SHA, source hash, and every image's `<repository>@sha256:…`). That single write is the
+release, and it is the only thing the deploy consults.
 
-| what the registry has | what happens |
+| what the registry has for a SHA | what happens |
 | --- | --- |
-| nothing | build the chain, check each image's source hash, push all four, record the digests |
-| all four | already released: re-verify from the published digests, record, push nothing, exit 0 |
-| some | refused (exit 6), naming which tags exist and which are missing |
+| a marker | released and frozen: re-verify the digests it names, record them, push nothing, exit 0 |
+| no marker | not released, whatever image tags exist: build, verify each source hash, push all four, then write the marker |
+| a marker naming an image that is gone or built from other sources | refused (exit 7 or 10), never repaired |
 
-The last row is what a push that fails mid-chain leaves behind. Completing it is a decision, not a
-retry: delete those package versions and rerun, or publish the next commit. Nothing in the script
-pushes over a tag that already resolves, so **rebuilding an already-published commit fails by
-design** — the digests published under that SHA are what a deploy verifies, and replacing them
-would change what an already-recorded release means.
+The middle row is what a run that failed or was cancelled between two pushes leaves behind. Those
+tags are inert residue, not a half-release: nothing will ever deploy them, and **rerunning the
+publish job completes that SHA with nobody deleting anything in the registry**. Once the marker
+exists the SHA is frozen — rebuilding an already-released commit pushes nothing by design, because
+the digests the marker names are what a deploy verifies and replacing them would change what an
+already-recorded release means.
 
-The deploy pulls exactly the tag of the revision it is deploying and checks that every image
-carries `org.codegen.worker_source_hash` equal to the source hash of that checkout
-(`infra/scripts/pull-worker-images.sh`). A SHA that was never published, an image without the
-label, or an image built from other sources fails the deploy — with the image, the expected hash
-and the found hash — before `compose up -d` touches what is running.
+The deploy resolves the marker of the revision it is deploying *first*, pulls the digests that
+marker names, and checks that every one of them carries `org.codegen.worker_source_hash` equal to
+the source hash of that checkout (`infra/scripts/pull-worker-images.sh`). A revision with no marker
+(exit 9), a release whose image is gone (exit 3), an image without the label (exit 4) or an image
+built from other sources (exit 5) fails the deploy — with the image, the expected hash and the
+found hash — before `compose up -d` touches what is running, and before a single local
+`worker-base-*:latest` name moves.
 
-The tag is resolved to a digest once, and the pull, the label check, the local retag and the
-record all name that `<repository>@sha256:…`. The pull writes its record on the host and the
-deploy copies that file back into the run summary and an artifact, so what is reported as deployed
-is the release that was verified rather than a second lookup of the same tag.
+Nothing after the marker resolves a tag: the pull, the label check, the local retag and the record
+all name the `<repository>@sha256:…` the marker holds. The pull writes its record on the host and
+the deploy copies that file back into the run summary and an artifact, so what is reported as
+deployed is the release that was verified rather than a second lookup of a mutable tag.
 
-So a commit can only be deployed once its CI publish job has run for it. Deploying an unpublished
+So a commit can only be deployed once its CI publish job has released it. Deploying an unreleased
 revision is a refusal, not a fallback to yesterday's workers: that fallback is what put stale
 workers onto a green deploy of an exact SHA (GitHub #278).
 

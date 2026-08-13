@@ -196,11 +196,13 @@ jobs:
             git reset --hard ${{ github.sha }}
 
       # The worker base images are one release chain keyed by the commit being
-      # deployed (.github/workflows/ci.yml, publish-worker-images). This pulls that
-      # exact release and refuses an image built from other sources, and it runs
-      # before anything touches the running deployment: a refusal fails the deploy
-      # with the image, the expected hash and the found hash, and production keeps
-      # running what it was running.
+      # deployed (.github/workflows/ci.yml, publish-worker-images). This reads the
+      # release marker of that exact commit — no marker means that commit was never
+      # released, whatever image tags a failed publish run left behind — pulls the
+      # digests the marker names and refuses an image built from other sources. It
+      # runs before anything touches the running deployment: a refusal fails the
+      # deploy with the image, the expected hash and the found hash, and production
+      # keeps running what it was running.
       - name: Pull and verify worker base images for this revision
         uses: appleboy/ssh-action@v1
         with:

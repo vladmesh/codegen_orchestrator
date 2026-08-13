@@ -5,22 +5,27 @@
 # and then claude, codex and factory from that exact common, stamping every image
 # with `--build-arg SOURCE_HASH`. This script is the publishing half that was missing —
 # it verifies what that build produced, pushes it under one immutable tag per image,
-# and records the digests it published.
+# and then commits the release.
 #
-# The release of a SHA is written once and never rewritten. Before anything is built
-# or pushed, every tag of the chain for GIT_SHA is resolved in the registry:
+# Four tag pushes are not one registry transaction, and no shell can make them one.
+# So a pushed tag is not a release here: the release of a SHA is one further object,
+# the release marker (infra/scripts/worker-images.sh), written last and carrying the
+# digest record of the four images. The puller resolves that marker first and deploys
+# only the digests it names, so a run that dies mid-chain leaves bytes in the registry
+# that nothing will ever act on.
 #
-#   nothing published  -> build, verify the source hash of each image, push all four
-#   all four published -> this SHA is already released: re-verify it from its digests
-#                         and record it, push nothing, succeed (a rerun is idempotent)
-#   some published     -> refuse, naming which tags exist and which are missing
+# Which makes the marker, and only the marker, the state this script branches on:
 #
-# That last state is a half-published SHA, which acceptance criterion 1 says must not
-# be left behind: a push that fails mid-chain is a decision (delete the package
-# versions, or release the next commit), not something a rerun should silently
-# complete over. A legitimate rebuild of the same SHA fails here by design — the
-# published digests are what the deploy verifies, so replacing them would break the
-# meaning of the recorded release.
+#   marker resolves  -> this SHA is released and frozen. Re-verify the digests it
+#                       names, rewrite the record, push nothing, succeed.
+#   marker absent    -> this SHA is not released, however many image tags exist.
+#                       Build, verify, push all four, then publish the marker. A run
+#                       cancelled or failed mid-chain is recovered by rerunning this
+#                       job, with nobody deleting anything in the registry.
+#
+# A marker that resolves but names an image that does not, or one built from other
+# sources, is corruption of a committed release: it is refused and never repaired,
+# because repairing it would change what an already-deployed release means.
 #
 # Required env vars:
 #   GHCR_TOKEN   — GitHub token with packages:write scope
@@ -29,18 +34,18 @@
 #   DIGEST_FILE  — where to write the machine-readable record of the release
 #
 # Exit codes, one per reason so a caller can tell them apart:
-#   1  usage: a required variable is missing
-#   2  what was just built does not carry the source hash of this tree
-#   6  this SHA is partially published: some tags exist and some do not
-#   7  an already-published image of this SHA carries the wrong source hash
-#   8  a tag that was just pushed does not resolve to a digest
+#   1   usage: a required variable is missing
+#   2   what was just built does not carry the source hash of this tree
+#   7   an image of an already-released SHA carries the wrong source hash
+#   8   a tag that was just pushed does not resolve to a digest
+#   10  the release marker of this SHA is unreadable or names an image that is gone
 
 set -euo pipefail
 
 EXIT_BUILT_LABEL=2
-EXIT_PARTIAL_RELEASE=6
-EXIT_PUBLISHED_LABEL=7
+EXIT_RELEASED_LABEL=7
 EXIT_UNRESOLVED=8
+EXIT_BROKEN_RELEASE=10
 
 : "${GHCR_TOKEN:?GHCR_TOKEN is required}"
 : "${GHCR_OWNER:?GHCR_OWNER is required}"
@@ -54,60 +59,57 @@ source "${SCRIPT_DIR}/worker-images.sh"
 
 SOURCE_HASH="$(python3 "${REPO_ROOT}/scripts/shared_freshness.py" hash)"
 REGISTRY="$(worker_image_registry "${GHCR_OWNER}")"
+MARKER="${REGISTRY}/${WORKER_RELEASE_MARKER_IMAGE}:${GIT_SHA}"
 
 echo "Logging in to GHCR..."
 echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_OWNER}" --password-stdin
 
-# Does this SHA already have a release? Ask before building anything, so a rerun of a
-# published commit costs one lookup per image and touches no tag.
-published=()
-missing=()
-for image in "${WORKER_BASE_IMAGES[@]}"; do
-    remote="${REGISTRY}/${image}:${GIT_SHA}"
-    if digest="$(worker_image_digest "${remote}" 2>/dev/null)" && [ -n "${digest}" ]; then
-        echo "  ${remote} is already published as ${digest}"
-        published+=("${image}=${REGISTRY}/${image}@${digest}")
-    else
-        echo "  ${remote} is not published"
-        missing+=("${image}")
-    fi
-done
+# Is this SHA released? Ask the marker, and only the marker, before building anything.
+if marker_digest="$(worker_image_digest "${MARKER}" 2>/dev/null)" && [ -n "${marker_digest}" ]; then
+    marker_reference="${REGISTRY}/${WORKER_RELEASE_MARKER_IMAGE}@${marker_digest}"
+    echo "${GIT_SHA} is already released (${marker_reference}); nothing will be pushed."
 
-if [ "${#missing[@]}" -eq 0 ]; then
-    echo "${GIT_SHA} is already published as a whole release; nothing will be pushed."
-    for record in "${published[@]}"; do
+    if ! docker pull "${marker_reference}" >/dev/null; then
+        echo "FATAL: the release marker of ${GIT_SHA} resolves to ${marker_digest}" >&2
+        echo "       but cannot be pulled, so the release cannot be re-verified." >&2
+        exit "${EXIT_BROKEN_RELEASE}"
+    fi
+    payload="$(docker inspect "${marker_reference}" \
+        --format "{{index .Config.Labels \"${WORKER_RELEASE_LABEL}\"}}")"
+    if ! released="$(worker_release_images "${payload}" "${GIT_SHA}" "${REGISTRY}")"; then
+        echo "FATAL: the release marker of ${GIT_SHA} does not carry a usable record." >&2
+        exit "${EXIT_BROKEN_RELEASE}"
+    fi
+
+    records=()
+    while IFS= read -r record; do
         image="${record%%=*}"
         reference="${record#*=}"
-        docker pull "${reference}" >/dev/null
+        if ! docker pull "${reference}" >/dev/null; then
+            echo "FATAL: the release of ${GIT_SHA} names ${reference}," >&2
+            echo "       which is not in the registry. A committed release is not repaired" >&2
+            echo "       here: publish the next commit instead." >&2
+            exit "${EXIT_BROKEN_RELEASE}"
+        fi
         found="$(docker inspect "${reference}" \
             --format "{{index .Config.Labels \"${WORKER_SOURCE_HASH_LABEL}\"}}")"
         if [ "${found}" != "${SOURCE_HASH}" ]; then
-            echo "FATAL: the published ${image} of ${GIT_SHA} (${reference})" >&2
+            echo "FATAL: the released ${image} of ${GIT_SHA} (${reference})" >&2
             echo "       carries ${WORKER_SOURCE_HASH_LABEL}=${found:-(no label)}," >&2
-            echo "       the tree is ${SOURCE_HASH}. The published tag is not rewritten." >&2
-            exit "${EXIT_PUBLISHED_LABEL}"
+            echo "       the tree is ${SOURCE_HASH}. A released SHA is never rewritten." >&2
+            exit "${EXIT_RELEASED_LABEL}"
         fi
         echo "  ${image}: ${WORKER_SOURCE_HASH_LABEL}=${found}"
-    done
-    worker_image_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" "${published[@]}"
+        records+=("${record}")
+    done <<< "${released}"
+
+    worker_image_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" "${records[@]}"
     exit 0
 fi
 
-if [ "${#published[@]}" -ne 0 ]; then
-    echo "FATAL: ${GIT_SHA} is half published, so this release cannot be completed here." >&2
-    echo "       already in the registry:" >&2
-    for record in "${published[@]}"; do
-        echo "         ${record#*=}" >&2
-    done
-    echo "       missing:" >&2
-    for image in "${missing[@]}"; do
-        echo "         ${REGISTRY}/${image}:${GIT_SHA}" >&2
-    done
-    echo "       A published tag is never overwritten. Delete the package versions listed" >&2
-    echo "       above and rerun, or publish the next commit." >&2
-    exit "${EXIT_PARTIAL_RELEASE}"
-fi
-
+# No marker: this SHA is not released. Anything of it already in the registry is
+# residue of a run that did not finish, and pushing over it releases nothing by itself.
+echo "${GIT_SHA} has no release marker; building and publishing it."
 echo "Building the worker chain for ${GIT_SHA} (source hash ${SOURCE_HASH})..."
 make -C "${REPO_ROOT}" rebuild-worker-images
 
@@ -125,8 +127,8 @@ done
 
 for image in "${WORKER_BASE_IMAGES[@]}"; do
     remote="${REGISTRY}/${image}:${GIT_SHA}"
-    echo "Pushing ${remote}..."
     docker tag "${image}:latest" "${remote}"
+    echo "Pushing ${remote}..."
     docker push "${remote}"
 done
 
@@ -143,3 +145,10 @@ for image in "${WORKER_BASE_IMAGES[@]}"; do
     records+=("${image}=${REGISTRY}/${image}@${digest}")
 done
 worker_image_record "${GIT_SHA}" "${SOURCE_HASH}" "${DIGEST_FILE}" "${records[@]}"
+
+# Every image of the chain resolves and the record of it is written. This last write
+# is the release: before it, nothing may deploy this SHA; after it, nothing may
+# change it.
+echo "Publishing the release marker ${MARKER}..."
+worker_release_marker_publish "${MARKER}" "${DIGEST_FILE}"
+echo "${GIT_SHA} is released."

@@ -6,19 +6,24 @@
   `main` builds common and then the claude, codex and factory images from that exact common, and
   publishes all four to GHCR under that commit's SHA, recording the published digests, the SHA and
   the source hash as a run artifact. Nothing publishes a mutable `:latest` any more.
-- A published SHA is never rewritten. The publish job resolves the whole chain in the registry
-  before it builds anything: an already-published SHA is re-verified and recorded without a push, a
-  half-published SHA is refused naming which tags exist and which are missing, and only a SHA with
-  nothing published is built and pushed. A rebuild of an already-published commit therefore fails
-  by design — the published digests are what a deploy verifies.
+- A release is one registry write, not four. Because four tag pushes cannot be one transaction, a
+  SHA is released by a final `worker-base-release:<sha>` marker carrying the digest record of the
+  chain, published only once all four images resolve. Image tags left behind by a failed or
+  cancelled publish run are inert residue: nothing deploys them, and rerunning the job completes
+  that SHA without anybody deleting package versions by hand. Once the marker exists the SHA is
+  frozen — a rerun re-verifies the digests it names and pushes nothing.
+- The deploy consults the marker first and refuses a revision that has no release (exit 9) before
+  any local tag moves, and refuses without repairing a committed release whose image is gone or
+  carries the wrong source hash.
 - The deploy records the digests it actually verified. The pull half resolves each tag to a digest
   once and then pulls, checks the source hash and retags from `<repository>@sha256:…`, writing that
   record on the host; the deploy copies it back rather than looking the tags up a second time.
-- The production deploy pulls the worker images of the revision it deploys by exact tag — there is
-  no default tag and no fallback — and verifies that each one carries the source hash of the
-  checked-out revision. A missing image, a missing label or a stale label fails the deploy naming
-  the image, the expected hash and the found hash, before `compose up -d` changes anything that is
-  running; the deployed SHA and verified digests are recorded in the run summary and an artifact.
+- The production deploy pulls the worker images of the revision it deploys by exact release — there
+  is no default tag and no fallback — and verifies that each one carries the source hash of the
+  checked-out revision. A missing release, a missing image, a missing label or a stale label fails
+  the deploy naming the image, the expected hash and the found hash, before `compose up -d` changes
+  anything that is running; the deployed SHA and verified digests are recorded in the run summary
+  and an artifact.
 
 - Added a production acceptance matrix for the two subscription-backed developer and QA
   executors. The live mega can now select a Claude or Codex developer, forces exploratory QA
