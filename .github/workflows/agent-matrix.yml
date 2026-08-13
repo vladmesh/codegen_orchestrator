@@ -169,3 +169,7 @@ jobs:
                   printf '\n===== %s =====\n' "$debug_file"
                   cat "$debug_file"
                 done
+
+            printf '\n===== worker result contract failures (last 24h) =====\n'
+            "${compose[@]}" logs --since 24h engineering-worker \
+              | grep 'worker_result_invalid' || true
