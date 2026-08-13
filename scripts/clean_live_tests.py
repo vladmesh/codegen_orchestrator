@@ -184,17 +184,29 @@ def manifest_project_ids() -> set[str]:
     return project_ids
 
 
-def cleanup_manifest_resources(data: dict) -> list[str]:
-    """Resume the same fail-closed owned cleanup used by the live harness."""
-    import asyncio
-
-    import httpx
-
+def _live_helpers_path() -> None:
     live_path = str(Path(ORCHESTRATOR_ROOT) / "tests" / "live")
     if live_path not in sys.path:
         sys.path.insert(0, live_path)
+
+
+def internal_api_client():
+    """The client every recovery phase talks to the live API with.
+
+    `cleanup_all` and the fence in front of it cancel runs via `/api/runs/`,
+    which rejects unauthenticated callers, so recovery authenticates as an
+    internal service exactly as the live harness does.
+    """
+    import httpx
+
+    headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
+    return httpx.AsyncClient(base_url=CLEANUP_API_URL, timeout=20, headers=headers)
+
+
+def manifest_context(data: dict) -> dict:
+    """Rebuild the harness context one persisted manifest describes."""
+    _live_helpers_path()
     from live_harness import OwnedResource, OwnershipManifest
-    from pipeline_helpers import cleanup_all
 
     manifest = OwnershipManifest(
         run_id=str(data["run_id"]),
@@ -218,14 +230,49 @@ def cleanup_manifest_resources(data: dict) -> list[str]:
         elif resource.kind == "server_deployment":
             ctx["project_name"] = resource.identifier
             ctx.update(resource.metadata)
+    return ctx
+
+
+def fence_run_work(ctx: dict) -> list[str]:
+    """Phase one of recovery: stop the run before anything reads or removes it.
+
+    Losing the harness does not stop the run. The API, the scheduler and
+    worker-manager keep going, so a worker carrying this run's label can still
+    be running when an operator recovers the crashed harness — and a label sweep
+    in front of the fence would capture that worker, account it and force-remove
+    it while its run is still live. So recovery cancels the run's work and waits
+    for quiescence first, using the fence the harness itself uses
+    (`pipeline_helpers.fence_owned_work`) rather than a second one that could
+    drift from it.
+
+    A fence that cannot be established is reported, and its caller then removes
+    nothing for this run: refusing is the correct answer only there.
+    """
+    import asyncio
+
+    _live_helpers_path()
+    import pipeline_helpers
+
+    async def fence() -> None:
+        async with internal_api_client() as api:
+            await pipeline_helpers.fence_owned_work(api, ctx)
+
+    try:
+        asyncio.run(fence())
+    except Exception as exc:
+        return [f"run {ctx['manifest'].run_id} fence: {type(exc).__name__}: {exc}"]
+    return []
+
+
+def cleanup_manifest_resources(ctx: dict) -> list[str]:
+    """Resume the same fail-closed owned cleanup used by the live harness."""
+    import asyncio
+
+    _live_helpers_path()
+    from pipeline_helpers import cleanup_all
 
     async def resume() -> None:
-        # cleanup_all cancels runs via /api/runs/, which rejects unauthenticated
-        # callers; authenticate as an internal service like the live harness does
-        headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
-        async with httpx.AsyncClient(
-            base_url="http://localhost:8000", timeout=20, headers=headers
-        ) as api:
+        async with internal_api_client() as api:
             await cleanup_all(api, api, ctx)
 
     try:
@@ -235,8 +282,67 @@ def cleanup_manifest_resources(data: dict) -> list[str]:
     return []
 
 
+def cleanup_run_scoped_resources(run_id: str) -> list[str]:
+    """Remove every Docker resource this run's ownership label selects.
+
+    Recovery's capture-and-remove phases, and the ones that need nothing but a
+    run id: the containers, QA-egress sidecars and dev networks this run created
+    carry `com.codegen.run.id` from creation, so they are found and removed
+    without reconstructing the context the harness had — the fragile round-trip
+    below (`issue:6b4cae67568ff1d8bf82`) no longer decides what Docker keeps.
+
+    It runs *behind* `fence_run_work`, never in front of it. A sweep that
+    overtakes the fence is not a faster cleanup, it is a cleanup racing the run
+    it is cleaning: the labelled worker it captures and force-removes may still
+    be working for a run nothing has cancelled.
+
+    Evidence first, as everywhere else: one capture pass over what is left of
+    the run is taken and retained before anything is removed, and it is that
+    pass which decides whether a `worker:meta` key retained for attribution may
+    finally be deleted. A worker the run's label still lists and the pass could
+    not read is written down as a stated missed capture rather than removed
+    unnamed, and the artifact is merged into rather than replaced — the manifest
+    round-trip below makes a second, poorer pass over the same run once these
+    resources are gone, and it may not unsay what this one recorded.
+    """
+    _live_helpers_path()
+    from run_cleanup import (
+        RunCleanupError,
+        account_listed_workers,
+        accounted_workers,
+        clean_run,
+        docker_cli_ops,
+        retain_evidence,
+    )
+    from run_evidence import RunEvidenceCollector
+
+    root = Path(ORCHESTRATOR_ROOT)
+    ops = docker_cli_ops(root)
+    collector = RunEvidenceCollector(run_id=run_id, owned_workers=lambda: ops.meta_workers(run_id))
+    try:
+        collector.capture()
+        account_listed_workers(collector, ops, run_id)
+        retain_evidence(collector, root / ".live-manifests" / "evidence" / f"{run_id}.json")
+    except Exception as exc:
+        return [f"run {run_id} evidence capture: {exc}"]
+    try:
+        clean_run(ops, run_id, accounted_workers=accounted_workers(collector))
+    except RunCleanupError as exc:
+        return [str(exc)]
+    except Exception as exc:
+        return [f"run {run_id} cleanup: {type(exc).__name__}: {exc}"]
+    return []
+
+
 def recover_ownership_manifests() -> None:
-    """Delete manifests only after owned resources are proven absent."""
+    """Delete manifests only after owned resources are proven absent.
+
+    Four phases, in this order, for each manifest: fence the run's work, capture
+    what is left of it, remove only what is accounted for, verify the run left
+    nothing. Each is a precondition of the next, so a manifest whose fence could
+    not be established is reported and otherwise left alone — nothing of that
+    run is captured or removed while it may still be live.
+    """
     failures: list[str] = []
     manifest_dir = Path(ORCHESTRATOR_ROOT) / ".live-manifests"
     for path in sorted(manifest_dir.glob("*.json")):
@@ -246,7 +352,13 @@ def recover_ownership_manifests() -> None:
             if not resources:
                 path.unlink()
                 continue
-            errors = cleanup_manifest_resources(data)
+            ctx = manifest_context(data)
+            errors = fence_run_work(ctx)
+            if errors:
+                failures.extend(f"{path.name}: {error}" for error in errors)
+                continue
+            errors = cleanup_run_scoped_resources(str(data["run_id"]))
+            errors += cleanup_manifest_resources(ctx)
             if errors:
                 failures.extend(f"{path.name}: {error}" for error in errors)
             elif path.exists():

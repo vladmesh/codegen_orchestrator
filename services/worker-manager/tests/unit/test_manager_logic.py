@@ -363,7 +363,7 @@ async def test_create_worker_creates_dev_network():
         worker_id, "worker:latest", ownership=_OWNERSHIP, network_name="codegen_internal", create_dev_network=True
     )
 
-    wrapper.create_network.assert_awaited_once_with(f"dev_proj_{worker_id}")
+    assert wrapper.create_network.await_args.args == (f"dev_proj_{worker_id}",)
 
 
 @pytest.mark.asyncio

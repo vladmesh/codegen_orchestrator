@@ -922,6 +922,18 @@ class RunEvidenceCollector:
     def records(self) -> list[dict]:
         return [self._records[worker_id] for worker_id in sorted(self._records)]
 
+    def accounted_workers(self) -> set[str]:
+        """The worker ids this run has evidence for, whatever that evidence says.
+
+        Read by run-scoped cleanup, which may only delete a worker's last
+        durable name — the `worker:meta:<id>` key `delete_worker` retains when a
+        removal record could not be stored — once the worker is in here. A
+        worker with a record is in the artifact with its ending or with the
+        stated reason its ending was unreadable; a worker without one would
+        simply cease to exist if its metadata were deleted now.
+        """
+        return set(self._records)
+
     def attempts(self) -> int:
         """Developer worker containers this run went through, retries included."""
         return sum(1 for record in self._records.values() if record["role"] == WorkerRole.DEVELOPER)

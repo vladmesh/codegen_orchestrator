@@ -191,9 +191,22 @@ class DockerClientWrapper:
         """List all Docker networks."""
         return await self._run(self._client.networks.list)
 
-    async def create_network(self, name: str, driver: str = "bridge", internal: bool = False) -> Any:
-        """Create a Docker network. `internal` means no route off the network."""
-        return await self._run(self._client.networks.create, name, driver=driver, internal=internal)
+    async def create_network(
+        self,
+        name: str,
+        driver: str = "bridge",
+        internal: bool = False,
+        labels: Dict[str, str] | None = None,
+    ) -> Any:
+        """Create a Docker network. `internal` means no route off the network.
+
+        `labels` are the network's ownership, applied at creation for the same
+        reason a container's are: they are the only thing that still names the
+        owner once Redis has forgotten the worker this network was made for.
+        """
+        return await self._run(
+            self._client.networks.create, name, driver=driver, internal=internal, labels=labels or {}
+        )
 
     async def inspect_network(self, name: str) -> Dict[str, Any]:
         """Read a network's attributes, including whether it is internal."""

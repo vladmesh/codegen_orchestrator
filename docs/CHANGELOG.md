@@ -2,6 +2,78 @@
 
 ## 2026-08-13
 
+- A run's cleanup is driven by its ownership labels, not by a reconstructed context.
+  `tests/live/run_cleanup.py` takes a run id and removes that run's worker containers, its
+  QA-egress sidecars and its dev networks with `docker ps -a`/`docker network ls --filter
+  label=com.codegen.run.id=<run>`, so resources are found whether or not Redis still knows them and
+  whether or not the harness that created them is alive. It is idempotent — "already absent" is a
+  success — and it verifies afterwards with the same two queries, raising `RunCleanupError` if
+  anything for that run remains. `scripts/clean_live_tests.py` runs it for every manifest before the
+  `ctx` round-trip it used to depend on (`issue:6b4cae67568ff1d8bf82`).
+- The label is the fence as well as the finder: a listed resource whose `com.codegen.run.id` is not
+  this run is refused rather than removed, and long-lived service containers carry no run label at
+  all, so a cleanup scoped to one run cannot take a neighbouring run's resources with it. Proved
+  with both runs present at once against a real daemon in
+  `tests/integration/backend/test_run_scoped_cleanup.py`.
+- `dev_proj_<worker_id>` networks now carry the same ownership labels as the worker they belong to,
+  plus `com.codegen.type=worker-dev-network`. A network's name is derived from a worker id, and a
+  worker id is exactly what is unrecoverable once the container and `worker:meta:<id>` are gone;
+  labelling the network at creation is what makes it findable by run afterwards.
+- `worker:meta:<id>` retained because a worker's removal record could not be stored is removed only
+  once that run's evidence accounts for the worker — that is, the run's evidence collector holds a
+  record for it (`RunEvidenceCollector.accounted_workers`), so the worker is in the artifact with its
+  ending or with the stated reason its ending was unreadable. Otherwise the key is kept and named in
+  the cleanup report as expected residue, never swept as an anomaly. A run with no evidence of its
+  own takes a capture pass and retains it under `.live-manifests/evidence/<run id>.json` before
+  anything is removed; `worker:evidence:removed:<run id>` is evidence and is never deleted by
+  cleanup.
+- A run has one evidence artifact and it only ever gains. `retain_evidence` merges into
+  `.live-manifests/evidence/<run id>.json` instead of replacing it, keeping the record that knows
+  more (an exit code first, then whatever else was read) whenever two passes describe the same
+  worker, and keeping every pass's capture errors. Recovery makes two passes over a manifest — the
+  run-scoped label sweep and then the `ctx` round-trip — and the second runs after the containers,
+  removal records and metadata the first read are gone; overwriting would have erased the accounting
+  that authorised their removal. An artifact that cannot be read, or that names another run, is
+  refused rather than written over.
+- Removal is fenced by accounting rather than merely preceded by a capture attempt. `clean_run`
+  compares every listed container and network against `accounted_workers` and leaves in place — and
+  fails with `RunCleanupError` — anything whose worker the run's evidence does not name, including
+  that worker's Redis keys. A capture that failed with a transient Docker error is no longer a
+  licence to remove what it could not read: `account_listed_workers` turns such a failure into a
+  stated missed capture naming the worker and why its ending is unknown, which is an acceptable
+  ending, and only that record authorises the removal. A silent disappearance is not an outcome the
+  harness can produce.
+- Cleaning a run has four phases in this order: fence, capture, remove, verify. Losing the harness
+  stops nothing else — the API, the scheduler and worker-manager carry the project on — so a worker
+  carrying the target run's label can still be working when an operator recovers a crashed harness.
+  `scripts/clean_live_tests.py::recover_ownership_manifests` therefore establishes the pre-existing
+  cancellation and quiescence fence *first*, through the harness's own
+  `pipeline_helpers.fence_owned_work` (extracted from `cleanup_all`, which still uses it, so there is
+  one fence and not two), and only then takes the run-scoped label sweep and the `ctx` round-trip. A
+  sweep in front of the fence is not a faster cleanup, it is a cleanup racing the run it is cleaning:
+  it would capture a running worker, account it and force-remove it while its run was still live.
+  A manifest whose fence cannot be established is reported loudly and otherwise left alone — nothing
+  of that run is captured or removed — which is the only case where refusing to clean is correct.
+  `scripts/tests/test_clean_live_tests.py` drives the real recovery over a fake API and a fake daemon
+  whose worker keeps running until its run is cancelled, and holds the phase order and the refusal.
+
+- The cleanup adapter a crash recovery actually uses is now proved against a real daemon.
+  `scripts/clean_live_tests.py` and `tests/live/pipeline_helpers.py` build
+  `run_cleanup.docker_cli_ops`, which asks the daemon in Go templates and parses text back, while
+  every real-daemon case so far ran `docker_sdk_ops`; the CLI adapter's templates were answered only
+  by hand-written fixtures. `tests/integration/backend/test_run_scoped_cleanup_cli.py` runs the
+  run-scoped scenario through the CLI adapter against the Docker-in-Docker daemon: a container
+  carrying the run label listed with its name and labels, a container carrying the run label and
+  none of the others — which proves `{{.Label "…"}}` renders an absent label as an empty field
+  rather than a Go placeholder that would become a worker id — the `{{.Labels}}` `k=v,k=v` rendering
+  `_labels_from_pairs` splits for networks, and a whole run removed while a neighbouring run on the
+  same daemon survives. Without it a template that rendered differently on a real daemon would make
+  the sweep find nothing and the verification pass then report the run left nothing behind: a false
+  all-clear in the one check that exists to catch a failed cleanup. The integration runner image
+  carries the docker CLI at the daemon's own version for this. The adapter's Redis half is not
+  covered there: it reaches Redis as `docker compose exec -T redis redis-cli`, addressing the live
+  compose project, which the runner's CLI — pointed at the nested daemon — is not in.
+
 - The backend Docker-in-Docker suite runs on every push to `main`. The worker-ownership,
   run-ownership-propagation and run-evidence-by-label tests are the only real-daemon proof that a
   dead, unsampled worker is still attributable and that a run-scoped query excludes its neighbour,

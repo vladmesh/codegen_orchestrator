@@ -1,8 +1,10 @@
 import ast
+import json
 import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -10,9 +12,22 @@ import pytest
 
 from scripts import clean_live_tests
 
+_LIVE_TESTS = Path(__file__).resolve().parents[2] / "tests" / "live"
+
 
 def _result(stdout="0\n", returncode=0, stderr=""):
     return SimpleNamespace(stdout=stdout, returncode=returncode, stderr=stderr)
+
+
+def _live_harness_modules():
+    """The harness modules recovery drives, imported the way recovery imports them."""
+    if str(_LIVE_TESTS) not in sys.path:
+        sys.path.insert(0, str(_LIVE_TESTS))
+    import pipeline_helpers
+    import run_cleanup
+    import run_evidence
+
+    return pipeline_helpers, run_cleanup, run_evidence
 
 
 @pytest.mark.parametrize(
@@ -386,21 +401,238 @@ def test_recover_manifests_removes_proven_orphan(monkeypatch, tmp_path):
 
 
 def test_recover_manifests_keeps_unproven_resources(monkeypatch, tmp_path):
+    _live_harness_modules()  # recovery rebuilds a real context before any phase runs
     manifest = tmp_path / ".live-manifests" / "run.json"
     manifest.parent.mkdir()
     manifest.write_text(
         '{"run_id":"run","resources":[{"kind":"github_repository","identifier":"org/repo"}]}'
     )
     monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
+    # Recovery has three steps now: the fence, which needs the live API, the
+    # run-scoped label sweep, which needs a daemon, and the manifest round-trip,
+    # which needs the API again. All are stood in for; what is under test is that
+    # an unproven resource is reported and its manifest kept.
+    monkeypatch.setattr(clean_live_tests, "fence_run_work", lambda ctx: [])
+    monkeypatch.setattr(clean_live_tests, "cleanup_run_scoped_resources", lambda run_id: [])
     monkeypatch.setattr(
         clean_live_tests,
         "cleanup_manifest_resources",
-        lambda data: ["github_repository org/repo"],
+        lambda ctx: ["github_repository org/repo"],
     )
 
     with pytest.raises(clean_live_tests.CleanupFailure, match="github_repository org/repo"):
         clean_live_tests.recover_ownership_manifests()
     assert manifest.exists()
+
+
+def test_recover_manifests_sweeps_the_runs_label_before_its_context(monkeypatch, tmp_path):
+    """The label sweep runs for every manifest, and its failure is reported too.
+
+    It goes ahead of the manifest round-trip because it needs nothing but the run
+    id: a run whose context cannot be reconstructed at all still has its
+    containers, sidecars and networks removed. It goes behind the fence, which
+    is the phase before it.
+    """
+    manifest = tmp_path / ".live-manifests" / "run.json"
+    manifest.parent.mkdir()
+    manifest.write_text('{"run_id":"live-abc","resources":[{"kind":"project","identifier":"p-1"}]}')
+    monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
+    _live_harness_modules()  # recovery rebuilds a real context before any phase runs
+    order: list[str] = []
+
+    def sweep(run_id):
+        order.append(f"sweep {run_id}")
+        return ["run live-abc cleanup failed: containers remain"]
+
+    monkeypatch.setattr(clean_live_tests, "fence_run_work", lambda ctx: order.append("fence") or [])
+    monkeypatch.setattr(clean_live_tests, "cleanup_run_scoped_resources", sweep)
+    monkeypatch.setattr(clean_live_tests, "cleanup_manifest_resources", lambda ctx: [])
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="containers remain"):
+        clean_live_tests.recover_ownership_manifests()
+
+    assert order == ["fence", "sweep live-abc"]
+    assert manifest.exists()
+
+
+def test_recover_manifests_removes_nothing_when_the_fence_cannot_be_established(
+    monkeypatch, tmp_path
+):
+    """No fence, no capture and no removal — and a loud failure, not a quiet skip.
+
+    Refusing to clean is the right answer in exactly this case and no other: the
+    run cannot be stopped, so nothing may be read from it or taken away from it.
+    """
+    _live_harness_modules()  # recovery rebuilds a real context before any phase runs
+    manifest = tmp_path / ".live-manifests" / "run.json"
+    manifest.parent.mkdir()
+    manifest.write_text('{"run_id":"live-abc","resources":[{"kind":"project","identifier":"p-1"}]}')
+    monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
+    touched: list[str] = []
+
+    monkeypatch.setattr(
+        clean_live_tests, "fence_run_work", lambda ctx: ["run live-abc fence: RuntimeError: no API"]
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "cleanup_run_scoped_resources",
+        lambda run_id: touched.append("sweep") or [],
+    )
+    monkeypatch.setattr(
+        clean_live_tests,
+        "cleanup_manifest_resources",
+        lambda ctx: touched.append("manifest") or [],
+    )
+
+    with pytest.raises(clean_live_tests.CleanupFailure, match="fence: RuntimeError: no API"):
+        clean_live_tests.recover_ownership_manifests()
+
+    assert touched == []
+    assert manifest.exists()
+
+
+def _running_container(worker_id: str, *, running: bool) -> dict:
+    """One `docker inspect` answer, for a worker that is or is not still working."""
+    return {
+        "State": {
+            "Status": "running" if running else "exited",
+            "Running": running,
+            "OOMKilled": False,
+            "StartedAt": "2026-08-13T20:00:00Z",
+            "FinishedAt": "" if running else "2026-08-13T20:05:00Z",
+            "Error": "",
+            "ExitCode": 0 if running else 137,
+        },
+        "Config": {
+            "Env": ["WORKER_TYPE=developer", f"WORKER_ID={worker_id}"],
+            "Image": "codegen/worker:test",
+        },
+        "Image": "sha256:0000",
+        "Created": "2026-08-13T20:00:00Z",
+        "Mounts": [],
+    }
+
+
+def test_recovery_fences_the_live_target_run_before_it_captures_or_removes_it(
+    monkeypatch, tmp_path
+):
+    """The harness crashed; its run did not. Recovery stops it before touching it.
+
+    Losing the harness stops nothing else: the API, the scheduler and
+    worker-manager carry the project on, so a worker carrying the target run's
+    label is still working when an operator runs the ordinary cleanup. This
+    drives the real `recover_ownership_manifests` over a fake API and a fake
+    daemon whose worker keeps running until its run is cancelled, and holds the
+    four phases to their order — fence, capture, remove, verify.
+
+    The neighbouring-run case in `tests/integration/backend/test_run_scoped_cleanup.py`
+    cannot catch this: it kills every worker before the cleanup, so it proves
+    label isolation against a dead neighbour, not safety against a live target.
+    """
+    pipeline_helpers, run_cleanup, run_evidence = _live_harness_modules()
+
+    manifest = tmp_path / ".live-manifests" / "live-abc.json"
+    manifest.parent.mkdir()
+    manifest.write_text(
+        json.dumps({"run_id": "live-abc", "resources": [{"kind": "project", "identifier": "p-1"}]})
+    )
+    monkeypatch.setattr(clean_live_tests, "ORCHESTRATOR_ROOT", str(tmp_path))
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+
+    order: list[str] = []
+    run = {"id": "live-abc", "project_id": "p-1", "status": "running"}
+
+    def api(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/runs/":
+            return httpx.Response(200, json=[run])
+        if request.method == "PATCH" and request.url.path == "/api/runs/live-abc":
+            order.append("cancel")
+            # Quiescence: the worker this run started stops with it.
+            run["status"] = "cancelled"
+            return httpx.Response(200, json=run)
+        raise AssertionError(f"unexpected {request.method} {request.url.path}")
+
+    monkeypatch.setattr(
+        clean_live_tests,
+        "internal_api_client",
+        lambda: httpx.AsyncClient(base_url="http://api", transport=httpx.MockTransport(api)),
+    )
+    # The consumer half of the fence talks to Redis through `docker compose exec`.
+    # What it does there is held elsewhere; that it happens at all is here.
+    for name in ("cancel_owned_scaffold", "cancel_owned_active_work"):
+        monkeypatch.setattr(pipeline_helpers, name, lambda ctx: order.append("fence consumers"))
+    monkeypatch.setattr(pipeline_helpers, "cleanup_owned_capability_work", lambda ctx: None)
+
+    worker = run_cleanup.LabelledResource(
+        name="worker-w1", kind="worker", worker_id="w1", run_id="live-abc"
+    )
+    containers = {worker.name: worker}
+
+    def remove_container(name: str):
+        order.append("remove" if run["status"] == "cancelled" else "remove while the run is live")
+        containers.pop(name, None)
+
+    ops = run_cleanup.CleanupOps(
+        list_containers=lambda run_id: [
+            item for item in containers.values() if item.run_id == run_id
+        ],
+        remove_container=remove_container,
+        list_networks=lambda run_id: [],
+        remove_network=lambda name: None,
+        meta_workers=lambda run_id: [],
+        delete_keys=lambda names: None,
+        existing_keys=lambda names: [],
+    )
+    monkeypatch.setattr(run_cleanup, "docker_cli_ops", lambda root, **kwargs: ops)
+
+    def probe(root=None):
+        def list_run_workers(run_id):
+            order.append("capture")
+            return [
+                run_evidence.ListedWorker(container=item.name, worker_id=item.worker_id)
+                for item in containers.values()
+                if item.run_id == run_id
+            ]
+
+        return run_evidence.ContainerProbe(
+            list_run_workers=list_run_workers,
+            # The worker is doing this run's work until the fence cancels it.
+            inspect=lambda container: _running_container(
+                "w1", running=run["status"] != "cancelled"
+            ),
+            logs=lambda container, tail: "",
+            removed_workers=lambda run_id: [],
+        )
+
+    monkeypatch.setattr(run_evidence, "docker_probe", probe)
+    # The manifest round-trip needs the whole live stack; the phases under test
+    # are the three in front of it.
+    monkeypatch.setattr(
+        clean_live_tests,
+        "cleanup_manifest_resources",
+        lambda ctx: order.append("manifest round-trip") or [],
+    )
+
+    clean_live_tests.recover_ownership_manifests()
+
+    assert order == [
+        "fence consumers",  # scaffold
+        "cancel",
+        "fence consumers",  # the capability consumers, behind the cancelled run
+        "capture",
+        "remove",
+        "manifest round-trip",
+    ]
+    assert containers == {}
+
+    # And the evidence proves the fence really came first: the capture read a
+    # worker that had already stopped, so its ending is a fact rather than
+    # "still running when this was captured".
+    artifact = json.loads((tmp_path / ".live-manifests" / "evidence" / "live-abc.json").read_text())
+    (record,) = artifact["workers"]
+    assert record["worker_id"] == "w1"
+    assert record["exit_code"]["status"] == "captured"
+    assert record["exit_code"]["value"] == 137
 
 
 def test_main_remote_failure_leaves_db_slugs_available_for_retry(monkeypatch, tmp_path):
