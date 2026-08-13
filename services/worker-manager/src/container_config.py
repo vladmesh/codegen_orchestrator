@@ -10,6 +10,11 @@ from shared.contracts.vocab import AgentType
 CLAUDE_CONFIG_DIR = "/home/worker/.claude"
 WORKER_PIDS_LIMIT = 256
 
+# Where the host transcript directory is mounted in every worker container. The
+# transcripts outlive the container, and this is the destination anything
+# looking for them reads back off the container's mounts.
+TRANSCRIPT_MOUNT = "/artifacts/worker-transcripts"
+
 
 @dataclass
 class WorkerContainerConfig:
@@ -47,7 +52,7 @@ class WorkerContainerConfig:
             "WORKER_TYPE": self.worker_type,
             "WORKER_CAPABILITIES": ",".join(self.capabilities),
             "WORKER_SUBPROCESS_TIMEOUT_SECONDS": str(subprocess_timeout_seconds),
-            "WORKER_TRANSCRIPT_DIR": "/artifacts/worker-transcripts",
+            "WORKER_TRANSCRIPT_DIR": TRANSCRIPT_MOUNT,
             "WORKER_TRANSCRIPT_MAX_BYTES": str(self.transcript_max_bytes),
             # The worker validates its own agent state against the mode it was
             # created with: host_session needs a mounted session, api_key does not.
@@ -93,7 +98,7 @@ class WorkerContainerConfig:
 
         if self.transcript_host_path:
             volumes[self.transcript_host_path] = {
-                "bind": "/artifacts/worker-transcripts",
+                "bind": TRANSCRIPT_MOUNT,
                 "mode": "rw",
             }
 

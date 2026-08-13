@@ -42,6 +42,7 @@ from run_evidence import (
     classify_outcome,
     combination_label,
     emit_run_evidence,
+    parse_removed_workers,
     qa_cell,
     redact_log_tail,
     role_from_worker_id,
@@ -53,7 +54,8 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
-from shared.contracts.queues.worker import WorkerLabel
+from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
+from shared.contracts.worker_evidence import RemovalFact, RemovedWorkerEvidence
 
 # Every test here drives the harness against fakes, so the run needs no credential
 # to start — see the guard in conftest.pytest_collection_modifyitems.
@@ -68,6 +70,8 @@ QA_WORKER_ID = "qa-abc123abc123"
 QA_CONTAINER = f"worker-{QA_WORKER_ID}"
 RUN_START = datetime(2026, 8, 13, 12, 0, 0, tzinfo=UTC)
 CODEX_REPOSITORY = "ghcr.io/org/codegen-orchestrator/worker-base-codex"
+# When the delete path captured a removal record, in the fakes below.
+REMOVED_AT = "2026-08-13T12:00:20+00:00"
 
 
 class FakeDocker:
@@ -81,6 +85,10 @@ class FakeDocker:
         self.log_reads: list[str] = []
         self.listed_states: list[str] = []
         self.listing_error: str | None = None
+        # The durable half: what worker-manager wrote before it removed a
+        # container, keyed by run exactly as `worker:evidence:removed:<run>` is.
+        self.removed: dict[str, list[RemovedWorkerEvidence]] = {}
+        self.removal_record_error: str | None = None
 
     def add(self, container: str, payload: dict, log: str) -> None:
         self.containers[container] = payload
@@ -90,6 +98,17 @@ class FakeDocker:
         """What worker-manager does on delete: the container stops existing."""
         self.containers.pop(container, None)
         self.logs_by_container.pop(container, None)
+
+    def delete(self, container: str, *, run_id: str = RUN_ID, **overrides) -> None:
+        """The whole delete path: capture the ending, then remove the container.
+
+        The order is the point. After `remove` there is nothing left to read, so
+        a test that deletes this way is testing what a run can still know about
+        a worker it never saw — which is every worker deleted before its first
+        evidence pass.
+        """
+        self.removed.setdefault(run_id, []).append(removal_record(container, **overrides))
+        self.remove(container)
 
     def probe(self) -> ContainerProbe:
         def list_run_workers(run_id: str) -> list[ListedWorker]:
@@ -128,7 +147,74 @@ class FakeDocker:
             self.log_reads.append(container)
             return self.logs_by_container[container]
 
-        return ContainerProbe(list_run_workers=list_run_workers, inspect=inspect, logs=logs)
+        def removed_workers(run_id: str) -> list[RemovedWorkerEvidence]:
+            if self.removal_record_error is not None:
+                raise RuntimeError(self.removal_record_error)
+            # Round-tripped through the wire format on purpose: this is what a
+            # reader actually gets back out of Redis, not an in-process object.
+            return parse_removed_workers(
+                [record.model_dump_json() for record in self.removed.get(run_id, [])]
+            )
+
+        return ContainerProbe(
+            list_run_workers=list_run_workers,
+            inspect=inspect,
+            logs=logs,
+            removed_workers=removed_workers,
+        )
+
+
+def removal_record(
+    container: str,
+    *,
+    worker_id: str | None = None,
+    ownership: WorkerOwnership | None = None,
+    worker_type: str = "developer",
+    agent_type: str = "codex",
+    exit_code: int | None = 1,
+    exit_reason: str = "the container was still running when it was removed",
+    log_tail: str | None = "wrapper said something\n",
+    transcript_dir: str | None = "/data/worker-transcripts",
+    delete_reason: str | None = "failed",
+) -> RemovedWorkerEvidence:
+    """One record in the shape worker-manager writes it, for a fake to serve."""
+    worker_id = worker_id or container.removeprefix("worker-")
+    return RemovedWorkerEvidence(
+        worker_id=worker_id,
+        container=container,
+        ownership=ownership
+        or WorkerOwnership(project_id=PROJECT_ID, run_id=RUN_ID, attempt_id="task-1"),
+        removed_at=REMOVED_AT,
+        delete_reason=delete_reason,
+        worker_type=RemovalFact.read(worker_type),
+        agent_type=RemovalFact.read(agent_type),
+        image=RemovalFact.read({"tag": f"worker-base-{agent_type}:latest", "id": "sha256:abc"}),
+        state=RemovalFact.read(
+            {
+                "status": "exited",
+                "running": False,
+                "oom_killed": False,
+                "started_at": "2026-08-13T12:00:05+00:00",
+                "finished_at": "2026-08-13T12:00:19+00:00",
+                "error": "",
+            }
+        ),
+        exit_code=(
+            RemovalFact.read(exit_code)
+            if exit_code is not None
+            else RemovalFact.missed(exit_reason)
+        ),
+        log_tail=(
+            RemovalFact.read(log_tail)
+            if log_tail is not None
+            else RemovalFact.missed("the container's log could not be read before removal")
+        ),
+        transcript_dir=(
+            RemovalFact.read(f"{transcript_dir}/{worker_id}")
+            if transcript_dir is not None
+            else RemovalFact.missed("the container declares no transcript bind mount")
+        ),
+    )
 
 
 def container_payload(
@@ -523,6 +609,7 @@ def test_probe_failure_is_recorded_not_raised(tmp_path):
             list_run_workers=explode,
             inspect=lambda name: None,
             logs=lambda name, tail: None,
+            removed_workers=lambda run_id: [],
         ),
         clock=lambda: RUN_START,
     )
@@ -546,6 +633,173 @@ def test_ownership_reconciliation_failure_is_recorded_not_raised(codex_docker, t
     artifact = build_artifact(base_ctx(collector), root=tmp_path)
     assert artifact["capture_errors"] == ["owned worker reconciliation failed: manifest unreadable"]
     assert artifact["workers"][0]["exit_code"]["value"] == 0
+
+
+# ── Workers the run never had a chance to see ────────────────────────────
+
+
+def test_a_worker_deleted_before_the_first_pass_still_carries_its_exit(codex_docker, tmp_path):
+    """The blind spot of the label, closed by whoever removed the container.
+
+    Nothing observes this worker while it exists. It is created, it ends, and
+    the ordinary delete path takes it away — capturing first — all before the
+    run's only evidence pass. `docker ps -a` cannot answer for it, so the
+    artifact would carry nothing at all if the removal had not written its
+    ending down.
+    """
+    codex_docker.delete(DEV_CONTAINER, exit_code=137)
+    assert codex_docker.containers == {}
+
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    assert [worker["worker_id"] for worker in artifact["workers"]] == [DEV_WORKER_ID]
+    worker = artifact["workers"][0]
+    assert worker["discovered_by"] == Discovery.DELETE_CAPTURE.value
+    assert worker["role_evidence"] == RoleEvidence.DELETE_RECORD.value
+    assert worker["container_present"] is False
+    assert worker["exit_code"] == {
+        "status": CaptureStatus.CAPTURED.value,
+        "value": 137,
+        "reason": None,
+    }
+    assert worker["log_tail"]["value"]["text"] == "wrapper said something\n"
+    assert worker["agent_type_executed"]["value"] == "codex"
+    assert worker["delete_reason"] == "failed"
+    assert worker["ownership_labels"][WorkerLabel.RUN.value] == RUN_ID
+    # The exit is attributable afterwards because the record kept the address
+    # of the transcript the container's mount would have named.
+    assert worker["transcript"]["host_dir"]["value"].endswith(DEV_WORKER_ID)
+    assert artifact["capture_errors"] == []
+    # And the run reports on it as a worker of this run, not as an absence.
+    assert artifact["run"]["attempts"] == 1
+    assert artifact["combination"]["worker_executed"]["value"] == "codex"
+
+
+def test_a_removed_qa_executor_makes_the_qa_cell_answer_for_a_real_container(
+    codex_docker, tmp_path
+):
+    """The QA half is the half most likely to be deleted before anyone looks."""
+    codex_docker.delete(
+        QA_CONTAINER, worker_type="qa", agent_type="claude", exit_code=0, transcript_dir=None
+    )
+
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    qa = artifact["qa"]
+    assert qa["executor_workers"] == [QA_WORKER_ID]
+    assert qa["executor_executed"]["value"] == "claude"
+    record = next(w for w in artifact["workers"] if w["worker_id"] == QA_WORKER_ID)
+    assert record["role"] == WorkerRole.QA_EXECUTOR.value
+    assert record["transcript"]["host_dir"]["status"] == CaptureStatus.MISSED.value
+    assert record["transcript"]["host_dir"]["reason"]
+
+
+def test_a_removal_record_that_missed_the_exit_says_so_rather_than_nothing(codex_docker, tmp_path):
+    """A capture that failed at the source is still a finding, never an omission."""
+    codex_docker.delete(
+        DEV_CONTAINER,
+        exit_code=None,
+        exit_reason="the container was still running when it was removed",
+        log_tail=None,
+    )
+
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    worker = artifact["workers"][0]
+    assert worker["exit_code"]["status"] == CaptureStatus.MISSED.value
+    assert worker["exit_code"]["value"] is None
+    assert "still running when it was removed" in worker["exit_code"]["reason"]
+    assert worker["log_tail"]["status"] == CaptureStatus.MISSED.value
+    assert worker["log_tail"]["reason"]
+
+
+def test_a_removal_record_never_overwrites_what_a_pass_read_off_the_container(
+    codex_docker, tmp_path
+):
+    """The live read is richer, and the two must not fight over the record."""
+    collector = collector_for(codex_docker)
+    collector.capture()  # reads the exited container: exit 0, real transcript files
+    codex_docker.delete(DEV_CONTAINER, exit_code=137)
+
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    worker = artifact["workers"][0]
+    assert worker["discovered_by"] == Discovery.RUN_LABEL.value
+    assert worker["exit_code"]["value"] == 0
+    assert worker["transcript"]["files"]["value"]
+
+
+def test_a_running_container_that_is_deleted_is_completed_by_its_record(transcripts, tmp_path):
+    """The lost race the previous attempt could only ever report as a loss."""
+    docker = FakeDocker(
+        containers={
+            DEV_CONTAINER: container_payload(
+                worker_id=DEV_WORKER_ID,
+                agent_type="codex",
+                exit_code=None,
+                transcript_source=str(transcripts),
+            )
+        },
+        logs={DEV_CONTAINER: "still working"},
+    )
+    collector = collector_for(docker)
+    collector.capture()  # saw it alive, so it has no exit code yet
+    docker.delete(DEV_CONTAINER, exit_code=143)
+
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    worker = artifact["workers"][0]
+    assert worker["exit_code"]["value"] == 143
+    assert worker["discovered_by"] == Discovery.DELETE_CAPTURE.value
+
+
+def test_one_runs_removal_records_are_never_read_into_another_run(codex_docker, tmp_path):
+    """Records are filed under a run, and read back under one."""
+    codex_docker.delete(DEV_CONTAINER, exit_code=137, run_id="live-someone-else")
+
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    assert artifact["workers"] == []
+
+
+def test_a_removal_record_read_failure_is_recorded_not_raised(codex_docker, tmp_path):
+    """Evidence collection never changes a matrix verdict — this source either."""
+    codex_docker.removal_record_error = "redis is unreachable"
+
+    collector = collector_for(codex_docker)
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    assert artifact["capture_errors"] == [
+        "removed worker evidence read failed: redis is unreachable"
+    ]
+    # The container the label did list is still fully reported.
+    assert artifact["workers"][0]["exit_code"]["value"] == 0
+
+
+def test_a_worker_in_no_source_at_all_is_still_named_with_its_reason(codex_docker, tmp_path):
+    """No container, no record: the manifest's stated miss is what is left."""
+    codex_docker.delete(DEV_CONTAINER, exit_code=137)
+    codex_docker.removed.clear()  # the capture itself never reached Redis
+
+    collector = collector_for(codex_docker, owned_workers=lambda: [DEV_WORKER_ID])
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    worker = artifact["workers"][0]
+    assert worker["discovered_by"] == Discovery.OWNERSHIP_MANIFEST.value
+    assert worker["exit_code"]["status"] == CaptureStatus.MISSED.value
+    assert "no removal record was written for it" in worker["exit_code"]["reason"]
 
 
 # ── Reading one container ────────────────────────────────────────────────

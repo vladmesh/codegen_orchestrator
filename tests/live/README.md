@@ -82,14 +82,20 @@ died reads its exit code and log tail exactly as well as one that ran while it l
 window, no container-name prefix, no dependence on a poll landing in time.
 
 What a label cannot survive is the *removal* of the container: `docker ps -a` forgets a removed
-container, and worker-manager removes one on delete (before deleting its Redis metadata, so nothing
-here may lean on Redis either). Two things follow. `pipeline_helpers.evidence_pass` takes a pass on
-every engineering poll and every poll of the post-deploy QA wait, so a pass always lands before the
-removal; and the run's ownership manifest is reconciled in as a second source, contributing a worker
-the label query never listed as an explicit `{"status": "missed", "reason": …}` record. A worker is
-never omitted — an omitted worker reads as "nothing ran", which is the failure this evidence exists
-to end. Evidence collection never fails a run: a probe error, or a failed ownership refresh, is
-recorded under `capture_errors`.
+container, and worker-manager removes one on delete. No polling interval fixes that — a harness
+cannot win a race against an asynchronous deleter — so the deleter captures instead. Before
+`delete_worker` removes a container it reads its exit code, a bounded log tail, its image, its agent
+type and its transcript directory into `worker:evidence:removed:<run id>`, a run-scoped Redis record
+that the deletion of `worker:meta:<id>` does not touch. The collector reads it as its second source,
+and it carries facts: a worker created and deleted before any pass ran still arrives with its exit
+code, as `discovered_by: "delete_capture"`.
+
+The run's ownership manifest is the third and weakest source, for a worker in neither of the other
+two — no container and no record, because the capture itself never reached Redis. It contributes an
+explicit `{"status": "missed", "reason": …}` record and nothing else. A worker is never omitted — an
+omitted worker reads as "nothing ran", which is the failure this evidence exists to end. Evidence
+collection never fails a run: a probe error, an unreadable removal record, or a failed ownership
+refresh is recorded under `capture_errors`.
 
 The QA cell reports `executor_executed` from the QA container this run's label selected, never from
 the qa-worker's configured selector: that selector is reported separately as `executor_selected`,
@@ -99,8 +105,9 @@ Agent stdout stays out of it. The log tail is the container's own log (worker-wr
 bounded and redacted through `shared.diagnostics.redact_diagnostic` against the container's secret
 environment values; Codex CLI diagnostics stay in the retained transcript, which the artifact
 references by path only. `tests/live/test_run_evidence.py` covers the whole schema offline;
-`tests/integration/backend/test_run_evidence_by_label.py` proves the discovery against a real daemon
-with a worker that is killed and forgotten by Redis before anything reads it.
+`tests/integration/backend/test_run_evidence_by_label.py` proves it against a real daemon, with a
+worker killed and forgotten by Redis before anything reads it, and with one taken through the whole
+ordinary delete path — container removed, metadata deleted — before anything observes it at all.
 
 ## Bot access revocation
 

@@ -2,6 +2,24 @@
 
 ## 2026-08-13
 
+- Whoever removes a worker captures its ending first. Before `delete_worker` removes a worker's
+  container it reads that container's exit code, a bounded and redacted log tail, its image, its
+  agent type and the host directory its transcript was retained in, and writes them to
+  `worker:evidence:removed:<run id>` — keyed by the ownership already on the worker and deliberately
+  outside the `worker:meta:<id>` the same deletion goes on to delete. Labels survive a worker that
+  died; they do not survive one that was removed, and no polling interval fixes that, so the
+  vanishing point is where the capture belongs. A worker created and deleted before any observer
+  looked at it now reaches its run's artifact with its exit code, not as a stated miss and not as an
+  omission.
+- Capture never owns cleanup. It is bounded by `WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS`, it raises
+  nothing at the deletion, and every fact it could not read becomes a stated reason in the record
+  rather than an absence: a worker whose ending cannot be read is still removed. Records are kept
+  for `WORKER_REMOVAL_EVIDENCE_TTL_SECONDS`.
+- The run evidence collector (artifact schema v4) now reads three sources in order of strength: the
+  containers the run label still lists, the removal records for those already gone, and — for a
+  worker in neither, because the capture itself never reached Redis — the run's ownership manifest,
+  which can still only add an explicit missed capture naming why.
+
 - A dynamic worker's death is attributable, and the run finds its workers by label. Every worker/QA
   combination of the production matrix now emits one retained, machine-readable artifact
   (`docs/e2e_results/run-evidence-*.json`) naming the deployed SHA and the worker image digest

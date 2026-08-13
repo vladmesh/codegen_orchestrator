@@ -51,12 +51,12 @@ WORKER_KEY_PATTERNS = (
 )
 
 
-async def _dead_owned_worker(redis_client, docker_client, repo_id: str, ownership: WorkerOwnership):
-    """Create one worker for this owner, kill it, and forget it in Redis.
+async def _owned_worker(redis_client, docker_client, repo_id: str, ownership: WorkerOwnership):
+    """Create one worker for this owner through the real path, and kill it.
 
     Returns the worker id and the id of its container. Nothing about the
-    container's ownership is read here — that is what the tests do, after it is
-    dead.
+    container is read here beyond the handle needed to kill it — every question
+    about who owned it or how it ended is asked afterwards, of a corpse.
     """
     request_id = f"own-{uuid4().hex[:8]}"
     command = CreateWorkerCommand(
@@ -89,6 +89,21 @@ async def _dead_owned_worker(redis_client, docker_client, repo_id: str, ownershi
     container = docker_client.containers.get(f"worker-{worker_id}")
     container_id = container.id
     container.kill()
+
+    return worker_id, container_id
+
+
+async def _dead_owned_worker(redis_client, docker_client, repo_id: str, ownership: WorkerOwnership):
+    """The same worker, with Redis already forgetting it.
+
+    The keys deleted here are exactly the ones `delete_worker` deletes in its
+    `finally` block, by hand and without the deletion: what these tests prove is
+    that attribution needs none of them. A test that wants the *whole* deletion
+    — including the evidence capture that happens inside it — has to run the
+    real delete path instead, which is what
+    `test_run_evidence_by_label.py` does.
+    """
+    worker_id, container_id = await _owned_worker(redis_client, docker_client, repo_id, ownership)
 
     await redis_client.delete(*[key.format(worker_id=worker_id) for key in WORKER_KEY_PATTERNS])
     assert await redis_client.hgetall(f"worker:meta:{worker_id}") == {}

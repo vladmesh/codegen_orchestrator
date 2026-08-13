@@ -65,6 +65,14 @@ class WorkerManagerSettings(BaseSettings):
     WORKER_TRANSCRIPT_RETENTION_DAYS: int = 30
     WORKER_TRANSCRIPT_MAX_BYTES: int = 5 * 1024 * 1024
 
+    # How a worker ended is readable only while its container exists, so the
+    # deletion path reads it first. That read is bounded and never owns the
+    # deletion: past this budget the removal proceeds and the record says the
+    # capture ran out of time. The record itself is run-scoped and outlives
+    # `worker:meta`, so it needs a retention of its own.
+    WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS: float = 10.0
+    WORKER_REMOVAL_EVIDENCE_TTL_SECONDS: int = 14 * 24 * 3600
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

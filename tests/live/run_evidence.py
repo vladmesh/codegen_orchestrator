@@ -25,11 +25,19 @@ the previous attempt (codegen-orchestrator-1181) tried and could not make work:
 a five-second poll cannot see a container that lived for one second.
 
 What the label query cannot answer for is a container that was **removed**, not
-merely killed — ``docker ps -a`` forgets those too. The run's ownership manifest
-is the second source for exactly that case: a worker it names that the label
-query never listed is written into the artifact as an explicit missed capture.
-It can only ever add a *missed* record; every captured fact in the artifact came
-from the label query.
+merely killed — ``docker ps -a`` forgets those too, and ``delete_worker``
+removes rather than stops. No polling interval fixes that: a harness cannot win
+a race against an asynchronous deleter. So the deleter captures instead. Before
+worker-manager removes a worker's container it reads the exit code, a bounded
+log tail and where the transcript was retained into a durable, run-scoped record
+(``shared/contracts/worker_evidence.py``) that outlives the ``worker:meta``
+deletion. That record is this module's second source, and it carries facts:
+a worker created and destroyed before any pass ran still arrives here with its
+exit code.
+
+The run's ownership manifest is the third and weakest source, for a worker that
+is in neither — no container and no removal record, because the capture itself
+failed. It can only ever add a *missed* record, which must still name why.
 
 An omitted worker would read as "nothing ran". That is the failure this module
 exists to end: every worker the run created appears, either with its evidence or
@@ -48,7 +56,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 import json
 from pathlib import Path
-import re
 import subprocess
 
 from live_harness import resolve_repo_root
@@ -59,6 +66,13 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.queues.worker import WorkerLabel
+from shared.contracts.worker_evidence import (
+    REMOVAL_LOG_TAIL_LINES,
+    REMOVAL_LOG_TAIL_MAX_CHARS,
+    RemovedWorkerEvidence,
+    removed_worker_evidence_key,
+    secret_env_values,
+)
 from shared.diagnostics import redact_diagnostic
 
 
@@ -80,11 +94,16 @@ def orchestrator_root() -> Path:
 # v3: workers are discovered by `com.codegen.run.id`, so every worker record
 #     carries the ownership labels it was found by and how it was discovered,
 #     and the container-name/creation-window heuristics are gone.
-EVIDENCE_SCHEMA_VERSION = 3
+# v4: a worker whose container was removed is carried by the record the remover
+#     wrote before removing it, so `discovered_by` may be `delete_capture` and
+#     such a record carries an exit code and a log tail like any other.
+EVIDENCE_SCHEMA_VERSION = 4
 EVIDENCE_KIND = "worker_failure_attribution"
 
-LOG_TAIL_LINES = 200
-LOG_TAIL_MAX_CHARS = 12_000
+# The same bounds the remover applies to the tail it persists, so a tail read
+# here and a tail read there are the same size of thing.
+LOG_TAIL_LINES = REMOVAL_LOG_TAIL_LINES
+LOG_TAIL_MAX_CHARS = REMOVAL_LOG_TAIL_MAX_CHARS
 
 # worker-manager names every worker container `worker-{worker_id}`
 # (services/worker-manager/src/container_config.py) and labels it
@@ -92,7 +111,8 @@ LOG_TAIL_MAX_CHARS = 12_000
 WORKER_CONTAINER_PREFIX = "worker"
 WORKER_TYPE_LABEL = f"{WorkerLabel.TYPE.value}=worker"
 
-# The container side of the transcript bind mount (container_config.py).
+# The container side of the transcript bind mount
+# (worker-manager container_config.TRANSCRIPT_MOUNT).
 TRANSCRIPT_MOUNT = "/artifacts/worker-transcripts"
 
 # Written on the deployment host by infra/scripts/pull-worker-images.sh, copied
@@ -100,17 +120,16 @@ TRANSCRIPT_MOUNT = "/artifacts/worker-transcripts"
 # release this host is deployed with.
 RELEASE_RECORD_FILE = "deployed-worker-images.json"
 
-# Same rule worker-wrapper redacts its transcripts with
-# (packages/worker-wrapper/src/worker_wrapper/observability.py).
-_SECRET_ENV_NAME = re.compile(r"(?:key|secret|token|password|credential|authorization)", re.I)
-
 
 class Discovery(StrEnum):
     """How the run came to know about one worker."""
 
     # The run label listed the container: everything about it is readable.
     RUN_LABEL = "run_label"
-    # Only the run's ownership manifest knows this worker; docker does not.
+    # The container is gone, and whoever removed it wrote the ending down first.
+    DELETE_CAPTURE = "delete_capture"
+    # Only the run's ownership manifest knows this worker; docker does not, and
+    # no removal record was written for it either.
     OWNERSHIP_MANIFEST = "ownership_manifest"
 
 
@@ -122,9 +141,9 @@ VANISHED_BEFORE_EXIT_REASON = (
     "was never readable"
 )
 NEVER_LISTED_REASON = (
-    "this run owned the worker and the run-label query never listed its container: "
-    "it was removed — not merely killed — before any evidence pass, and `docker ps "
-    "-a` does not remember a removed container"
+    "this run owned the worker, the run-label query never listed its container and "
+    "no removal record was written for it: the container was removed — not merely "
+    "killed — and the capture the remover takes before removing did not reach Redis"
 )
 REMOVED_BEFORE_CAPTURE_REASON = (
     "docker listed this container for the run label and no longer knows it: it was "
@@ -201,6 +220,9 @@ class RoleEvidence(StrEnum):
 
     # `WORKER_TYPE` on the container: what worker-manager was told to create.
     CONTAINER_ENV = "container_worker_type_env"
+    # The `worker_type` worker-manager held for this worker, read out of its
+    # metadata by the deletion that removed it.
+    DELETE_RECORD = "worker_manager_removal_record"
     # The worker id itself, when no container could be inspected. QA executor
     # ids are minted `qa-{request_id[:12]}` (clients/qa_worker.py) and developer
     # ids `dev-{repo}-{request_id[:8]}` (clients/worker_spawner.py).
@@ -259,11 +281,17 @@ class ContainerProbe:
     ``logs`` return ``None`` for a container docker no longer knows — that is
     reported, not raised. Any other docker failure raises: a broken probe must
     not be mistaken for a removed container.
+
+    ``removed_workers`` answers the other half of the question, for the workers
+    docker cannot be asked about at all: the records worker-manager wrote before
+    it removed them. It has no ``None`` case — a run with no removed workers has
+    no records — and a failure to read it raises, for the same reason.
     """
 
     list_run_workers: Callable[[str], list[ListedWorker]]
     inspect: Callable[[str], dict | None]
     logs: Callable[[str, int], str | None]
+    removed_workers: Callable[[str], list[RemovedWorkerEvidence]]
 
 
 def _run_label_filters(run_id: str) -> list[str]:
@@ -342,14 +370,72 @@ def docker_probe(root: Path | None = None) -> ContainerProbe:
             raise RuntimeError(f"docker logs {container} failed: {result.stderr.strip()}")
         return "\n".join(part for part in (result.stdout, result.stderr) if part.strip())
 
-    return ContainerProbe(list_run_workers=list_run_workers, inspect=inspect, logs=logs)
+    return ContainerProbe(
+        list_run_workers=list_run_workers,
+        inspect=inspect,
+        logs=logs,
+        removed_workers=compose_removed_workers(root),
+    )
 
 
-def docker_sdk_probe(client) -> ContainerProbe:
+def parse_removed_workers(payloads: list[str]) -> list[RemovedWorkerEvidence]:
+    """Validate raw removal records against the contract the remover wrote them to."""
+    return [RemovedWorkerEvidence.model_validate_json(payload) for payload in payloads]
+
+
+def compose_removed_workers(root: Path) -> Callable[[str], list[RemovedWorkerEvidence]]:
+    """Read the run's removal records out of the stack's own Redis.
+
+    The live harness has no Redis client — it drives the stack from the host —
+    so it asks the Redis service the way every other harness helper does.
+    """
+
+    def removed_workers(run_id: str) -> list[RemovedWorkerEvidence]:
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "redis",
+                "redis-cli",
+                "HVALS",
+                removed_worker_evidence_key(run_id),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=root,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"reading removal records failed: {result.stderr.strip()}")
+        # Each record is one line: `model_dump_json` escapes every newline the
+        # log tail contains, so a record never spans two lines of this output.
+        return parse_removed_workers([line for line in result.stdout.splitlines() if line.strip()])
+
+    return removed_workers
+
+
+def redis_removed_workers(url: str) -> Callable[[str], list[RemovedWorkerEvidence]]:
+    """Read the run's removal records straight from Redis, for a test that can."""
+    import redis as redis_sdk  # imported here: the live harness has no redis client
+
+    client = redis_sdk.Redis.from_url(url, decode_responses=True)
+
+    def removed_workers(run_id: str) -> list[RemovedWorkerEvidence]:
+        stored = client.hgetall(removed_worker_evidence_key(run_id))
+        return parse_removed_workers([stored[worker_id] for worker_id in sorted(stored)])
+
+    return removed_workers
+
+
+def docker_sdk_probe(client, removed_workers: Callable[[str], list[RemovedWorkerEvidence]]):
     """The same probe over a docker SDK client, for a daemon reached by socket.
 
-    Same three reads and the same label query, so a test that owns a daemon
-    exercises this module's real discovery rather than a look-alike of it.
+    Same reads and the same label query, so a test that owns a daemon exercises
+    this module's real discovery rather than a look-alike of it. The removal
+    records come from wherever that test's Redis is, because they are not on the
+    docker daemon at all.
     """
     from docker.errors import NotFound  # imported here: the live harness has no docker SDK
 
@@ -380,7 +466,12 @@ def docker_sdk_probe(client) -> ContainerProbe:
             return None
         return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
 
-    return ContainerProbe(list_run_workers=list_run_workers, inspect=inspect, logs=logs)
+    return ContainerProbe(
+        list_run_workers=list_run_workers,
+        inspect=inspect,
+        logs=logs,
+        removed_workers=removed_workers,
+    )
 
 
 def _container_env(inspected: dict) -> dict[str, str]:
@@ -407,11 +498,14 @@ def _role_from_container(environment: dict[str, str], worker_id: str) -> tuple[W
 
 
 def redact_log_tail(text: str, environment: dict[str, str]) -> str:
-    """Bound and redact one container log tail before it becomes evidence."""
-    secrets = [
-        value for name, value in environment.items() if value and _SECRET_ENV_NAME.search(name)
-    ]
-    redacted = redact_diagnostic(text, secrets=secrets)
+    """Bound and redact one container log tail before it becomes evidence.
+
+    The rule lives in `shared.contracts.worker_evidence`, so the tail
+    worker-manager persists when it removes a container and the tail read here
+    off a container that is still there are redacted against one definition of
+    a secret rather than two that can drift.
+    """
+    redacted = redact_diagnostic(text, secrets=secret_env_values(environment))
     if len(redacted) > LOG_TAIL_MAX_CHARS:
         redacted = redacted[-LOG_TAIL_MAX_CHARS:]
     return redacted
@@ -444,20 +538,8 @@ def _state_evidence(inspected: dict) -> tuple[Capture, Capture]:
     return captured_state, Capture.captured(int(state["ExitCode"]))
 
 
-def _transcript_evidence(inspected: dict, worker_id: str) -> dict:
-    """Where worker-wrapper's retained transcript for this worker lives."""
-    host_dir = None
-    for mount in inspected["Mounts"] or []:
-        if mount.get("Destination") == TRANSCRIPT_MOUNT:
-            host_dir = f"{mount['Source']}/{worker_id}"
-            break
-    if host_dir is None:
-        return {
-            "host_dir": Capture.missed(
-                f"the container declares no {TRANSCRIPT_MOUNT} bind mount"
-            ).as_dict(),
-            "files": Capture.missed("no transcript directory to list").as_dict(),
-        }
+def _transcript_at(host_dir: str) -> dict:
+    """The retained transcript directory, and what is in it if it can be read."""
     try:
         files = Capture.captured(
             [
@@ -470,6 +552,19 @@ def _transcript_evidence(inspected: dict, worker_id: str) -> dict:
             f"{host_dir} is not readable from the harness host: {type(error).__name__}"
         )
     return {"host_dir": Capture.captured(host_dir).as_dict(), "files": files.as_dict()}
+
+
+def _transcript_evidence(inspected: dict, worker_id: str) -> dict:
+    """Where worker-wrapper's retained transcript for this worker lives."""
+    for mount in inspected["Mounts"] or []:
+        if mount.get("Destination") == TRANSCRIPT_MOUNT:
+            return _transcript_at(f"{mount['Source']}/{worker_id}")
+    return {
+        "host_dir": Capture.missed(
+            f"the container declares no {TRANSCRIPT_MOUNT} bind mount"
+        ).as_dict(),
+        "files": Capture.missed("no transcript directory to list").as_dict(),
+    }
 
 
 def capture_worker(probe: ContainerProbe, listed: ListedWorker, *, now: datetime) -> dict:
@@ -561,11 +656,72 @@ def _absent_worker(
     }
 
 
+def _capture_of(fact) -> Capture:
+    """One `RemovalFact` as this artifact's own capture vocabulary."""
+    return Capture.captured(fact.value) if fact.was_read else Capture.missed(fact.missed_reason)
+
+
+def _role_from_removal(evidence: RemovedWorkerEvidence) -> tuple[WorkerRole, str]:
+    """The role the remover recorded, or the one the worker id implies."""
+    if evidence.worker_type.was_read:
+        if evidence.worker_type.value == "qa":
+            return WorkerRole.QA_EXECUTOR, RoleEvidence.DELETE_RECORD.value
+        if evidence.worker_type.value == "developer":
+            return WorkerRole.DEVELOPER, RoleEvidence.DELETE_RECORD.value
+    return role_from_worker_id(evidence.worker_id), RoleEvidence.WORKER_ID.value
+
+
+def removed_worker_record(evidence: RemovedWorkerEvidence) -> dict:
+    """One worker's evidence as its remover captured it, before removing it.
+
+    The container is gone and cannot be asked anything. Everything here was read
+    while it still existed, which is why this record carries an exit code and a
+    log tail at all rather than the stated absence a removed container would
+    otherwise be reduced to.
+    """
+    role, role_evidence = _role_from_removal(evidence)
+    log_tail = evidence.log_tail
+    if evidence.transcript_dir.was_read:
+        transcript = _transcript_at(evidence.transcript_dir.value)
+    else:
+        transcript = {
+            "host_dir": Capture.missed(evidence.transcript_dir.missed_reason).as_dict(),
+            "files": Capture.missed("no transcript directory to list").as_dict(),
+        }
+    return {
+        "worker_id": evidence.worker_id,
+        "role": role.value,
+        "role_evidence": role_evidence,
+        "discovered_by": Discovery.DELETE_CAPTURE.value,
+        "ownership_labels": {
+            WorkerLabel.PROJECT.value: evidence.ownership.project_id,
+            WorkerLabel.RUN.value: evidence.ownership.run_id,
+            WorkerLabel.ATTEMPT.value: evidence.ownership.attempt_id,
+        },
+        "container": evidence.container,
+        "container_present": False,
+        "removed_at": evidence.removed_at,
+        "delete_reason": evidence.delete_reason,
+        "agent_type_executed": _capture_of(evidence.agent_type).as_dict(),
+        "image": _capture_of(evidence.image).as_dict(),
+        "created_at": (evidence.state.value["started_at"] if evidence.state.was_read else None),
+        "state": _capture_of(evidence.state).as_dict(),
+        "exit_code": _capture_of(evidence.exit_code).as_dict(),
+        "log_tail": (
+            Capture.captured({"requested_lines": LOG_TAIL_LINES, "text": log_tail.value})
+            if log_tail.was_read
+            else Capture.missed(log_tail.missed_reason)
+        ).as_dict(),
+        "transcript": transcript,
+        "captured_at": evidence.removed_at,
+    }
+
+
 def _has_exit_code(record: dict) -> bool:
     return record["exit_code"]["status"] == CaptureStatus.CAPTURED.value
 
 
-def _lost_race(previous: dict, now: datetime) -> dict:
+def _lost_race(previous: dict, now: datetime, reason: str = VANISHED_BEFORE_EXIT_REASON) -> dict:
     """Downgrade a record of a running container that has since disappeared.
 
     What was already read stays — the state and the log tail of a container that
@@ -576,9 +732,9 @@ def _lost_race(previous: dict, now: datetime) -> dict:
     """
     record = dict(previous)
     record["container_present"] = False
-    record["exit_code"] = Capture.missed(VANISHED_BEFORE_EXIT_REASON).as_dict()
+    record["exit_code"] = Capture.missed(reason).as_dict()
     if previous["log_tail"]["status"] != CaptureStatus.CAPTURED.value:
-        record["log_tail"] = Capture.missed(VANISHED_BEFORE_EXIT_REASON).as_dict()
+        record["log_tail"] = Capture.missed(reason).as_dict()
     record["captured_at"] = now.isoformat()
     return record
 
@@ -631,30 +787,71 @@ class RunEvidenceCollector:
         return list(self._errors)
 
     def capture(self) -> None:
-        """Take one pass over the containers this run's label selects.
+        """Take one pass over everything this run's workers can still be read from.
 
-        Three things happen, in this order: what the run label lists now is
-        read; what an earlier pass saw running and the label no longer lists is
-        written down as a lost race; and every worker the ownership manifest
-        names that the label never listed is written down as a missed capture.
+        Four things happen, in this order: what the run label lists now is read;
+        the records the remover wrote for containers that no longer exist are
+        merged in; what an earlier pass saw running, the label no longer lists
+        and no removal record covers is written down as a lost race; and every
+        worker the ownership manifest names that neither source accounts for is
+        written down as a missed capture.
         """
+        listed: list[ListedWorker] | None
         try:
             listed = self._probe.list_run_workers(self._run_id)
         except Exception as error:  # noqa: BLE001 — a probe failure is evidence, not a verdict
             # A failed listing says nothing about which containers still exist,
             # so it must not be read as "everything disappeared".
             self._errors.append(f"worker container discovery failed: {error}")
-            return
-        for worker in listed:
+            listed = None
+        for worker in listed or []:
             try:
                 record = capture_worker(self._probe, worker, now=self._clock())
             except Exception as error:  # noqa: BLE001 — see above
                 self._errors.append(f"{worker.container}: capture failed: {error}")
                 continue
             self._merge(record)
-        present = {worker.worker_id for worker in listed}
+        removed = self._capture_removed()
+        if listed is None:
+            # The removal records are an independent source and stay true, but
+            # nothing may be reconciled against a listing that never happened.
+            return
+        present = {worker.worker_id for worker in listed} | removed
         self._reconcile_vanished(present)
         self._reconcile_owned(present)
+
+    def _capture_removed(self) -> set[str]:
+        """Merge in what the remover captured for this run's removed containers."""
+        try:
+            removed = self._probe.removed_workers(self._run_id)
+        except Exception as error:  # noqa: BLE001 — see capture
+            self._errors.append(f"removed worker evidence read failed: {error}")
+            return set()
+        for evidence in removed:
+            self._merge_removed(removed_worker_record(evidence))
+        return {evidence.worker_id for evidence in removed}
+
+    def _merge_removed(self, record: dict) -> None:
+        """Fold one removal record into what this run already knows.
+
+        A container that was listed and read while it still existed is the
+        richer observation, so a removal record never overwrites one that
+        already carries an exit code. Below that it is strictly better than
+        anything else available: it is the only source that can carry an exit
+        code for a container docker has forgotten.
+        """
+        worker_id = record["worker_id"]
+        existing = self._records.get(worker_id)
+        if existing is not None and _has_exit_code(existing):
+            return
+        if existing is None or _has_exit_code(record):
+            self._records[worker_id] = record
+            return
+        # The remover could not read the ending either. Keep what the live
+        # observation saw and state the loss in the remover's own words.
+        self._records[worker_id] = _lost_race(
+            existing, self._clock(), reason=record["exit_code"]["reason"]
+        )
 
     def note_error(self, message: str) -> None:
         """Record a collection failure raised outside this collector."""
@@ -926,12 +1123,15 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
         "discovery": {
             "run_id": collector.run_id,
             "docker_filters": [f"label={label}" for label in _run_label_filters(collector.run_id)],
+            "removal_records": removed_worker_evidence_key(collector.run_id),
             "note": (
                 "Workers are found by the run label their container was stamped with at "
                 "creation, so one that exited — and whose Redis metadata is already "
-                "deleted — is still listed and still readable. A worker the ownership "
-                "manifest names that this query never listed had its container removed, "
-                "and is recorded as a missed capture saying so."
+                "deleted — is still listed and still readable. A container that was "
+                "removed is not listed at all, so worker-manager reads its exit code and "
+                "log tail before removing it and files them under the run: those arrive "
+                "here as discovered_by=delete_capture. A worker in neither source is "
+                "recorded as a missed capture saying so."
             ),
         },
         "release": release_evidence(root),

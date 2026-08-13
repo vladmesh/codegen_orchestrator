@@ -15,20 +15,41 @@ which is exactly what the previous attempt (codegen-orchestrator-1181) could not
 get past.
 
 The one thing a label cannot survive is the removal of the container itself:
-`docker ps -a` forgets a removed container. That case is proved too — it comes
-back as an explicit missed capture naming the reason, never as an omission,
-because a missing worker record reads as "nothing ran".
+`docker ps -a` forgets a removed container, and `delete_worker` removes rather
+than stops. So the run does not race the deleter — the deleter captures. One
+test here runs the whole ordinary delete path through the real worker-manager
+before anything observes the worker at all, and the artifact still comes back
+with that worker's exit code and log tail: not a miss, and not an omission.
+
+What is left when even that fails — no container, no record — is proved too: it
+comes back as an explicit missed capture naming the reason, never as an
+omission, because a missing worker record reads as "nothing ran".
 """
 
+import asyncio
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import time
+from uuid import uuid4
 
 import pytest
 
-from shared.contracts.queues.worker import WorkerLabel
+from shared.contracts.queues.worker import (
+    DeleteWorkerCommand,
+    DeleteWorkerResponse,
+    WorkerLabel,
+)
+from shared.contracts.worker_evidence import removed_worker_evidence_key
 
-from .test_worker_ownership_labels import _by_labels, _dead_owned_worker, _fresh_ownership
+from .conftest import REDIS_STREAM_COMMANDS, REDIS_STREAM_DEV_RESPONSES, REDIS_URL
+from .test_worker_ownership_labels import (
+    _by_labels,
+    _dead_owned_worker,
+    _fresh_ownership,
+    _owned_worker,
+)
 
 LIVE_TESTS = Path(__file__).resolve().parents[2] / "live"
 
@@ -50,11 +71,49 @@ def _run_evidence():
     return module
 
 
+async def _delete_through_worker_manager(redis_client, worker_id: str, timeout: int = 180) -> None:
+    """Run the ordinary delete path to completion and wait for its response.
+
+    No shortcut: the command goes on `worker:commands` and the real
+    worker-manager consumes it, so whatever `delete_worker` does for a worker in
+    production — including capturing its ending before removing its container —
+    is what happens here.
+    """
+    request_id = f"del-{uuid4().hex[:8]}"
+    await redis_client.xadd(
+        REDIS_STREAM_COMMANDS,
+        {
+            "data": DeleteWorkerCommand(
+                request_id=request_id, worker_id=worker_id, reason="failed"
+            ).model_dump_json()
+        },
+    )
+    deadline = time.time() + timeout
+    cursor = "0"
+    while time.time() < deadline:
+        messages = await redis_client.xread(
+            {REDIS_STREAM_DEV_RESPONSES: cursor}, count=10, block=1000
+        )
+        for _stream, entries in messages or []:
+            for message_id, fields in entries:
+                cursor = message_id
+                payload = json.loads(fields["data"])
+                if payload.get("request_id") != request_id:
+                    continue
+                response = DeleteWorkerResponse.model_validate(payload)
+                assert response.success is True, f"delete failed: {response.error}"
+                return
+        await asyncio.sleep(0.1)
+    raise TimeoutError(f"worker-manager did not answer the delete of {worker_id}")
+
+
 def _artifact_for(run_evidence, docker_client, ownership, tmp_path, **collector_kwargs) -> dict:
-    """Build one artifact for a run, reading only the daemon."""
+    """Build one artifact for a run, reading only the daemon and Redis."""
     collector = run_evidence.RunEvidenceCollector(
         run_id=ownership.run_id,
-        probe=run_evidence.docker_sdk_probe(docker_client),
+        probe=run_evidence.docker_sdk_probe(
+            docker_client, run_evidence.redis_removed_workers(REDIS_URL)
+        ),
         **collector_kwargs,
     )
     collector.capture()
@@ -115,6 +174,60 @@ class TestEvidenceFollowsTheRunLabel:
             if level["status"] == run_evidence.CaptureStatus.MISSED.value:
                 assert level["reason"]
                 assert level["value"] is None
+
+    async def test_a_worker_deleted_before_anything_looked_still_carries_its_exit(
+        self, redis_client, docker_client, scaffolded_workspace, tmp_path
+    ):
+        """The sequence a harness can never win, decided at the vanishing point.
+
+        The worker is created, it dies, and the ordinary delete path runs to
+        completion — container removed, `worker:meta` deleted — before anything
+        observes it. `docker ps -a` has nothing to say about it and neither has
+        Redis's worker metadata. The artifact still names it, with the exit code
+        and the log tail worker-manager read in the instant before it removed
+        the container, because that is where the capture belongs.
+        """
+        run_evidence = _run_evidence()
+        ownership = _fresh_ownership()
+
+        worker_id, container_id = await _owned_worker(
+            redis_client, docker_client, scaffolded_workspace, ownership
+        )
+        await _delete_through_worker_manager(redis_client, worker_id)
+
+        # Genuinely gone, on both of the sources the previous attempt had.
+        assert _by_labels(docker_client, **{WorkerLabel.RUN.value: ownership.run_id}) == []
+        assert await redis_client.hgetall(f"worker:meta:{worker_id}") == {}
+
+        artifact = _artifact_for(run_evidence, docker_client, ownership, tmp_path)
+
+        assert [worker["worker_id"] for worker in artifact["workers"]] == [worker_id]
+        worker = artifact["workers"][0]
+        assert worker["discovered_by"] == run_evidence.Discovery.DELETE_CAPTURE.value
+        assert worker["role"] == run_evidence.WorkerRole.DEVELOPER.value
+        assert worker["role_evidence"] == run_evidence.RoleEvidence.DELETE_RECORD.value
+        assert worker["container_present"] is False
+        assert worker["delete_reason"] == "failed"
+        assert worker["ownership_labels"] == {
+            WorkerLabel.PROJECT.value: ownership.project_id,
+            WorkerLabel.RUN.value: ownership.run_id,
+            WorkerLabel.ATTEMPT.value: ownership.attempt_id,
+        }
+        # Not a miss, and not an omission: the two things this card exists to
+        # rule out for a worker nobody was watching.
+        assert worker["exit_code"]["status"] == run_evidence.CaptureStatus.CAPTURED.value
+        assert isinstance(worker["exit_code"]["value"], int)
+        assert worker["log_tail"]["status"] == run_evidence.CaptureStatus.CAPTURED.value
+        assert isinstance(worker["log_tail"]["value"]["text"], str)
+        assert worker["agent_type_executed"]["value"] == "claude"
+        # And where to attribute a Codex exit afterwards, kept while the mount
+        # was still readable.
+        assert worker["transcript"]["host_dir"]["value"].endswith(worker_id)
+        assert artifact["capture_errors"] == []
+
+        # The record survives the metadata deletion that follows it, which is
+        # the whole reason it is not kept in `worker:meta`.
+        assert await redis_client.hexists(removed_worker_evidence_key(ownership.run_id), worker_id)
 
     async def test_a_removed_container_the_run_owned_is_a_stated_missed_capture(
         self, redis_client, docker_client, scaffolded_workspace, tmp_path

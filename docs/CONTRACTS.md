@@ -1537,10 +1537,12 @@ class WorkerOwnership(BaseModel):
     """Who a dynamic worker belongs to. Every part is non-empty by contract.
 
     Written by worker-manager onto the container's labels and into
-    `worker:meta:<worker_id>` at creation, before the container can exit. It is
-    the only record that survives the worker: `delete_worker` removes the
-    container first and deletes the Redis metadata afterwards, so a dead
-    worker is attributed from `docker ps -a --filter label=...` alone.
+    `worker:meta:<worker_id>` at creation, before the container can exit.
+    `delete_worker` removes the container first and deletes the Redis metadata
+    afterwards, so a worker that merely *died* is attributed from
+    `docker ps -a --filter label=...` alone. A worker that was *removed* is not
+    — Docker forgets a removed container and its labels with it — which is what
+    `RemovedWorkerEvidence` below is for.
 
     `run_id` is the **initiating run** — the identity of the thing that asked
     for the work (a live harness run, a matrix combination). It enters the
@@ -1564,6 +1566,40 @@ class WorkerOwnership(BaseModel):
     project_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     attempt_id: str = Field(min_length=1)
+
+
+# shared/contracts/worker_evidence.py — the durable record of a worker's end.
+# Written by whoever removes the worker, before the container is removed, to
+# the Redis hash `worker:evidence:removed:<run_id>` (field: worker id), which
+# `delete_worker`'s deletion of `worker:meta:<id>` does not touch. Retention is
+# WORKER_REMOVAL_EVIDENCE_TTL_SECONDS; the capture is bounded by
+# WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS and never fails or delays a deletion.
+
+class RemovalFact(BaseModel):
+    """One fact read at removal, or the stated reason it could not be read.
+
+    Exactly one of the two is set, always. No field of a removal record is ever
+    a bare empty value: "the agent printed nothing" and "the log could not be
+    read" are different findings.
+    """
+    value: Any = None
+    missed_reason: str | None = None
+
+
+class RemovedWorkerEvidence(BaseModel):
+    """A removed worker's ending, attributed to the worker's own ownership."""
+    worker_id: str = Field(min_length=1)
+    container: str = Field(min_length=1)
+    ownership: WorkerOwnership
+    removed_at: str = Field(min_length=1)     # ISO-8601 UTC
+    delete_reason: str | None = None          # the DeleteWorkerCommand reason
+    worker_type: RemovalFact                  # "developer" | "qa", from worker:meta
+    agent_type: RemovalFact                   # WORKER_AGENT_TYPE as executed
+    image: RemovalFact                        # {"tag": ..., "id": ...}
+    state: RemovalFact                        # status/running/oom_killed/times/error
+    exit_code: RemovalFact                    # int, or why there is none
+    log_tail: RemovalFact                     # bounded, redacted container log
+    transcript_dir: RemovalFact               # host path, outlives the container
 
 
 class WorkerConfig(BaseModel):
