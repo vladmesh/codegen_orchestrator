@@ -1,0 +1,100 @@
+name: Production Agent Matrix
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-agent-matrix
+  cancel-in-progress: false
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 300
+    steps:
+      - name: Run Claude and Codex worker/QA matrix
+        uses: appleboy/ssh-action@v1
+        timeout-minutes: 290
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 285m
+          script: |
+            set -euo pipefail
+            cd /opt/codegen_orchestrator
+            export PATH="$HOME/.local/bin:$PATH"
+            command -v uv >/dev/null
+            test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+
+            compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+            report="/tmp/codegen-agent-matrix-${{ github.run_id }}.tsv"
+            printf 'qa_agent\tworker_agent\tstatus\tduration_seconds\n' > "$report"
+
+            set_qa_executor() {
+              local executor="$1"
+              python3 - "$executor" <<'PY'
+            from pathlib import Path
+            import sys
+
+            path = Path(".env")
+            executor = sys.argv[1]
+            lines = path.read_text(encoding="utf-8").splitlines()
+            rendered = []
+            replaced = False
+            for line in lines:
+                if line.startswith("QA_EXECUTOR_AGENT_TYPE="):
+                    rendered.append(f"QA_EXECUTOR_AGENT_TYPE={executor}")
+                    replaced = True
+                else:
+                    rendered.append(line)
+            if not replaced:
+                rendered.append(f"QA_EXECUTOR_AGENT_TYPE={executor}")
+            path.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+            PY
+              "${compose[@]}" up -d --no-deps --force-recreate qa-worker
+              local actual
+              actual=$("${compose[@]}" exec -T qa-worker python -c \
+                'from src.config.settings import get_settings; print(get_settings().qa_executor_agent_type.value)')
+              test "$actual" = "$executor"
+            }
+
+            restore_default() {
+              set_qa_executor codex || true
+            }
+            trap restore_default EXIT
+
+            internal_key=$("${compose[@]}" exec -T api printenv INTERNAL_API_KEY)
+            test -n "$internal_key"
+            for fallback_var in QA_LLM_MODEL QA_LLM_BASE_URL QA_LLM_API_KEY; do
+              test -z "$("${compose[@]}" exec -T qa-worker printenv "$fallback_var")"
+            done
+            matrix_failed=0
+            for qa_agent in claude codex; do
+              set_qa_executor "$qa_agent"
+              for worker_agent in claude codex; do
+                started=$(date +%s)
+                if INTERNAL_API_KEY="$internal_key" \
+                  LIVE_LLM_QA=1 \
+                  LIVE_QA_AGENT_TYPE="$qa_agent" \
+                  LIVE_WORKER_AGENT_TYPE="$worker_agent" \
+                  uv run pytest \
+                    tests/live/test_full_pipeline.py::TestFullPipelineLLM \
+                    -v --tb=long -x -s; then
+                  status=passed
+                else
+                  status=failed
+                  matrix_failed=1
+                fi
+                duration=$(($(date +%s) - started))
+                printf '%s\t%s\t%s\t%s\n' \
+                  "$qa_agent" "$worker_agent" "$status" "$duration" | tee -a "$report"
+              done
+            done
+
+            restore_default
+            trap - EXIT
+            printf '\nProduction agent matrix summary:\n'
+            cat "$report"
+            exit "$matrix_failed"

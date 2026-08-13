@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-13
+
+- Added a production acceptance matrix for the two subscription-backed developer and QA
+  executors. The live mega can now select a Claude or Codex developer, forces exploratory QA
+  instead of the deterministic health-only shortcut, and verifies the active QA selector. The
+  manual production workflow runs all four worker/QA combinations sequentially with owned
+  cleanup, then restores the production QA default to Codex.
+
 ## 2026-08-12
 
 - Updated developer-worker test guidance to use the generated project's supported

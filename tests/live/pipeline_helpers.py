@@ -107,6 +107,12 @@ LLM_BACKEND_TASK_DESCRIPTION = (
     "a production-safe GET /health endpoint that returns HTTP 200 JSON. The app must deploy "
     "with backend-only modules and no user-required secrets."
 )
+LLM_QA_ACCEPTANCE_CRITERIA = """- GET /health returns HTTP 200.
+- Inspect the JSON returned by GET /health and report the observed non-empty status value.
+"""
+LIVE_WORKER_AGENT_TYPE_ENV = "LIVE_WORKER_AGENT_TYPE"
+LIVE_LLM_QA_ENV = "LIVE_LLM_QA"
+LIVE_MATRIX_AGENT_TYPES = frozenset({"claude", "codex"})
 
 
 # ── Low-level helpers ────────────────────────────────────────────────────
@@ -345,16 +351,56 @@ async def create_llm_backend_project(
     api: httpx.AsyncClient, api_internal: httpx.AsyncClient
 ) -> dict:
     """Create project + repository for the live LLM backend pipeline."""
-    return await create_pipeline_project(
+    ctx = await create_pipeline_project(
         api,
         api_internal,
         project_prefix="live-test-llm",
         description=LLM_BACKEND_PROJECT_DESCRIPTION,
         detailed_spec=LLM_BACKEND_DETAILED_SPEC,
-        agent_type="claude",
+        agent_type=live_worker_agent_type(),
         task_title=LLM_BACKEND_TASK_TITLE,
         task_description=LLM_BACKEND_TASK_DESCRIPTION,
     )
+    ctx["qa_requires_executor"] = os.getenv(LIVE_LLM_QA_ENV) == "1"
+    if ctx["qa_requires_executor"]:
+        response = await api.patch(
+            f"/api/repositories/{ctx['repo_id']}",
+            json={"acceptance_criteria": LLM_QA_ACCEPTANCE_CRITERIA},
+        )
+        response.raise_for_status()
+    return ctx
+
+
+def live_worker_agent_type() -> str:
+    """Resolve the real developer used by a live matrix run."""
+    agent_type = os.getenv(LIVE_WORKER_AGENT_TYPE_ENV, "claude").strip().lower()
+    if agent_type not in LIVE_MATRIX_AGENT_TYPES:
+        allowed = ", ".join(sorted(LIVE_MATRIX_AGENT_TYPES))
+        raise RuntimeError(
+            f"{LIVE_WORKER_AGENT_TYPE_ENV} must be one of {allowed}, got {agent_type!r}"
+        )
+    return agent_type
+
+
+def configured_qa_executor() -> str:
+    """Read the executor selected by the live qa-worker container."""
+    command = (
+        "from src.config.settings import get_settings; "
+        "print(get_settings().qa_executor_agent_type.value)"
+    )
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "qa-worker", "python", "-c", command],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        cwd=ORCHESTRATOR_ROOT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"cannot read qa-worker executor: {result.stderr.strip()}")
+    agent_type = result.stdout.strip()
+    if agent_type not in LIVE_MATRIX_AGENT_TYPES:
+        raise RuntimeError(f"qa-worker reported unsupported executor {agent_type!r}")
+    return agent_type
 
 
 def trigger_scaffold(ctx: dict) -> None:

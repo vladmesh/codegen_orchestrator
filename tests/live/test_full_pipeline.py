@@ -16,6 +16,7 @@ real developer worker changes code before CI, merge, deploy, health, and QA.
 """
 
 import asyncio
+import os
 
 import httpx
 from live_harness import cleanup_guard
@@ -32,6 +33,7 @@ from pipeline_helpers import (
     api_client_as_test_user,
     api_client_as_unscoped_observer,
     cleanup_all,
+    configured_qa_executor,
     create_llm_backend_project,
     create_noop_project,
     create_story_and_task,
@@ -72,6 +74,9 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
             async with cleanup_guard(
                 lambda: cleanup_all(api_internal, api_observer, ctx), manifest=ctx["manifest"]
             ):
+                if ctx.get("qa_requires_executor"):
+                    ctx["qa_agent_type"] = configured_qa_executor()
+
                 # Phase 1: Scaffold
                 trigger_scaffold(ctx)
                 await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
@@ -264,7 +269,7 @@ class TestFullPipelineLLM:
 
     async def test_project_active(self, llm_pipeline):
         """Project status should be 'active' after successful scaffold + deploy."""
-        assert llm_pipeline.get("agent_type") == "claude"
+        assert llm_pipeline.get("agent_type") == os.getenv("LIVE_WORKER_AGENT_TYPE", "claude")
         assert llm_pipeline.get("scaffold_status") == ProjectStatus.ACTIVE, (
             f"Scaffold failed, status: {llm_pipeline.get('scaffold_status')}"
         )
@@ -274,6 +279,11 @@ class TestFullPipelineLLM:
         assert llm_pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
             f"Deploy failed, app_status: {llm_pipeline.get('final_app_status')}"
         )
+
+    async def test_requested_qa_executor_is_active(self, llm_pipeline):
+        if not llm_pipeline.get("qa_requires_executor"):
+            pytest.skip("ordinary mega uses deterministic health-only QA")
+        assert llm_pipeline.get("qa_agent_type") == os.environ["LIVE_QA_AGENT_TYPE"]
 
     async def test_no_user_secrets_required(self, llm_pipeline):
         """The backend-only LLM project must not trip the user-secret deploy path.
