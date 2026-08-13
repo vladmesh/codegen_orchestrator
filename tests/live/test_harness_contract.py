@@ -2958,3 +2958,15 @@ def test_production_agent_matrix_preserves_failure_evidence_and_has_read_only_di
     assert "Debug dump for QA=%s worker=%s" in workflow
     assert "matrix_api_sidecar=absent" in workflow
     assert "head -n 4" in workflow
+
+
+def test_production_agent_matrix_builds_exact_source_workers_and_cleans_only_live_test_deaths():
+    root = resolve_repo_root(Path(__file__))
+    workflow = (root / ".github/workflows/agent-matrix.yml").read_text(encoding="utf-8")
+
+    assert "make rebuild-worker-images" in workflow
+    assert "make check-worker-images" in workflow
+    assert "--filter label=com.codegen.type=worker" in workflow
+    assert "--filter status=exited" in workflow
+    assert "--filter name=worker-dev-live-te-" in workflow
+    assert "docker container prune" not in workflow
