@@ -2,6 +2,12 @@ name: Production Agent Matrix
 
 on:
   workflow_dispatch:
+    inputs:
+      diagnostics_only:
+        description: Print recent matrix debug dumps without starting projects
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: production-agent-matrix
@@ -9,6 +15,7 @@ concurrency:
 
 jobs:
   matrix:
+    if: ${{ !inputs.diagnostics_only }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 300
@@ -108,6 +115,13 @@ jobs:
                 else
                   status=failed
                   matrix_failed=1
+                  latest_debug=$(find docs/e2e_results -maxdepth 1 \
+                    -name 'debug-full-llm-*.md' -type f -printf '%T@ %p\n' \
+                    | sort -nr | head -n 1 | cut -d' ' -f2-)
+                  if [ -n "$latest_debug" ]; then
+                    printf '\nDebug dump for QA=%s worker=%s:\n' "$qa_agent" "$worker_agent"
+                    cat "$latest_debug"
+                  fi
                 fi
                 duration=$(($(date +%s) - started))
                 printf '%s\t%s\t%s\t%s\n' \
@@ -120,3 +134,38 @@ jobs:
             printf '\nProduction agent matrix summary:\n'
             cat "$report"
             exit "$matrix_failed"
+
+  diagnostics:
+    if: ${{ inputs.diagnostics_only }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - name: Inspect recent matrix diagnostics
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            cd /opt/codegen_orchestrator
+            compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+
+            printf 'qa_executor='
+            "${compose[@]}" exec -T qa-worker python -c \
+              'from src.config.settings import get_settings; print(get_settings().qa_executor_agent_type.value)'
+            if docker ps -a --format '{{.Names}}' | grep -q '^codegen-agent-matrix-api-'; then
+              echo 'matrix_api_sidecar=present'
+            else
+              echo 'matrix_api_sidecar=absent'
+            fi
+
+            find docs/e2e_results -maxdepth 1 \
+              -name 'debug-full-llm-*.md' -type f -printf '%T@ %p\n' \
+              | sort -nr | head -n 4 | cut -d' ' -f2- \
+              | while IFS= read -r debug_file; do
+                  printf '\n===== %s =====\n' "$debug_file"
+                  cat "$debug_file"
+                done
