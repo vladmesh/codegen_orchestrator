@@ -5,6 +5,7 @@ These are plain functions, not pytest fixtures.
 """
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 import json
 import os
@@ -543,15 +544,33 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
 
 
 async def wait_engineering(
-    api: httpx.AsyncClient, ctx: dict, timeout: int = ENGINEERING_TIMEOUT
+    api: httpx.AsyncClient,
+    ctx: dict,
+    timeout: int = ENGINEERING_TIMEOUT,
+    *,
+    on_poll: Callable[[], None] | None = None,
 ) -> None:
-    """Wait for engineering to complete. Updates ctx['task_status'], ctx['story_status']."""
+    """Wait for engineering to complete. Updates ctx['task_status'], ctx['story_status'].
+
+    ``on_poll`` runs once per poll, before the task status is read, and once
+    before the first wait. It exists for evidence collection: worker-manager
+    removes a dead worker's container when the next attempt for the same project
+    starts, and a removed container is the one thing the run label cannot find
+    afterwards. Everything a pass needs is on the container from creation, so a
+    pass that lands any time before that removal is enough — but a pass that
+    never runs sees nothing at all, which is why the first one precedes the
+    first sleep.
+    """
     done_statuses = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
     status = None
     elapsed = 0
+    if on_poll is not None:
+        on_poll()
     while elapsed < timeout:
         await asyncio.sleep(5)
         elapsed += 5
+        if on_poll is not None:
+            on_poll()
         resp = await api.get(f"/api/tasks/{ctx['task_id']}")
         resp.raise_for_status()
         status = resp.json().get("status")
@@ -917,6 +936,8 @@ async def run_non_llm_qa(
     *,
     timeout: float,
     poll_interval: float = QA_RUN_POLL_INTERVAL,
+    record: Callable[[dict], None] | None = None,
+    on_poll: Callable[[], None] | None = None,
 ) -> dict[str, str]:
     """Wait for this story's QA run and require a terminal ``passed``.
 
@@ -926,6 +947,16 @@ async def run_non_llm_qa(
     the run the pipeline produced: a health request issued by this test would
     prove the service answers, not that QA concluded anything about it.
 
+    ``record`` receives the terminal QA run before it is judged. It is what lets
+    run evidence report the QA cell as exercised — and with which outcome — even
+    when the outcome is what fails this gate.
+
+    ``on_poll`` runs once per poll, and once before the first wait. The QA
+    client enqueues its executor's deletion in a ``finally`` block, before the
+    QA consumer persists the terminal run this function waits for, so the
+    executor's container can be *removed* — not merely dead — by the time this
+    returns. This wait is the window a pass has to land in.
+
     Reads /api/runs/ as an internal service with no user header — see
     ``require_unscoped_run_observer``.
     """
@@ -933,6 +964,8 @@ async def run_non_llm_qa(
     deadline = time.monotonic() + timeout
     run = None
     while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
         resp = await api_internal.get(
             "/api/runs/",
             params={"story_id": story_id, "run_type": RunType.QA.value},
@@ -952,6 +985,8 @@ async def run_non_llm_qa(
             f"no QA run reached a terminal state for story {story_id} in {timeout}s"
         )
 
+    if record is not None:
+        record(run)
     result = run["result"] or {}
     outcome = result.get("qa_outcome")
     if run["status"] != "completed" or outcome != QAOutcome.PASSED.value:
@@ -1251,6 +1286,29 @@ def capture_owned_workers(ctx: dict) -> None:
             image = inspect.stdout.strip() if inspect.returncode == 0 else ""
         ctx["manifest"].own("worker", worker_id, image=image, container=container)
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
+
+
+def evidence_pass(ctx: dict) -> None:
+    """One run-evidence pass over the containers this run's label selects.
+
+    The capture is the whole of it, and it needs nothing but the run id: every
+    worker this run caused carries `com.codegen.run.id` from creation, so a pass
+    reads a worker that is already dead exactly as well as one that is running.
+
+    Ownership is refreshed alongside it, and only as a second source. Redis
+    names a worker while worker-manager still holds it, and the manifest keeps
+    that name afterwards — which is how a worker whose container was *removed*,
+    the one case the label query cannot answer, still reaches the artifact as a
+    stated missed capture instead of an omission that would read as "nothing
+    ran". A failed refresh must not stop the capture, and neither may fail the
+    run: this is evidence collection, not a gate.
+    """
+    collector = ctx["run_evidence"]
+    try:
+        capture_owned_workers(ctx)
+    except Exception as exc:
+        collector.note_error(f"worker ownership refresh failed: {exc}")
+    collector.capture()
 
 
 def _wait_for_container_absence(

@@ -2,6 +2,33 @@
 
 ## 2026-08-13
 
+- A dynamic worker's death is attributable, and the run finds its workers by label. Every worker/QA
+  combination of the production matrix now emits one retained, machine-readable artifact
+  (`docs/e2e_results/run-evidence-*.json`) naming the deployed SHA and the worker image digest
+  record in use, the project, the role agents as executed, the attempts, the terminal state, a
+  failure kind, and per worker container its exit code, a bounded log tail and the path of the
+  transcript worker-wrapper already retained on the host. The matrix prints it per combination and
+  records its path in the summary table.
+- Discovery is `docker ps -a --filter label=com.codegen.type=worker --filter
+  label=com.codegen.run.id=<run id>`, so a worker that exited — and whose `worker:meta:<id>` is
+  already deleted — is still listed and still readable. Nothing depends on a poll landing while a
+  container happens to be alive, which is what the previous attempt tried and could not make work.
+  The QA executor creation-window heuristic and the developer container-name prefix are gone with it.
+- What a label cannot survive is the removal of the container, so evidence is collected on every
+  engineering poll and every poll of the post-deploy QA wait — always before cleanup — and the run's
+  ownership manifest is reconciled in as a second source that can only add an explicit missed
+  capture. A container listed running that then disappears, and a worker the run owned that the
+  label query never listed, are both written as a stated reason naming what was lost. An omitted
+  worker would read as "nothing ran", which is exactly the failure this evidence exists to end.
+- A QA role is reported as exercised only once its worker handed a result to QA; a combination whose
+  worker died first carries a QA cell that says so and why. The executor is reported from the QA
+  container actually observed, never from the qa-worker's configured selector, which is recorded
+  separately as the selection it was asked to make.
+- The privacy boundary is unchanged: Codex CLI diagnostics still never enter the business result
+  stream or service logs. The artifact's log tail is the worker container's own log, bounded and
+  redacted against the container's secret environment values, and the transcript is referenced by
+  path, never copied.
+
 - Every dynamic worker is stamped with its owner when it is created. `WorkerConfig` now carries a
   required `WorkerOwnership` (project id and run id, both non-empty); worker-manager writes both to
   the container's Docker labels — `com.codegen.project.id` and `com.codegen.run.id`, next to the
