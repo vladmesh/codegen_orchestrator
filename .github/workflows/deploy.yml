@@ -195,6 +195,60 @@ jobs:
             git fetch --no-tags origin ${{ github.sha }}
             git reset --hard ${{ github.sha }}
 
+      # The worker base images are one release chain keyed by the commit being
+      # deployed (.github/workflows/ci.yml, publish-worker-images). This reads the
+      # release marker of that exact commit — no marker means that commit was never
+      # released, whatever image tags a failed publish run left behind — pulls the
+      # digests the marker names and refuses an image built from other sources. It
+      # runs before anything touches the running deployment: a refusal fails the
+      # deploy with the image, the expected hash and the found hash, and production
+      # keeps running what it was running.
+      - name: Pull and verify worker base images for this revision
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            GHCR_TOKEN='${{ secrets.GHCR_TOKEN }}' \
+            GHCR_OWNER='${{ github.repository_owner }}' \
+            WORKER_IMAGE_TAG='${{ github.sha }}' \
+            DIGEST_FILE='${{ env.DEPLOY_PATH }}/deployed-worker-images.json' \
+            bash infra/scripts/pull-worker-images.sh
+
+      # What the deploy is made of, on the record. This does not look the tags up
+      # again: it copies back the record the step above wrote from the digests it
+      # pulled and verified, so the recorded release is the one that was checked.
+      - name: Record deployed revision and verified worker image digests
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          GIT_SHA: ${{ github.sha }}
+          DIGEST_FILE: ${{ runner.temp }}/deployed-worker-images.json
+        run: |
+          set -euo pipefail
+          key="$(mktemp)"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${key}"
+          chmod 600 "${key}"
+          ssh -i "${key}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+            "deploy@${PROD_HOST}" \
+            "cat ${{ env.DEPLOY_PATH }}/deployed-worker-images.json" > "${DIGEST_FILE}"
+          {
+            echo "### Deployed revision ${GIT_SHA}"
+            echo
+            echo '```json'
+            cat "${DIGEST_FILE}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deployed worker image digests
+        uses: actions/upload-artifact@v7
+        with:
+          name: deployed-worker-images-${{ github.sha }}
+          path: ${{ runner.temp }}/deployed-worker-images.json
+          if-no-files-found: error
+
       - name: Build service images
         uses: appleboy/ssh-action@v1
         timeout-minutes: 15
@@ -207,18 +261,6 @@ jobs:
             cd ${{ env.DEPLOY_PATH }}
             docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
             docker compose -f docker-compose.yml -f docker-compose.prod.yml build
-
-      - name: Pull worker base images from GHCR
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: deploy
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cd ${{ env.DEPLOY_PATH }}
-            GHCR_TOKEN='${{ secrets.GHCR_TOKEN }}' \
-            GHCR_OWNER='${{ github.repository_owner }}' \
-            bash infra/scripts/pull-worker-images.sh
 
       - name: Deploy
         uses: appleboy/ssh-action@v1

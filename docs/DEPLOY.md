@@ -450,7 +450,51 @@ the host cannot back up. Every task is a state, so re-running it changes nothing
 Deploy is triggered manually via GitHub Actions:
 
 1. Go to Actions > "Deploy to Production" > Run workflow
-2. The workflow: writes `.env` and secret files, pulls code, builds images, pulls worker images from GHCR, starts services, runs migrations, verifies health
+2. The workflow: writes `.env` and secret files, checks out the dispatched revision, pulls and
+   verifies the worker base images of that revision, builds service images, starts services, runs
+   migrations, verifies health
+
+### Worker base images are a release chain
+
+Every green commit on `main` publishes the whole worker chain to GHCR under that commit's SHA
+(`publish-worker-images` in `.github/workflows/ci.yml`, via `infra/scripts/publish-worker-images.sh`).
+The tag is the SHA; nothing publishes a mutable `:latest`.
+
+**The release is the marker, not the tags.** Four tag pushes cannot be one registry transaction, so
+a pushed tag does not mean a commit was released. After all four images resolve, the publish job
+writes one more object — `worker-base-release:<sha>`, carrying the digest record of that release
+(git SHA, source hash, and every image's `<repository>@sha256:…`). That single write is the
+release, and it is the only thing the deploy consults.
+
+| what the registry has for a SHA | what happens |
+| --- | --- |
+| a marker | released and frozen: re-verify the digests it names, record them, push nothing, exit 0 |
+| no marker | not released, whatever image tags exist: build, verify each source hash, push all four, then write the marker |
+| a marker naming an image that is gone or built from other sources | refused (exit 7 or 10), never repaired |
+
+The middle row is what a run that failed or was cancelled between two pushes leaves behind. Those
+tags are inert residue, not a half-release: nothing will ever deploy them, and **rerunning the
+publish job completes that SHA with nobody deleting anything in the registry**. Once the marker
+exists the SHA is frozen — rebuilding an already-released commit pushes nothing by design, because
+the digests the marker names are what a deploy verifies and replacing them would change what an
+already-recorded release means.
+
+The deploy resolves the marker of the revision it is deploying *first*, pulls the digests that
+marker names, and checks that every one of them carries `org.codegen.worker_source_hash` equal to
+the source hash of that checkout (`infra/scripts/pull-worker-images.sh`). A revision with no marker
+(exit 9), a release whose image is gone (exit 3), an image without the label (exit 4) or an image
+built from other sources (exit 5) fails the deploy — with the image, the expected hash and the
+found hash — before `compose up -d` touches what is running, and before a single local
+`worker-base-*:latest` name moves.
+
+Nothing after the marker resolves a tag: the pull, the label check, the local retag and the record
+all name the `<repository>@sha256:…` the marker holds. The pull writes its record on the host and
+the deploy copies that file back into the run summary and an artifact, so what is reported as
+deployed is the release that was verified rather than a second lookup of a mutable tag.
+
+So a commit can only be deployed once its CI publish job has released it. Deploying an unreleased
+revision is a refusal, not a fallback to yesterday's workers: that fallback is what put stale
+workers onto a green deploy of an exact SHA (GitHub #278).
 
 ## First-Time Setup
 
@@ -475,7 +519,11 @@ sudo systemctl enable --now orchestrator-backup.timer
 # 4. Verify timer
 systemctl list-timers orchestrator-backup
 
-# 5. Run first deploy from GitHub Actions
+# 5. Check that the deploy user can resolve a tag to a digest. The worker image
+#    verification resolves each published tag once and works from that digest.
+docker buildx imagetools inspect alpine:3.20 --format '{{.Manifest.Digest}}'
+
+# 6. Run first deploy from GitHub Actions
 ```
 
 ## DB Backup
