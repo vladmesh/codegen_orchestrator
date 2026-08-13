@@ -281,6 +281,10 @@ async def create_pipeline_project(
     suffix = secrets.token_hex(4)
     project_title = f"{project_prefix}-{suffix}"
     project_id = str(uuid.uuid4())
+    # This run's identity, minted before the project it will work on. It is
+    # handed over once, at project creation, and the platform carries it from
+    # there onto every worker this run causes.
+    manifest = OwnershipManifest(run_id=f"live-{uuid.uuid4().hex[:12]}")
     config = {
         "description": description,
         "modules": ["backend"],
@@ -294,6 +298,7 @@ async def create_pipeline_project(
         json={
             "id": project_id,
             "title": project_title,
+            "initiating_run_id": manifest.run_id,
             "status": ProjectStatus.DRAFT,
             "config": config,
         },
@@ -303,7 +308,6 @@ async def create_pipeline_project(
     project = resp.json()
     project_name = project["slug"]
 
-    manifest = OwnershipManifest(run_id=project_id)
     manifest.own("project", project_id)
     ctx = {
         "project_id": project_id,
@@ -318,7 +322,7 @@ async def create_pipeline_project(
     }
 
     async with cleanup_on_error(lambda: cleanup_all(api_internal, None, ctx)):
-        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{manifest.run_id}.json")
         resp = await api.post(
             "/api/repositories/",
             json={

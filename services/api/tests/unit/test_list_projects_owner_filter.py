@@ -21,6 +21,7 @@ def _make_project(name: str, owner_id: int):
     p.config = {}
     p.project_spec = None
     p.owner_id = owner_id
+    p.initiating_run_id = "test-run-1"
     return p
 
 

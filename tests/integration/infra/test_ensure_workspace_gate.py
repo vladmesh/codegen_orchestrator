@@ -43,6 +43,7 @@ async def _create_project(api_client, *, status="active", config=None):
         "/api/projects/",
         json={
             "title": f"int-test-{uuid.uuid4().hex[:8]}",
+            "initiating_run_id": "test-run-1",
             "status": status,
             "config": config or {},
         },

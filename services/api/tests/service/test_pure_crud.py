@@ -22,6 +22,7 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
 
     payload = {
         "id": PROJECT_UUID,
+        "initiating_run_id": "test-run-1",
         "title": "New Project 001",
         "status": "draft",
         "config": {"modules": ["backend"]},

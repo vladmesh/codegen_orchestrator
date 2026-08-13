@@ -190,7 +190,9 @@ async def _run_qa(conn: FakeConn, executor, tmp_path, established_facts=None):
     ):
         return await run_qa_centrally(
             target=TARGET,
-            ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
+            ownership=WorkerOwnership(
+                project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+            ),
             fleet_ssh_key="fleet-key",
             acceptance_criteria="- the bot answers /start",
             runtime=RUNTIME,
@@ -379,6 +381,7 @@ def bot_message() -> dict:
     return {
         "story_id": "story-1",
         "project_id": "116c9678-5872-4ce5-8332-9a267ab27604",
+        "initiating_run_id": "live-1",
         "telegram_chat_id": "12345",
         "deployed_url": "https://weather.example.com",
         "application_id": 1,

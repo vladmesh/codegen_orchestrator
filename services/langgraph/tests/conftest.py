@@ -44,6 +44,7 @@ class TestHarness:
         message = EngineeringMessage(
             task_id=task_id,
             project_id=project_id,
+            initiating_run_id="live-run-1",
             telegram_chat_id=123,
         )
         await self.redis.xadd("engineering:queue", {"data": message.model_dump_json()})

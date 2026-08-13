@@ -101,6 +101,7 @@ def mock_api_client():
         mock.get_project = AsyncMock(
             return_value=ProjectDTO(
                 id="116c9678-5872-4ce5-8332-9a267ab27604",
+                initiating_run_id="test-run-1",
                 title="weather_bot",
                 slug="weather-bot-0000",
                 status=ProjectStatus.ACTIVE,
@@ -184,6 +185,7 @@ def qa_message_data():
         "application_id": 1,
         "acceptance_criteria": AGENT_CRITERIA,
         "run_id": "qa-run-1",
+        "initiating_run_id": "live-1",
         "bot_username": None,
         "qa_attempt": 0,
     }
@@ -239,6 +241,30 @@ class TestProcessQAJobServerResolveFailure:
         run_data = patch_call[1]["json"]
         assert run_data["status"] == RunStatus.COMPLETED.value
         assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
+
+
+class TestTheExecutorIsOwnedByTheInitiatingRun:
+    @pytest.mark.asyncio
+    async def test_executor_ownership_is_the_run_that_asked_for_the_work(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """A QA executor belongs to the same run as the code it is testing.
+
+        Not to the QA run row: that is this attempt, and it is carried as the
+        attempt. Cleanup and evidence scoped to the run that started the work
+        have to select the QA executor too, which they only can if it is
+        labelled with that run.
+        """
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        ownership = mock_run.call_args.kwargs["ownership"]
+        assert ownership.run_id == qa_message_data["initiating_run_id"]
+        assert ownership.attempt_id == qa_message_data["run_id"]
+        assert ownership.project_id == qa_message_data["project_id"]
 
 
 class TestProcessQAJobPass:
@@ -748,6 +774,7 @@ class TestHealthOnlyCriteriaRouting:
         respx.get("https://weather.example.com/health").mock(return_value=httpx.Response(200))
         mock_api_client.get_project.return_value = ProjectDTO(
             id="116c9678-5872-4ce5-8332-9a267ab27604",
+            initiating_run_id="test-run-1",
             title="tg_bot_project",
             slug="tg-bot-project-0000",
             status=ProjectStatus.ACTIVE,
@@ -844,6 +871,7 @@ class TestProcessQAJobEdgeCases:
             "application_id": 42,
             "acceptance_criteria": AGENT_CRITERIA,
             "run_id": "qa-run-1",
+            "initiating_run_id": "live-1",
             "qa_attempt": 0,
         }
 
@@ -874,6 +902,7 @@ class TestProcessQAJobEdgeCases:
             "application_id": 1,
             "acceptance_criteria": AGENT_CRITERIA,
             "run_id": "qa-run-1",
+            "initiating_run_id": "live-1",
             "qa_attempt": 0,
         }
 
@@ -891,6 +920,7 @@ class TestProcessQAJobEdgeCases:
     ):
         mock_api_client.get_project.return_value = ProjectDTO(
             id="116c9678-5872-4ce5-8332-9a267ab27604",
+            initiating_run_id="test-run-1",
             title="tg_bot_project",
             slug="tg-bot-project-0000",
             status=ProjectStatus.ACTIVE,

@@ -189,6 +189,10 @@ async def create_project(
             status=project_in.status.value,
             config=_vet_config_write(_initial_project_config(project_in.config), None),
             owner_id=owner_id,
+            # Ownership enters the system here and nowhere else: the caller that
+            # started the run names it, and every worker created for this
+            # project is stamped with it later.
+            initiating_run_id=project_in.initiating_run_id,
         )
         db.add(project)
         await db.commit()

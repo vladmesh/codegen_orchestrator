@@ -18,6 +18,7 @@ def _make_project(**overrides) -> ProjectDTO:
         "slug": "my-project",
         "status": "draft",
         "owner_id": 1,
+        "initiating_run_id": "test-run-1",
         "config": {},
         "created_by": "system",
         "created_at": "2026-03-17T00:00:00Z",

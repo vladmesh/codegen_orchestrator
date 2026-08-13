@@ -201,7 +201,7 @@ class WorkerManager:
         Create and start a new worker container.
 
         Args:
-            ownership: the project and run this worker belongs to. Applied to the
+            ownership: the project, run and attempt this worker belongs to. Applied to the
                 container's labels and written to `worker:meta:<worker_id>` before
                 the container exists, so a worker that dies immediately — and whose
                 Redis metadata is deleted with it — is still attributable from
@@ -244,6 +244,7 @@ class WorkerManager:
             dev_network=dev_network if create_dev_network else None,
             project_id=ownership.project_id,
             run_id=ownership.run_id,
+            attempt_id=ownership.attempt_id,
         )
 
         try:
@@ -570,8 +571,9 @@ class WorkerManager:
         Create worker with specified capabilities and agent config.
         Injects instructions (-> instruction file) and task_content (-> TASK.md) if provided.
 
-        `ownership` is the project and run the requester made this worker for. It
-        is required — a worker nobody owns cannot be attributed once it is dead —
+        `ownership` is the project, the run that asked for the work and the
+        attempt inside it that the requester made this worker for. It is
+        required — a worker nobody owns cannot be attributed once it is dead —
         and it is written here, before any of the slow work, so a creation that
         fails halfway still leaves an attributable record.
         """
@@ -580,6 +582,7 @@ class WorkerManager:
             worker_id=worker_id,
             project_id=ownership.project_id,
             run_id=ownership.run_id,
+            attempt_id=ownership.attempt_id,
             worker_type=worker_type,
         )
         is_qa_worker = worker_type == QA_WORKER_TYPE

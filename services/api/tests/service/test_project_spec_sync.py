@@ -45,6 +45,7 @@ async def project(async_client: AsyncClient, _spec_user) -> dict:
         json={
             "id": str(uuid.uuid4()),
             "title": "Spec Sync Project",
+            "initiating_run_id": "test-run-1",
             "status": "active",
             "config": {"modules": ["backend"]},
         },
@@ -90,6 +91,7 @@ async def test_project_create_rejects_fields_the_model_cannot_store(
         "/api/projects/",
         json={
             "title": "Unstorable Fields",
+            "initiating_run_id": "test-run-1",
             "description": "nowhere to put this",
             "modules": ["backend"],
         },

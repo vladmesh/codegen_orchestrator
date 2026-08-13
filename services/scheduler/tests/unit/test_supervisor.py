@@ -622,6 +622,7 @@ class TestSuperviseWaitingResourceTasks:
             owner_id=42,
             status="active",
             config={"workspace_ready": True},
+            initiating_run_id="live-run-1",
         )
         api_client.get_tasks_by_story.return_value = [task]
 

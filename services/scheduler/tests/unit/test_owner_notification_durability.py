@@ -53,6 +53,7 @@ logger = structlog.get_logger(__name__)
 def _project() -> ProjectDTO:
     return ProjectDTO(
         id=UUID(PROJECT_ID),
+        initiating_run_id="test-run-1",
         title="Test Project",
         slug="test-project",
         status=ProjectStatus.ACTIVE,
@@ -83,6 +84,7 @@ def _qa_run(*, result: dict):
                 qa_message=QAMessage(
                     story_id="story-1",
                     project_id=PROJECT_ID,
+                    initiating_run_id="live-run-1",
                     telegram_chat_id="",
                     deployed_url="https://example.com",
                     application_id=42,

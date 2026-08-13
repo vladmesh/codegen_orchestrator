@@ -53,6 +53,7 @@ def _qa_message(run_id: str = "qa-1") -> QAMessage:
     return QAMessage(
         story_id="story-1",
         project_id=PROJECT_ID,
+        initiating_run_id="live-run-1",
         telegram_chat_id="",
         deployed_url="https://example.com",
         application_id=42,
@@ -227,6 +228,7 @@ def _slot_still_filled() -> TemporaryAccessGrantDTO:
 def _project() -> ProjectDTO:
     return ProjectDTO(
         id=PROJECT_ID,
+        initiating_run_id="test-run-1",
         title="Palindrome",
         slug="palindrome-bot",
         owner_id=1,

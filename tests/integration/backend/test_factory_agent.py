@@ -21,7 +21,9 @@ def _ownership() -> WorkerOwnership:
     workspace lock, so every worker here is made for its own project and run.
     """
     token = uuid4().hex[:8]
-    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
+    return WorkerOwnership(
+        project_id=f"proj-{token}", run_id=f"run-{token}", attempt_id=f"attempt-run-{token}"
+    )
 
 
 @pytest.mark.integration

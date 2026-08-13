@@ -15,6 +15,7 @@ import pytest
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import SpawnResult
 
@@ -26,6 +27,7 @@ def _project(**overrides) -> ProjectDTO:
     """Factory for ProjectDTO with sensible defaults."""
     defaults = {
         "id": _PROJECT_UUID,
+        "initiating_run_id": "test-run-1",
         "title": "test-project",
         "slug": "test-project-0000",
         "status": ProjectStatus.ACTIVE,
@@ -69,9 +71,11 @@ def _make_state(*, action="create", status=ProjectStatus.ACTIVE.value, modules=N
         },
         "action": action,
         "repo_id": repo_id,
-        # The engineering run this work belongs to; the node stamps a worker
-        # it asks for with it.
+        # This attempt (the engineering run row) and the run that initiated the
+        # work. The node stamps a worker it asks for with both, as attempt and
+        # owner respectively.
         "run_id": "eng-1",
+        "ownership": WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
         "errors": [],
     }
 

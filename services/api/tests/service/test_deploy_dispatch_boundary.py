@@ -36,7 +36,12 @@ async def _deploy_run(async_client: AsyncClient, *, run_status: str = "running")
 
     project = await async_client.post(
         "/api/projects/",
-        json={"id": project_id, "title": "Dispatch Boundary", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "id": project_id,
+            "title": "Dispatch Boundary",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(telegram_id)},
     )
     assert project.status_code == status.HTTP_201_CREATED

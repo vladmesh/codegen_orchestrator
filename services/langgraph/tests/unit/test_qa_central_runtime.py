@@ -362,7 +362,9 @@ def central_run(tmp_path):
         ):
             result = await run_qa_centrally(
                 target=target,
-                ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
+                ownership=WorkerOwnership(
+                    project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                ),
                 fleet_ssh_key="fleet-key",
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
@@ -430,7 +432,9 @@ class TestCleanTargetPassesExploratoryQA:
         ):
             result = await run_qa_centrally(
                 target=TARGET,
-                ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
+                ownership=WorkerOwnership(
+                    project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                ),
                 fleet_ssh_key="-----BEGIN OPENSSH PRIVATE KEY-----\nfleet\n-----END-----",
                 acceptance_criteria="- GET /health returns 200",
                 runtime=runtime,
@@ -473,7 +477,9 @@ class TestCleanTargetPassesExploratoryQA:
         ):
             await run_qa_centrally(
                 target=TARGET,
-                ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
+                ownership=WorkerOwnership(
+                    project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                ),
                 fleet_ssh_key="fleet-key",
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
@@ -522,7 +528,9 @@ class TestTheRunBorrowsTheAccountProvisioningMade:
         ):
             result = await run_qa_centrally(
                 target=TARGET,
-                ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
+                ownership=WorkerOwnership(
+                    project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                ),
                 fleet_ssh_key="fleet-key",
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,
@@ -932,7 +940,9 @@ class TestGrantIsDurableAndDestroyed:
         ):
             result = await run_qa_centrally(
                 target=TARGET,
-                ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
+                ownership=WorkerOwnership(
+                    project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+                ),
                 fleet_ssh_key="fleet-key",
                 acceptance_criteria="- GET /health returns 200",
                 runtime=RUNTIME,

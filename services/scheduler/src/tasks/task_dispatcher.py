@@ -164,9 +164,14 @@ async def _create_and_publish_run(
     redis_client: RedisStreamClient,
     task: TaskDTO,
     description: str,
+    initiating_run_id: str,
     log: structlog.BoundLogger,
 ) -> str | None:
     """Create the engineering run and publish its message.
+
+    `initiating_run_id` is the project's — the run that asked for this work.
+    This function creates one *attempt* inside it, and the message carries both:
+    the attempt as `task_id`, the run as `initiating_run_id`.
 
     Returns the run id. If publishing fails the run is closed as FAILED — nothing
     would ever pick it up — and None is returned so the task stays in todo and the
@@ -200,6 +205,7 @@ async def _create_and_publish_run(
     eng_msg = EngineeringMessage(
         task_id=run_id,
         project_id=project_id,
+        initiating_run_id=initiating_run_id,
         telegram_chat_id=recipient.telegram_chat_id,
         action=action,
         description=description,
@@ -284,15 +290,21 @@ async def dispatch_todo_tasks(
         if project_id == INTERNAL_PROJECT_ID:
             continue
 
+        # The project is read once and kept: it decides whether this task may be
+        # dispatched at all, and it carries the run that initiated the work,
+        # which the message below has to hand on to the worker.
+        project = await api_client.get_project(project_id)
+        if project is None:
+            log.error("task_skipped_project_missing", project_id=project_id)
+            continue
+
         # Guard: don't dispatch until scaffold is complete and workspace is ready
-        if project_id:
-            project = await api_client.get_project(project_id)
-            if project and project.status == ProjectStatus.DRAFT:
-                log.info("task_skipped_not_scaffolded", project_status=project.status)
-                continue
-            if project and not (project.config or {}).get("workspace_ready"):
-                log.info("task_skipped_workspace_not_ready", project_id=project_id)
-                continue
+        if project.status == ProjectStatus.DRAFT:
+            log.info("task_skipped_not_scaffolded", project_status=project.status)
+            continue
+        if not (project.config or {}).get("workspace_ready"):
+            log.info("task_skipped_workspace_not_ready", project_id=project_id)
+            continue
 
         # Fetch siblings once — used for both guard and context
         siblings = []
@@ -333,7 +345,9 @@ async def dispatch_todo_tasks(
         if context:
             description = context + description
 
-        run_id = await _create_and_publish_run(api_client, redis_client, task, description, log)
+        run_id = await _create_and_publish_run(
+            api_client, redis_client, task, description, project.initiating_run_id, log
+        )
         if run_id is None:
             continue
 

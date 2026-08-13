@@ -399,6 +399,7 @@ class TestFeatureActionFlow:
             {
                 "task_id": "eng-feat-1",
                 "project_id": "proj-1",
+                "initiating_run_id": "live-1",
                 "action": "feature",
                 "description": "Add stats endpoint",
                 "telegram_chat_id": "u1",
@@ -478,6 +479,7 @@ class TestFeatureActionFlow:
             {
                 "task_id": "eng-feat-2",
                 "project_id": "proj-1",
+                "initiating_run_id": "live-1",
                 "action": "feature",
                 "description": "Add feature",
                 "telegram_chat_id": "u1",
@@ -489,6 +491,14 @@ class TestFeatureActionFlow:
         # Verify allocations were passed to subgraph
         subgraph_input = mock_subgraph.ainvoke.call_args[0][0]
         assert "vps-1:8042" in subgraph_input["allocated_resources"]
+
+        # And the subgraph is handed ownership already decided: the run that
+        # asked for the work owns every worker it spawns, with this engineering
+        # run as the attempt. No node downstream derives it again.
+        ownership = subgraph_input["ownership"]
+        assert ownership.run_id == "live-1"
+        assert ownership.attempt_id == "eng-feat-2"
+        assert ownership.project_id == "proj-1"
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
@@ -548,6 +558,7 @@ class TestFeatureActionFlow:
             {
                 "task_id": "eng-feat-3",
                 "project_id": "proj-1",
+                "initiating_run_id": "live-1",
                 "action": "feature",
                 "description": "Add feature",
                 "telegram_chat_id": "u1",
@@ -616,6 +627,7 @@ class TestFeatureActionFlow:
             {
                 "task_id": "eng-feat-4",
                 "project_id": "proj-1",
+                "initiating_run_id": "live-1",
                 "action": "feature",
                 "skip_deploy": False,
                 "description": "Add feature",
@@ -696,6 +708,7 @@ class TestFeatureActionFlow:
             {
                 "task_id": "eng-feat-5",
                 "project_id": "proj-1",
+                "initiating_run_id": "live-1",
                 "action": "feature",
                 "description": None,
                 "telegram_chat_id": "u1",

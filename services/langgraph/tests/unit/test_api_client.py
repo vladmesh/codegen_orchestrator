@@ -41,6 +41,7 @@ class TestGetProjectWithTelegramId:
             "slug": "test-0000",
             "status": "active",
             "owner_id": 1,
+            "initiating_run_id": "test-run-1",
             "created_at": _NOW,
         }
         mock_httpx_client.request.return_value = resp
@@ -61,6 +62,7 @@ class TestGetProjectWithTelegramId:
             "slug": "test-0000",
             "status": "active",
             "owner_id": 1,
+            "initiating_run_id": "test-run-1",
             "created_at": _NOW,
         }
         mock_httpx_client.request.return_value = resp
@@ -132,6 +134,7 @@ class TestListProjectsWithTelegramId:
                 "slug": "test-0000",
                 "status": "active",
                 "owner_id": 1,
+                "initiating_run_id": "test-run-1",
                 "created_at": _NOW,
             }
         ]

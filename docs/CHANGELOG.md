@@ -18,8 +18,21 @@
   route to the deployment. Because a QA executor now records a project, it is explicitly excluded
   from the developer workspace mutex — it neither takes the lock, nor is blocked by one, nor
   releases one when it is deleted.
-- A developer worker's run is the engineering run it was spawned inside: the run id travels from
-  `EngineeringMessage.task_id` through the engineering subgraph state into the create command.
+- A worker's run is the run that *initiated* the work, and it enters the system in exactly one
+  place: `Project.initiating_run_id`, supplied by whoever starts the run when the project is
+  created (`ProjectCreate.initiating_run_id`, required and non-empty). Every producer of engineering
+  and QA work reads it from the project and carries it on the message
+  (`EngineeringMessage.initiating_run_id`, `QAMessage.initiating_run_id`, both required), and
+  `WorkerOwnership.for_engineering` / `for_qa` — the only two places a worker's ownership is
+  derived — turn that message into the ownership worker-manager stamps. A live run therefore finds
+  its own dead workers with `docker ps -a --filter label=com.codegen.run.id=<manifest.run_id>`.
+- The attempt is carried too, and separately. `com.codegen.attempt.id` (`WorkerOwnership.attempt_id`)
+  is the engineering Run row a developer worker was spawned by, or the QA Run row its executor
+  serves; one initiating run may spawn many attempts, so a run-scoped query must not be answerable
+  only per attempt. `com.codegen.run.id` never carries an attempt id.
+- The live harness names its run before it creates anything: `OwnershipManifest.run_id` is a fresh
+  `live-…` identity (no longer the project id), it is what the project is created with, and the
+  manifest file under `.live-manifests/` is named after it.
 
 - Worker base images are one immutable release chain keyed by the git SHA. Every green commit on
   `main` builds common and then the claude, codex and factory images from that exact common, and

@@ -26,6 +26,7 @@ from shared.contracts.bot_access import (
     project_bot_audience,
 )
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.qa_handoff import (
     QA_DISPATCHED_AT_KEY,
     QA_HANDOFF_KEY,
@@ -882,13 +883,20 @@ async def _handle_deploy_success_story(
     # story that cannot be granted it fails visibly instead of reaching TESTING
     # with a run that can only be refused by the bot.
     head_sha = _deploy_run_head_sha(run)
-    grant_needed = await _temporary_access_is_needed(api_client, project_id, result, log)
-    if grant_needed is None:
+    # The project is read once here and used twice: it says who the bot admits,
+    # and it carries the run that initiated this work, which the QA message has
+    # to hand on so the QA executor is owned by the same run as the developer
+    # workers that produced the code under test.
+    project = await api_client.get_project(project_id)
+    if project is None:
+        log.error("qa_handoff_project_missing", project_id=project_id)
         await api_client.fail_story(story_id)
         await _notify_admin_failure(
             story_id, project_id, "deploy succeeded but the project is gone — cannot run QA"
         )
         return False
+
+    grant_needed = _temporary_access_is_needed(project, result, log)
     if grant_needed and not head_sha:
         log.error("deploy_success_head_sha_missing_for_access_grant", run_id=run.id)
         await api_client.fail_story(story_id)
@@ -912,6 +920,7 @@ async def _handle_deploy_success_story(
     qa_message = QAMessage(
         story_id=story_id,
         project_id=project_id,
+        initiating_run_id=project.initiating_run_id,
         telegram_chat_id=qa_recipient.telegram_chat_id,
         deployed_url=deployed_url,
         application_id=application_id,
@@ -1001,12 +1010,11 @@ async def _execute_qa_handoff(
     )
 
 
-async def _temporary_access_is_needed(
-    api_client: SchedulerAPIClient,
-    project_id: str,
+def _temporary_access_is_needed(
+    project: ProjectDTO,
     result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
-) -> bool | None:
+) -> bool:
     """Whether this QA run has to borrow the deployed bot's test identity slot.
 
     Two deployments do not: one whose audience already admits the QA identity
@@ -1014,17 +1022,13 @@ async def _temporary_access_is_needed(
     no test slot at all. The second is reported, because it means QA will be
     refused by a private bot and the deployed code is why.
 
-    None means the audience could not be read at all, which the caller turns
-    into a visible failure rather than a guess about who the bot admits.
+    The project is read by the caller, which needs it anyway and fails the story
+    visibly when it is gone, so this decides the question rather than also
+    answering "the audience could not be read at all".
     """
     if not result.test_identity_slot:
-        log.warning("qa_handoff_without_test_identity_slot", project_id=project_id)
+        log.warning("qa_handoff_without_test_identity_slot", project_id=str(project.id))
         return False
-
-    project = await api_client.get_project(project_id)
-    if project is None:
-        log.error("qa_handoff_project_missing", project_id=project_id)
-        return None
 
     audience = project_bot_audience(project.config)
     if bot_admits(audience=audience, test_identity="", telegram_id=QA_TEST_TELEGRAM_ID):
@@ -1067,6 +1071,16 @@ async def _handle_deploy_code_fix(
 
     Returns True if redispatched, False if retries exhausted.
     """
+    # A fix is another attempt inside the run that initiated the work, so the
+    # message carries the project's run: the worker it spawns belongs to the
+    # same run as the one whose deploy failed.
+    project = await api_client.get_project(project_id)
+    if project is None:
+        log.error("deploy_fix_project_missing", project_id=project_id)
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(run.id, project_id, "deploy fix needs a project that is gone")
+        return False
+
     attempt = result.deploy_fix_attempt
     if attempt >= _max_deploy_fix_attempts():
         log.warning(
@@ -1104,6 +1118,7 @@ async def _handle_deploy_code_fix(
     fix_msg = EngineeringMessage(
         task_id=fix_task_id,
         project_id=project_id,
+        initiating_run_id=project.initiating_run_id,
         telegram_chat_id=fix_recipient.telegram_chat_id,
         action="fix",
         description=(

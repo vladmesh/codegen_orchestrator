@@ -14,6 +14,7 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.queues.worker import WorkerOwnership
 
 from ..nodes.base import FunctionalNode
 from ..nodes.developer import developer_node
@@ -54,9 +55,14 @@ class EngineeringState(TypedDict):
     # Repository info (for workspace mounting)
     repo_id: str | None
 
-    # The engineering run this work belongs to. It is the run row's id, and it
-    # is what a worker created here is stamped with — see WorkerOwnership.
+    # This attempt: the engineering run row's id, used for run bookkeeping.
     run_id: str
+
+    # Who a worker created in this subgraph belongs to. Built once by the
+    # consumer from the message that started the work (project, initiating run,
+    # this attempt) and only read here: no node derives ownership of its own,
+    # so the container's labels cannot disagree with what asked for the work.
+    ownership: WorkerOwnership
 
     # Story branch name (e.g. "story/{story_id}")
     branch: str | None

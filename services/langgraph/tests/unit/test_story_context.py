@@ -19,6 +19,7 @@ import pytest
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO
+from shared.contracts.queues.worker import WorkerOwnership
 
 
 def _story(**overrides) -> StoryDTO:
@@ -418,6 +419,7 @@ class TestDeveloperNodeStoryContext:
             },
             "action": "feature",
             "run_id": "eng-1",
+            "ownership": WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
             "description": "Add endpoint",
             "story_context": "- ~~Create model~~ — done (see .story/old_tasks/)",
             "repo_id": None,
@@ -461,6 +463,7 @@ class TestDeveloperNodeStoryContext:
             },
             "action": "feature",
             "run_id": "eng-1",
+            "ownership": WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
             "description": "Add endpoint",
             "story_context": None,
             "story_md": story_md_content,

@@ -44,7 +44,12 @@ async def _test_user(async_client: AsyncClient):
 async def project(async_client: AsyncClient, _test_user):
     resp = await async_client.post(
         "/api/projects/",
-        json={"title": "DTO Contract Project", "status": "active", "config": {}},
+        json={
+            "initiating_run_id": "test-run-1",
+            "title": "DTO Contract Project",
+            "status": "active",
+            "config": {},
+        },
         headers={"X-Telegram-ID": str(TELEGRAM_ID)},
     )
     assert resp.status_code == 201

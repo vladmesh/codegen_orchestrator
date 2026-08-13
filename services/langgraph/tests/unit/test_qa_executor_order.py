@@ -44,7 +44,9 @@ TARGET = QATarget(
     deployed_url="http://1.2.3.4:8000",
     allocated_ports=frozenset({8000}),
 )
-OWNERSHIP = WorkerOwnership(project_id="proj-weather", run_id="qa-run-1")
+OWNERSHIP = WorkerOwnership(
+    project_id="proj-weather", run_id="qa-run-1", attempt_id="attempt-qa-run-1"
+)
 PHYSICAL_ROOT = "/srv/deployments/weather-bot"
 CONTAINER = "weather-bot-backend-1"
 RUNNING_STATE = (

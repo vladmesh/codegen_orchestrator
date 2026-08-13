@@ -25,7 +25,10 @@ from src.manager import WorkerManager
 
 
 def _make_create_command(
-    project_id: str = "proj-123", run_id: str = "eng-123", repo_id: str | None = None
+    project_id: str = "proj-123",
+    run_id: str = "live-123",
+    attempt_id: str = "eng-123",
+    repo_id: str | None = None,
 ) -> CreateWorkerCommand:
     """Build a CreateWorkerCommand with ownership and an optional repo_id."""
     config = WorkerConfig(
@@ -35,7 +38,7 @@ def _make_create_command(
         instructions="test instructions",
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT],
-        ownership=WorkerOwnership(project_id=project_id, run_id=run_id),
+        ownership=WorkerOwnership(project_id=project_id, run_id=run_id, attempt_id=attempt_id),
         repo_id=repo_id,
     )
     return CreateWorkerCommand(
@@ -92,12 +95,12 @@ async def test_consumer_passes_none_reason_when_missing():
 @pytest.mark.asyncio
 async def test_consumer_passes_ownership_to_manager(consumer):
     """Ownership from WorkerConfig should be forwarded to manager as one fact."""
-    cmd = _make_create_command(project_id="proj-123", run_id="eng-777", repo_id="repo-123")
+    cmd = _make_create_command(project_id="proj-123", run_id="live-777", attempt_id="eng-777", repo_id="repo-123")
     await consumer._handle_create(cmd)
 
     consumer.manager.create_worker_with_capabilities.assert_awaited_once()
     call_kwargs = consumer.manager.create_worker_with_capabilities.call_args.kwargs
-    assert call_kwargs["ownership"] == WorkerOwnership(project_id="proj-123", run_id="eng-777")
+    assert call_kwargs["ownership"] == WorkerOwnership(project_id="proj-123", run_id="live-777", attempt_id="eng-777")
 
 
 @pytest.mark.asyncio
@@ -130,13 +133,18 @@ def test_a_create_command_without_ownership_is_refused():
 
 
 @pytest.mark.parametrize(
-    "project_id, run_id",
-    [("", "eng-1"), ("proj-1", ""), ("", "")],
+    "project_id, run_id, attempt_id",
+    [
+        ("", "live-1", "eng-1"),
+        ("proj-1", "", "eng-1"),
+        ("proj-1", "live-1", ""),
+        ("", "", ""),
+    ],
 )
-def test_ownership_rejects_an_empty_half(project_id, run_id):
-    """An empty label attributes nothing, so an empty half is not ownership."""
+def test_ownership_rejects_an_empty_part(project_id, run_id, attempt_id):
+    """An empty label attributes nothing, so an empty part is not ownership."""
     with pytest.raises(ValidationError):
-        WorkerOwnership(project_id=project_id, run_id=run_id)
+        WorkerOwnership(project_id=project_id, run_id=run_id, attempt_id=attempt_id)
 
 
 # --- Phase 2: Workspace by repo_id ---
@@ -193,7 +201,7 @@ class TestWorkspaceByRepoId:
                 worker_id="w-1",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -209,7 +217,7 @@ class TestWorkspaceByRepoId:
                 worker_id="w-2",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id=None,
             )
 
@@ -229,7 +237,7 @@ class TestWorkspaceByRepoId:
                 worker_id="w-2b",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-missing",
             )
 
@@ -253,7 +261,7 @@ class TestWorkspaceByRepoId:
                 worker_id="w-3",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
                 env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "ghp_test"},
             )
@@ -282,7 +290,7 @@ class TestRepoIdRedisMeta:
                 worker_id="w-5",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -303,7 +311,7 @@ class TestRepoIdRedisMeta:
                 worker_id="w-5b",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -324,7 +332,7 @@ class TestRepoIdRedisMeta:
                 worker_id="w-6",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -644,7 +652,7 @@ class TestProjectMutex:
                 worker_id="w-first",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -659,7 +667,7 @@ class TestProjectMutex:
                 worker_id="w-second",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -677,7 +685,7 @@ class TestProjectMutex:
                 worker_id="w-first",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -696,7 +704,7 @@ class TestProjectMutex:
                 worker_id="w-second",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
             assert result == "w-second"
@@ -919,7 +927,7 @@ class TestForceCleanAndReject:
                 worker_id="w-16",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -937,7 +945,7 @@ class TestForceCleanAndReject:
                 worker_id="w-17",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 
@@ -957,7 +965,7 @@ class TestForceCleanAndReject:
                 worker_id="w-18",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1"),
+                ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-1",
             )
 

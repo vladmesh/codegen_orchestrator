@@ -169,6 +169,7 @@ async def _grant(
             qa_message=QAMessage(
                 story_id="story-1",
                 project_id=project_id,
+                initiating_run_id="live-run-1",
                 telegram_chat_id="",
                 deployed_url="https://example.com",
                 # The deployment QA tested the borrowed identity on. The reading

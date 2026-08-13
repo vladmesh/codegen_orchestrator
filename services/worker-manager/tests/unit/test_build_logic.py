@@ -17,7 +17,7 @@ from src.image_builder import compute_image_hash
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test")
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
 
 
 BASE_SOURCE_HASH = "basehash0001"

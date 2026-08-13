@@ -13,6 +13,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.story import StoryDTO
@@ -68,6 +69,28 @@ def _make_task(**overrides) -> TaskDTO:
         overrides["project_id"] = UUID(overrides["project_id"])
     defaults.update(overrides)
     return TaskDTO(**defaults)
+
+
+def _make_project(**overrides) -> ProjectDTO:
+    """The project a supervised story belongs to.
+
+    It carries `initiating_run_id`: the run that asked for this work, which the
+    supervisor puts on the QA and fix messages so the workers they lead to are
+    owned by it.
+    """
+    defaults = {
+        "id": UUID("00000000-0000-0000-0000-000000000001"),
+        "title": "test-project",
+        "slug": "test-project-0000",
+        "status": ProjectStatus.ACTIVE,
+        "config": {},
+        "owner_id": 1,
+        "initiating_run_id": "live-run-1",
+        "created_at": _NOW,
+        "updated_at": None,
+    }
+    defaults.update(overrides)
+    return ProjectDTO(**defaults)
 
 
 def _make_repo(**overrides) -> RepositoryDTO:

@@ -13,7 +13,7 @@ from src.manager import WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test")
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
 
 
 def _make_docker_mock():

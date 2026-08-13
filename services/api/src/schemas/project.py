@@ -39,6 +39,9 @@ class ProjectRead(ProjectBase, TimestampedDTO):
 
     owner_id: int
     project_spec: dict | None = None
+    # The run this project's work belongs to. Every consumer that creates a
+    # worker reads it from here, so it has to leave the API with the project.
+    initiating_run_id: str
 
 
 class MergeSecretsRequest(BaseModel):

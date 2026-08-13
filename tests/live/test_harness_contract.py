@@ -901,7 +901,7 @@ async def test_creating_the_story_writes_the_deploy_ahead_of_the_stack(monkeypat
     down from this file alone, so the record is on disk before the story exists.
     """
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
-    manifest_file = tmp_path / ".live-manifests" / f"{ctx['project_id']}.json"
+    manifest_file = tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
 
     # Before the story: no deploy is reachable, nothing is owned.
     assert [item["kind"] for item in json.loads(manifest_file.read_text())["resources"]] == [
@@ -924,7 +924,7 @@ async def test_the_deploy_is_owned_before_the_story_that_leads_to_it_exists(monk
     not know about.
     """
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
-    manifest_file = tmp_path / ".live-manifests" / f"{ctx['project_id']}.json"
+    manifest_file = tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
     owned_when_story_posted = None
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -956,7 +956,9 @@ async def test_a_run_that_creates_no_story_owns_no_stack(monkeypatch, tmp_path):
 
     kinds = [resource.kind for resource in ctx["manifest"].resources]
     assert "server_deployment" not in kinds
-    written = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
+    written = json.loads(
+        (tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json").read_text()
+    )
     assert [item["kind"] for item in written["resources"]] == ["project"]
 
 
@@ -978,7 +980,9 @@ async def test_a_deploy_watched_without_a_story_is_owned_anyway(monkeypatch, tmp
         SimpleNamespace(get=get), SimpleNamespace(get=get), ctx, timeout=0
     )
 
-    written = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
+    written = json.loads(
+        (tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json").read_text()
+    )
     assert {"kind": "server_deployment", "identifier": "live-te-abc"} in written["resources"]
 
 
@@ -997,7 +1001,7 @@ async def test_manifest_file_alone_tears_down_a_written_ahead_stack(monkeypatch,
     service_base, containers, env = _fake_deploy_target(tmp_path, stack)
 
     # Rebuild ownership from the file exactly as scripts/clean_live_tests.py does.
-    data = json.loads((tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").read_text())
+    data = json.loads((tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json").read_text())
     resumed = OwnershipManifest(
         run_id=data["run_id"],
         resources=[
@@ -1265,7 +1269,9 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
         ("project", cleanup_contexts[0]["project_id"]),
     ]
     written = json.loads((tmp_path / ".live-manifests" / f"{manifest.run_id}.json").read_text())
-    assert written["resources"] == [{"identifier": manifest.run_id, "kind": "project"}]
+    assert written["resources"] == [
+        {"identifier": cleanup_contexts[0]["project_id"], "kind": "project"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -1406,7 +1412,36 @@ async def test_common_live_project_gets_persisted_manifest(monkeypatch, tmp_path
     assert data == {"id": "common-project"}
     resource = ctx["manifest"].resources[0]
     assert (resource.kind, resource.identifier) == ("project", ctx["project_id"])
-    assert (tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").is_file()
+    # The file is named after the run, which is its own identity now: the
+    # project is one of the resources that run owns, not its name.
+    assert (tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_the_project_is_created_for_this_run(monkeypatch, tmp_path):
+    """The run hands its id to the platform, once, when it creates the project.
+
+    That is the whole propagation contract from this side: the harness names its
+    run before anything exists, and the platform carries that name onto every
+    worker the run causes. If this request ever stopped carrying it, no live run
+    could find its own containers after they died — so it is asserted on the
+    request the harness actually makes.
+    """
+    posted = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        posted.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": "common-project"})
+
+    monkeypatch.setattr("conftest.ORCHESTRATOR_ROOT", tmp_path)
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        _, ctx = await create_test_project_context(api)
+
+    assert posted[0]["initiating_run_id"] == ctx["manifest"].run_id
+    # The run is not the project under another name: a project is one of the
+    # things this run owns, and one run can own several.
+    assert ctx["manifest"].run_id != ctx["project_id"]
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,7 @@ import structlog
 
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.models import Run, TaskEvent
+from shared.models import Project, Run, TaskEvent
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis.client import RedisStreamClient
 
@@ -207,6 +207,15 @@ async def spawn_worker(
     """
     body = body or SpawnWorkerRequest()
     task = await get_task(task_id, db)
+    # The run this work belongs to, recorded when the project was created. The
+    # message below cannot be built without it, so an admin-spawned worker is
+    # owned on exactly the same terms as a dispatched one.
+    project = await db.get(Project, task.project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {task.project_id} not found",
+        )
 
     # Transition to IN_DEV if needed
     startable = {TaskStatus.BACKLOG, TaskStatus.TODO}
@@ -246,6 +255,7 @@ async def spawn_worker(
     msg = EngineeringMessage(
         task_id=run_id,
         project_id=str(task.project_id),
+        initiating_run_id=project.initiating_run_id,
         telegram_chat_id=await resolve_project_chat_id(
             db,
             task.project_id,

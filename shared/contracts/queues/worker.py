@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from shared.contracts.base import QueueMeta
+from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.queues.qa import QAMessage
 from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
 from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES, AgentType
 
@@ -58,35 +60,84 @@ class WorkerLabel(StrEnum):
     TYPE = "com.codegen.type"
     PROJECT = "com.codegen.project.id"
     RUN = "com.codegen.run.id"
+    ATTEMPT = "com.codegen.attempt.id"
 
 
 class WorkerOwnership(BaseModel):
-    """Who a dynamic worker belongs to: one project, one run.
+    """Who a dynamic worker belongs to: one project, one run, one attempt.
 
     Ownership is a required fact of a create request, not something observed
-    afterwards. Whoever asks for a worker knows both — a developer worker is
-    spawned inside an engineering run for a project, a QA executor inside a QA
-    run for a project — so the answer is written down when the worker is made
-    and never inferred by scanning Docker or Redis later.
+    afterwards. Whoever asks for a worker knows all three, so the answer is
+    written down when the worker is made and never inferred by scanning Docker
+    or Redis later.
 
-    Both fields are non-empty by contract: an "unowned" worker is exactly the
+    The two run-shaped fields are different identities and are not
+    interchangeable:
+
+    - `run_id` is the **initiating run** — the identity of the thing that asked
+      for this work: a live harness run, a matrix combination. It enters the
+      system once, when its project is created (`Project.initiating_run_id`),
+      and travels from there onto every queue message and into every worker.
+      One run may spawn several engineering attempts, so this is the identity
+      run-scoped cleanup and per-run evidence are decidable against.
+    - `attempt_id` is the **attempt** inside that run: the engineering Run row a
+      developer worker was spawned by, or the QA Run row a QA executor serves.
+      Useful for attributing one worker to one attempt; it is never the answer
+      to "which run owns this", which is why it has a label of its own instead
+      of overloading `com.codegen.run.id`.
+
+    Every field is non-empty by contract: an "unowned" worker is exactly the
     thing that cannot be attributed after it dies, so it is refused on arrival
     instead of becoming an untraceable container.
     """
 
     project_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    attempt_id: str = Field(min_length=1)
+
+    @classmethod
+    def for_engineering(cls, msg: "EngineeringMessage") -> "WorkerOwnership":
+        """Ownership of every worker an engineering message leads to.
+
+        The one place a developer worker's ownership is derived, so the value on
+        the container is the value the producer put on the message and nothing
+        can quietly substitute a different identity along the way.
+        """
+        return cls(
+            project_id=msg.project_id,
+            run_id=msg.initiating_run_id,
+            attempt_id=msg.task_id,
+        )
+
+    @classmethod
+    def for_qa(cls, msg: "QAMessage") -> "WorkerOwnership":
+        """Ownership of the executor a QA message leads to.
+
+        Same rule as `for_engineering`, and deliberately the same run: a QA
+        executor belongs to the run that asked for the work, not to the QA run
+        row, which is this attempt.
+        """
+        return cls(
+            project_id=msg.project_id,
+            run_id=msg.initiating_run_id,
+            attempt_id=msg.run_id,
+        )
 
     def as_labels(self) -> dict[str, str]:
         """The ownership half of a worker container's Docker labels."""
         return {
             WorkerLabel.PROJECT.value: self.project_id,
             WorkerLabel.RUN.value: self.run_id,
+            WorkerLabel.ATTEMPT.value: self.attempt_id,
         }
 
     def as_redis_meta(self) -> dict[str, str]:
-        """The same two facts, as `worker:meta:<worker_id>` fields."""
-        return {"project_id": self.project_id, "run_id": self.run_id}
+        """The same facts, as `worker:meta:<worker_id>` fields."""
+        return {
+            "project_id": self.project_id,
+            "run_id": self.run_id,
+            "attempt_id": self.attempt_id,
+        }
 
 
 class ScaffoldConfig(BaseModel):

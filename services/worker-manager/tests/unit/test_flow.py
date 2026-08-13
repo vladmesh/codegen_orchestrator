@@ -47,7 +47,9 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
     # We expect ensure_image to be called
     # For this test, image exists
     container_id = await manager.create_worker(
-        worker_id, image, ownership=WorkerOwnership(project_id="proj-flow", run_id="eng-flow")
+        worker_id,
+        image,
+        ownership=WorkerOwnership(project_id="proj-flow", run_id="eng-flow", attempt_id="attempt-eng-flow"),
     )
 
     assert container_id == "container-123"

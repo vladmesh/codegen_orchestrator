@@ -27,7 +27,7 @@ from src.manager import QA_WORKER_TYPE, WorkerManager
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test")
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
 
 
 QA_NETWORK = "codegen_qa_egress"
@@ -114,7 +114,7 @@ def qa_worker(tmp_path):
                 "base_image": "worker-base:latest",
                 # A QA executor is owned like any other worker: a project under
                 # test and the QA run that made it.
-                "ownership": WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
+                "ownership": WorkerOwnership(project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"),
                 "agent_type": agent_type,
                 "worker_type": QA_WORKER_TYPE,
                 "instructions": "# QA executor",
@@ -513,7 +513,7 @@ class TestTheContract:
             instructions="# QA executor",
             allowed_commands=["*"],
             capabilities=[],
-            ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
+            ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1", attempt_id="attempt-qa-run-1"),
         )
 
         assert config.repo_id is None

@@ -84,6 +84,7 @@ async def _tasks_project():
                 json={
                     "id": TASK_TEST_PROJECT_ID,
                     "title": "Test Tasks Project",
+                    "initiating_run_id": "test-run-1",
                     "status": "active",
                     "config": {},
                 },

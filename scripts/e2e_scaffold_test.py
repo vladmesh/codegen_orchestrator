@@ -152,7 +152,9 @@ async def main():
             capabilities=[WorkerCapability.GIT, WorkerCapability.GITHUB_CLI],
             env_vars={"GITHUB_TOKEN": token, "REPO_NAME": repo_full},
             ownership=WorkerOwnership(
-                project_id="scaffold-e2e-test", run_id=f"e2e-{request_id[:8]}"
+                project_id="scaffold-e2e-test",
+                run_id=f"e2e-{request_id[:8]}",
+                attempt_id=f"eng-{request_id[:8]}",
             ),
             scaffold_config=scaffold_config,
         ),

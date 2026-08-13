@@ -88,7 +88,12 @@ async def running_application(api_client):
 
         resp = await client.post(
             "/api/projects/",
-            json={"id": project_id, "title": f"Analytics {project_id[:8]}", "status": "active"},
+            json={
+                "initiating_run_id": "test-run-1",
+                "id": project_id,
+                "title": f"Analytics {project_id[:8]}",
+                "status": "active",
+            },
             headers={"X-Telegram-ID": str(telegram_id)},
         )
         assert resp.status_code == httpx.codes.CREATED, resp.text

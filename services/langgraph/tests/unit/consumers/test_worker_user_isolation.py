@@ -56,6 +56,7 @@ class TestEngineeringWorkerPassesTelegramId:
         job_data = {
             "task_id": "eng-test",
             "project_id": "proj-1",
+            "initiating_run_id": "live-1",
             "telegram_chat_id": "12345",
             "action": "create",
             "callback_stream": "po:input",
@@ -75,6 +76,7 @@ class TestEngineeringWorkerPassesTelegramId:
         job_data = {
             "task_id": "eng-test",
             "project_id": "proj-1",
+            "initiating_run_id": "live-1",
             "telegram_chat_id": "",
             "action": "create",
             "callback_stream": "po:input",

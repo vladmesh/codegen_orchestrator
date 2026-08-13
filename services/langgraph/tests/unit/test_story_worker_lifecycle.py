@@ -21,6 +21,7 @@ _PROJECT_ID = uuid.uuid4()
 def _project(**overrides):
     base = {
         "id": "proj-1",
+        "initiating_run_id": "test-run-1",
         "title": "test-project",
         "slug": "test-project-0000",
         "config": {"modules": ["backend"]},
@@ -33,6 +34,7 @@ def _project(**overrides):
 def _project_dto(**overrides) -> ProjectDTO:
     base = {
         "id": _PROJECT_ID,
+        "initiating_run_id": "test-run-1",
         "title": "test-project",
         "slug": "test-project-0000",
         "status": ProjectStatus.ACTIVE,
@@ -116,6 +118,7 @@ class TestTwoTaskStoryLifecycle:
             {
                 "task_id": "eng-task1",
                 "project_id": "proj-1",
+                "initiating_run_id": "live-1",
                 "telegram_chat_id": "u-1",
                 "action": "feature",
                 "description": "Create User model",
@@ -155,6 +158,7 @@ class TestTwoTaskStoryLifecycle:
             {
                 "task_id": "eng-task2",
                 "project_id": "proj-1",
+                "initiating_run_id": "live-1",
                 "telegram_chat_id": "u-1",
                 "action": "feature",
                 "description": "Add API endpoint",

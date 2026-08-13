@@ -10,6 +10,7 @@ import pytest
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.queues.worker import WorkerOwnership
 from src.clients.worker_spawner import SpawnResult
 from src.consumers.engineering import EngineeringSuccessParams
 
@@ -20,6 +21,7 @@ def _project(**overrides):
     """Minimal project dict for tests."""
     base = {
         "id": "proj-1",
+        "initiating_run_id": "test-run-1",
         "title": "test-project",
         "slug": "test-project-0000",
         "config": {"modules": ["backend"]},
@@ -32,6 +34,7 @@ def _project(**overrides):
 def _project_dto(**overrides) -> ProjectDTO:
     base = {
         "id": _PROJECT_ID,
+        "initiating_run_id": "test-run-1",
         "title": "test-project",
         "slug": "test-project-0000",
         "status": ProjectStatus.ACTIVE,
@@ -92,6 +95,9 @@ class TestDeveloperNodeWorkerReuse:
                 "project_spec": _project(),
                 "action": "feature",
                 "run_id": "eng-1",
+                "ownership": WorkerOwnership(
+                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                ),
                 "description": "Add login page",
                 "worker_id": "dev-existing-abc",
                 "errors": [],
@@ -142,6 +148,9 @@ class TestDeveloperNodeWorkerReuse:
                 "project_spec": _project(),
                 "action": "feature",
                 "run_id": "eng-1",
+                "ownership": WorkerOwnership(
+                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                ),
                 "description": "Add login page",
                 "worker_id": "dev-existing-abc",
                 "errors": [],
@@ -179,6 +188,9 @@ class TestDeveloperNodeWorkerReuse:
                 "project_spec": _project(),
                 "action": "feature",
                 "run_id": "eng-1",
+                "ownership": WorkerOwnership(
+                    project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                ),
                 "description": "Add login page",
                 "errors": [],
             }
@@ -242,6 +254,7 @@ class TestEngineeringConsumerStoryWorker:
                 "telegram_chat_id": "u-1",
                 "action": "feature",
                 "run_id": "eng-1",
+                "initiating_run_id": "live-1",
                 "description": "Add login",
                 "story_id": "story-1",
                 "planning_task_id": "task-1",
@@ -306,6 +319,7 @@ class TestEngineeringConsumerStoryWorker:
                 "telegram_chat_id": "u-1",
                 "action": "feature",
                 "run_id": "eng-1",
+                "initiating_run_id": "live-1",
                 "description": "Add profile page",
                 "story_id": "story-1",
                 "planning_task_id": "task-2",
@@ -366,6 +380,7 @@ class TestEngineeringConsumerStoryWorker:
                 "telegram_chat_id": "u-1",
                 "action": "feature",
                 "run_id": "eng-1",
+                "initiating_run_id": "live-1",
                 "description": "Standalone fix",
                 "skip_deploy": True,
             },

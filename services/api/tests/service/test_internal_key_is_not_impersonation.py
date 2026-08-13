@@ -83,6 +83,7 @@ async def owned_project(service_client) -> str:
         json={
             "id": project_id,
             "title": f"impersonation-{project_id[:8]}",
+            "initiating_run_id": "test-run-1",
             "status": ProjectStatus.ACTIVE.value,
             "config": {},
         },

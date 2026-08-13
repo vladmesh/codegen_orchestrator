@@ -301,6 +301,7 @@ class TestEngineringMessagePassthrough:
             job = {
                 "task_id": "eng-fix-1",
                 "project_id": "proj-1",
+                "initiating_run_id": "live-1",
                 "telegram_chat_id": "12345",
                 "action": "fix",
                 "deploy_fix_attempt": 2,

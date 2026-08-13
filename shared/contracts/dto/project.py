@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -47,6 +47,12 @@ class ProjectCreate(BaseModel):
     title: str
     status: ProjectStatus = ProjectStatus.DRAFT
     config: dict[str, Any] = {}
+    # The run this project's work is being done for. Required: this is where a
+    # run identity enters the system, and a project created without one would
+    # be a project whose workers cannot be attributed to anything once they are
+    # dead. The caller that starts the run supplies its own id here — the live
+    # harness its manifest run id, the PO agent the request it opened.
+    initiating_run_id: str = Field(min_length=1, max_length=64)
 
 
 class ProjectUpdate(BaseModel):
@@ -103,3 +109,6 @@ class ProjectDTO(TimestampedDTO):
     config: dict = {}
     owner_id: int
     project_spec: dict | None = None
+    # The run that initiated this project's work. Consumers read it from here to
+    # stamp ownership on the workers they create.
+    initiating_run_id: str

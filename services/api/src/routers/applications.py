@@ -577,9 +577,17 @@ async def run_e2e(
     await db.refresh(run)
     await db.refresh(app)
 
-    # Publish QA message
+    # Publish QA message. The QA executor it leads to belongs to the run the
+    # project was created for, exactly as a developer worker does.
+    project = await db.get(Project, repo.project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {repo.project_id} not found",
+        )
     msg = QAMessage(
         project_id=str(repo.project_id),
+        initiating_run_id=project.initiating_run_id,
         telegram_chat_id=await resolve_project_chat_id(db, repo.project_id, event="qa_run"),
         deployed_url=deployed_url,
         application_id=application_id,

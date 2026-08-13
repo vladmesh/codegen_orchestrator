@@ -17,6 +17,7 @@ def _make_job_data(**overrides):
     base = {
         "task_id": "eng-test-1",
         "project_id": "proj-1",
+        "initiating_run_id": "live-1",
         "telegram_chat_id": "123",
         "callback_stream": "cb:test",
         "action": "feature",
@@ -29,6 +30,7 @@ def _make_job_data(**overrides):
 def _make_project(**overrides) -> ProjectDTO:
     base = {
         "id": _PROJECT_ID,
+        "initiating_run_id": "test-run-1",
         "title": "test-project",
         "slug": "test-project-0000",
         "status": ProjectStatus.ACTIVE,

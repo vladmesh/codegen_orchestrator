@@ -944,8 +944,13 @@ class ArchitectMessage(BaseMessage):
 
 class EngineeringMessage(BaseMessage):
     """Start engineering task."""
-    task_id: str
+    task_id: str                 # this attempt: the engineering Run row's id
     project_id: str
+    # The run that asked for the work, read off `Project.initiating_run_id` by
+    # the producer. Required and non-empty: every worker this message leads to
+    # is stamped with it, so a message without it could only produce a container
+    # nobody can attribute once it is dead.
+    initiating_run_id: str
     telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     action: ActionType = ActionType.CREATE  # shared.contracts.vocab
     description: str | None = None
@@ -1366,6 +1371,10 @@ class QAMessage(BaseMessage):
     """Trigger QA testing for a deployed project."""
     story_id: str = ""
     project_id: str
+    # The run that asked for the work, exactly as on EngineeringMessage: the
+    # executor is owned by the same run as the developer workers that produced
+    # the code under test. `run_id` below is this QA attempt, not that run.
+    initiating_run_id: str
     telegram_chat_id: str = ""   # resolved by the producer; never an internal User.id
     deployed_url: str
     application_id: int
@@ -1520,11 +1529,12 @@ class WorkerLabel(StrEnum):
     ID = "com.codegen.worker.id"
     TYPE = "com.codegen.type"
     PROJECT = "com.codegen.project.id"
-    RUN = "com.codegen.run.id"
+    RUN = "com.codegen.run.id"          # the run that initiated the work
+    ATTEMPT = "com.codegen.attempt.id"  # the engineering/QA run row inside it
 
 
 class WorkerOwnership(BaseModel):
-    """Who a dynamic worker belongs to. Both halves are non-empty by contract.
+    """Who a dynamic worker belongs to. Every part is non-empty by contract.
 
     Written by worker-manager onto the container's labels and into
     `worker:meta:<worker_id>` at creation, before the container can exit. It is
@@ -1532,13 +1542,28 @@ class WorkerOwnership(BaseModel):
     container first and deletes the Redis metadata afterwards, so a dead
     worker is attributed from `docker ps -a --filter label=...` alone.
 
-    The run is the run row the worker was made inside: the engineering run id
-    for a developer worker (`EngineeringMessage.task_id`), the QA run id for a
-    QA executor (`QAMessage.run_id`). `ownership.project_id` is also the project
-    whose workspace a developer worker locks — there is no second project field.
+    `run_id` is the **initiating run** — the identity of the thing that asked
+    for the work (a live harness run, a matrix combination). It enters the
+    system once, as `Project.initiating_run_id`, and travels from there onto
+    every queue message (`EngineeringMessage.initiating_run_id`,
+    `QAMessage.initiating_run_id`) and into every worker. One run may spawn
+    several attempts, which is why run-scoped cleanup and per-run evidence are
+    decided against it and not against an attempt.
+
+    `attempt_id` is that attempt: the engineering Run row a developer worker was
+    spawned by (`EngineeringMessage.task_id`) or the QA Run row its executor
+    serves (`QAMessage.run_id`). It has a label of its own rather than
+    overloading `com.codegen.run.id`.
+
+    `ownership.project_id` is also the project whose workspace a developer
+    worker locks — there is no second project field.
+
+    `for_engineering(msg)` and `for_qa(msg)` are the only two places this value
+    is derived; nothing downstream recomputes it.
     """
     project_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
+    attempt_id: str = Field(min_length=1)
 
 
 class WorkerConfig(BaseModel):

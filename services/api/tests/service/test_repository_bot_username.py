@@ -33,6 +33,7 @@ async def bot_project(async_client: AsyncClient) -> tuple[str, str]:
         json={
             "id": project_id,
             "title": "Palindrome Bot",
+            "initiating_run_id": "test-run-1",
             "status": "draft",
             "config": {"modules": ["backend", "tg_bot"]},
         },

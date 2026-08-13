@@ -103,7 +103,9 @@ def _by_labels(docker_client, **labels):
 
 def _fresh_ownership() -> WorkerOwnership:
     token = uuid4().hex[:8]
-    return WorkerOwnership(project_id=f"proj-{token}", run_id=f"run-{token}")
+    return WorkerOwnership(
+        project_id=f"proj-{token}", run_id=f"live-{token}", attempt_id=f"eng-{token}"
+    )
 
 
 @pytest.mark.integration

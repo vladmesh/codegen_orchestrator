@@ -12,7 +12,7 @@ from shared.contracts.vocab import AgentType
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
-_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test")
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
 
 
 def _write_profile(path, *, auth_mode=0o600, config_mode=0o600):

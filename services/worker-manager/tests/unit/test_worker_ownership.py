@@ -10,7 +10,9 @@ itself, and the only moment the answer is certainly known is creation.
 These tests hold that line at the unit level: what Docker is asked to label, and
 what Redis holds before the container exists. The same properties against a real
 daemon — a worker that dies inside one poll interval, and a query scoped to one
-run — are in `tests/service/test_worker_ownership_labels.py`.
+run — are in `tests/integration/backend/test_worker_ownership_labels.py`, and the
+value provenance behind them — the run id a live run was born with reaching the
+container's labels — is in `tests/integration/backend/test_run_ownership_propagation.py`.
 """
 
 from __future__ import annotations
@@ -27,8 +29,11 @@ from src.manager import QA_WORKER_TYPE, WorkerManager
 
 pytestmark = pytest.mark.asyncio
 
-OWNERSHIP = WorkerOwnership(project_id="proj-alpha", run_id="eng-alpha-1")
-OTHER_RUN = WorkerOwnership(project_id="proj-alpha", run_id="eng-alpha-2")
+# The run that initiated the work, and the attempt inside it. They are
+# deliberately unalike here: a test that used one value for both could not see
+# the two being swapped.
+OWNERSHIP = WorkerOwnership(project_id="proj-alpha", run_id="live-alpha", attempt_id="eng-alpha-1")
+OTHER_RUN = WorkerOwnership(project_id="proj-alpha", run_id="live-beta", attempt_id="eng-alpha-2")
 
 
 def _docker_mock():
@@ -65,7 +70,8 @@ async def test_the_container_is_labelled_with_its_project_and_run():
 
     labels = docker.run_container.await_args.kwargs["labels"]
     assert labels[WorkerLabel.PROJECT.value] == "proj-alpha"
-    assert labels[WorkerLabel.RUN.value] == "eng-alpha-1"
+    assert labels[WorkerLabel.RUN.value] == "live-alpha"
+    assert labels[WorkerLabel.ATTEMPT.value] == "eng-alpha-1"
     assert labels[WorkerLabel.ID.value] == "w-labelled"
     assert labels[WorkerLabel.TYPE.value] == "worker"
 
@@ -98,7 +104,8 @@ async def test_ownership_is_in_redis_before_the_container_is_asked_for():
     )
 
     assert seen["meta"]["project_id"] == "proj-alpha"
-    assert seen["meta"]["run_id"] == "eng-alpha-1"
+    assert seen["meta"]["run_id"] == "live-alpha"
+    assert seen["meta"]["attempt_id"] == "eng-alpha-1"
 
 
 async def test_a_worker_that_never_reached_a_container_is_still_owned():
@@ -119,7 +126,8 @@ async def test_a_worker_that_never_reached_a_container_is_still_owned():
 
     meta = decode_redis_fields(await redis.hgetall("worker:meta:w-doomed"))
     assert meta["project_id"] == "proj-alpha"
-    assert meta["run_id"] == "eng-alpha-1"
+    assert meta["run_id"] == "live-alpha"
+    assert meta["attempt_id"] == "eng-alpha-1"
 
 
 async def test_two_runs_of_one_project_are_told_apart_by_their_run_label():
@@ -141,7 +149,7 @@ async def test_two_runs_of_one_project_are_told_apart_by_their_run_label():
         call.kwargs["labels"][WorkerLabel.RUN.value]: call.kwargs["name"]
         for call in docker.run_container.await_args_list
     }
-    assert by_run == {"eng-alpha-1": "worker-w-run-1", "eng-alpha-2": "worker-w-run-2"}
+    assert by_run == {"live-alpha": "worker-w-run-1", "live-beta": "worker-w-run-2"}
 
 
 @patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True))
@@ -162,9 +170,14 @@ async def test_a_developer_worker_carries_the_ownership_the_request_named(_works
 
     labels = docker.run_container.await_args.kwargs["labels"]
     assert labels[WorkerLabel.PROJECT.value] == "proj-alpha"
-    assert labels[WorkerLabel.RUN.value] == "eng-alpha-1"
+    assert labels[WorkerLabel.RUN.value] == "live-alpha"
+    assert labels[WorkerLabel.ATTEMPT.value] == "eng-alpha-1"
     meta = decode_redis_fields(await redis.hgetall("worker:meta:dev-owned"))
-    assert (meta["project_id"], meta["run_id"]) == ("proj-alpha", "eng-alpha-1")
+    assert (meta["project_id"], meta["run_id"], meta["attempt_id"]) == (
+        "proj-alpha",
+        "live-alpha",
+        "eng-alpha-1",
+    )
 
 
 async def test_a_qa_executor_owns_a_project_without_taking_its_workspace_lock(tmp_path):
@@ -179,7 +192,7 @@ async def test_a_qa_executor_owns_a_project_without_taking_its_workspace_lock(tm
     docker.inspect_container = AsyncMock(return_value={"NetworkSettings": {"Networks": {"codegen_qa_egress": {}}}})
     docker.inspect_network = AsyncMock(return_value={"Internal": True})
     manager = WorkerManager(redis=redis, docker_client=docker)
-    qa_ownership = WorkerOwnership(project_id="proj-alpha", run_id="qa-alpha-9")
+    qa_ownership = WorkerOwnership(project_id="proj-alpha", run_id="live-alpha", attempt_id="qa-alpha-9")
 
     with (
         patch("src.manager.settings") as settings,
@@ -215,15 +228,23 @@ async def test_a_qa_executor_owns_a_project_without_taking_its_workspace_lock(tm
 
     labels = docker.run_container.await_args.kwargs["labels"]
     assert labels[WorkerLabel.PROJECT.value] == "proj-alpha"
-    assert labels[WorkerLabel.RUN.value] == "qa-alpha-9"
+    # The executor belongs to the run that asked for the work — the same run a
+    # developer worker for this project carries — with the QA run row as its
+    # attempt.
+    assert labels[WorkerLabel.RUN.value] == "live-alpha"
+    assert labels[WorkerLabel.ATTEMPT.value] == "qa-alpha-9"
     meta = decode_redis_fields(await redis.hgetall("worker:meta:qa-owned"))
-    assert (meta["project_id"], meta["run_id"]) == ("proj-alpha", "qa-alpha-9")
+    assert (meta["project_id"], meta["run_id"], meta["attempt_id"]) == (
+        "proj-alpha",
+        "live-alpha",
+        "qa-alpha-9",
+    )
     # The lock is untouched: no membership taken, and a developer worker for the
     # same project is still free to start.
     assert not await redis.sismember("workspace:active_projects", "proj-alpha")
     assert await manager._check_project_lock("proj-alpha") is None
     # The run's egress proxy is labelled with the run that opened it.
-    assert establish.await_args.kwargs["labels"][WorkerLabel.RUN.value] == "qa-alpha-9"
+    assert establish.await_args.kwargs["labels"][WorkerLabel.RUN.value] == "live-alpha"
 
 
 async def test_deleting_a_qa_executor_does_not_release_a_developers_workspace(tmp_path):

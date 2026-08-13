@@ -116,7 +116,7 @@ async def _owner_and_project(api_client) -> tuple[int, str]:
     resp = await api_client.post(
         "/api/projects/",
         headers={"X-Telegram-ID": str(OWNER_TELEGRAM_ID)},
-        json={"title": f"recipient-{uuid.uuid4().hex[:6]}"},
+        json={"initiating_run_id": "test-run-1", "title": f"recipient-{uuid.uuid4().hex[:6]}"},
     )
     assert resp.status_code in (200, 201), resp.text
     return user_id, resp.json()["id"]

@@ -59,7 +59,7 @@ from src.consumers.qa import process_qa_job
 _RUNTIME = QARuntimeConfig(executor_agent_type=AgentType.CLAUDE, capability_host="127.0.0.1")
 _NO_API_FALLBACK = SimpleNamespace(qa_llm_model=None, qa_llm_base_url=None, qa_llm_api_key=None)
 
-OWNERSHIP = WorkerOwnership(project_id="proj-app", run_id="qa-run-1")
+OWNERSHIP = WorkerOwnership(project_id="proj-app", run_id="qa-run-1", attempt_id="attempt-qa-run-1")
 ALLOWED_PORT = 8000
 NEIGHBOUR_PORT = 9000
 OWN_CONTAINER = "app-backend-1"
@@ -483,6 +483,7 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
             {
                 "story_id": "story-1",
                 "project_id": "project-1",
+                "initiating_run_id": "live-1",
                 "telegram_chat_id": "1",
                 "deployed_url": "http://app.example",
                 "application_id": 1,

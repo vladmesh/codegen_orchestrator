@@ -75,11 +75,17 @@ class TestAgentType:
 
 class TestActionType:
     def test_engineering_message_default_and_valid(self):
-        msg = EngineeringMessage(task_id="t", project_id="p", telegram_chat_id="u")
+        msg = EngineeringMessage(
+            task_id="t", project_id="p", initiating_run_id="live-1", telegram_chat_id="u"
+        )
         assert msg.action is ActionType.CREATE
         assert (
             EngineeringMessage(
-                task_id="t", project_id="p", telegram_chat_id="u", action="fix"
+                task_id="t",
+                project_id="p",
+                initiating_run_id="live-1",
+                telegram_chat_id="u",
+                action="fix",
             ).action
             is ActionType.FIX
         )
@@ -87,7 +93,13 @@ class TestActionType:
     def test_engineering_message_rejects_deploy_only_action(self):
         # 'stop'/'undeploy' are deploy operations, not engineering actions.
         with pytest.raises(ValidationError):
-            EngineeringMessage(task_id="t", project_id="p", telegram_chat_id="u", action="stop")
+            EngineeringMessage(
+                task_id="t",
+                project_id="p",
+                initiating_run_id="live-1",
+                telegram_chat_id="u",
+                action="stop",
+            )
 
     def test_action_type_is_subset_of_deploy_action(self):
         assert {a.value for a in ActionType} <= {d.value for d in DeployAction}

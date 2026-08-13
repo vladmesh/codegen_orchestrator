@@ -122,6 +122,9 @@ def api_client():
     project_mock.id = "proj-1"
     project_mock.status = ProjectStatus.ACTIVE.value
     project_mock.config = {"workspace_ready": True}
+    # The run this project's work belongs to — what the dispatcher puts on the
+    # message so the worker it leads to is owned by it.
+    project_mock.initiating_run_id = "live-run-1"
     client.get_project.return_value = project_mock
     # Default: project has existing applications (feature deploy)
     client.get_applications_by_project.return_value = [{"id": 1, "status": "running"}]
@@ -144,6 +147,67 @@ def redis_client():
 
 class TestDispatchTodoTasks:
     """Dispatch unblocked todo tasks to engineering queue."""
+
+    @pytest.mark.asyncio
+    async def test_message_carries_the_run_the_project_was_created_for(
+        self, api_client, redis_client
+    ):
+        """The message owns the work by the initiating run, not by this attempt.
+
+        The dispatcher creates an engineering Run row per attempt, and the old
+        contract had nothing else on the message to own a worker by. The run
+        that *asked* for the work is a different, longer-lived identity, read
+        off the project where its initiator wrote it; the attempt travels
+        beside it as `task_id`, never as its substitute.
+        """
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _task(
+                id="task-1",
+                title="Add user model",
+                description="Create User SQLAlchemy model",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id=None,
+                status="todo",
+            )
+        ]
+        api_client.get_task_events.return_value = []
+        api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        msg = redis_client.publish_message.call_args[0][1]
+        assert msg.initiating_run_id == "live-run-1"
+        assert msg.task_id == api_client.create_run.call_args[0][0]["id"]
+        assert msg.task_id != msg.initiating_run_id
+
+    @pytest.mark.asyncio
+    async def test_a_task_whose_project_is_gone_is_not_dispatched(self, api_client, redis_client):
+        """No project, no run to own the worker — so no worker is asked for."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _task(
+                id="task-1",
+                title="Add user model",
+                description="Create User SQLAlchemy model",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id=None,
+                blocked_by_task_id=None,
+                status="todo",
+            )
+        ]
+        api_client.get_project.return_value = None
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 0
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_dispatches_unblocked_task(self, api_client, redis_client):

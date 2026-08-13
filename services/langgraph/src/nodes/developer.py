@@ -105,13 +105,12 @@ class DeveloperNode(FunctionalNode):
         action = state.get("action", "create")
         feature_description = state.get("description")
         project_id = project_spec.get("id")
-        # Who the worker this node is about to ask for will belong to. Both
-        # halves come from the run that is executing: the project being worked
-        # on and the engineering run id the consumer was handed. Neither may be
-        # absent — a worker created without them could not be attributed once it
-        # is dead — so the model refuses an empty one here rather than a
-        # container carrying an empty label later.
-        ownership = WorkerOwnership(project_id=str(project_id or ""), run_id=state["run_id"])
+        # Who the worker this node is about to ask for belongs to. It was
+        # decided before this node ran — the consumer built it from the message
+        # that started the work — and it is read, never rebuilt: one fact, one
+        # writer. A state without it is a bug, and KeyError says so here rather
+        # than a container carrying an empty label later.
+        ownership = state["ownership"]
 
         logger.info(
             "developer_node_start",

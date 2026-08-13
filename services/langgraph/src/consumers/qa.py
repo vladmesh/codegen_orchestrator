@@ -405,9 +405,11 @@ async def _run_exploratory_qa(
             return None, access_blocker
 
     qa_result = await run_qa_centrally(
-        # The QA run owns its executor: the project under test and the run row
-        # this message carries. Both exist before any container does.
-        ownership=WorkerOwnership(project_id=msg.project_id, run_id=msg.run_id),
+        # Who the executor belongs to, derived by the one constructor that
+        # derives it: the project under test, the run that asked for the work
+        # (the same run the developer workers of this project carry), and this
+        # QA run row as the attempt. All of it exists before any container does.
+        ownership=WorkerOwnership.for_qa(msg),
         target=QATarget(
             server_ip=server_info.server_ip,
             ssh_user=server_info.ssh_user,
