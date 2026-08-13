@@ -1900,6 +1900,109 @@ async def test_qa_gate_rejects_a_user_scoped_observer():
             await run_non_llm_qa(api, "story-1", timeout=1, poll_interval=0)
 
 
+# ── Run evidence collection ordering ─────────────────────────────────────
+
+
+class _RecordingCollector:
+    """A run-evidence collector that records the order it was driven in."""
+
+    def __init__(self, events: list[str]):
+        self.events = events
+
+    def capture(self) -> None:
+        self.events.append("capture")
+
+    def note_error(self, message: str) -> None:
+        self.events.append(f"error: {message}")
+
+
+@pytest.mark.asyncio
+async def test_engineering_evidence_pass_does_not_wait_out_a_poll_interval(monkeypatch):
+    """The first capture happens before the first sleep.
+
+    A worker can be created and killed inside one five-second sampling interval,
+    which is what the Codex failures did. Reconciliation covers what sampling
+    misses, but a pass that never runs sees nothing at all.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "in_progress"})
+
+    events: list[str] = []
+    ctx = {"task_id": "task-1", "story_id": "story-1"}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    ) as api:
+        # timeout=0 runs no poll iteration at all: whatever capture happens here
+        # is the one that does not depend on winning the sampling race.
+        await pipeline_helpers.wait_engineering(
+            api, ctx, timeout=0, on_poll=lambda: events.append("capture")
+        )
+
+    assert events == ["capture"]
+
+
+@pytest.mark.asyncio
+async def test_qa_evidence_pass_precedes_the_terminal_run_it_reports(monkeypatch):
+    """The QA executor is captured before QA's terminal run is even read.
+
+    ``run_qa_executor`` enqueues the executor's DeleteWorkerCommand in its
+    ``finally`` block, before the QA consumer persists the terminal run. A
+    capture that waited for that run would be reading a container that is
+    already being removed, so the capture point has to sit inside the wait.
+    """
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    events: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        events.append("read")
+        return httpx.Response(200, json=[_qa_run()])
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://test"
+    ) as api:
+        result = await run_non_llm_qa(
+            api,
+            "story-1",
+            timeout=1,
+            poll_interval=0,
+            record=lambda run: events.append("record"),
+            on_poll=lambda: events.append("capture"),
+        )
+
+    assert result["qa_outcome"] == "passed"
+    assert events == ["capture", "read", "record"]
+
+
+def test_evidence_pass_refreshes_ownership_before_it_captures(monkeypatch):
+    """Redis names a worker while it lives; the manifest keeps the name after."""
+    events: list[str] = []
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "capture_owned_workers",
+        lambda ctx: events.append("own"),
+    )
+
+    pipeline_helpers.evidence_pass({"run_evidence": _RecordingCollector(events)})
+
+    assert events == ["own", "capture"]
+
+
+def test_evidence_pass_still_captures_when_ownership_discovery_fails(monkeypatch):
+    """A broken Redis read is recorded as evidence, and never skips the capture."""
+    events: list[str] = []
+
+    def explode(ctx: dict) -> None:
+        raise RuntimeError("redis unreachable")
+
+    monkeypatch.setattr(pipeline_helpers, "capture_owned_workers", explode)
+
+    pipeline_helpers.evidence_pass({"run_evidence": _RecordingCollector(events)})
+
+    assert events == ["error: worker ownership refresh failed: redis unreachable", "capture"]
+
+
 # ── Environment contract preflight ───────────────────────────────────────
 
 

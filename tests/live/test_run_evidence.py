@@ -58,6 +58,7 @@ class FakeDocker:
         self.containers = containers
         self.logs_by_container = logs
         self.log_reads: list[str] = []
+        self.listing_error: str | None = None
 
     def remove(self, container: str) -> None:
         self.containers.pop(container, None)
@@ -65,6 +66,8 @@ class FakeDocker:
 
     def probe(self) -> ContainerProbe:
         def list_workers() -> list[str]:
+            if self.listing_error is not None:
+                raise RuntimeError(self.listing_error)
             return sorted(self.containers)
 
         def inspect(container: str) -> dict | None:
@@ -253,8 +256,119 @@ def test_emit_reconciles_owned_workers_that_were_never_seen(codex_docker, tmp_pa
     absent = by_id["qa-ffffffffffff"]
     assert absent["role"] == WorkerRole.QA_EXECUTOR.value
     assert absent["container_present"] is False
-    assert "removed before the capture reached it" in absent["exit_code"]["reason"]
+    assert "removed before any capture reached it" in absent["exit_code"]["reason"]
     assert path.parent == tmp_path / "docs" / "e2e_results"
+
+
+def test_a_worker_seen_running_that_vanishes_states_the_lost_race(transcripts, tmp_path):
+    """The sampled-then-lost case: never keep reporting "still running".
+
+    A container observed alive at one pass, killed and removed before the next,
+    used to keep its "the container was still running" record forever — an exit
+    that reads as pending when it will never be readable at all.
+    """
+    docker = FakeDocker(
+        containers={
+            DEV_CONTAINER: container_payload(
+                worker_id=DEV_WORKER_ID,
+                agent_type="codex",
+                exit_code=None,
+                transcript_source=str(transcripts),
+            )
+        },
+        logs={DEV_CONTAINER: "worker_started worker_id=" + DEV_WORKER_ID},
+    )
+    collector = collector_for(docker)
+    collector.capture()  # alive here
+    docker.remove(DEV_CONTAINER)  # a retry removes it before the next pass
+    collector.capture()
+
+    worker = build_artifact(base_ctx(collector), root=tmp_path)["workers"][0]
+    assert worker["container_present"] is False
+    assert worker["exit_code"]["status"] == CaptureStatus.MISSED.value
+    assert "lost the race with cleanup" in worker["exit_code"]["reason"]
+    # What was read while it lived is evidence and stays.
+    assert "worker_started" in worker["log_tail"]["value"]["text"]
+    assert worker["agent_type_executed"]["value"] == "codex"
+
+
+def test_an_owned_worker_no_pass_ever_sampled_is_still_accounted_for(tmp_path):
+    """The never-sampled case: capture must not depend on winning a poll race.
+
+    A Codex worker that starts and dies inside one sampling interval is never
+    listed by docker at any pass. The run still owned it, so the artifact
+    reports it as an explicit missed capture — an omitted worker would read as
+    "nothing ran", which is the failure this card exists to end.
+    """
+    docker = FakeDocker(containers={}, logs={})
+    collector = RunEvidenceCollector(
+        developer_prefix=developer_container_prefix(REPO),
+        probe=docker.probe(),
+        owned_workers=lambda: [DEV_WORKER_ID, "qa-ffffffffffff"],
+        clock=lambda: RUN_START,
+    )
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    by_id = {worker["worker_id"]: worker for worker in artifact["workers"]}
+    assert set(by_id) == {DEV_WORKER_ID, "qa-ffffffffffff"}
+    developer = by_id[DEV_WORKER_ID]
+    assert developer["role"] == WorkerRole.DEVELOPER.value
+    assert developer["container_present"] is False
+    for field in ("exit_code", "log_tail", "state"):
+        assert developer[field]["status"] == CaptureStatus.MISSED.value
+        assert "no evidence pass ever saw its container" in developer[field]["reason"]
+    assert by_id["qa-ffffffffffff"]["role"] == WorkerRole.QA_EXECUTOR.value
+    assert artifact["run"]["attempts"] == 1
+
+
+def test_a_sampled_owned_worker_keeps_its_capture_over_the_manifest(codex_docker, tmp_path):
+    """Reconciliation never downgrades evidence that was actually collected."""
+    collector = RunEvidenceCollector(
+        developer_prefix=developer_container_prefix(REPO),
+        probe=codex_docker.probe(),
+        owned_workers=lambda: [DEV_WORKER_ID],
+        clock=lambda: RUN_START,
+    )
+    collector.capture()
+    codex_docker.remove(DEV_CONTAINER)
+    collector.capture()  # the manifest still names it; the exit is already ours
+
+    worker = build_artifact(base_ctx(collector), root=tmp_path)["workers"][0]
+    assert worker["exit_code"]["value"] == 0
+    assert "agent_exited_without_result" in worker["log_tail"]["value"]["text"]
+
+
+def test_a_failed_listing_does_not_declare_every_container_lost(transcripts, tmp_path):
+    """A broken probe is not evidence that anything was removed.
+
+    A listing that fails says nothing about which containers still exist, so a
+    worker still running through it keeps its running record and the failure is
+    reported as a capture error.
+    """
+    docker = FakeDocker(
+        containers={
+            DEV_CONTAINER: container_payload(
+                worker_id=DEV_WORKER_ID,
+                agent_type="claude",
+                exit_code=None,
+                transcript_source=str(transcripts),
+            )
+        },
+        logs={DEV_CONTAINER: "worker_started"},
+    )
+    collector = collector_for(docker)
+    collector.capture()
+    docker.listing_error = "docker daemon unreachable"
+    collector.capture()
+
+    artifact = build_artifact(base_ctx(collector), root=tmp_path)
+    worker = artifact["workers"][0]
+    assert worker["container_present"] is True
+    assert "still running" in worker["exit_code"]["reason"]
+    assert artifact["capture_errors"] == [
+        "worker container discovery failed: docker daemon unreachable"
+    ]
 
 
 def test_a_container_that_never_started_is_not_reported_as_exit_zero(transcripts, tmp_path):
@@ -432,7 +546,85 @@ def test_qa_cell_is_not_exercised_when_the_worker_died_first(codex_docker, tmp_p
     )
     assert cell["run_id"] is None
     assert cell["outcome"] is None
+    # The qa-worker was configured to select claude, and no QA container ever
+    # ran because the developer worker died first. The cell reports what was
+    # observed — nothing — and names the configuration only as the reason.
+    assert cell["executor_selected"] == "claude"
+    assert cell["executor_executed"]["status"] == CaptureStatus.MISSED.value
+    assert cell["executor_executed"]["value"] is None
+    assert (
+        "no QA executor container of this run was observed" in (cell["executor_executed"]["reason"])
+    )
+    assert "'claude'" in cell["executor_executed"]["reason"]
+    assert cell["executor_workers"] == []
+
+
+def test_qa_executor_evidence_is_collected_before_its_container_is_deleted(
+    codex_docker, transcripts, tmp_path
+):
+    """The QA executor is captured while it runs, not after QA reports.
+
+    The QA client enqueues the executor's DeleteWorkerCommand in its `finally`
+    block, before the QA consumer persists the terminal run — so a capture that
+    waited for the run would find nothing. Capturing during the QA wait is what
+    makes the executor's exit code and tail exist at all.
+    """
+    qa_container = "worker-qa-abc123abc123"
+    codex_docker.containers[qa_container] = container_payload(
+        worker_id="qa-abc123abc123",
+        agent_type="claude",
+        exit_code=3,
+        transcript_source=str(transcripts),
+        created=RUN_START + timedelta(minutes=2),
+    )
+    codex_docker.logs_by_container[qa_container] = "qa_executor_failed"
+    collector = collector_for(codex_docker)
+
+    collector.capture()  # during the QA wait, while the executor still exists
+    codex_docker.remove(qa_container)  # the delete command lands
+    collector.capture()
+
+    ctx = base_ctx(
+        collector,
+        task_status=TaskStatus.DONE,
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        qa_run={"id": "qa-run-1", "result": {"qa_outcome": QAOutcome.FAILED.value}},
+    )
+    cell = build_artifact(ctx, root=tmp_path)["qa"]
+    assert cell["state"] == QAExercise.EXERCISED.value
     assert cell["executor_executed"]["value"] == "claude"
+    assert cell["executor_workers"] == ["qa-abc123abc123"]
+    qa_worker = next(
+        worker
+        for worker in build_artifact(ctx, root=tmp_path)["workers"]
+        if worker["role"] == "qa_executor"
+    )
+    assert qa_worker["exit_code"]["value"] == 3
+    assert "qa_executor_failed" in qa_worker["log_tail"]["value"]["text"]
+
+
+def test_qa_executor_that_was_never_observed_is_not_claimed_from_configuration(
+    codex_docker, tmp_path
+):
+    """A configured selector is a plan; the cell only claims what it saw run."""
+    collector = collector_for(codex_docker)
+    collector.capture()
+    ctx = base_ctx(
+        collector,
+        task_status=TaskStatus.DONE,
+        deploy_outcome=DeployOutcome.SUCCESS.value,
+        final_app_status=ApplicationStatus.RUNNING.value,
+        qa_run={"id": "qa-run-1", "result": {"qa_outcome": QAOutcome.PASSED.value}},
+    )
+
+    artifact = build_artifact(ctx, root=tmp_path)
+    cell = artifact["qa"]
+    assert cell["state"] == QAExercise.EXERCISED.value  # a terminal QA run exists
+    assert cell["executor_selected"] == "claude"
+    assert cell["executor_executed"]["status"] == CaptureStatus.MISSED.value
+    assert "not evidenced" in cell["executor_executed"]["reason"]
+    assert artifact["combination"]["qa_executed"] == cell["executor_executed"]
 
 
 def test_qa_cell_is_not_exercised_when_the_deploy_never_ran(codex_docker):
@@ -653,7 +845,8 @@ def test_artifact_schema_field_by_field(codex_docker, tmp_path):
     assert artifact["combination"]["worker_requested"] == "codex"
     assert artifact["combination"]["worker_executed"]["value"] == "codex"
     assert artifact["combination"]["qa_requested"] == "claude"
-    assert artifact["combination"]["qa_executed"]["value"] == "claude"
+    assert artifact["combination"]["qa_executed"] == artifact["qa"]["executor_executed"]
+    assert artifact["combination"]["qa_executed"]["status"] == CaptureStatus.MISSED.value
 
     assert artifact["project"] == {
         "id": ctx["project_id"],

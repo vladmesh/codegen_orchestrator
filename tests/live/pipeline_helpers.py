@@ -548,14 +548,19 @@ async def wait_engineering(
 ) -> None:
     """Wait for engineering to complete. Updates ctx['task_status'], ctx['story_status'].
 
-    ``on_poll`` runs once per poll, before the task status is read. It exists for
-    evidence collection: a retried task destroys the previous attempt's worker
-    container and its Redis metadata, so anything that has to survive the retry
-    has to be collected while the attempt is still on the host.
+    ``on_poll`` runs once per poll, before the task status is read, and once
+    before the first wait. It exists for evidence collection: a retried task
+    destroys the previous attempt's worker container and its Redis metadata, so
+    anything that has to survive the retry has to be collected while the attempt
+    is still on the host. The first call happens before the first sleep because
+    a worker can be created and killed inside one poll interval — the collector
+    reconciles what it missed, but a pass it never made cannot see anything.
     """
     done_statuses = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
     status = None
     elapsed = 0
+    if on_poll is not None:
+        on_poll()
     while elapsed < timeout:
         await asyncio.sleep(5)
         elapsed += 5
@@ -927,6 +932,7 @@ async def run_non_llm_qa(
     timeout: float,
     poll_interval: float = QA_RUN_POLL_INTERVAL,
     record: Callable[[dict], None] | None = None,
+    on_poll: Callable[[], None] | None = None,
 ) -> dict[str, str]:
     """Wait for this story's QA run and require a terminal ``passed``.
 
@@ -940,6 +946,12 @@ async def run_non_llm_qa(
     run evidence report the QA cell as exercised — and with which outcome — even
     when the outcome is what fails this gate.
 
+    ``on_poll`` runs once per poll, and once before the first wait. Exploratory
+    QA runs inside a dynamic QA worker whose deletion is enqueued in the QA
+    client's ``finally`` block, before the terminal run this function is waiting
+    for is even persisted — so the only place the QA executor's container can be
+    captured is here, while it is still doing the work.
+
     Reads /api/runs/ as an internal service with no user header — see
     ``require_unscoped_run_observer``.
     """
@@ -947,6 +959,8 @@ async def run_non_llm_qa(
     deadline = time.monotonic() + timeout
     run = None
     while time.monotonic() < deadline:
+        if on_poll is not None:
+            on_poll()
         resp = await api_internal.get(
             "/api/runs/",
             params={"story_id": story_id, "run_type": RunType.QA.value},
@@ -1267,6 +1281,26 @@ def capture_owned_workers(ctx: dict) -> None:
             image = inspect.stdout.strip() if inspect.returncode == 0 else ""
         ctx["manifest"].own("worker", worker_id, image=image, container=container)
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
+
+
+def evidence_pass(ctx: dict) -> None:
+    """One run-evidence pass over this run's dynamic workers.
+
+    Ownership is refreshed first and capture follows, because the two decay at
+    different speeds: Redis names a worker while worker-manager still has its
+    container, and the manifest keeps that name after both are gone. A worker
+    that dies between two passes is therefore still accounted for — as a stated
+    missed capture rather than as an omission, which would read as "nothing ran".
+
+    Ownership discovery failing must not stop the capture, and neither may fail
+    the run: this is evidence collection, not a gate.
+    """
+    collector = ctx["run_evidence"]
+    try:
+        capture_owned_workers(ctx)
+    except Exception as exc:
+        collector.note_error(f"worker ownership refresh failed: {exc}")
+    collector.capture()
 
 
 def _wait_for_container_absence(

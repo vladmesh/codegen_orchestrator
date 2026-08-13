@@ -8,12 +8,19 @@
   the attempts, the terminal state, a failure kind, and per worker container its exit code, a
   bounded log tail and the path of the transcript worker-wrapper already retained on the host. The
   matrix prints it per combination and records its path in the summary table.
-- The evidence is collected on every engineering poll, before cleanup can remove it: a retry deletes
-  the previous attempt's container and its Redis metadata, and the attempt that died is the one that
-  has to stay explainable. Nothing in the collection reads Redis, and a fact it could not collect is
-  written as a stated reason rather than an empty field.
+- The evidence is collected on every engineering poll and on every poll of the post-deploy QA wait,
+  before cleanup can remove it: a retry deletes the previous attempt's container and its Redis
+  metadata, and the QA client enqueues the QA executor's deletion before QA's terminal run is
+  persisted. Each pass refreshes the run's worker ownership from Redis first, so the artifact does
+  not depend on a poll landing while a container happens to be alive.
+- Capture never omits a worker it could not read. A container seen running that then disappears, and
+  a worker the run owned that no pass ever sampled, are both written as a stated missed capture
+  naming the lost race — an omitted worker would read as "nothing ran", which is exactly the failure
+  this evidence exists to end.
 - A QA role is reported as exercised only once its worker handed a result to QA; a combination whose
-  worker died first carries a QA cell that says so and why.
+  worker died first carries a QA cell that says so and why. The executor is reported from the QA
+  container actually observed, never from the qa-worker's configured selector, which is recorded
+  separately as the selection it was asked to make.
 - The privacy boundary is unchanged: Codex CLI diagnostics still never enter the business result
   stream or service logs. The artifact's log tail is the worker container's own log, bounded and
   redacted against the container's secret environment values, and the transcript is referenced by

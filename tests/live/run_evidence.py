@@ -29,6 +29,14 @@ what destroys the previous attempt: worker-manager deletes a dead worker's
 container and ``_check_project_lock`` deletes its Redis metadata when the next
 worker for the same project starts. The first successful capture of a
 container's exit is kept; a later pass that finds nothing cannot erase it.
+
+Sampling alone cannot win that race, so it is not asked to. A pass also
+reconciles against the run's ownership manifest — the workers Redis named as
+this run's — and against what earlier passes already saw. A worker the run owned
+and no pass ever sampled, and a worker seen running that then disappeared, both
+end up in the artifact as an explicit missed capture that names the race. An
+omitted worker would read as "nothing ran", which is the failure mode this
+module exists to end.
 """
 
 from __future__ import annotations
@@ -55,7 +63,9 @@ ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # The artifact is read by humans and by whatever comes next; a consumer that
 # knows the version knows the field names. Bump it when a field changes meaning.
-EVIDENCE_SCHEMA_VERSION = 1
+# v2: qa.executor_executed reports the executor observed on a QA container, not
+# the selector the qa-worker was configured with.
+EVIDENCE_SCHEMA_VERSION = 2
 EVIDENCE_KIND = "worker_failure_attribution"
 
 LOG_TAIL_LINES = 200
@@ -87,6 +97,21 @@ _DOCKER_TIME = re.compile(
     r"^(?P<head>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
     r"(?:\.(?P<fraction>\d+))?"
     r"(?P<zone>Z|[+-]\d{2}:?\d{2})?$"
+)
+
+# The two ways a capture loses the race, stated in the artifact rather than
+# represented by an absent worker record.
+VANISHED_WHILE_RUNNING_REASON = (
+    "this container was observed running and was gone from docker by the next "
+    "evidence pass: the capture lost the race with cleanup, so its exit code was "
+    "never readable"
+)
+OWNED_BUT_NEVER_SAMPLED_REASON = (
+    "this run owned the worker and no evidence pass ever saw its container: it "
+    "was removed before any capture reached it"
+)
+REMOVED_BEFORE_CAPTURE_REASON = (
+    "docker no longer knows this container: it was removed before evidence capture"
 )
 
 PRIVACY_STATEMENT = (
@@ -345,13 +370,7 @@ def capture_worker(
     inspected = probe.inspect(container)
     worker_id = container.removeprefix(f"{WORKER_CONTAINER_PREFIX}-")
     if inspected is None:
-        return _absent_worker(
-            worker_id,
-            role,
-            container,
-            "docker no longer knows this container: it was removed before evidence capture",
-            now,
-        )
+        return _absent_worker(worker_id, role, container, REMOVED_BEFORE_CAPTURE_REASON, now)
     labels = inspected["Config"]["Labels"] or {}
     environment = _container_env(inspected)
     state, exit_code = _state_evidence(inspected)
@@ -417,13 +436,37 @@ def _has_exit_code(record: dict) -> bool:
     return record["exit_code"]["status"] == CaptureStatus.CAPTURED.value
 
 
+def _lost_race(previous: dict, now: datetime) -> dict:
+    """Downgrade a record of a running container that has since disappeared.
+
+    What was already read stays — the state and the log tail of a container that
+    was alive are true observations of this run. What is replaced is the claim
+    that the exit is still pending: the container is gone, the exit code will
+    never be read, and the artifact has to say that rather than keep reporting
+    "still running" forever.
+    """
+    record = dict(previous)
+    record["container_present"] = False
+    record["exit_code"] = Capture.missed(VANISHED_WHILE_RUNNING_REASON).as_dict()
+    if previous["log_tail"]["status"] != CaptureStatus.CAPTURED.value:
+        record["log_tail"] = Capture.missed(VANISHED_WHILE_RUNNING_REASON).as_dict()
+    record["captured_at"] = now.isoformat()
+    return record
+
+
 class RunEvidenceCollector:
     """Collects dynamic worker evidence repeatedly and keeps the best of it.
 
-    ``capture`` is safe to call on every engineering poll: it is the only way
-    attempt one survives attempt two, which deletes its container and its Redis
-    metadata. A capture that raises is recorded as a capture error rather than
-    failing the run — evidence collection must never change a matrix verdict.
+    ``capture`` is safe to call on every poll of any phase that can be running a
+    dynamic worker: it is the only way attempt one survives attempt two, which
+    deletes its container and its Redis metadata. A capture that raises is
+    recorded as a capture error rather than failing the run — evidence
+    collection must never change a matrix verdict.
+
+    ``owned_workers`` names the worker ids this run is known to own, read from
+    the run's ownership manifest. It is what makes the result independent of
+    sampling luck: a worker named there that no pass ever sampled is reported as
+    a missed capture instead of being left out of the artifact.
     """
 
     def __init__(
@@ -431,10 +474,12 @@ class RunEvidenceCollector:
         *,
         developer_prefix: str,
         probe: ContainerProbe | None = None,
+        owned_workers: Callable[[], list[str]] = list,
         clock: Callable[[], datetime] = lambda: datetime.now(tz=UTC),
     ) -> None:
         self._developer_prefix = developer_prefix
         self._probe = probe if probe is not None else docker_probe()
+        self._owned_workers = owned_workers
         self._clock = clock
         self._started_at = clock()
         self._records: dict[str, dict] = {}
@@ -449,13 +494,22 @@ class RunEvidenceCollector:
         return list(self._errors)
 
     def capture(self) -> None:
-        """Take one pass over this run's worker containers."""
+        """Take one pass over this run's worker containers.
+
+        Three things happen, in this order, because the later two are what make
+        the first one's timing stop mattering: what docker lists now is read;
+        what an earlier pass saw running and docker no longer lists is written
+        down as a lost race; and every worker this run owns that no pass ever
+        reached is written down as a missed capture.
+        """
         try:
-            containers = self._probe.list_workers()
+            listed = self._probe.list_workers()
         except Exception as error:  # noqa: BLE001 — a probe failure is evidence, not a verdict
+            # A failed listing says nothing about which containers still exist,
+            # so it must not be read as "everything disappeared".
             self._errors.append(f"worker container discovery failed: {error}")
             return
-        for container in containers:
+        for container in listed:
             role = self._role_of(container)
             if role is None:
                 continue
@@ -467,6 +521,46 @@ class RunEvidenceCollector:
             if role is WorkerRole.QA_EXECUTOR and not self._started_during_run(record):
                 continue
             self._merge(record)
+        present = set(listed)
+        self._reconcile_vanished(present)
+        self._reconcile_owned(present)
+
+    def note_error(self, message: str) -> None:
+        """Record a collection failure raised outside this collector."""
+        self._errors.append(message)
+
+    def _reconcile_vanished(self, present: set[str]) -> None:
+        """State the loss for a container seen running that docker has dropped."""
+        for container, record in list(self._records.items()):
+            if container in present or not record["container_present"]:
+                continue
+            if _has_exit_code(record):
+                continue
+            self._records[container] = _lost_race(record, self._clock())
+
+    def _reconcile_owned(self, present: set[str]) -> None:
+        """Account for every owned worker docker no longer lists."""
+        try:
+            owned = self._owned_workers()
+        except Exception as error:  # noqa: BLE001 — see capture
+            self._errors.append(f"owned worker reconciliation failed: {error}")
+            return
+        for worker_id in owned:
+            container = f"{WORKER_CONTAINER_PREFIX}-{worker_id}"
+            if container in present:
+                continue
+            existing = self._records.get(container)
+            if existing is not None and (
+                _has_exit_code(existing) or not existing["container_present"]
+            ):
+                continue
+            self._records[container] = _absent_worker(
+                worker_id,
+                self._owned_role(worker_id),
+                container,
+                OWNED_BUT_NEVER_SAMPLED_REASON,
+                self._clock(),
+            )
 
     def observe_absent(self, worker_id: str, role: WorkerRole, reason: str) -> None:
         """Record a worker known from elsewhere whose container was never seen."""
@@ -484,18 +578,35 @@ class RunEvidenceCollector:
 
     def executed_worker_agent(self) -> Capture:
         """The agent type the developer worker containers actually declared."""
+        return self._executed_agent(
+            WorkerRole.DEVELOPER,
+            "no developer worker container was observed carrying WORKER_AGENT_TYPE",
+        )
+
+    def executed_qa_agent(self) -> Capture:
+        """The agent type the QA executor containers actually declared."""
+        return self._executed_agent(
+            WorkerRole.QA_EXECUTOR,
+            "no QA executor container was observed carrying WORKER_AGENT_TYPE",
+        )
+
+    def worker_ids(self, role: WorkerRole) -> list[str]:
+        """The worker ids of one role this run has any record of."""
+        return sorted(
+            record["worker_id"] for record in self._records.values() if record["role"] == role
+        )
+
+    def _executed_agent(self, role: WorkerRole, nothing_observed: str) -> Capture:
         declared = sorted(
             {
                 record["agent_type_executed"]["value"]
                 for record in self._records.values()
-                if record["role"] == WorkerRole.DEVELOPER
+                if record["role"] == role
                 and record["agent_type_executed"]["status"] == CaptureStatus.CAPTURED.value
             }
         )
         if not declared:
-            return Capture.missed(
-                "no developer worker container was observed carrying WORKER_AGENT_TYPE"
-            )
+            return Capture.missed(nothing_observed)
         if len(declared) > 1:
             return Capture.captured(declared)
         return Capture.captured(declared[0])
@@ -506,6 +617,19 @@ class RunEvidenceCollector:
         if container.startswith(QA_CONTAINER_PREFIX):
             return WorkerRole.QA_EXECUTOR
         return None
+
+    def _owned_role(self, worker_id: str) -> WorkerRole:
+        """The role of a worker known by id alone, from the manifest.
+
+        The manifest names only this run's workers, so an id that matches
+        neither container prefix is still one of ours — a developer worker of a
+        repo whose name was truncated differently, most plausibly — and is
+        reported as such rather than dropped.
+        """
+        role = self._role_of(f"{WORKER_CONTAINER_PREFIX}-{worker_id}")
+        if role is not None:
+            return role
+        return WorkerRole.QA_EXECUTOR if worker_id.startswith("qa-") else WorkerRole.DEVELOPER
 
     def _started_during_run(self, record: dict) -> bool:
         """QA executor ids carry no project, so the run window attributes them.
@@ -526,7 +650,15 @@ class RunEvidenceCollector:
 
     def _merge(self, record: dict) -> None:
         existing = self._records.get(record["container"])
-        if existing is not None and _has_exit_code(existing) and not _has_exit_code(record):
+        if existing is None:
+            self._records[record["container"]] = record
+            return
+        if _has_exit_code(existing) and not _has_exit_code(record):
+            return
+        if existing["container_present"] and not record["container_present"]:
+            # The container was there and is not any more. What was read of it
+            # is worth more than a bare "removed", so keep it and state the loss.
+            self._records[record["container"]] = _lost_race(existing, self._clock())
             return
         self._records[record["container"]] = record
 
@@ -564,20 +696,18 @@ def qa_cell(ctx: dict) -> dict:
     deploy of that work succeeded, so "a terminal QA run for this story" is the
     evidence that the worker handed something to QA. Anything short of that is
     reported as not exercised, with the reason it was not.
+
+    The executor is reported from the QA containers this run observed, never
+    from the selector the qa-worker was configured with: a configured selector
+    is a plan, and this artifact only claims what it saw run.
     """
-    executed = ctx.get("qa_agent_type")
-    if executed:
-        executor = Capture.captured(executed)
-    elif ctx.get("qa_requires_executor"):
-        executor = Capture.missed("the harness never read the qa-worker's active executor")
-    else:
-        executor = Capture.missed(
-            "this run uses deterministic health-only QA, which starts no QA executor"
-        )
+    collector: RunEvidenceCollector = ctx["run_evidence"]
     cell = {
         "mode": "llm_executor" if ctx.get("qa_requires_executor") else "deterministic_health",
         "executor_requested": ctx.get("qa_agent_type_requested"),
-        "executor_executed": executor.as_dict(),
+        "executor_selected": ctx.get("qa_agent_type"),
+        "executor_executed": _qa_executor_evidence(ctx).as_dict(),
+        "executor_workers": collector.worker_ids(WorkerRole.QA_EXECUTOR),
         "run_id": None,
         "outcome": None,
     }
@@ -591,6 +721,23 @@ def qa_cell(ctx: dict) -> dict:
     cell["state"] = QAExercise.NOT_EXERCISED.value
     cell["reason"] = _qa_not_exercised_reason(ctx)
     return cell
+
+
+def _qa_executor_evidence(ctx: dict) -> Capture:
+    """Which executor actually ran QA, judged only on container evidence."""
+    collector: RunEvidenceCollector = ctx["run_evidence"]
+    observed = collector.executed_qa_agent()
+    if observed.is_captured:
+        return observed
+    if not ctx.get("qa_requires_executor"):
+        return Capture.missed(
+            "this run uses deterministic health-only QA, which starts no QA executor"
+        )
+    return Capture.missed(
+        "no QA executor container of this run was observed, so the executor that ran "
+        "QA is not evidenced; the qa-worker was configured to select "
+        f"{ctx.get('qa_agent_type') or ctx.get('qa_agent_type_requested')!r}"
+    )
 
 
 def _qa_not_exercised_reason(ctx: dict) -> str:
@@ -732,8 +879,7 @@ def emit_run_evidence(ctx: dict, *, root: Path = ORCHESTRATOR_ROOT) -> Path:
                 WorkerRole.QA_EXECUTOR
                 if resource.identifier.startswith("qa-")
                 else WorkerRole.DEVELOPER,
-                "this run owned the worker, and no container carried it at evidence time: "
-                "it was removed before the capture reached it",
+                OWNED_BUT_NEVER_SAMPLED_REASON,
             )
     artifact = build_artifact(ctx, root=root)
     return write_artifact(artifact, root / "docs" / "e2e_results")

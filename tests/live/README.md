@@ -70,11 +70,23 @@ count, the terminal state and failure kind, the duration — and per worker cont
 bounded log tail and the path of the transcript worker-wrapper retained under
 `WORKER_TRANSCRIPT_STORAGE_PATH`.
 
-The collector (`tests/live/run_evidence.py`) takes a pass on every engineering poll, because that is
-the only moment a failed attempt still exists: a retry deletes the previous worker's container and
-its Redis metadata. Nothing it reads comes from Redis, and a fact it could not collect is written as
-`{"status": "missed", "reason": ...}` rather than as an empty field. Evidence collection never fails
-a run — a probe error is recorded under `capture_errors`.
+The collector (`tests/live/run_evidence.py`) takes a pass on every engineering poll and on every
+poll of the post-deploy QA wait, because those are the only moments the containers still exist: a
+retry deletes the previous developer worker's container and its Redis metadata, and the QA client
+enqueues the QA executor's deletion before QA's terminal run is even persisted.
+
+Because a worker can be created and killed inside one poll interval, a pass does not rely on
+sampling luck. `pipeline_helpers.evidence_pass` first refreshes the run's worker ownership from
+Redis (`capture_owned_workers`) and then captures; each capture reconciles what docker lists now
+against the ownership manifest and against what earlier passes saw. A worker seen running that then
+disappears, and a worker the run owned that no pass ever sampled, both stay in the artifact as
+`{"status": "missed", "reason": ...}` naming the lost race — never as an omitted worker, which would
+read as "nothing ran". The collector itself reads only docker. Evidence collection never fails a
+run — a probe error, or a failed ownership refresh, is recorded under `capture_errors`.
+
+The QA cell reports `executor_executed` from the QA container this run observed, never from the
+qa-worker's configured selector: the selector it was configured with is reported separately as
+`executor_selected`, and appears in the missed capture's reason when no QA container was seen.
 
 Agent stdout stays out of it. The log tail is the container's own log (worker-wrapper's structlog),
 bounded and redacted through `shared.diagnostics.redact_diagnostic` against the container's secret

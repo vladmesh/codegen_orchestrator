@@ -39,6 +39,7 @@ from pipeline_helpers import (
     create_story_and_task,
     dump_debug,
     ensure_test_user,
+    evidence_pass,
     record_env_contract,
     run_non_llm_qa,
     trigger_scaffold,
@@ -83,7 +84,15 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
                 # the containers and Redis metadata it is collected from.
                 ctx["qa_agent_type_requested"] = os.getenv("LIVE_QA_AGENT_TYPE")
                 ctx["run_evidence"] = RunEvidenceCollector(
-                    developer_prefix=developer_container_prefix(ctx["repo_name"])
+                    developer_prefix=developer_container_prefix(ctx["repo_name"]),
+                    # The manifest is the run's own record of which workers were
+                    # its own. Reconciling against it is what keeps the evidence
+                    # from depending on a poll landing while a container lives.
+                    owned_workers=lambda: [
+                        resource.identifier
+                        for resource in ctx["manifest"].resources
+                        if resource.kind == "worker"
+                    ],
                 )
                 try:
                     async for value in _pipeline_phases(
@@ -96,6 +105,11 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
                     ):
                         yield value
                 finally:
+                    # A last ownership refresh before cleanup: whatever Redis
+                    # still names here is reconciled into the artifact, and
+                    # emit_run_evidence then captures and writes it — always
+                    # ahead of cleanup_all, which is what removes the evidence.
+                    evidence_pass(ctx)
                     emit_run_evidence(ctx)
 
 
@@ -132,7 +146,7 @@ async def _pipeline_phases(
     # died is exactly the one that has to stay attributable.
     await create_story_and_task(api, ctx)
     await wait_engineering(
-        api, ctx, timeout=engineering_timeout, on_poll=ctx["run_evidence"].capture
+        api, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
     )
     if ctx.get("task_status") != TaskStatus.DONE:
         yield ctx
@@ -166,11 +180,15 @@ async def _pipeline_phases(
     ):
         # The QA run is recorded before it is judged, so a QA cell can say
         # "exercised and failed" instead of falling back to "not exercised".
+        # Every poll takes an evidence pass too: an exploratory QA executor's
+        # container is deleted as soon as the executor call returns, so this
+        # wait is the only window its exit code and log tail exist in.
         ctx["qa_result"] = await run_non_llm_qa(
             api_internal,
             ctx["story_id"],
             timeout=QA_RUN_TIMEOUT,
             record=lambda run: ctx.__setitem__("qa_run", run),
+            on_poll=lambda: evidence_pass(ctx),
         )
 
     yield ctx
