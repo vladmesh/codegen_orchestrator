@@ -175,6 +175,18 @@ class DockerClientWrapper:
         except Exception as e:
             return f"Failed to get logs: {e}"
 
+    async def read_container_logs(self, container_id: str, tail: int = 50) -> str:
+        """Read a container's logs, raising if they cannot be read.
+
+        `get_container_logs` answers a failed read with the failure text, which
+        is fine for a log line and wrong for evidence: a caller that has to say
+        whether it captured the tail must be able to tell a log that says
+        "Failed to get logs" from a read that failed.
+        """
+        container = await self.get_container(container_id)
+        logs = await self._run(container.logs, tail=tail, stdout=True, stderr=True)
+        return logs.decode(errors="replace")
+
     async def list_networks(self) -> List[Any]:
         """List all Docker networks."""
         return await self._run(self._client.networks.list)

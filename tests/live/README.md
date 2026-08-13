@@ -60,6 +60,57 @@ starts a health-only QA observation against `/health` and `/v1/health`. It accep
 contract `status=completed` with `qa_outcome=passed`. An unreachable endpoint, a non-200 response or
 timeout makes the live run red. This gate does not publish to `qa:queue` and does not run an LLM.
 
+## Run evidence
+
+Every mega run writes one machine-readable artifact for the worker/QA combination it exercised, to
+`docs/e2e_results/run-evidence-<combination>-<timestamp>.json` (git-ignored, retained on the host).
+It exists so a dynamic worker's death is attributable after the run: it carries the deployed SHA and
+the worker image digest record in use, the project, the role agents **as executed**, the attempt
+count, the terminal state and failure kind, the duration — and per worker container its exit code, a
+bounded log tail and the path of the transcript worker-wrapper retained under
+`WORKER_TRANSCRIPT_STORAGE_PATH`.
+
+**Workers are found by run label.** The collector (`tests/live/run_evidence.py`) is given one fact,
+this run's id — the same `initiating_run_id` the project was created with — and asks
+
+```
+docker ps -a --filter label=com.codegen.type=worker --filter label=com.codegen.run.id=<run id>
+```
+
+Every worker the run causes carries that label from creation, so a pass that runs *after* a worker
+died reads its exit code and log tail exactly as well as one that ran while it lived. No creation
+window, no container-name prefix, no dependence on a poll landing in time.
+
+What a label cannot survive is the *removal* of the container: `docker ps -a` forgets a removed
+container, and worker-manager removes one on delete. No polling interval fixes that — a harness
+cannot win a race against an asynchronous deleter — so the deleter captures instead. Before
+`delete_worker` removes a container it reads its exit code, a bounded log tail, its image, its agent
+type and its transcript directory into `worker:evidence:removed:<run id>`, a run-scoped Redis record
+that the deletion of `worker:meta:<id>` does not touch. The collector reads it as its second source,
+and it carries facts: a worker created and deleted before any pass ran still arrives with its exit
+code, as `discovered_by: "delete_capture"`.
+
+The run's ownership manifest is the third and weakest source, for a worker in neither of the other
+two — no container and no record, because the capture itself never reached Redis. That case is why
+`delete_worker` keeps `worker:meta:<id>` when it could not store the record: the manifest reads that
+metadata, so the worker is still nameable when the container is gone. It contributes an
+explicit `{"status": "missed", "reason": …}` record and nothing else. A worker is never omitted — an
+omitted worker reads as "nothing ran", which is the failure this evidence exists to end. Evidence
+collection never fails a run: a probe error, an unreadable removal record, or a failed ownership
+refresh is recorded under `capture_errors`.
+
+The QA cell reports `executor_executed` from the QA container this run's label selected, never from
+the qa-worker's configured selector: that selector is reported separately as `executor_selected`,
+and appears in the missed capture's reason when no QA container was seen.
+
+Agent stdout stays out of it. The log tail is the container's own log (worker-wrapper's structlog),
+bounded and redacted through `shared.diagnostics.redact_diagnostic` against the container's secret
+environment values; Codex CLI diagnostics stay in the retained transcript, which the artifact
+references by path only. `tests/live/test_run_evidence.py` covers the whole schema offline;
+`tests/integration/backend/test_run_evidence_by_label.py` proves it against a real daemon, with a
+worker killed and forgotten by Redis before anything reads it, and with one taken through the whole
+ordinary delete path — container removed, metadata deleted — before anything observes it at all.
+
 ## Bot access revocation
 
 `tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a

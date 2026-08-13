@@ -233,6 +233,7 @@ services:
         "tests/integration/backend/test_worker_execution.py",
         "tests/integration/backend/test_worker_ownership_labels.py",
         "tests/integration/backend/test_run_ownership_propagation.py",
+        "tests/integration/backend/test_run_evidence_by_label.py",
         "-v",
       ]
     depends_on:
