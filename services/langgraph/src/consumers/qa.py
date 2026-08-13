@@ -21,6 +21,7 @@ from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
 from shared.contracts.dto.telegram import BotLivenessState
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.notifications import notify_admins_best_effort
 from shared.qa_identity import (
     QA_SSH_USER_LABEL,
@@ -404,6 +405,9 @@ async def _run_exploratory_qa(
             return None, access_blocker
 
     qa_result = await run_qa_centrally(
+        # The QA run owns its executor: the project under test and the run row
+        # this message carries. Both exist before any container does.
+        ownership=WorkerOwnership(project_id=msg.project_id, run_id=msg.run_id),
         target=QATarget(
             server_ip=server_info.server_ip,
             ssh_user=server_info.ssh_user,

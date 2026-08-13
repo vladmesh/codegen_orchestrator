@@ -17,6 +17,7 @@ from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 from .conftest import WORKSPACE_BASE_PATH, wait_for_create_response
@@ -27,6 +28,10 @@ WORKER_MANAGER_URL = os.getenv("WORKER_MANAGER_URL", "http://worker-manager:8000
 
 REDIS_STREAM_COMMANDS = "worker:commands"
 REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
+
+
+# Every worker is created for somebody; these tests are not about who.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
 
 
 @pytest.mark.integration
@@ -46,6 +51,7 @@ class TestDevEnvIntegration:
                 instructions="Test workspace",
                 allowed_commands=[],
                 capabilities=[],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -90,6 +96,7 @@ class TestDevEnvIntegration:
                 instructions="Test compose",
                 allowed_commands=[],
                 capabilities=[],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -150,6 +157,7 @@ class TestDevEnvIntegration:
                 instructions="Test delete",
                 allowed_commands=[],
                 capabilities=[],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )

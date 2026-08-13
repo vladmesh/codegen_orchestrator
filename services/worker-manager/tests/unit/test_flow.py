@@ -5,6 +5,7 @@ from fakeredis import aioredis
 
 from shared.contracts.dto.worker import WorkerStatus
 from src.manager import WorkerManager
+from shared.contracts.queues.worker import WorkerOwnership
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +46,9 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
 
     # We expect ensure_image to be called
     # For this test, image exists
-    container_id = await manager.create_worker(worker_id, image)
+    container_id = await manager.create_worker(
+        worker_id, image, ownership=WorkerOwnership(project_id="proj-flow", run_id="eng-flow")
+    )
 
     assert container_id == "container-123"
     status = await manager.get_worker_status(worker_id)

@@ -1,9 +1,17 @@
-"""Tests for project_id passthrough in request_spawn."""
+"""Ownership travels with a spawn request, and a spawn without it never happens.
+
+Both halves are written into the create command the spawner publishes, because
+worker-manager stamps them on the container at creation. Nothing downstream can
+recover them afterwards: the container may already be dead by the time anybody
+looks, and its Redis metadata is deleted with it.
+"""
 
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from shared.contracts.queues.worker import WorkerOwnership
 
 
 def _mock_settings():
@@ -17,10 +25,10 @@ def _mock_settings():
 @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
 @patch("src.prompts.load_developer_instructions", return_value="test instructions")
 @patch("redis.asyncio.Redis.from_url")
-async def test_request_spawn_includes_project_id_in_command(
+async def test_request_spawn_includes_ownership_in_command(
     mock_redis_from_url, mock_instructions, mock_settings
 ):
-    """request_spawn(project_id='proj-456') should include project_id in the command."""
+    """The project and the engineering run both reach worker-manager."""
     # Setup mock redis
     mock_redis = AsyncMock()
     mock_redis_from_url.return_value = mock_redis
@@ -94,7 +102,7 @@ async def test_request_spawn_includes_project_id_in_command(
         repo="org/repo",
         github_token="ghs_test",  # noqa: S106
         task_content="build it",
-        project_id="proj-456",
+        ownership=WorkerOwnership(project_id="proj-456", run_id="eng-789"),
         timeout_seconds=5,
     )
 
@@ -104,83 +112,24 @@ async def test_request_spawn_includes_project_id_in_command(
     assert stream == "worker:commands"
 
     payload = json.loads(data["data"])
-    assert payload["config"]["project_id"] == "proj-456"
+    assert payload["config"]["ownership"] == {"project_id": "proj-456", "run_id": "eng-789"}
     assert payload["context"]["project_id"] == "proj-456"
 
 
 @pytest.mark.asyncio
-@patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
-@patch("src.prompts.load_developer_instructions", return_value="test instructions")
-@patch("redis.asyncio.Redis.from_url")
-async def test_request_spawn_project_id_defaults_to_none(
-    mock_redis_from_url, mock_instructions, mock_settings
-):
-    """request_spawn() without project_id should have project_id=None in config."""
-    mock_redis = AsyncMock()
-    mock_redis_from_url.return_value = mock_redis
-    mock_redis.xgroup_create = AsyncMock()
+async def test_request_spawn_cannot_be_called_without_ownership():
+    """There is no unowned spawn to fall back to; the call itself is invalid.
 
-    captured_commands = []
-
-    async def capture_xadd(stream, data):
-        captured_commands.append((stream, data))
-        return "msg-id"
-
-    mock_redis.xadd = capture_xadd
-
-    mock_redis.xreadgroup = AsyncMock(
-        side_effect=[
-            [
-                (
-                    b"worker:responses:developer",
-                    [
-                        (
-                            b"1-0",
-                            {
-                                b"data": json.dumps(
-                                    {
-                                        "request_id": None,
-                                        "success": True,
-                                        "worker_id": "test-worker-id",
-                                    }
-                                ).encode()
-                            },
-                        )
-                    ],
-                )
-            ],
-            [
-                (
-                    b"worker:test-worker-id:output",
-                    [
-                        (
-                            b"2-0",
-                            {
-                                b"data": json.dumps(
-                                    {"status": "completed", "content": "done", "commit_sha": "abc"}
-                                ).encode()
-                            },
-                        )
-                    ],
-                )
-            ],
-        ]
-    )
-    mock_redis.xack = AsyncMock()
-    mock_redis.xgroup_destroy = AsyncMock()
-    mock_redis.aclose = AsyncMock()
-
+    This replaces the old contract, where `project_id` was optional and a worker
+    could be created owning nothing. Such a worker is exactly the one that
+    cannot be attributed after it dies.
+    """
     from src.clients.worker_spawner import request_spawn
 
-    await request_spawn(
-        repo="org/repo",
-        github_token="ghs_test",  # noqa: S106
-        task_content="build it",
-        timeout_seconds=5,
-    )
-
-    assert len(captured_commands) >= 1
-    stream, data = captured_commands[0]
-    payload = json.loads(data["data"])
-    assert payload["config"]["project_id"] is None
-    assert payload["context"]["project_id"] == ""
+    with pytest.raises(TypeError):
+        await request_spawn(
+            repo="org/repo",
+            github_token="ghs_test",  # noqa: S106
+            task_content="build it",
+            timeout_seconds=5,
+        )

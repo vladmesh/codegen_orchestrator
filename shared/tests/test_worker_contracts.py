@@ -10,7 +10,11 @@ from shared.contracts.queues.worker import (
     WorkerCapability,
     WorkerCommand,
     WorkerConfig,
+    WorkerOwnership,
 )
+
+# Ownership is required of every worker; these tests are about other fields.
+_OWNERSHIP = WorkerOwnership(project_id="proj-1", run_id="run-1")
 
 
 class TestScaffoldConfig:
@@ -22,6 +26,7 @@ class TestScaffoldConfig:
             instructions="Read AGENTS.md",
             allowed_commands=["*"],
             capabilities=[WorkerCapability.GIT],
+            ownership=_OWNERSHIP,
             host_codex_home="/srv/codex-worker",
         )
 
@@ -46,6 +51,7 @@ class TestScaffoldConfig:
             instructions="Read TASK.md",
             allowed_commands=["*"],
             capabilities=[WorkerCapability.GIT],
+            ownership=_OWNERSHIP,
             scaffold_config=scaffold,
         )
         cmd = CreateWorkerCommand(
@@ -72,6 +78,7 @@ class TestScaffoldConfig:
             instructions="test",
             allowed_commands=["*"],
             capabilities=[],
+            ownership=_OWNERSHIP,
         )
         assert config.scaffold_config is None
 
@@ -104,6 +111,7 @@ class TestQARunsOnAnAssignedSubscriptionAgent:
             instructions="# QA executor",
             allowed_commands=["*"],
             capabilities=[],
+            ownership=_OWNERSHIP,
         )
 
     @pytest.mark.parametrize("agent_type", [AgentType.CLAUDE, AgentType.CODEX])
@@ -134,6 +142,7 @@ class TestQARunsOnAnAssignedSubscriptionAgent:
                 "instructions": "# QA executor",
                 "allowed_commands": ["*"],
                 "capabilities": [],
+                "ownership": {"project_id": "proj-1", "run_id": "run-1"},
             },
         }
 
@@ -150,6 +159,7 @@ class TestQARunsOnAnAssignedSubscriptionAgent:
             instructions="Read TASK.md",
             allowed_commands=["*"],
             capabilities=[WorkerCapability.GIT],
+            ownership=_OWNERSHIP,
         )
 
         assert config.agent_type is agent_type

@@ -236,6 +236,11 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "story_context": story_context,
             "story_md": story_md,
             "repo_id": repo_id,
+            # `msg.task_id` is the engineering run's id (task_dispatcher creates
+            # the run and names the message after it). It travels into the
+            # subgraph as what it is, because a worker spawned below is stamped
+            # with it at creation.
+            "run_id": task_id,
             "commit_sha": None,
             "worker_id": existing_worker_id,
             "engineering_status": EngineeringStatus.IDLE,

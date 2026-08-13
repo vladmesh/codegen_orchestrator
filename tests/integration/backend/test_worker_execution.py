@@ -9,6 +9,7 @@ from shared.contracts.queues.worker import (
     WorkerCapability,
     WorkerChannels,
     WorkerConfig,
+    WorkerOwnership,
 )
 from shared.contracts.queues.worker_result import WorkerResultStatus
 
@@ -18,6 +19,9 @@ from .conftest import (
     wait_for_create_response,
     wait_for_stream_message,
 )
+
+# Every worker is created for somebody; these tests are not about who.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
 
 
 @pytest.mark.integration
@@ -40,6 +44,7 @@ class TestWorkerExecution:
                 instructions="You are a test assistant.",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -83,6 +88,7 @@ class TestWorkerExecution:
                 instructions="You are a Factory assistant.",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -126,6 +132,7 @@ class TestWorkerExecution:
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -148,6 +155,7 @@ class TestWorkerExecution:
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -198,6 +206,7 @@ class TestWorkerExecution:
                 instructions="Echo test agent",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )

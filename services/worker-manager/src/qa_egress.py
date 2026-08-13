@@ -45,6 +45,7 @@ from urllib.parse import urlsplit
 
 import structlog
 
+from shared.contracts.queues.worker import WorkerLabel
 from shared.contracts.vocab import AgentType
 
 from .qa_egress_proxy import LISTEN_PORT as PROXY_PORT
@@ -199,7 +200,7 @@ async def establish(
     allowed = model_backends(agent_type, configured_backends)
     name = proxy_container_name(worker_id)
     proxy_labels = dict(labels or {})
-    proxy_labels.update({"com.codegen.type": PROXY_TYPE_LABEL, "com.codegen.worker.id": worker_id})
+    proxy_labels.update({WorkerLabel.TYPE.value: PROXY_TYPE_LABEL, WorkerLabel.ID.value: worker_id})
 
     await docker.remove_container(name, force=True)
     try:

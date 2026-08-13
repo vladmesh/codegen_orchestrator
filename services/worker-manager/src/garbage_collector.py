@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.queues.worker import WorkerLabel
 from shared.redis import decode_redis_fields
 
 from .config import settings
@@ -44,7 +45,7 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
 
     # --- Orphaned containers ---
     try:
-        containers = await docker.list_containers(filters={"label": "com.codegen.type=worker"}, all=True)
+        containers = await docker.list_containers(filters={"label": f"{WorkerLabel.TYPE.value}=worker"}, all=True)
     except Exception as e:
         logger.error("orphan_gc_list_containers_failed", error=str(e))
         containers = []
@@ -52,7 +53,7 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
     # Collect live container IDs for reverse check
     live_container_ids: set[str] = set()
     for container in containers:
-        worker_id = container.labels.get("com.codegen.worker.id")
+        worker_id = container.labels.get(WorkerLabel.ID.value)
         if worker_id and worker_id not in known_ids:
             logger.info("orphan_gc_removing_container", worker_id=worker_id)
             try:
@@ -87,14 +88,14 @@ async def garbage_collect_orphaned_resources(redis: Redis, docker: DockerClientW
     # kind of thing that must not be left running.
     try:
         proxies = await docker.list_containers(
-            filters={"label": f"com.codegen.type={qa_egress.PROXY_TYPE_LABEL}"}, all=True
+            filters={"label": f"{WorkerLabel.TYPE.value}={qa_egress.PROXY_TYPE_LABEL}"}, all=True
         )
     except Exception as e:
         logger.error("orphan_gc_list_proxies_failed", error=str(e))
         proxies = []
 
     for proxy in proxies:
-        worker_id = proxy.labels.get("com.codegen.worker.id")
+        worker_id = proxy.labels.get(WorkerLabel.ID.value)
         if worker_id and worker_id not in known_ids:
             logger.info("orphan_gc_removing_qa_egress_proxy", worker_id=worker_id)
             await qa_egress.tear_down(docker, worker_id)

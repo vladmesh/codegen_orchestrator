@@ -33,6 +33,7 @@ from shared.contracts.queues.worker import (  # noqa: E402
     ScaffoldConfig,
     WorkerCapability,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 GITHUB_ORG = os.getenv("GITHUB_ORG", "project-factory-organization")
@@ -150,6 +151,9 @@ async def main():
             allowed_commands=["*"],
             capabilities=[WorkerCapability.GIT, WorkerCapability.GITHUB_CLI],
             env_vars={"GITHUB_TOKEN": token, "REPO_NAME": repo_full},
+            ownership=WorkerOwnership(
+                project_id="scaffold-e2e-test", run_id=f"e2e-{request_id[:8]}"
+            ),
             scaffold_config=scaffold_config,
         ),
         context={"source": "e2e-test", "repo": repo_full},

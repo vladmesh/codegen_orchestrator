@@ -49,6 +49,7 @@ from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
 )
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.qa_identity import QAIdentityRejection
 from shared.telegram_access_probe import (
@@ -721,6 +722,7 @@ def _apply_cleanup_residue(qa_result: QAResult, residues: list[str]) -> QAResult
 async def _invoke_qa_agent(
     *,
     target: QATarget,
+    ownership: WorkerOwnership,
     workspace: QAWorkspace,
     session,
     acceptance_criteria: str,
@@ -755,6 +757,7 @@ async def _invoke_qa_agent(
     try:
         executor_run, executor_failure = await _run_central_executor(
             target=target,
+            ownership=ownership,
             acceptance_criteria=acceptance_criteria,
             runtime=runtime,
             established_facts=established_facts,
@@ -805,6 +808,7 @@ async def _invoke_qa_agent(
 async def _run_central_executor(
     *,
     target: QATarget,
+    ownership: WorkerOwnership,
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
     established_facts: list[str],
@@ -832,6 +836,7 @@ async def _run_central_executor(
         try:
             run = await run_qa_executor(
                 agent_type=runtime.executor_agent_type,
+                ownership=ownership,
                 capability_url=endpoint.url,
                 capability_token=endpoint.token,
                 instructions=build_qa_instructions(),
@@ -978,6 +983,7 @@ class QAProvisioningJournal(Protocol):
 async def run_qa_centrally(
     *,
     target: QATarget,
+    ownership: WorkerOwnership,
     fleet_ssh_key: str,
     acceptance_criteria: str,
     runtime: QARuntimeConfig,
@@ -999,6 +1005,9 @@ async def run_qa_centrally(
 
     Args:
         target: the single deployment this run may reach.
+        ownership: the project under test and this QA run's id, stamped on the
+            executor container at creation so a run's executor is attributable
+            after it is gone.
         fleet_ssh_key: the server key, used by this function only to issue and
             revoke the run's own identity. It is never given to the agent.
         acceptance_criteria: regression test criteria from the repository.
@@ -1046,6 +1055,7 @@ async def run_qa_centrally(
                 else:
                     qa_result = await _invoke_qa_agent(
                         target=target,
+                        ownership=ownership,
                         workspace=workspace,
                         session=session,
                         acceptance_criteria=acceptance_criteria,

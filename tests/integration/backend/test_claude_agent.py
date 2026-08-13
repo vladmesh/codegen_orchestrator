@@ -8,10 +8,15 @@ from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     WorkerCapability,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 # Constants
 TEST_TIMEOUT = 60  # seconds
+
+
+# Every worker is created for somebody; these tests are not about who.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
 
 
 @pytest.mark.integration
@@ -28,6 +33,7 @@ async def test_claude_cli_installed(redis_client, docker_client, scaffolded_work
         instructions="Test instructions",
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT, WorkerCapability.CURL],
+        ownership=_OWNERSHIP,
         # This test verifies the binary, not host-session persistence. The DinD fixture has no
         # real subscription session, so keep the wrapper alive with its isolated test key.
         auth_mode="api_key",
@@ -81,6 +87,7 @@ async def test_claude_session_mounted(redis_client, docker_client, scaffolded_wo
         instructions="Test",
         allowed_commands=["*"],
         capabilities=[],
+        ownership=_OWNERSHIP,
         auth_mode="host_session",
         host_claude_dir="/tmp/test-claude-session",  # noqa: S108
         repo_id=scaffolded_workspace,
@@ -116,6 +123,7 @@ async def test_claude_instructions_injected(redis_client, docker_client, scaffol
         instructions=instructions,
         allowed_commands=["*"],
         capabilities=[],
+        ownership=_OWNERSHIP,
         repo_id=scaffolded_workspace,
     )
 

@@ -54,6 +54,10 @@ class EngineeringState(TypedDict):
     # Repository info (for workspace mounting)
     repo_id: str | None
 
+    # The engineering run this work belongs to. It is the run row's id, and it
+    # is what a worker created here is stamped with — see WorkerOwnership.
+    run_id: str
+
     # Story branch name (e.g. "story/{story_id}")
     branch: str | None
 

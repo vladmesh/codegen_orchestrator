@@ -69,6 +69,9 @@ def _make_state(*, action="create", status=ProjectStatus.ACTIVE.value, modules=N
         },
         "action": action,
         "repo_id": repo_id,
+        # The engineering run this work belongs to; the node stamps a worker
+        # it asks for with it.
+        "run_id": "eng-1",
         "errors": [],
     }
 

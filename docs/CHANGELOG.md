@@ -2,6 +2,25 @@
 
 ## 2026-08-13
 
+- Every dynamic worker is stamped with its owner when it is created. `WorkerConfig` now carries a
+  required `WorkerOwnership` (project id and run id, both non-empty); worker-manager writes both to
+  the container's Docker labels — `com.codegen.project.id` and `com.codegen.run.id`, next to the
+  existing `com.codegen.worker.id` and `com.codegen.type` — and into `worker:meta:<worker_id>`,
+  before the container is created. A worker that dies in its first second and has its Redis metadata
+  deleted is still found and attributed with `docker ps -a --filter label=...`, which is what
+  label-based crash cleanup and per-run evidence will be built on. Ownership can no longer be
+  absent: a create command without it is refused by the contract, and `request_spawn` cannot be
+  called without it.
+- The QA executor is ownable on the same terms. `run_qa_executor` is handed the QA run's project and
+  run id (`QAMessage.project_id` / `QAMessage.run_id`) and worker-manager records them; the run's
+  egress proxy is labelled with the same run. The QA isolation boundary is unchanged: no git, no
+  GitHub token, no repository, the internal QA network only, and the capability endpoint as its one
+  route to the deployment. Because a QA executor now records a project, it is explicitly excluded
+  from the developer workspace mutex — it neither takes the lock, nor is blocked by one, nor
+  releases one when it is deleted.
+- A developer worker's run is the engineering run it was spawned inside: the run id travels from
+  `EngineeringMessage.task_id` through the engineering subgraph state into the create command.
+
 - Worker base images are one immutable release chain keyed by the git SHA. Every green commit on
   `main` builds common and then the claude, codex and factory images from that exact common, and
   publishes all four to GHCR under that commit's SHA, recording the published digests, the SHA and

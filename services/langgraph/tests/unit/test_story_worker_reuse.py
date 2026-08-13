@@ -91,6 +91,7 @@ class TestDeveloperNodeWorkerReuse:
             {
                 "project_spec": _project(),
                 "action": "feature",
+                "run_id": "eng-1",
                 "description": "Add login page",
                 "worker_id": "dev-existing-abc",
                 "errors": [],
@@ -140,6 +141,7 @@ class TestDeveloperNodeWorkerReuse:
             {
                 "project_spec": _project(),
                 "action": "feature",
+                "run_id": "eng-1",
                 "description": "Add login page",
                 "worker_id": "dev-existing-abc",
                 "errors": [],
@@ -176,6 +178,7 @@ class TestDeveloperNodeWorkerReuse:
             {
                 "project_spec": _project(),
                 "action": "feature",
+                "run_id": "eng-1",
                 "description": "Add login page",
                 "errors": [],
             }
@@ -238,6 +241,7 @@ class TestEngineeringConsumerStoryWorker:
                 "project_id": "proj-1",
                 "telegram_chat_id": "u-1",
                 "action": "feature",
+                "run_id": "eng-1",
                 "description": "Add login",
                 "story_id": "story-1",
                 "planning_task_id": "task-1",
@@ -301,6 +305,7 @@ class TestEngineeringConsumerStoryWorker:
                 "project_id": "proj-1",
                 "telegram_chat_id": "u-1",
                 "action": "feature",
+                "run_id": "eng-1",
                 "description": "Add profile page",
                 "story_id": "story-1",
                 "planning_task_id": "task-2",
@@ -360,6 +365,7 @@ class TestEngineeringConsumerStoryWorker:
                 "project_id": "proj-1",
                 "telegram_chat_id": "u-1",
                 "action": "feature",
+                "run_id": "eng-1",
                 "description": "Standalone fix",
                 "skip_deploy": True,
             },

@@ -128,7 +128,7 @@ class WorkerCommandConsumer:
                 host_codex_home=cmd.config.host_codex_home or settings.HOST_CODEX_HOME,
                 api_key=cmd.config.api_key,
                 worker_type=cmd.config.worker_type,
-                project_id=cmd.config.project_id,
+                ownership=cmd.config.ownership,
                 repo_id=cmd.config.repo_id,
                 scaffold_config=cmd.config.scaffold_config,
                 branch=cmd.config.branch,

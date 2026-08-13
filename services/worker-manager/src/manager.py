@@ -12,6 +12,7 @@ import httpx
 from redis.asyncio import Redis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
 from shared.redis import decode_redis_fields
@@ -170,10 +171,23 @@ class WorkerManager:
         except Exception as exc:
             raise RuntimeError(f"remote Docker daemon could not prepare worker mounts for {worker_id}: {exc}") from exc
 
+    async def _stamp_ownership(self, worker_id: str, ownership: WorkerOwnership) -> None:
+        """Write who this worker belongs to, before it can do anything.
+
+        The single writer of the fact. Both places that need it early — the
+        project lock in `create_worker_with_capabilities` and container creation
+        below — call this with the same required `ownership` value threaded down
+        from the create request, so the record cannot be half-written or
+        disagree with the container's labels.
+        """
+        await self.redis.hset(f"worker:meta:{worker_id}", mapping=ownership.as_redis_meta())
+
     async def create_worker(
         self,
         worker_id: str,
         image: str,
+        *,
+        ownership: WorkerOwnership,
         env_vars: Dict[str, str] = None,
         volumes: Dict[str, Dict[str, str]] = None,
         network_name: Optional[str] = None,
@@ -187,6 +201,11 @@ class WorkerManager:
         Create and start a new worker container.
 
         Args:
+            ownership: the project and run this worker belongs to. Applied to the
+                container's labels and written to `worker:meta:<worker_id>` before
+                the container exists, so a worker that dies immediately — and whose
+                Redis metadata is deleted with it — is still attributable from
+                `docker ps -a --filter label=...` alone.
             network_name: Primary Docker network to attach to. If None, uses WORKER_NETWORK.
             create_dev_network: If True, also create a dev_proj_<worker_id> network and
                                 connect the container to it as a second network.
@@ -209,8 +228,9 @@ class WorkerManager:
         await self.ensure_image(image)
 
         labels = json.loads(settings.WORKER_DOCKER_LABELS)
-        labels["com.codegen.worker.id"] = worker_id
-        labels["com.codegen.type"] = "worker"
+        labels[WorkerLabel.ID.value] = worker_id
+        labels[WorkerLabel.TYPE.value] = "worker"
+        labels.update(ownership.as_labels())
 
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         dev_network = f"dev_proj_{worker_id}"
@@ -222,9 +242,16 @@ class WorkerManager:
             container_name=container_name,
             network=network_name,
             dev_network=dev_network if create_dev_network else None,
+            project_id=ownership.project_id,
+            run_id=ownership.run_id,
         )
 
         try:
+            # Ownership is written before the container exists, on both sides.
+            # A container that dies in its first second has already carried its
+            # labels since creation, and the metadata was already there.
+            await self._stamp_ownership(worker_id, ownership)
+
             await self.docker.remove_container(container_name, force=True)
 
             if create_dev_network:
@@ -322,7 +349,11 @@ class WorkerManager:
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
         finally:
             await self._unregister_broker_worker(worker_id)
-            if project_id:
+            # Only the worker that took the workspace lock releases it. A QA
+            # executor records the same project as its owner but never held the
+            # lock, and releasing one it does not hold would free a developer
+            # worker's workspace under it.
+            if project_id and not is_qa_worker:
                 logger.info("workspace_preserved", project_id=project_id, worker_id=worker_id)
                 await self.redis.srem("workspace:active_projects", project_id)
 
@@ -480,15 +511,20 @@ class WorkerManager:
     _TERMINAL_STATUSES = frozenset({WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED})
 
     async def _check_project_lock(self, project_id: str) -> str | None:
-        """Check if another worker is active for this project.
+        """Check if another developer worker is active for this project.
 
         Returns worker_id if locked, None if free.
         Auto-cleans stale Redis keys for workers in terminal states (DEAD/FAILED/STOPPED).
+
+        A QA executor records the same project — that is its ownership — but holds
+        no workspace, so it is not a lock holder and is skipped here.
         """
         if not await self.redis.sismember("workspace:active_projects", project_id):
             return None
         async for key in self.redis.scan_iter(match="worker:meta:*"):
             meta = decode_redis_fields(await self.redis.hgetall(key))
+            if meta.get("worker_type") == QA_WORKER_TYPE:
+                continue
             if meta.get("project_id") == project_id:
                 worker_id = key.split(":")[-1]
                 status = await self.redis.hget(f"worker:status:{worker_id}", "status")
@@ -515,6 +551,7 @@ class WorkerManager:
         worker_id: str,
         capabilities: List[str],
         base_image: str,
+        ownership: WorkerOwnership,
         agent_type: AgentType = AgentType.CLAUDE,
         prefix: str | None = None,
         instructions: str | None = None,
@@ -525,7 +562,6 @@ class WorkerManager:
         api_key: str | None = None,
         env_vars: Dict[str, str] = None,
         worker_type: str = "developer",
-        project_id: str | None = None,
         repo_id: str | None = None,
         scaffold_config: "ScaffoldConfig | None" = None,
         branch: str | None = None,
@@ -533,14 +569,21 @@ class WorkerManager:
         """
         Create worker with specified capabilities and agent config.
         Injects instructions (-> instruction file) and task_content (-> TASK.md) if provided.
+
+        `ownership` is the project and run the requester made this worker for. It
+        is required — a worker nobody owns cannot be attributed once it is dead —
+        and it is written here, before any of the slow work, so a creation that
+        fails halfway still leaves an attributable record.
         """
         logger.info(
             "create_worker_with_capabilities",
             worker_id=worker_id,
-            project_id=project_id,
+            project_id=ownership.project_id,
+            run_id=ownership.run_id,
             worker_type=worker_type,
         )
         is_qa_worker = worker_type == QA_WORKER_TYPE
+        project_id = ownership.project_id
         # Written before anything is created, for two reasons that both need it
         # early. It is what `delete_worker` reads to know a QA workspace is
         # scratch it must remove — a creation that fails halfway would otherwise
@@ -549,6 +592,10 @@ class WorkerManager:
         # to exist before the credential does, because a request whose worker
         # type is unrecorded is refused.
         await self.redis.hset(f"worker:meta:{worker_id}", "worker_type", worker_type)
+        # And with it, who the worker is for. Written here rather than at
+        # container creation because everything between the two can fail, and a
+        # worker that never reached a container is still one this run made.
+        await self._stamp_ownership(worker_id, ownership)
 
         network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
 
@@ -558,7 +605,11 @@ class WorkerManager:
             validation_path = settings.HOST_CODEX_VALIDATION_PATH or host_codex_home
             validate_codex_host_session(validation_path)
 
-        if project_id:
+        # The workspace lock is a developer-worker concern: it guards the one
+        # persistent checkout a project has. A QA executor owns the same project
+        # but touches no workspace of it, so it neither takes the lock nor is
+        # blocked by one — its ownership is a record, not a claim.
+        if not is_qa_worker:
             existing_worker = await self._check_project_lock(project_id)
             if existing_worker:
                 raise RuntimeError(f"Project {project_id} already has active worker {existing_worker}")
@@ -569,8 +620,8 @@ class WorkerManager:
             if failure_count >= 3:
                 raise RuntimeError(f"Max retries (3) exceeded for project {project_id}. Reset with: DEL {failure_key}")
 
-            # Register project lock early so spawner gets worker_id before image build
-            await self.redis.hset(f"worker:meta:{worker_id}", "project_id", project_id)
+            # Register the project lock early so the spawner gets worker_id before
+            # the image build. Ownership itself is already written, above.
             await self.redis.sadd("workspace:active_projects", project_id)
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.BUILDING})
 
@@ -667,7 +718,9 @@ class WorkerManager:
                     internet_network=settings.WORKER_NETWORK,
                     configured_backends=self._qa_backend_setting(agent_type),
                     direct=qa_egress.direct_hosts(container_env, settings.WORKER_BROKER_URL),
-                    labels=json.loads(settings.WORKER_DOCKER_LABELS),
+                    # The run's proxy belongs to the run that opened it, and is
+                    # labelled with the same ownership as the executor it serves.
+                    labels={**json.loads(settings.WORKER_DOCKER_LABELS), **ownership.as_labels()},
                 )
                 container_env.update(egress.env_vars)
 
@@ -686,6 +739,7 @@ class WorkerManager:
             container_id = await self.create_worker(
                 worker_id=worker_id,
                 image=image_tag,
+                ownership=ownership,
                 env_vars=container_env,
                 volumes=volumes,
                 network_name=network_name,
@@ -793,8 +847,9 @@ class WorkerManager:
                 # that has to improvise. Say it failed.
                 await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
                 await self.redis.set(f"worker:error:{worker_id}", str(exc))
-            # Early lock was registered — clean it up on failure
-            if project_id:
+            # Early lock was registered — clean it up on failure. A QA executor
+            # took no lock and must not release a developer worker's.
+            if not is_qa_worker:
                 await self.redis.srem("workspace:active_projects", project_id)
                 await self.redis.delete(
                     f"worker:status:{worker_id}",

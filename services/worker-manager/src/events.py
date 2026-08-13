@@ -16,6 +16,7 @@ import structlog
 from shared.contracts.queues.worker_result import WorkerFailedResult
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.queues.worker import WorkerLabel
 
 logger = structlog.get_logger()
 
@@ -42,7 +43,7 @@ class DockerEventsListener:
             filters={
                 "type": "container",
                 "event": "die",
-                "label": "com.codegen.type=worker",
+                "label": f"{WorkerLabel.TYPE.value}=worker",
             },
         )
 
@@ -117,7 +118,7 @@ class DockerEventsListener:
         actor = event.get("Actor", {})
         attributes = actor.get("Attributes", {})
 
-        worker_id = attributes.get("com.codegen.worker.id")
+        worker_id = attributes.get(WorkerLabel.ID.value)
         if not worker_id:
             return
 

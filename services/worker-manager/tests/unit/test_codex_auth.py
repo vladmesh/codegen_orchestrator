@@ -6,7 +6,13 @@ import pytest
 
 from src.codex_auth import validate_codex_host_session
 from src.manager import WorkerManager
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
+
+
+# Every worker is created for somebody. These tests are not about who, so they
+# use one owner; the tests that are about ownership name their own.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test")
 
 
 def _write_profile(path, *, auth_mode=0o600, config_mode=0o600):
@@ -54,6 +60,7 @@ async def test_manager_rejects_missing_codex_session_before_image_resolution(tmp
             worker_id="worker-codex",
             capabilities=[],
             base_image="worker-base-codex:latest",
+            ownership=_OWNERSHIP,
             agent_type=AgentType.CODEX,
             host_codex_home=str(tmp_path / "missing"),
         )

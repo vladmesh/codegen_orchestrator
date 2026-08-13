@@ -8,6 +8,7 @@ from shared.contracts.queues.worker import (
     DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 from .conftest import (
@@ -23,6 +24,10 @@ async def cleanup_worker(redis_client, worker_id: str | None):
         return
     cmd = DeleteWorkerCommand(request_id=f"cleanup-{worker_id}", worker_id=worker_id)
     await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
+
+
+# Every worker is created for somebody; these tests are not about who.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
 
 
 @pytest.mark.integration
@@ -45,6 +50,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )
@@ -95,6 +101,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_OWNERSHIP,
                 repo_id=scaffolded_workspace,
             ),
         )

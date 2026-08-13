@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from shared.contracts.base import QueueMeta
 from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
@@ -12,6 +12,8 @@ __all__ = [
     "QA_EXECUTOR_AGENT_TYPES",
     "WorkerCapability",
     "WorkerChannels",
+    "WorkerLabel",
+    "WorkerOwnership",
     "ScaffoldConfig",
     "WorkerConfig",
     "CreateWorkerCommand",
@@ -40,6 +42,51 @@ class WorkerChannels(StrEnum):
     # Patterns
     INPUT_PATTERN = "worker:{worker_id}:input"
     OUTPUT_PATTERN = "worker:{worker_id}:output"
+
+
+class WorkerLabel(StrEnum):
+    """Docker labels every dynamic worker container carries.
+
+    They are applied by the one path that creates workers, at creation, so they
+    exist before the container can exit and survive everything that happens
+    after: the container's death, its removal from the API's view, and the
+    deletion of its Redis metadata. A worker whose Redis record is already gone
+    is still found and attributed with `docker ps -a --filter label=...`.
+    """
+
+    ID = "com.codegen.worker.id"
+    TYPE = "com.codegen.type"
+    PROJECT = "com.codegen.project.id"
+    RUN = "com.codegen.run.id"
+
+
+class WorkerOwnership(BaseModel):
+    """Who a dynamic worker belongs to: one project, one run.
+
+    Ownership is a required fact of a create request, not something observed
+    afterwards. Whoever asks for a worker knows both — a developer worker is
+    spawned inside an engineering run for a project, a QA executor inside a QA
+    run for a project — so the answer is written down when the worker is made
+    and never inferred by scanning Docker or Redis later.
+
+    Both fields are non-empty by contract: an "unowned" worker is exactly the
+    thing that cannot be attributed after it dies, so it is refused on arrival
+    instead of becoming an untraceable container.
+    """
+
+    project_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+
+    def as_labels(self) -> dict[str, str]:
+        """The ownership half of a worker container's Docker labels."""
+        return {
+            WorkerLabel.PROJECT.value: self.project_id,
+            WorkerLabel.RUN.value: self.run_id,
+        }
+
+    def as_redis_meta(self) -> dict[str, str]:
+        """The same two facts, as `worker:meta:<worker_id>` fields."""
+        return {"project_id": self.project_id, "run_id": self.run_id}
 
 
 class ScaffoldConfig(BaseModel):
@@ -71,7 +118,12 @@ class WorkerConfig(BaseModel):
     host_claude_dir: str | None = None
     host_codex_home: str | None = None
     api_key: str | None = None
-    project_id: str | None = None  # Project ID for workspace persistence
+    # Who this worker belongs to. Required for every worker, developer and QA
+    # alike: it is what worker-manager stamps on the container and writes to the
+    # worker's Redis metadata at creation. `ownership.project_id` is also the
+    # project a developer worker's workspace belongs to — there is no second
+    # project field, because two of them could disagree.
+    ownership: WorkerOwnership
     repo_id: str | None = None  # Repository ID — mount pre-scaffolded workspace
     scaffold_config: ScaffoldConfig | None = None  # Scaffold phase config (copier + make setup)
     branch: str | None = None  # Story branch to checkout (e.g. "story/{story_id}")

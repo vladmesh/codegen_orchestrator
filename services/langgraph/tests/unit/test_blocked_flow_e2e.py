@@ -54,6 +54,7 @@ class TestBlockedFlowEndToEnd:
                     "config": {"description": "Test", "modules": ["backend"]},
                 },
                 "action": "feature",
+                "run_id": "eng-1",
                 "description": "Add payment processing",
             }
         )

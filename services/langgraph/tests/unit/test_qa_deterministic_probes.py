@@ -32,6 +32,7 @@ import pytest
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.dto.telegram import BotLiveness, BotLivenessState
 from shared.contracts.queues.qa import QAOutcome, QAServerInfo
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from src.clients.qa_worker import QAExecutorRun
 from src.consumers._qa_runner import (
@@ -189,6 +190,7 @@ async def _run_qa(conn: FakeConn, executor, tmp_path, established_facts=None):
     ):
         return await run_qa_centrally(
             target=TARGET,
+            ownership=WorkerOwnership(project_id="proj-qa", run_id="qa-run-1"),
             fleet_ssh_key="fleet-key",
             acceptance_criteria="- the bot answers /start",
             runtime=RUNTIME,

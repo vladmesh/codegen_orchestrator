@@ -7,9 +7,14 @@ from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 TEST_TIMEOUT = 60
+
+
+# Every worker is created for somebody; these tests are not about who.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
 
 
 @pytest.mark.integration
@@ -25,6 +30,7 @@ async def test_factory_cli_installed(redis_client, docker_client, scaffolded_wor
         instructions="Test",
         allowed_commands=["*"],
         capabilities=[],
+        ownership=_OWNERSHIP,
         auth_mode="api_key",
         api_key="sk-test-factory-key",
         repo_id=scaffolded_workspace,

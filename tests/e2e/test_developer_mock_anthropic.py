@@ -19,6 +19,7 @@ from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 pytestmark = [pytest.mark.e2e, pytest.mark.asyncio]
@@ -39,6 +40,10 @@ async def wait_for_stream_message(
     raise TimeoutError(f"No message on {stream} within {timeout}s")
 
 
+# Every worker is created for somebody; these tests are not about who.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
+
+
 class TestDeveloperWorkerMockAnthropic:
     """Tests for Developer Worker integration with Mock Anthropic server."""
 
@@ -56,6 +61,7 @@ class TestDeveloperWorkerMockAnthropic:
                 api_key="test-key",
                 allowed_commands=[],
                 capabilities=["git"],
+                ownership=_OWNERSHIP,
                 env_vars={
                     "ANTHROPIC_BASE_URL": "http://172.30.0.40:8000",
                 },

@@ -66,6 +66,7 @@ class TestDeveloperNodeWorkerId:
             {
                 "project_spec": _project(status=ProjectStatus.ACTIVE.value),
                 "action": "create",
+                "run_id": "eng-1",
                 "errors": [],
             }
         )

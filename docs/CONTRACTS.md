@@ -1515,6 +1515,32 @@ class WorkerChannels(StrEnum):
     OUTPUT_PATTERN = "worker:{worker_id}:output"
 
 
+class WorkerLabel(StrEnum):
+    """Docker labels every dynamic worker container carries, applied at creation."""
+    ID = "com.codegen.worker.id"
+    TYPE = "com.codegen.type"
+    PROJECT = "com.codegen.project.id"
+    RUN = "com.codegen.run.id"
+
+
+class WorkerOwnership(BaseModel):
+    """Who a dynamic worker belongs to. Both halves are non-empty by contract.
+
+    Written by worker-manager onto the container's labels and into
+    `worker:meta:<worker_id>` at creation, before the container can exit. It is
+    the only record that survives the worker: `delete_worker` removes the
+    container first and deletes the Redis metadata afterwards, so a dead
+    worker is attributed from `docker ps -a --filter label=...` alone.
+
+    The run is the run row the worker was made inside: the engineering run id
+    for a developer worker (`EngineeringMessage.task_id`), the QA run id for a
+    QA executor (`QAMessage.run_id`). `ownership.project_id` is also the project
+    whose workspace a developer worker locks — there is no second project field.
+    """
+    project_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+
+
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
     name: str
@@ -1532,7 +1558,7 @@ class WorkerConfig(BaseModel):
     host_claude_dir: str | None = None
     host_codex_home: str | None = None
     api_key: str | None = None
-    project_id: str | None = None             # Workspace persistence (developer)
+    ownership: WorkerOwnership                # Required: the project and run this worker is for
     repo_id: str | None = None                # Mount pre-scaffolded workspace (developer)
     scaffold_config: ScaffoldConfig | None = None
     branch: str | None = None                 # Story branch to checkout

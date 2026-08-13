@@ -29,6 +29,7 @@ from shared.contracts.queues.worker import (
     WorkerCapability,
     WorkerChannels,
     WorkerConfig,
+    WorkerOwnership,
 )
 
 # Service addresses inside codegen_internal network
@@ -75,6 +76,10 @@ async def wait_for_response(
 
 
 # --- Fixtures ---
+
+
+# Every worker is created for somebody; these tests are not about who.
+_OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="run-test")
 
 
 @pytest.fixture
@@ -150,6 +155,7 @@ class TestWorkerLifecycle:
                 instructions="Smoke test worker. Do nothing.",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
+                ownership=_OWNERSHIP,
             ),
         )
         await redis_client.xadd(WORKER_COMMANDS, {"data": command.model_dump_json()})
