@@ -30,6 +30,7 @@ jobs:
 
             compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
             report="/tmp/codegen-agent-matrix-${{ github.run_id }}.tsv"
+            matrix_api_container="codegen-agent-matrix-api-${{ github.run_id }}"
             printf 'qa_agent\tworker_agent\tstatus\tduration_seconds\n' > "$report"
 
             set_qa_executor() {
@@ -60,16 +61,37 @@ jobs:
               test "$actual" = "$executor"
             }
 
-            restore_default() {
+            cleanup_matrix() {
+              docker rm -f "$matrix_api_container" >/dev/null 2>&1 || true
               set_qa_executor codex || true
             }
-            trap restore_default EXIT
+            trap cleanup_matrix EXIT
 
             internal_key=$("${compose[@]}" exec -T api printenv INTERNAL_API_KEY)
             test -n "$internal_key"
             for fallback_var in QA_LLM_MODEL QA_LLM_BASE_URL QA_LLM_API_KEY; do
               test -z "$("${compose[@]}" exec -T qa-worker printenv "$fallback_var")"
             done
+
+            # Production intentionally does not publish the API port. Start an
+            # isolated second API process for the host-side live harness; it
+            # shares the production network and state, but never recreates the
+            # primary API container or changes Caddy routing.
+            docker rm -f "$matrix_api_container" >/dev/null 2>&1 || true
+            "${compose[@]}" run -d --no-deps \
+              --name "$matrix_api_container" \
+              -p 127.0.0.1:8000:8000 api >/dev/null
+            for attempt in $(seq 1 60); do
+              if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+                break
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                docker logs "$matrix_api_container"
+                exit 1
+              fi
+              sleep 1
+            done
+
             matrix_failed=0
             for qa_agent in claude codex; do
               set_qa_executor "$qa_agent"
@@ -93,7 +115,7 @@ jobs:
               done
             done
 
-            restore_default
+            cleanup_matrix
             trap - EXIT
             printf '\nProduction agent matrix summary:\n'
             cat "$report"
