@@ -450,7 +450,26 @@ the host cannot back up. Every task is a state, so re-running it changes nothing
 Deploy is triggered manually via GitHub Actions:
 
 1. Go to Actions > "Deploy to Production" > Run workflow
-2. The workflow: writes `.env` and secret files, pulls code, builds images, pulls worker images from GHCR, starts services, runs migrations, verifies health
+2. The workflow: writes `.env` and secret files, checks out the dispatched revision, pulls and
+   verifies the worker base images of that revision, builds service images, starts services, runs
+   migrations, verifies health
+
+### Worker base images are a release chain
+
+Every green commit on `main` publishes the whole worker chain to GHCR under that commit's SHA
+(`publish-worker-images` in `.github/workflows/ci.yml`, via `infra/scripts/publish-worker-images.sh`).
+The tag is the SHA; nothing publishes a mutable `:latest`.
+
+The deploy pulls exactly the tag of the revision it is deploying and checks that every image
+carries `org.codegen.worker_source_hash` equal to the source hash of that checkout
+(`infra/scripts/pull-worker-images.sh`). A SHA that was never published, an image without the
+label, or an image built from other sources fails the deploy — with the image, the expected hash
+and the found hash — before `compose up -d` touches what is running. The deploy run's summary and
+artifact record the deployed SHA and the digests it verified.
+
+So a commit can only be deployed once its CI publish job has run for it. Deploying an unpublished
+revision is a refusal, not a fallback to yesterday's workers: that fallback is what put stale
+workers onto a green deploy of an exact SHA (GitHub #278).
 
 ## First-Time Setup
 

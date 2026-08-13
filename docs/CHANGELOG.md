@@ -2,6 +2,16 @@
 
 ## 2026-08-13
 
+- Worker base images are one immutable release chain keyed by the git SHA. Every green commit on
+  `main` builds common and then the claude, codex and factory images from that exact common, and
+  publishes all four to GHCR under that commit's SHA, recording the published digests, the SHA and
+  the source hash as a run artifact. Nothing publishes a mutable `:latest` any more.
+- The production deploy pulls the worker images of the revision it deploys by exact tag — there is
+  no default tag and no fallback — and verifies that each one carries the source hash of the
+  checked-out revision. A missing image, a missing label or a stale label fails the deploy naming
+  the image, the expected hash and the found hash, before `compose up -d` changes anything that is
+  running; the deployed SHA and verified digests are recorded in the run summary and an artifact.
+
 - Added a production acceptance matrix for the two subscription-backed developer and QA
   executors. The live mega can now select a Claude or Codex developer, forces exploratory QA
   instead of the deterministic health-only shortcut, and verifies the active QA selector. The

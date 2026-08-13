@@ -529,3 +529,48 @@ jobs:
             echo "Required CI gate failed"
             exit 1
           fi
+
+  # The publishing half of the worker base image release chain. Every green commit on
+  # main gets its own immutable set of worker images, tagged with that commit's SHA;
+  # the production deploy pulls exactly the tag of the revision it deploys and refuses
+  # anything else (infra/scripts/pull-worker-images.sh). Nothing publishes a mutable
+  # :latest: that is what put stale workers on a green deploy in GitHub #278.
+  publish-worker-images:
+    name: Publish Worker Base Images
+    runs-on: ubuntu-latest
+    needs: merge-gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Deliberately no buildx builder: the chain is built with the runner's own
+      # docker daemon, so the built images can be inspected and pushed by tag.
+      - name: Build and publish the worker chain
+        run: bash infra/scripts/publish-worker-images.sh
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+          GIT_SHA: ${{ github.sha }}
+          DIGEST_FILE: ${{ runner.temp }}/worker-images.json
+
+      - name: Upload published worker image digests
+        uses: actions/upload-artifact@v7
+        with:
+          name: worker-images-${{ github.sha }}
+          path: ${{ runner.temp }}/worker-images.json
+          if-no-files-found: error
+
+      - name: Record the release in the run summary
+        run: |
+          set -euo pipefail
+          {
+            echo "### Worker base images published"
+            echo
+            echo '```json'
+            cat "${RUNNER_TEMP}/worker-images.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
