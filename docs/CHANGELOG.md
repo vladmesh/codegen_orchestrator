@@ -2,6 +2,15 @@
 
 ## 2026-08-13
 
+- The periodic orphan sweep in `services/worker-manager/src/garbage_collector.py` never removes a
+  container that is still alive. Redis was its only evidence, so a lost `worker:status:*` — a flush,
+  a restart without persistence, a wiped volume — made every live worker of every run look like an
+  orphan and the 30-minute sweep deleted it mid-run. A container in `running`, `paused` or
+  `restarting` state with no Redis entry is now kept and logged (`orphan_gc_keeping_live_container`)
+  instead; exited and dead orphans are reclaimed exactly as before. The protection travels with the
+  worker id: a live worker's QA-egress proxy and its `dev_proj_<worker id>` network are kept too, and
+  a proxy that is itself still serving is kept whatever state its worker is in.
+
 - A run's cleanup is driven by its ownership labels, not by a reconstructed context.
   `tests/live/run_cleanup.py` takes a run id and removes that run's worker containers, its
   QA-egress sidecars and its dev networks with `docker ps -a`/`docker network ls --filter
