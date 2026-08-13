@@ -2906,3 +2906,20 @@ def test_live_modules_do_not_compose_auth_headers_of_their_own():
         source = (live_dir / name).read_text()
         assert "AUTH_HEADERS" not in source, f"{name} composes the user header itself"
         assert "internal_headers" not in source, f"{name} composes the internal key itself"
+
+
+def test_production_agent_matrix_exposes_only_an_ephemeral_api():
+    """The production override hides port 8000, so the host harness needs a sidecar.
+
+    The matrix must not recreate or expose the primary API merely to run tests,
+    and the temporary listener must be covered by the workflow's EXIT cleanup.
+    """
+    root = resolve_repo_root(Path(__file__))
+    workflow = (root / ".github/workflows/agent-matrix.yml").read_text(encoding="utf-8")
+
+    assert 'matrix_api_container="codegen-agent-matrix-api-${{ github.run_id }}"' in workflow
+    assert "trap cleanup_matrix EXIT" in workflow
+    assert 'docker rm -f "$matrix_api_container"' in workflow
+    assert "-p 127.0.0.1:8000:8000 api" in workflow
+    assert "curl -fsS http://127.0.0.1:8000/health" in workflow
+    assert "up -d --no-deps --force-recreate api" not in workflow
