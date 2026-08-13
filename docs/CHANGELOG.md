@@ -11,6 +11,12 @@
   vanishing point is where the capture belongs. A worker created and deleted before any observer
   looked at it now reaches its run's artifact with its exit code, not as a stated miss and not as an
   omission.
+- Destructive steps are ordered by how much attributability they destroy. Removing the container
+  always proceeds — cleanup is never wedged by observability — but `worker:meta:<id>` is the
+  worker's last durable name, so it is deleted only once the removal record exists. When the record
+  cannot be stored, `delete_worker` keeps the metadata and logs `worker_meta_retained_for_attribution`
+  instead: the run's ownership manifest can still name the worker as an explicit missed capture, and
+  a leaked key a label sweep collects later beats a worker no source can name.
 - Capture never owns cleanup. It is bounded by `WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS`, it raises
   nothing at the deletion, and every fact it could not read becomes a stated reason in the record
   rather than an absence: a worker whose ending cannot be read is still removed. Records are kept

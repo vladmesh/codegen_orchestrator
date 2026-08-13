@@ -387,7 +387,7 @@ class WorkerManager:
         meta: Dict[str, str] | None,
         ownership: WorkerOwnership,
         reason: str | None,
-    ) -> None:
+    ) -> bool:
         """Write down how this worker ended, before the container that knows is removed.
 
         This is the last instant the fact exists. Docker forgets a removed
@@ -401,6 +401,9 @@ class WorkerManager:
         caller, and a fact it could not read becomes a stated reason rather than
         an absence: a worker that cannot be captured is still removed, and
         cleanup is never wedged by observability.
+
+        Returns whether a durable record now exists, which is what the caller
+        needs to know before it deletes the worker's last durable name.
         """
         timeout = settings.WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS
         read = self._read_removal_evidence(worker_id, container_name, meta, ownership, reason)
@@ -428,17 +431,20 @@ class WorkerManager:
                 exit_code=evidence.exit_code.value,
                 exit_code_missed=evidence.exit_code.missed_reason,
             )
+            return True
         except Exception as exc:  # noqa: BLE001 — see above
             store.close()
-            # Nothing else can be done here: the record is the durable half and
-            # it is what failed. The run's collector reports this worker from
-            # its ownership manifest instead, as an explicit missed capture.
+            # The record is the durable half and it is what failed. Saying so in
+            # the log is not enough — a log line is not a source the run's
+            # artifact reads — so the caller keeps `worker:meta:<id>` instead,
+            # and the worker stays nameable to its run.
             logger.warning(
                 "worker_removal_evidence_not_stored",
                 worker_id=worker_id,
                 run_id=ownership.run_id,
                 error=str(exc),
             )
+            return False
 
     def _unreadable_removal_evidence(
         self,
@@ -594,6 +600,12 @@ class WorkerManager:
         # what the removal record below is filed under, and it is only knowable
         # from the metadata this method is about to delete.
         ownership = self._ownership_from_meta(meta)
+        # `worker:meta:<id>` is this worker's last durable name: once it is gone
+        # and the container with it, nothing left can say the worker existed.
+        # It is therefore deleted only after the removal record exists — a
+        # worker whose metadata was never keyed to a run has no record to wait
+        # for and nothing a leaked key could be attributed to.
+        keep_meta = False
         if ownership is None:
             logger.warning(
                 "worker_removal_evidence_unattributable",
@@ -641,7 +653,7 @@ class WorkerManager:
             # looked would be unattributable for good. This never raises and is
             # bounded, so it cannot stop or stall the removal below.
             if ownership is not None:
-                await self._capture_removal_evidence(worker_id, container_name, meta, ownership, reason)
+                keep_meta = not await self._capture_removal_evidence(worker_id, container_name, meta, ownership, reason)
 
             await self.docker.remove_container(container_name, force=True)
 
@@ -669,13 +681,24 @@ class WorkerManager:
 
             keys_to_delete = [
                 f"worker:status:{worker_id}",
-                f"worker:meta:{worker_id}",
                 f"worker:error:{worker_id}",
                 f"worker:broker:{worker_id}",
                 f"worker:last_activity:{worker_id}",
                 f"worker:{worker_id}:input",
                 f"worker:{worker_id}:output",
             ]
+            if keep_meta:
+                # A leaked key is a good failure and a silent omission is not:
+                # the run's ownership manifest can still name this worker, and
+                # the residue is exactly what a label sweep collects later.
+                logger.warning(
+                    "worker_meta_retained_for_attribution",
+                    worker_id=worker_id,
+                    run_id=ownership.run_id,
+                    error="no removal record could be stored, so the worker keeps its last durable name",
+                )
+            else:
+                keys_to_delete.append(f"worker:meta:{worker_id}")
             await self.redis.delete(*keys_to_delete)
 
     async def pause_worker(self, worker_id: str) -> None:

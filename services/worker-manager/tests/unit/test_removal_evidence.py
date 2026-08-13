@@ -248,6 +248,39 @@ async def test_a_record_that_cannot_be_stored_never_fails_the_deletion():
     assert f"remove:{CONTAINER}" in order
 
 
+async def test_a_record_that_cannot_be_stored_keeps_the_workers_last_durable_name():
+    """The two destructive steps are not equal, and only one of them may proceed.
+
+    The container goes — cleanup is never wedged by observability. But deleting
+    `worker:meta:<id>` after a failed store would leave no source at all able to
+    name this worker, which is the silent omission this evidence exists to end.
+    So the metadata stays, and a leaked key is the good failure: the run's
+    ownership manifest still reaches it, and a label sweep collects it later.
+    """
+    redis = aioredis.FakeRedis(decode_responses=True)
+    order: list[str] = []
+    docker = docker_double(order)
+    manager = WorkerManager(redis=redis, docker_client=docker)
+    await owned_worker(redis)
+    original_hset = redis.hset
+
+    async def refuse(key, *args, **kwargs):
+        if key.startswith("worker:evidence:"):
+            raise RuntimeError("redis is out of memory")
+        return await original_hset(key, *args, **kwargs)
+
+    redis.hset = refuse
+
+    await manager.delete_worker(WORKER_ID, reason="failed")
+
+    assert f"remove:{CONTAINER}" in order
+    assert await stored_record(redis) is None
+    meta = await redis.hgetall(f"worker:meta:{WORKER_ID}")
+    assert meta["run_id"] == OWNERSHIP.run_id
+    # Only the name is kept. Everything else this deletion erases still goes.
+    assert await redis.hgetall(f"worker:status:{WORKER_ID}") == {}
+
+
 async def test_a_worker_whose_metadata_names_no_owner_is_still_removed():
     """There is no run to file it under, and that must not stop the cleanup."""
     redis = aioredis.FakeRedis(decode_responses=True)

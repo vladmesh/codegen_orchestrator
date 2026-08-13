@@ -91,7 +91,9 @@ and it carries facts: a worker created and deleted before any pass ran still arr
 code, as `discovered_by: "delete_capture"`.
 
 The run's ownership manifest is the third and weakest source, for a worker in neither of the other
-two — no container and no record, because the capture itself never reached Redis. It contributes an
+two — no container and no record, because the capture itself never reached Redis. That case is why
+`delete_worker` keeps `worker:meta:<id>` when it could not store the record: the manifest reads that
+metadata, so the worker is still nameable when the container is gone. It contributes an
 explicit `{"status": "missed", "reason": …}` record and nothing else. A worker is never omitted — an
 omitted worker reads as "nothing ran", which is the failure this evidence exists to end. Evidence
 collection never fails a run: a probe error, an unreadable removal record, or a failed ownership

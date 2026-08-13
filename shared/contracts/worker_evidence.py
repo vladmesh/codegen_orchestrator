@@ -20,6 +20,13 @@ read is still removed, and its record says which fact was lost and why. That is
 the point of `RemovalFact` — no field here is ever a bare empty value, because
 "the agent printed nothing" and "the log could not be read in time" are
 different findings and an artifact that cannot tell them apart is worthless.
+
+Cleanup is never wedged by observability, but the two destructive steps are not
+equal: removing the container frees resources and always proceeds, while
+deleting `worker:meta:<id>` destroys the worker's last durable name. So the
+metadata is deleted only once this record exists. When the record cannot be
+stored, `delete_worker` keeps `worker:meta` instead — a leaked key a label sweep
+collects later, rather than a worker no source can name.
 """
 
 from __future__ import annotations

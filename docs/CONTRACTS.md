@@ -1574,6 +1574,9 @@ class WorkerOwnership(BaseModel):
 # `delete_worker`'s deletion of `worker:meta:<id>` does not touch. Retention is
 # WORKER_REMOVAL_EVIDENCE_TTL_SECONDS; the capture is bounded by
 # WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS and never fails or delays a deletion.
+# The container is removed either way; `worker:meta:<id>` is deleted only once
+# this record exists, so a worker whose record could not be stored keeps its
+# last durable name instead of being silently omitted from its run.
 
 class RemovalFact(BaseModel):
     """One fact read at removal, or the stated reason it could not be read.

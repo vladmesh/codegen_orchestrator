@@ -260,6 +260,65 @@ class TestEvidenceFollowsTheRunLabel:
             assert worker[field]["value"] is None
             assert "never listed its container" in worker[field]["reason"]
 
+    async def test_a_worker_whose_removal_record_failed_still_reaches_its_artifact(
+        self, redis_client, docker_client, scaffolded_workspace, tmp_path
+    ):
+        """The last durable name is kept when the durable record cannot be written.
+
+        The record's own storage is the half that can fail, and when it does the
+        container is removed anyway — cleanup is never wedged by observability.
+        What must not also happen is the deletion of `worker:meta:<id>`: with the
+        container gone, no removal record and no metadata, nothing left could
+        name this worker and the run's artifact would read as if it never ran.
+
+        Nothing is sampled while the worker lives and no worker id is handed to
+        the collector: the ownership manifest is read from the metadata
+        worker-manager itself declined to delete.
+        """
+        run_evidence = _run_evidence()
+        ownership = _fresh_ownership()
+
+        worker_id, _ = await _owned_worker(
+            redis_client, docker_client, scaffolded_workspace, ownership
+        )
+        # A genuine store failure inside the real worker-manager: the run's
+        # evidence key already holds a string, so the record's HSET is refused
+        # by Redis itself rather than by a patched client.
+        evidence_key = removed_worker_evidence_key(ownership.run_id)
+        await redis_client.set(evidence_key, "not a hash")
+
+        await _delete_through_worker_manager(redis_client, worker_id)
+
+        assert _by_labels(docker_client, **{WorkerLabel.RUN.value: ownership.run_id}) == []
+        meta = await redis_client.hgetall(f"worker:meta:{worker_id}")
+        assert meta["run_id"] == ownership.run_id
+        # The poison is removed before the run reads: what the collector must
+        # face is an empty record set, which is what the failed store left.
+        await redis_client.delete(evidence_key)
+
+        artifact = _artifact_for(
+            run_evidence,
+            docker_client,
+            ownership,
+            tmp_path,
+            owned_workers=run_evidence.redis_owned_workers(REDIS_URL, ownership.run_id),
+        )
+
+        assert [worker["worker_id"] for worker in artifact["workers"]] == [worker_id]
+        worker = artifact["workers"][0]
+        assert worker["discovered_by"] == run_evidence.Discovery.OWNERSHIP_MANIFEST.value
+        assert worker["container_present"] is False
+        for field in ("exit_code", "log_tail", "state", "image"):
+            assert worker[field]["status"] == run_evidence.CaptureStatus.MISSED.value
+            assert worker[field]["value"] is None
+            assert worker[field]["reason"]
+        assert artifact["capture_errors"] == []
+
+        # Left behind on purpose, and only this: the leaked name a label sweep
+        # collects later, with everything else the deletion erases gone.
+        assert await redis_client.hgetall(f"worker:status:{worker_id}") == {}
+        await redis_client.delete(f"worker:meta:{worker_id}")
+
     async def test_one_runs_artifact_never_carries_another_runs_worker(
         self, redis_client, docker_client, scaffolded_workspace, tmp_path
     ):

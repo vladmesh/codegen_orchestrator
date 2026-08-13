@@ -429,6 +429,30 @@ def redis_removed_workers(url: str) -> Callable[[str], list[RemovedWorkerEvidenc
     return removed_workers
 
 
+def redis_owned_workers(url: str, run_id: str) -> Callable[[], list[str]]:
+    """Name this run's workers from the metadata worker-manager still holds.
+
+    The ownership manifest's own source, read straight from Redis by a test that
+    can. It matters on exactly one path: a worker whose removal record could not
+    be stored keeps its `worker:meta:<id>`, so that key is the last thing left
+    that can name the worker to its run once the container is gone. It can only
+    ever add a name — every fact about the worker comes from the label query or
+    the removal record.
+    """
+    import redis as redis_sdk  # imported here: the live harness has no redis client
+
+    client = redis_sdk.Redis.from_url(url, decode_responses=True)
+
+    def owned_workers() -> list[str]:
+        owned = []
+        for key in client.scan_iter(match="worker:meta:*"):
+            if client.hget(key, "run_id") == run_id:
+                owned.append(key.removeprefix("worker:meta:"))
+        return sorted(owned)
+
+    return owned_workers
+
+
 def docker_sdk_probe(client, removed_workers: Callable[[str], list[RemovedWorkerEvidence]]):
     """The same probe over a docker SDK client, for a daemon reached by socket.
 
