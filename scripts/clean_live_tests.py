@@ -247,13 +247,18 @@ def cleanup_run_scoped_resources(run_id: str) -> list[str]:
     Evidence first, as everywhere else: one capture pass over what is left of
     the run is taken and retained before anything is removed, and it is that
     pass which decides whether a `worker:meta` key retained for attribution may
-    finally be deleted.
+    finally be deleted. A worker the run's label still lists and the pass could
+    not read is written down as a stated missed capture rather than removed
+    unnamed, and the artifact is merged into rather than replaced — the manifest
+    round-trip below makes a second, poorer pass over the same run once these
+    resources are gone, and it may not unsay what this one recorded.
     """
     live_path = str(Path(ORCHESTRATOR_ROOT) / "tests" / "live")
     if live_path not in sys.path:
         sys.path.insert(0, live_path)
     from run_cleanup import (
         RunCleanupError,
+        account_listed_workers,
         accounted_workers,
         clean_run,
         docker_cli_ops,
@@ -266,6 +271,7 @@ def cleanup_run_scoped_resources(run_id: str) -> list[str]:
     collector = RunEvidenceCollector(run_id=run_id, owned_workers=lambda: ops.meta_workers(run_id))
     try:
         collector.capture()
+        account_listed_workers(collector, ops, run_id)
         retain_evidence(collector, root / ".live-manifests" / "evidence" / f"{run_id}.json")
     except Exception as exc:
         return [f"run {run_id} evidence capture: {exc}"]

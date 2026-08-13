@@ -46,6 +46,24 @@ run's evidence collector holds a record for. A worker with no record keeps its
 name, and the report says so. Nothing here touches
 `worker:evidence:removed:<run id>`: the removal records are the evidence, they
 outlive the cleanup on purpose, and they expire on their own TTL.
+
+**Accounting fences removal; a capture attempt does not.** Two rules make that
+true rather than merely intended.
+
+*One run has one artifact, and it only ever gains.* `retain_evidence` merges into
+`.live-manifests/evidence/<run id>.json` instead of replacing it, keeping the
+record that knows more whenever two passes describe the same worker. Recovery
+runs more than one pass over a run — the label sweep and then the manifest
+round-trip — and the later pass, taken after the container and the metadata are
+already gone, knows strictly less than the one that authorised their removal. A
+sequence of passes may fill a record in; it may never lose one.
+
+*Nothing labelled is removed before its worker is in that artifact.* `clean_run`
+compares every listed container and network against `accounted_workers` and
+leaves in place — loudly, as a `RunCleanupError` — anything whose worker has no
+record. A capture that failed is not a licence to remove: `account_listed_workers`
+is how a caller turns such a failure into a stated missed capture, which names
+the worker and is therefore an acceptable ending. A silent disappearance is not.
 """
 
 from __future__ import annotations
@@ -84,6 +102,29 @@ RETAINED_FOR_EVIDENCE = (
     "kept: this run's evidence has no record for this worker yet, and "
     "`worker:meta` is the last thing that can still name it to its run"
 )
+
+# Said of a labelled resource whose worker the run's evidence does not name. The
+# resource is the last thing that still attributes that worker to this run, so it
+# stays, and the cleanup that wanted it gone is red.
+UNACCOUNTED_FENCE = (
+    "{name} is left in place: this run's evidence holds no record for worker "
+    "{worker_id!r}, so removing it would leave nothing naming that worker"
+)
+
+# Said of a worker a listing named and a capture could not read. It is a record,
+# not an error: the worker is in the artifact with the reason its ending is
+# unknown, which is what makes removing its container an accounted removal.
+UNREADABLE_ENDING = (
+    "this run's evidence pass listed this worker and could not read its ending "
+    "before cleanup removed it: {detail}"
+)
+NO_STATED_CAPTURE_FAILURE = "the capture pass recorded no failure naming this worker"
+
+# `run_evidence.CaptureStatus.CAPTURED`, as it appears in a retained artifact.
+# Spelled out because merging reads the artifact's JSON rather than a collector's
+# objects, and this module imports `run_evidence` only when it needs the harness
+# around it. `test_run_cleanup.py` holds the two spellings together.
+CAPTURED = "captured"
 
 
 class RunCleanupError(AssertionError):
@@ -136,6 +177,9 @@ class RunCleanupReport:
     # Anything a listing returned that does not carry this run's label. Refused,
     # not removed, and loud: a query that selects a neighbour is a defect.
     refused: list[str] = field(default_factory=list)
+    # Anything this run does own and whose worker its evidence cannot name.
+    # Kept, and loud: it is that worker's last attribution to this run.
+    fenced: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -146,6 +190,7 @@ class RunCleanupReport:
             "deleted_meta": sorted(self.deleted_meta),
             "retained_meta": dict(sorted(self.retained_meta.items())),
             "refused": sorted(self.refused),
+            "fenced": sorted(self.fenced),
             "errors": list(self.errors),
         }
 
@@ -190,15 +235,29 @@ def clean_run(
     still attached cannot be removed. Redis comes last: a key is only a name,
     and a name is worth keeping until the thing it named is actually gone.
 
+    **Accounting fences the removal.** A labelled resource is removed only once
+    `accounted_workers` names its worker — the set of worker ids this run's
+    evidence holds a record for, a real ending or a stated missed capture alike.
+    A resource whose worker has no record is the last thing attributing that
+    worker to this run, so it is kept and the cleanup fails. Callers that would
+    rather remove it must first make the miss a record (`account_listed_workers`);
+    a capture that merely failed is not a licence to remove.
+
     Raises `RunCleanupError` if anything could not be removed, if a listing
-    returned a resource belonging to another run, or if the verification pass
-    still selects something for this run.
+    returned a resource belonging to another run, if a resource's worker is not
+    accounted for, or if the verification pass still selects something for this
+    run.
     """
     require_run_id(run_id)
     report = RunCleanupReport(run_id=run_id)
+    containers = list(_owned(ops.list_containers(run_id), run_id, report))
+    networks = list(_owned(ops.list_networks(run_id), run_id, report))
+    unaccounted = _unaccounted(containers + networks, accounted_workers)
     workers: set[str] = set()
 
-    for container in _owned(ops.list_containers(run_id), run_id, report):
+    for container in containers:
+        if _fence(container, unaccounted, report):
+            continue
         if container.worker_id:
             workers.add(container.worker_id)
         reason = ops.remove_container(container.name)
@@ -207,21 +266,43 @@ def clean_run(
         else:
             report.removed_containers.append(container.name)
 
-    for network in _owned(ops.list_networks(run_id), run_id, report):
+    for network in networks:
+        if _fence(network, unaccounted, report):
+            continue
         reason = ops.remove_network(network.name)
         if reason:
             report.errors.append(f"network {network.name}: {reason}")
         else:
             report.removed_networks.append(network.name)
 
-    _clean_worker_keys(ops, run_id, report, workers, accounted_workers)
+    _clean_worker_keys(ops, run_id, report, workers, accounted_workers, unaccounted)
     _verify(ops, run_id, report)
 
-    if report.errors or report.refused:
+    if report.errors or report.refused or report.fenced:
         raise RunCleanupError(
-            f"run {run_id} cleanup failed: " + "; ".join([*report.refused, *report.errors])
+            f"run {run_id} cleanup failed: "
+            + "; ".join([*report.refused, *report.fenced, *report.errors])
         )
     return report
+
+
+def _unaccounted(
+    resources: Iterable[LabelledResource], accounted_workers: set[str] | frozenset[str]
+) -> set[str]:
+    """The worker ids this run owns resources for and has no evidence record of."""
+    return {
+        resource.worker_id
+        for resource in resources
+        if resource.worker_id and resource.worker_id not in accounted_workers
+    }
+
+
+def _fence(resource: LabelledResource, unaccounted: set[str], report: RunCleanupReport) -> bool:
+    """Keep one resource whose worker nothing names, and say so. True if kept."""
+    if resource.worker_id not in unaccounted:
+        return False
+    report.fenced.append(UNACCOUNTED_FENCE.format(name=resource.name, worker_id=resource.worker_id))
+    return True
 
 
 def _clean_worker_keys(
@@ -230,6 +311,7 @@ def _clean_worker_keys(
     report: RunCleanupReport,
     listed_workers: set[str],
     accounted_workers: set[str] | frozenset[str],
+    fenced_workers: set[str] | frozenset[str] = frozenset(),
 ) -> None:
     """Delete this run's per-worker keys, and its `worker:meta` only when accounted for.
 
@@ -237,15 +319,19 @@ def _clean_worker_keys(
     containers the run label just selected — a worker whose metadata is already
     deleted may still have stray keys — and the `worker:meta` records that name
     this run, which is the only source for a worker whose container is gone.
+
+    A worker whose resources the accounting fence kept is skipped in both: its
+    container is still there and unaccounted for, so nothing that names it may be
+    taken away either.
     """
     try:
-        meta_workers = sorted(set(ops.meta_workers(run_id)))
+        meta_workers = sorted(set(ops.meta_workers(run_id)) - set(fenced_workers))
     except Exception as exc:  # noqa: BLE001 — a failed read must not stop the teardown
         report.errors.append(f"worker metadata discovery: {exc}")
         return
 
     keys: list[str] = []
-    for worker_id in sorted(listed_workers - set(meta_workers)):
+    for worker_id in sorted(listed_workers - set(meta_workers) - set(fenced_workers)):
         keys += worker_keys(worker_id)
     for worker_id in meta_workers:
         keys += worker_keys(worker_id)
@@ -529,23 +615,133 @@ def accounted_workers(collector) -> set[str]:
     return set(collector.accounted_workers())
 
 
+def account_listed_workers(collector, ops: CleanupOps, run_id: str) -> list[str]:
+    """Give every labelled worker of this run a record, before anything is removed.
+
+    The gap this closes: a listing succeeds, a worker's inspect or log read then
+    fails with something other than "no such container", and the collector notes
+    a capture *error* and moves on. An error is not a record — it names a
+    container, not an ending, and it is not what `accounted_workers` reads — so
+    the fence in `clean_run` would keep that worker's container forever while the
+    artifact still said nothing about the worker.
+
+    So the miss is written down as a miss: the worker enters the artifact with
+    the stated reason its ending could not be read, which is an acceptable ending
+    and makes removing its resources an accounted removal. Returns the worker ids
+    that needed it, for the caller to report.
+    """
+    from run_evidence import role_from_worker_id  # tests/live module, imported on use
+
+    listed = {
+        resource.worker_id
+        for resource in [*ops.list_containers(run_id), *ops.list_networks(run_id)]
+        if resource.run_id == run_id and resource.worker_id
+    }
+    missed = sorted(listed - set(collector.accounted_workers()))
+    for worker_id in missed:
+        collector.observe_absent(
+            worker_id,
+            role_from_worker_id(worker_id),
+            UNREADABLE_ENDING.format(detail=_capture_failure(collector, worker_id)),
+        )
+    return missed
+
+
+def _capture_failure(collector, worker_id: str) -> str:
+    """What the capture pass said about this worker, in its own words."""
+    stated = [error for error in collector.errors if worker_id in error]
+    return "; ".join(stated) if stated else NO_STATED_CAPTURE_FAILURE
+
+
+def _knowledge(record: dict) -> tuple[int, int]:
+    """How much one worker record knows, for choosing between two of them.
+
+    The exit code first, because it is the finding the artifact exists for, then
+    everything else that was read rather than missed. It compares two
+    descriptions of one worker, never two workers.
+    """
+    has_exit = 1 if record["exit_code"]["status"] == CAPTURED else 0
+    return has_exit, sum(1 for capture in _captures(record) if capture["status"] == CAPTURED)
+
+
+def _captures(record: dict):
+    """Every capture in one worker record, including the nested transcript ones."""
+    for value in record.values():
+        if not isinstance(value, dict):
+            continue
+        if "status" in value:
+            yield value
+            continue
+        for nested in value.values():
+            if isinstance(nested, dict) and "status" in nested:
+                yield nested
+
+
+def merge_worker_records(kept: list[dict], incoming: list[dict]) -> list[dict]:
+    """Fold a later pass into a retained artifact, losing nothing it already knew.
+
+    A pass taken after cleanup removed a container knows less about it than the
+    pass that authorised the removal — it cannot inspect what is gone. So a
+    record is replaced only by one that knows more, and a worker only ever
+    appears.
+    """
+    merged = {record["worker_id"]: record for record in kept}
+    for record in incoming:
+        known = merged.get(record["worker_id"])
+        if known is None or _knowledge(record) > _knowledge(known):
+            merged[record["worker_id"]] = record
+    return [merged[worker_id] for worker_id in sorted(merged)]
+
+
+def _retained_artifact(path: Path, run_id: str) -> dict:
+    """What this run already retained, refusing to write over what cannot be read."""
+    if not path.exists():
+        return {}
+    try:
+        retained = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RunCleanupError(
+            f"{path} exists and cannot be read ({type(exc).__name__}); "
+            "replacing it would destroy evidence this run already retained"
+        ) from exc
+    if retained.get("run_id") != run_id:
+        raise RunCleanupError(
+            f"{path} holds evidence for run {retained.get('run_id')!r}, not {run_id!r}"
+        )
+    return retained
+
+
 def retain_evidence(collector, path: Path) -> Path:
-    """Write this run's worker records down before cleanup removes their sources.
+    """Merge this run's worker records into its one artifact, before their sources go.
 
     Used by recovery, which has no artifact of its own: `clean_live_tests.py`
     finds a manifest for a run nobody is watching any more, takes one capture
     pass over what is left of it, and retains that here. Only then may cleanup
     delete a `worker:meta` key the run's evidence now accounts for.
+
+    **The write is a merge, and that is the point.** Recovery makes more than one
+    pass over the same run — the label sweep first, the manifest round-trip after
+    it — and the later pass runs when the containers, the removal records and the
+    metadata the first pass read are already gone. Overwriting would erase the
+    very accounting that authorised their removal, leaving the worker named
+    nowhere. So a record is only ever added or improved (`merge_worker_records`),
+    and the capture errors of every pass are kept.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    retained = _retained_artifact(path, collector.run_id)
+    now = datetime.now(tz=UTC).isoformat()
     path.write_text(
         json.dumps(
             {
                 "run_id": collector.run_id,
-                "retained_at": datetime.now(tz=UTC).isoformat(),
+                "first_retained_at": retained.get("first_retained_at") or now,
+                "retained_at": now,
+                "passes": int(retained.get("passes", 0)) + 1,
                 "reason": "capture before cleanup, for a run recovered without its harness",
-                "workers": collector.records(),
-                "capture_errors": collector.errors,
+                "workers": merge_worker_records(retained.get("workers", []), collector.records()),
+                "capture_errors": list(
+                    dict.fromkeys([*retained.get("capture_errors", []), *collector.errors])
+                ),
             },
             indent=2,
             sort_keys=True,

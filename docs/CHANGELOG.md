@@ -27,6 +27,22 @@
   own takes a capture pass and retains it under `.live-manifests/evidence/<run id>.json` before
   anything is removed; `worker:evidence:removed:<run id>` is evidence and is never deleted by
   cleanup.
+- A run has one evidence artifact and it only ever gains. `retain_evidence` merges into
+  `.live-manifests/evidence/<run id>.json` instead of replacing it, keeping the record that knows
+  more (an exit code first, then whatever else was read) whenever two passes describe the same
+  worker, and keeping every pass's capture errors. Recovery makes two passes over a manifest — the
+  run-scoped label sweep and then the `ctx` round-trip — and the second runs after the containers,
+  removal records and metadata the first read are gone; overwriting would have erased the accounting
+  that authorised their removal. An artifact that cannot be read, or that names another run, is
+  refused rather than written over.
+- Removal is fenced by accounting rather than merely preceded by a capture attempt. `clean_run`
+  compares every listed container and network against `accounted_workers` and leaves in place — and
+  fails with `RunCleanupError` — anything whose worker the run's evidence does not name, including
+  that worker's Redis keys. A capture that failed with a transient Docker error is no longer a
+  licence to remove what it could not read: `account_listed_workers` turns such a failure into a
+  stated missed capture naming the worker and why its ending is unknown, which is an acceptable
+  ending, and only that record authorises the removal. A silent disappearance is not an outcome the
+  harness can produce.
 
 - The backend Docker-in-Docker suite runs on every push to `main`. The worker-ownership,
   run-ownership-propagation and run-evidence-by-label tests are the only real-daemon proof that a

@@ -1328,18 +1328,26 @@ def evidence_accounting(ctx: dict, ops: run_cleanup.CleanupOps) -> set[str]:
     cleanup is about to consider, so a worker whose removal record could not be
     stored reaches the evidence as a stated missed capture — and only then is
     its name a thing cleanup may take away.
+
+    Then every worker the run's own label still lists is checked against those
+    records and, if a capture failed for it, written down as an explicit missed
+    capture: removal is fenced by accounting, and a capture that merely failed
+    would otherwise fence the teardown forever while naming the worker nowhere.
+    The result is retained — merged, never replaced — so the accounting that
+    authorises the removal outlives the removal in both cases.
     """
+    run_id = ctx["manifest"].run_id
     collector = ctx.get("run_evidence")
     if collector is None:
-        run_id = ctx["manifest"].run_id
         collector = RunEvidenceCollector(
             run_id=run_id, owned_workers=lambda: ops.meta_workers(run_id)
         )
         collector.capture()
-        run_cleanup.retain_evidence(
-            collector,
-            ORCHESTRATOR_ROOT / ".live-manifests" / "evidence" / f"{collector.run_id}.json",
-        )
+    run_cleanup.account_listed_workers(collector, ops, run_id)
+    run_cleanup.retain_evidence(
+        collector,
+        ORCHESTRATOR_ROOT / ".live-manifests" / "evidence" / f"{collector.run_id}.json",
+    )
     return run_cleanup.accounted_workers(collector)
 
 

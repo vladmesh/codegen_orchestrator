@@ -143,6 +143,22 @@ are never deleted by cleanup — they expire on their own TTL.
 `scripts/clean_live_tests.py` starts its recovery of every manifest with exactly this sweep, so a
 run's Docker resources no longer depend on the reconstructed `ctx` round-trip that follows it.
 
+Two properties make "capture before cleanup" hold under more than one pass, because recovery is
+more than one pass — the label sweep above, and the `ctx` round-trip after it.
+
+*The artifact only ever gains.* `retain_evidence` merges into `.live-manifests/evidence/<run
+id>.json` rather than replacing it: a record is added, or replaced by one that knows more, and
+never by one that knows less. The second pass runs when the containers, removal records and
+metadata the first pass read are already gone, so it knows almost nothing; without the merge it
+would erase the very accounting that authorised their removal.
+
+*Nothing is removed before the artifact names its worker.* `clean_run` checks every listed
+container and network against `accounted_workers` and keeps — loudly — anything whose worker has no
+record, its Redis keys included. A capture that fails is not a licence to remove: a caller uses
+`account_listed_workers` first, which writes the failure down as a missed capture naming the worker
+and why its ending could not be read. That is an acceptable ending; a worker that simply disappears
+is not.
+
 ## Bot access revocation
 
 `tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a

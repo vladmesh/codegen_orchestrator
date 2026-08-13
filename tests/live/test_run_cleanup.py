@@ -1,9 +1,10 @@
 """Run-scoped cleanup, against a daemon and a Redis that only exist in memory.
 
 These are the rules the module holds everywhere: what a run's label selects is
-removed, what it does not select is not touched, a second pass is a no-op, and a
+removed, what it does not select is not touched, a second pass is a no-op, a
 `worker:meta` key retained for attribution is deleted only once the run's
-evidence accounts for the worker it names.
+evidence accounts for the worker it names, and nothing labelled is removed at all
+until that evidence names its worker.
 
 The same rules against a real daemon, with two runs alive at once, are in
 `tests/integration/backend/test_run_scoped_cleanup.py`. What is proved here is
@@ -11,6 +12,7 @@ the decision logic; what is proved there is that Docker agrees.
 """
 
 from dataclasses import dataclass, field
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -20,8 +22,19 @@ from run_cleanup import (
     CleanupOps,
     LabelledResource,
     RunCleanupError,
+    account_listed_workers,
+    accounted_workers,
     clean_run,
+    merge_worker_records,
+    retain_evidence,
     worker_keys,
+)
+from run_evidence import (
+    CaptureStatus,
+    ContainerProbe,
+    ListedWorker,
+    RunEvidenceCollector,
+    WorkerRole,
 )
 
 from shared.contracts.queues.worker import WorkerLabel
@@ -227,11 +240,218 @@ def test_the_stray_keys_of_a_worker_with_no_name_left_are_still_removed():
     daemon.meta.pop("dev-1")
     daemon.keys.pop("worker:meta:dev-1")
 
-    report = clean_run(daemon.ops(), RUN, accounted_workers=set())
+    report = clean_run(daemon.ops(), RUN, accounted_workers={"dev-1"})
 
     assert daemon.keys == {}
     assert report.retained_meta == {}
     assert report.deleted_meta == []
+
+
+def _probe(listed, *, inspect, removed=()):
+    """A run-evidence probe over containers this test decides the fate of."""
+    return ContainerProbe(
+        list_run_workers=lambda run_id: [
+            ListedWorker(container=f"worker-{worker_id}", worker_id=worker_id, ownership={})
+            for worker_id in listed
+        ],
+        inspect=inspect,
+        logs=lambda container, tail: "",
+        removed_workers=lambda run_id: list(removed),
+    )
+
+
+def _unreadable(container: str):
+    """The transient, non-NotFound docker failure a capture cannot recover from."""
+    raise RuntimeError(f"docker inspect {container} failed: daemon temporarily unavailable")
+
+
+class TestRemovalIsFencedByAccounting:
+    """A capture that failed is not a licence to remove what it failed to read."""
+
+    def test_a_listed_worker_the_evidence_cannot_name_is_kept_and_the_cleanup_is_red(self):
+        """The container is that worker's last attribution; it outlives the cleanup."""
+        daemon = FakeDaemon()
+        daemon.own(RUN, "dev-1", proxy=True)
+
+        with pytest.raises(RunCleanupError) as failure:
+            clean_run(daemon.ops(), RUN, accounted_workers=set())
+
+        assert "no record for worker 'dev-1'" in str(failure.value)
+        assert sorted(daemon.containers) == ["qa-egress-dev-1", "worker-dev-1"]
+        assert sorted(daemon.networks) == ["dev_proj_dev-1"]
+        assert daemon.keys[f"worker:meta:{'dev-1'}"] == RUN
+        assert daemon.keys[f"worker:status:{'dev-1'}"] == RUN
+
+    def test_one_workers_missing_record_does_not_hold_up_an_accounted_one(self):
+        """The fence is per worker: what is named is still removed."""
+        daemon = FakeDaemon()
+        daemon.own(RUN, "dev-1")
+        daemon.own(RUN, "dev-2")
+
+        with pytest.raises(RunCleanupError):
+            clean_run(daemon.ops(), RUN, accounted_workers={"dev-2"})
+
+        assert sorted(daemon.containers) == ["worker-dev-1"]
+        assert sorted(daemon.networks) == ["dev_proj_dev-1"]
+
+    def test_a_capture_that_failed_becomes_a_named_miss_and_then_a_removal(self):
+        """The reviewer's scenario: the listing succeeds and one inspect does not.
+
+        The worker is not silently removed and it does not fence the teardown
+        forever either. It is written into the artifact as a missed capture that
+        says why its ending could not be read — an acceptable ending — and only
+        that record authorises the removal.
+        """
+        daemon = FakeDaemon()
+        daemon.own(RUN, "dev-1")
+        ops = daemon.ops()
+        collector = RunEvidenceCollector(
+            run_id=RUN, probe=_probe(["dev-1"], inspect=_unreadable), owned_workers=list
+        )
+        collector.capture()
+
+        assert accounted_workers(collector) == set()
+        assert any("capture failed" in error for error in collector.errors)
+
+        assert account_listed_workers(collector, ops, RUN) == ["dev-1"]
+
+        [record] = collector.records()
+        assert record["worker_id"] == "dev-1"
+        assert record["exit_code"]["status"] == CaptureStatus.MISSED.value
+        assert "daemon temporarily unavailable" in record["exit_code"]["reason"]
+
+        report = clean_run(ops, RUN, accounted_workers=accounted_workers(collector))
+
+        assert report.fenced == []
+        assert report.removed_containers == ["worker-dev-1"]
+        assert daemon.containers == {}
+
+    def test_a_worker_already_read_is_not_downgraded_to_a_miss(self):
+        """Accounting adds names; it never restates a known ending as an unknown one."""
+        daemon = FakeDaemon()
+        daemon.own(RUN, "dev-1")
+        inspected = {
+            "Config": {"Env": ["WORKER_TYPE=developer"], "Image": "worker:test"},
+            "Image": "sha256:abc",
+            "Created": "2026-08-13T00:00:00Z",
+            "Mounts": [],
+            "State": {
+                "Running": False,
+                "Status": "exited",
+                "OOMKilled": False,
+                "StartedAt": "2026-08-13T00:00:00Z",
+                "FinishedAt": "2026-08-13T00:00:10Z",
+                "Error": "",
+                "ExitCode": 3,
+            },
+        }
+        collector = RunEvidenceCollector(
+            run_id=RUN,
+            probe=_probe(["dev-1"], inspect=lambda container: inspected),
+            owned_workers=list,
+        )
+        collector.capture()
+
+        assert account_listed_workers(collector, daemon.ops(), RUN) == []
+        [record] = collector.records()
+        assert record["exit_code"] == {
+            "status": CaptureStatus.CAPTURED.value,
+            "value": 3,
+            "reason": None,
+        }
+
+
+class TestTheArtifactOnlyEverGains:
+    """One run has one evidence artifact, and no pass over it can know less."""
+
+    def _artifact(self, path):
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _record(self, worker_id: str, *, exit_code) -> dict:
+        """One worker record in the shape the collector really writes them."""
+        collector = RunEvidenceCollector(run_id=RUN, probe=_probe([], inspect=_unreadable))
+        collector.observe_absent(worker_id, WorkerRole.DEVELOPER, "the ending was not read")
+        [record] = collector.records()
+        if exit_code is not None:
+            record["exit_code"] = {
+                "status": CaptureStatus.CAPTURED.value,
+                "value": exit_code,
+                "reason": None,
+            }
+        return record
+
+    def test_the_spelling_of_a_captured_status_is_one_spelling(self):
+        """The merge reads the artifact's JSON; this holds it to the collector's word."""
+        assert run_cleanup.CAPTURED == CaptureStatus.CAPTURED.value
+
+    def test_a_later_poorer_pass_cannot_unname_a_worker(self, tmp_path):
+        """The defect: the second pass runs after the sources are gone."""
+        path = tmp_path / "evidence.json"
+        first = RunEvidenceCollector(
+            run_id=RUN,
+            probe=_probe([], inspect=lambda container: None),
+            owned_workers=lambda: ["dev-1"],
+        )
+        first.capture()
+        retain_evidence(first, path)
+
+        assert [record["worker_id"] for record in self._artifact(path)["workers"]] == ["dev-1"]
+
+        # The manifest round-trip's own collector: container, removal record and
+        # `worker:meta` are all gone by now, so it knows about nothing at all.
+        second = RunEvidenceCollector(
+            run_id=RUN, probe=_probe([], inspect=lambda container: None), owned_workers=list
+        )
+        second.capture()
+        retain_evidence(second, path)
+
+        artifact = self._artifact(path)
+        assert [record["worker_id"] for record in artifact["workers"]] == ["dev-1"]
+        assert artifact["passes"] == 2
+
+    def test_a_later_richer_pass_fills_a_record_in(self):
+        """Merging is not "first writer wins" either: a real ending replaces a miss."""
+        merged = merge_worker_records(
+            [self._record("dev-1", exit_code=None)], [self._record("dev-1", exit_code=137)]
+        )
+
+        assert [record["exit_code"]["value"] for record in merged] == [137]
+
+    def test_capture_errors_of_every_pass_are_kept(self, tmp_path):
+        path = tmp_path / "evidence.json"
+        first = RunEvidenceCollector(run_id=RUN, probe=_probe([], inspect=_unreadable))
+        first.note_error("first pass: redis unreachable")
+        retain_evidence(first, path)
+        second = RunEvidenceCollector(run_id=RUN, probe=_probe([], inspect=_unreadable))
+        second.note_error("second pass: docker unreachable")
+        retain_evidence(second, path)
+
+        assert self._artifact(path)["capture_errors"] == [
+            "first pass: redis unreachable",
+            "second pass: docker unreachable",
+        ]
+
+    def test_another_runs_artifact_is_never_written_over(self, tmp_path):
+        path = tmp_path / "evidence.json"
+        retain_evidence(
+            RunEvidenceCollector(run_id=NEIGHBOUR, probe=_probe([], inspect=_unreadable)), path
+        )
+
+        with pytest.raises(RunCleanupError, match=NEIGHBOUR):
+            retain_evidence(
+                RunEvidenceCollector(run_id=RUN, probe=_probe([], inspect=_unreadable)), path
+            )
+
+    def test_an_unreadable_artifact_is_not_replaced(self, tmp_path):
+        """What cannot be read cannot be merged, and so must not be overwritten."""
+        path = tmp_path / "evidence.json"
+        path.write_text("{not json", encoding="utf-8")
+
+        with pytest.raises(RunCleanupError, match="cannot be read"):
+            retain_evidence(
+                RunEvidenceCollector(run_id=RUN, probe=_probe([], inspect=_unreadable)), path
+            )
+        assert path.read_text(encoding="utf-8") == "{not json"
 
 
 def test_an_unscoped_cleanup_is_refused():
