@@ -2,6 +2,14 @@
 
 ## 2026-08-13
 
+- The Backend Docker-in-Docker suite reaches its own assertions again. The three run-scoped suites
+  load `tests/live/run_evidence.py` and `tests/live/run_cleanup.py` by path — `tests/live` is not a
+  package — but did not register the loaded module in `sys.modules`. Both modules declare
+  dataclasses under `from __future__ import annotations`, and `@dataclass` resolves string
+  annotations through `sys.modules[cls.__module__]`, so executing them unregistered raised
+  `AttributeError: 'NoneType' object has no attribute '__dict__'` from `dataclasses` itself before
+  any test body ran (15 errors). Both loaders now register the module before executing it.
+
 - The periodic orphan sweep in `services/worker-manager/src/garbage_collector.py` never removes a
   container that is still alive. Redis was its only evidence, so a lost `worker:status:*` — a flush,
   a restart without persistence, a wiped volume — made every live worker of every run look like an

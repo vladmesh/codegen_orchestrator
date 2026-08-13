@@ -51,6 +51,10 @@ def _run_cleanup():
         "run_cleanup_for_integration", LIVE_TESTS / "run_cleanup.py"
     )
     module = importlib.util.module_from_spec(spec)
+    # Registered before execution for the same reason as in
+    # `test_run_evidence_by_label._run_evidence`: @dataclass reads the string
+    # annotations of this module's classes out of sys.modules[cls.__module__].
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
