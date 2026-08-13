@@ -50,6 +50,11 @@ from pipeline_helpers import (
 )
 import pytest
 import pytest_asyncio
+from run_evidence import (
+    RunEvidenceCollector,
+    developer_container_prefix,
+    emit_run_evidence,
+)
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
@@ -74,70 +79,107 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
             async with cleanup_guard(
                 lambda: cleanup_all(api_internal, api_observer, ctx), manifest=ctx["manifest"]
             ):
-                if ctx.get("qa_requires_executor"):
-                    ctx["qa_agent_type"] = configured_qa_executor()
-
-                # Phase 1: Scaffold
-                trigger_scaffold(ctx)
-                await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
-                if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-                    yield ctx
-                    dump_debug(ctx, f"{debug_prefix}-scaffold")
-                    return
-
-                # The scaffolded repo must already carry the contract deploy
-                # resolves its environment from.
-                if not record_env_contract(ctx, "main", phase="scaffold"):
-                    yield ctx
-                    dump_debug(ctx, f"{debug_prefix}-env-contract-scaffold")
-                    return
-
-                # Phase 2: Engineering
-                await create_story_and_task(api, ctx)
-                await wait_engineering(api, ctx, timeout=engineering_timeout)
-                if ctx.get("task_status") != TaskStatus.DONE:
-                    yield ctx
-                    dump_debug(ctx, f"{debug_prefix}-engineering")
-                    return
-
-                # Phase 3: Deploy. The story branch merges into main and only then
-                # does a deploy run appear carrying the merged head SHA. The ref
-                # deploy reads the contract at. Re-check the contract there: the
-                # scaffolded tree proves nothing about what engineering merged.
-                deploy_run = await wait_deploy_run(api_internal, ctx, timeout=DEPLOY_RUN_TIMEOUT)
-                if deploy_run is None:
-                    yield ctx
-                    dump_debug(ctx, f"{debug_prefix}-deploy-run")
-                    return
-                if not record_env_contract(
-                    ctx,
-                    ctx["deploy_head_sha"],
-                    phase="merged",
-                    verify_merged_into_main=True,
-                ):
-                    yield ctx
-                    dump_debug(ctx, f"{debug_prefix}-env-contract-merged")
-                    return
-
-                await wait_deploy(api, api_observer, ctx, timeout=DEPLOY_TIMEOUT)
-                await wait_deploy_outcome(api_internal, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT)
-                if (
-                    ctx.get("final_app_status") == ApplicationStatus.RUNNING.value
-                    and ctx.get("deploy_outcome") == DeployOutcome.SUCCESS.value
-                ):
-                    ctx["qa_result"] = await run_non_llm_qa(
+                # One artifact per combination, written before teardown removes
+                # the containers and Redis metadata it is collected from.
+                ctx["qa_agent_type_requested"] = os.getenv("LIVE_QA_AGENT_TYPE")
+                ctx["run_evidence"] = RunEvidenceCollector(
+                    developer_prefix=developer_container_prefix(ctx["repo_name"])
+                )
+                try:
+                    async for value in _pipeline_phases(
+                        api,
                         api_internal,
-                        ctx["story_id"],
-                        timeout=QA_RUN_TIMEOUT,
-                    )
+                        api_observer,
+                        ctx,
+                        engineering_timeout=engineering_timeout,
+                        debug_prefix=debug_prefix,
+                    ):
+                        yield value
+                finally:
+                    emit_run_evidence(ctx)
 
-                yield ctx
 
-                if (
-                    ctx.get("final_app_status") != ApplicationStatus.RUNNING.value
-                    or ctx.get("deploy_outcome") != DeployOutcome.SUCCESS.value
-                ):
-                    dump_debug(ctx, f"{debug_prefix}-deploy")
+async def _pipeline_phases(
+    api,
+    api_internal,
+    api_observer,
+    ctx: dict,
+    *,
+    engineering_timeout: int,
+    debug_prefix: str,
+):
+    """The pipeline phases themselves, so evidence can wrap every exit from them."""
+    if ctx.get("qa_requires_executor"):
+        ctx["qa_agent_type"] = configured_qa_executor()
+
+    # Phase 1: Scaffold
+    trigger_scaffold(ctx)
+    await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
+    if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
+        yield ctx
+        dump_debug(ctx, f"{debug_prefix}-scaffold")
+        return
+
+    # The scaffolded repo must already carry the contract deploy
+    # resolves its environment from.
+    if not record_env_contract(ctx, "main", phase="scaffold"):
+        yield ctx
+        dump_debug(ctx, f"{debug_prefix}-env-contract-scaffold")
+        return
+
+    # Phase 2: Engineering. Every poll takes an evidence pass: a retry deletes
+    # the previous attempt's container and Redis metadata, and the attempt that
+    # died is exactly the one that has to stay attributable.
+    await create_story_and_task(api, ctx)
+    await wait_engineering(
+        api, ctx, timeout=engineering_timeout, on_poll=ctx["run_evidence"].capture
+    )
+    if ctx.get("task_status") != TaskStatus.DONE:
+        yield ctx
+        dump_debug(ctx, f"{debug_prefix}-engineering")
+        return
+
+    # Phase 3: Deploy. The story branch merges into main and only then
+    # does a deploy run appear carrying the merged head SHA. The ref
+    # deploy reads the contract at. Re-check the contract there: the
+    # scaffolded tree proves nothing about what engineering merged.
+    deploy_run = await wait_deploy_run(api_internal, ctx, timeout=DEPLOY_RUN_TIMEOUT)
+    if deploy_run is None:
+        yield ctx
+        dump_debug(ctx, f"{debug_prefix}-deploy-run")
+        return
+    if not record_env_contract(
+        ctx,
+        ctx["deploy_head_sha"],
+        phase="merged",
+        verify_merged_into_main=True,
+    ):
+        yield ctx
+        dump_debug(ctx, f"{debug_prefix}-env-contract-merged")
+        return
+
+    await wait_deploy(api, api_observer, ctx, timeout=DEPLOY_TIMEOUT)
+    await wait_deploy_outcome(api_internal, ctx, timeout=DEPLOY_OUTCOME_TIMEOUT)
+    if (
+        ctx.get("final_app_status") == ApplicationStatus.RUNNING.value
+        and ctx.get("deploy_outcome") == DeployOutcome.SUCCESS.value
+    ):
+        # The QA run is recorded before it is judged, so a QA cell can say
+        # "exercised and failed" instead of falling back to "not exercised".
+        ctx["qa_result"] = await run_non_llm_qa(
+            api_internal,
+            ctx["story_id"],
+            timeout=QA_RUN_TIMEOUT,
+            record=lambda run: ctx.__setitem__("qa_run", run),
+        )
+
+    yield ctx
+
+    if (
+        ctx.get("final_app_status") != ApplicationStatus.RUNNING.value
+        or ctx.get("deploy_outcome") != DeployOutcome.SUCCESS.value
+    ):
+        dump_debug(ctx, f"{debug_prefix}-deploy")
 
 
 @pytest_asyncio.fixture(loop_scope="module", scope="module")

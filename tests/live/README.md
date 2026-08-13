@@ -60,6 +60,27 @@ starts a health-only QA observation against `/health` and `/v1/health`. It accep
 contract `status=completed` with `qa_outcome=passed`. An unreachable endpoint, a non-200 response or
 timeout makes the live run red. This gate does not publish to `qa:queue` and does not run an LLM.
 
+## Run evidence
+
+Every mega run writes one machine-readable artifact for the worker/QA combination it exercised, to
+`docs/e2e_results/run-evidence-<combination>-<timestamp>.json` (git-ignored, retained on the host).
+It exists so a dynamic worker's death is attributable after the run: it carries the deployed SHA and
+the worker image digest record in use, the project, the role agents **as executed**, the attempt
+count, the terminal state and failure kind, the duration — and per worker container its exit code, a
+bounded log tail and the path of the transcript worker-wrapper retained under
+`WORKER_TRANSCRIPT_STORAGE_PATH`.
+
+The collector (`tests/live/run_evidence.py`) takes a pass on every engineering poll, because that is
+the only moment a failed attempt still exists: a retry deletes the previous worker's container and
+its Redis metadata. Nothing it reads comes from Redis, and a fact it could not collect is written as
+`{"status": "missed", "reason": ...}` rather than as an empty field. Evidence collection never fails
+a run — a probe error is recorded under `capture_errors`.
+
+Agent stdout stays out of it. The log tail is the container's own log (worker-wrapper's structlog),
+bounded and redacted through `shared.diagnostics.redact_diagnostic` against the container's secret
+environment values; Codex CLI diagnostics stay in the retained transcript, which the artifact
+references by path only. `tests/live/test_run_evidence.py` covers the whole schema offline.
+
 ## Bot access revocation
 
 `tests/live/test_bot_access_revocation.py` is the only check that asks the deployed bot whether a

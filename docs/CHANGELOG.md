@@ -2,6 +2,23 @@
 
 ## 2026-08-13
 
+- A dynamic worker's death is attributable. Every worker/QA combination of the production matrix now
+  emits one retained, machine-readable artifact (`docs/e2e_results/run-evidence-*.json`) naming the
+  deployed SHA and the worker image digest record in use, the project, the role agents as executed,
+  the attempts, the terminal state, a failure kind, and per worker container its exit code, a
+  bounded log tail and the path of the transcript worker-wrapper already retained on the host. The
+  matrix prints it per combination and records its path in the summary table.
+- The evidence is collected on every engineering poll, before cleanup can remove it: a retry deletes
+  the previous attempt's container and its Redis metadata, and the attempt that died is the one that
+  has to stay explainable. Nothing in the collection reads Redis, and a fact it could not collect is
+  written as a stated reason rather than an empty field.
+- A QA role is reported as exercised only once its worker handed a result to QA; a combination whose
+  worker died first carries a QA cell that says so and why.
+- The privacy boundary is unchanged: Codex CLI diagnostics still never enter the business result
+  stream or service logs. The artifact's log tail is the worker container's own log, bounded and
+  redacted against the container's secret environment values, and the transcript is referenced by
+  path, never copied.
+
 - Worker base images are one immutable release chain keyed by the git SHA. Every green commit on
   `main` builds common and then the claude, codex and factory images from that exact common, and
   publishes all four to GHCR under that commit's SHA, recording the published digests, the SHA and

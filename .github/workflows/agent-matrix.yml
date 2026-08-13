@@ -38,7 +38,7 @@ jobs:
             compose=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
             report="/tmp/codegen-agent-matrix-${{ github.run_id }}.tsv"
             matrix_api_container="codegen-agent-matrix-api-${{ github.run_id }}"
-            printf 'qa_agent\tworker_agent\tstatus\tduration_seconds\n' > "$report"
+            printf 'qa_agent\tworker_agent\tstatus\tduration_seconds\trun_evidence\n' > "$report"
 
             set_qa_executor() {
               local executor="$1"
@@ -137,8 +137,28 @@ jobs:
                   fi
                 fi
                 duration=$(($(date +%s) - started))
-                printf '%s\t%s\t%s\t%s\n' \
-                  "$qa_agent" "$worker_agent" "$status" "$duration" | tee -a "$report"
+
+                # One retained artifact per combination, written by the live
+                # harness before its teardown removes the worker containers and
+                # their Redis metadata. It is what makes a worker's death
+                # attributable after the fact: exit code, bounded container log
+                # tail, executed role agents and the retained transcript path.
+                # Restricted to this combination's own window so a combination
+                # that emitted nothing cannot borrow the previous one's evidence.
+                evidence=$(find docs/e2e_results -maxdepth 1 \
+                  -name 'run-evidence-*.json' -type f -newermt "@$started" \
+                  -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
+                if [ -n "$evidence" ]; then
+                  printf '\nRun evidence for QA=%s worker=%s:\n' "$qa_agent" "$worker_agent"
+                  cat "$evidence"
+                else
+                  evidence=missing
+                  printf '\nNo run evidence artifact for QA=%s worker=%s\n' \
+                    "$qa_agent" "$worker_agent"
+                fi
+
+                printf '%s\t%s\t%s\t%s\t%s\n' \
+                  "$qa_agent" "$worker_agent" "$status" "$duration" "$evidence" | tee -a "$report"
               done
             done
 
@@ -174,6 +194,14 @@ jobs:
             else
               echo 'matrix_api_sidecar=absent'
             fi
+
+            find docs/e2e_results -maxdepth 1 \
+              -name 'run-evidence-*.json' -type f -printf '%T@ %p\n' \
+              | sort -nr | head -n 4 | cut -d' ' -f2- \
+              | while IFS= read -r evidence_file; do
+                  printf '\n===== %s =====\n' "$evidence_file"
+                  cat "$evidence_file"
+                done
 
             find docs/e2e_results -maxdepth 1 \
               -name 'debug-full-llm-*.md' -type f -printf '%T@ %p\n' \

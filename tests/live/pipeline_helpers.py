@@ -5,6 +5,7 @@ These are plain functions, not pytest fixtures.
 """
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 import json
 import os
@@ -539,15 +540,27 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
 
 
 async def wait_engineering(
-    api: httpx.AsyncClient, ctx: dict, timeout: int = ENGINEERING_TIMEOUT
+    api: httpx.AsyncClient,
+    ctx: dict,
+    timeout: int = ENGINEERING_TIMEOUT,
+    *,
+    on_poll: Callable[[], None] | None = None,
 ) -> None:
-    """Wait for engineering to complete. Updates ctx['task_status'], ctx['story_status']."""
+    """Wait for engineering to complete. Updates ctx['task_status'], ctx['story_status'].
+
+    ``on_poll`` runs once per poll, before the task status is read. It exists for
+    evidence collection: a retried task destroys the previous attempt's worker
+    container and its Redis metadata, so anything that has to survive the retry
+    has to be collected while the attempt is still on the host.
+    """
     done_statuses = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
     status = None
     elapsed = 0
     while elapsed < timeout:
         await asyncio.sleep(5)
         elapsed += 5
+        if on_poll is not None:
+            on_poll()
         resp = await api.get(f"/api/tasks/{ctx['task_id']}")
         resp.raise_for_status()
         status = resp.json().get("status")
@@ -913,6 +926,7 @@ async def run_non_llm_qa(
     *,
     timeout: float,
     poll_interval: float = QA_RUN_POLL_INTERVAL,
+    record: Callable[[dict], None] | None = None,
 ) -> dict[str, str]:
     """Wait for this story's QA run and require a terminal ``passed``.
 
@@ -921,6 +935,10 @@ async def run_non_llm_qa(
     health check, which QA decides over HTTP with no LLM involved. The gate reads
     the run the pipeline produced: a health request issued by this test would
     prove the service answers, not that QA concluded anything about it.
+
+    ``record`` receives the terminal QA run before it is judged. It is what lets
+    run evidence report the QA cell as exercised — and with which outcome — even
+    when the outcome is what fails this gate.
 
     Reads /api/runs/ as an internal service with no user header — see
     ``require_unscoped_run_observer``.
@@ -948,6 +966,8 @@ async def run_non_llm_qa(
             f"no QA run reached a terminal state for story {story_id} in {timeout}s"
         )
 
+    if record is not None:
+        record(run)
     result = run["result"] or {}
     outcome = result.get("qa_outcome")
     if run["status"] != "completed" or outcome != QAOutcome.PASSED.value:
