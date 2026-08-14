@@ -104,8 +104,14 @@ def test_ci_publishes_the_whole_chain_for_the_commit_it_builds():
     workflow = yaml.safe_load(CI_WORKFLOW.read_text())
     job = workflow["jobs"]["publish-worker-images"]
 
-    assert job["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    condition = " ".join(job["if"].split())
     assert job["needs"] == "merge-gate", "only a green main is published"
+    assert "needs.merge-gate.result == 'success'" in condition, "only a green main is published"
+    assert "github.event_name == 'push'" in condition
+    assert "github.ref == 'refs/heads/main'" in condition
+    # Without this the job inherits the skip of any conditional suite above the gate,
+    # and a main commit that touches no frontend gets no worker release at all.
+    assert condition.startswith("always()"), "a skipped ancestor must not skip the release"
     assert job["permissions"]["packages"] == "write"
 
     publish = next(

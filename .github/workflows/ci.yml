@@ -539,11 +539,21 @@ jobs:
   # A rerun of this job for an already-published SHA re-verifies and records that
   # release without pushing; it never rewrites a published tag. A SHA left half
   # published by a failed push is refused rather than completed — see the script.
+  # `always()` is what makes this job reachable at all, not a way to publish a red
+  # commit: the gate's own result is checked right after it. `merge-gate` runs with
+  # `if: always()` because the suites above it are conditional, and a job downstream
+  # of one skipped ancestor is skipped itself unless it says otherwise — so on every
+  # main commit that left `web-checks` skipped (anything not touching the frontends)
+  # this job silently never ran, and the revision got no worker release at all. The
+  # deploy then refuses that revision (pull-worker-images.sh, exit 9), which is the
+  # right end but a late and confusing one.
   publish-worker-images:
     name: Publish Worker Base Images
     runs-on: ubuntu-latest
     needs: merge-gate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      always() && needs.merge-gate.result == 'success'
+      && github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
