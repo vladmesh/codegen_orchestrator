@@ -149,6 +149,21 @@ def test_an_edit_under_shared_leaves_the_built_images_behind(tree: Path):
     assert all(source_hash(tree) in problem for problem in problems)
 
 
+def test_a_tools_cache_under_a_hashed_tree_is_not_a_source(tree: Path):
+    """Two machines on one revision must compute one hash.
+
+    A cache belongs to whoever ran the tool, not to the revision: counting it made
+    a deployment host refuse a release its own CI had published.
+    """
+    before = source_hash(tree)
+    for cache in (".ruff_cache/0.16.2/13067436999605408254", ".pytest_cache/CACHEDIR.TAG"):
+        artifact = tree / "shared" / cache
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("whatever this machine happened to cache\n")
+
+    assert source_hash(tree) == before
+
+
 def test_an_image_that_cannot_say_what_it_baked_fails_the_check(tree: Path):
     images = _built(tree)
     images["codegen-orchestrator/worker-manager:local"] = {"org.opencontainers.title": "wm"}
