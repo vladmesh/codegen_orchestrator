@@ -529,6 +529,56 @@ class TestTheDockerCliOperations:
 
         assert ops.remove_container("worker-dev-1") == "still exists after removal wait"
 
+    def test_a_removed_network_is_absent_in_the_daemons_own_wording(self, monkeypatch, tmp_path):
+        """A network gone is `network <name> not found`, never `no such object`.
+
+        Reading that wording as a failure made every removed `dev_proj_*` network
+        end a live run in a cleanup error, with the network already gone.
+        """
+
+        def respond(cmd, **kwargs):
+            if cmd[:3] == ["docker", "network", "rm"]:
+                return SimpleNamespace(returncode=0, stdout="dev_proj_dev-1\n", stderr="")
+            return SimpleNamespace(
+                returncode=1,
+                stdout="[]\n",
+                stderr="Error response from daemon: network dev_proj_dev-1 not found",
+            )
+
+        ops = self._ops(monkeypatch, respond, tmp_path)
+
+        assert ops.remove_network("dev_proj_dev-1") is None
+
+    def test_a_network_removed_by_someone_else_is_accepted(self, monkeypatch, tmp_path):
+        """`docker network rm` refuses a network already gone; that is not a failure."""
+
+        def respond(cmd, **kwargs):
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="Error response from daemon: network dev_proj_dev-1 not found",
+            )
+
+        ops = self._ops(monkeypatch, respond, tmp_path)
+
+        assert ops.remove_network("dev_proj_dev-1") is None
+
+    def test_a_failure_naming_another_network_is_not_read_as_absence(self, monkeypatch, tmp_path):
+        """Absence is claimed for the network asked about, not for any `not found`."""
+
+        def respond(cmd, **kwargs):
+            if cmd[:3] == ["docker", "network", "rm"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="Error response from daemon: network dev_proj_other not found",
+            )
+
+        ops = self._ops(monkeypatch, respond, tmp_path)
+
+        assert ops.remove_network("dev_proj_dev-1") == "docker inspect failed"
+
     def test_an_operational_failure_is_reported_without_quoting_the_daemon(
         self, monkeypatch, tmp_path
     ):
