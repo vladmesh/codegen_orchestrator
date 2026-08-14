@@ -41,8 +41,7 @@ Codex is available for developer workers and is the default central exploratory-
 `0.144.6`; the wrapper runs it non-interactively:
 
 ```bash
-codex exec --sandbox workspace-write \
-  --config sandbox_workspace_write.network_access=true \
+codex exec --sandbox danger-full-access \
   "Read TASK.md and AGENTS.md, then complete the task described in TASK.md."
 ```
 
@@ -50,9 +49,14 @@ The task is in `/workspace/TASK.md`, and the shared developer instructions are
 in `/workspace/AGENTS.md`. The agent must report success or failure through
 `POST http://localhost:9090/result`. CLI stdout and stderr are diagnostics and
 are neither accepted as the business result nor persisted for Codex workers.
-The per-run network override is required because `workspace-write` otherwise
-blocks the agent's localhost result call, dependency access, and Git push. The
-Docker worker network remains the outer isolation boundary.
+Codex's own sandbox is off because the container already is one, and the two
+cannot nest: `workspace-write` puts every file operation through Codex's bwrap
+helper, which needs a user namespace the worker container does not have. Codex
+then fails to read `TASK.md`, reports itself blocked and exits without a result.
+`danger-full-access` also removes the need for the per-run network override that
+`workspace-write` required for the localhost result call, dependency access and
+Git push. The Docker worker network and the container's own `cap_drop: ALL`,
+`no-new-privileges` and resource limits remain the isolation boundary.
 
 A central QA worker is intentionally different: it receives an empty ephemeral
 non-Git workspace, injected `AGENTS.md` and `TASK.md`, and invokes Codex with

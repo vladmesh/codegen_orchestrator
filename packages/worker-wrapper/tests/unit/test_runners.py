@@ -61,16 +61,19 @@ class TestFactoryRunner:
 
 
 class TestCodexRunner:
-    def test_build_command_uses_non_interactive_workspace_sandbox(self):
+    def test_build_command_leaves_the_sandbox_to_the_container(self):
+        """Codex must not nest its own bwrap sandbox inside the worker container.
+
+        The container has no user namespace to give it, so `workspace-write`
+        fails on the first file operation and the agent exits without a result.
+        """
         cmd = CodexRunner().build_command(prompt="Read TASK.md and AGENTS.md")
 
         assert cmd == [
             "codex",
             "exec",
             "--sandbox",
-            "workspace-write",
-            "--config",
-            "sandbox_workspace_write.network_access=true",
+            "danger-full-access",
             "Read TASK.md and AGENTS.md",
         ]
 
@@ -83,9 +86,7 @@ class TestCodexRunner:
             "codex",
             "exec",
             "--sandbox",
-            "workspace-write",
-            "--config",
-            "sandbox_workspace_write.network_access=true",
+            "danger-full-access",
             "--skip-git-repo-check",
             "Read TASK.md and AGENTS.md",
         ]
