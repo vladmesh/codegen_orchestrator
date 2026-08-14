@@ -423,9 +423,25 @@ class _DockerCli:
         return result.stdout
 
     @staticmethod
-    def _gone(result: subprocess.CompletedProcess) -> bool:
+    def _gone(result: subprocess.CompletedProcess, name: str) -> bool:
+        """Whether a refusal says the object is not there, in each kind's wording.
+
+        A missing container is `no such object` to `docker inspect`; a missing
+        network is `network <name> not found` to `docker network inspect` and to
+        `docker network rm` alike. A bare `not found` would read some unrelated
+        failure as an absence, so the network's form is anchored on the name the
+        command was asked about.
+        """
         message = f"{result.stderr}\n{result.stdout}".lower()
-        return any(marker in message for marker in ("no such container", "no such object"))
+        return any(
+            marker in message
+            for marker in (
+                "no such container",
+                "no such object",
+                "no such network",
+                f"network {name.lower()} not found",
+            )
+        )
 
     def list_containers(self, run_id: str) -> list[LabelledResource]:
         result = self._docker(
@@ -457,7 +473,7 @@ class _DockerCli:
             raise RunCleanupError(f"docker network ls failed: {result.stderr.strip()}")
         return [_network_from_line(line) for line in result.stdout.splitlines() if line.strip()]
 
-    def _absent(self, inspect: list[str]) -> str | None:
+    def _absent(self, inspect: list[str], name: str) -> str | None:
         """Poll one `docker inspect` until it says the object is gone."""
         deadline = time.monotonic() + self.timeout
         while True:
@@ -465,7 +481,7 @@ class _DockerCli:
             if verify.returncode != 0:
                 # The daemon's own words are not reported: a failed inspect can
                 # quote an environment that carries secrets.
-                return None if self._gone(verify) else "docker inspect failed"
+                return None if self._gone(verify, name) else "docker inspect failed"
             if time.monotonic() >= deadline:
                 return "still exists after removal wait"
             time.sleep(self.poll_interval)
@@ -473,16 +489,16 @@ class _DockerCli:
     def remove_container(self, name: str) -> str | None:
         removed = self._docker(["rm", "-f", name])
         if removed.returncode != 0 and not (
-            self._gone(removed) or "already in progress" in removed.stderr
+            self._gone(removed, name) or "already in progress" in removed.stderr
         ):
             return "docker removal failed"
-        return self._absent(["inspect", name])
+        return self._absent(["inspect", name], name)
 
     def remove_network(self, name: str) -> str | None:
         removed = self._docker(["network", "rm", name])
-        if removed.returncode != 0 and not self._gone(removed):
+        if removed.returncode != 0 and not self._gone(removed, name):
             return "docker network removal failed"
-        return self._absent(["network", "inspect", name])
+        return self._absent(["network", "inspect", name], name)
 
     def meta_workers(self, run_id: str) -> list[str]:
         require_run_id(run_id)
