@@ -59,6 +59,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -91,7 +92,18 @@ DECLARES_LABEL = re.compile(
     re.MULTILINE,
 )
 
-WALK_SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__"}
+# Directories a walk never descends into: version control, environments, and the caches
+# tools drop wherever they are run. None of them is a baked source, and every one of them
+# differs between two machines holding the same revision.
+WALK_SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".mypy_cache",
+}
 SHARED_TREE = "shared"
 SHARED_MOUNT_TARGET = "/app/shared"
 GLOB_CHARS = set("*?[")
@@ -110,12 +122,24 @@ class Unreadable(RuntimeError):
 
 
 def _hashed_files(root: Path) -> list[str]:
+    """Every baked source under the hashed trees, and nothing a tool left behind.
+
+    The hash is compared across machines — CI stamps it on a published image and the
+    deployment host checks it back — so it may only cover what the revision says. A
+    tool's cache under a hashed tree is not the revision: `services/worker-broker`
+    carries a `.ruff_cache` whose contents differ per machine and per ruff version,
+    and including it made a deploy of a correctly published release refuse itself
+    with "built from other sources than the deployed revision".
+    """
     files = []
     for tree in HASHED_TREES:
-        for path in (root / tree).rglob("*"):
-            if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
-                continue
-            files.append(str(path.relative_to(root)))
+        for directory, subdirectories, names in os.walk(root / tree):
+            subdirectories[:] = [name for name in subdirectories if name not in WALK_SKIP_DIRS]
+            for name in names:
+                path = Path(directory) / name
+                if path.suffix == ".pyc" or not path.is_file():
+                    continue
+                files.append(str(path.relative_to(root)))
     return sorted(files)
 
 
