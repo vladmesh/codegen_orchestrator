@@ -107,12 +107,8 @@ class TestWorkerWrapperComponent:
             "codex",
             "exec",
             "--sandbox",
-            "workspace-write",
+            "danger-full-access",
         )
-        assert mock_exec.call_args.args[4:6] == (
-            "--config",
-            "sandbox_workspace_write.network_access=true",
-        )
-        assert "TASK.md" in mock_exec.call_args.args[6]
-        assert "not part of the command" not in mock_exec.call_args.args[6]
+        assert "TASK.md" in mock_exec.call_args.args[4]
+        assert "not part of the command" not in mock_exec.call_args.args[4]
         assert wrapper._agent_stdout_tail is None
