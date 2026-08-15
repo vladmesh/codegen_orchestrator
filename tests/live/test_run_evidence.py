@@ -22,6 +22,7 @@ from pathlib import Path
 
 from live_harness import OwnershipManifest
 import pytest
+import run_evidence
 from run_evidence import (
     EVIDENCE_KIND,
     EVIDENCE_SCHEMA_VERSION,
@@ -482,6 +483,22 @@ def test_a_removed_container_the_run_owned_is_reported_not_omitted(codex_docker,
         assert absent[level]["value"] is None
         assert "never listed its container" in absent[level]["reason"]
     assert path.parent == tmp_path / "docs" / "e2e_results"
+
+
+def test_the_artifact_is_written_without_being_told_where(tmp_path, monkeypatch):
+    """The live harness calls this with no root, and that is how it is called.
+
+    Every unit test passed one, so `None / "docs"` went unseen until it raised in
+    the pipeline fixture's `finally` — failing a combination whose pipeline had
+    passed, and leaving the run with no artifact at all.
+    """
+    monkeypatch.setattr(run_evidence, "orchestrator_root", lambda: tmp_path)
+    ctx = base_ctx(collector_for(FakeDocker()))
+
+    path = emit_run_evidence(ctx)
+
+    assert path.parent == tmp_path / "docs" / "e2e_results"
+    assert json.loads(path.read_text(encoding="utf-8"))["kind"] == EVIDENCE_KIND
 
 
 def test_an_owned_worker_the_label_never_listed_is_accounted_for_on_every_pass(tmp_path):
