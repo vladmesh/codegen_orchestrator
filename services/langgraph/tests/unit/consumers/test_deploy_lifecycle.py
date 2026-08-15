@@ -13,6 +13,7 @@ import pytest
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
+from shared.live_harness_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 from tests.unit.factories import make_run, make_run_start
 
 
@@ -141,12 +142,8 @@ class TestDeployLifecycleUndeploy:
 
         assert result["status"] == "success"
         ssh_cmd = ssh_conn.run.call_args[0][0]
-        assert "/infra" in ssh_cmd
-        assert "--env-file ../.env" in ssh_cmd
-        assert "compose.base.yml" in ssh_cmd
-        assert "compose.prod.yml" in ssh_cmd
-        assert "down -v" in ssh_cmd
-        assert "rm -rf /opt/services/weather-bot-0000" in ssh_cmd
+        assert ssh_cmd == build_remote_cleanup_command("weather-bot-0000")
+        assert ssh_conn.run.call_args.kwargs["input"] == REMOTE_CLEANUP_SCRIPT.read_text()
         mock_api.get.assert_not_called()
 
     @pytest.mark.asyncio

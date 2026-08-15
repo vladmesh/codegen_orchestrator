@@ -2,6 +2,16 @@
 
 ## 2026-08-15
 
+- Application undeploy and live-target recovery now stream one project-scoped cleanup script. It
+  captures Compose-labelled images, volumes, networks and anonymous volumes before `docker compose
+  down`, accepts directory-less image residue only for exact `<project>-{backend,tg-bot,frontend,
+  notifications-worker}` tags, refuses a candidate image with another tag or any remaining container
+  reference, verifies each selected artifact is gone, and only then removes `/opt/services/<project>`.
+  The candidate snapshot is retained under `/opt/services/.codegen-cleanup-candidates/` until success,
+  so a live reference that leaves an anonymous volume behind is retryable after its source container
+  and even its service directory have gone. The Backend
+  Docker-in-Docker regression proves removal, a live neighbour and reusable postgres/redis tags
+  surviving, idempotent retry, and a retained retry directory for a referenced anonymous volume.
 - QA's Telegram capability now returns and persists typed reply evidence: separate text and caption, media type, reply-keyboard/inline-button data, callback answers with only post-press bot replies, and post-press evidence of the clicked message so edit-in-place is observable. Link previews retain their text. Inline callbacks are accepted only for a button the same QA run observed from its bound bot; a refused callback is stored as an undelivered non-product blocker, and the executor still receives no Telegram credential.
 - A Telegram capability error now overrides an agent's product verdict with a typed QA blocker. An operation proven undelivered, including Telethon's empty-message `ValueError`, is stored as `telegram_probe_undelivered` with attempted, sent and received evidence; an ambiguous capability error stays an `unknown` blocker. The supervisor creates engineering fixes only from typed failed checks without a blocker and otherwise stops for human review.
 
