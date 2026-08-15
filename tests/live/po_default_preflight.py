@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 import uuid
 
 from live_harness import OwnershipManifest, resolve_repo_root
@@ -29,6 +29,11 @@ FIXED_TEST_COMMAND = "matrix-po-default"
 _CHECKOUT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _PREFLIGHT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{2,63}")
 _PROJECT_RESPONSE_RE = re.compile(r"^Project created\. ID: ([0-9a-f-]{36}), ")
+_STREAM_ID_RE = re.compile(r"[0-9]+-[0-9]+")
+_SENSITIVE_FAILURE_VALUE_RE = re.compile(
+    r"(?i)(api[_-]?key|token|secret|password|authorization)\s*(?:=|:)\s*"
+    r"(?:bearer\s+)?[^,\s]+"
+)
 
 
 class PreflightError(RuntimeError):
@@ -45,7 +50,7 @@ class PreflightConfig:
     def __post_init__(self) -> None:
         if not _PREFLIGHT_ID_RE.fullmatch(self.preflight_id):
             raise PreflightError("preflight identity is not a safe matrix identifier")
-        if len(f"{self.preflight_id}-omitted") > 64:
+        if len(f"{self.preflight_id}-explicit") > 64:
             raise PreflightError("preflight identity leaves no room for a manifest run suffix")
         if not _CHECKOUT_SHA_RE.fullmatch(self.checkout_sha):
             raise PreflightError("checkout SHA is not an exact commit SHA")
@@ -60,7 +65,7 @@ class PreflightConfig:
 class PreflightRuntime(Protocol):
     """The narrow seam the offline contract exercises without a live stack."""
 
-    async def require_test_user(self, telegram_id: str) -> None: ...
+    async def ensure_test_user(self, telegram_id: str) -> None: ...
 
     def read_runtime_default(self) -> str: ...
 
@@ -75,7 +80,13 @@ class PreflightRuntime(Protocol):
     async def read_repositories(self, project_id: str) -> list[dict[str, Any]]: ...
 
     async def notification_snapshot(
-        self, *, request_ids: list[str], telegram_id: str
+        self,
+        *,
+        request_ids: list[str],
+        project_ids: list[str],
+        telegram_id: str,
+        phase: Literal["before", "after"],
+        proactive_after_id: str | None,
     ) -> dict[str, Any]: ...
 
     async def notification_outbox(self, project_ids: list[str]) -> dict[str, dict[str, int]]: ...
@@ -134,8 +145,17 @@ def _runnable_config(config: PreflightConfig, ctx: dict[str, Any]) -> dict[str, 
     }
 
 
-def _assert_notification_silence(snapshot: dict[str, Any]) -> None:
-    expected = {"po_response_streams", "proactive_matching_entries"}
+def _notification_violations(
+    snapshot: dict[str, Any],
+    *,
+    phase: Literal["before", "after"],
+    project_ids: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    expected = (
+        {"po_response_streams", "proactive_boundary"}
+        if phase == "before"
+        else {"po_response_streams", "proactive_delta"}
+    )
     if set(snapshot) != expected:
         raise PreflightError("notification probe is incomplete")
     response_streams = snapshot["po_response_streams"]
@@ -148,8 +168,123 @@ def _assert_notification_silence(snapshot: dict[str, Any]) -> None:
         )
     ):
         raise PreflightError("notification probe found a PO response")
-    if snapshot["proactive_matching_entries"] != 0:
-        raise PreflightError("notification probe found a proactive delivery")
+    if phase == "before":
+        boundary = snapshot["proactive_boundary"]
+        if (
+            not isinstance(boundary, dict)
+            or set(boundary) != {"stream_id"}
+            or (
+                boundary["stream_id"] is not None
+                and (
+                    not isinstance(boundary["stream_id"], str)
+                    or _STREAM_ID_RE.fullmatch(boundary["stream_id"]) is None
+                )
+            )
+        ):
+            raise PreflightError("notification boundary probe is malformed")
+        return [], []
+
+    delta = snapshot["proactive_delta"]
+    if not isinstance(delta, list):
+        raise PreflightError("notification delta probe is malformed")
+    owned_entries: list[dict[str, Any]] = []
+    ambiguous_entries: list[dict[str, Any]] = []
+    for entry in delta:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"stream_id", "project_id", "project_identity"}
+            or not isinstance(entry["stream_id"], str)
+            or _STREAM_ID_RE.fullmatch(entry["stream_id"]) is None
+            or entry["project_identity"] not in {"valid", "missing", "invalid"}
+        ):
+            raise PreflightError("notification delta entry is malformed")
+        project_id = entry["project_id"]
+        if entry["project_identity"] == "valid":
+            try:
+                canonical_project_id = str(uuid.UUID(str(project_id)))
+            except (TypeError, ValueError) as exc:
+                raise PreflightError("notification delta project identity is malformed") from exc
+            if canonical_project_id != project_id:
+                raise PreflightError("notification delta project identity is malformed")
+            if project_id in project_ids:
+                owned_entries.append(entry)
+            continue
+        if project_id is not None:
+            raise PreflightError("notification delta project identity is malformed")
+        ambiguous_entries.append(entry)
+    return owned_entries, ambiguous_entries
+
+
+def _register_owned_proactive_entries(
+    runtime: PreflightRuntime,
+    contexts: dict[str, dict[str, Any]],
+    entries: list[dict[str, Any]],
+) -> None:
+    contexts_by_project_id = {ctx["project_id"]: ctx for ctx in contexts.values()}
+    for entry in entries:
+        ctx = contexts_by_project_id[entry["project_id"]]
+        ctx["manifest"].own("redis_entry", entry["stream_id"], stream="po:proactive")
+        runtime.write_manifest(ctx["manifest"])
+
+
+def _failure_receipt(exc: Exception) -> dict[str, str]:
+    message = _SENSITIVE_FAILURE_VALUE_RE.sub(r"\1=<redacted>", str(exc))
+    return {"kind": type(exc).__name__, "message": message[:1000]}
+
+
+async def _capture_notification_boundary(
+    runtime: PreflightRuntime,
+    config: PreflightConfig,
+    contexts: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    request_ids = [ctx["request_id"] for ctx in contexts.values()]
+    project_ids = [ctx["project_id"] for ctx in contexts.values()]
+    snapshot = await runtime.notification_snapshot(
+        request_ids=request_ids,
+        project_ids=project_ids,
+        telegram_id=config.test_telegram_id,
+        phase="before",
+        proactive_after_id=None,
+    )
+    _notification_violations(snapshot, phase="before", project_ids=set(project_ids))
+    return snapshot, project_ids
+
+
+async def _verify_post_creation_notification_silence(
+    runtime: PreflightRuntime,
+    config: PreflightConfig,
+    contexts: dict[str, dict[str, Any]],
+    *,
+    project_ids: list[str],
+    notification_before: dict[str, Any],
+    artifact: dict[str, Any],
+) -> None:
+    request_ids = [ctx["request_id"] for ctx in contexts.values()]
+    notification_after = await runtime.notification_snapshot(
+        request_ids=request_ids,
+        project_ids=project_ids,
+        telegram_id=config.test_telegram_id,
+        phase="after",
+        proactive_after_id=notification_before["proactive_boundary"]["stream_id"],
+    )
+    artifact["notification_probes"]["after"] = notification_after
+    owned_entries, ambiguous_entries = _notification_violations(
+        notification_after,
+        phase="after",
+        project_ids=set(project_ids),
+    )
+    _register_owned_proactive_entries(runtime, contexts, owned_entries)
+    outbox = await runtime.notification_outbox(project_ids)
+    expected_outbox = {
+        project_id: {"run_count": 0, "owner_notification_count": 0} for project_id in project_ids
+    }
+    artifact["notification_probes"]["owner_notification_outbox"] = outbox
+    if outbox != expected_outbox:
+        raise PreflightError("notification outbox probe is ambiguous")
+    if owned_entries:
+        raise PreflightError("notification probe found an owned proactive delivery")
+    if ambiguous_entries:
+        raise PreflightError("notification probe found an ambiguous proactive delivery")
 
 
 def _persisted_agent(project: dict[str, Any], *, project_id: str) -> str:
@@ -229,20 +364,20 @@ async def run_preflight(runtime: PreflightRuntime, config: PreflightConfig) -> d
         "cleanup": {},
     }
     writer.write(artifact)
-    failure: Exception | None = None
+    failure: PreflightError | None = None
+    underlying_failure: Exception | None = None
 
     try:
-        await runtime.require_test_user(config.test_telegram_id)
+        await runtime.ensure_test_user(config.test_telegram_id)
         runtime_default = runtime.read_runtime_default()
         if not isinstance(runtime_default, str) or not runtime_default:
             raise PreflightError("actual API runtime default is missing")
         artifact["runtime_default_agent_type"] = runtime_default
 
-        request_ids = [omitted_ctx["request_id"], explicit_ctx["request_id"]]
-        notification_before = await runtime.notification_snapshot(
-            request_ids=request_ids, telegram_id=config.test_telegram_id
+        notification_before, project_ids = await _capture_notification_boundary(
+            runtime, config, contexts
         )
-        _assert_notification_silence(notification_before)
+        artifact["notification_probes"] = {"before": notification_before}
 
         omitted_arguments = {
             "title": FIXED_TEST_COMMAND,
@@ -288,27 +423,21 @@ async def run_preflight(runtime: PreflightRuntime, config: PreflightConfig) -> d
         if _persisted_agent(unchanged, project_id=omitted_ctx["project_id"]) != runtime_default:
             raise PreflightError("explicit PO choice rewrote the omitted-default project")
 
-        notification_after = await runtime.notification_snapshot(
-            request_ids=request_ids, telegram_id=config.test_telegram_id
+        await _verify_post_creation_notification_silence(
+            runtime,
+            config,
+            contexts,
+            project_ids=project_ids,
+            notification_before=notification_before,
+            artifact=artifact,
         )
-        _assert_notification_silence(notification_after)
-        outbox = await runtime.notification_outbox(
-            [omitted_ctx["project_id"], explicit_ctx["project_id"]]
-        )
-        expected_outbox = {
-            project_id: {"run_count": 0, "owner_notification_count": 0}
-            for project_id in (omitted_ctx["project_id"], explicit_ctx["project_id"])
-        }
-        if outbox != expected_outbox:
-            raise PreflightError("notification outbox probe is ambiguous")
-
-        artifact["notification_probes"] = {
-            "before": notification_before,
-            "after": notification_after,
-            "owner_notification_outbox": outbox,
-        }
     except Exception as exc:
-        failure = exc if isinstance(exc, PreflightError) else PreflightError(type(exc).__name__)
+        underlying_failure = exc
+        failure = (
+            exc
+            if isinstance(exc, PreflightError)
+            else PreflightError(f"{type(exc).__name__}: {exc}")
+        )
     finally:
         for variant, ctx in contexts.items():
             try:
@@ -316,18 +445,20 @@ async def run_preflight(runtime: PreflightRuntime, config: PreflightConfig) -> d
             except Exception as cleanup_exc:
                 artifact["cleanup"][variant] = {
                     "status": "failed",
-                    "failure_kind": type(cleanup_exc).__name__,
+                    "failure": _failure_receipt(cleanup_exc),
                 }
                 if failure is None:
+                    underlying_failure = cleanup_exc
                     failure = PreflightError("owned resource cleanup failed")
         try:
             await runtime.close()
-        except Exception:
+        except Exception as close_exc:
             if failure is None:
+                underlying_failure = close_exc
                 failure = PreflightError("PO preflight client shutdown failed")
         artifact["status"] = "failed" if failure is not None else "passed"
         if failure is not None:
-            artifact["failure"] = {"kind": type(failure).__name__}
+            artifact["failure"] = _failure_receipt(underlying_failure or failure)
         writer.write(artifact)
         writer.close()
 
@@ -348,6 +479,7 @@ class MatrixRuntime:
 
     def __init__(self, *, api_url: str, api_container: str) -> None:
         self._root = resolve_repo_root(Path(__file__))
+        self._api_url = api_url
         self._api_container = api_container
         if str(self._root) not in sys.path:
             sys.path.insert(0, str(self._root))
@@ -371,11 +503,14 @@ class MatrixRuntime:
             check=False,
         )
 
-    async def require_test_user(self, telegram_id: str) -> None:
-        response = await self._api.get_raw(f"users/by-telegram/{telegram_id}")
-        if response.status_code == 404:
-            raise PreflightError("matrix test user is absent")
-        response.raise_for_status()
+    async def ensure_test_user(self, telegram_id: str) -> None:
+        import pipeline_helpers
+
+        expected_telegram_id = str(pipeline_helpers.TEST_TELEGRAM_ID)
+        if telegram_id != expected_telegram_id:
+            raise PreflightError("matrix preflight must use the live-harness test identity")
+        async with pipeline_helpers.api_client_as_test_user(base_url=self._api_url) as api:
+            await pipeline_helpers.ensure_test_user(api)
 
     def read_runtime_default(self) -> str:
         command = (
@@ -419,9 +554,90 @@ class MatrixRuntime:
             raise PreflightError("repository read returned a non-list response")
         return body
 
+    @staticmethod
+    def _redis_json_entries(
+        result: subprocess.CompletedProcess[str], *, probe: str
+    ) -> list[list[Any]]:
+        if result.returncode != 0:
+            raise PreflightError(f"{probe} probe failed")
+        try:
+            entries = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise PreflightError(f"{probe} probe was not machine-readable") from exc
+        if not isinstance(entries, list):
+            raise PreflightError(f"{probe} probe was not a list")
+        return entries
+
+    @staticmethod
+    def _proactive_delta_entry(entry: list[Any]) -> dict[str, str | None]:
+        if (
+            not isinstance(entry, list)
+            or len(entry) != 2
+            or not isinstance(entry[0], str)
+            or _STREAM_ID_RE.fullmatch(entry[0]) is None
+            or not isinstance(entry[1], list)
+        ):
+            raise PreflightError("PO proactive stream probe entry was malformed")
+        fields = entry[1]
+        if len(fields) % 2:
+            raise PreflightError("PO proactive stream probe fields were malformed")
+        values = {str(fields[index]): str(fields[index + 1]) for index in range(0, len(fields), 2)}
+        raw_project_id = values.get("project_id")
+        if not raw_project_id:
+            return {
+                "stream_id": entry[0],
+                "project_id": None,
+                "project_identity": "missing",
+            }
+        try:
+            project_id = str(uuid.UUID(raw_project_id))
+        except ValueError:
+            return {
+                "stream_id": entry[0],
+                "project_id": None,
+                "project_identity": "invalid",
+            }
+        return {
+            "stream_id": entry[0],
+            "project_id": project_id,
+            "project_identity": "valid",
+        }
+
+    def _proactive_boundary(self) -> dict[str, str | None]:
+        latest = self._redis_json_entries(
+            self._compose_redis("--json", "XREVRANGE", "po:proactive", "+", "-", "COUNT", "1"),
+            probe="PO proactive boundary",
+        )
+        if not latest:
+            return {"stream_id": None}
+        if len(latest) != 1 or not isinstance(latest[0], list) or not latest[0]:
+            raise PreflightError("PO proactive boundary entry was malformed")
+        stream_id = latest[0][0]
+        if not isinstance(stream_id, str) or _STREAM_ID_RE.fullmatch(stream_id) is None:
+            raise PreflightError("PO proactive boundary identifier was malformed")
+        return {"stream_id": stream_id}
+
+    def _proactive_delta(self, proactive_after_id: str | None) -> list[dict[str, str | None]]:
+        start = f"({proactive_after_id}" if proactive_after_id is not None else "-"
+        entries = self._redis_json_entries(
+            self._compose_redis("--json", "XRANGE", "po:proactive", start, "+"),
+            probe="PO proactive delta",
+        )
+        return [self._proactive_delta_entry(entry) for entry in entries]
+
     async def notification_snapshot(
-        self, *, request_ids: list[str], telegram_id: str
+        self,
+        *,
+        request_ids: list[str],
+        project_ids: list[str],
+        telegram_id: str,
+        phase: Literal["before", "after"],
+        proactive_after_id: str | None,
     ) -> dict[str, Any]:
+        if not project_ids or any(not isinstance(project_id, str) for project_id in project_ids):
+            raise PreflightError("notification probe project scope is invalid")
+        if not telegram_id:
+            raise PreflightError("notification probe test identity is invalid")
         response_streams: dict[str, bool] = {}
         for request_id in request_ids:
             response = self._compose_redis("--raw", "EXISTS", f"po:response:{request_id}")
@@ -429,31 +645,19 @@ class MatrixRuntime:
                 raise PreflightError("PO response stream probe failed")
             response_streams[request_id] = response.stdout.strip() == "1"
 
-        proactive = self._compose_redis("--json", "XRANGE", "po:proactive", "-", "+")
-        if proactive.returncode != 0:
-            raise PreflightError("PO proactive stream probe failed")
-        try:
-            entries = json.loads(proactive.stdout or "[]")
-        except json.JSONDecodeError as exc:
-            raise PreflightError("PO proactive stream probe was not machine-readable") from exc
-        if not isinstance(entries, list):
-            raise PreflightError("PO proactive stream probe was not a list")
-        matching = 0
-        for entry in entries:
-            if not isinstance(entry, list) or len(entry) != 2 or not isinstance(entry[1], list):
-                raise PreflightError("PO proactive stream probe entry was malformed")
-            fields = entry[1]
-            if len(fields) % 2:
-                raise PreflightError("PO proactive stream probe fields were malformed")
-            values = {
-                str(fields[index]): str(fields[index + 1]) for index in range(0, len(fields), 2)
+        if phase == "before":
+            if proactive_after_id is not None:
+                raise PreflightError("notification boundary cannot follow an earlier boundary")
+            return {
+                "po_response_streams": response_streams,
+                "proactive_boundary": self._proactive_boundary(),
             }
-            if values.get("telegram_chat_id") == telegram_id:
-                matching += 1
-        return {
-            "po_response_streams": response_streams,
-            "proactive_matching_entries": matching,
-        }
+        if phase == "after":
+            return {
+                "po_response_streams": response_streams,
+                "proactive_delta": self._proactive_delta(proactive_after_id),
+            }
+        raise PreflightError("notification probe phase is invalid")
 
     async def notification_outbox(self, project_ids: list[str]) -> dict[str, dict[str, int]]:
         result: dict[str, dict[str, int]] = {}
