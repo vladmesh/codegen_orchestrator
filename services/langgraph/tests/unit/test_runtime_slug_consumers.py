@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import shlex
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from shared.contracts.queues.deploy import DeployAction
+from shared.live_harness_cleanup import REMOTE_CLEANUP_SCRIPT
 from src.consumers._qa_target import QATarget, QATargetSession, resolve_capabilities
 from src.consumers.deploy import _build_subgraph_input
 from src.consumers.deploy_lifecycle import process_lifecycle_action
@@ -170,6 +172,5 @@ async def test_runtime_consumers_resolve_same_slug_dir_and_compose_project():
             server_handle="srv-1",
         )
     unsafe_cmd = unsafe_conn.run.await_args.args[0]
-    assert "cd '/opt/services/unsafe project; echo nope/infra'" in unsafe_cmd
-    assert "docker compose -p 'unsafe project; echo nope'" in unsafe_cmd
-    assert "rm -rf '/opt/services/unsafe project; echo nope'" in unsafe_cmd
+    assert shlex.split(unsafe_cmd) == ["sh", "-s", "--", unsafe_project, "/opt/services"]
+    assert unsafe_conn.run.await_args.kwargs["input"] == REMOTE_CLEANUP_SCRIPT.read_text()

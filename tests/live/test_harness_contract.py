@@ -384,6 +384,8 @@ elif [ "$1" = "volume" ] || [ "$1" = "network" ]; then
   elif [ "$command" = "rm" ]; then
     echo "$resource:${*: -1}" >> "$calls"
     : > "${FAKE_DOCKER_STATE:?}/$resource"
+  elif [ "$command" = "inspect" ]; then
+    [ -s "${FAKE_DOCKER_STATE:?}/$resource" ]
   fi
 fi
 """,
@@ -440,6 +442,98 @@ fi
     assert rm_calls, "expected docker rm to run"
     for call in rm_calls:
         assert "-v" in call.split(), f"docker rm missing -v: {call}"
+
+
+def test_server_cleanup_retries_anonymous_volume_after_live_reference_clears(tmp_path):
+    """The retained candidate record is what makes an orphaned anonymous volume retryable."""
+    project = "live-test-2c3e830f"
+    volume = "a" * 64
+    image = "sha256:deadbeef"
+    service_dir = tmp_path / "services" / project
+    service_dir.mkdir(parents=True)
+    state = tmp_path / "state"
+    state.mkdir()
+    for name in ("target", "conflict", "volume", "image"):
+        (state / name).write_text("present\n")
+    _write_fake_docker(
+        tmp_path,
+        """
+state=${FAKE_DOCKER_STATE:?}
+project=${FAKE_PROJECT:?}
+volume=${FAKE_VOLUME:?}
+image=${FAKE_IMAGE:?}
+if [ "$1" = "ps" ]; then
+  filter=
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--filter" ]; then
+      shift
+      filter=$1
+    fi
+    shift || true
+  done
+  case "$filter" in
+    label=com.docker.compose.project=$project|name=^/$project[-_])
+      [ -s "$state/target" ] && echo target
+      ;;
+    volume=$volume)
+      [ -s "$state/conflict" ] && echo conflict
+      ;;
+  esac
+  true
+elif [ "$1" = "inspect" ]; then
+  [ -s "$state/target" ] || exit 1
+  format=$3
+  case "$format" in
+    *com.docker.compose.project*) echo "$project" ;;
+    *Mounts*) echo "$volume" ;;
+    *'{{.Image}}'*) echo "$image" ;;
+  esac
+elif [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
+  [ -s "$state/target" ]
+elif [ "$1" = "rm" ]; then
+  : > "$state/target"
+elif [ "$1" = "volume" ]; then
+  case "$2" in
+    ls) ;;
+    inspect) [ -s "$state/volume" ] ;;
+    rm) : > "$state/volume" ;;
+  esac
+elif [ "$1" = "image" ]; then
+  case "$2" in
+    ls) [ -s "$state/image" ] && echo "$image" ;;
+    inspect)
+      [ -s "$state/image" ] || exit 1
+      case "$3" in
+        *RepoTags*) echo "$project-backend:cleanup" ;;
+        *com.docker.compose.project*) echo '<no value>' ;;
+      esac
+      ;;
+    rm) : > "$state/image" ;;
+  esac
+fi
+""",
+    )
+    env = {
+        **os.environ,
+        "FAKE_DOCKER_STATE": str(state),
+        "FAKE_IMAGE": image,
+        "FAKE_PROJECT": project,
+        "FAKE_VOLUME": volume,
+        "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
+    }
+
+    failed = _run_remote_cleanup(project, tmp_path / "services", env)
+
+    assert failed.returncode != 0
+    assert "volume candidate" in failed.stderr
+    assert (tmp_path / "services" / ".codegen-cleanup-candidates" / project).exists()
+
+    (state / "conflict").write_text("")
+    recovered = _run_remote_cleanup(project, tmp_path / "services", env)
+
+    assert recovered.returncode == 0, recovered.stderr
+    assert not (state / "volume").read_text()
+    assert not service_dir.exists()
 
 
 def test_server_cleanup_verifies_labelled_volume_residue_without_infra_directory(tmp_path):

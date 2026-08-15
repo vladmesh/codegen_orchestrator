@@ -11,6 +11,7 @@ import asyncssh
 import structlog
 
 from shared.contracts.queues.deploy import DeployAction, DeployOutcome
+from shared.live_harness_cleanup import REMOTE_CLEANUP_SCRIPT, build_remote_cleanup_command
 
 from ..clients.api import api_client
 from ._live_work import live_work_settled, live_work_unsettled
@@ -50,7 +51,6 @@ async def process_lifecycle_action(
         )
 
     service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
-    quoted_service_dir = shlex.quote(service_dir)
     compose_cmd = (
         f"cd {shlex.quote(f'{service_dir}/infra')} && "
         f"docker compose -p {shlex.quote(project_name)} "
@@ -59,10 +59,12 @@ async def process_lifecycle_action(
 
     if action == DeployAction.STOP:
         cmd = f"{compose_cmd} stop"
+        remote_input = None
     elif action == DeployAction.UNDEPLOY:
-        # compose down first, rm -rf only if down succeeds.
-        # If down fails — keep directory so retry can work.
-        cmd = f"{compose_cmd} down -v && rm -rf {quoted_service_dir}"
+        # Both production and recovery stream this one selector/order to the
+        # target. A failure retains the service directory for the next retry.
+        cmd = build_remote_cleanup_command(project_name, SERVICE_BASE_DIR)
+        remote_input = REMOTE_CLEANUP_SCRIPT.read_text()
     else:
         raise ValueError(f"Unexpected lifecycle action: {action}")
 
@@ -74,7 +76,7 @@ async def process_lifecycle_action(
             known_hosts=None,
             client_keys=[key],
         ) as conn:
-            result = await conn.run(cmd, check=False)
+            result = await conn.run(cmd, check=False, input=remote_input)
 
             if result.exit_status != 0:
                 error = f"SSH command failed (exit {result.exit_status}): {result.stderr}"
