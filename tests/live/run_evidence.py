@@ -1208,6 +1208,10 @@ def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
     names that no pass ever listed are reconciled in as missed captures — never
     omitted, because an omitted worker reads as "nothing ran".
     """
+    # Resolved here as well as in build_artifact: the live harness calls this with
+    # no root, and `None / "docs"` raised inside the fixture's `finally`, failing
+    # every combination at teardown and writing no artifact at all.
+    root = root if root is not None else orchestrator_root()
     collector: RunEvidenceCollector = ctx["run_evidence"]
     collector.capture()
     manifest = ctx.get("manifest")
