@@ -30,11 +30,17 @@ import httpx
 from langchain_core.tools import StructuredTool
 import structlog
 
+from shared.contracts.dto.run_result import (
+    QABlocker,
+    QABlockerCategory,
+    QATelegramProbeEvidence,
+)
 from shared.telegram_access_probe import ProbeRun, run_probe_script
 from shared.telegram_bot_probe import (
     TELEGRAM_REPLY_TIMEOUT,
+    build_bot_callback_script,
     build_bot_message_script,
-    parse_bot_replies,
+    parse_bot_probe_result,
 )
 
 from ...consumers._qa_target import QACapabilities, QATargetError, QATargetSession
@@ -132,6 +138,144 @@ def _remote_tools(session: QATargetSession, record, refuse) -> dict:
     }
 
 
+class _TelegramCapability:
+    """One run's Telegram operations and the callback data they made visible."""
+
+    def __init__(
+        self,
+        *,
+        bot_username: str,
+        workspace: QAWorkspace,
+        telethon_env: dict[str, str],
+        probe_runner: Callable[..., object],
+    ) -> None:
+        self._bot_username = bot_username
+        self._workspace = workspace
+        self._telethon_env = telethon_env
+        self._run_probe = probe_runner
+        self._visible_callbacks: dict[tuple[int, str], str] = {}
+
+    def _record_evidence(self, tool: str, evidence: QATelegramProbeEvidence) -> dict:
+        """Persist runner-owned evidence and fail closed on Telegram errors."""
+        blocker = self._blocker_for(evidence)
+        self._workspace.record_telegram_probe(evidence, blocker)
+        serialized = evidence.model_dump(mode="json")
+        self._workspace.record(tool, evidence.attempted, repr(serialized))
+        return {"error": evidence.error, **serialized} if blocker else serialized
+
+    @staticmethod
+    def _blocker_for(evidence: QATelegramProbeEvidence) -> QABlocker | None:
+        if not evidence.error:
+            return None
+        category = (
+            QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED
+            if evidence.delivered is False
+            else QABlockerCategory.UNKNOWN
+        )
+        return QABlocker(
+            category=category,
+            attempted=evidence.attempted,
+            sent=evidence.sent,
+            received=evidence.error,
+        )
+
+    def _unparseable_evidence(
+        self, *, action: str, attempted: str, sent: str, error: str, tool: str
+    ) -> dict:
+        """A child process with no usable result is not product evidence either."""
+        return self._record_evidence(
+            tool,
+            QATelegramProbeEvidence(
+                action=action,
+                attempted=attempted,
+                sent=sent,
+                delivered=None,
+                error=error,
+            ),
+        )
+
+    def _remember_visible_callbacks(self, evidence: QATelegramProbeEvidence) -> None:
+        for reply in evidence.replies:
+            if reply.reply_markup:
+                for button in reply.reply_markup.buttons:
+                    if button.callback_data:
+                        self._visible_callbacks[(reply.id, button.callback_data)] = (
+                            button.text or "inline button"
+                        )
+
+    def _parse_result(
+        self,
+        run: ProbeRun,
+        *,
+        action: str,
+        attempted: str,
+        sent: str,
+        tool: str,
+    ) -> dict:
+        try:
+            evidence = QATelegramProbeEvidence.model_validate(parse_bot_probe_result(run.stdout))
+        except ValueError as exc:
+            detail = (run.stderr or run.stdout or str(exc)).strip()[-1000:]
+            return self._unparseable_evidence(
+                action=action,
+                attempted=attempted,
+                sent=sent,
+                error=f"Telegram {action} probe returned no usable evidence: {detail}",
+                tool=tool,
+            )
+        self._remember_visible_callbacks(evidence)
+        return self._record_evidence(tool, evidence)
+
+    async def telegram_probe(self, message: str) -> dict:
+        run: ProbeRun = await self._run_probe(
+            build_bot_message_script(self._bot_username, message),
+            env=self._telethon_env,
+            timeout=TELEGRAM_REPLY_TIMEOUT + 30,
+        )
+        return self._parse_result(
+            run,
+            action="message",
+            attempted=f"send {message!r} to @{self._bot_username}",
+            sent=message,
+            tool="telegram_probe",
+        )
+
+    async def telegram_click_button(self, message_id: int, callback_data: str) -> dict:
+        """Invoke exactly one inline button a prior reply made visible in this run."""
+        button_text = self._visible_callbacks.get((message_id, callback_data))
+        sent = f"message_id={message_id} callback_data={callback_data}"
+        if button_text is None:
+            error = "the callback is not from an inline button visible in this run's bot replies"
+            logger.info("qa_tool_refused", tool="telegram_click_button", error=error)
+            return self._record_evidence(
+                "telegram_click_button",
+                QATelegramProbeEvidence(
+                    action="callback",
+                    attempted="press a callback requested by the executor",
+                    sent=sent,
+                    delivered=False,
+                    error=error,
+                ),
+            )
+        run: ProbeRun = await self._run_probe(
+            build_bot_callback_script(
+                self._bot_username,
+                message_id,
+                callback_data,
+                button_text=button_text,
+            ),
+            env=self._telethon_env,
+            timeout=TELEGRAM_REPLY_TIMEOUT + 30,
+        )
+        return self._parse_result(
+            run,
+            action="callback",
+            attempted=f"press {button_text}",
+            sent=sent,
+            tool="telegram_click_button",
+        )
+
+
 def build_qa_callables(
     *,
     session: QATargetSession,
@@ -154,7 +298,6 @@ def build_qa_callables(
         probe_runner: override for the Telegram child process, for tests.
     """
     capabilities = session.capabilities
-    run_probe = probe_runner or run_probe_script
 
     def record(tool: str, request: str, response: str) -> None:
         workspace.record(tool, request, response)
@@ -163,24 +306,6 @@ def build_qa_callables(
         record(tool, request, f"refused: {error}")
         logger.info("qa_tool_refused", tool=tool, error=str(error))
         return {"error": str(error)}
-
-    async def telegram_probe(message: str) -> dict:
-        request = f"@{capabilities.bot_username} <- {message}"
-        script = build_bot_message_script(capabilities.bot_username, message)
-        run: ProbeRun = await run_probe(
-            script, env=telethon_env, timeout=TELEGRAM_REPLY_TIMEOUT + 30
-        )
-        if run.exit_status != 0:
-            detail = (run.stderr or run.stdout or "probe failed").strip()[-1000:]
-            record("telegram_probe", request, f"failed: {detail}")
-            return {"error": detail}
-        try:
-            replies = parse_bot_replies(run.stdout)
-        except ValueError as exc:
-            record("telegram_probe", request, f"failed: {exc}")
-            return {"error": str(exc)}
-        record("telegram_probe", request, " | ".join(replies))
-        return {"sent": message, "replies": replies}
 
     def write_qa_report(markdown: str) -> str:
         workspace.write_report(markdown)
@@ -191,7 +316,14 @@ def build_qa_callables(
     if capabilities.bot_username:
         if not telethon_env:
             raise ValueError("a bot target needs the QA account's Telethon credentials")
-        callables["telegram_probe"] = telegram_probe
+        telegram = _TelegramCapability(
+            bot_username=capabilities.bot_username,
+            workspace=workspace,
+            telethon_env=telethon_env,
+            probe_runner=probe_runner or run_probe_script,
+        )
+        callables["telegram_probe"] = telegram.telegram_probe
+        callables["telegram_click_button"] = telegram.telegram_click_button
     return callables
 
 
@@ -221,6 +353,17 @@ def build_qa_tools(
                     f"Send a message to @{capabilities.bot_username} as the platform's QA "
                     "Telegram account and return the bot's replies. This is the only way to talk "
                     "to the bot; you never hold the account's credentials."
+                ),
+            )
+        )
+        tools.append(
+            StructuredTool.from_function(
+                coroutine=callables["telegram_click_button"],
+                name="telegram_click_button",
+                description=(
+                    "Invoke one inline button returned by telegram_probe in this QA run. "
+                    "Use the reply id and callback_data exactly as returned; arbitrary callbacks "
+                    "and callbacks from another bot are refused."
                 ),
             )
         )

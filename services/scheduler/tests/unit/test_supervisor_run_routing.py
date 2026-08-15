@@ -1209,6 +1209,48 @@ class TestSuperviseTestingStories:
         api_client.fail_story.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_undelivered_telegram_probe_never_creates_an_engineering_fix(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-telegram-1",
+            type=RunType.QA,
+            run_metadata={"application_id": 42},
+            result={
+                "qa_outcome": QAOutcome.BLOCKED.value,
+                "blocker": {
+                    "category": "telegram_probe_undelivered",
+                    "attempted": "send an empty message to @weather_bot",
+                    "sent": "",
+                    "received": "ValueError: The message cannot be empty",
+                },
+                "telegram_probe_evidence": [
+                    {
+                        "action": "message",
+                        "attempted": "send an empty message to @weather_bot",
+                        "sent": "",
+                        "delivered": False,
+                        "replies": [],
+                        "callback": None,
+                        "error": "ValueError: The message cannot be empty",
+                    }
+                ],
+            },
+        )
+        api_client.get_project.return_value = SimpleNamespace(owner_id=100713)
+
+        result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.create_task.assert_not_awaited()
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+
+    @pytest.mark.asyncio
     async def test_unreachable_health_only_qa_waits_for_human_without_fix_task(
         self, api_client, redis_client
     ):

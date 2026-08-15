@@ -20,6 +20,7 @@ shares the host, that is what has to refuse.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import re
 import shlex
 from types import SimpleNamespace
@@ -349,6 +350,7 @@ def central_run(tmp_path):
         provisioning=None,
         settings=NO_API_FALLBACK,
         unavailable=None,
+        runtime=RUNTIME,
     ):
         connection = conn or FakeConn()
         factory = _executor_factory(behaviour, unavailable=unavailable)
@@ -367,7 +369,7 @@ def central_run(tmp_path):
                 ),
                 fleet_ssh_key="fleet-key",
                 acceptance_criteria="- GET /health returns 200",
-                runtime=RUNTIME,
+                runtime=runtime,
                 grant_journal=record,
                 provisioning_journal=provisioning_record,
                 settings=settings,
@@ -792,7 +794,16 @@ class TestASecondProjectOnTheSameHost:
 
         async def probe(script, *, env, timeout):
             sent.append(script)
-            return SimpleNamespace(exit_status=0, stdout='telegram_replies:["hi"]\n', stderr="")
+            return SimpleNamespace(
+                exit_status=0,
+                stdout=(
+                    'telegram_probe_result:{"action":"message","attempted":"send /start '
+                    'to @weather_bot","sent":"/start","delivered":true,"replies":[{"id":7,'
+                    '"text":"hi","caption":null,"media_type":null,"reply_markup":null}],'
+                    '"callback":null,"error":null}\n'
+                ),
+                stderr="",
+            )
 
         with qa_workspace(root=str(tmp_path)) as workspace:
             tools = {
@@ -806,9 +817,130 @@ class TestASecondProjectOnTheSameHost:
             }
             answer = await tools["telegram_probe"].ainvoke({"message": "/start"})
 
-        assert answer["replies"] == ["hi"]
+        assert answer["replies"][0]["text"] == "hi"
         assert "@weather_bot" in sent[0]
         assert "@weather_bot" in tools["telegram_probe"].description
+
+    async def test_a_visible_inline_button_is_invoked_only_through_this_run(self, tmp_path):
+        from src.agents.qa.tools import build_qa_tools
+
+        with_bot = QACapabilities(
+            deployed_url=TARGET.deployed_url,
+            physical_root=PHYSICAL_ROOT,
+            containers=frozenset(OWN_CONTAINERS),
+            loopback_ports=frozenset({8000}),
+            bot_username="weather_bot",
+        )
+        scripts: list[str] = []
+
+        async def probe(script, *, env, timeout):
+            scripts.append(script)
+            if "GetBotCallbackAnswerRequest" in script:
+                return SimpleNamespace(
+                    exit_status=0,
+                    stdout=(
+                        'telegram_probe_result:{"action":"callback","attempted":"press '
+                        'Details","sent":"message_id=7 callback_data=ZGV0YWlscw==",'
+                        '"delivered":true,"replies":[{"id":8,"text":"Forecast details",'
+                        '"caption":null,"media_type":null,"reply_markup":null}],"callback":'
+                        '{"text":"opened","alert":false,"url":null},"error":null}\n'
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(
+                exit_status=0,
+                stdout=(
+                    'telegram_probe_result:{"action":"message","attempted":"send /start '
+                    'to @weather_bot","sent":"/start","delivered":true,"replies":[{"id":7,'
+                    '"text":"Choose","caption":null,"media_type":null,"reply_markup":{"type":'
+                    '"ReplyInlineMarkup","buttons":[{"row":0,"column":0,"text":"Details",'
+                    '"type":"KeyboardButtonCallback","callback_data":"ZGV0YWlscw=="}]}}],'
+                    '"callback":null,"error":null}\n'
+                ),
+                stderr="",
+            )
+
+        with qa_workspace(root=str(tmp_path)) as workspace:
+            tools = {
+                tool.name: tool
+                for tool in build_qa_tools(
+                    session=_session(capabilities=with_bot),
+                    workspace=workspace,
+                    telethon_env={"TELETHON_SESSION": "s"},
+                    probe_runner=probe,
+                )
+            }
+            first = await tools["telegram_probe"].ainvoke({"message": "/start"})
+            callback = await tools["telegram_click_button"].ainvoke(
+                {"message_id": first["replies"][0]["id"], "callback_data": "ZGV0YWlscw=="}
+            )
+
+        assert callback["callback"]["text"] == "opened"
+        assert callback["replies"][0]["text"] == "Forecast details"
+        assert "GetBotCallbackAnswerRequest" in scripts[-1]
+
+    async def test_an_unseen_inline_button_becomes_a_non_product_blocker(self, tmp_path):
+        from src.agents.qa.tools import build_qa_callables
+
+        with_bot = QACapabilities(
+            deployed_url=TARGET.deployed_url,
+            physical_root=PHYSICAL_ROOT,
+            containers=frozenset(OWN_CONTAINERS),
+            loopback_ports=frozenset({8000}),
+            bot_username="weather_bot",
+        )
+
+        with qa_workspace(root=str(tmp_path)) as workspace:
+            calls = build_qa_callables(
+                session=_session(capabilities=with_bot),
+                workspace=workspace,
+                telethon_env={"TELETHON_SESSION": "s"},
+            )
+            answer = await calls["telegram_click_button"](7, "ZGV0YWlscw==")
+
+            assert answer["delivered"] is False
+            assert workspace.telegram_probe_blocker is not None
+            assert (
+                workspace.telegram_probe_blocker.category
+                is QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED
+            )
+
+    async def test_a_pre_delivery_telegram_error_blocks_the_agent_verdict(self, central_run):
+        runtime = QARuntimeConfig(
+            executor_agent_type=AgentType.CLAUDE,
+            capability_host="127.0.0.1",
+            telethon_env={"TELETHON_SESSION": "s"},
+        )
+
+        async def behaviour(harness):
+            answer = await harness.tools["telegram_probe"].ainvoke({"message": ""})
+            assert "error" in answer
+            return (
+                '{"pass": false, "checks": [{"name": "Telegram /start", '
+                '"pass": false, "detail": "empty"}], "summary": "bot failed"}'
+            )
+
+        async def probe(script, *, env, timeout):
+            return SimpleNamespace(
+                exit_status=0,
+                stdout=(
+                    'telegram_probe_result:{"action":"message","attempted":"send \'\' '
+                    'to @weather_bot","sent":"","delivered":false,"replies":[], '
+                    '"callback":null,"error":"ValueError: The message cannot be empty"}\n'
+                ),
+                stderr="",
+            )
+
+        with patch("src.agents.qa.tools.run_probe_script", probe):
+            result, _, _, _ = await central_run(
+                behaviour=behaviour,
+                runtime=runtime,
+                target=replace(TARGET, bot_username="weather_bot"),
+            )
+
+        assert result.blocker is not None
+        assert result.blocker.category is QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED
+        assert result.telegram_probe_evidence[0].delivered is False
 
     async def test_a_run_without_a_bot_has_no_telegram_tool(self, tmp_path):
         from src.agents.qa.tools import build_qa_tools

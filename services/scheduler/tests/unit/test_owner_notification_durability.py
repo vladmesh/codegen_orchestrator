@@ -422,7 +422,13 @@ class TestTheRecordComesBeforeTheTransition:
         from src.tasks.supervisor import supervise_testing_stories
 
         _reroute(
-            world, api_client, {"qa_outcome": QAOutcome.FAILED.value, "summary": "still broken"}
+            world,
+            api_client,
+            {
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "still broken",
+                "failed_checks": [{"name": "weather endpoint", "detail": "500"}],
+            },
         )
         api_client.get_tasks_by_story.return_value = [
             _make_task(id=f"task-{index}", failure_metadata={"qa_failure": _prior_failure(index)})

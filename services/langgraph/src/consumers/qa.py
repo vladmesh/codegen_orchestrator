@@ -589,6 +589,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 run_id=run_id,
                 blocker=qa_result.blocker,
                 state_changes=qa_result.state_changes,
+                telegram_probe_evidence=qa_result.telegram_probe_evidence,
             )
         if qa_result.passed:
             return await _handle_qa_pass(
@@ -596,6 +597,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 deployed_url=msg.deployed_url,
                 report=qa_result.report,
                 state_changes=qa_result.state_changes,
+                telegram_probe_evidence=qa_result.telegram_probe_evidence,
             )
         else:
             return await _handle_qa_fail(
@@ -630,6 +632,7 @@ async def _handle_qa_pass(
     deployed_url: str,
     report: str = "",
     state_changes: list[dict] | None = None,
+    telegram_probe_evidence: list | None = None,
 ) -> dict:
     """Handle QA pass — store PASSED outcome in run."""
     await _update_run(
@@ -639,6 +642,7 @@ async def _handle_qa_pass(
         deployed_url=deployed_url,
         report=report,
         state_changes=state_changes or [],
+        telegram_probe_evidence=telegram_probe_evidence or [],
     )
     logger.info("qa_passed", run_id=run_id)
     return live_work_settled({"status": "passed"})
@@ -649,6 +653,7 @@ async def _handle_qa_blocked(
     run_id: str,
     blocker: QABlocker,
     state_changes: list[dict] | None = None,
+    telegram_probe_evidence: list | None = None,
 ) -> dict:
     """Persist a non-product QA blocker for human review."""
     await _update_run(
@@ -658,6 +663,7 @@ async def _handle_qa_blocked(
         summary="QA could not verify the product",
         blocker=blocker,
         state_changes=state_changes or [],
+        telegram_probe_evidence=telegram_probe_evidence or [],
     )
     logger.warning("qa_blocked", run_id=run_id, category=blocker.category.value)
     return live_work_settled({"status": "qa_blocked", "blocker": blocker.category.value})
@@ -692,6 +698,7 @@ async def _handle_qa_fail(
             qa_attempt=qa_attempt,
             report=qa_result.report,
             state_changes=qa_result.state_changes,
+            telegram_probe_evidence=qa_result.telegram_probe_evidence,
         )
         return live_work_settled({"status": "qa_exhausted"})
 
@@ -704,6 +711,7 @@ async def _handle_qa_fail(
         qa_attempt=qa_attempt,
         report=qa_result.report,
         state_changes=qa_result.state_changes,
+        telegram_probe_evidence=qa_result.telegram_probe_evidence,
     )
 
     logger.info(
