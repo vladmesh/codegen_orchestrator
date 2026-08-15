@@ -103,6 +103,27 @@ class TestCreateProject:
         assert "abc123" in result
 
     @pytest.mark.asyncio
+    async def test_uses_a_pre_registered_creation_identity_from_runnable_config(
+        self, mock_api_client
+    ):
+        """A live harness can own a PO creation before the scheduler sees it."""
+        mock_api_client.post_raw.return_value = _make_response(
+            {"id": "11111111-1111-1111-1111-111111111111", "title": "Matrix", "slug": "matrix"}
+        )
+        config = _make_config("999000001")
+        config["configurable"]["project_creation_identity"] = {
+            "project_id": "11111111-1111-1111-1111-111111111111",
+            "initiating_run_id": "matrix-po-default-42-omitted",
+        }
+
+        await create_project.ainvoke({"title": "Matrix", "modules": "backend"}, config=config)
+
+        payload = mock_api_client.post_raw.call_args_list[0].kwargs["json"]
+        assert payload["id"] == "11111111-1111-1111-1111-111111111111"
+        assert payload["initiating_run_id"] == "matrix-po-default-42-omitted"
+        assert "agent_type" not in payload["config"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("agent_type", ["claude", "factory", "codex"])
     async def test_persists_selected_developer_agent(self, mock_api_client, agent_type):
         mock_api_client.post_raw.return_value = _make_response(

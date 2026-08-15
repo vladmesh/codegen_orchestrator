@@ -49,6 +49,37 @@ HTTP_UNPROCESSABLE = 422
 # free token it has no way to deliver, and gives up long before the user does.
 TEARDOWN_POLL_INTERVAL_SECONDS = 5.0
 TEARDOWN_TIMEOUT_SECONDS = 300.0
+MAX_INITIATING_RUN_ID_LENGTH = 64
+
+
+def _project_creation_identity(config: RunnableConfig) -> tuple[str, str]:
+    """Return the pre-registered identity when a harness supplied one.
+
+    Normal PO requests mint both values here. A live harness may register a
+    project in its recovery manifest before it asks the real PO tool to create
+    it; that identity travels in RunnableConfig, never in the model-visible
+    tool arguments.
+    """
+    configurable = config.get("configurable", {})
+    supplied = configurable.get("project_creation_identity")
+    if supplied is None:
+        return str(uuid.uuid4()), f"po-{uuid.uuid4().hex[:12]}"
+    if not isinstance(supplied, dict):
+        raise ValueError("project_creation_identity must be an object")
+
+    project_id = supplied.get("project_id")
+    initiating_run_id = supplied.get("initiating_run_id")
+    if not isinstance(project_id, str):
+        raise ValueError("project_creation_identity.project_id must be a UUID")
+    try:
+        project_id = str(uuid.UUID(project_id))
+    except ValueError as exc:
+        raise ValueError("project_creation_identity.project_id must be a UUID") from exc
+    if not isinstance(initiating_run_id, str) or not 1 <= len(initiating_run_id) <= (
+        MAX_INITIATING_RUN_ID_LENGTH
+    ):
+        raise ValueError("project_creation_identity.initiating_run_id must be 1-64 characters")
+    return project_id, initiating_run_id
 
 
 @tool
@@ -82,7 +113,7 @@ async def create_project(
     if "backend" not in modules_list:
         modules_list.insert(0, "backend")
 
-    project_id = str(uuid.uuid4())
+    project_id, initiating_run_id = _project_creation_identity(config)
     proj_config = {
         "modules": modules_list,
         "description": description,
@@ -101,7 +132,7 @@ async def create_project(
         # once, at creation. Every worker created for this project later is
         # stamped with this id. (An experiment matrix supplies its combination's
         # run id in the same field instead of minting one.)
-        "initiating_run_id": f"po-{uuid.uuid4().hex[:12]}",
+        "initiating_run_id": initiating_run_id,
     }
 
     api = _get_api()

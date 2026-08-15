@@ -2,6 +2,16 @@
 
 ## 2026-08-15
 
+- The operator-dispatched Production Agent Matrix now runs one PO-default preflight before its
+  worker/QA combinations. The preflight invokes the released `create_project` tool with a real
+  test-user RunnableConfig and no `agent_type` argument, reads the sidecar API's actual runtime
+  default and persisted project, then creates a separately owned project with a different explicit
+  supported agent. It retains one exclusive, SHA-bound redacted receipt with the project,
+  repository, initiating-run, PO-response and notification-probe identifiers. Both projects are
+  registered in separate live manifests before the tool calls and pass through the normal
+  run-scoped cleanup path on success and every error path; response/proactive/outbox ambiguity is
+  a failed preflight, never a silent absence.
+
 - The Backend Docker-in-Docker Claude-agent checks now own each worker through
   create completion, sustained Docker liveness and worker-manager deletion.
   `test_claude_instructions_injected` uses API-key mode because it verifies
