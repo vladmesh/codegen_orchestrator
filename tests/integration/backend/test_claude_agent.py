@@ -11,7 +11,13 @@ from shared.contracts.queues.worker import (
     WorkerOwnership,
 )
 
-from .conftest import delete_test_worker, exec_in_running_worker, wait_for_worker_ready
+from .conftest import (
+    assert_worker_is_running,
+    delete_test_worker,
+    exec_in_running_worker,
+    wait_for_worker_exit,
+    wait_for_worker_ready,
+)
 
 # Constants
 CREATE_TIMEOUT = 240  # seconds, includes a cold worker image build inside DinD
@@ -193,15 +199,18 @@ async def test_stopped_instruction_worker_reports_startup_evidence(
     )
 
     try:
+        container = await wait_for_worker_exit(
+            redis_client,
+            docker_client,
+            request_id=request_id,
+            worker_id=worker_id,
+            create_timeout=CREATE_TIMEOUT,
+            exit_timeout=READINESS_TIMEOUT,
+        )
+        assert container.attrs["State"]["ExitCode"] == 1
+
         with pytest.raises(AssertionError) as exc:
-            await wait_for_worker_ready(
-                redis_client,
-                docker_client,
-                request_id=request_id,
-                worker_id=worker_id,
-                create_timeout=CREATE_TIMEOUT,
-                readiness_timeout=READINESS_TIMEOUT,
-            )
+            assert_worker_is_running(container, worker_id)
 
         failure = str(exc.value)
         assert "status=exited" in failure

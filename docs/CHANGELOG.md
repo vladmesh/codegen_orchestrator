@@ -7,8 +7,9 @@
   `test_claude_instructions_injected` uses API-key mode because it verifies
   injection rather than session persistence; a stopped worker now reports its
   status, exit code and bounded log tail instead of retrying a Docker 409. The
-  regression drives the prior ordering through a deliberately non-writable
-  host-session mount, while the actual host-session check uses a test-owned,
+  deliberately non-writable regression waits for its owned worker to exit
+  before it checks that evidence, so it does not race the positive sustained-
+  readiness assertion. The actual host-session check uses a test-owned,
   worker-writable DinD volume.
 
 - Application undeploy and live-target recovery now stream one project-scoped cleanup script. It

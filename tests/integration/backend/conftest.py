@@ -49,7 +49,11 @@ _TERMINAL_CONTAINER_STATES = frozenset({"dead", "exited", "removing"})
 
 
 async def wait_for_create_response(
-    redis_client: redis.Redis, stream: str, request_id: str, timeout: int = 120
+    redis_client: redis.Redis,
+    stream: str,
+    request_id: str,
+    timeout: int = 120,
+    require_running_after_completion: bool = True,
 ) -> CreateWorkerResponse:
     """Wait for a CreateWorkerResponse matching the given request_id.
 
@@ -89,6 +93,7 @@ async def wait_for_create_response(
                 request_id=request_id,
                 worker_id=response.worker_id,
                 timeout=max(1, round(remaining)),
+                require_running=require_running_after_completion,
             )
         return response
 
@@ -96,7 +101,12 @@ async def wait_for_create_response(
 
 
 async def _wait_for_create_command_completion(
-    redis_client: redis.Redis, *, request_id: str, worker_id: str, timeout: int
+    redis_client: redis.Redis,
+    *,
+    request_id: str,
+    worker_id: str,
+    timeout: int,
+    require_running: bool = True,
 ) -> None:
     """Wait past the create command's early response until its stream entry is ACKed."""
     command_id = None
@@ -118,6 +128,8 @@ async def _wait_for_create_command_completion(
             count=1,
         )
         if not pending:
+            if not require_running:
+                return
             status = await redis_client.hget(f"worker:status:{worker_id}", "status")
             if status == "RUNNING":
                 return
@@ -258,6 +270,66 @@ async def wait_for_worker_ready(
 
     raise AssertionError(
         f"Worker {worker_id} did not become ready within {readiness_timeout}s after creation: "
+        f"{_container_lifecycle_diagnostics(container, worker_id)}"
+    )
+
+
+async def wait_for_worker_exit(
+    redis_client: redis.Redis,
+    docker_client,
+    *,
+    request_id: str,
+    worker_id: str,
+    create_timeout: int = 240,
+    exit_timeout: int = 30,
+):
+    """Wait for a deliberately invalid test worker to reach its terminal exit."""
+    try:
+        response = await wait_for_create_response(
+            redis_client,
+            REDIS_STREAM_DEV_RESPONSES,
+            request_id=request_id,
+            timeout=create_timeout,
+            require_running_after_completion=False,
+        )
+    except (RuntimeError, TimeoutError) as exc:
+        try:
+            container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
+        except NotFound:
+            raise AssertionError(
+                f"Worker {worker_id} did not complete creation: {exc}; container was not created"
+            ) from exc
+        raise AssertionError(
+            f"Worker {worker_id} did not complete creation: {exc}; "
+            f"{_container_lifecycle_diagnostics(container, worker_id)}"
+        ) from exc
+
+    assert response.success and response.worker_id == worker_id, (
+        f"Worker creation was not accepted for {worker_id}: {response.error}"
+    )
+
+    try:
+        container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
+    except NotFound as exc:
+        raise AssertionError(f"Worker {worker_id} was removed before it could exit") from exc
+
+    deadline = time.monotonic() + exit_timeout
+    while time.monotonic() < deadline:
+        try:
+            container.reload()
+        except NotFound as exc:
+            raise AssertionError(f"Worker {worker_id} was removed before it could exit") from exc
+        if container.status == "exited":
+            return container
+        if container.status in _TERMINAL_CONTAINER_STATES:
+            raise AssertionError(
+                f"Worker {worker_id} reached unexpected terminal state: "
+                f"{_container_lifecycle_diagnostics(container, worker_id)}"
+            )
+        await asyncio.sleep(0.25)
+
+    raise AssertionError(
+        f"Worker {worker_id} did not exit within {exit_timeout}s after creation: "
         f"{_container_lifecycle_diagnostics(container, worker_id)}"
     )
 
