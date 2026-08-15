@@ -243,13 +243,20 @@ class _TelegramCapability:
     async def telegram_click_button(self, message_id: int, callback_data: str) -> dict:
         """Invoke exactly one inline button a prior reply made visible in this run."""
         button_text = self._visible_callbacks.get((message_id, callback_data))
+        sent = f"message_id={message_id} callback_data={callback_data}"
         if button_text is None:
             error = "the callback is not from an inline button visible in this run's bot replies"
-            request = f"message_id={message_id} callback_data={callback_data}"
-            self._workspace.record("telegram_click_button", request, f"refused: {error}")
             logger.info("qa_tool_refused", tool="telegram_click_button", error=error)
-            return {"error": error}
-        sent = f"message_id={message_id} callback_data={callback_data}"
+            return self._record_evidence(
+                "telegram_click_button",
+                QATelegramProbeEvidence(
+                    action="callback",
+                    attempted="press a callback requested by the executor",
+                    sent=sent,
+                    delivered=False,
+                    error=error,
+                ),
+            )
         run: ProbeRun = await self._run_probe(
             build_bot_callback_script(
                 self._bot_username,

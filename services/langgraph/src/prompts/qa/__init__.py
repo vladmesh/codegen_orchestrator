@@ -109,7 +109,8 @@ def _bot_section(bot_username: str, executor: QAExecutorKind) -> str:
   caption, media type and keyboard buttons. A media-only reply is evidence.
 - Invoke a visible inline button only with {callback_call}, using the reply id
   and callback data returned by the probe. It returns the callback answer and
-  every resulting bot reply.
+  every resulting bot reply, plus post-press evidence for the clicked message
+  so an edit-in-place is observable.
 - You never hold the account's credentials, and there is no other way to reach Telegram.
 - Every Telegram check is either pass or fail, decided by sending the message.
   "Blocked", "skipped" and "cannot test" are not allowed results: if you have not

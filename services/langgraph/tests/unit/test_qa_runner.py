@@ -50,6 +50,7 @@ class TestBuildQAPrompt:
         )
         assert "@weather_bot" in prompt
         assert "telegram_probe" in prompt
+        assert "post-press evidence" in prompt
 
     def test_bot_prompt_never_hands_the_agent_telegram_credentials(self):
         prompt = build_qa_prompt(

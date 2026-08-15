@@ -256,6 +256,9 @@ class QATelegramProbeEvidence(BaseModel):
     delivered: bool | None = None
     replies: list[QATelegramReplyEvidence] = Field(default_factory=list)
     callback: QATelegramCallbackEvidence | None = None
+    # Callback operations re-read the pressed bot reply after the press. This
+    # makes an edit-in-place observable even when Telegram sends no new reply.
+    post_press_message: QATelegramReplyEvidence | None = None
     error: str | None = None
 
 

@@ -150,6 +150,13 @@ class TestValidPayloads:
                             }
                         ],
                         "callback": None,
+                        "post_press_message": {
+                            "id": 42,
+                            "text": "Details opened",
+                            "caption": None,
+                            "media_type": None,
+                            "reply_markup": None,
+                        },
                         "error": None,
                     }
                 ],
@@ -158,6 +165,8 @@ class TestValidPayloads:
 
         evidence = run.result.telegram_probe_evidence[0]
         assert evidence.replies[0].media_type == "MessageMediaPhoto"
+        assert evidence.post_press_message is not None
+        assert evidence.post_press_message.text == "Details opened"
         assert evidence.replies[0].caption == "Today: sunny"
         assert evidence.replies[0].reply_markup.buttons[0].callback_data == "ZGV0YWlscw=="
 

@@ -173,7 +173,8 @@ def main():
 
     sys.stdout.write(body + "\\n")
     answer = json.loads(body)
-    return 1 if "error" in answer else 0
+    error = answer.get("error")
+    return 1 if isinstance(error, str) and error.strip() else 0
 
 
 if __name__ == "__main__":

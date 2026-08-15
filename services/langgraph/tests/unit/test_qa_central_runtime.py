@@ -879,6 +879,32 @@ class TestASecondProjectOnTheSameHost:
         assert callback["replies"][0]["text"] == "Forecast details"
         assert "GetBotCallbackAnswerRequest" in scripts[-1]
 
+    async def test_an_unseen_inline_button_becomes_a_non_product_blocker(self, tmp_path):
+        from src.agents.qa.tools import build_qa_callables
+
+        with_bot = QACapabilities(
+            deployed_url=TARGET.deployed_url,
+            physical_root=PHYSICAL_ROOT,
+            containers=frozenset(OWN_CONTAINERS),
+            loopback_ports=frozenset({8000}),
+            bot_username="weather_bot",
+        )
+
+        with qa_workspace(root=str(tmp_path)) as workspace:
+            calls = build_qa_callables(
+                session=_session(capabilities=with_bot),
+                workspace=workspace,
+                telethon_env={"TELETHON_SESSION": "s"},
+            )
+            answer = await calls["telegram_click_button"](7, "ZGV0YWlscw==")
+
+            assert answer["delivered"] is False
+            assert workspace.telegram_probe_blocker is not None
+            assert (
+                workspace.telegram_probe_blocker.category
+                is QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED
+            )
+
     async def test_a_pre_delivery_telegram_error_blocks_the_agent_verdict(self, central_run):
         runtime = QARuntimeConfig(
             executor_agent_type=AgentType.CLAUDE,

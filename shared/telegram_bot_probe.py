@@ -49,12 +49,17 @@ def reply_markup_evidence(markup):
 
 def message_evidence(message):
     media = getattr(message, "media", None)
-    content = getattr(message, "raw_text", None) or getattr(message, "message", None)
+    media_type = type(media).__name__ if media is not None else None
+    content = getattr(message, "raw_text", None)
+    if content is None:
+        content = getattr(message, "message", None)
+    content = content or None
+    is_attachment = media is not None and media_type != "MessageMediaWebPage"
     return {
         "id": message.id,
-        "text": None if media is not None else content,
-        "caption": content if media is not None else None,
-        "media_type": type(media).__name__ if media is not None else None,
+        "text": None if is_attachment else content,
+        "caption": content if is_attachment else None,
+        "media_type": media_type,
         "reply_markup": reply_markup_evidence(getattr(message, "reply_markup", None)),
     }
 
@@ -66,6 +71,11 @@ def received_replies(client, bot, minimum_id):
         for message in reversed(found)
         if not message.out and message.id > minimum_id
     ]
+
+
+def newest_message_id(client, bot):
+    messages = client.get_messages(bot, limit=1)
+    return messages[0].id if messages else 0
 """
 
 
@@ -161,6 +171,7 @@ def build_bot_callback_script(
         "    'delivered': False,\n"
         "    'replies': [],\n"
         "    'callback': None,\n"
+        "    'post_press_message': None,\n"
         "    'error': None,\n"
         "}\n"
         "try:\n"
@@ -177,6 +188,8 @@ def build_bot_callback_script(
         "               if button['callback_data'] is not None}\n"
         "    if callback_data not in visible:\n"
         "        raise ValueError('the requested callback is not visible on that bot reply')\n"
+        "    pre_press_message = message_evidence(message)\n"
+        "    reply_baseline = newest_message_id(client, bot)\n"
         "    answer = client(GetBotCallbackAnswerRequest(\n"
         "        peer=bot, msg_id=message.id, data=base64.b64decode(callback_data)\n"
         "    ))\n"
@@ -188,8 +201,13 @@ def build_bot_callback_script(
         "    }\n"
         f"    deadline = time.monotonic() + {wait_seconds}\n"
         "    while time.monotonic() < deadline:\n"
-        "        result['replies'] = received_replies(client, bot, message.id)\n"
-        "        if result['replies']:\n"
+        "        result['replies'] = received_replies(client, bot, reply_baseline)\n"
+        "        post_press = client.get_messages(bot, ids=message.id)\n"
+        "        result['post_press_message'] = (\n"
+        "            message_evidence(post_press)\n"
+        "            if post_press is not None and not post_press.out else None\n"
+        "        )\n"
+        "        if result['replies'] or result['post_press_message'] != pre_press_message:\n"
         "            break\n"
         "        time.sleep(1)\n"
         "except Exception as exc:\n"
