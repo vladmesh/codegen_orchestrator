@@ -2,6 +2,15 @@
 
 ## 2026-08-15
 
+- [hotfix] The PO-default matrix preflight now binds its PO tool to the checkout it is proving.
+  `uv run` puts every workspace member's sources on `sys.path` and `services/api` precedes
+  `services/langgraph` there, so a conditional insert was a no-op and `import src.agents...`
+  resolved to the API service — the preflight died on production with `No module named
+  'src.agents'`. The checkout is forced ahead of the workspace entries and the imported module's
+  provenance is verified against it, so a wrong binding is a named preflight failure. Covered by a
+  child-interpreter regression that performs the import the workflow actually performs; the
+  existing runtime tests all build `MatrixRuntime` with `object.__new__` and never executed it.
+
 - The operator-dispatched Production Agent Matrix now runs one PO-default preflight before its
   worker/QA combinations. The preflight invokes the released `create_project` tool with a real
   test-user RunnableConfig and no `agent_type` argument, reads the sidecar API's actual runtime

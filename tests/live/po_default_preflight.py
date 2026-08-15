@@ -474,6 +474,38 @@ class _UnusedPOStreamClient:
         raise PreflightError(f"create_project unexpectedly used PO stream client attribute {name}")
 
 
+def load_po_tool_boundary(root: Path) -> tuple[Any, Any]:
+    """Bind the released PO tool to *this* checkout's langgraph service.
+
+    `uv run` installs every workspace member editable, so each service source
+    directory is already on `sys.path` — and `services/api` sits ahead of
+    `services/langgraph` there. Both services own a top level package named
+    `src`, so a plain `import src.agents...` binds to the API service and fails
+    with `No module named 'src.agents'`. A conditional insert cannot repair
+    that: the path is present, just in the losing position. The checkout is
+    therefore forced to the front of `sys.path`, and the module the import
+    actually produced is checked against the checkout before it is used, so a
+    wrong binding is a named preflight failure rather than a missing attribute
+    somewhere later.
+    """
+    for entry in (root, root / "services" / "langgraph"):
+        text = str(entry)
+        while text in sys.path:
+            sys.path.remove(text)
+        sys.path.insert(0, text)
+    from src.agents.po import tools_projects
+    from src.agents.po.tools import create_project, init_po_clients
+
+    expected = root / "services" / "langgraph" / "src" / "agents" / "po" / "tools_projects.py"
+    if Path(tools_projects.__file__).resolve() != expected.resolve():
+        raise PreflightError(
+            f"{TOOL_IDENTIFIER} resolved outside the matrix checkout: {tools_projects.__file__}"
+        )
+    if create_project is not tools_projects.create_project:
+        raise PreflightError(f"{TOOL_IDENTIFIER} is not the tool the preflight imported")
+    return create_project, init_po_clients
+
+
 class MatrixRuntime:
     """Production implementation backed by the matrix checkout and sidecar API."""
 
@@ -481,12 +513,8 @@ class MatrixRuntime:
         self._root = resolve_repo_root(Path(__file__))
         self._api_url = api_url
         self._api_container = api_container
-        if str(self._root) not in sys.path:
-            sys.path.insert(0, str(self._root))
-        if str(self._root / "services" / "langgraph") not in sys.path:
-            sys.path.insert(0, str(self._root / "services" / "langgraph"))
+        create_project, init_po_clients = load_po_tool_boundary(self._root)
         from shared.clients.internal_api import InternalAPIClient
-        from src.agents.po.tools import create_project, init_po_clients
 
         self._api = InternalAPIClient(api_url)
         self._create_project = create_project
