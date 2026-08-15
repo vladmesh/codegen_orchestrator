@@ -29,6 +29,7 @@ from src.agents.po.tools import (
     validate_telegram_token,
     web_search,
 )
+from src.agents.po.tools_projects import _project_creation_identity
 
 BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105
 
@@ -101,6 +102,58 @@ class TestCreateProject:
         assert "tg_bot" in payload["config"]["modules"]
         assert "Project created" in result
         assert "abc123" in result
+
+    @pytest.mark.asyncio
+    async def test_uses_a_pre_registered_creation_identity_from_runnable_config(
+        self, mock_api_client
+    ):
+        """A live harness can own a PO creation before the scheduler sees it."""
+        mock_api_client.post_raw.return_value = _make_response(
+            {"id": "11111111-1111-1111-1111-111111111111", "title": "Matrix", "slug": "matrix"}
+        )
+        config = _make_config("999000001")
+        config["configurable"]["project_creation_identity"] = {
+            "project_id": "11111111-1111-1111-1111-111111111111",
+            "initiating_run_id": "matrix-po-default-42-omitted",
+        }
+
+        await create_project.ainvoke({"title": "Matrix", "modules": "backend"}, config=config)
+
+        payload = mock_api_client.post_raw.call_args_list[0].kwargs["json"]
+        assert payload["id"] == "11111111-1111-1111-1111-111111111111"
+        assert payload["initiating_run_id"] == "matrix-po-default-42-omitted"
+        assert "agent_type" not in payload["config"]
+
+    @pytest.mark.parametrize(
+        ("identity", "message"),
+        [
+            ([], "must be an object"),
+            (
+                {"project_id": 1, "initiating_run_id": "matrix-po-default-omitted"},
+                "project_id must be a UUID",
+            ),
+            (
+                {
+                    "project_id": "not-a-uuid",
+                    "initiating_run_id": "matrix-po-default-omitted",
+                },
+                "project_id must be a UUID",
+            ),
+            (
+                {
+                    "project_id": "11111111-1111-1111-1111-111111111111",
+                    "initiating_run_id": "x" * 65,
+                },
+                "initiating_run_id must be 1-64 characters",
+            ),
+        ],
+    )
+    def test_rejects_invalid_pre_registered_creation_identity(self, identity, message):
+        config = _make_config("999000001")
+        config["configurable"]["project_creation_identity"] = identity
+
+        with pytest.raises(ValueError, match=message):
+            _project_creation_identity(config)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("agent_type", ["claude", "factory", "codex"])

@@ -2,6 +2,24 @@
 
 ## 2026-08-15
 
+- The operator-dispatched Production Agent Matrix now runs one PO-default preflight before its
+  worker/QA combinations. The preflight invokes the released `create_project` tool with a real
+  test-user RunnableConfig and no `agent_type` argument, reads the sidecar API's actual runtime
+  default and persisted project, then creates a separately owned project with a different explicit
+  supported agent. It retains one exclusive, SHA-bound redacted receipt with the project,
+  repository, initiating-run, PO-response and notification-probe identifiers. Both projects are
+  registered in separate live manifests before the tool calls and pass through the normal
+  run-scoped cleanup path on success and every error path; response/proactive/outbox ambiguity is
+  a failed preflight, never a silent absence.
+
+- PO-default preflight notification evidence now takes a `po:proactive` stream boundary before
+  either manifest-owned project is created and examines only the post-boundary delta. Historical
+  harness-user deliveries are recorded only by the boundary and cannot poison a later operator
+  dispatch; a delta entry for either owned project or one without a valid project identity fails
+  closed. Owned delta entries are registered in their manifest for normal cleanup. The preflight
+  also upserts the established harness identity itself, reserves initiating-run space for the
+  `-explicit` variant, and records the underlying failure class and redacted message in its receipt.
+
 - The Backend Docker-in-Docker Claude-agent checks now own each worker through
   create completion, sustained Docker liveness and worker-manager deletion.
   `test_claude_instructions_injected` uses API-key mode because it verifies

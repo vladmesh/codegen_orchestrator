@@ -112,6 +112,33 @@ jobs:
               sleep 1
             done
 
+            # This is deliberately the released PO-tool boundary, not a POST
+            # factory. The entry point binds two manifest-owned project ids to
+            # this checkout and writes its own exclusive receipt before any
+            # worker/QA combination starts. Its failure is terminal for this
+            # operator-dispatched matrix, but the receipt remains for the
+            # read-only diagnostics action.
+            preflight_id="matrix-po-default-${{ github.run_id }}-${{ github.run_attempt }}"
+            preflight_evidence="docs/e2e_results/run-evidence-po-default-${preflight_id}.json"
+            test ! -e "$preflight_evidence"
+            if COMPOSE_FILE="docker-compose.yml:docker-compose.prod.yml" \
+              INTERNAL_API_KEY="$internal_key" \
+              PO_DEFAULT_MATRIX_API_URL="http://127.0.0.1:8000" \
+              PO_DEFAULT_MATRIX_API_CONTAINER="$matrix_api_container" \
+              PO_DEFAULT_MATRIX_CHECKOUT_SHA="${{ github.sha }}" \
+              PO_DEFAULT_MATRIX_PREFLIGHT_ID="$preflight_id" \
+              PO_DEFAULT_MATRIX_TEST_TELEGRAM_ID="999000001" \
+              PO_DEFAULT_MATRIX_EVIDENCE_DIRECTORY="docs/e2e_results" \
+              uv run python tests/live/po_default_preflight.py; then
+              preflight_status=passed
+            else
+              preflight_status=failed
+            fi
+            test -s "$preflight_evidence"
+            printf '\nPO default preflight (%s):\n' "$preflight_status"
+            cat "$preflight_evidence"
+            test "$preflight_status" = passed
+
             matrix_failed=0
             for qa_agent in claude codex; do
               set_qa_executor "$qa_agent"
