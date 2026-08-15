@@ -48,6 +48,7 @@ from shared.contracts.acceptance import HealthCriterion
 from shared.contracts.dto.run_result import (
     QABlocker,
     QABlockerCategory,
+    QATelegramProbeEvidence,
 )
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
@@ -180,6 +181,7 @@ class QAResult:
     report: str = ""
     blocker: QABlocker | None = None
     state_changes: list[dict] = field(default_factory=list)
+    telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
     # What the executor's own container reported about the run. Runner-owned
     # evidence like the tool trace, and scanned for forbidden writes with it.
     executor_evidence: str = ""
@@ -719,6 +721,23 @@ def _apply_cleanup_residue(qa_result: QAResult, residues: list[str]) -> QAResult
     return qa_result
 
 
+def _apply_telegram_probe_evidence(qa_result: QAResult, workspace: QAWorkspace) -> QAResult:
+    """Persist Telegram evidence and refuse a product verdict after a probe error.
+
+    The executor may describe a failed product check after its capability call
+    returned an error. The runtime, not the executor, knows whether Telegram
+    actually received that operation, so it replaces that unverified verdict
+    with the recorded blocker before the QA consumer ever sees it.
+    """
+    qa_result.telegram_probe_evidence = list(workspace.telegram_probe_evidence)
+    if workspace.telegram_probe_blocker is None:
+        return qa_result
+    qa_result.passed = False
+    qa_result.blocker = workspace.telegram_probe_blocker
+    qa_result.summary = "QA could not verify the product because a Telegram probe failed"
+    return qa_result
+
+
 async def _invoke_qa_agent(
     *,
     target: QATarget,
@@ -766,7 +785,9 @@ async def _invoke_qa_agent(
             timeout=timeout,
         )
         if executor_run is not None:
-            return _verdict_of(workspace, service, executor_run, timeout)
+            return _apply_telegram_probe_evidence(
+                _verdict_of(workspace, service, executor_run, timeout), workspace
+            )
     finally:
         await service.stop()
 
@@ -793,15 +814,18 @@ async def _invoke_qa_agent(
         executor=runtime.executor_agent_type.value,
         detail=executor_failure.detail,
     )
-    return await _run_in_process_agent(
-        target=target,
-        workspace=workspace,
-        session=session,
-        acceptance_criteria=acceptance_criteria,
-        runtime=runtime,
-        established_facts=established_facts,
-        fallback=fallback,
-        timeout=timeout,
+    return _apply_telegram_probe_evidence(
+        await _run_in_process_agent(
+            target=target,
+            workspace=workspace,
+            session=session,
+            acceptance_criteria=acceptance_criteria,
+            runtime=runtime,
+            established_facts=established_facts,
+            fallback=fallback,
+            timeout=timeout,
+        ),
+        workspace,
     )
 
 

@@ -408,6 +408,45 @@ class TestProcessQAJobPass:
         assert run_data["state_changes"][0]["cleanup"]["succeeded"] is False
 
     @pytest.mark.asyncio
+    async def test_undelivered_telegram_probe_is_persisted_as_a_non_product_blocker(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from shared.contracts.dto.run_result import (
+            QABlocker,
+            QABlockerCategory,
+            QATelegramProbeEvidence,
+        )
+        from src.consumers._qa_runner import QAResult
+
+        blocker = QABlocker(
+            category=QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED,
+            attempted="send an empty message to @weather_bot",
+            sent="",
+            received="ValueError: The message cannot be empty",
+        )
+        evidence = QATelegramProbeEvidence(
+            action="message",
+            attempted=blocker.attempted,
+            sent=blocker.sent,
+            delivered=False,
+            error=blocker.received,
+        )
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=False,
+                summary="Telegram probe did not deliver a message",
+                blocker=blocker,
+                telegram_probe_evidence=[evidence],
+            )
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "qa_blocked"
+        stored = mock_api_client.patch.call_args.kwargs["json"]["result"]
+        assert stored["qa_outcome"] == QAOutcome.BLOCKED.value
+        assert stored["blocker"]["category"] == "telegram_probe_undelivered"
+        assert stored["telegram_probe_evidence"][0]["delivered"] is False
+
+    @pytest.mark.asyncio
     async def test_qa_pass_does_not_transition_story(
         self, mock_api_client, mock_redis, qa_message_data
     ):

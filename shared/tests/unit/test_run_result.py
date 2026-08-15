@@ -118,6 +118,49 @@ class TestValidPayloads:
 
         assert run.result.state_changes == [change]
 
+    def test_qa_telegram_evidence_round_trips_with_media_and_inline_button_data(self):
+        run = _run(
+            RunType.QA,
+            {
+                "qa_outcome": QAOutcome.PASSED.value,
+                "telegram_probe_evidence": [
+                    {
+                        "action": "message",
+                        "attempted": "send /forecast to @weather_bot",
+                        "sent": "/forecast",
+                        "delivered": True,
+                        "replies": [
+                            {
+                                "id": 42,
+                                "text": None,
+                                "caption": "Today: sunny",
+                                "media_type": "MessageMediaPhoto",
+                                "reply_markup": {
+                                    "type": "ReplyInlineMarkup",
+                                    "buttons": [
+                                        {
+                                            "row": 0,
+                                            "column": 0,
+                                            "text": "Details",
+                                            "type": "KeyboardButtonCallback",
+                                            "callback_data": "ZGV0YWlscw==",
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                        "callback": None,
+                        "error": None,
+                    }
+                ],
+            },
+        )
+
+        evidence = run.result.telegram_probe_evidence[0]
+        assert evidence.replies[0].media_type == "MessageMediaPhoto"
+        assert evidence.replies[0].caption == "Today: sunny"
+        assert evidence.replies[0].reply_markup.buttons[0].callback_data == "ZGV0YWlscw=="
+
     def test_passed_qa_rejects_residual_state_change(self):
         change = QAStateChange(
             resource="POST /api/items",

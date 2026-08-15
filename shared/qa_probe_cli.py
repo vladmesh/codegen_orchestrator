@@ -48,6 +48,7 @@ qa remote_exec ARG [ARG ...]        — one read-only docker call, e.g.
 qa container_logs CONTAINER [TAIL]  — tail one container's log
 qa container_inspect CONTAINER      — one container's state
 qa telegram_probe MESSAGE           — send a message to the bot under test
+qa telegram_click_button ID DATA    — invoke a visible inline bot button
 qa report FILE                      — store the Markdown QA report
 qa finish FILE                      — submit the final result JSON and end the run\
 """
@@ -121,6 +122,10 @@ def build_call(argv):
         if not rest:
             fail("usage: qa telegram_probe MESSAGE")
         return "telegram_probe", {"message": " ".join(rest)}
+    if command == "telegram_click_button":
+        if len(rest) != 2 or not rest[0].isdigit():
+            fail("usage: qa telegram_click_button MESSAGE_ID CALLBACK_DATA")
+        return "telegram_click_button", {"message_id": int(rest[0]), "callback_data": rest[1]}
     if command == "report":
         if len(rest) != 1:
             fail("usage: qa report FILE")

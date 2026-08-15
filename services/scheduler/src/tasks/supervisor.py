@@ -1874,13 +1874,23 @@ async def supervise_testing_stories(
             completed += 1
 
         elif outcome == QAOutcome.FAILED:
-            dispatched = await _handle_qa_failed(
-                api_client, redis_client, story_id, project_id, run, log
-            )
-            if dispatched:
-                redispatched += 1
-            elif dispatched is False:
+            # Only a typed failed check is product evidence. A malformed or
+            # contradictory failed result is not permission to ask engineering
+            # to change customer code, so it takes the ordinary unverified QA
+            # route instead.
+            if run.result.blocker is not None or not run.result.failed_checks:
+                await _quarantine_unverified_application(
+                    api_client, redis_client, story_id, project_id, run, log
+                )
                 failed += 1
+            else:
+                dispatched = await _handle_qa_failed(
+                    api_client, redis_client, story_id, project_id, run, log
+                )
+                if dispatched:
+                    redispatched += 1
+                elif dispatched is False:
+                    failed += 1
 
         elif outcome in (QAOutcome.BLOCKED, QAOutcome.EXHAUSTED, QAOutcome.ERROR):
             await _quarantine_unverified_application(
@@ -1980,6 +1990,10 @@ def _qa_quarantine_reason(result: QARunResult) -> dict:
     if result.state_changes:
         reason["state_changes"] = [
             change.model_dump(mode="json") for change in result.state_changes
+        ]
+    if result.telegram_probe_evidence:
+        reason["telegram_probe_evidence"] = [
+            evidence.model_dump(mode="json") for evidence in result.telegram_probe_evidence
         ]
     return reason
 

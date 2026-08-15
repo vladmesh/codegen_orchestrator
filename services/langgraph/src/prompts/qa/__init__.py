@@ -91,22 +91,31 @@ deployment this run is bound to and prints the JSON answer.
 
 
 def _bot_section(bot_username: str, executor: QAExecutorKind) -> str:
-    call = (
+    message_call = (
         f"`{QA_PROBE_NAME} telegram_probe <message>`"
         if executor is QAExecutorKind.CENTRAL_AGENT
         else "the `telegram_probe` tool"
     )
+    callback_call = (
+        f"`{QA_PROBE_NAME} telegram_click_button <message id> <callback data>`"
+        if executor is QAExecutorKind.CENTRAL_AGENT
+        else "the `telegram_click_button` tool"
+    )
     return f"""
 ### Telegram bot
 - Bot: @{bot_username}
-- Use {call}. It sends your message to the bot as the
-  platform's QA Telegram account and returns the bot's replies.
+- Use {message_call}. It sends your message to the bot as the
+  platform's QA Telegram account and returns structured reply evidence: text,
+  caption, media type and keyboard buttons. A media-only reply is evidence.
+- Invoke a visible inline button only with {callback_call}, using the reply id
+  and callback data returned by the probe. It returns the callback answer and
+  every resulting bot reply.
 - You never hold the account's credentials, and there is no other way to reach Telegram.
 - Every Telegram check is either pass or fail, decided by sending the message.
   "Blocked", "skipped" and "cannot test" are not allowed results: if you have not
   sent the message, you have no result to report. Do not substitute code reading.
-- If it returns an error, try once more, then report the Telegram
-  checks as failed and paste the error as the detail.
+- If either Telegram call returns an error, stop testing and submit no product
+  failure for it. The runtime records this as a non-product blocker.
 """
 
 

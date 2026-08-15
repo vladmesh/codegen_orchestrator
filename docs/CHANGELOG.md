@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-08-15
+
+- QA's Telegram capability now returns and persists typed reply evidence: separate text and caption, media type, reply-keyboard/inline-button data, and callback answers with any resulting bot replies. Inline callbacks are accepted only for a button the same QA run observed from its bound bot; the executor still receives no Telegram credential.
+- A Telegram capability error now overrides an agent's product verdict with a typed QA blocker. An operation proven undelivered, including Telethon's empty-message `ValueError`, is stored as `telegram_probe_undelivered` with attempted, sent and received evidence; an ambiguous capability error stays an `unknown` blocker. The supervisor creates engineering fixes only from typed failed checks without a blocker and otherwise stops for human review.
+
 ## 2026-08-13
 
 - The Backend Docker-in-Docker suite reaches its own assertions again. The three run-scoped suites

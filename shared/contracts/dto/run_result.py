@@ -11,6 +11,7 @@ pair — see `RunDTO._check_result_matches_type`.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -166,6 +167,11 @@ class QABlockerCategory(StrEnum):
     # binding a working token, and no amount of test access changes it.
     BOT_NOT_LIVE = "bot_not_live"
     TELEGRAM_ACCESS_DENIED = "telegram_access_denied"
+    # The QA runtime could not deliver the requested Telegram operation. This
+    # is deliberately distinct from a bot reply that failed an acceptance
+    # criterion: the product did not receive the operation, so no conclusion
+    # about its behaviour can reach the engineering-fix loop.
+    TELEGRAM_PROBE_UNDELIVERED = "telegram_probe_undelivered"
     SERVER_UNAVAILABLE = "server_unavailable"
     QA_CLEANUP_FAILED = "qa_cleanup_failed"
     # The temporary identity QA tests private bots with: never handed over, or
@@ -189,6 +195,68 @@ class QABlocker(BaseModel):
     attempted: str
     sent: str
     received: str
+
+
+class QATelegramReplyButton(BaseModel):
+    """One button a Telegram reply made visible to the QA executor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    text: str | None = None
+    type: str
+    # Callback data is base64 encoded at the Telegram boundary. Its presence
+    # makes an inline button actionable without exposing a Telegram session;
+    # reply-keyboard buttons identify themselves by their row, column and text.
+    callback_data: str | None = None
+
+
+class QATelegramReplyMarkup(BaseModel):
+    """The reply or inline keyboard carried by one bot reply."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    buttons: list[QATelegramReplyButton] = Field(default_factory=list)
+
+
+class QATelegramReplyEvidence(BaseModel):
+    """Observable fields of one Telegram message received from the bound bot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    text: str | None = None
+    caption: str | None = None
+    media_type: str | None = None
+    reply_markup: QATelegramReplyMarkup | None = None
+
+
+class QATelegramCallbackEvidence(BaseModel):
+    """Telegram's direct answer to a run-scoped inline-button callback."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str | None = None
+    alert: bool = False
+    url: str | None = None
+
+
+class QATelegramProbeEvidence(BaseModel):
+    """Runner-owned evidence for one Telegram message or callback operation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["message", "callback"]
+    attempted: str
+    sent: str
+    # None means the child process did not leave enough evidence to prove
+    # whether delivery happened. It is still a blocker, never product evidence.
+    delivered: bool | None = None
+    replies: list[QATelegramReplyEvidence] = Field(default_factory=list)
+    callback: QATelegramCallbackEvidence | None = None
+    error: str | None = None
 
 
 class QAStateChangeCleanup(BaseModel):
@@ -237,6 +305,7 @@ class QARunResult(BaseModel):
     deployed_url: str | None = None
     error: str | None = None
     blocker: QABlocker | None = None
+    telegram_probe_evidence: list[QATelegramProbeEvidence] = Field(default_factory=list)
     state_changes: list[QAStateChange] = Field(default_factory=list)
 
     @model_validator(mode="after")

@@ -22,6 +22,8 @@ import tempfile
 
 import structlog
 
+from shared.contracts.dto.run_result import QABlocker, QATelegramProbeEvidence
+
 logger = structlog.get_logger(__name__)
 
 QA_WORKSPACE_ROOT = "/tmp/qa-runs"  # noqa: S108 — container-local, one dir per run
@@ -38,6 +40,8 @@ class QAWorkspace:
     destroyed: bool = False
     residual: str | None = None
     verdict: str | None = None
+    telegram_probe_evidence: list[QATelegramProbeEvidence] = field(default_factory=list)
+    telegram_probe_blocker: QABlocker | None = None
     _trace: list[dict] = field(default_factory=list)
 
     @property
@@ -75,6 +79,14 @@ class QAWorkspace:
         self._trace.append(entry)
         with self.trace_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def record_telegram_probe(
+        self, evidence: QATelegramProbeEvidence, blocker: QABlocker | None = None
+    ) -> None:
+        """Retain runner-owned Telegram evidence until it is persisted on the run."""
+        self.telegram_probe_evidence.append(evidence)
+        if blocker is not None and self.telegram_probe_blocker is None:
+            self.telegram_probe_blocker = blocker
 
     def trace_text(self) -> str:
         """The whole trace as one blob, for scanning."""
