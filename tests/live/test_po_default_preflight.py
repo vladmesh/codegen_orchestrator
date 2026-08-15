@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import po_default_preflight
@@ -341,6 +342,42 @@ def test_workflow_runs_the_preflight_once_before_the_worker_qa_combinations():
     assert 'PO_DEFAULT_MATRIX_API_CONTAINER="$matrix_api_container"' in source
     assert 'PO_DEFAULT_MATRIX_CHECKOUT_SHA="${{ github.sha }}"' in source
     assert "run-evidence-po-default-" in source
+
+
+def test_po_tool_boundary_binds_to_langgraph_in_a_workspace_interpreter():
+    """The import the workflow actually performs, in a process shaped like its own.
+
+    Every other runtime test builds the object with `object.__new__`, so none of
+    them executes this import — which is how a matrix run reached production and
+    died on `No module named 'src.agents'`. A child interpreter is used because
+    the pytest process has already resolved `src` for other modules, and a
+    cached binding would hide exactly the failure under test.
+    """
+    root = Path(__file__).resolve().parents[2]
+    program = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(root / 'tests' / 'live')!r})\n"
+        "from po_default_preflight import load_po_tool_boundary\n"
+        f"load_po_tool_boundary(Path({str(root)!r}))\n"
+        "from src.agents.po import tools_projects\n"
+        "print(tools_projects.__file__)\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        timeout=300,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        Path(result.stdout.strip())
+        == root / "services" / "langgraph" / "src" / "agents" / "po" / "tools_projects.py"
+    )
 
 
 @pytest.mark.asyncio
