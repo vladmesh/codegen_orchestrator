@@ -2,6 +2,8 @@ volumes:
   workspaces:
   worker-transcripts:
   dind-storage:
+  claude-test-session:
+  claude-test-session-unwritable:
 
 networks:
   backend-test:
@@ -196,15 +198,23 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
-    # Mount host Claude session directory for E2E tests
-    # Workers inside DIND will mount /host-claude as their ~/.claude
+    # Workers inside DinD bind these daemon-visible, test-only paths at
+    # /home/worker/.claude when a host-session test needs them. The writable
+    # path is initialized before dockerd accepts worker-manager requests; the
+    # other volume intentionally stays root-owned for the startup regression.
     volumes:
       - dind-storage:/var/lib/docker
-      - ${HOST_CLAUDE_DIR:-/tmp/fake-claude}:/host-claude:rw
+      - claude-test-session:/host-claude
+      - claude-test-session-unwritable:/host-claude-unwritable
       - workspaces:/tmp/codegen/workspaces
       - worker-transcripts:/tmp/codegen/worker-transcripts
     # Pass DNS to Docker daemon for containers spawned inside DIND
-    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--dns=8.8.8.8", "--dns=8.8.4.4"]
+    command:
+      [
+        "sh",
+        "-ec",
+        "chown -R 1000:1000 /host-claude && exec dockerd-entrypoint.sh dockerd --host=tcp://0.0.0.0:2375 --dns=8.8.8.8 --dns=8.8.4.4",
+      ]
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:2375/_ping || exit 1"]
       interval: 3s
@@ -258,8 +268,6 @@ services:
       - REDIS_URL=redis://172.31.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
       - FACTORY_API_KEY=${FACTORY_API_KEY}
-      - CLAUDE_SESSION_DIR=${HOST_CLAUDE_DIR}
-      - HOST_CLAUDE_DIR=${HOST_CLAUDE_DIR}
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     networks:
       - backend-test

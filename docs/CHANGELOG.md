@@ -2,6 +2,16 @@
 
 ## 2026-08-15
 
+- The Backend Docker-in-Docker Claude-agent checks now own each worker through
+  create completion, sustained Docker liveness and worker-manager deletion.
+  `test_claude_instructions_injected` uses API-key mode because it verifies
+  injection rather than session persistence; a stopped worker now reports its
+  status, exit code and bounded log tail instead of retrying a Docker 409. The
+  deliberately non-writable regression waits for its owned worker to exit
+  before it checks that evidence, so it does not race the positive sustained-
+  readiness assertion. The actual host-session check uses a test-owned,
+  worker-writable DinD volume.
+
 - Application undeploy and live-target recovery now stream one project-scoped cleanup script. It
   captures Compose-labelled images, volumes, networks and anonymous volumes before `docker compose
   down`, accepts directory-less image residue only for exact `<project>-{backend,tg-bot,frontend,

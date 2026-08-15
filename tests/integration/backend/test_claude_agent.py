@@ -2,7 +2,6 @@ import uuid
 from uuid import uuid4
 
 import pytest
-from tenacity import retry, stop_after_delay, wait_fixed
 
 from shared.contracts.queues.worker import (
     AgentType,
@@ -12,8 +11,17 @@ from shared.contracts.queues.worker import (
     WorkerOwnership,
 )
 
+from .conftest import (
+    assert_worker_is_running,
+    delete_test_worker,
+    exec_in_running_worker,
+    wait_for_worker_exit,
+    wait_for_worker_ready,
+)
+
 # Constants
-TEST_TIMEOUT = 60  # seconds
+CREATE_TIMEOUT = 240  # seconds, includes a cold worker image build inside DinD
+READINESS_TIMEOUT = 30  # seconds, once worker-manager has completed creation
 
 
 def _ownership() -> WorkerOwnership:
@@ -53,26 +61,23 @@ async def test_claude_cli_installed(redis_client, docker_client, scaffolded_work
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
     await redis_client.xadd("worker:commands", {"data": cmd.model_dump_json()})
 
-    # 2. Wait for container to be running
-    @retry(stop=stop_after_delay(TEST_TIMEOUT), wait=wait_fixed(1))
-    async def wait_for_container():
-        try:
-            container = docker_client.containers.get(f"worker-{worker_id}")
-            if container.status != "running":
-                raise Exception("Container not running")
-            return container
-        except Exception:
-            raise Exception("Container not found") from None
+    try:
+        container = await wait_for_worker_ready(
+            redis_client,
+            docker_client,
+            request_id=request_id,
+            worker_id=worker_id,
+            create_timeout=CREATE_TIMEOUT,
+            readiness_timeout=READINESS_TIMEOUT,
+        )
 
-    container = await wait_for_container()
+        exit_code, output = exec_in_running_worker(container, worker_id, "which claude")
+        assert exit_code == 0, f"claude not found: {output.decode()}"
 
-    # 3. Check claude CLI
-    exit_code, output = container.exec_run("which claude")
-    assert exit_code == 0, f"claude not found: {output.decode()}"
-
-    # 4. Check claude version
-    exit_code, output = container.exec_run("claude --version")
-    assert exit_code == 0, f"claude version check failed: {output.decode()}"
+        exit_code, output = exec_in_running_worker(container, worker_id, "claude --version")
+        assert exit_code == 0, f"claude version check failed: {output.decode()}"
+    finally:
+        await delete_test_worker(redis_client, docker_client, worker_id)
 
 
 @pytest.mark.integration
@@ -80,14 +85,6 @@ async def test_claude_session_mounted(redis_client, docker_client, scaffolded_wo
     """Check if host session directory is mounted."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-mount-{request_id[:8]}"
-
-    # We are in DIND, so /home/worker/.claude inside the container should be mounted
-    # to whatever we specified. But verifying exact host mount in DIND is tricky.
-    # However, we can check if the directory exists and is writable.
-
-    # Note: in test environment we might not have a real host dir effectively mounted
-    # unless we configured it in the runner. But for this test let's simulate passing a path.
-    # The runner might create it.
 
     config = WorkerConfig(
         name=worker_id,
@@ -98,24 +95,35 @@ async def test_claude_session_mounted(redis_client, docker_client, scaffolded_wo
         capabilities=[],
         ownership=_ownership(),
         auth_mode="host_session",
-        host_claude_dir="/tmp/test-claude-session",  # noqa: S108
+        host_claude_dir="/host-claude",
         repo_id=scaffolded_workspace,
-        # Actually in DIND, volumes need to exist on the DIND host or Docker creates them as dir.
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
     await redis_client.xadd("worker:commands", {"data": cmd.model_dump_json()})
 
-    @retry(stop=stop_after_delay(TEST_TIMEOUT), wait=wait_fixed(1))
-    async def wait_for_container():
-        return docker_client.containers.get(f"worker-{worker_id}")
+    try:
+        container = await wait_for_worker_ready(
+            redis_client,
+            docker_client,
+            request_id=request_id,
+            worker_id=worker_id,
+            create_timeout=CREATE_TIMEOUT,
+            readiness_timeout=READINESS_TIMEOUT,
+        )
 
-    container = await wait_for_container()
-
-    # Check if directory exists
-    exit_code, output = container.exec_run("ls -la /home/worker/.claude")
-    # Even if empty, it should exist as a directory
-    assert exit_code == 0, f"Session dir not found: {output.decode()}"
+        probe = f"/home/worker/.claude/.mount-probe-{request_id}"
+        exit_code, output = exec_in_running_worker(
+            container,
+            worker_id,
+            (
+                "sh -ec 'test -d /home/worker/.claude "
+                f"&& touch {probe} && test -w {probe} && rm {probe}'"
+            ),
+        )
+        assert exit_code == 0, f"Session directory is not mounted and writable: {output.decode()}"
+    finally:
+        await delete_test_worker(redis_client, docker_client, worker_id)
 
 
 @pytest.mark.integration
@@ -133,24 +141,80 @@ async def test_claude_instructions_injected(redis_client, docker_client, scaffol
         allowed_commands=["*"],
         capabilities=[],
         ownership=_ownership(),
+        # CLAUDE.md injection does not exercise persisted Claude authentication.
+        # The DinD fixture intentionally has no real user session, so selecting
+        # host_session here makes the wrapper reject its own required mount and
+        # tests the wrong boundary.
+        auth_mode="api_key",
+        api_key="sk-ant-test-claude-key",
         repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
     await redis_client.xadd("worker:commands", {"data": cmd.model_dump_json()})
 
-    @retry(stop=stop_after_delay(TEST_TIMEOUT), wait=wait_fixed(1))
-    async def wait_for_container():
-        return docker_client.containers.get(f"worker-{worker_id}")
+    try:
+        container = await wait_for_worker_ready(
+            redis_client,
+            docker_client,
+            request_id=request_id,
+            worker_id=worker_id,
+            create_timeout=CREATE_TIMEOUT,
+            readiness_timeout=READINESS_TIMEOUT,
+        )
 
-    container = await wait_for_container()
+        ec, output = exec_in_running_worker(container, worker_id, "cat /workspace/CLAUDE.md")
+        assert ec == 0, f"CLAUDE.md not found: {output.decode()}"
+        assert instructions in output.decode()
+    finally:
+        await delete_test_worker(redis_client, docker_client, worker_id)
 
-    # Check content (CLAUDE.md is written by worker-wrapper entrypoint after start — retry)
-    @retry(stop=stop_after_delay(TEST_TIMEOUT), wait=wait_fixed(1))
-    async def wait_for_claude_md():
-        ec, out = container.exec_run("cat /workspace/CLAUDE.md")
-        assert ec == 0, f"CLAUDE.md not found: {out.decode()}"
-        return out
 
-    output = await wait_for_claude_md()
-    assert instructions in output.decode()
+@pytest.mark.integration
+async def test_stopped_instruction_worker_reports_startup_evidence(
+    redis_client, docker_client, scaffolded_workspace
+):
+    """The prior dead-container path reports its exit rather than a Docker 409."""
+    request_id = str(uuid.uuid4())
+    worker_id = f"test-claude-stopped-{request_id[:8]}"
+    config = WorkerConfig(
+        name=worker_id,
+        worker_type="developer",
+        agent_type=AgentType.CLAUDE,
+        instructions="This worker must not reach a Claude turn.",
+        allowed_commands=["*"],
+        capabilities=[],
+        ownership=_ownership(),
+        auth_mode="host_session",
+        # The test-owned source stays root-owned, so the non-root worker wrapper
+        # must reject it at startup after worker-manager injects instructions.
+        # This follows the failed gate's ordering without exposing daemon files.
+        host_claude_dir="/host-claude-unwritable",
+        repo_id=scaffolded_workspace,
+    )
+
+    await redis_client.xadd(
+        "worker:commands",
+        {"data": CreateWorkerCommand(request_id=request_id, config=config).model_dump_json()},
+    )
+
+    try:
+        container = await wait_for_worker_exit(
+            redis_client,
+            docker_client,
+            request_id=request_id,
+            worker_id=worker_id,
+            create_timeout=CREATE_TIMEOUT,
+            exit_timeout=READINESS_TIMEOUT,
+        )
+        assert container.attrs["State"]["ExitCode"] == 1
+
+        with pytest.raises(AssertionError) as exc:
+            assert_worker_is_running(container, worker_id)
+
+        failure = str(exc.value)
+        assert "status=exited" in failure
+        assert "exit_code=1" in failure
+        assert "not writable" in failure
+    finally:
+        await delete_test_worker(redis_client, docker_client, worker_id)

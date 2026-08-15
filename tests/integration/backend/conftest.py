@@ -8,13 +8,17 @@ import subprocess
 import time
 from uuid import uuid4
 
-from docker.errors import NotFound
+from docker.errors import APIError, NotFound
 import pytest
 import redis.asyncio as redis
 
 import docker
 from scripts.shared_freshness import source_hash
-from shared.contracts.queues.worker import CreateWorkerResponse
+from shared.contracts.queues.worker import (
+    CreateWorkerResponse,
+    DeleteWorkerCommand,
+    DeleteWorkerResponse,
+)
 from shared.queues import WORKER_MANAGER_GROUP
 
 # Configure pytest-asyncio
@@ -38,21 +42,26 @@ TREE_ROOT = "/app"
 REDIS_STREAM_COMMANDS = "worker:commands"
 REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
 TEST_TELEGRAM_ID = "999000"
+_TERMINAL_CONTAINER_STATES = frozenset({"dead", "exited", "removing"})
 
 
 # --- Shared test helpers ---
 
 
 async def wait_for_create_response(
-    redis_client: redis.Redis, stream: str, request_id: str, timeout: int = 120
+    redis_client: redis.Redis,
+    stream: str,
+    request_id: str,
+    timeout: int = 120,
+    require_running_after_completion: bool = True,
 ) -> CreateWorkerResponse:
     """Wait for a CreateWorkerResponse matching the given request_id.
 
     Skips messages from other commands (e.g. delete responses from cleanup).
     """
-    start = time.time()
+    deadline = time.monotonic() + timeout
     current_id = "0"
-    while time.time() - start < timeout:
+    while time.monotonic() < deadline:
         messages = await redis_client.xread({stream: current_id}, count=1, block=1000)
         if not messages:
             continue
@@ -74,11 +83,17 @@ async def wait_for_create_response(
 
         response = CreateWorkerResponse.model_validate(parsed)
         if response.success and response.worker_id:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Create command for worker_id={response.worker_id} exceeded {timeout}s"
+                )
             await _wait_for_create_command_completion(
                 redis_client,
                 request_id=request_id,
                 worker_id=response.worker_id,
-                timeout=timeout,
+                timeout=max(1, round(remaining)),
+                require_running=require_running_after_completion,
             )
         return response
 
@@ -86,7 +101,12 @@ async def wait_for_create_response(
 
 
 async def _wait_for_create_command_completion(
-    redis_client: redis.Redis, *, request_id: str, worker_id: str, timeout: int
+    redis_client: redis.Redis,
+    *,
+    request_id: str,
+    worker_id: str,
+    timeout: int,
+    require_running: bool = True,
 ) -> None:
     """Wait past the create command's early response until its stream entry is ACKed."""
     command_id = None
@@ -108,6 +128,8 @@ async def _wait_for_create_command_completion(
             count=1,
         )
         if not pending:
+            if not require_running:
+                return
             status = await redis_client.hget(f"worker:status:{worker_id}", "status")
             if status == "RUNNING":
                 return
@@ -120,6 +142,249 @@ async def _wait_for_create_command_completion(
 
     raise TimeoutError(
         f"Worker manager did not finish create command for {worker_id} within {timeout}s"
+    )
+
+
+def _container_lifecycle_diagnostics(container, worker_id: str) -> str:
+    """Return a bounded report for a worker that never became usable."""
+    state = container.attrs.get("State", {})
+    status = state.get("Status", getattr(container, "status", "unknown"))
+    exit_code = state.get("ExitCode", "unknown")
+    error = state.get("Error") or "none"
+    try:
+        log_tail = container.logs(tail=100).decode(errors="replace")[-8_000:]
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not mask the lifecycle error
+        log_tail = f"unavailable: {type(exc).__name__}: {exc}"
+    return (
+        f"worker={worker_id} status={status} exit_code={exit_code} "
+        f"error={error!r} log_tail={log_tail!r}"
+    )
+
+
+def _get_container_without_fixture_retry(docker_client, container_name: str):
+    """Use the fixture's direct Docker lookup when a failure must stay bounded."""
+    try:
+        return docker_client._test_direct_container_get(container_name)
+    except AttributeError as exc:
+        raise RuntimeError("docker_client fixture does not expose a direct Docker lookup") from exc
+
+
+def assert_worker_is_running(container, worker_id: str) -> None:
+    """Fail with Docker state and logs before a test tries to exec a dead worker."""
+    try:
+        container.reload()
+    except NotFound as exc:
+        raise AssertionError(
+            f"Worker {worker_id} was removed before the test could observe readiness"
+        ) from exc
+    if container.status == "running":
+        return
+    diagnostics = _container_lifecycle_diagnostics(container, worker_id)
+    raise AssertionError(f"Worker did not become ready: {diagnostics}")
+
+
+def exec_in_running_worker(container, worker_id: str, command: str):
+    """Run one test command without reducing a stopped worker to Docker's 409."""
+    assert_worker_is_running(container, worker_id)
+    try:
+        return container.exec_run(command)
+    except NotFound as exc:
+        raise AssertionError(f"Worker {worker_id} was removed while running {command!r}") from exc
+    except APIError as exc:
+        try:
+            container.reload()
+        except NotFound as gone:
+            raise AssertionError(
+                f"Worker {worker_id} was removed while running {command!r}"
+            ) from gone
+        except Exception:  # noqa: BLE001 - retain the original Docker failure as context
+            pass
+        raise AssertionError(
+            f"Worker {worker_id} stopped while running {command!r}: "
+            f"{_container_lifecycle_diagnostics(container, worker_id)}"
+        ) from exc
+
+
+async def wait_for_worker_ready(
+    redis_client: redis.Redis,
+    docker_client,
+    *,
+    request_id: str,
+    worker_id: str,
+    create_timeout: int = 240,
+    readiness_timeout: int = 30,
+    stable_for: float = 1.0,
+):
+    """Wait for a worker's full create command and require a live container.
+
+    Create responses are intentionally early acknowledgements. This boundary waits
+    until worker-manager has completed the command, then observes Docker before
+    the caller exercises the container. A startup failure therefore carries the
+    container's status, exit code and bounded logs instead of surfacing later as
+    an opaque Docker exec conflict.
+    """
+    try:
+        response = await wait_for_create_response(
+            redis_client,
+            REDIS_STREAM_DEV_RESPONSES,
+            request_id=request_id,
+            timeout=create_timeout,
+        )
+    except (RuntimeError, TimeoutError) as exc:
+        try:
+            container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
+        except NotFound:
+            raise AssertionError(
+                f"Worker {worker_id} did not complete creation: {exc}; container was not created"
+            ) from exc
+        raise AssertionError(
+            f"Worker {worker_id} did not complete creation: {exc}; "
+            f"{_container_lifecycle_diagnostics(container, worker_id)}"
+        ) from exc
+
+    assert response.success and response.worker_id == worker_id, (
+        f"Worker creation was not accepted for {worker_id}: {response.error}"
+    )
+
+    try:
+        container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
+    except NotFound as exc:
+        raise AssertionError(f"Worker {worker_id} was removed before it became ready") from exc
+
+    deadline = time.monotonic() + readiness_timeout
+    running_since = None
+    while time.monotonic() < deadline:
+        try:
+            container.reload()
+        except NotFound as exc:
+            raise AssertionError(f"Worker {worker_id} was removed before it became ready") from exc
+        if container.status == "running":
+            running_since = running_since or time.monotonic()
+            if time.monotonic() - running_since >= stable_for:
+                return container
+        else:
+            running_since = None
+        if container.status in _TERMINAL_CONTAINER_STATES:
+            assert_worker_is_running(container, worker_id)
+        await asyncio.sleep(0.25)
+
+    raise AssertionError(
+        f"Worker {worker_id} did not become ready within {readiness_timeout}s after creation: "
+        f"{_container_lifecycle_diagnostics(container, worker_id)}"
+    )
+
+
+async def wait_for_worker_exit(
+    redis_client: redis.Redis,
+    docker_client,
+    *,
+    request_id: str,
+    worker_id: str,
+    create_timeout: int = 240,
+    exit_timeout: int = 30,
+):
+    """Wait for a deliberately invalid test worker to reach its terminal exit."""
+    try:
+        response = await wait_for_create_response(
+            redis_client,
+            REDIS_STREAM_DEV_RESPONSES,
+            request_id=request_id,
+            timeout=create_timeout,
+            require_running_after_completion=False,
+        )
+    except (RuntimeError, TimeoutError) as exc:
+        try:
+            container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
+        except NotFound:
+            raise AssertionError(
+                f"Worker {worker_id} did not complete creation: {exc}; container was not created"
+            ) from exc
+        raise AssertionError(
+            f"Worker {worker_id} did not complete creation: {exc}; "
+            f"{_container_lifecycle_diagnostics(container, worker_id)}"
+        ) from exc
+
+    assert response.success and response.worker_id == worker_id, (
+        f"Worker creation was not accepted for {worker_id}: {response.error}"
+    )
+
+    try:
+        container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
+    except NotFound as exc:
+        raise AssertionError(f"Worker {worker_id} was removed before it could exit") from exc
+
+    deadline = time.monotonic() + exit_timeout
+    while time.monotonic() < deadline:
+        try:
+            container.reload()
+        except NotFound as exc:
+            raise AssertionError(f"Worker {worker_id} was removed before it could exit") from exc
+        if container.status == "exited":
+            return container
+        if container.status in _TERMINAL_CONTAINER_STATES:
+            raise AssertionError(
+                f"Worker {worker_id} reached unexpected terminal state: "
+                f"{_container_lifecycle_diagnostics(container, worker_id)}"
+            )
+        await asyncio.sleep(0.25)
+
+    raise AssertionError(
+        f"Worker {worker_id} did not exit within {exit_timeout}s after creation: "
+        f"{_container_lifecycle_diagnostics(container, worker_id)}"
+    )
+
+
+async def delete_test_worker(
+    redis_client: redis.Redis, docker_client, worker_id: str, timeout: int = 60
+) -> None:
+    """Delete one test-owned worker and verify its container is gone."""
+    request_id = f"cleanup-{worker_id}-{uuid4().hex[:8]}"
+    await redis_client.xadd(
+        REDIS_STREAM_COMMANDS,
+        {
+            "data": DeleteWorkerCommand(
+                request_id=request_id,
+                worker_id=worker_id,
+                reason="completed",
+            ).model_dump_json()
+        },
+    )
+
+    deadline = time.monotonic() + timeout
+    current_id = "0"
+    response_received = False
+    while time.monotonic() < deadline:
+        messages = await redis_client.xread(
+            {REDIS_STREAM_DEV_RESPONSES: current_id}, count=10, block=1000
+        )
+        for _stream, entries in messages or []:
+            for message_id, fields in entries:
+                current_id = message_id
+                payload = json.loads(fields["data"])
+                if payload.get("request_id") != request_id:
+                    continue
+                response = DeleteWorkerResponse.model_validate(payload)
+                assert response.success, f"Worker cleanup failed for {worker_id}: {response.error}"
+                response_received = True
+                break
+        if response_received:
+            break
+
+    if not response_received:
+        raise TimeoutError(f"Worker manager did not delete {worker_id} within {timeout}s")
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            container = _get_container_without_fixture_retry(docker_client, f"worker-{worker_id}")
+            container.reload()
+        except NotFound:
+            return
+        await asyncio.sleep(0.25)
+
+    raise AssertionError(
+        f"Worker manager acknowledged cleanup but left test worker {worker_id}: "
+        f"{_container_lifecycle_diagnostics(container, worker_id)}"
     )
 
 
@@ -154,6 +419,7 @@ async def redis_client():
 def docker_client():
     client = docker.DockerClient(base_url=DOCKER_HOST)
     original_get = client.containers.get
+    client._test_direct_container_get = original_get
     resolved_names: set[str] = set()
 
     def get_after_create(container_id: str):
