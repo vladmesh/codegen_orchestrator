@@ -322,8 +322,7 @@ def wipe_targets(remote: Remote, inventory: dict, allowed_handles: set[str]) -> 
         # The target's private key lives in the database, not on the host. It is
         # written out for the length of the wipe and shredded in the finally.
         inner = (
-            f'curl -sS -H "X-Internal-Key: $K" '
-            f"http://localhost:8000/api/servers/{handle}/ssh-key"
+            f'curl -sS -H "X-Internal-Key: $K" http://localhost:8000/api/servers/{handle}/ssh-key'
         )
         remote.run(
             f"set -a; . {DEPLOY_PATH}/.env; set +a; "
