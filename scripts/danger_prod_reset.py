@@ -330,13 +330,18 @@ def wipe_targets(remote: Remote, inventory: dict, allowed_handles: set[str]) -> 
             "| python3 -c 'import json,sys; print(json.load(sys.stdin)[\"ssh_key\"])' "
             f"> {key_path}; chmod 600 {key_path}"
         )
+        # `rm -rf /opt/services/*` leaves hidden entries alone, and the deploy
+        # side keeps its bookkeeping in one: .codegen-cleanup-candidates. It is
+        # not residue of a project, so it is named rather than counted — a bare
+        # count read as «one stack survived the wipe» when nothing had.
         remote_wipe = (
             "for d in /opt/services/*/; do "
             '[ -d "$d" ] && (cd "$d" && docker compose down -v --remove-orphans || true); '
             "done; "
             "rm -rf /opt/services/*; "
+            'left="$(ls -A /opt/services 2>/dev/null | tr "\\n" " ")"; '
             "docker system prune -af --volumes > /dev/null; "
-            'echo "  services: $(ls -A /opt/services | wc -l) entries"; '
+            'echo "  /opt/services holds: ${left:-(nothing)}"; '
             'echo "  containers: $(docker ps -aq | wc -l)"; '
             "df -h / | tail -1"
         )
