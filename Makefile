@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean danger-prod-reset \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -362,6 +362,16 @@ test-live-pipeline:
 test-live-clean:
 	@echo "🧹 Running comprehensive live test cleanup (DB, GitHub, Workers, Workspaces, Servers)..."
 	@uv run python scripts/clean_live_tests.py
+
+# Destroys production and rebuilds it from the deployed revision. Ordinary
+# cleanup is `test-live-clean`; this is for when a live run on production has
+# left residue across contours and rebuilding is cheaper than picking it apart.
+# ARGS is mandatory in practice: without --confirm the script refuses.
+#   make danger-prod-reset ARGS="--dry-run"
+#   make danger-prod-reset ARGS="--confirm DANGEROUS-PROD-CLEANUP-MEGA-SUPER-PUPER \
+#       --allow-telegram-id 625038902 --ssh-key ~/.ssh/codegen_server_ed25519"
+danger-prod-reset:
+	@uv run python scripts/danger_prod_reset.py $(ARGS)
 
 
 # E2E Scaffold Test: runs against running `make up` stack
