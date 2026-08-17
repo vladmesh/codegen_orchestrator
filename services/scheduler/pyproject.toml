@@ -5,7 +5,7 @@ description = "Background workers service - polling, health checks, sync tasks"
 requires-python = ">=3.12"
 dependencies = [
     # Database
-    "sqlalchemy>=2.0.0",
+    "sqlalchemy>=2.0.52",
     "asyncpg>=0.29.0",
     "pgvector>=0.4.0",
     
