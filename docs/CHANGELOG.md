@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-20
+
+- [hotfix] Ensure-workspace jobs for active projects now clone the linked Repository name instead
+  of reconstructing a GitHub repository from `Project.slug`. Imported projects may retain an
+  existing repository whose name predates the orchestrator project record; using the generated
+  slug made scaffolding report that repository missing, persisted `scaffold_error`, and left every
+  story task in `todo` before a developer worker could start. Full scaffolding keeps using the
+  generated project slug for genuinely new repositories.
+
 ## 2026-08-15
 
 - [hotfix] The PO-default matrix preflight now binds its PO tool to the checkout it is proving.

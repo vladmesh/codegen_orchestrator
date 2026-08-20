@@ -155,14 +155,25 @@ async def _trigger_ensure_scaffold(project, api_client, redis_client, log) -> bo
         return False
 
     repo = repos[0]
-    msg = await _build_scaffold_message(api_client, project, repo.id, mode="ensure")
+    msg = await _build_scaffold_message(
+        api_client,
+        project,
+        repo.id,
+        mode="ensure",
+        project_name=repo.name,
+    )
     await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
     log.info("scaffold_triggered", repository_id=repo.id, mode="ensure")
     return True
 
 
 async def _build_scaffold_message(
-    api_client: SchedulerAPIClient, project, repo_id: str, mode: str
+    api_client: SchedulerAPIClient,
+    project,
+    repo_id: str,
+    mode: str,
+    *,
+    project_name: str | None = None,
 ) -> ScaffoldMessage:
     """Build a ScaffoldMessage from project data.
 
@@ -185,7 +196,7 @@ async def _build_scaffold_message(
         telegram_chat_id=recipient.telegram_chat_id,
         template_repo=template_repo,
         template_ref=template_ref,
-        project_name=project.slug,
+        project_name=project_name or project.slug,
         modules=modules,
         task_description=config.get("description", project.description or ""),
         mode=mode,
