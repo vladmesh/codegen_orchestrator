@@ -110,6 +110,31 @@ class TestTriggerScaffolds:
         assert msg.mode == "ensure"
 
     @pytest.mark.asyncio
+    async def test_ensure_uses_linked_repository_name_instead_of_project_slug(
+        self,
+        mock_api,
+        mock_redis,
+    ):
+        """Imported repositories keep their existing GitHub name."""
+        project = _make_project(ProjectStatus.ACTIVE.value)
+        imported_repo = _REPO.model_copy(
+            update={
+                "name": "fortune-teller-bot",
+                "git_url": "https://github.com/org/fortune-teller-bot",
+            }
+        )
+        mock_api.get_projects.return_value = [project]
+        mock_api.get_tasks_by_project_and_status.return_value = [{"id": "task-1"}]
+        mock_api.get_repositories.return_value = [imported_repo]
+
+        count = await trigger_scaffolds(mock_api, mock_redis)
+
+        assert count == 1
+        msg = mock_redis.publish_message.call_args[0][1]
+        assert msg.mode == "ensure"
+        assert msg.project_name == "fortune-teller-bot"
+
+    @pytest.mark.asyncio
     async def test_active_project_workspace_ready_is_skipped(self, mock_api, mock_redis):
         """ACTIVE project with workspace_ready=true → skip."""
         project = _make_project(
