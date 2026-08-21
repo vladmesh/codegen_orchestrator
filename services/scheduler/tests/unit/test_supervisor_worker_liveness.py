@@ -7,6 +7,7 @@ from _run_routing_factories import _make_run, _make_task
 import pytest
 
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 
 WORKER_ID = "dev-story-1"
@@ -129,6 +130,79 @@ async def test_timeout_only_requests_stop_until_worker_manager_records_removal()
     patch = api.update_run.await_args.args[1]
     assert patch["run_metadata"]["worker_stop_requested_at"]
     assert patch["run_metadata"]["stop_reason"] == "turn_deadline_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_missing_status_is_unknown_but_becomes_a_bounded_stop_request():
+    api = AsyncMock()
+    api.get_tasks_by_status.return_value = [_make_task(id="task-1", status="in_dev")]
+    api.list_runs.return_value = [
+        _run(
+            {
+                "active_turn_requested_at": (datetime.now(UTC) - timedelta(days=7)).isoformat(),
+                "active_turn_backstop_seconds": 4500,
+            }
+        )
+    ]
+
+    from src.tasks.supervisor import supervise_stuck_tasks
+
+    assert await supervise_stuck_tasks(api, _redis(status=None)) == {
+        "timed_out": 0,
+        "working": 0,
+        "stopping": 1,
+    }
+    api.transition_task.assert_not_called()
+    assert api.update_run.await_args.args[1]["run_metadata"]["worker_stop_attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_teardown_is_republished_after_the_durable_backoff():
+    api = AsyncMock()
+    task = _make_task(id="task-1", status="in_dev")
+    run = _run(
+        {
+            "worker_stop_requested_at": (datetime.now(UTC) - timedelta(minutes=10)).isoformat(),
+            "worker_stop_attempts": 1,
+            "worker_stop_next_retry_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        }
+    )
+    from src.tasks.worker_liveness import WorkerAttemptState, request_stuck_attempt_stop
+
+    redis_client = _redis()
+
+    assert await request_stuck_attempt_stop(
+        api,
+        redis_client,
+        task,
+        run,
+        WorkerAttemptState.TIMED_OUT,
+        WORKER_ID,
+        datetime.now(UTC),
+    )
+    patch = api.update_run.await_args.args[1]["run_metadata"]
+    assert patch["worker_stop_attempts"] == 2
+    redis_client.publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_terminal_run_is_replayed_without_clobbering_its_outcome():
+    completed = _run()
+    completed.status = RunStatus.COMPLETED
+    completed.result = EngineeringRunResult(engineering_status="done", commit_sha="abc123")
+    api = AsyncMock()
+    api.get_tasks_by_status.return_value = [_make_task(id="task-1", status="in_dev")]
+    api.list_runs.return_value = [completed]
+
+    from src.tasks.supervisor import supervise_stuck_tasks
+
+    assert await supervise_stuck_tasks(api, _redis()) == {
+        "timed_out": 0,
+        "working": 0,
+        "stopping": 0,
+    }
+    api.update_run.assert_not_called()
+    assert api.transition_task.await_count == 3
 
 
 @pytest.mark.asyncio

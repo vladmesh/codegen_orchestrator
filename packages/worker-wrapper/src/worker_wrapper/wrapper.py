@@ -839,17 +839,12 @@ class WorkerWrapper:
         only the CLI retains its output pipe and lets it keep mutating the shared
         workspace after a timed-out turn. ``start_new_session=True`` below makes
         the CLI PID the process-group leader, so one signal settles the whole
-        turn. The fallback keeps the method testable with minimal process doubles.
+        turn.
         """
         try:
-            pid = proc.pid
-        except AttributeError:
-            proc.kill()
-        else:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         try:
             await proc.wait()
         except ProcessLookupError:

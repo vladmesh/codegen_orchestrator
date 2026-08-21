@@ -1,7 +1,9 @@
 """A bounded turn keeps its partial transcript and kills its whole process tree."""
 
 import asyncio
+import os
 from pathlib import Path
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -81,6 +83,31 @@ class TestTheLimitKeepsTheWork:
         assert partial.decode() in body
         assert wrapper._transcript_path is not None
         killpg.assert_called_once_with(proc.pid, __import__("signal").SIGKILL)
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name != "posix", reason="process groups are a POSIX contract")
+    async def test_process_group_kill_reaches_a_real_descendant(self):
+        """A real child process cannot keep the timed-out turn's pipe alive."""
+        program = (
+            "import subprocess, sys, time; "
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+            "print(child.pid, flush=True); time.sleep(60)"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            program,
+            stdout=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        assert proc.stdout is not None
+        child_pid = int((await proc.stdout.readline()).decode())
+        await WorkerWrapper._kill_agent_process_group(proc)
+        for _ in range(20):
+            if not Path(f"/proc/{child_pid}").exists():
+                break
+            await asyncio.sleep(0.01)
+        assert not Path(f"/proc/{child_pid}").exists()
 
     @pytest.mark.asyncio
     async def test_the_result_says_the_limit_is_what_stopped_it(self, tmp_path):

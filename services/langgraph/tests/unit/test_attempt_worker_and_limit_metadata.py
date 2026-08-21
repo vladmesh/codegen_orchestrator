@@ -53,9 +53,7 @@ class TestAttemptNamesItsWorker:
             patch.object(
                 worker_spawner, "record_worker_on_attempt", new_callable=AsyncMock
             ) as record,
-            patch.object(
-                worker_spawner, "record_turn_on_attempt", new_callable=AsyncMock
-            ),
+            patch.object(worker_spawner, "record_turn_on_attempt", new_callable=AsyncMock),
             patch.object(worker_spawner, "get_settings") as settings,
             patch.object(worker_spawner, "redis") as redis_mod,
         ):
@@ -76,6 +74,41 @@ class TestAttemptNamesItsWorker:
             )
 
         record.assert_awaited_once_with(ATTEMPT_ID, "dev-created-for-attempt-a")
+
+    @pytest.mark.asyncio
+    async def test_reused_turn_is_recorded_before_its_input_is_published(self):
+        """A crash cannot expose a turn whose supervisor fence was never written."""
+        from src.clients import worker_spawner
+
+        order: list[str] = []
+        with (
+            patch.object(worker_spawner, "record_worker_on_attempt", new_callable=AsyncMock),
+            patch.object(
+                worker_spawner,
+                "record_turn_on_attempt",
+                new_callable=AsyncMock,
+                side_effect=lambda *_: order.append("record"),
+            ),
+            patch.object(worker_spawner, "get_settings") as settings,
+            patch.object(worker_spawner, "redis") as redis_mod,
+        ):
+            settings.return_value.redis_url = "redis://localhost:6379"
+            client = AsyncMock()
+            redis_mod.from_url.return_value = client
+            client.xgroup_create = AsyncMock()
+            client.xadd = AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("publish"))
+            client.xreadgroup = AsyncMock(return_value=[])
+            client.xgroup_destroy = AsyncMock()
+            client.aclose = AsyncMock()
+
+            await worker_spawner.send_task_to_worker(
+                worker_id="dev-created-for-attempt-a",
+                task_content="next task in the story",
+                timeout_seconds=0,
+                ownership=OWNERSHIP,
+            )
+
+        assert order.index("record") < order.index("publish")
 
 
 class TestStopReasonReachesTheRun:

@@ -82,11 +82,6 @@
   category: supervisor
   description: "Minutes before a story in 'created' status is considered stuck"
 
-- key: supervisor.task_stuck_threshold_minutes
-  value: 30
-  category: supervisor
-  description: "Minutes before a task in 'in_dev' is considered stuck"
-
 - key: supervisor.story_max_architect_retries
   value: 3
   category: supervisor

@@ -60,13 +60,19 @@ def _decode(value: Any) -> str:
 
 
 def _active_turn(worker_id: str, lease_id: str, data: dict[str, Any]) -> WorkerActiveTurn | None:
-    """Build the fenced engineering-turn record carried by a leased input."""
-    fields = ("attempt_id", "request_id", "turn_deadline_seconds")
-    present = [name for name in fields if data.get(name) is not None]
-    if not present:
+    """Build a record for the versioned engineering-turn payload only.
+
+    QA and pre-turn-protocol workers legitimately send a request id without an
+    engineering attempt.  They stay compatible and lease normally; only the
+    producer of the complete three-field protocol creates supervision state.
+    """
+    if data.get("attempt_id") is None or data.get("turn_deadline_seconds") is None:
         return None
-    if len(present) != len(fields):
-        raise HTTPException(422, "worker input has an incomplete active-turn identity")
+    if data.get("request_id") is None:
+        # Treat malformed producer payload as legacy rather than poisoning an
+        # already-delivered stream entry.  Engineering producers always write
+        # the complete identity before XADD.
+        return None
     try:
         deadline_seconds = int(data["turn_deadline_seconds"])
     except (TypeError, ValueError):

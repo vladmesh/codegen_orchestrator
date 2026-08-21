@@ -155,7 +155,10 @@ class TestMalformedOutputHandling:
 
         from src.clients.worker_spawner import send_task_to_worker
 
-        with patch("src.clients.worker_spawner.record_worker_on_attempt", new_callable=AsyncMock):
+        with (
+            patch("src.clients.worker_spawner.record_worker_on_attempt", new_callable=AsyncMock),
+            patch("src.clients.worker_spawner.record_turn_on_attempt", new_callable=AsyncMock),
+        ):
             result = await send_task_to_worker(
                 worker_id="dev-1",
                 task_content="fix",

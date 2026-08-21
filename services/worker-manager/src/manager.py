@@ -682,8 +682,11 @@ class WorkerManager:
             # publish removal evidence until `remove_container` succeeds.
             if ownership is not None:
                 try:
+                    evidence_task = asyncio.create_task(
+                        self._read_removal_evidence(worker_id, container_name, meta, ownership, reason)
+                    )
                     evidence = await asyncio.wait_for(
-                        self._read_removal_evidence(worker_id, container_name, meta, ownership, reason),
+                        evidence_task,
                         timeout=settings.WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS,
                     )
                 except Exception as exc:  # noqa: BLE001
@@ -714,47 +717,44 @@ class WorkerManager:
 
         except Exception as e:
             logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
-        finally:
-            if not removed:
-                # No evidence and no lock release: a failed Docker call is not a
-                # teardown confirmation, so retrying must remain fenced out.
-                return
-            await self._unregister_broker_worker(worker_id)
-            # Only the worker that took the workspace lock releases it, and the
-            # holder fact is the only thing that says so.
-            if held_project_id:
-                logger.info("workspace_preserved", project_id=held_project_id, worker_id=worker_id)
-                await self._release_workspace_lock(worker_id, held_project_id)
+        if not removed:
+            # No evidence and no lock release: a failed Docker call is not a
+            # teardown confirmation. The supervisor re-drives the durable stop
+            # intent with capped backoff until this operation succeeds.
+            return
+        await self._unregister_broker_worker(worker_id)
+        # Only the worker that took the workspace lock releases it, and the
+        # holder fact is the only thing that says so.
+        if held_project_id:
+            logger.info("workspace_preserved", project_id=held_project_id, worker_id=worker_id)
+            await self._release_workspace_lock(worker_id, held_project_id)
 
-                if reason:
-                    failure_key = f"workspace:{held_project_id}:failure_count"
-                    if reason in ("failed", "timeout"):
-                        await self.redis.incr(failure_key)
-                        await self.redis.expire(failure_key, 48 * 3600)
-                    elif reason == "completed":
-                        await self.redis.delete(failure_key)
+            if reason:
+                failure_key = f"workspace:{held_project_id}:failure_count"
+                if reason in ("failed", "timeout"):
+                    await self.redis.incr(failure_key)
+                    await self.redis.expire(failure_key, 48 * 3600)
+                elif reason == "completed":
+                    await self.redis.delete(failure_key)
 
-            keys_to_delete = [
-                f"worker:status:{worker_id}",
-                f"worker:error:{worker_id}",
-                f"worker:broker:{worker_id}",
-                f"worker:active-turn:{worker_id}",
-                f"worker:{worker_id}:input",
-                f"worker:{worker_id}:output",
-            ]
-            if keep_meta:
-                # A leaked key is a good failure and a silent omission is not:
-                # the run's ownership manifest can still name this worker, and
-                # the residue is exactly what a label sweep collects later.
-                logger.warning(
-                    "worker_meta_retained_for_attribution",
-                    worker_id=worker_id,
-                    run_id=ownership.run_id,
-                    error="no removal record could be stored, so the worker keeps its last durable name",
-                )
-            else:
-                keys_to_delete.append(f"worker:meta:{worker_id}")
-            await self.redis.delete(*keys_to_delete)
+        keys_to_delete = [
+            f"worker:status:{worker_id}",
+            f"worker:error:{worker_id}",
+            f"worker:broker:{worker_id}",
+            f"worker:active-turn:{worker_id}",
+            f"worker:{worker_id}:input",
+            f"worker:{worker_id}:output",
+        ]
+        if keep_meta:
+            logger.warning(
+                "worker_meta_retained_for_attribution",
+                worker_id=worker_id,
+                run_id=ownership.run_id,
+                error="no removal record could be stored, so the worker keeps its last durable name",
+            )
+        else:
+            keys_to_delete.append(f"worker:meta:{worker_id}")
+        await self.redis.delete(*keys_to_delete)
 
     async def pause_worker(self, worker_id: str) -> None:
         """Pause a running worker."""

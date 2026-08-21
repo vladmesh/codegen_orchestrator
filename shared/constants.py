@@ -50,7 +50,7 @@ class Timeouts:
     # Worker spawners (langgraph-specific but shared for visibility). This is an
     # observer's wait, not a limit: it must outlast the turn it waits for, or it
     # would take away a worker that is still within its own limit.
-    WORKER_SPAWN = int(os.getenv("WORKER_SPAWN_TIMEOUT", str(AGENT_TURN + WORKER_TURN_OVERHEAD)))
+    WORKER_SPAWN = AGENT_TURN + WORKER_TURN_OVERHEAD
     PREPARER_SPAWN = int(os.getenv("PREPARER_SPAWN_TIMEOUT", "120"))  # 2 minutes
 
     # Deployment

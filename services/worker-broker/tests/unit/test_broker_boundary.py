@@ -243,9 +243,15 @@ async def test_a_qa_worker_gets_the_turn_protocol_and_no_control_plane(monkeypat
     assert await redis.hget(credential_key(worker_id), "worker_type") == WorkerType.QA.value
 
     # The turn protocol: everything a QA run actually needs.
-    await redis.xadd(f"worker:{worker_id}:input", {"data": json.dumps({"task_id": "qa-1", "prompt": "test it"})})
+    # This is the actual QA producer shape: it has a request id but no
+    # engineering attempt/deadline, so it must not be rejected after XREADGROUP.
+    await redis.xadd(
+        f"worker:{worker_id}:input",
+        {"data": json.dumps({"request_id": "qa-request-1", "task_id": "qa-1", "prompt": "test it"})},
+    )
     lease = await main.lease_input(worker_id, token)
     assert lease["data"]["task_id"] == "qa-1"
+    assert await redis.hgetall(active_turn_key(worker_id)) == {}
     await main.update_status(worker_id, main.StatusUpdate(values={"status": "running"}), token)
     await main.set_session(worker_id, main.SessionUpdate(session_id="qa-session"), token)
     assert (await main.get_session(worker_id, token))["session_id"] == "qa-session"

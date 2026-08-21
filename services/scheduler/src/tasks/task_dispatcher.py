@@ -30,6 +30,7 @@ from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType
+from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -55,6 +56,7 @@ from .supervisor import (
     supervise_waiting_user_secret_stories,
 )
 from .temporary_access import supervise_temporary_access
+from .worker_liveness import terminal_task_statuses
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
@@ -155,18 +157,6 @@ async def _find_dispatched_run(api_client: SchedulerAPIClient, task: TaskDTO) ->
     return None
 
 
-def _replay_statuses(run: RunDTO) -> tuple[TaskStatus, ...]:
-    """Task statuses that mirror a finished run's outcome, in transition order."""
-    if run.status == RunStatus.COMPLETED:
-        return (TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE)
-    if (
-        run.status == RunStatus.FAILED
-        and run.result.engineering_status == EngineeringStatus.GAVE_UP
-    ):
-        return (TaskStatus.WAITING_HUMAN_REVIEW,)
-    return (TaskStatus.FAILED,)
-
-
 async def _recover_dispatched_task(
     api_client: SchedulerAPIClient,
     task_id: str,
@@ -184,7 +174,7 @@ async def _recover_dispatched_task(
     adopted by the caller's guard before it gets here.
     """
     await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
-    for status in _replay_statuses(run):
+    for status in terminal_task_statuses(run):
         await api_client.transition_task(task_id, status, "dispatcher")
     log.info("task_outcome_replayed", run_id=run.id, run_status=run.status.value)
 
@@ -289,7 +279,7 @@ async def _create_and_publish_run(
         "triggered_by": "dispatcher",
         "story_id": story_id,
         "task_id": task_id,
-        "initiating_run_id": initiating_run_id,
+        **AttemptTurnMetadata(initiating_run_id=initiating_run_id).as_run_metadata(),
         "iteration": task.current_iteration,
     }
     await api_client.create_run(

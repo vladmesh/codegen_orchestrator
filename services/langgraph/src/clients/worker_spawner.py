@@ -14,7 +14,7 @@ import uuid
 from pydantic import ValidationError
 import redis.asyncio as redis
 
-from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.dto.worker import WORKER_TERMINAL_STATUSES, WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
@@ -30,6 +30,7 @@ from shared.contracts.queues.worker_result import (
     WorkerResultAdapter,
     WorkerStopReason,
 )
+from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.diagnostics import safe_validation_errors
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
@@ -239,13 +240,11 @@ async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool
         return None
     # Handle both bytes and str (depends on decode_responses setting)
     status_str = status.decode() if isinstance(status, bytes) else status
-    if status_str in {
-        WorkerStatus.DEAD,
-        WorkerStatus.FAILED,
-        WorkerStatus.STOPPED,
-        WorkerStatus.GONE,
-    }:
-        return False
+    try:
+        if WorkerStatus(status_str) in WORKER_TERMINAL_STATUSES:
+            return False
+    except ValueError:
+        return None
     return True
 
 
@@ -350,12 +349,6 @@ async def _wait_for_response(
     return None
 
 
-ATTEMPT_WORKER_KEY = "worker_id"
-ATTEMPT_AGENT_LIMIT_KEY = "agent_limit_seconds"
-ATTEMPT_TURN_REQUEST_KEY = "active_turn_request_id"
-ATTEMPT_TURN_BACKSTOP_KEY = "active_turn_backstop_seconds"
-
-
 async def record_worker_on_attempt(attempt_id: str, worker_id: str) -> None:
     """Name, on the attempt's own run row, the worker that is executing it.
 
@@ -375,10 +368,9 @@ async def record_worker_on_attempt(attempt_id: str, worker_id: str) -> None:
     await api_client.patch(
         f"runs/{attempt_id}",
         json={
-            "run_metadata": {
-                ATTEMPT_WORKER_KEY: worker_id,
-                ATTEMPT_AGENT_LIMIT_KEY: Timeouts.AGENT_TURN,
-            }
+            "run_metadata": AttemptTurnMetadata(
+                worker_id=worker_id, agent_limit_seconds=Timeouts.AGENT_TURN
+            ).as_run_metadata()
         },
     )
     logger.info(
@@ -429,11 +421,11 @@ async def record_turn_on_attempt(attempt_id: str, request_id: str) -> None:
     await api_client.patch(
         f"runs/{attempt_id}",
         json={
-            "run_metadata": {
-                ATTEMPT_TURN_REQUEST_KEY: request_id,
-                ATTEMPT_TURN_BACKSTOP_KEY: Timeouts.WORKER_SPAWN,
-                "active_turn_requested_at": datetime.now(UTC).isoformat(),
-            }
+            "run_metadata": AttemptTurnMetadata(
+                active_turn_request_id=request_id,
+                active_turn_backstop_seconds=Timeouts.WORKER_SPAWN,
+                active_turn_requested_at=datetime.now(UTC),
+            ).as_run_metadata()
         },
     )
 
@@ -568,10 +560,10 @@ async def request_spawn(
                 raise
 
         # 5. Send task message to worker input stream
+        await record_turn_on_attempt(ownership.attempt_id, request_id)
         await _send_turn(
             redis_client, worker_id, request_id, ownership.attempt_id, task_content, story_md
         )
-        await record_turn_on_attempt(ownership.attempt_id, request_id)
 
         # Wait for output (worker output doesn't have request_id, so pass None)
         try:
@@ -693,13 +685,13 @@ async def send_task_to_worker(
             task_message["story_md"] = story_md
         if branch:
             task_message["branch"] = branch
+        await record_turn_on_attempt(ownership.attempt_id, request_id)
         await redis_client.xadd(
             input_stream,
             {"data": json.dumps(task_message)},
             maxlen=DEFAULT_STREAM_MAXLEN,
             approximate=True,
         )
-        await record_turn_on_attempt(ownership.attempt_id, request_id)
         logger.info(
             "task_sent_to_existing_worker",
             request_id=request_id,

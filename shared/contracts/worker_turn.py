@@ -1,10 +1,11 @@
 """Durable identity for the one input turn a worker currently leases."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["WorkerActiveTurn", "active_turn_key"]
+__all__ = ["AttemptTurnMetadata", "WorkerActiveTurn", "active_turn_key"]
 
 
 def active_turn_key(worker_id: str) -> str:
@@ -44,3 +45,32 @@ class WorkerActiveTurn(BaseModel):
         if not fields:
             return None
         return cls.model_validate(fields)
+
+
+class AttemptTurnMetadata(BaseModel):
+    """The run-metadata half of a worker turn's durable identity.
+
+    Run metadata also carries unrelated pipeline facts, so this model reads only
+    its own fields and serializes only non-null values for a merge patch.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    initiating_run_id: str | None = Field(default=None, min_length=1)
+    worker_id: str | None = Field(default=None, min_length=1)
+    agent_limit_seconds: int | None = Field(default=None, gt=0)
+    active_turn_request_id: str | None = Field(default=None, min_length=1)
+    active_turn_backstop_seconds: int | None = Field(default=None, gt=0)
+    active_turn_requested_at: datetime | None = None
+    worker_stop_requested_at: datetime | None = None
+    worker_stop_attempts: int | None = Field(default=None, ge=0)
+    worker_stop_next_retry_at: datetime | None = None
+    stop_reason: str | None = None
+    worker_state: str | None = None
+
+    def as_run_metadata(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=True)
+
+    @classmethod
+    def from_run_metadata(cls, metadata: dict[str, Any] | None) -> "AttemptTurnMetadata":
+        return cls.model_validate(metadata or {})

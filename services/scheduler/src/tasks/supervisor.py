@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 import hashlib
 import json
@@ -26,7 +26,6 @@ from shared.contracts.bot_access import (
     project_bot_audience,
 )
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -39,7 +38,7 @@ from shared.contracts.dto.qa_handoff import (
     TemporaryAccessRequest,
 )
 from shared.contracts.dto.repository import RepositoryDTO
-from shared.contracts.dto.run import RunDTO, RunStatus, RunType
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import (
     AllocationFailureReason,
     DeployRunResult,
@@ -48,7 +47,6 @@ from shared.contracts.dto.run_result import (
 )
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.contracts.dto.worker import WORKER_TERMINAL_STATUSES, WorkerStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import (
     DeployAction,
@@ -59,10 +57,6 @@ from shared.contracts.queues.deploy import (
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.queues.qa import QAMessage, QAOutcome
-from shared.contracts.queues.worker import DeleteWorkerCommand
-from shared.contracts.queues.worker_result import WorkerStopReason
-from shared.contracts.worker_evidence import RemovedWorkerEvidence, removed_worker_evidence_key
-from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 from shared.notifications import notify_admins_best_effort
 from shared.queues import (
     ARCHITECT_QUEUE,
@@ -70,9 +64,7 @@ from shared.queues import (
     ENGINEERING_QUEUE,
     PO_INPUT_QUEUE,
     QA_QUEUE,
-    WORKER_COMMANDS,
 )
-from shared.redis import decode_redis_fields, decode_redis_value
 from shared.redis_client import RedisStreamClient
 from shared.server_admission import (
     provisioning_failed_server_handles,
@@ -86,23 +78,20 @@ from .. import startup
 from ._recipients import resolve_project_recipient
 from .owner_notifications import deliver_owed_notification, owe_owner_notification
 from .temporary_access import grant_temporary_access
+from .worker_liveness import (
+    WorkerAttemptState,
+    attempt_state,
+    fail_removed_attempt as _fail_removed_attempt,
+    replay_terminal_attempt,
+    request_stuck_attempt_stop,
+    select_live_engineering_run,
+    select_terminal_engineering_run,
+)
 
 logger = structlog.get_logger(__name__)
 
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
 DEPLOY_RETRY_KEY_PREFIX = "deploy:retries:"
-
-#: `run_metadata` key naming the worker executing an attempt. Written by the
-#: langgraph spawner the moment the worker exists, read here to get from a task
-#: to the thing that is (or is not) doing its work.
-ATTEMPT_WORKER_KEY = "worker_id"
-ATTEMPT_STOP_REQUESTED_KEY = "worker_stop_requested_at"
-ATTEMPT_INITIATING_RUN_KEY = "initiating_run_id"
-ATTEMPT_TURN_REQUESTED_KEY = "active_turn_requested_at"
-ATTEMPT_TURN_BACKSTOP_KEY = "active_turn_backstop_seconds"
-
-#: Run statuses in which the engineering pipeline still owns an attempt.
-_LIVE_ENGINEERING_STATUSES = (RunStatus.QUEUED, RunStatus.RUNNING)
 
 #: Where a deploy that carried an infrastructure wait forward started waiting.
 #: Stored in `run_metadata` so the bound survives every re-dispatch.
@@ -143,10 +132,6 @@ def _deploy_retry_ttl() -> int:
 
 def _story_stuck_threshold() -> int:
     return startup.get_config().get_int("supervisor.story_stuck_threshold_minutes")
-
-
-def _task_stuck_threshold() -> int:
-    return startup.get_config().get_int("supervisor.task_stuck_threshold_minutes")
 
 
 def _max_architect_retries() -> int:
@@ -675,156 +660,6 @@ async def _notify_resources_resumed_via_po(
     await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
 
 
-async def _current_engineering_run(api_client: SchedulerAPIClient, task) -> RunDTO | None:
-    """The engineering attempt this task is currently being worked on in.
-
-    The live attempt, if there is one; otherwise the most recent. Live comes
-    first because an in_dev task's question is "is somebody working on this",
-    and the answer is on the run that has not finished.
-    """
-    runs = list(await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value))
-    for run in runs:
-        if run.status in _LIVE_ENGINEERING_STATUSES:
-            return run
-    if not runs:
-        return None
-    return max(runs, key=lambda run: _parse_datetime(run.created_at))
-
-
-class WorkerAttemptState(StrEnum):
-    RUNNING = "running"
-    IDLE = "idle"
-    DEAD = "dead"
-    TIMED_OUT = "timed_out"
-    REMOVED = "removed"
-    UNKNOWN = "unknown"
-
-
-def _turn_backstop_expired(run, now: datetime) -> bool:
-    metadata = run.run_metadata or {}
-    requested_at = metadata.get(ATTEMPT_TURN_REQUESTED_KEY)
-    seconds = metadata.get(ATTEMPT_TURN_BACKSTOP_KEY)
-    if not requested_at or not isinstance(seconds, int):
-        return False
-    return now >= _parse_datetime(requested_at) + timedelta(seconds=seconds)
-
-
-async def _attempt_state(
-    redis_client: RedisStreamClient, run, now: datetime
-) -> tuple[WorkerAttemptState, str | None]:
-    """Read one fenced lease and authoritative lifecycle evidence.
-
-    Missing Redis status is deliberately ``unknown``.  Only a worker-manager
-    terminal status or its post-removal evidence can say that Docker is gone.
-    """
-    metadata = run.run_metadata or {}
-    worker_id = metadata.get(ATTEMPT_WORKER_KEY)
-    if not worker_id:
-        return (
-            WorkerAttemptState.TIMED_OUT
-            if _turn_backstop_expired(run, now)
-            else WorkerAttemptState.UNKNOWN,
-            None,
-        )
-    redis = redis_client.redis
-    initiating_run_id = metadata.get(ATTEMPT_INITIATING_RUN_KEY)
-    if initiating_run_id:
-        try:
-            raw = await redis.hget(removed_worker_evidence_key(initiating_run_id), worker_id)
-            if raw:
-                evidence = RemovedWorkerEvidence.model_validate_json(decode_redis_value(raw))
-                if evidence.ownership.attempt_id == run.id:
-                    return WorkerAttemptState.REMOVED, worker_id
-        except Exception:
-            return WorkerAttemptState.UNKNOWN, worker_id
-
-    # The worker-manager's terminal observation outranks a possibly stale
-    # input lease.  A container can die while its lease remains in Redis.
-    try:
-        status = decode_redis_value(await redis.hget(f"worker:status:{worker_id}", "status"))
-    except Exception:
-        return WorkerAttemptState.UNKNOWN, worker_id
-    if status is None:
-        return WorkerAttemptState.UNKNOWN, worker_id
-    try:
-        if WorkerStatus(status) in WORKER_TERMINAL_STATUSES:
-            return WorkerAttemptState.DEAD, worker_id
-    except ValueError:
-        return WorkerAttemptState.UNKNOWN, worker_id
-
-    try:
-        active = WorkerActiveTurn.from_redis_fields(
-            decode_redis_fields(await redis.hgetall(active_turn_key(worker_id)))
-        )
-    except Exception:
-        return WorkerAttemptState.UNKNOWN, worker_id
-    if (
-        active is not None
-        and active.attempt_id == run.id
-        and active.request_id == metadata.get("active_turn_request_id")
-    ):
-        return (
-            WorkerAttemptState.TIMED_OUT
-            if now >= active.deadline_at
-            else WorkerAttemptState.RUNNING,
-            worker_id,
-        )
-    return (
-        WorkerAttemptState.TIMED_OUT
-        if _turn_backstop_expired(run, now)
-        else WorkerAttemptState.IDLE,
-        worker_id,
-    )
-
-
-async def _request_stuck_attempt_stop(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    task,
-    run,
-    state: WorkerAttemptState,
-    worker_id: str | None,
-    log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Persist an idempotent stop intent; never mistake it for teardown."""
-    if run.run_metadata.get(ATTEMPT_STOP_REQUESTED_KEY):
-        return
-    await api_client.update_run(
-        run.id,
-        {
-            "run_metadata": {
-                ATTEMPT_STOP_REQUESTED_KEY: datetime.now(UTC).isoformat(),
-                "stop_reason": WorkerStopReason.TURN_DEADLINE_EXCEEDED.value,
-                "worker_state": state.value,
-            }
-        },
-    )
-    if worker_id:
-        delete_cmd = DeleteWorkerCommand(
-            request_id=f"stuck-{task.id}",
-            worker_id=worker_id,
-            reason="timeout",
-        )
-        await redis_client.publish(WORKER_COMMANDS, delete_cmd.model_dump(mode="json"))
-        log.warning("stuck_worker_stop_requested", worker_id=worker_id)
-
-
-async def _close_removed_attempt(api_client: SchedulerAPIClient, task, run) -> None:
-    """Only a post-removal record makes the attempt and task retryable."""
-    await api_client.update_run(
-        run.id,
-        {
-            "status": RunStatus.FAILED.value,
-            "error_message": "engineering worker was removed after its turn timed out",
-            "result": EngineeringRunResult(engineering_status=EngineeringStatus.FAILED).model_dump(
-                mode="json"
-            ),
-            "run_metadata": {"stop_reason": WorkerStopReason.TURN_DEADLINE_EXCEEDED.value},
-        },
-    )
-    await api_client.transition_task(task.id, TaskStatus.FAILED, "supervisor")
-
-
 async def supervise_stuck_tasks(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -837,16 +672,13 @@ async def supervise_stuck_tasks(
     now = datetime.now(UTC)
 
     for task in tasks:
-        run = await _current_engineering_run(api_client, task)
+        run = await select_live_engineering_run(api_client, task.id)
         if run is None:
+            terminal_run = await select_terminal_engineering_run(api_client, task.id)
+            if terminal_run is not None:
+                await replay_terminal_attempt(api_client, task.id, terminal_run, "supervisor")
             continue
-        state, worker_id = await _attempt_state(redis_client, run, now)
-        log = logger.bind(
-            task_id=task.id,
-            run_id=run.id if run else None,
-            worker_id=worker_id,
-            liveness_state=state.value,
-        )
+        state, worker_id = await attempt_state(redis_client, run, now)
 
         if state is WorkerAttemptState.RUNNING:
             working += 1
@@ -854,7 +686,7 @@ async def supervise_stuck_tasks(
         if state in {WorkerAttemptState.IDLE, WorkerAttemptState.UNKNOWN}:
             continue
         if state is WorkerAttemptState.REMOVED:
-            await _close_removed_attempt(api_client, task, run)
+            await _fail_removed_attempt(api_client, task, run)
             timed_out += 1
             continue
         # No worker was ever recorded for this attempt, so there is no
@@ -862,12 +694,10 @@ async def supervise_stuck_tasks(
         # terminal evidence; continuing to publish an empty stop intent would
         # otherwise leave the run open forever.
         if state is WorkerAttemptState.TIMED_OUT and worker_id is None:
-            await _close_removed_attempt(api_client, task, run)
+            await _fail_removed_attempt(api_client, task, run)
             timed_out += 1
             continue
-        await _request_stuck_attempt_stop(
-            api_client, redis_client, task, run, state, worker_id, log
-        )
+        await request_stuck_attempt_stop(api_client, redis_client, task, run, state, worker_id, now)
         stopping += 1
 
     return {"timed_out": timed_out, "working": working, "stopping": stopping}

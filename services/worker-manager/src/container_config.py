@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
 from shared.contracts.vocab import AgentType
+from shared.constants import Timeouts
 
 # The host Claude session directory is mounted here, and the Claude CLI is told
 # to keep its whole config there via CLAUDE_CONFIG_DIR. Without that variable the
@@ -36,7 +37,7 @@ class WorkerContainerConfig:
         self,
         broker_url: str,
         broker_token: str,
-        subprocess_timeout_seconds: int = 300,
+        subprocess_timeout_seconds: int = Timeouts.AGENT_TURN,
     ) -> Dict[str, str]:
         """Generate environment variables for the container.
 

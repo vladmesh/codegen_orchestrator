@@ -47,7 +47,6 @@ def initialized_scheduler_config(monkeypatch):
         "deploy.max_deploy_fix_attempts": 2,
         "deploy.deploy_retry_ttl": 86400,
         "supervisor.story_stuck_threshold_minutes": 5,
-        "supervisor.task_stuck_threshold_minutes": 30,
         "supervisor.story_max_architect_retries": 3,
         "supervisor.story_retry_ttl": 3600,
         "supervisor.qa_failure_max_fingerprint_attempts": 2,

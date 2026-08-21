@@ -19,7 +19,10 @@ def _attempt_recording_stubbed():
     Naming the worker on its attempt is a real API write with its own test; here
     it would only be a live HTTP call in the middle of a Redis-level assertion.
     """
-    with patch("src.clients.worker_spawner.record_worker_on_attempt", new_callable=AsyncMock):
+    with (
+        patch("src.clients.worker_spawner.record_worker_on_attempt", new_callable=AsyncMock),
+        patch("src.clients.worker_spawner.record_turn_on_attempt", new_callable=AsyncMock),
+    ):
         yield
 
 
