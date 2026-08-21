@@ -336,8 +336,9 @@ async for msg in client.consume(
     group="capability-workers",
     consumer="worker-1",
     auto_ack=False,          # False = caller must call ack() after processing
-    claim_pending=True,      # Recover PEL (crashed messages) on startup
+    claim_pending=True,      # Sweep the PEL for stuck entries, for this consumer's lifetime
     pending_timeout_ms=60_000,  # Min idle time before re-claiming pending message
+    reclaim_interval_ms=None,   # Sweep period; defaults to pending_timeout_ms, floored at 1s
 ):
     await process(msg.data)
     await client.ack(stream, group, msg.message_id)
@@ -352,9 +353,9 @@ async for msg in client.consume(
 
 ### PEL Recovery
 
-On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim messages that were pending for longer than `pending_timeout_ms`. This handles the case where a consumer crashes mid-processing — on restart, the message is automatically re-delivered.
+With `claim_pending=True` the consumer calls `XAUTOCLAIM` from inside its read loop, every `reclaim_interval_ms`, and reclaims entries nobody has been handed for `pending_timeout_ms`. It covers both a consumer that crashed mid-processing and one that is still running when an entry gets stuck: no restart is needed either way. Sweep period and the reasoning behind its default are in [ERROR_HANDLING.md](ERROR_HANDLING.md#c-consumer-errors-redis).
 
-**Special case:** PO Consumer (`services/langgraph/src/consumers/po.py`) uses a custom while-loop for concurrent dispatch but still implements PEL recovery via direct `XAUTOCLAIM` calls on startup.
+**Special case:** PO Consumer (`services/langgraph/src/consumers/po.py`) uses a custom while-loop for concurrent dispatch and does **not** go through `RedisStreamClient.consume`. Its PEL recovery is a private `XAUTOCLAIM` copy that still runs once, on startup, and still skips a body-less claim in silence — it did not inherit the continuous sweep or the trim diagnostics.
 
 ### Consumer Inventory
 

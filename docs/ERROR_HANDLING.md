@@ -78,16 +78,20 @@ All consumers use unified `RedisStreamClient.consume()` API with two ACK modes:
 2. Losing it on a crash is acceptable (notifications, not critical data).
 
 **PEL Recovery** (`claim_pending=True`):
-- On startup the consumer calls `XAUTOCLAIM` and picks up messages that have been stuck in the PEL longer than `pending_timeout_ms` (default: 60s).
-- This covers the scenario of a consumer crashing mid-processing — after a restart the message is reprocessed automatically.
-- PEL recovery runs before the main `XREADGROUP` loop.
+- The `XAUTOCLAIM` sweep runs *inside* the read loop, not once before it: `_iter_entries` alternates a sweep with the blocking `XREADGROUP`, so an entry that gets stuck long after start-up is reclaimed by the running consumer, with no restart.
+- A sweep claims only entries nobody has been handed for `pending_timeout_ms` (default: 60s). That idle bar is the whole protection against taking work away from a healthy consumer, and the periodic sweep passes it through unchanged.
+- Sweep period: `reclaim_interval_ms`, defaulting to `pending_timeout_ms` floored at `MIN_RECLAIM_INTERVAL_MS` (1s). An entry cannot become claimable sooner than `pending_timeout_ms` after its last delivery, so sweeping faster buys nothing but round trips; sweeping at that period bounds the pickup delay at twice the timeout. The floor exists because a caller may pass `pending_timeout_ms=0` (the proactive listener does) and a zero period would put an `XAUTOCLAIM` on every turn of the loop.
+- A consumer that would rather not wait can pass `reclaim_interval_ms` explicitly.
+
+**Entry lost to a trim:**
+Every publish carries `MAXLEN ~ 1000` and the scheduler additionally runs `XTRIM MINID` by age; neither looks at the PEL first. `XAUTOCLAIM` then reports a pending entry whose body is gone — as `(id, None)` on Redis 6.2, in the third response element on Redis 7. Both shapes are logged as `stream_entry_lost_to_trim` and counted in the Redis hash `stream:diagnostics:lost_entries`, keyed `{stream}|{group}` (`RedisStreamClient.lost_entry_count`). The work itself is unrecoverable; what the counter buys is that a trim eating live work does not read as an idle queue.
 
 **Error handling flow:**
-1. **Processing Error (Transient):** we do not call ACK → the message stays in the PEL → PEL recovery picks it up on a restart.
-2. **Processing Error (Permanent):** ACK + XADD to the DLQ (if implemented).
-3. **Consumer Crash:** the message is in the PEL → another instance or a restart picks it up through `XAUTOCLAIM`.
-
-2. **DLQ Handling:** a separate process or the admin goes through the DLQ by hand.
+1. **Processing Error (Transient):** we do not call ACK → the message stays in the PEL → the running consumer's next sweep picks it up, restart or no restart.
+2. **Processing Error (Permanent) — a poison entry:** in `consume_typed`, an entry that cannot be JSON decoded or fails schema validation is copied to `{stream}:dlq` and ACKed away *only after that copy lands*. If the DLQ write fails, the entry is left unacked and comes back on a later sweep — a message is never destroyed because its diagnostics copy failed.
+3. **Newer publisher:** a payload that fails validation *only* because it carries fields this consumer's schema does not know yet is not poison. It is accepted with those fields dropped and `typed_consume_unknown_fields_ignored` logged (field names only). Anything else — a missing field, a wrong type, a `QueueMeta.version` this consumer does not implement — is not forgiven and takes the DLQ route above. Tolerance is read-side only: the contracts keep `extra="forbid"`, so a publisher still cannot emit an unknown field.
+4. **Consumer Crash:** the message is in the PEL → another instance or a restart picks it up through `XAUTOCLAIM`.
+5. **DLQ Handling:** a separate process or the admin goes through the DLQ by hand.
 
 ---
 
@@ -153,21 +157,20 @@ PO sends user-facing lifecycle messages through `po:proactive`: deploy success, 
 - `engineering:queue:dlq`
 - `deploy:queue:dlq`
 
-**When to send to DLQ:**
-1. The message is invalid (does not parse with Pydantic).
-2. The retries for Transient errors are exhausted.
-3. A logic error that the service cannot handle.
+**Implemented for:** the typed consume path. `RedisStreamClient.consume_typed` writes every entry it refuses — bad JSON, failed validation, a message still addressed by the removed `user_id` — to `{stream}:dlq` before ACKing it. Nothing else writes to a DLQ yet: exhausted transient retries and service-level logic errors are handled by the owning consumer and do **not** produce a DLQ entry today.
 
-**Payload:**
-A copy of the original message + the error metadata:
-```json
-{
-  "original_message": {...},
-  "error_context": {
-    "error": "ValueError: Invalid project_id",
-    "timestamp": "...",
-    "service": "langgraph",
-    "attempts": 3
-  }
-}
-```
+**Payload:** flat stream fields, not a nested JSON document:
+
+| Field | Meaning |
+|-------|---------|
+| `source_stream` | the stream the entry came from |
+| `group` | the consumer group that refused it |
+| `entry_id` | its id on the source stream |
+| `failure` | `decode_error` or `validation_error` |
+| `reason` | JSON: for a validation failure the `{type, loc}` list with every input value elided; for a decode failure the positional `JSONDecodeError` text |
+| `quarantined_at` | UTC ISO-8601 |
+| `body` | JSON of the original field map, verbatim |
+
+**Secrets:** `body` is kept whole, secrets included. That is a deliberate difference from the logs, and the two must not be conflated. A DLQ entry is a stream in the same Redis, under the same credentials, next to the stream the payload already sat on in cleartext — copying it there crosses no trust boundary. Logs go to Loki and are read by a wider audience, which is why `reason` elides values, `str(e)` is never logged for a validation error, and the raw field map is never logged at all. Do not "improve" the DLQ by logging its body.
+
+The DLQ stream is written with the same `MAXLEN ~` as any other publish, so a flood of poison entries cannot grow it without bound; a DLQ that is being trimmed is itself a signal to go look.

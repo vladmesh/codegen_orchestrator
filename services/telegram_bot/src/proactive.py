@@ -4,8 +4,8 @@
 a stream entry it returns from was either accepted by Telegram, or its bounded
 attempts were used up and admins were alerted. It acks the entry itself, so the
 only way to leave one pending is for the process to die mid-delivery — and the
-listener claims the pending entries of its previous incarnation on startup
-(``claim_pending``), which brings the message back here. The attempt bound
+listener's ``claim_pending`` sweep, which runs for as long as the listener does,
+brings the message back here. The attempt bound
 therefore cannot live in memory: it is read from the group's PEL delivery count,
 which survives the restart, so a message that keeps killing its consumer is
 still bounded.
@@ -41,9 +41,11 @@ PROACTIVE_RETRY_DELAY_S = 1.0
 # Times the group may be handed the same entry before the message is given up on.
 # Counted by Redis, so a consumer that dies mid-delivery cannot restart the count.
 PROACTIVE_MAX_DELIVERIES = 3
-# Pending entries are claimed on startup regardless of how long they have been
-# idle: the consumer that held them is this consumer's dead predecessor, and a
-# fast restart must not leave a notification unattended.
+# Pending entries are claimed regardless of how long they have been idle: the
+# consumer that held them is this consumer's dead predecessor, and a fast restart
+# must not leave a notification unattended. The client floors the resulting sweep
+# period at MIN_RECLAIM_INTERVAL_MS, so a zero idle bar does not turn the read
+# loop into a sweep loop.
 PROACTIVE_RECLAIM_IDLE_MS = 0
 
 

@@ -1,10 +1,13 @@
 """Unit tests for shared.redis.client.RedisStreamClient."""
 
+import asyncio
 import json
+import time
 from typing import Literal
 from unittest.mock import AsyncMock, patch
 
 from fakeredis import aioredis
+from pydantic import ConfigDict
 import pytest
 import pytest_asyncio
 import redis as redis_module
@@ -16,6 +19,7 @@ from shared.redis.client import (
     StreamMessage,
     TypedMessage,
     decode_redis_value,
+    dlq_stream,
 )
 
 
@@ -510,3 +514,256 @@ class TestPublishFlat:
         assert "data" not in fields or fields["data"] != json.dumps(
             {"type": "test", "user_id": "42"}
         )
+
+
+class StrictSample(BaseMessage):
+    """A strict contract: unknown fields are refused, as the queue DTOs are."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+class StrictCreate(BaseMessage):
+    """Union member, strict, distinguished by ``command``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: Literal["create"] = "create"
+    payload: str
+
+
+class StrictDelete(BaseMessage):
+    """The other union member."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: Literal["delete"] = "delete"
+    worker_id: str
+
+
+class TestReclaimRunsForTheConsumerLifetime:
+    """XAUTOCLAIM used to run once, before the read loop. The generator is built
+    once per process, so an entry that got stuck after start-up stayed in the
+    PEL until the service was restarted."""
+
+    async def test_entry_stuck_after_startup_is_reclaimed_without_a_restart(
+        self, client, fake_redis
+    ):
+        entries = client.consume(
+            "s",
+            "g",
+            "live-consumer",
+            block_ms=10,
+            auto_ack=False,
+            claim_pending=True,
+            pending_timeout_ms=0,
+        ).__aiter__()
+
+        # The consumer starts against an empty stream: the start-up sweep finds
+        # nothing, and it settles into its read loop.
+        assert await anext(entries) is None
+
+        # Only now does another consumer take an entry and die without acking.
+        await fake_redis.xadd("s", {"data": json.dumps({"key": "stuck"})})
+        await fake_redis.xreadgroup("g", "dead-consumer", {"s": ">"}, count=1)
+        assert (await fake_redis.xpending("s", "g"))["pending"] == 1
+
+        # The same, still running generator has to bring it back. Give it more
+        # than one reclaim interval to do so.
+        received = []
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            msg = await anext(entries)
+            if msg is not None:
+                received.append(msg.data)
+                break
+            await asyncio.sleep(0.02)
+        await entries.aclose()
+
+        assert received == [{"key": "stuck"}], "a live consumer never reclaimed the stuck entry"
+
+    async def test_a_sweep_never_lowers_the_idle_bar_that_protects_a_healthy_consumer(
+        self, client, fake_redis
+    ):
+        """The periodic sweep still passes ``pending_timeout_ms`` as min_idle_time."""
+        claims = []
+        fake_redis.xautoclaim = AsyncMock(
+            side_effect=lambda *a, **kw: claims.append(kw["min_idle_time"]) or ("0-0", [])
+        )
+        async for _ in client.consume(
+            "s", "g", "c1", block_ms=10, claim_pending=True, pending_timeout_ms=45_000
+        ):
+            break
+        assert claims == [45_000]
+
+
+class TestTrimmedEntryIsDiagnosed:
+    """A PEL entry whose body the stream no longer holds — trimmed by MAXLEN on
+    publish or by the scheduler's XTRIM MINID — used to be skipped in silence."""
+
+    async def test_body_less_claim_is_logged_and_counted(self, client, fake_redis):
+        # Redis 6.2 shape: the claimed list carries the entry with no fields.
+        fake_redis.xautoclaim = AsyncMock(return_value=("0-0", [("5-5", None)]))
+
+        with capture_logs() as logs:
+            async for _ in client.consume(
+                "s", "g", "c1", block_ms=10, claim_pending=True, pending_timeout_ms=0
+            ):
+                break
+
+        lost = [entry for entry in logs if entry["event"] == "stream_entry_lost_to_trim"]
+        assert lost, "an entry lost to a trim left no trace"
+        assert lost[0]["entry_id"] == "5-5"
+        assert lost[0]["stream"] == "s"
+        assert await client.lost_entry_count("s", "g") == 1
+
+    async def test_deleted_ids_reported_by_redis_7_are_counted_too(self, client, fake_redis):
+        # Redis 7 shape: dropped ids come back in a third element instead.
+        fake_redis.xautoclaim = AsyncMock(return_value=("0-0", [], ["9-9"]))
+
+        with capture_logs() as logs:
+            async for _ in client.consume(
+                "s", "g", "c1", block_ms=10, claim_pending=True, pending_timeout_ms=0
+            ):
+                break
+
+        assert [e["entry_id"] for e in logs if e["event"] == "stream_entry_lost_to_trim"] == ["9-9"]
+        assert await client.lost_entry_count("s", "g") == 1
+
+    async def test_counter_accumulates_across_streams_separately(self, client, fake_redis):
+        fake_redis.xautoclaim = AsyncMock(return_value=("0-0", [("5-5", None)]))
+        for _ in range(2):
+            async for _ in client.consume(
+                "s", "g", "c1", block_ms=10, claim_pending=True, pending_timeout_ms=0
+            ):
+                break
+        assert await client.lost_entry_count("s", "g") == 2
+        assert await client.lost_entry_count("other", "g") == 0
+
+
+class TestPoisonEntryIsQuarantined:
+    """A poison entry is ACKed away — but only after it lands somewhere a human
+    can read it back from."""
+
+    async def test_undecodable_body_is_recoverable_from_the_dlq(self, client, fake_redis):
+        raw = '{"api_key": "ghp_super_secret_token", bad json'
+        await fake_redis.xadd("s", {"data": raw})
+
+        assert await _drain_typed(client, TypedSample) == []
+
+        quarantined = await fake_redis.xrange(dlq_stream("s"))
+        assert len(quarantined) == 1, "poison entry vanished instead of being quarantined"
+        entry_id, fields = quarantined[0]
+        assert fields["source_stream"] == "s"
+        assert fields["group"] == "g"
+        assert fields["failure"] == "decode_error"
+        assert json.loads(fields["body"]) == {"data": raw}
+        assert (await fake_redis.xpending("s", "g"))["pending"] == 0
+
+    async def test_schema_invalid_body_is_recoverable_with_an_elided_reason(
+        self, client, fake_redis
+    ):
+        await client.publish("s", {"api_key": "ghp_super_secret_token", "capability": "not-a-cap"})
+
+        assert await _drain_typed(client, SecretSample) == []
+
+        quarantined = await fake_redis.xrange(dlq_stream("s"))
+        assert len(quarantined) == 1
+        fields = quarantined[0][1]
+        assert fields["failure"] == "validation_error"
+        reason = json.loads(fields["reason"])
+        assert reason == [{"type": "literal_error", "loc": ["capability"]}]
+        assert "not-a-cap" not in fields["reason"], "the reason must not echo the payload"
+        # The body is kept whole, secrets and all: the DLQ is a stream in the
+        # same Redis the payload already sat in, unlike a log.
+        assert json.loads(json.loads(fields["body"])["data"])["api_key"] == (
+            "ghp_super_secret_token"
+        )
+
+    async def test_the_quarantine_copy_is_never_logged(self, client, fake_redis):
+        leaked = "ghp_super_secret_token"
+        await client.publish("s", {"api_key": leaked, "capability": "not-a-cap"})
+        with capture_logs() as logs:
+            await _drain_typed(client, SecretSample)
+        assert leaked not in json.dumps(logs, default=str)
+        assert any(entry["event"] == "typed_consume_entry_quarantined" for entry in logs)
+
+    async def test_an_entry_that_cannot_be_quarantined_is_not_acked_away(self, client, fake_redis):
+        real_xadd = fake_redis.xadd
+
+        async def refuse_dlq(name, *args, **kwargs):
+            if name.endswith(":dlq"):
+                raise RuntimeError("redis refused the write")
+            return await real_xadd(name, *args, **kwargs)
+
+        fake_redis.xadd = refuse_dlq
+        await client.publish("s", {"wrong_field": "x"})
+
+        with capture_logs() as logs:
+            assert await _drain_typed(client, TypedSample) == []
+
+        assert any(entry["event"] == "typed_consume_quarantine_failed" for entry in logs)
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 1, "destroyed the message because its DLQ copy failed"
+
+    async def test_a_legacy_addressed_message_is_quarantined_as_well(self, client, fake_redis):
+        await client.publish("s", {"user_id": "1", "event": "story_completed"})
+        with patch("shared.notifications.notify_admins_best_effort", new=AsyncMock()):
+            assert await _drain_typed(client, TypedSample) == []
+        assert len(await fake_redis.xrange(dlq_stream("s"))) == 1
+
+
+class TestNewerPublisherIsNotDestructive:
+    """Publisher and consumer are built into separate images, so one of them is
+    always the older one for a while."""
+
+    async def test_extra_field_from_a_newer_publisher_is_still_delivered(self, client, fake_redis):
+        await client.publish("s", {"name": "hello", "cost_usd": 0.42})
+
+        received = await _drain_typed(client, StrictSample)
+
+        assert [m.value.name for m in received] == ["hello"]
+        assert await fake_redis.xlen(dlq_stream("s")) == 0
+
+    async def test_the_ignored_field_is_named_in_the_log_without_its_value(self, client):
+        await client.publish("s", {"name": "hello", "api_key": "ghp_super_secret_token"})
+        with capture_logs() as logs:
+            await _drain_typed(client, StrictSample)
+        ignored = [e for e in logs if e["event"] == "typed_consume_unknown_fields_ignored"]
+        assert ignored and ignored[0]["unknown_fields"] == ["api_key"]
+        assert "ghp_super_secret_token" not in json.dumps(logs, default=str)
+
+    async def test_a_newer_field_on_a_union_member_is_delivered_to_that_member(self, client):
+        await client.publish("s", {"command": "create", "payload": "x", "cost_usd": 0.42})
+
+        received = await _drain_typed(client, StrictCreate | StrictDelete)
+
+        assert len(received) == 1
+        assert isinstance(received[0].value, StrictCreate)
+        assert received[0].value.payload == "x"
+
+    async def test_a_payload_that_is_wrong_rather_than_new_still_goes_to_the_dlq(
+        self, client, fake_redis
+    ):
+        # Missing the required field *and* carrying an unknown one: not a newer
+        # publisher, so nothing is forgiven.
+        await client.publish("s", {"cost_usd": 0.42})
+
+        assert await _drain_typed(client, StrictSample) == []
+        assert await fake_redis.xlen(dlq_stream("s")) == 1
+
+    async def test_an_unknown_queue_version_is_quarantined_not_accepted(self, client, fake_redis):
+        await client.publish("s", {"name": "hello", "version": "2"})
+
+        assert await _drain_typed(client, StrictSample) == []
+        quarantined = await fake_redis.xrange(dlq_stream("s"))
+        assert len(quarantined) == 1
+        assert json.loads(quarantined[0][1]["reason"]) == [
+            {"type": "literal_error", "loc": ["version"]}
+        ]
+
+    def test_publishing_an_unknown_field_still_fails_at_the_publisher(self):
+        """Tolerance is read-side only: the write side keeps ``extra="forbid"``."""
+        with pytest.raises(ValueError, match="cost_usd"):
+            StrictSample(name="hello", cost_usd=0.42)

@@ -2,6 +2,34 @@
 
 ## 2026-08-21
 
+- A stream entry no longer disappears without a trace. Three defects in `shared/redis/client.py`
+  shared one failure shape — the record is gone and there is nothing to look at — and are closed
+  together because they patch each other's hole.
+  - **PEL reclaim is now continuous.** The `XAUTOCLAIM` sweep used to sit *before* the
+    `XREADGROUP` loop in `_iter_entries`; the generator is created once per process, so it ran at
+    start-up and never again, and an entry stuck afterwards waited for a service restart while six
+    consumers were written expecting the opposite. The sweep now runs inside the loop, every
+    `reclaim_interval_ms` — by default `pending_timeout_ms` floored at 1s. `min_idle_time` is
+    unchanged, so a healthy consumer's in-flight entry is still not taken from it.
+  - **A poison entry is quarantined, not destroyed.** `consume_typed` copies an entry it cannot
+    decode or validate to `{stream}:dlq` — source stream, group, entry id, failure kind, the
+    structured reason with values elided, and the body verbatim — and ACKs it only once that copy
+    lands. A failed DLQ write leaves the entry in the PEL for the next sweep. The DLQ carries the
+    body because it is a stream in the same Redis the payload already sat in; the logs keep their
+    elision, and nothing there was weakened.
+  - **A trimmed entry is diagnosed.** `MAXLEN ~` on publish and the scheduler's `XTRIM MINID`
+    both ignore the PEL, so `XAUTOCLAIM` reports pending entries with no body. Both response
+    shapes (Redis 6.2's `(id, None)` and Redis 7's deleted-id list) are now logged as
+    `stream_entry_lost_to_trim` and counted in `stream:diagnostics:lost_entries`, instead of a
+    silent `continue`.
+  - **A newer publisher no longer destroys the message.** A payload that fails validation only
+    because it carries fields the consumer's schema does not know yet is accepted with those
+    fields dropped and the names logged. Everything else — a missing field, a wrong type, an
+    unknown `QueueMeta.version` — still fails and takes the DLQ route. The tolerance is read-side
+    only; contracts keep `extra="forbid"`, so a publisher still cannot emit an unknown field.
+  - `docs/ERROR_HANDLING.md` (PEL Recovery, Error handling flow, DLQ) now describes what the code
+    does; the DLQ's "(if implemented)" is resolved, with the paths that still have no DLQ named.
+
 - Re-delivering a scaffold message onto an already-scaffolded workspace now succeeds instead of
   destroying the project. `copier --overwrite` rewrites byte-identical files, so `git commit` exits
   non-zero with nothing staged; the git step used to break out of its loop there, never reach
