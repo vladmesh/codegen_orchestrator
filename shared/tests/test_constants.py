@@ -28,8 +28,14 @@ class TestTimeouts:
     def test_access_phase(self):
         assert Timeouts.ACCESS_PHASE == 180
 
-    def test_worker_spawn(self):
-        assert Timeouts.WORKER_SPAWN == 1800
+    def test_agent_turn(self):
+        assert Timeouts.AGENT_TURN == 3600
+
+    def test_worker_spawn_outlasts_the_turn_it_waits_for(self):
+        # The spawn wait is an observer, not a limit. If it could expire first it
+        # would take a worker away that is still inside the limit it was given.
+        assert Timeouts.WORKER_SPAWN == Timeouts.AGENT_TURN + Timeouts.WORKER_TURN_OVERHEAD
+        assert Timeouts.WORKER_SPAWN > Timeouts.AGENT_TURN
 
     def test_preparer_spawn(self):
         assert Timeouts.PREPARER_SPAWN == 120

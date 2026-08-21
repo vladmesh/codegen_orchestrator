@@ -720,8 +720,8 @@ class TestProjectMutex:
             assert result == "w-second"
 
     @pytest.mark.asyncio
-    async def test_delete_worker_releases_project_lock_when_container_remove_fails(self, mock_docker):
-        """Docker teardown failures must not leave the project mutex stuck."""
+    async def test_delete_worker_keeps_project_lock_when_container_remove_fails(self, mock_docker):
+        """A failed Docker remove is not teardown evidence for a retry."""
         redis = aioredis.FakeRedis(decode_responses=True)
         await redis.sadd("workspace:active_projects", "proj-1")
         await redis.hset(
@@ -745,8 +745,8 @@ class TestProjectMutex:
             mock_runner_cls.return_value = mock_runner
             await manager.delete_worker("w-first")
 
-        assert not await redis.sismember("workspace:active_projects", "proj-1")
-        assert await manager._check_project_lock("proj-1") is None
+        assert await redis.sismember("workspace:active_projects", "proj-1")
+        assert await manager._check_project_lock("proj-1") == "w-first"
 
 
 # --- Phase 6: Failure counter + force clean + retry limit ---
@@ -948,7 +948,7 @@ class TestForceCleanAndReject:
     @pytest.mark.asyncio
     async def test_spawn_rejected_after_three_failures(self, mock_redis, mock_docker):
         """When failure_count>=3, spawn should be rejected with RuntimeError."""
-        mock_redis.get = AsyncMock(return_value="3")
+        mock_redis.get = AsyncMock(side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None)
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with pytest.raises(RuntimeError, match="Max retries"):
@@ -963,7 +963,7 @@ class TestForceCleanAndReject:
     @pytest.mark.asyncio
     async def test_reject_before_workspace_resolution(self, mock_redis, mock_docker):
         """When failure_count>=3, workspace should NOT be resolved (reject happens first)."""
-        mock_redis.get = AsyncMock(return_value="3")
+        mock_redis.get = AsyncMock(side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None)
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with (

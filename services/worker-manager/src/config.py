@@ -32,11 +32,6 @@ class WorkerManagerSettings(BaseSettings):
     HOST_CODEX_HOME: str | None = None
     HOST_CODEX_VALIDATION_PATH: str | None = None
 
-    # Worker subprocess timeout (seconds). Live LLM agents (Claude/Factory) need
-    # well over the noop budget to write and iterate on real code; keep within the
-    # harness LLM_ENGINEERING_TIMEOUT. The noop runner uses its own short timeout.
-    WORKER_SUBPROCESS_TIMEOUT_SECONDS: int = 900
-
     # Path to pre-scaffolded workspaces (created by scaffolder service)
     # All workspaces live here, keyed by repo_id: /data/workspaces/{repo_id}/
     SCAFFOLDED_WORKSPACE_PATH: str = "/data/workspaces"

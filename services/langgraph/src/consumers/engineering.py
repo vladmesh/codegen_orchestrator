@@ -258,6 +258,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "worker_report": None,
             "worker_observability": None,
             "gave_up_reason": None,
+            "stop_reason": None,
+            "agent_limit_seconds": None,
             "errors": [],
         }
 
@@ -337,6 +339,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 error_msg,
                 planning_task_id,
                 result.get("worker_observability"),
+                stop_reason=result.get("stop_reason"),
+                agent_limit_seconds=result.get("agent_limit_seconds"),
             )
 
     except Exception as e:

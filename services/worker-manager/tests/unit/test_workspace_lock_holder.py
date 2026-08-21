@@ -162,6 +162,21 @@ async def test_the_holder_is_the_one_that_won_the_acquisition(docker):
 
 
 @pytest.mark.asyncio
+async def test_failed_container_removal_keeps_the_owner_fenced_workspace_lock(docker):
+    """A delete command is not teardown evidence and cannot free the checkout."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    manager = WorkerManager(redis=redis, docker_client=docker)
+    await manager._acquire_workspace_lock("worker-a", _ownership("run-a", "attempt-a"))
+    docker.remove_container.side_effect = RuntimeError("docker daemon unavailable")
+
+    await manager.delete_worker("worker-a", reason="timeout")
+
+    assert await redis.get(f"workspace:lock:{PROJECT}") == "worker-a"
+    with pytest.raises(RuntimeError, match="taken by a concurrent worker"):
+        await manager._acquire_workspace_lock("worker-b", _ownership("run-b", "attempt-b"))
+
+
+@pytest.mark.asyncio
 async def test_a_qa_executor_does_not_release_a_developer_workers_lock(docker):
     """A QA executor owns the project and holds none of its workspace.
 

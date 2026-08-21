@@ -78,6 +78,15 @@ from .. import startup
 from ._recipients import resolve_project_recipient
 from .owner_notifications import deliver_owed_notification, owe_owner_notification
 from .temporary_access import grant_temporary_access
+from .worker_liveness import (
+    WorkerAttemptState,
+    attempt_state,
+    fail_removed_attempt as _fail_removed_attempt,
+    replay_terminal_attempt,
+    request_stuck_attempt_stop,
+    select_live_engineering_run,
+    select_terminal_engineering_run,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -123,10 +132,6 @@ def _deploy_retry_ttl() -> int:
 
 def _story_stuck_threshold() -> int:
     return startup.get_config().get_int("supervisor.story_stuck_threshold_minutes")
-
-
-def _task_stuck_threshold() -> int:
-    return startup.get_config().get_int("supervisor.task_stuck_threshold_minutes")
 
 
 def _max_architect_retries() -> int:
@@ -659,30 +664,43 @@ async def supervise_stuck_tasks(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
-    """Detect tasks stuck in in_dev and fail them.
-
-    Failed tasks will be picked up by supervise_failed_tasks for retry.
-    Returns dict with 'timed_out' count.
-    """
+    """Reconcile active leases, Docker endings and a finite turn deadline."""
     tasks = await api_client.get_tasks_by_status(TaskStatus.IN_DEV)
     timed_out = 0
+    working = 0
+    stopping = 0
     now = datetime.now(UTC)
 
     for task in tasks:
-        task_id = task.id
-        updated_at = _parse_datetime(task.updated_at)
-        age_minutes = (now - updated_at).total_seconds() / 60
-
-        if age_minutes < _task_stuck_threshold():
+        run = await select_live_engineering_run(api_client, task.id)
+        if run is None:
+            terminal_run = await select_terminal_engineering_run(api_client, task.id)
+            if terminal_run is not None:
+                await replay_terminal_attempt(api_client, task.id, terminal_run, "supervisor")
             continue
+        state, worker_id = await attempt_state(redis_client, run, now)
 
-        log = logger.bind(task_id=task_id, age_minutes=round(age_minutes, 1))
-        log.warning("task_stuck_timeout", threshold_minutes=_task_stuck_threshold())
+        if state is WorkerAttemptState.RUNNING:
+            working += 1
+            continue
+        if state in {WorkerAttemptState.IDLE, WorkerAttemptState.UNKNOWN}:
+            continue
+        if state is WorkerAttemptState.REMOVED:
+            await _fail_removed_attempt(api_client, task, run)
+            timed_out += 1
+            continue
+        # No worker was ever recorded for this attempt, so there is no
+        # container teardown to await.  Its absolute request deadline is the
+        # terminal evidence; continuing to publish an empty stop intent would
+        # otherwise leave the run open forever.
+        if state is WorkerAttemptState.TIMED_OUT and worker_id is None:
+            await _fail_removed_attempt(api_client, task, run)
+            timed_out += 1
+            continue
+        await request_stuck_attempt_stop(api_client, redis_client, task, run, state, worker_id, now)
+        stopping += 1
 
-        await api_client.transition_task(task_id, TaskStatus.FAILED, "supervisor")
-        timed_out += 1
-
-    return {"timed_out": timed_out}
+    return {"timed_out": timed_out, "working": working, "stopping": stopping}
 
 
 async def supervise_deploying_stories(  # noqa: PLR0912

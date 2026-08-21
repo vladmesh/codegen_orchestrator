@@ -15,6 +15,7 @@ from typing_extensions import TypedDict
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.queues.worker_result import WorkerStopReason
 
 from ..nodes.base import FunctionalNode
 from ..nodes.developer import developer_node
@@ -74,6 +75,12 @@ class EngineeringState(TypedDict):
     worker_report: str | None
     worker_observability: dict | None
     gave_up_reason: str | None
+
+    # Why the worker's turn ended without a result, and the limit it was
+    # measured against. Both are recorded on the attempt so a failed run says
+    # what happened instead of only that it failed.
+    stop_reason: WorkerStopReason | None
+    agent_limit_seconds: int | None
 
     # Loop tracking
     iteration_count: int

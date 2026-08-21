@@ -2,6 +2,17 @@
 
 ## 2026-08-21
 
+- Engineering worker supervision now follows the input lease rather than a
+  wrapper heartbeat or `task.updated_at`. The broker records the active turn
+  with its worker, attempt, request, lease and absolute deadline; a reused
+  worker cannot lend an old turn's activity to a new attempt. Missing Redis
+  status is unknown, not Docker death. A deadline writes a durable stop intent
+  and requests deletion, but a task becomes retryable only after worker-manager
+  has recorded successful container removal. Workspace locks are owner-fenced,
+  and the wrapper kills the agent's whole process group while retaining its
+  partial transcript. `AGENT_TURN_TIMEOUT` defaults to 60 minutes; outer waits
+  are derived from that limit plus bounded teardown overhead.
+
 - The PO consumer no longer keeps its own copy of the read loop. It was the last product consumer
   reading `po:input` through a private `XAUTOCLAIM` copy, and it still carried exactly the defects
   already fixed in `shared/redis/client.py`: reclaim only at start-up, a sweep that stopped on the

@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 __all__ = [
     "WorkerResultStatus",
+    "WorkerStopReason",
     "WorkerCompletedResult",
     "WorkerFailedResult",
     "WorkerBlockedResult",
@@ -34,6 +35,14 @@ __all__ = [
     "WorkerResultAdapter",
     "parse_worker_result",
 ]
+
+
+class WorkerStopReason(StrEnum):
+    """Why the runtime deliberately ended a turn without a normal result."""
+
+    AGENT_LIMIT_EXCEEDED = "agent_limit_exceeded"
+    TURN_DEADLINE_EXCEEDED = "turn_deadline_exceeded"
+    AGENT_REFUSED = "agent_refused"
 
 
 class WorkerResultStatus(StrEnum):
@@ -69,10 +78,21 @@ class WorkerCompletedResult(_WorkerResultBase):
 
 
 class WorkerFailedResult(_WorkerResultBase):
-    """Worker hit a technical failure (execution error, timeout, no result)."""
+    """Worker hit a technical failure (execution error, timeout, no result).
+
+    ``error`` is prose for a human. ``stop_reason`` is the same fact for the
+    pipeline: it is what the attempt records in ``run_metadata``, so a run says
+    *why* it stopped instead of only that it did. It is optional because most
+    technical failures are not a stop at all — a crashed CLI, an unreadable
+    workspace — and inventing a stop reason for them would make the field
+    useless for the case it exists for.
+    """
 
     status: Literal[WorkerResultStatus.FAILED] = WorkerResultStatus.FAILED
     error: str
+    stop_reason: WorkerStopReason | None = None
+    #: The limit that was in force, as the wrapper actually enforced it.
+    agent_limit_seconds: int | None = None
 
 
 class WorkerBlockedResult(_WorkerResultBase):

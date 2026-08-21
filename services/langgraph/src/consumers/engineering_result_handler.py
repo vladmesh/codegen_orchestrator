@@ -14,6 +14,7 @@ from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.contracts.queues.worker_result import WorkerStopReason
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -114,11 +115,28 @@ async def _write_task_event(api, planning_task_id: str, event_type: str, details
         )
 
 
+def _stop_patch(stop_reason: WorkerStopReason | None, agent_limit_seconds: int | None) -> dict:
+    """`run_metadata` naming why a turn stopped, or nothing when it did not.
+
+    The API merges `run_metadata`, so an absent stop reason leaves the attempt's
+    existing metadata — including the worker and limit recorded at spawn —
+    untouched instead of blanking it.
+    """
+    if stop_reason is None:
+        return {}
+    metadata = {"stop_reason": stop_reason.value}
+    if agent_limit_seconds is not None:
+        metadata["agent_limit_seconds"] = agent_limit_seconds
+    return {"run_metadata": metadata}
+
+
 async def fail_job(
     task_id: str,
     error_msg: str,
     planning_task_id: str | None = None,
     worker_observability: dict | None = None,
+    stop_reason: WorkerStopReason | None = None,
+    agent_limit_seconds: int | None = None,
 ) -> dict:
     """Mark a run as failed and optionally update planning task."""
     await api_client.patch(
@@ -130,6 +148,7 @@ async def fail_job(
                 mode="json"
             ),
             **_observability_patch(worker_observability),
+            **_stop_patch(stop_reason, agent_limit_seconds),
         },
     )
     if planning_task_id:
@@ -169,6 +188,10 @@ async def handle_worker_gave_up(
                 mode="json"
             ),
             **_observability_patch(worker_observability),
+            # A refusal is a stop with a reason, and it is the third one the
+            # attempt can carry: the agent declined rather than ran out of time
+            # or went quiet.
+            **_stop_patch(WorkerStopReason.AGENT_REFUSED, None),
         },
     )
 

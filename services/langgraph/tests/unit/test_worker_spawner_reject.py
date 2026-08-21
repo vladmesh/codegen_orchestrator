@@ -6,7 +6,24 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.queues.worker import WorkerOwnership
 from src.clients.worker_spawner import SpawnResult
+
+_OWNERSHIP = WorkerOwnership(project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1")
+
+
+@pytest.fixture(autouse=True)
+def _attempt_recording_stubbed():
+    """These tests exercise the stream protocol, not the attempt bookkeeping.
+
+    Naming the worker on its attempt is a real API write with its own test; here
+    it would only be a live HTTP call in the middle of a Redis-level assertion.
+    """
+    with (
+        patch("src.clients.worker_spawner.record_worker_on_attempt", new_callable=AsyncMock),
+        patch("src.clients.worker_spawner.record_turn_on_attempt", new_callable=AsyncMock),
+    ):
+        yield
 
 
 class TestSpawnResultGaveUpField:
@@ -64,6 +81,7 @@ class TestSendTaskGaveUpPropagation:
             from src.clients.worker_spawner import send_task_to_worker
 
             result = await send_task_to_worker(
+                ownership=_OWNERSHIP,
                 worker_id="dev-test-123",
                 task_content="Fix CI",
                 timeout_seconds=10,
@@ -99,6 +117,7 @@ class TestSendTaskGaveUpPropagation:
             from src.clients.worker_spawner import send_task_to_worker
 
             result = await send_task_to_worker(
+                ownership=_OWNERSHIP,
                 worker_id="dev-test-123",
                 task_content="Fix CI",
                 timeout_seconds=10,
@@ -133,6 +152,7 @@ class TestSendTaskGaveUpPropagation:
             from src.clients.worker_spawner import send_task_to_worker
 
             result = await send_task_to_worker(
+                ownership=_OWNERSHIP,
                 worker_id="dev-test-123",
                 task_content="Fix CI",
                 timeout_seconds=10,

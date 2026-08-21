@@ -7,6 +7,7 @@ from fakeredis import FakeAsyncRedis
 
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import WorkerControlPlaneOperation
+from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 
 from src.auth import credential_key, verify_token
 from src import main
@@ -155,10 +156,27 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
     assert denied.value.status_code == 403
 
     await main.register_worker(registration, main.settings.BROKER_INTERNAL_TOKEN)
-    await redis.xadd(registration.input_stream, {"data": json.dumps({"task_id": "task-1", "prompt": "fix it"})})
+    await redis.xadd(
+        registration.input_stream,
+        {
+            "data": json.dumps(
+                {
+                    "attempt_id": "eng-attempt-1",
+                    "request_id": "request-1",
+                    "turn_deadline_seconds": 4500,
+                    "task_id": "task-1",
+                    "prompt": "fix it",
+                }
+            )
+        },
+    )
 
     lease = await main.lease_input(worker_id, worker_token)
-    assert lease["data"] == {"task_id": "task-1", "prompt": "fix it"}
+    active = WorkerActiveTurn.from_redis_fields(await redis.hgetall(active_turn_key(worker_id)))
+    assert active is not None
+    assert active.attempt_id == "eng-attempt-1"
+    assert active.request_id == "request-1"
+    assert active.lease_id == lease["lease_id"]
 
     await main.set_session(worker_id, main.SessionUpdate(session_id="session-1"), worker_token)
     assert await main.get_session(worker_id, worker_token) == {"session_id": "session-1"}
@@ -195,6 +213,7 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
     result = json.loads(output[0][1]["data"])
     assert result["status"] == "failed"
     assert result["error"] == "agent failed"
+    assert await redis.hgetall(active_turn_key(worker_id)) == {}
 
 
 @pytest.mark.asyncio
@@ -224,9 +243,15 @@ async def test_a_qa_worker_gets_the_turn_protocol_and_no_control_plane(monkeypat
     assert await redis.hget(credential_key(worker_id), "worker_type") == WorkerType.QA.value
 
     # The turn protocol: everything a QA run actually needs.
-    await redis.xadd(f"worker:{worker_id}:input", {"data": json.dumps({"task_id": "qa-1", "prompt": "test it"})})
+    # This is the actual QA producer shape: it has a request id but no
+    # engineering attempt/deadline, so it must not be rejected after XREADGROUP.
+    await redis.xadd(
+        f"worker:{worker_id}:input",
+        {"data": json.dumps({"request_id": "qa-request-1", "task_id": "qa-1", "prompt": "test it"})},
+    )
     lease = await main.lease_input(worker_id, token)
     assert lease["data"]["task_id"] == "qa-1"
+    assert await redis.hgetall(active_turn_key(worker_id)) == {}
     await main.update_status(worker_id, main.StatusUpdate(values={"status": "running"}), token)
     await main.set_session(worker_id, main.SessionUpdate(session_id="qa-session"), token)
     assert (await main.get_session(worker_id, token))["session_id"] == "qa-session"

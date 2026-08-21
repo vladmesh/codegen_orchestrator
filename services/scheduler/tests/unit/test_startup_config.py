@@ -53,7 +53,6 @@ def test_required_keys_cover_every_scheduler_task_config_value():
         "deploy.max_deploy_fix_attempts",
         "deploy.deploy_retry_ttl",
         "supervisor.story_stuck_threshold_minutes",
-        "supervisor.task_stuck_threshold_minutes",
         "supervisor.story_max_architect_retries",
         "supervisor.story_retry_ttl",
         "supervisor.qa_failure_max_fingerprint_attempts",

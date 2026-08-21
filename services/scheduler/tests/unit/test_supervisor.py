@@ -823,8 +823,8 @@ class TestSuperviseStuckTasks:
     """Detect tasks stuck in in_dev and fail them."""
 
     @pytest.mark.asyncio
-    async def test_fails_stuck_in_dev_task(self, api_client, redis_client):
-        """Task in in_dev > threshold -> transition to failed."""
+    async def test_does_not_infer_worker_death_from_task_row_age(self, api_client, redis_client):
+        """An old task row has no authority over a worker it cannot observe."""
         from src.tasks.task_dispatcher import supervise_stuck_tasks
 
         old = datetime.now(UTC) - timedelta(minutes=45)
@@ -840,8 +840,8 @@ class TestSuperviseStuckTasks:
 
         result = await supervise_stuck_tasks(api_client, redis_client)
 
-        assert result["timed_out"] == 1
-        api_client.transition_task.assert_called_once_with("task-1", "failed", "supervisor")
+        assert result["timed_out"] == 0
+        api_client.transition_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_recent_in_dev_task(self, api_client, redis_client):

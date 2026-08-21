@@ -3,6 +3,7 @@
 import json
 import secrets
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -13,6 +14,7 @@ from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
 from shared.contracts.queues.worker_result import parse_worker_result
+from shared.contracts.worker_turn import WorkerActiveTurn, active_turn_key
 from shared.contracts.vocab import WorkerType
 from shared.contracts.worker_control_plane import (
     WorkerControlPlaneOperation,
@@ -55,6 +57,37 @@ class SessionUpdate(BaseModel):
 
 def _decode(value: Any) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _active_turn(worker_id: str, lease_id: str, data: dict[str, Any]) -> WorkerActiveTurn | None:
+    """Build a record for the versioned engineering-turn payload only.
+
+    QA and pre-turn-protocol workers legitimately send a request id without an
+    engineering attempt.  They stay compatible and lease normally; only the
+    producer of the complete three-field protocol creates supervision state.
+    """
+    if data.get("attempt_id") is None or data.get("turn_deadline_seconds") is None:
+        return None
+    if data.get("request_id") is None:
+        # Treat malformed producer payload as legacy rather than poisoning an
+        # already-delivered stream entry.  Engineering producers always write
+        # the complete identity before XADD.
+        return None
+    try:
+        deadline_seconds = int(data["turn_deadline_seconds"])
+    except (TypeError, ValueError):
+        raise HTTPException(422, "worker input has an invalid turn deadline") from None
+    if deadline_seconds <= 0:
+        raise HTTPException(422, "worker input has an invalid turn deadline")
+    now = datetime.now(UTC)
+    return WorkerActiveTurn(
+        worker_id=worker_id,
+        attempt_id=str(data["attempt_id"]),
+        request_id=str(data["request_id"]),
+        lease_id=lease_id,
+        started_at=now,
+        deadline_at=now + timedelta(seconds=deadline_seconds),
+    )
 
 
 async def _worker(
@@ -142,7 +175,7 @@ async def register_worker(registration: Registration, x_broker_internal_token: s
 @app.delete("/internal/workers/{worker_id}")
 async def unregister_worker(worker_id: str, x_broker_internal_token: str | None = Header(default=None)):
     _internal(x_broker_internal_token)
-    await app.state.redis.delete(credential_key(worker_id), f"worker:session:{worker_id}")
+    await app.state.redis.delete(credential_key(worker_id), f"worker:session:{worker_id}", active_turn_key(worker_id))
     return {"ok": True}
 
 
@@ -163,7 +196,11 @@ async def lease_input(worker_id: str, x_worker_broker_token: str | None = Header
             decoded = json.loads(decoded["data"])
         except json.JSONDecodeError:
             raise HTTPException(422, "invalid worker input payload") from None
-    return {"lease_id": _decode(message_id), "data": decoded}
+    lease_id = _decode(message_id)
+    active_turn = _active_turn(worker_id, lease_id, decoded)
+    if active_turn is not None:
+        await redis.hset(active_turn_key(worker_id), mapping=active_turn.as_redis_fields())
+    return {"lease_id": lease_id, "data": decoded}
 
 
 @app.post("/v1/workers/{worker_id}/output")
@@ -181,6 +218,9 @@ async def submit_output(
     )
     # ACK comes after the typed output is durably accepted. A failed submission leaves the input pending.
     await redis.xack(metadata["input_stream"], metadata["consumer_group"], submission.lease_id)
+    active_turn = WorkerActiveTurn.from_redis_fields(await redis.hgetall(active_turn_key(worker_id)))
+    if active_turn is not None and active_turn.lease_id == submission.lease_id:
+        await redis.delete(active_turn_key(worker_id))
     return {"ok": True}
 
 

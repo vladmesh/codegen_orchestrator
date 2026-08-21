@@ -12,6 +12,7 @@ Runs as a periodic scheduler job (every 30s).
 from __future__ import annotations
 
 import asyncio
+from enum import StrEnum
 from typing import TYPE_CHECKING
 import uuid
 
@@ -29,6 +30,7 @@ from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType
+from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -54,6 +56,7 @@ from .supervisor import (
     supervise_waiting_user_secret_stories,
 )
 from .temporary_access import supervise_temporary_access
+from .worker_liveness import terminal_task_statuses
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
@@ -115,13 +118,37 @@ def _build_cumulative_context(sibling_events: list) -> str:
     return "## Context from completed tasks\n" + "\n".join(lines) + "\n\n"
 
 
-async def _find_dispatched_run(api_client: SchedulerAPIClient, task: TaskDTO) -> RunDTO | None:
-    """Return the engineering run this task's current iteration was dispatched with.
+async def _find_unfinished_run(api_client: SchedulerAPIClient, task: TaskDTO) -> RunDTO | None:
+    """Return an engineering run for this task that has not finished, any iteration.
 
-    Terminal runs count too: a worker can finish before the next tick, and a task
-    left in todo by a failed transition must not be dispatched a second time. Runs
-    of earlier iterations are ignored — the supervisor bumps the iteration when it
-    legitimately sends a task back to todo, so those must stay dispatchable.
+    This is the guard that keeps one story branch to one worker, and it reads the
+    only fact that answers the question: whether an attempt is still open. It
+    deliberately ignores `current_iteration`. The supervisor increments that
+    field in the same breath as it returns a task to todo, so a guard keyed on it
+    stops recognising the very run whose worker may still be holding the branch —
+    which is how a retry used to put a second worker on it.
+
+    An attempt that is genuinely over is closed by whoever ended it: the result
+    handler on a real outcome, and the supervisor on a stuck one, which fails the
+    run before it fails the task. So a run left in queued/running always means
+    work that is still owned, never a leftover to be dispatched past.
+    """
+    runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
+    for run in runs:
+        if run.status in _LIVE_RUN_STATUSES:
+            return run
+    return None
+
+
+async def _find_dispatched_run(api_client: SchedulerAPIClient, task: TaskDTO) -> RunDTO | None:
+    """Return the finished engineering run this task's current iteration produced.
+
+    Only terminal runs reach here — an unfinished one is caught by
+    `_find_unfinished_run` first. Its job is the replay case: a worker can finish
+    before the next tick, and a task left in todo by a failed transition must
+    have that outcome applied instead of being dispatched a second time. Runs of
+    earlier iterations are ignored, because a legitimate retry has to be
+    dispatchable.
     """
     runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
     for run in runs:
@@ -130,38 +157,99 @@ async def _find_dispatched_run(api_client: SchedulerAPIClient, task: TaskDTO) ->
     return None
 
 
-def _replay_statuses(run: RunDTO) -> tuple[TaskStatus, ...]:
-    """Task statuses that mirror a finished run's outcome, in transition order."""
-    if run.status == RunStatus.COMPLETED:
-        return (TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE)
-    if (
-        run.status == RunStatus.FAILED
-        and run.result.engineering_status == EngineeringStatus.GAVE_UP
-    ):
-        return (TaskStatus.WAITING_HUMAN_REVIEW,)
-    return (TaskStatus.FAILED,)
-
-
 async def _recover_dispatched_task(
     api_client: SchedulerAPIClient,
     task_id: str,
     run: RunDTO,
     log: structlog.BoundLogger,
 ) -> None:
-    """Finish a dispatch whose transition to in_dev never landed.
+    """Replay a finished run's outcome onto a task the transition never left todo.
 
-    in_dev is the only way out of todo, so the task goes there first. If the run
-    already finished, its outcome is replayed on top — the result handler could not
-    apply it while the task was still in todo, and without the replay the task would
-    sit in in_dev until the stuck-task timeout.
+    in_dev is the only way out of todo, so the task goes there first and the
+    outcome is applied on top — the result handler could not apply it while the
+    task was still in todo, and without the replay the task would sit in in_dev
+    with nothing working on it.
+
+    The run is always finished by the time this is called: an unfinished one is
+    adopted by the caller's guard before it gets here.
     """
     await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
-    if run.status in _LIVE_RUN_STATUSES:
-        log.info("task_transition_recovered", run_id=run.id, run_status=run.status.value)
-        return
-    for status in _replay_statuses(run):
+    for status in terminal_task_statuses(run):
         await api_client.transition_task(task_id, status, "dispatcher")
     log.info("task_outcome_replayed", run_id=run.id, run_status=run.status.value)
+
+
+def _story_blocks_dispatch(siblings: list[TaskDTO], log: structlog.BoundLogger) -> bool:
+    """Whether a sibling task in this story forbids dispatching another one.
+
+    One task in flight per story, and none at all once a sibling has been handed
+    to a human: a story branch is written by one worker at a time.
+    """
+    if any(sibling.status == TaskStatus.IN_DEV for sibling in siblings):
+        log.info("task_skipped_story_busy")
+        return True
+    if any(sibling.status == TaskStatus.WAITING_HUMAN_REVIEW for sibling in siblings):
+        log.info("task_skipped_story_has_gave_up_sibling")
+        return True
+    return False
+
+
+class _PriorAttempt(StrEnum):
+    """What an attempt this task already had made this tick do instead of dispatching."""
+
+    #: This task's own dispatch, finished: the message went out on an earlier
+    #: tick and only the transition was missing. Counts as dispatched.
+    RECOVERED = "recovered"
+    #: Somebody else's unfinished attempt is still holding the story branch —
+    #: typically one the supervisor's retry path stepped over. The task goes back
+    #: to in_dev and nothing is dispatched.
+    BLOCKED = "blocked"
+    #: A run that finished while the task was stuck in todo: its outcome is
+    #: applied to the task instead of a second run being created.
+    REPLAYED = "replayed"
+
+
+#: Outcomes in which this tick left a task in in_dev with work behind it.
+_DISPATCH_COMPLETING = (_PriorAttempt.RECOVERED, _PriorAttempt.REPLAYED)
+
+
+async def _handle_prior_attempt(
+    api_client: SchedulerAPIClient, task: TaskDTO, log: structlog.BoundLogger
+) -> _PriorAttempt | None:
+    """Deal with an attempt this task already has, or `None` if it has none.
+
+    Unfinished first, and — this is the whole point — without consulting
+    `current_iteration` to decide *whether* to stop. That field is incremented by
+    the very retry that creates the risk, so a guard keyed on it stops
+    recognising the run whose worker may still be holding the story branch.
+
+    The iteration is read afterwards, and only to name what happened: an
+    unfinished run of this iteration is this task's own dispatch being completed,
+    one of an earlier iteration is a live attempt the retry path ran ahead of.
+    Both take the same action; they are not the same event in the logs.
+    """
+    unfinished_run = await _find_unfinished_run(api_client, task)
+    if unfinished_run is not None:
+        run_iteration = unfinished_run.run_metadata.get("iteration")
+        own_dispatch = run_iteration == task.current_iteration
+        event = (
+            "task_transition_recovered" if own_dispatch else "task_dispatch_blocked_by_live_attempt"
+        )
+        log.info(
+            event,
+            run_id=unfinished_run.id,
+            run_status=unfinished_run.status.value,
+            iteration=task.current_iteration,
+            run_iteration=run_iteration,
+        )
+        await api_client.transition_task(task.id, TaskStatus.IN_DEV, "dispatcher")
+        return _PriorAttempt.RECOVERED if own_dispatch else _PriorAttempt.BLOCKED
+
+    prior_run = await _find_dispatched_run(api_client, task)
+    if prior_run is not None:
+        await _recover_dispatched_task(api_client, task.id, prior_run, log)
+        return _PriorAttempt.REPLAYED
+    return None
 
 
 async def _create_and_publish_run(
@@ -191,6 +279,7 @@ async def _create_and_publish_run(
         "triggered_by": "dispatcher",
         "story_id": story_id,
         "task_id": task_id,
+        **AttemptTurnMetadata(initiating_run_id=initiating_run_id).as_run_metadata(),
         "iteration": task.current_iteration,
     }
     await api_client.create_run(
@@ -338,27 +427,17 @@ async def dispatch_todo_tasks(
             continue
 
         # Fetch siblings once — used for both guard and context
-        siblings = []
-        if story_id:
-            siblings = await api_client.get_tasks_by_story(story_id)
+        siblings = await api_client.get_tasks_by_story(story_id) if story_id else []
+        if _story_blocks_dispatch(siblings, log):
+            continue
 
-            # Guard: max 1 in_dev task per story
-            if any(s.status == TaskStatus.IN_DEV for s in siblings):
-                log.info("task_skipped_story_busy")
-                continue
-
-            # Guard: don't dispatch if any sibling is waiting for human review
-            if any(s.status == TaskStatus.WAITING_HUMAN_REVIEW for s in siblings):
-                log.info("task_skipped_story_has_gave_up_sibling")
-                continue
-
-        # An engineering run for this iteration means a previous tick published the
-        # message but died before the transition. Recover that task instead of
-        # creating a second run and dispatching the same task twice.
-        prior_run = await _find_dispatched_run(api_client, task)
-        if prior_run is not None:
-            await _recover_dispatched_task(api_client, task_id, prior_run, log)
-            dispatched += 1
+        # This task may already have an attempt — one still running, or one that
+        # finished before its outcome could be applied. Either way it must not
+        # get a second worker on the same story branch.
+        prior = await _handle_prior_attempt(api_client, task, log)
+        if prior is not None:
+            if prior in _DISPATCH_COMPLETING:
+                dispatched += 1
             continue
 
         # Build cumulative context from sibling tasks

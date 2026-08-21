@@ -13,6 +13,7 @@ import httpx
 from redis.asyncio import Redis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.constants import Timeouts
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.contracts.worker_evidence import (
@@ -25,7 +26,7 @@ from shared.contracts.worker_evidence import (
 )
 from shared.diagnostics import redact_diagnostic
 from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
-from shared.redis import decode_redis_fields
+from shared.redis import decode_redis_fields, decode_redis_value
 
 from .config import settings
 from .docker_ops import DockerClientWrapper
@@ -213,18 +214,16 @@ class WorkerManager:
         visible before the metadata, that sweep could run in the window, judge
         the project stale, and let a second creator onto the same checkout.
 
-        The `SADD` is then the acquisition — it returns 1 only for the worker
-        that actually took the project, so two creates that raced past
-        `_check_project_lock` cannot both proceed. The loser's ownership is
-        withdrawn before it is refused: nothing describes a worker that was
-        refused, and a worker carrying no `project_id` can never be mistaken
-        for this project's holder. Returns the project now held.
+        The lock stores its owner, not merely a set membership.  That fence is
+        what prevents an old delete from releasing a newer worker's checkout.
         """
         await self._stamp_ownership(worker_id, ownership)
-        acquired = await self.redis.sadd("workspace:active_projects", ownership.project_id)
+        lock_key = f"workspace:lock:{ownership.project_id}"
+        acquired = await self.redis.set(lock_key, worker_id, nx=True)
         if not acquired:
             await self.redis.hdel(f"worker:meta:{worker_id}", *ownership.as_redis_meta())
             raise RuntimeError(f"Project {ownership.project_id} workspace lock was taken by a concurrent worker")
+        await self.redis.sadd("workspace:active_projects", ownership.project_id)
         return ownership.project_id
 
     async def _release_workspace_lock(self, worker_id: str, held_project_id: str | None) -> None:
@@ -240,8 +239,26 @@ class WorkerManager:
         """
         if not held_project_id:
             return
-        logger.info("workspace_lock_released", project_id=held_project_id, worker_id=worker_id)
+        lock_key = f"workspace:lock:{held_project_id}"
+        owner = await self.redis.get(lock_key)
+        owner = owner.decode() if isinstance(owner, bytes) else owner
+        if owner is None:
+            # Pre-fence workers have only the old set membership. This path is
+            # reached only after Docker removal was confirmed.
+            await self.redis.srem("workspace:active_projects", held_project_id)
+            logger.info("legacy_workspace_lock_released", project_id=held_project_id, worker_id=worker_id)
+            return
+        if owner != worker_id:
+            logger.warning(
+                "workspace_lock_not_released_not_owner",
+                project_id=held_project_id,
+                worker_id=worker_id,
+                owner=owner,
+            )
+            return
+        await self.redis.delete(lock_key)
         await self.redis.srem("workspace:active_projects", held_project_id)
+        logger.info("workspace_lock_released", project_id=held_project_id, worker_id=worker_id)
 
     async def _reject_worker(self, worker_id: str, exc: Exception) -> None:
         """Mark a worker that was refused before it could take anything.
@@ -618,6 +635,8 @@ class WorkerManager:
         # worker whose metadata was never keyed to a run has no record to wait
         # for and nothing a leaked key could be attributed to.
         keep_meta = False
+        removed = False
+        evidence: RemovedWorkerEvidence | None = None
         if ownership is None:
             logger.warning(
                 "worker_removal_evidence_unattributable",
@@ -659,59 +678,83 @@ class WorkerManager:
                 except Exception as e:
                     logger.warning("compose_down_failed", worker_id=worker_id, error=str(e))
 
-            # The capture point is the vanishing point. After the next line
-            # there is no container, no labels and — one `finally` block later —
-            # no Redis metadata either, so a worker removed before any observer
-            # looked would be unattributable for good. This never raises and is
-            # bounded, so it cannot stop or stall the removal below.
+            # Read while Docker can still describe the container, but do not
+            # publish removal evidence until `remove_container` succeeds.
             if ownership is not None:
-                keep_meta = not await self._capture_removal_evidence(worker_id, container_name, meta, ownership, reason)
+                try:
+                    evidence_task = asyncio.create_task(
+                        self._read_removal_evidence(worker_id, container_name, meta, ownership, reason)
+                    )
+                    evidence = await asyncio.wait_for(
+                        evidence_task,
+                        timeout=settings.WORKER_REMOVAL_EVIDENCE_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    evidence = self._unreadable_removal_evidence(
+                        worker_id,
+                        container_name,
+                        meta,
+                        ownership,
+                        reason,
+                        "the container could not be read before it was removed: "
+                        f"{type(exc).__name__}: {exc or 'inspection timed out'}",
+                    )
 
             await self.docker.remove_container(container_name, force=True)
+            removed = True
+
+            if evidence is not None:
+                try:
+                    await self._store_removal_evidence(
+                        evidence.model_copy(update={"removed_at": datetime.now(tz=UTC).isoformat()})
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    keep_meta = True
+                    logger.warning("worker_removal_evidence_not_stored", worker_id=worker_id, error=str(exc))
 
             if dev_network:
                 await self.docker.remove_network(dev_network)
 
         except Exception as e:
             logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
-        finally:
-            await self._unregister_broker_worker(worker_id)
-            # Only the worker that took the workspace lock releases it, and the
-            # holder fact is the only thing that says so.
-            if held_project_id:
-                logger.info("workspace_preserved", project_id=held_project_id, worker_id=worker_id)
-                await self._release_workspace_lock(worker_id, held_project_id)
+        if not removed:
+            # No evidence and no lock release: a failed Docker call is not a
+            # teardown confirmation. The supervisor re-drives the durable stop
+            # intent with capped backoff until this operation succeeds.
+            return
+        await self._unregister_broker_worker(worker_id)
+        # Only the worker that took the workspace lock releases it, and the
+        # holder fact is the only thing that says so.
+        if held_project_id:
+            logger.info("workspace_preserved", project_id=held_project_id, worker_id=worker_id)
+            await self._release_workspace_lock(worker_id, held_project_id)
 
-                if reason:
-                    failure_key = f"workspace:{held_project_id}:failure_count"
-                    if reason in ("failed", "timeout"):
-                        await self.redis.incr(failure_key)
-                        await self.redis.expire(failure_key, 48 * 3600)
-                    elif reason == "completed":
-                        await self.redis.delete(failure_key)
+            if reason:
+                failure_key = f"workspace:{held_project_id}:failure_count"
+                if reason in ("failed", "timeout"):
+                    await self.redis.incr(failure_key)
+                    await self.redis.expire(failure_key, 48 * 3600)
+                elif reason == "completed":
+                    await self.redis.delete(failure_key)
 
-            keys_to_delete = [
-                f"worker:status:{worker_id}",
-                f"worker:error:{worker_id}",
-                f"worker:broker:{worker_id}",
-                f"worker:last_activity:{worker_id}",
-                f"worker:{worker_id}:input",
-                f"worker:{worker_id}:output",
-            ]
-            if keep_meta:
-                # A leaked key is a good failure and a silent omission is not:
-                # the run's ownership manifest can still name this worker, and
-                # the residue is exactly what a label sweep collects later.
-                logger.warning(
-                    "worker_meta_retained_for_attribution",
-                    worker_id=worker_id,
-                    run_id=ownership.run_id,
-                    error="no removal record could be stored, so the worker keeps its last durable name",
-                )
-            else:
-                keys_to_delete.append(f"worker:meta:{worker_id}")
-            await self.redis.delete(*keys_to_delete)
+        keys_to_delete = [
+            f"worker:status:{worker_id}",
+            f"worker:error:{worker_id}",
+            f"worker:broker:{worker_id}",
+            f"worker:active-turn:{worker_id}",
+            f"worker:{worker_id}:input",
+            f"worker:{worker_id}:output",
+        ]
+        if keep_meta:
+            logger.warning(
+                "worker_meta_retained_for_attribution",
+                worker_id=worker_id,
+                run_id=ownership.run_id,
+                error="no removal record could be stored, so the worker keeps its last durable name",
+            )
+        else:
+            keys_to_delete.append(f"worker:meta:{worker_id}")
+        await self.redis.delete(*keys_to_delete)
 
     async def pause_worker(self, worker_id: str) -> None:
         """Pause a running worker."""
@@ -740,30 +783,6 @@ class WorkerManager:
     async def garbage_collect_images(self, retention_seconds: int = 7 * 24 * 3600) -> None:
         """Remove unused images."""
         await gc.garbage_collect_images(self.redis, self.docker, retention_seconds=retention_seconds)
-
-    # --- Worker idle management ---
-
-    async def check_and_pause_workers(self, idle_timeout: int = 600) -> None:
-        """Pause workers that have been inactive."""
-        async for key in self.redis.scan_iter(match="worker:last_activity:*"):
-            worker_id = key.split(":")[-1]
-
-            status = await self.get_worker_status(worker_id)
-            if status != WorkerStatus.RUNNING:
-                continue
-
-            last_activity_ts = await self.redis.get(key)
-            if not last_activity_ts:
-                continue
-
-            age = datetime.now().timestamp() - float(last_activity_ts)
-
-            if age > idle_timeout:
-                logger.info("auto_pausing_worker", worker_id=worker_id, idle_seconds=age)
-                try:
-                    await self.pause_worker(worker_id)
-                except Exception as e:
-                    logger.error("auto_pause_failed", worker_id=worker_id, error=str(e))
 
     async def get_worker_status(self, worker_id: str) -> str:
         """Get status from Redis (primary) or Docker (fallback)."""
@@ -851,15 +870,14 @@ class WorkerManager:
         """Check if another developer worker is active for this project.
 
         Returns worker_id if locked, None if free.
-        Auto-cleans stale Redis keys for workers in terminal states (DEAD/FAILED/STOPPED).
 
-        A developer worker's `project_id` is written by the acquisition itself,
-        so it is also the holder fact: a worker refused before it could acquire
-        carries none. A QA executor is the exception — it owns the project and
-        holds no workspace of it — so it is skipped, or a running QA run would
-        look like the holder and, once it ended, be cleaned up here with the
-        live developer worker's lock released along with it.
+        The owner-fenced key is authoritative.  The active-projects set is a
+        legacy discovery aid only and must not turn a missing set member into
+        permission to reuse a workspace while an owner key remains.
         """
+        lock_owner = await self.redis.get(f"workspace:lock:{project_id}")
+        if lock_owner:
+            return decode_redis_value(lock_owner)
         if not await self.redis.sismember("workspace:active_projects", project_id):
             return None
         async for key in self.redis.scan_iter(match="worker:meta:*"):
@@ -868,22 +886,6 @@ class WorkerManager:
                 continue
             if meta.get("project_id") == project_id:
                 worker_id = key.split(":")[-1]
-                status = await self.redis.hget(f"worker:status:{worker_id}", "status")
-                if status in self._TERMINAL_STATUSES:
-                    logger.warning(
-                        "stale_worker_auto_cleanup",
-                        worker_id=worker_id,
-                        project_id=project_id,
-                        status=status,
-                    )
-                    await self.redis.delete(
-                        f"worker:status:{worker_id}",
-                        f"worker:meta:{worker_id}",
-                        f"worker:error:{worker_id}",
-                        f"worker:last_activity:{worker_id}",
-                    )
-                    await self.redis.srem("workspace:active_projects", project_id)
-                    return None
                 return worker_id
         return None
 
@@ -1051,7 +1053,10 @@ class WorkerManager:
             container_env = config.to_env_vars(
                 broker_url=settings.WORKER_BROKER_URL,
                 broker_token=broker_token,
-                subprocess_timeout_seconds=settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS,
+                # The wrapper enforces this shared per-turn limit. Do not let a
+                # worker-manager-only environment variable create a second,
+                # earlier ceiling than the metadata and waiter advertise.
+                subprocess_timeout_seconds=Timeouts.AGENT_TURN,
             )
             container_env.update(env_vars)
             for forbidden in ("WORKER_REDIS_URL", "WORKER_API_URL", "WORKER_MANAGER_URL", "SECRETS_ENCRYPTION_KEY"):
