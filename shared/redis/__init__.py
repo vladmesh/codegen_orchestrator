@@ -4,6 +4,7 @@ from .client import (
     TypedMessage,
     decode_redis_fields,
     decode_redis_value,
+    dlq_stream,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "TypedMessage",
     "decode_redis_fields",
     "decode_redis_value",
+    "dlq_stream",
 ]
