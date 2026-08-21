@@ -948,9 +948,7 @@ class TestForceCleanAndReject:
     @pytest.mark.asyncio
     async def test_spawn_rejected_after_three_failures(self, mock_redis, mock_docker):
         """When failure_count>=3, spawn should be rejected with RuntimeError."""
-        mock_redis.get = AsyncMock(
-            side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None
-        )
+        mock_redis.get = AsyncMock(side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None)
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with pytest.raises(RuntimeError, match="Max retries"):
@@ -965,9 +963,7 @@ class TestForceCleanAndReject:
     @pytest.mark.asyncio
     async def test_reject_before_workspace_resolution(self, mock_redis, mock_docker):
         """When failure_count>=3, workspace should NOT be resolved (reject happens first)."""
-        mock_redis.get = AsyncMock(
-            side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None
-        )
+        mock_redis.get = AsyncMock(side_effect=lambda key: "3" if key == "workspace:proj-1:failure_count" else None)
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with (
