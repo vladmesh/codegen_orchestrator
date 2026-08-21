@@ -10,15 +10,22 @@
   `RedisStreamClient.consume_typed`, so the continuous sweep, the full PEL walk, both `XAUTOCLAIM`
   response shapes, `stream:diagnostics:lost_entries`, the `po:input:dlq` quarantine before ACK and
   the tolerance for a field a newer publisher added all come from the one implementation.
-  - **Concurrent dispatch keeps a lease instead of a second mechanism.** PO processes in
+  - **Concurrent dispatch renews a lease instead of adding a second mechanism.** PO processes in
     `asyncio.Task`s under a semaphore and per-user locks and ACKs in the task's `finally`, so an
-    entry is legitimately pending for as long as the graph runs. A naive recurring sweep would hand
-    that entry back to the process already working on it. Instead `RECLAIM_INTERVAL_MS =
-    PEL_TIMEOUT_MS // 2`: every sweep re-claims — and thereby renews — this process's own in-flight
-    entries strictly before the idle bar they are measured against, and the read loop recognises
-    the ids it has in flight and does not dispatch them twice. Renewal stops when the process
-    stops, so an entry left in flight by a dead PO is claimable by the next one after one
-    `PEL_TIMEOUT_MS`; liveness is a sign of work, not a reading of the clock.
+    entry is legitimately pending for as long as the graph runs, and any sweep — PO's own or
+    another PO process's — would take it back at `PEL_TIMEOUT_MS` and start the same work twice.
+    `_renew_in_flight_leases` refreshes the ids this process is actually working on with
+    `XCLAIM ... 0 <ids> JUSTID` every `LEASE_RENEWAL_INTERVAL_MS` (`PEL_TIMEOUT_MS // 3`), so their
+    idle time never reaches that bar. The sweep cannot stand in for this: `XAUTOCLAIM` only returns
+    entries that have *already* reached `min_idle_time`, so it could refresh one no sooner than the
+    instant everybody else may claim it. The renewal is a task on the same event loop as the
+    processing and re-reads the in-flight set every turn, so a dead process, a jammed loop or a
+    finished task — including one whose ACK raised — all stop it and the entry is claimable by the
+    next PO after one `PEL_TIMEOUT_MS`; liveness is a sign of work, not a reading of the clock. The
+    read loop still keeps its in-flight ids and refuses to dispatch one twice.
+  - `CONSUMER_NAME` now carries the hostname as well as the PID. Two standard containers are both
+    PID 1, and two processes answering to one consumer name share a PEL, so each would have read
+    the other's in-flight entries as its own.
   - The existing secret elision is untouched: a validation failure still logs `loc`/`type` only,
     the raw body never reaches a log, and the alert for a message still addressed by the removed
     `user_id` field is raised by the same shared path.
