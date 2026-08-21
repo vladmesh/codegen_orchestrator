@@ -81,6 +81,18 @@ def _failure_detail(stderr: str, stdout: str, token: str) -> str:
     return redact_diagnostic(stderr or stdout, secrets=(token,))
 
 
+async def _nothing_to_commit(workspace: Path) -> bool:
+    """Tell "nothing to commit" apart from a real commit failure.
+
+    `git status --porcelain` is machine-readable and locale-independent: an empty
+    listing after `git add .` means index and worktree both match HEAD, so there was
+    nothing for `git commit` to record. Any other outcome — output, or a status call
+    that itself fails — is a real commit failure.
+    """
+    rc, out, _ = await _run_cmd(["git", "status", "--porcelain"], cwd=workspace)
+    return rc == 0 and not out.strip()
+
+
 async def run_scaffold(  # noqa: PLR0915
     *,
     project_id: str,
@@ -238,20 +250,48 @@ async def run_scaffold(  # noqa: PLR0915
     # Step 5: Git add, commit, push
     # Re-disable hooks before push (make setup may re-enable them via `git config core.hooksPath`)
     log.info("scaffold_git_push_start")
+    git_env = _git_auth_env(github_token)
     for args in (
         ["git", "config", "core.hooksPath", "/dev/null"],
         ["git", "add", "."],
-        ["git", "commit", "-m", f"feat: scaffold {project_name} with modules: {modules}"],
-        ["git", "push", "-u", "origin", "main"],
     ):
-        rc, out, err = await _run_cmd(args, cwd=workspace, env=_git_auth_env(github_token))
+        rc, out, err = await _run_cmd(args, cwd=workspace, env=git_env)
         if rc != 0:
-            break
+            detail = _failure_detail(err, out, github_token)
+            result.commands_log.append(f"{args[0]} {args[1]}: rc={rc}")
+            result.error = f"Git push failed: {detail}"
+            log.error("scaffold_git_push_failed", stage=args[1], error=detail)
+            return result
+
+    rc, out, err = await _run_cmd(
+        ["git", "commit", "-m", f"feat: scaffold {project_name} with modules: {modules}"],
+        cwd=workspace,
+        env=git_env,
+    )
+    if rc == 0:
+        result.commands_log.append("git commit: rc=0 (committed)")
+        log.info("scaffold_git_committed")
+    elif await _nothing_to_commit(workspace):
+        # A re-delivered scaffold message rewrites byte-identical files, so `git commit`
+        # exits non-zero with nothing staged. That is not a failure: the push below still
+        # has to run, and it is the push that decides whether the remote is up to date.
+        result.commands_log.append(f"git commit: rc={rc} (nothing to commit)")
+        log.info("scaffold_git_nothing_to_commit", commit_rc=rc)
+    else:
+        detail = _failure_detail(err, out, github_token)
+        result.commands_log.append(f"git commit: rc={rc}")
+        result.error = f"Git commit failed: {detail}"
+        log.error("scaffold_git_commit_failed", error=detail)
+        return result
+
+    rc, out, err = await _run_cmd(
+        ["git", "push", "-u", "origin", "main"], cwd=workspace, env=git_env
+    )
     result.commands_log.append(f"git push: rc={rc}")
     if rc != 0:
         detail = _failure_detail(err, out, github_token)
         result.error = f"Git push failed: {detail}"
-        log.error("scaffold_git_push_failed", error=detail)
+        log.error("scaffold_git_push_failed", stage="push", error=detail)
         return result
 
     # Step 6: Re-enable hooks and capture tree

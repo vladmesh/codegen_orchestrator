@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-08-21
+
+- Re-delivering a scaffold message onto an already-scaffolded workspace now succeeds instead of
+  destroying the project. `copier --overwrite` rewrites byte-identical files, so `git commit` exits
+  non-zero with nothing staged; the git step used to break out of its loop there, never reach
+  `git push`, and report `Git push failed`. "Nothing to commit" is now told apart from a real
+  commit failure by an empty `git status --porcelain` — machine-readable and locale-independent —
+  and the push still runs, so the second pass ends with `success == True`. `commands_log` and the
+  structured log now distinguish `git commit: rc=0 (committed)` from
+  `git commit: rc=N (nothing to commit)`; a genuine commit or push failure still fails the scaffold
+  with diagnostics.
+
+- A failed scaffold no longer fails every story of the project. `_process_full_mode` fails only
+  stories still in `created`; work already in flight (`in_progress`, `pr_review`, `deploying`,
+  `testing`, `waiting_*`) or already finished (`completed`, `archived`) is left alone, and the
+  failed/skipped counts are logged. Covered by a two-pass idempotency test that runs the real git
+  commands against a local bare remote.
+
 ## 2026-08-20
 
 - [hotfix] Ensure-workspace jobs for active projects now clone the linked Repository name instead
