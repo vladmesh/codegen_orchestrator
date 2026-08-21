@@ -421,7 +421,16 @@ class RedisStreamClient:
             for message_id in deleted:
                 await self._record_lost_entry(stream, group, decode_redis_value(message_id))
 
-            if new_cursor in ("0-0", cursor) or not (claimed or deleted):
+            # Follow the cursor whenever Redis moved it, even when this page
+            # brought back nothing. XAUTOCLAIM gives up after scanning about
+            # ``count * 10`` PEL entries, so a page filled with entries a
+            # healthy consumer is still holding answers with an advanced cursor,
+            # no claims and no deleted ids. Stopping there stranded every stale
+            # entry behind that fresh prefix: the next sweep starts at "0-0"
+            # again, walks into the same prefix and stops again, for as long as
+            # the prefix stays fresh. Only a terminal or non-advancing cursor
+            # means the PEL has been walked to its end.
+            if new_cursor in ("0-0", cursor):
                 break
             cursor = new_cursor
 

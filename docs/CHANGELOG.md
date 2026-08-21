@@ -11,6 +11,9 @@
     consumers were written expecting the opposite. The sweep now runs inside the loop, every
     `reclaim_interval_ms` — by default `pending_timeout_ms` floored at 1s. `min_idle_time` is
     unchanged, so a healthy consumer's in-flight entry is still not taken from it.
+    A sweep also follows the `XAUTOCLAIM` cursor across pages that claim nothing: Redis stops
+    scanning after about `COUNT * 10` PEL entries, so a prefix of entries a healthy consumer is
+    still holding used to end the sweep and hide every stale entry behind it.
   - **A poison entry is quarantined, not destroyed.** `consume_typed` copies an entry it cannot
     decode or validate to `{stream}:dlq` — source stream, group, entry id, failure kind, the
     structured reason with values elided, and the body verbatim — and ACKs it only once that copy

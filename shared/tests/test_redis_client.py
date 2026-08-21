@@ -1,6 +1,7 @@
 """Unit tests for shared.redis.client.RedisStreamClient."""
 
 import asyncio
+from dataclasses import dataclass, field
 import json
 import time
 from typing import Literal
@@ -542,6 +543,47 @@ class StrictDelete(BaseMessage):
     worker_id: str
 
 
+@dataclass
+class _PelEntry:
+    """One entry in a consumer group's PEL, as the scan below sees it."""
+
+    entry_id: str
+    idle_ms: int
+    fields: dict[str, str] = field(default_factory=lambda: {"data": "{}"})
+
+
+class _RedisPelScan:
+    """XAUTOCLAIM with the scan limit real Redis applies and fakeredis does not.
+
+    Redis walks at most about ``COUNT * 10`` PEL entries per call and then
+    answers with wherever it stopped, so a call can come back with an advanced
+    cursor, no claimed entries and no deleted ids. fakeredis instead filters the
+    whole PEL by idle time and returns ``start`` as the cursor whenever it
+    claimed nothing, which cannot express that answer. Reproduced against
+    ``redis:7.4.10-alpine``: eleven pending entries, the first ten refreshed,
+    the eleventh stale, ``COUNT 1`` -> ``cursor=<eleventh-id>, claimed=[],
+    deleted=[]``.
+    """
+
+    def __init__(self, entries: list[_PelEntry]):
+        self.entries = entries
+        self.start_ids: list[str] = []
+
+    async def __call__(self, stream, group, consumer, *, min_idle_time, start_id, count):
+        self.start_ids.append(start_id)
+        cursor = "0-0"
+        claimed: list[tuple[str, dict[str, str]]] = []
+        scanned = 0
+        for entry in (e for e in self.entries if e.entry_id >= start_id):
+            if scanned >= count * 10 or len(claimed) >= count:
+                cursor = entry.entry_id
+                break
+            scanned += 1
+            if entry.idle_ms >= min_idle_time:
+                claimed.append((entry.entry_id, entry.fields))
+        return [cursor, claimed, []]
+
+
 class TestReclaimRunsForTheConsumerLifetime:
     """XAUTOCLAIM used to run once, before the read loop. The generator is built
     once per process, so an entry that got stuck after start-up stayed in the
@@ -582,6 +624,49 @@ class TestReclaimRunsForTheConsumerLifetime:
         await entries.aclose()
 
         assert received == [{"key": "stuck"}], "a live consumer never reclaimed the stuck entry"
+
+    async def test_a_stale_tail_behind_a_fresh_prefix_is_still_reclaimed(self, client, fake_redis):
+        """A page with nothing to claim must not end the sweep.
+
+        Redis stops an XAUTOCLAIM call after scanning roughly ``count * 10``
+        PEL entries. When those entries all belong to a consumer that is still
+        healthy, the call answers with an advanced cursor, an empty claim list
+        and no deleted ids. The sweep used to treat that empty page as the end
+        of the PEL, so a stale entry sitting behind a fresh prefix was never
+        reclaimed — and since every sweep restarts at "0-0", it walked into the
+        same prefix and stopped again for as long as the prefix stayed fresh.
+        """
+        fresh = [_PelEntry(f"{1000 + i}-0", idle_ms=0) for i in range(10)]
+        stale = _PelEntry("1010-0", idle_ms=60_000, fields={"data": json.dumps({"key": "tail"})})
+        pel = _RedisPelScan([*fresh, stale])
+        fake_redis.xautoclaim = pel
+
+        received = []
+        entries = client.consume(
+            "s",
+            "g",
+            "live-consumer",
+            block_ms=10,
+            auto_ack=False,
+            claim_pending=True,
+            pending_timeout_ms=1_000,
+            reclaim_interval_ms=10,
+        ).__aiter__()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            msg = await anext(entries)
+            if msg is not None:
+                received.append(msg.data)
+                break
+            await asyncio.sleep(0.02)
+        await entries.aclose()
+
+        assert received == [{"key": "tail"}], (
+            "the sweep stopped on the fresh prefix instead of following the cursor"
+        )
+        assert pel.start_ids[:2] == ["0-0", "1010-0"], (
+            "the second call has to resume from the cursor Redis handed back"
+        )
 
     async def test_a_sweep_never_lowers_the_idle_bar_that_protects_a_healthy_consumer(
         self, client, fake_redis
