@@ -5,7 +5,7 @@ description = "Infrastructure worker for provisioning servers via Ansible"
 requires-python = ">=3.12"
 dependencies = [
     # Ansible (moved from langgraph)
-    "ansible-core>=2.16.0",
+    "ansible-core>=2.21.3",
 
     # Redis for queue consumption
     "redis[hiredis]>=8.1.0",

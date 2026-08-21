@@ -5,7 +5,7 @@ description = "LangGraph-based multi-agent orchestrator"
 requires-python = ">=3.12"
 dependencies = [
     # LangGraph & LangChain
-    "langgraph>=1.0.5",
+    "langgraph>=1.2.11",
     "langchain>=1.0.0",
     "langchain-openai>=0.2.0",
 
