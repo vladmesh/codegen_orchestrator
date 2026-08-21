@@ -3,18 +3,39 @@
 Reads messages from po:input, invokes the PO ReactAgent graph,
 writes responses to po:response:{request_id}.
 
-NOTE: This consumer keeps its own while-loop (instead of using
-RedisStreamClient.consume()) because it dispatches messages concurrently
-via asyncio.create_task() with a semaphore and per-user locks.
+PO reads through ``RedisStreamClient.consume_typed`` like every other consumer:
+the recurring PEL sweep, the full PEL walk, the trim diagnostics, the DLQ route
+for a poison entry and the tolerance for a field a newer publisher added all
+live there and are not reimplemented here.
+
+What is PO's own is dispatch. Every entry goes to an ``asyncio.Task`` under a
+semaphore and a per-user lock, and is ACKed in that task's ``finally``, so an
+entry stays pending for as long as the graph runs — minutes, legitimately. That
+is the one thing this module adds to the shared loop: ``_consume_po_input``
+remembers which ids are in flight *here*, because this process's own sweep
+brings such an entry back once it has been pending for ``PEL_TIMEOUT_MS``, and
+dispatching it again would run the same work twice on one event loop.
+
+That set is a set inside one process, and the delivery contract says exactly as
+much. Between processes ``po:input`` is at-least-once, like every other stream
+on this client: an entry pending for ``PEL_TIMEOUT_MS`` is claimable by another
+PO's sweep whether or not this one is still working on it. Nothing here
+promises mutual exclusion between processes, and nothing here should — that
+needs ownership with fencing and a way to cancel the running graph, which is a
+question about the PO graph's external effects rather than a Redis detail.
+Today ``langgraph`` has no ``deploy.replicas`` and there is one PO process; if
+that changes, an overlap is not silent — the entry stays in the PEL and its
+delivery count grows.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import socket
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 import structlog
 
 from shared.contracts.queues.po import (
@@ -24,66 +45,102 @@ from shared.contracts.queues.po import (
     proactive_from_input,
     to_flat_fields,
 )
-from shared.contracts.recipient import (
-    alert_legacy_recipient_field,
-    has_legacy_recipient_field,
-)
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
-from shared.redis import decode_redis_fields, decode_redis_value
 from shared.redis_client import RedisStreamClient
 
 from ..agents.po.graph import create_po_graph
 from ..agents.po.tools import init_po_clients
 from ..clients.api import api_client
 from ..config.settings import get_settings
-from ._validation import _safe_validation_errors
 
 logger = structlog.get_logger(__name__)
 
 MAX_CONCURRENT = 10
-CONSUMER_NAME = f"po-worker-{os.getpid()}"
+
+# The identity of this process inside the consumer group. The PID alone is not
+# one: two standard containers are both PID 1, and two processes answering to
+# the same consumer name share one PEL, so each would read the other's in-flight
+# entries as its own and neither the PEL nor a log would tell the two apart.
+CONSUMER_NAME = f"po-worker-{socket.gethostname()}-{os.getpid()}"
+
+# How long an entry must go undelivered before any consumer's sweep may take it.
 PEL_TIMEOUT_MS = 60_000
+
+# How often the sweep comes round looking for entries that are stuck. Half the
+# timeout rather than the shared client's default of one full timeout, which
+# bounds the pickup delay for a stuck entry at 1.5 timeouts instead of 2 —
+# po:input is what a waiting user is on the other end of. It is a sweep period
+# and nothing more: what a sweep may take is decided by ``min_idle_time``, which
+# the shared client passes ``PEL_TIMEOUT_MS`` for, unchanged.
+RECLAIM_INTERVAL_MS = PEL_TIMEOUT_MS // 2
+
+READ_BLOCK_MS = 5_000
+READ_COUNT = 10
 
 _po_input_adapter = TypeAdapter(POInputMessage)
 
 
-async def _recover_pending(client: RedisStreamClient, sem, user_locks, graph) -> int:
-    """Recover pending messages from PEL via XAUTOCLAIM before reading new ones."""
-    recovered = 0
-    cursor = "0-0"
-    while True:
-        result = await client.redis.xautoclaim(
-            PO_INPUT_QUEUE,
-            PO_CONSUMER_GROUP,
-            CONSUMER_NAME,
-            min_idle_time=PEL_TIMEOUT_MS,
-            start_id=cursor,
-            count=10,
+async def _consume_po_input(
+    graph,
+    client: RedisStreamClient,
+    sem: asyncio.Semaphore,
+    user_locks: dict[str, asyncio.Lock],
+) -> None:
+    """Read po:input through the shared client and dispatch each entry.
+
+    ``in_flight`` maps an entry id to the task processing it. It holds the only
+    strong reference to that task — asyncio keeps a weak one — and it is what
+    tells an entry that belongs to work already running here apart from one that
+    needs dispatching. Every route an entry can take into this loop — a fresh
+    XREADGROUP delivery, a sweep handing back something genuinely stuck, this
+    process's own sweep handing back an id it is still working on — ends at the
+    same two lines below. An id leaves the dict when its task finishes, success
+    or failure, which is after the ACK attempt.
+
+    What that buys and what it does not: inside this process, no entry ever gets
+    a second ``_process_message`` while the first one is running. Between
+    processes the delivery contract is the at-least-once every other consumer on
+    this client lives with — an entry pending for ``PEL_TIMEOUT_MS`` may be
+    claimed by another PO's sweep while this one is still working on it, and
+    ``in_flight`` cannot see that and does not claim to.
+    """
+    in_flight: dict[str, asyncio.Task] = {}
+
+    def _dispatched(task: asyncio.Task, msg_id: str) -> None:
+        # Runs for every ending: a clean ACK, and an ACK that raised out of the
+        # task's finally. After a failed ACK the entry is still pending and has
+        # to be allowed to age until a sweep reclaims it, because nothing here
+        # is working on it any more — so the id goes either way.
+        in_flight.pop(msg_id, None)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("po_dispatch_failed", msg_id=msg_id, error=str(task.exception()))
+
+    async for message in client.consume_typed(
+        PO_INPUT_QUEUE,
+        PO_CONSUMER_GROUP,
+        CONSUMER_NAME,
+        _po_input_adapter,
+        block_ms=READ_BLOCK_MS,
+        count=READ_COUNT,
+        claim_pending=True,
+        pending_timeout_ms=PEL_TIMEOUT_MS,
+        reclaim_interval_ms=RECLAIM_INTERVAL_MS,
+    ):
+        if message is None:
+            continue
+        if message.message_id in in_flight:
+            # Our own sweep, coming back round to work that is still running
+            # here. Dispatching it again would run the same graph invocation
+            # twice on this event loop.
+            logger.debug("po_in_flight_entry_redelivered", msg_id=message.message_id)
+            continue
+        task = asyncio.create_task(
+            _process_message(graph, client, sem, user_locks, message.message_id, message.value)
         )
-        new_cursor = decode_redis_value(result[0])
-        claimed = result[1]
-        for msg_id, fields in claimed:
-            if fields is None:
-                continue
-            recovered += 1
-            asyncio.create_task(
-                _process_message(
-                    graph,
-                    client,
-                    sem,
-                    user_locks,
-                    decode_redis_value(msg_id),
-                    decode_redis_fields(fields),
-                )
-            )
-        if new_cursor == "0-0" or not claimed:
-            break
-        cursor = new_cursor
-    if recovered:
-        logger.info("po_pel_recovery_complete", recovered=recovered)
-    return recovered
+        in_flight[message.message_id] = task
+        task.add_done_callback(lambda done, msg_id=message.message_id: _dispatched(done, msg_id))
 
 
 async def run_po_consumer() -> None:
@@ -91,7 +148,6 @@ async def run_po_consumer() -> None:
     settings = get_settings()
     client = RedisStreamClient(redis_url=settings.redis_url)
     await client.connect()
-    redis = client.redis
 
     init_po_clients(api_client, client)
 
@@ -132,66 +188,16 @@ async def run_po_consumer() -> None:
         trigger_tokens=settings.summarization_trigger_tokens,
     )
 
-    # Ensure consumer group exists
-    try:
-        await redis.xgroup_create(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, id="0", mkstream=True)
-        logger.info("po_consumer_group_created")
-    except Exception as e:
-        if "BUSYGROUP" in str(e):
-            logger.debug("po_consumer_group_exists")
-        else:
-            raise
-
     logger.info("po_consumer_started", consumer=CONSUMER_NAME)
 
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     user_locks: dict[str, asyncio.Lock] = {}
 
-    # PEL recovery on startup
-    await _recover_pending(client, sem, user_locks, graph)
-
     try:
-        while True:
-            try:
-                entries = await redis.xreadgroup(
-                    PO_CONSUMER_GROUP,
-                    CONSUMER_NAME,
-                    {PO_INPUT_QUEUE: ">"},
-                    count=10,
-                    block=5000,
-                )
-            except asyncio.CancelledError:
-                logger.info("po_consumer_cancelled")
-                break
-            except Exception as e:
-                if "NOGROUP" in str(e):
-                    logger.warning("po_consumer_nogroup_recovering")
-                    try:
-                        await redis.xgroup_create(
-                            PO_INPUT_QUEUE, PO_CONSUMER_GROUP, id="0", mkstream=True
-                        )
-                    except Exception as create_err:
-                        if "BUSYGROUP" not in str(create_err):
-                            raise
-                    await asyncio.sleep(1)
-                    continue
-                raise
-
-            if not entries:
-                continue
-
-            for _stream_name, messages in entries:
-                for msg_id, data in messages:
-                    asyncio.create_task(
-                        _process_message(
-                            graph,
-                            client,
-                            sem,
-                            user_locks,
-                            decode_redis_value(msg_id),
-                            decode_redis_fields(data),
-                        )
-                    )
+        # The consumer group, the recurring PEL sweep and the NOGROUP recovery
+        # are the shared client's; what PO adds is where an entry goes next and
+        # the set of ids it already has in flight here.
+        await _consume_po_input(graph, client, sem, user_locks)
     finally:
         await api_client.close()
         await client.close()
@@ -204,31 +210,23 @@ async def _process_message(
     sem: asyncio.Semaphore,
     user_locks: dict[str, asyncio.Lock],
     msg_id: str,
-    data: dict,
+    message: POInputMessage,
 ) -> None:
-    """Process a single message with concurrency control."""
-    # Validate incoming message
-    try:
-        _po_input_adapter.validate_python(data)
-    except ValidationError as exc:
-        logger.warning(
-            "po_input_validation_failed",
-            msg_id=msg_id,
-            errors=_safe_validation_errors(exc),
-        )
-        # An event addressed by the removed ``user_id`` field is refused rather
-        # than answered into a thread keyed by an id that means two things. It is
-        # somebody's notification, so it gets an alert, not just a log line.
-        if has_legacy_recipient_field(data):
-            await alert_legacy_recipient_field(source=PO_INPUT_QUEUE, entry_id=msg_id, data=data)
-        await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
-        return
+    """Process one validated message with concurrency control.
 
+    Everything that can go wrong before this point — a body that will not
+    decode, one that fails ``POInputMessage``, one still addressed by the
+    removed ``user_id`` field — is handled by ``consume_typed``: it logs with
+    values elided, alerts, copies the entry to ``po:input:dlq`` and only then
+    ACKs it. So what arrives here is a model, and the ACK below is the one for
+    work that was actually attempted.
+    """
+    data = message.model_dump(mode="json")
     bind_message_context(data)
     # The addressing key is the Telegram chat, never the internal user id: it is
     # what the per-user lock and the PO thread are keyed by, so a pipeline event
     # about a project lands in the same conversation the user is typing in.
-    telegram_chat_id = data.get("telegram_chat_id", "")
+    telegram_chat_id = message.telegram_chat_id
     lock = user_locks.setdefault(telegram_chat_id, asyncio.Lock())
 
     async with sem:

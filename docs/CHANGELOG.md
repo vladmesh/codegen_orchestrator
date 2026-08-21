@@ -2,6 +2,43 @@
 
 ## 2026-08-21
 
+- The PO consumer no longer keeps its own copy of the read loop. It was the last product consumer
+  reading `po:input` through a private `XAUTOCLAIM` copy, and it still carried exactly the defects
+  already fixed in `shared/redis/client.py`: reclaim only at start-up, a sweep that stopped on the
+  first page it could not claim from, a silent skip for a body-less claim, and an `XACK` that
+  destroyed a body it could not validate. The copy is gone — PO now reads through
+  `RedisStreamClient.consume_typed`, so the continuous sweep, the full PEL walk, both `XAUTOCLAIM`
+  response shapes, `stream:diagnostics:lost_entries`, the `po:input:dlq` quarantine before ACK and
+  the tolerance for a field a newer publisher added all come from the one implementation.
+  - **Concurrent dispatch is covered by the ids the loop has in flight.** PO processes in
+    `asyncio.Task`s under a semaphore and per-user locks and ACKs in the task's `finally`, so an
+    entry is legitimately pending for as long as the graph runs, and this process's own sweep finds
+    it idle past `PEL_TIMEOUT_MS` and hands it back. The read loop recognises such an id and does
+    not start a second `_process_message` for work already running. The id is dropped when the task
+    ends, success or failure, so an entry whose ACK raised goes back to ageing towards a reclaim,
+    and an entry left in flight by a process that died is claimable by the next PO after one
+    `PEL_TIMEOUT_MS`. `RECLAIM_INTERVAL_MS = PEL_TIMEOUT_MS // 2` is a sweep period and nothing
+    else — it bounds the pickup delay for a genuinely stuck entry at 1.5 timeouts instead of 2,
+    because `po:input` is what a waiting user is on the other end of.
+  - **The delivery contract for `po:input` is the at-least-once the other six consumers have.**
+    The in-flight set lives in one process and excludes a second dispatch *there*; it cannot
+    exclude another PO process, whose sweep may claim an entry that has been pending for
+    `PEL_TIMEOUT_MS` whatever this one is doing with it. Mutual exclusion between PO processes is
+    deliberately not built: it needs ownership with fencing and a way to cancel the running graph,
+    which is a decision about the graph's external effects rather than a Redis setting, and
+    `langgraph` has no `deploy.replicas`. An overlap would not be silent — the entry stays in the
+    PEL and its delivery count grows.
+  - `CONSUMER_NAME` now carries the hostname as well as the PID. Two standard containers are both
+    PID 1, and two processes answering to one consumer name share a PEL, so each would have read
+    the other's in-flight entries as its own and neither the PEL nor a log would tell them apart.
+  - The existing secret elision is untouched: a validation failure still logs `loc`/`type` only,
+    the raw body never reaches a log, and the alert for a message still addressed by the removed
+    `user_id` field is raised by the same shared path.
+  - The `XAUTOCLAIM` scan model the sweep tests need (`RedisPelScan`) moved to
+    `shared/tests/redis_pel_scan.py` so the shared-client suite and the PO suite share one copy.
+  - `docs/CONTRACTS.md`, `docs/ERROR_HANDLING.md` and `ARCHITECTURE.md` no longer describe PO as
+    the documented exception to the unified consumer path.
+
 - A stream entry no longer disappears without a trace. Three defects in `shared/redis/client.py`
   shared one failure shape — the record is gone and there is nothing to look at — and are closed
   together because they patch each other's hole.
