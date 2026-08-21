@@ -2,6 +2,34 @@
 
 ## 2026-08-21
 
+- Telegram bot audiences can now be changed conversationally, one user at a
+  time. `set_bot_access` stays for the initial public/custom/only-me choice,
+  but it replaces the whole audience, which made "add user 84" through a
+  conversation unsafe: an LLM reconstructing the comma-separated list could
+  silently drop IDs. New typed endpoints
+  `POST /projects/{id}/config/bot-access/users` (body `{"telegram_id": N}`) and
+  `DELETE /projects/{id}/config/bot-access/users/{telegram_id}` mutate the
+  stored audience under the project row lock, validate numeric IDs,
+  deduplicate, preserve unrelated config/secrets and enforce ownership like
+  every other project mutation. Removing the final allowed ID is refused — an
+  empty private audience is the public bot, so going public remains an explicit
+  `set_bot_access(mode="public")` decision. Repeats are idempotent: adding a
+  present ID or removing an absent one persists nothing and launches no rollout.
+  - A mutation of an already-deployed bot stages a config-only rollout: the
+    latest successful service-deployment record supplies the running
+    application and its deployed SHA, and a plain PO-triggered FEATURE deploy of
+    that same SHA re-reads the project's `env_overrides` in the DevOps subgraph
+    and ships the new audience — no story, no engineering, no rebuild, no new
+    deployment system. If something is running but no deployment recorded its
+    SHA, the endpoint refuses with 409 rather than pretending; if nothing is
+    deployed it reports `not_deployed` and only persists the configuration.
+  - The response separates the write from the effect (`rollout`:
+    applied/pending/failed/not_deployed with a durable run id), and a status
+    endpoint reads that run back. The PO gained matching `add_bot_user` /
+    `remove_bot_user` tools that poll the rollout to a bounded verdict and are
+    required to report applied, pending and failed differently — access is
+    never called live merely because the transaction committed.
+
 - [hotfix] A manual CI dispatch for `main` now runs the required backend
   Docker-in-Docker suite as well as a main push. The release gate deliberately
   refuses a skipped DinD result on `main`; the job had been limited to `push`,

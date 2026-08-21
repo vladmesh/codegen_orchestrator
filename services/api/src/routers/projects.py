@@ -8,6 +8,12 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.bot_access import (
+    add_to_audience,
+    canonical_audience,
+    parse_allowed_telegram_ids,
+    remove_from_audience,
+)
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult, TeardownStatus
 from shared.contracts.dto.repository import RepositoryRole
@@ -19,7 +25,7 @@ from shared.contracts.dto.telegram import (
     TelegramTokenVerdict,
     TokenVerdictStatus,
 )
-from shared.contracts.queues.deploy import DeployTrigger
+from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.vocab import AgentType
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import (
@@ -57,6 +63,7 @@ from ..dependencies import (
 )
 from ..schemas import (
     BotAccessRequest,
+    BotUserMutationRequest,
     MergeSecretsRequest,
     ProjectCreate,
     ProjectRead,
@@ -64,7 +71,7 @@ from ..schemas import (
 )
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import bot_liveness, looks_like_bot_token, validate_telegram_token
-from ._recipients import resolve_project_recipient
+from ._recipients import ProjectRecipient, resolve_project_recipient
 from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
 
 logger = structlog.get_logger()
@@ -74,6 +81,18 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 _BOT_ALLOWED_IDS_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
 _LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
 _BOT_ACCESS_WRITE_DETAIL = "bot access is managed through /config/bot-access"
+
+# Rollout statuses the audience endpoints report, in the PO-facing vocabulary:
+# applied means the running service carries the new configuration; pending
+# means the rollout is on its way but unconfirmed; failed means it did not land.
+ROLLOUT_APPLIED = "applied"
+ROLLOUT_PENDING = "pending"
+ROLLOUT_FAILED = "failed"
+ROLLOUT_NOT_DEPLOYED = "not_deployed"
+
+# The deploy run id prefix of a config-only rollout. Distinct from story deploys,
+# so an operator can tell one apart in the runs list at a glance.
+ROLLOUT_RUN_ID_PREFIX = "botrollout-"
 
 
 async def _resolve_user(
@@ -592,6 +611,338 @@ async def set_bot_access(
 
     logger.info("project_bot_access_set", project_id=str(project_id), mode=body.mode)
     return {"mode": body.mode, "allowed_telegram_ids": body.allowed_telegram_ids}
+
+
+# ---------------------------------------------------------------------------
+# Conversational audience mutations (add/remove one Telegram ID)
+# ---------------------------------------------------------------------------
+
+
+def _stored_audience(config: dict) -> str | None:
+    """The project's chosen audience, or None when it never chose one.
+
+    A missing bot_access is not an empty (public) audience: a public choice is
+    explicit. Returning None here is what makes an add refuse instead of
+    silently turning an undecided bot private.
+    """
+    access = config.get("bot_access")
+    if not isinstance(access, dict) or access.get("mode") == "public":
+        return None
+    return canonical_audience(project_bot_audience_of(config))
+
+
+def project_bot_audience_of(config: dict) -> str:
+    """The raw audience string this project stores, "" when there is none."""
+    access = config.get("bot_access")
+    if not isinstance(access, dict):
+        return ""
+    audience = access.get("allowed_telegram_ids")
+    return audience if isinstance(audience, str) else ""
+
+
+async def _find_live_rollout_target(
+    db: AsyncSession, project_id: uuid.UUID
+) -> tuple[int, str] | None | str:
+    """The running application and the SHA it was deployed from.
+
+    Read from the latest successful service deployment record: that is where the
+    deployer wrote what actually runs, so the rollout redeploys exactly the
+    commit and images already live instead of whatever the branch holds now.
+
+    Returns None when nothing is running (a config-only write is honest), and
+    the string "unrecorded" when something is running but no successful
+    deployment recorded its SHA — a target we cannot safely redeploy, which the
+    caller must refuse rather than quietly skip.
+    """
+    query = (
+        select(Application.id, Deployment)
+        .outerjoin(Deployment, Deployment.application_id == Application.id)
+        .where(Application.status == ApplicationStatus.RUNNING)
+        .order_by(Application.id, Deployment.deployed_at.desc().nulls_last())
+    )
+    rows = (await db.execute(query)).all()
+    # Latest deployment per application; prefer the most recently deployed one.
+    by_application: dict[int, tuple[int, str] | None] = {}
+    for application_id, deployment in rows:
+        if application_id in by_application:
+            continue
+        if deployment is None or not deployment.deployed_sha:
+            by_application[application_id] = None
+        else:
+            by_application[application_id] = (
+                application_id,
+                deployment.deployed_sha,
+            )
+    if not by_application:
+        return None
+    unrecorded = [app for app, target in by_application.items() if target is None]
+    if unrecorded:
+        return "unrecorded"
+    return max(by_application.values(), key=lambda pair: pair[0])
+
+
+def _stage_config_rollout(
+    project: Project,
+    run_id: str,
+    head_sha: str,
+    recipient: ProjectRecipient,
+) -> DeployMessage:
+    """Build the config-only rollout message for *project*.
+
+    Same commit, same images, no story, no engineering: the DevOps subgraph
+    re-reads the project's env_overrides when it rebuilds the DOTENV payload,
+    so publishing a plain FEATURE deploy of the recorded SHA is what carries
+    the new audience to the running service.
+    """
+    return DeployMessage(
+        task_id=run_id,
+        project_id=str(project.id),
+        telegram_chat_id=recipient.telegram_chat_id,
+        unaddressed_reason=recipient.unaddressed_reason,
+        story_id="",
+        triggered_by=DeployTrigger.PO,
+        action=DeployAction.FEATURE,
+        head_sha=head_sha,
+        env_overrides={},
+    )
+
+
+@router.post("/{project_id}/config/bot-access/users")
+async def add_bot_user(
+    project_id: uuid.UUID,
+    body: BotUserMutationRequest,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Add one Telegram ID to the chosen bot audience.
+
+    Atomic under the project row lock: the stored audience is read, extended
+    and written in one transaction, so concurrent mutations cannot lose IDs.
+    Idempotent: adding an ID already present persists nothing new and launches
+    no second rollout.
+    """
+    return await _mutate_bot_audience(
+        project_id,
+        body.telegram_id,
+        _add_operation,
+        "added",
+        x_telegram_id=x_telegram_id,
+        db=db,
+        redis=redis,
+        is_internal=_is_internal,
+    )
+
+
+@router.delete("/{project_id}/config/bot-access/users/{telegram_id}")
+async def remove_bot_user(
+    project_id: uuid.UUID,
+    telegram_id: int,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Remove one Telegram ID from the chosen bot audience.
+
+    Removing the final allowed ID is refused: an empty private audience is the
+    public bot, and going public must be an explicit set_bot_access decision,
+    never the side effect of a removal. Removing an absent ID succeeds without
+    writing or rolling out — the state already matches the request.
+    """
+    return await _mutate_bot_audience(
+        project_id,
+        telegram_id,
+        _remove_operation,
+        "removed",
+        x_telegram_id=x_telegram_id,
+        db=db,
+        redis=redis,
+        is_internal=_is_internal,
+    )
+
+
+async def _add_operation(audience: str, telegram_id: int) -> str:
+    return add_to_audience(audience, telegram_id)
+
+
+async def _remove_operation(audience: str, telegram_id: int) -> str:
+    updated = remove_from_audience(audience, telegram_id)
+    if parse_allowed_telegram_ids(updated):
+        return updated
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=(
+            f"Telegram ID {telegram_id} is the final allowed ID — removing it would "
+            "make the bot public. Use /config/bot-access with mode='public' if that "
+            "is what you want."
+        ),
+    )
+
+
+async def _mutate_bot_audience(
+    project_id: uuid.UUID,
+    telegram_id: int,
+    operation,
+    operation_name: str,
+    *,
+    x_telegram_id: int | None,
+    db: AsyncSession,
+    redis: RedisStreamClient,
+    is_internal: bool,
+) -> dict:
+    """Apply one typed ID mutation to the stored audience, then roll out if live.
+
+    The whole read-modify-write happens under `_load_locked_project`, the same
+    lock every other config writer takes, and the transaction commits before any
+    queue message is published — a rollout never names a run the database does
+    not have yet. The response reports the rollout separately from the write:
+    `pending` means the configuration changed but the running service has not
+    been confirmed to carry it yet.
+    """
+    project = await _load_locked_project(db, project_id)
+    await _check_project_access(project, x_telegram_id, db, is_internal=is_internal)
+
+    config = dict(project.config or {})
+    stored = _stored_audience(config)
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "this project has no private bot audience to change — choose one with "
+                "/config/bot-access first"
+                if config.get("bot_access", {}).get("mode") == "public"
+                else "no bot audience has been chosen for this project — set one with "
+                "/config/bot-access before adding or removing users"
+            ),
+        )
+
+    updated = await operation(stored, telegram_id)
+
+    unchanged = updated == stored
+    if unchanged:
+        # The state already matches the request: no write, no commit, and no
+        # rollout — an idempotent repeat launches nothing.
+        logger.info(
+            "project_bot_audience_mutated",
+            project_id=str(project_id),
+            operation=operation_name,
+            telegram_id=telegram_id,
+            audience=stored,
+            idempotent=True,
+            rollout=ROLLOUT_NOT_DEPLOYED,
+            rollout_run_id=None,
+        )
+        return {
+            "mode": (config.get("bot_access") or {}).get("mode"),
+            "operation": "already_present" if operation_name == "added" else "already_absent",
+            "audience": stored,
+            "rollout": ROLLOUT_NOT_DEPLOYED,
+            "rollout_run_id": None,
+        }
+
+    overrides = dict(config.get("env_overrides") or {})
+    overrides[_BOT_ALLOWED_IDS_KEY] = updated
+    access = dict(config["bot_access"])
+    access["allowed_telegram_ids"] = updated
+    config["env_overrides"] = overrides
+    config["bot_access"] = access
+    project.config = config
+
+    recipient = await resolve_project_recipient(
+        db, project_id, event=f"bot_audience_{operation_name}"
+    )
+
+    rollout_run_id: str | None = None
+    rollout_status = ROLLOUT_NOT_DEPLOYED
+    message: DeployMessage | None = None
+    if not unchanged:
+        target = await _find_live_rollout_target(db, project_id)
+        if isinstance(target, str):
+            # Something is running but no successful deployment recorded its SHA,
+            # so there is no commit to redeploy and no safe rollout exists. The
+            # config change is rolled back with the transaction: the caller is
+            # told, not left believing the audience will reach the service.
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "the bot is running but its deployed commit is not recorded — a "
+                    "configuration-only rollout cannot be started safely; redeploy "
+                    "the project first"
+                ),
+            )
+        if target is not None:
+            application_id, head_sha = target
+            rollout_run_id = f"{ROLLOUT_RUN_ID_PREFIX}{uuid.uuid4().hex[:12]}"
+            run = Run(
+                id=rollout_run_id,
+                type="deploy",
+                project_id=project_id,
+                run_metadata={
+                    "application_id": application_id,
+                    "head_sha": head_sha,
+                    "triggered_by": "bot_audience_rollout",
+                },
+            )
+            db.add(run)
+            message = _stage_config_rollout(project, rollout_run_id, head_sha, recipient)
+            rollout_status = ROLLOUT_PENDING
+
+    await db.commit()
+
+    if message is not None:
+        await redis.publish_message(DEPLOY_QUEUE, message)
+
+    logger.info(
+        "project_bot_audience_mutated",
+        project_id=str(project_id),
+        operation=operation_name,
+        telegram_id=telegram_id,
+        audience=updated,
+        idempotent=False,
+        rollout=rollout_status,
+        rollout_run_id=rollout_run_id,
+    )
+
+    return {
+        "mode": (config.get("bot_access") or {}).get("mode"),
+        "operation": operation_name,
+        "audience": updated,
+        "rollout": rollout_status,
+        "rollout_run_id": rollout_run_id,
+    }
+
+
+@router.get("/{project_id}/config/bot-access/rollouts/{run_id}")
+async def get_bot_audience_rollout(
+    run_id: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Where a config-only audience rollout stands.
+
+    Reads the durable deploy run the mutation created, so the answer survives
+    restarts: applied only once the deploy worker recorded success, failed with
+    its error when it did not, pending while it is still on its way.
+    """
+    result = await db.execute(select(Run).where(Run.id == run_id))
+    run = result.scalars().first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Rollout run not found")
+
+    if run.status == RunStatus.COMPLETED.value:
+        rollout, detail = ROLLOUT_APPLIED, ""
+    elif run.status == RunStatus.FAILED.value:
+        outcome = (run.result or {}).get("deploy_outcome")
+        rollout = ROLLOUT_FAILED
+        detail = run.error_message or f"deploy outcome: {outcome or 'failed'}"
+    else:
+        rollout, detail = ROLLOUT_PENDING, ""
+
+    return {"rollout": rollout, "detail": detail}
 
 
 @router.post("/{project_id}/telegram/token", response_model=TelegramTokenVerdict)

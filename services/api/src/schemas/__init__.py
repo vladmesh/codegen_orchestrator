@@ -15,6 +15,7 @@ from .incident import IncidentCreate, IncidentRead, IncidentUpdate
 from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, PortAllocationRead
 from .project import (
     BotAccessRequest,
+    BotUserMutationRequest,
     MergeSecretsRequest,
     ProjectCreate,
     ProjectRead,
@@ -72,6 +73,7 @@ __all__ = [
     "ProjectUpdate",
     "MergeSecretsRequest",
     "BotAccessRequest",
+    "BotUserMutationRequest",
     "RAGDocsIngest",
     "RAGDocsIngestResult",
     "RAGMessageCreate",

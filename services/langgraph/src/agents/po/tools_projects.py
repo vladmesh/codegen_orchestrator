@@ -43,6 +43,14 @@ AVAILABLE_DEVELOPER_AGENTS = {
 HTTP_FORBIDDEN = 403
 HTTP_NOT_FOUND = 404
 HTTP_UNPROCESSABLE = 422
+HTTP_CONFLICT = 409
+
+# Rollout verdicts the audience endpoints report. The tool repeats them verbatim
+# so its report can only mirror what the server said, never embellish it.
+ROLLOUT_APPLIED = "applied"
+ROLLOUT_PENDING = "pending"
+ROLLOUT_FAILED = "failed"
+ROLLOUT_NOT_DEPLOYED = "not_deployed"
 
 # A teardown is an SSH `docker compose down` on the project's server: seconds when the
 # consumer is free, minutes when it is busy. The tool waits rather than promising a
@@ -257,6 +265,150 @@ async def set_bot_access(
         return f"Error: {resp.json()['detail']}"
     resp.raise_for_status()
     return f"Bot access set to '{mode}' for project {project_id}."
+
+
+# How long the tool waits for a config-only rollout to land before it reports
+# pending instead of applied. A rollout is a redeploy of one running container:
+# normally a couple of minutes, never worth holding a conversation much longer.
+ROLLOUT_POLL_INTERVAL_SECONDS = 10.0
+ROLLOUT_TIMEOUT_SECONDS = 300.0
+
+
+async def _await_rollout(
+    api, project_id: str, run_id: str, *, config: RunnableConfig
+) -> tuple[str, str]:
+    """Poll a config-only rollout to a terminal answer, or time out as pending.
+
+    Returns (status, detail). The status is the server's own verdict — applied,
+    failed or pending — read from the durable deploy run, never from the fact
+    that the database write committed.
+    """
+    deadline = asyncio.get_running_loop().time() + ROLLOUT_TIMEOUT_SECONDS
+    while True:
+        poll = await api.get_raw(
+            f"projects/{project_id}/config/bot-access/rollouts/{run_id}",
+            headers=_user_headers(config),
+        )
+        if poll.status_code == HTTP_NOT_FOUND:
+            return "failed", "the rollout run disappeared — it was never recorded"
+        poll.raise_for_status()
+        body = poll.json()
+        status = body.get("rollout", "pending")
+        detail = body.get("detail", "")
+        if status in {"applied", "failed"}:
+            return status, detail
+        if asyncio.get_running_loop().time() >= deadline:
+            return "pending", detail
+        await asyncio.sleep(ROLLOUT_POLL_INTERVAL_SECONDS)
+
+
+def _rollout_report(status: str, detail: str) -> str:
+    """The user-facing sentence for one rollout outcome. Truthful by construction:
+    only `applied` says anything reached the running bot."""
+    if status == "applied":
+        return "The change is live on the running bot now."
+    if status == "failed":
+        return (
+            f"The configuration changed, but applying it to the running bot FAILED"
+            f"{': ' + detail if detail else ''}. The bot is still running with the "
+            "old audience — tell the user, and do not say the access changed."
+        )
+    return (
+        "The configuration is saved, but the rollout has not finished yet "
+        "(it is still being applied to the running bot). Tell the user it is "
+        "in progress and check again in a few minutes — do not say the access "
+        "changed live until it is confirmed."
+    )
+
+
+async def _mutate_bot_user(
+    project_id: str,
+    telegram_id: int,
+    *,
+    method: str,
+    config: RunnableConfig,
+) -> str:
+    """One typed audience mutation plus a truthful rollout report.
+
+    The server owns the audience arithmetic; this tool sends exactly one ID and
+    never reconstructs the comma-separated list.
+    """
+    api = _get_api()
+    headers = _user_headers(config)
+    if method == "POST":
+        resp = await api.post_raw(
+            f"projects/{project_id}/config/bot-access/users",
+            json={"telegram_id": telegram_id},
+            headers=headers,
+        )
+    else:
+        resp = await api.delete_raw(
+            f"projects/{project_id}/config/bot-access/users/{telegram_id}",
+            headers=headers,
+        )
+    if resp.status_code in {HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNPROCESSABLE, HTTP_CONFLICT}:
+        return f"Error: {resp.json()['detail']}"
+    resp.raise_for_status()
+    body = resp.json()
+
+    operation = body["operation"]
+    audience = body["audience"]
+    if operation in {"already_present", "already_absent"}:
+        return (
+            f"Telegram ID {telegram_id} was already "
+            f"{'in' if operation == 'already_present' else 'not in'} the audience — "
+            f"nothing changed. Current audience: {audience}."
+        )
+
+    rollout, detail = ROLLOUT_NOT_DEPLOYED, ""
+    if body["rollout"] == ROLLOUT_PENDING:
+        rollout, detail = await _await_rollout(
+            api, project_id, body["rollout_run_id"], config=config
+        )
+    elif body["rollout"] != ROLLOUT_NOT_DEPLOYED:
+        rollout = body["rollout"]
+
+    verb = "added to" if operation == "added" else "removed from"
+    if rollout == ROLLOUT_NOT_DEPLOYED:
+        return (
+            f"Telegram ID {telegram_id} {verb} the audience. Current audience: {audience}. "
+            "The project is not deployed, so there is nothing to apply to — the "
+            "audience takes effect at the next deploy."
+        )
+    report = _rollout_report(rollout, detail)
+    return f"Telegram ID {telegram_id} {verb} the audience (now: {audience}). {report}"
+
+
+@tool
+async def add_bot_user(project_id: str, telegram_id: int, *, config: RunnableConfig) -> str:
+    """Add ONE Telegram user ID to a bot's allowed audience.
+
+    Use this when the user says "add user ID X to my bot". The ID is added to the
+    existing audience — nobody else loses access. For an already-deployed bot the
+    change is rolled out to the running bot automatically; the tool answers only
+    after the rollout is confirmed (or reports honestly that it is still pending).
+
+    Args:
+        project_id: Project ID.
+        telegram_id: The Telegram user ID to allow.
+    """
+    return await _mutate_bot_user(project_id, telegram_id, method="POST", config=config)
+
+
+@tool
+async def remove_bot_user(project_id: str, telegram_id: int, *, config: RunnableConfig) -> str:
+    """Remove ONE Telegram user ID from a bot's allowed audience.
+
+    Use this when the user says "remove user ID X from my bot". Only that ID is
+    removed; the rest of the audience is preserved. The owner stays in the
+    audience unless they are removed explicitly. Removing the final allowed ID is
+    refused — making the bot public is set_bot_access's explicit decision.
+
+    Args:
+        project_id: Project ID.
+        telegram_id: The Telegram user ID to revoke.
+    """
+    return await _mutate_bot_user(project_id, telegram_id, method="DELETE", config=config)
 
 
 @tool
