@@ -4,8 +4,10 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.story import StoryDTO, StoryStatus
 from src.consumer import _begin_scaffold_work, _finish_scaffold_work, process_scaffold_job
 from src.scaffold import ScaffoldResult
 
@@ -366,3 +368,84 @@ class TestProcessScaffoldJobEnsureMode:
         mock_ensure.assert_not_called()
         # Full mode SHOULD set project status to ACTIVE
         mock_api.update_project_status.assert_called_once_with("proj-123", ProjectStatus.ACTIVE)
+
+
+def _make_story(story_id: str, status: str):
+    """Build a StoryDTO for tests."""
+    return StoryDTO.model_validate(
+        {
+            "id": story_id,
+            "project_id": "00000000-0000-0000-0000-000000000001",
+            "title": f"story {story_id}",
+            "type": "product",
+            "status": status,
+            "priority": 0,
+            "created_by": "system",
+            "created_at": "2026-03-17T00:00:00Z",
+            "updated_at": "2026-03-17T00:00:00Z",
+        }
+    )
+
+
+class TestScaffoldFailureBlastRadius:
+    @pytest.mark.asyncio
+    async def test_only_unstarted_stories_are_failed(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """A failed scaffold must not destroy work that already left `created`."""
+        mock_api.get_stories_by_project.return_value = [
+            _make_story("s-created", StoryStatus.CREATED),
+            _make_story("s-in-progress", StoryStatus.IN_PROGRESS),
+            _make_story("s-pr-review", StoryStatus.PR_REVIEW),
+            _make_story("s-deploying", StoryStatus.DEPLOYING),
+            _make_story("s-testing", StoryStatus.TESTING),
+            _make_story("s-waiting-human", StoryStatus.WAITING_HUMAN_REVIEW),
+            _make_story("s-waiting-secret", StoryStatus.WAITING_USER_SECRET),
+            _make_story("s-completed", StoryStatus.COMPLETED),
+            _make_story("s-archived", StoryStatus.ARCHIVED),
+            _make_story("s-created-2", StoryStatus.CREATED),
+        ]
+        scaffold_result = ScaffoldResult(success=False, error="copier crashed")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result),
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(os.environ, _GITHUB_ENV, clear=False),
+            capture_logs() as logs,
+        ):
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "failed"
+        failed_ids = [call.args[0] for call in mock_api.fail_story.await_args_list]
+        assert failed_ids == ["s-created", "s-created-2"]
+
+        summary = next(e for e in logs if e["event"] == "scaffold_stories_failed_summary")
+        assert summary["failed_count"] == 2
+        assert summary["skipped_count"] == 8
+
+    @pytest.mark.asyncio
+    async def test_successful_scaffold_fails_no_story(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        mock_api.get_stories_by_project.return_value = [
+            _make_story("s-created", StoryStatus.CREATED),
+        ]
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch(
+                "src.consumer.run_scaffold",
+                return_value=ScaffoldResult(success=True, tree=".\n-- src"),
+            ),
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(os.environ, _GITHUB_ENV, clear=False),
+        ):
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        mock_api.fail_story.assert_not_called()

@@ -448,3 +448,129 @@ class TestRunEnsureWorkspace:
 
         assert result.success is False
         assert "not found on GitHub" in result.error
+
+
+class TestGitCommitStep:
+    """A re-delivered scaffold finds a clean tree; that must still reach the push."""
+
+    @staticmethod
+    def _harness(workspace, *, commit_rc, commit_stderr, status_out, push_rc=0):
+        """Fake create_subprocess_exec that scripts commit/status/push outcomes."""
+        commands_run = []
+
+        def _proc(rc, stdout=b"", stderr=b""):
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(stdout, stderr))
+            proc.returncode = rc
+            return proc
+
+        async def fake_subprocess(*args, **kwargs):
+            cmd = args or tuple(kwargs.get("args", ()))
+            commands_run.append(cmd)
+            if cmd[:2] == ("copier", "copy"):
+                workspace.mkdir(parents=True, exist_ok=True)
+                (workspace / ".copier-answers.yml").write_text("_commit: 27c76cef\n")
+                return _proc(0)
+            if cmd[:2] == ("git", "commit"):
+                return _proc(commit_rc, stderr=commit_stderr)
+            if cmd[:3] == ("git", "status", "--porcelain"):
+                return _proc(0, stdout=status_out)
+            if cmd[:2] == ("git", "push"):
+                return _proc(push_rc, stderr=b"" if push_rc == 0 else b"remote rejected")
+            if cmd[0] in {"tree", "find"}:
+                return _proc(0, stdout=b".\n-- src\n")
+            return _proc(0)
+
+        return commands_run, fake_subprocess
+
+    async def _run(self, scaffold_msg, settings, fake_token, fake_subprocess):
+        with patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_subprocess):
+            return await run_scaffold(
+                project_id=scaffold_msg["project_id"],
+                repository_id=scaffold_msg["repository_id"],
+                template_repo=scaffold_msg["template_repo"],
+                template_ref=scaffold_msg["template_ref"],
+                project_name=scaffold_msg["project_name"],
+                modules=scaffold_msg["modules"],
+                task_description=scaffold_msg["task_description"],
+                repo_full_name="org/my-project",
+                github_token=fake_token,
+                settings=settings,
+            )
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_commit_still_pushes_and_succeeds(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path)
+        commands_run, fake_subprocess = self._harness(
+            tmp_path / "repo-456",
+            commit_rc=1,
+            commit_stderr=b"nothing to commit, working tree clean\n",
+            status_out=b"",
+        )
+
+        with capture_logs() as logs:
+            result = await self._run(scaffold_msg, settings, fake_token, fake_subprocess)
+
+        assert result.success is True
+        assert result.error is None
+        assert any(cmd[:2] == ("git", "push") for cmd in commands_run)
+        assert "git commit: rc=1 (nothing to commit)" in result.commands_log
+        assert "git push: rc=0" in result.commands_log
+        assert any(entry["event"] == "scaffold_git_nothing_to_commit" for entry in logs)
+
+    @pytest.mark.asyncio
+    async def test_committed_run_records_the_commit(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path)
+        commands_run, fake_subprocess = self._harness(
+            tmp_path / "repo-456", commit_rc=0, commit_stderr=b"", status_out=b""
+        )
+
+        with capture_logs() as logs:
+            result = await self._run(scaffold_msg, settings, fake_token, fake_subprocess)
+
+        assert result.success is True
+        assert "git commit: rc=0 (committed)" in result.commands_log
+        assert any(entry["event"] == "scaffold_git_committed" for entry in logs)
+        assert any(cmd[:2] == ("git", "push") for cmd in commands_run)
+
+    @pytest.mark.asyncio
+    async def test_real_commit_failure_still_fails_without_pushing(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        """Dirty tree + failing commit (hook, conflict) is a real failure."""
+        settings.workspace_base_path = str(tmp_path)
+        commands_run, fake_subprocess = self._harness(
+            tmp_path / "repo-456",
+            commit_rc=1,
+            commit_stderr=b"pre-commit hook refused the commit\n",
+            status_out=b"M  src/main.py\n",
+        )
+
+        result = await self._run(scaffold_msg, settings, fake_token, fake_subprocess)
+
+        assert result.success is False
+        assert "pre-commit hook refused" in result.error
+        assert not any(cmd[:2] == ("git", "push") for cmd in commands_run)
+
+    @pytest.mark.asyncio
+    async def test_push_rejection_after_clean_tree_is_a_failure(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path)
+        _, fake_subprocess = self._harness(
+            tmp_path / "repo-456",
+            commit_rc=1,
+            commit_stderr=b"nothing to commit, working tree clean\n",
+            status_out=b"",
+            push_rc=1,
+        )
+
+        result = await self._run(scaffold_msg, settings, fake_token, fake_subprocess)
+
+        assert result.success is False
+        assert "Git push failed" in result.error
+        assert "remote rejected" in result.error

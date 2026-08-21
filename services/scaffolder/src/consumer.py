@@ -16,6 +16,7 @@ from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.diagnostics import redact_diagnostic, safe_validation_errors
 from shared.log_config import setup_logging
@@ -253,12 +254,27 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     except Exception:
         log.warning("failed_to_mark_scaffold_error", exc_info=True)
 
-    # Fail all stories so architect/dispatcher don't keep waiting
+    # Fail only stories that never started, so architect/dispatcher don't keep waiting.
+    # Work already in flight (in_progress, review, deploy, testing, waiting_*) and work
+    # already finished (completed, archived) is not defective because this scaffold run
+    # failed, and failing it destroys user-visible state that nothing rolls back.
     try:
         stories = await api.get_stories_by_project(msg.project_id)
+        failed_ids = []
+        skipped_ids = []
         for story in stories:
+            if story.status != StoryStatus.CREATED:
+                skipped_ids.append(story.id)
+                continue
             await api.fail_story(story.id)
+            failed_ids.append(story.id)
             log.info("scaffold_story_failed", story_id=story.id)
+        log.info(
+            "scaffold_stories_failed_summary",
+            failed_count=len(failed_ids),
+            skipped_count=len(skipped_ids),
+            skipped_story_ids=skipped_ids,
+        )
     except Exception:
         log.warning("failed_to_fail_stories_on_scaffold_error", exc_info=True)
 

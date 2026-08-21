@@ -124,6 +124,9 @@ ALL_SUITES=(
     "worker-broker|services/worker-broker/tests/unit|$ROOT/services/worker-broker"
     "infra-service|services/infra-service/tests/unit|$ROOT/services/infra-service"
     "scaffolder|services/scaffolder/tests/unit|$ROOT/services/scaffolder"
+    # component despite the sweep it runs in: real local git in a tmpdir, a bare repo
+    # for the remote, no network — a fraction of a second, so it belongs pre-push.
+    "scaffolder-component|services/scaffolder/tests/component|$ROOT/services/scaffolder"
     "worker-wrapper|packages/worker-wrapper/tests/unit|"
     # component and integration despite the name: both run offline in a tmpdir and
     # finish in under a second, so they belong in the pre-push sweep.
