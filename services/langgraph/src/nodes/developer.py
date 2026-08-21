@@ -325,17 +325,14 @@ class DeveloperNode(FunctionalNode):
                 worker_id=existing_worker_id,
                 task_content=spawn_kwargs["task_content"],
                 timeout_seconds=Timeouts.WORKER_SPAWN,
+                ownership=spawn_kwargs["ownership"],
                 story_md=spawn_kwargs["story_md"],
                 branch=spawn_kwargs["branch"],
             )
-            # Fall back to fresh spawn if worker is dead
-            if not worker_result.success and worker_result.error_message == "execution_timeout":
-                logger.warning(
-                    "developer_reuse_failed_fallback",
-                    worker_id=existing_worker_id,
-                    project_name=project_name,
-                )
-                worker_result = await request_spawn(**spawn_kwargs)
+            # A timeout requests teardown, but it does not prove that the
+            # previous container is gone.  Do not create a sibling worker;
+            # the worker-manager's owner-fenced workspace lock and supervisor
+            # removal reconciliation decide when another attempt may start.
         else:
             worker_result = await request_spawn(**spawn_kwargs)
         return worker_result
@@ -416,11 +413,18 @@ class DeveloperNode(FunctionalNode):
             "developer_node_failed",
             project_name=project_name,
             error=error_msg,
+            stop_reason=worker_result.stop_reason.value if worker_result.stop_reason else None,
+            agent_limit_seconds=worker_result.agent_limit_seconds,
         )
         return {
             "messages": [AIMessage(content=f"Development failed:\n{error_msg}")],
             "engineering_status": EngineeringStatus.FAILED,
             "errors": state.get("errors", []) + [f"Development failed: {error_msg}"],
+            # Why the turn stopped, when the worker said why. It travels to the
+            # attempt's run_metadata so a failed run is readable as "ran out of
+            # its limit" rather than as an unexplained failure.
+            "stop_reason": worker_result.stop_reason,
+            "agent_limit_seconds": worker_result.agent_limit_seconds,
             "worker_observability": DeveloperNode._worker_observability(
                 worker_result, state.get("project_spec") or {}
             ),

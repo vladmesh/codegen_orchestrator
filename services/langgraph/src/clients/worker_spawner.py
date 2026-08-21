@@ -6,7 +6,9 @@ Used by LangGraph nodes to trigger container spawning.
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
+from typing import Any
 import uuid
 
 from pydantic import ValidationError
@@ -26,6 +28,7 @@ from shared.contracts.queues.worker_result import (
     WorkerCompletedResult,
     WorkerResult,
     WorkerResultAdapter,
+    WorkerStopReason,
 )
 from shared.diagnostics import safe_validation_errors
 from shared.log_config import get_logger
@@ -63,6 +66,8 @@ class SpawnResult:
     cost_usd: float | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
+    stop_reason: WorkerStopReason | None = None
+    agent_limit_seconds: int | None = None
 
 
 class WorkerOutputDecodeError(Exception):
@@ -165,6 +170,8 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         exit_code=1,
         output="",
         error_message=result.error,
+        stop_reason=result.stop_reason,
+        agent_limit_seconds=result.agent_limit_seconds,
         worker_id=worker_id,
         worker_report=result.worker_report,
         logs_tail=result.agent_stdout_tail,
@@ -220,19 +227,24 @@ async def _wait_until_ready(
     )
 
 
-async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool:
-    """Check if a worker is still alive by reading its Redis status.
+async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool | None:
+    """Return a confirmed terminal state, a non-terminal state, or unknown.
 
-    Returns False if the status is DEAD (set by DockerEventsListener when the
-    container dies) or if the status key has been deleted entirely.
+    ``worker:status`` is a worker-manager cache of Docker events.  Its absence
+    can mean Redis was flushed or temporarily unreadable; it is not evidence
+    that Docker removed the container, so a waiter must continue in that case.
     """
     status = await redis_client.hget(f"worker:status:{worker_id}", "status")
     if status is None:
-        # Key deleted — worker was cleaned up
-        return False
+        return None
     # Handle both bytes and str (depends on decode_responses setting)
     status_str = status.decode() if isinstance(status, bytes) else status
-    if status_str == WorkerStatus.DEAD:
+    if status_str in {
+        WorkerStatus.DEAD,
+        WorkerStatus.FAILED,
+        WorkerStatus.STOPPED,
+        WorkerStatus.GONE,
+    }:
         return False
     return True
 
@@ -272,7 +284,8 @@ async def _wait_for_response(
         if worker_id and (now - last_liveness_check) >= LIVENESS_CHECK_INTERVAL_S:
             last_liveness_check = now
             try:
-                if not await _check_worker_alive(redis_client, worker_id):
+                alive = await _check_worker_alive(redis_client, worker_id)
+                if alive is False:
                     logger.warning(
                         "worker_dead_detected",
                         worker_id=worker_id,
@@ -335,6 +348,114 @@ async def _wait_for_response(
                     # ACK non-matching messages so they don't pile up
                     await redis_client.xack(stream, group_name, msg_id)
     return None
+
+
+ATTEMPT_WORKER_KEY = "worker_id"
+ATTEMPT_AGENT_LIMIT_KEY = "agent_limit_seconds"
+ATTEMPT_TURN_REQUEST_KEY = "active_turn_request_id"
+ATTEMPT_TURN_BACKSTOP_KEY = "active_turn_backstop_seconds"
+
+
+async def record_worker_on_attempt(attempt_id: str, worker_id: str) -> None:
+    """Name, on the attempt's own run row, the worker that is executing it.
+
+    The supervisor decides whether an attempt is stuck by looking at the worker
+    doing the work, so it has to be able to get from the attempt to the worker
+    without scanning anything. This is the moment that mapping is known for
+    certain — the worker exists and the attempt asked for it — and it is written
+    for a fresh spawn and for a reused container alike, because a reused worker
+    is executing a different attempt than the one it was created for.
+
+    The agent limit goes on the same row: the run then says what bound the work
+    it is carrying, rather than leaving it to be reconstructed from whichever
+    service happened to hold the setting.
+    """
+    from .api import api_client
+
+    await api_client.patch(
+        f"runs/{attempt_id}",
+        json={
+            "run_metadata": {
+                ATTEMPT_WORKER_KEY: worker_id,
+                ATTEMPT_AGENT_LIMIT_KEY: Timeouts.AGENT_TURN,
+            }
+        },
+    )
+    logger.info(
+        "attempt_worker_recorded",
+        attempt_id=attempt_id,
+        worker_id=worker_id,
+        agent_limit_seconds=Timeouts.AGENT_TURN,
+    )
+
+
+async def _send_turn(
+    redis_client: redis.Redis,
+    worker_id: str,
+    request_id: str,
+    attempt_id: str,
+    task_content: str,
+    story_md: str | None,
+) -> None:
+    """Put one turn on a worker's input stream."""
+    task_message: dict[str, Any] = {
+        "request_id": request_id,
+        "attempt_id": attempt_id,
+        "turn_deadline_seconds": Timeouts.WORKER_SPAWN,
+        "prompt": task_content,
+        "user_id": 0,  # System task
+    }
+    if story_md:
+        task_message["story_md"] = story_md
+    await redis_client.xadd(
+        f"worker:{worker_id}:input",
+        {"data": json.dumps(task_message)},
+        maxlen=DEFAULT_STREAM_MAXLEN,
+        approximate=True,
+    )
+    logger.info(
+        "task_sent_to_worker",
+        request_id=request_id,
+        attempt_id=attempt_id,
+        worker_id=worker_id,
+        turn_backstop_seconds=Timeouts.WORKER_SPAWN,
+    )
+
+
+async def record_turn_on_attempt(attempt_id: str, request_id: str) -> None:
+    """Record the turn request that the broker will later fence with its lease."""
+    from .api import api_client
+
+    await api_client.patch(
+        f"runs/{attempt_id}",
+        json={
+            "run_metadata": {
+                ATTEMPT_TURN_REQUEST_KEY: request_id,
+                ATTEMPT_TURN_BACKSTOP_KEY: Timeouts.WORKER_SPAWN,
+                "active_turn_requested_at": datetime.now(UTC).isoformat(),
+            }
+        },
+    )
+
+
+async def _publish_worker_deletion(
+    redis_client: redis.Redis, request_id: str, worker_id: str, reason: str
+) -> None:
+    """Ask worker-manager to take a worker away.
+
+    Used wherever a spawn stops being waited on: the container exists from the
+    creation ACK onwards and holds its project's workspace lock, so leaving it
+    behind blocks the next attempt on the same project rather than merely
+    wasting a container.
+    """
+    await redis_client.xadd(
+        WORKER_COMMANDS,
+        {
+            "data": DeleteWorkerCommand(
+                request_id=f"cleanup-{request_id}", worker_id=worker_id, reason=reason
+            ).model_dump_json()
+        },
+    )
 
 
 async def request_spawn(
@@ -428,6 +549,7 @@ async def request_spawn(
 
         worker_id = create_resp.get("worker_id")
         logger.info("worker_ack_received", request_id=request_id, worker_id=worker_id)
+        await record_worker_on_attempt(ownership.attempt_id, worker_id)
 
         # 3b. Poll worker status until RUNNING (image build + container start)
         ready_failure = await _wait_until_ready(redis_client, worker_id, request_id)
@@ -446,21 +568,10 @@ async def request_spawn(
                 raise
 
         # 5. Send task message to worker input stream
-        input_stream = f"worker:{worker_id}:input"
-        task_message = {
-            "request_id": request_id,
-            "prompt": task_content,
-            "user_id": 0,  # System task
-        }
-        if story_md:
-            task_message["story_md"] = story_md
-        await redis_client.xadd(
-            input_stream,
-            {"data": json.dumps(task_message)},
-            maxlen=DEFAULT_STREAM_MAXLEN,
-            approximate=True,
+        await _send_turn(
+            redis_client, worker_id, request_id, ownership.attempt_id, task_content, story_md
         )
-        logger.info("task_sent_to_worker", request_id=request_id, worker_id=worker_id)
+        await record_turn_on_attempt(ownership.attempt_id, request_id)
 
         # Wait for output (worker output doesn't have request_id, so pass None)
         try:
@@ -499,12 +610,18 @@ async def request_spawn(
                 False,
                 -1,
                 f"Timeout after {timeout_seconds}s waiting for worker output. "
-                "Container cleaned up.",
+                "Container teardown requested; its confirmation is reconciled separately.",
                 error_message="execution_timeout",
             )
 
     except Exception as e:
-        logger.error("spawn_failed", error=str(e))
+        logger.error("spawn_failed", error=str(e), worker_id=worker_id)
+        # The container exists from the ACK onwards. Anything that goes wrong
+        # after that point leaves it holding this project's workspace lock with
+        # nobody waiting for its output, so it is taken away here rather than
+        # left for a sweep that only collects workers Redis has already lost.
+        if worker_id:
+            await _publish_worker_deletion(redis_client, request_id, worker_id, "failed")
         return SpawnResult(request_id, False, -1, str(e))
     finally:
         # Cleanup consumer groups (ignore errors - groups may not exist)
@@ -525,6 +642,7 @@ async def send_task_to_worker(
     task_content: str,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
     *,
+    ownership: WorkerOwnership,
     clear_session: bool = False,
     story_md: str | None = None,
     branch: str | None = None,
@@ -534,11 +652,16 @@ async def send_task_to_worker(
     Unlike request_spawn(), this does NOT create a new container.
     It sends a prompt to the worker's input stream and waits for output.
 
+    `ownership` names the attempt this turn belongs to. A reused container was
+    created for an earlier attempt, so without this the attempt now being worked
+    on would name no worker and the supervisor would judge it by silence.
+
     Args:
         clear_session: If True, worker clears its session before executing,
             forcing a fresh Claude CLI session (no --resume). Use for retries
             to avoid inheriting errors from a failed previous attempt.
     """
+    await record_worker_on_attempt(ownership.attempt_id, worker_id)
     request_id = str(uuid.uuid4())
     settings = get_settings()
     redis_client = redis.from_url(settings.redis_url)
@@ -560,6 +683,8 @@ async def send_task_to_worker(
         # 2. Send task to worker input stream
         task_message = {
             "request_id": request_id,
+            "attempt_id": ownership.attempt_id,
+            "turn_deadline_seconds": Timeouts.WORKER_SPAWN,
             "prompt": task_content,
         }
         if clear_session:
@@ -574,6 +699,7 @@ async def send_task_to_worker(
             maxlen=DEFAULT_STREAM_MAXLEN,
             approximate=True,
         )
+        await record_turn_on_attempt(ownership.attempt_id, request_id)
         logger.info(
             "task_sent_to_existing_worker",
             request_id=request_id,

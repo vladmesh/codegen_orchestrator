@@ -33,8 +33,24 @@ class Timeouts:
     PASSWORD_RESET = int(os.getenv("PASSWORD_RESET_TIMEOUT", "300"))  # 5 minutes
     ACCESS_PHASE = int(os.getenv("ACCESS_PHASE_TIMEOUT", "180"))  # 3 minutes
 
-    # Worker spawners (langgraph-specific but shared for visibility)
-    WORKER_SPAWN = int(os.getenv("WORKER_SPAWN_TIMEOUT", "1800"))  # 30 minutes
+    # How long one coding-agent turn may run inside a worker before the wrapper
+    # stops it. This is the deliberate limit on the work itself, enforced by the
+    # process that runs it, and it is the only timer that may end a working
+    # engineering worker. Real product tasks — a business-logic review that runs
+    # unit and integration suites, a Copier migration that generates, resolves
+    # conflicts, tests and builds Docker images — take tens of minutes.
+    AGENT_TURN = int(os.getenv("AGENT_TURN_TIMEOUT", "3600"))  # 60 minutes
+
+    # What a turn costs on top of the agent process: workspace pull, venv
+    # repointing, transcript save, commit, push and result submission. Every
+    # timer that waits for a turn is derived from AGENT_TURN plus this, so no
+    # observer can expire before the limit it is waiting on.
+    WORKER_TURN_OVERHEAD = int(os.getenv("WORKER_TURN_OVERHEAD_TIMEOUT", "900"))  # 15 minutes
+
+    # Worker spawners (langgraph-specific but shared for visibility). This is an
+    # observer's wait, not a limit: it must outlast the turn it waits for, or it
+    # would take away a worker that is still within its own limit.
+    WORKER_SPAWN = int(os.getenv("WORKER_SPAWN_TIMEOUT", str(AGENT_TURN + WORKER_TURN_OVERHEAD)))
     PREPARER_SPAWN = int(os.getenv("PREPARER_SPAWN_TIMEOUT", "120"))  # 2 minutes
 
     # Deployment

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from pydantic import ValidationError
 import pytest
 
+from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.queues.worker_result import WorkerResultAdapter
 from src.clients.worker_spawner import (
     WorkerOutputDecodeError,
@@ -154,7 +155,15 @@ class TestMalformedOutputHandling:
 
         from src.clients.worker_spawner import send_task_to_worker
 
-        result = await send_task_to_worker(worker_id="dev-1", task_content="fix", timeout_seconds=5)
+        with patch("src.clients.worker_spawner.record_worker_on_attempt", new_callable=AsyncMock):
+            result = await send_task_to_worker(
+                worker_id="dev-1",
+                task_content="fix",
+                timeout_seconds=5,
+                ownership=WorkerOwnership(
+                    project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1"
+                ),
+            )
 
         # Explicit invalid result — NOT execution_timeout.
         assert result.success is False

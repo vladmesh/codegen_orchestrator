@@ -7,12 +7,28 @@ import pytest
 
 from shared.contracts.queues.worker import WorkerOwnership
 
+_OWNERSHIP = WorkerOwnership(project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1")
+
 
 def _mock_settings():
     """Minimal settings for spawner functions."""
     s = MagicMock()
     s.redis_url = "redis://localhost:6379"
     return s
+
+
+@pytest.fixture(autouse=True)
+def _attempt_recording_stubbed():
+    """These tests exercise the stream protocol, not the attempt bookkeeping.
+
+    Naming the worker on its attempt is a real API write with its own test; here
+    it would only be a live HTTP call in the middle of a Redis-level assertion.
+    """
+    with (
+        patch("src.clients.worker_spawner.record_worker_on_attempt", new_callable=AsyncMock),
+        patch("src.clients.worker_spawner.record_turn_on_attempt", new_callable=AsyncMock),
+    ):
+        yield
 
 
 # ---------- Liveness check ----------
@@ -40,14 +56,14 @@ class TestCheckWorkerAlive:
         assert await _check_worker_alive(mock_redis, "dev-123") is False
 
     @pytest.mark.asyncio
-    async def test_returns_false_when_key_missing(self):
-        """Worker with no status key (cleaned up) should be considered not alive."""
+    async def test_returns_unknown_when_key_missing(self):
+        """A missing Redis cache entry is not proof that Docker removed it."""
         from src.clients.worker_spawner import _check_worker_alive
 
         mock_redis = AsyncMock()
         mock_redis.hget = AsyncMock(return_value=None)
 
-        assert await _check_worker_alive(mock_redis, "dev-123") is False
+        assert await _check_worker_alive(mock_redis, "dev-123") is None
 
     @pytest.mark.asyncio
     async def test_handles_bytes_status(self):
@@ -149,6 +165,7 @@ class TestSendTaskToWorker:
         from src.clients.worker_spawner import send_task_to_worker
 
         result = await send_task_to_worker(
+            ownership=_OWNERSHIP,
             worker_id="dev-123",
             task_content="Fix the CI error in test_foo.py",
             timeout_seconds=10,
@@ -160,6 +177,8 @@ class TestSendTaskToWorker:
         assert stream == "worker:dev-123:input"
         payload = json.loads(data["data"])
         assert payload["prompt"] == "Fix the CI error in test_foo.py"
+        assert payload["attempt_id"] == _OWNERSHIP.attempt_id
+        assert payload["turn_deadline_seconds"] > 0
         assert kwargs == {"maxlen": 1000, "approximate": True}
 
         # Verify result
@@ -187,6 +206,7 @@ class TestSendTaskToWorker:
         from src.clients.worker_spawner import send_task_to_worker
 
         result = await send_task_to_worker(
+            ownership=_OWNERSHIP,
             worker_id="dev-123",
             task_content="Fix it",
             timeout_seconds=0,
@@ -233,6 +253,7 @@ class TestSendTaskToWorker:
         from src.clients.worker_spawner import send_task_to_worker
 
         result = await send_task_to_worker(
+            ownership=_OWNERSHIP,
             worker_id="dev-123",
             task_content="Fix it",
             timeout_seconds=10,

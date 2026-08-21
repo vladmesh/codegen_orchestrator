@@ -5,6 +5,7 @@ import uuid
 from fakeredis import aioredis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.worker_turn import active_turn_key
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
@@ -425,7 +426,7 @@ async def test_delete_worker_full_cleanup():
     )
     await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
     await redis.set(f"worker:error:{worker_id}", "some error")
-    await redis.set(f"worker:last_activity:{worker_id}", "12345")
+    await redis.hset(active_turn_key(worker_id), mapping={"worker_id": worker_id})
 
     with patch("src.manager.ComposeRunner") as mock_runner_cls:
         # Mock compose runner to avoid filesystem side effects
@@ -442,7 +443,9 @@ async def test_delete_worker_full_cleanup():
     assert await redis.hgetall(f"worker:meta:{worker_id}") == {}
     assert await redis.hgetall(f"worker:status:{worker_id}") == {}
     assert await redis.get(f"worker:error:{worker_id}") is None
-    assert await redis.get(f"worker:last_activity:{worker_id}") is None
+    # The liveness record is per-worker residue too: a deleted worker must not
+    # leave a signal behind that a later reader could still find.
+    assert await redis.hgetall(active_turn_key(worker_id)) == {}
 
 
 @pytest.mark.asyncio
@@ -710,8 +713,8 @@ async def test_gc_still_tears_down_an_exited_orphan_proxy():
 
 
 @pytest.mark.asyncio
-async def test_check_project_lock_cleans_dead_worker():
-    """_check_project_lock should auto-cleanup DEAD workers and return None (unlocked)."""
+async def test_check_project_lock_keeps_dead_worker_fenced_until_teardown_confirms_it():
+    """A terminal Redis cache value is not permission to release a workspace."""
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     manager = WorkerManager(redis=redis, docker_client=wrapper)
@@ -731,17 +734,13 @@ async def test_check_project_lock_cleans_dead_worker():
 
     result = await manager._check_project_lock(project_id)
 
-    # Should return None (project is free) after cleaning stale keys
-    assert result is None
-    # Stale keys should be cleaned up
-    assert await redis.hgetall(f"worker:meta:{worker_id}") == {}
-    assert await redis.hgetall(f"worker:status:{worker_id}") == {}
-    assert not await redis.sismember("workspace:active_projects", project_id)
+    assert result == worker_id
+    assert await redis.hgetall(f"worker:meta:{worker_id}") != {}
+    assert await redis.sismember("workspace:active_projects", project_id)
 
 
 @pytest.mark.asyncio
-async def test_check_project_lock_cleans_failed_worker():
-    """_check_project_lock should auto-cleanup FAILED workers."""
+async def test_check_project_lock_keeps_failed_worker_fenced_until_teardown_confirms_it():
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     manager = WorkerManager(redis=redis, docker_client=wrapper)
@@ -760,13 +759,12 @@ async def test_check_project_lock_cleans_failed_worker():
 
     result = await manager._check_project_lock(project_id)
 
-    assert result is None
-    assert await redis.hgetall(f"worker:meta:{worker_id}") == {}
+    assert result == worker_id
+    assert await redis.hgetall(f"worker:meta:{worker_id}") != {}
 
 
 @pytest.mark.asyncio
-async def test_check_project_lock_cleans_stopped_worker():
-    """_check_project_lock should auto-cleanup STOPPED workers."""
+async def test_check_project_lock_keeps_stopped_worker_fenced_until_teardown_confirms_it():
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     manager = WorkerManager(redis=redis, docker_client=wrapper)
@@ -785,7 +783,7 @@ async def test_check_project_lock_cleans_stopped_worker():
 
     result = await manager._check_project_lock(project_id)
 
-    assert result is None
+    assert result == worker_id
 
 
 @pytest.mark.asyncio
@@ -811,8 +809,16 @@ async def test_check_project_lock_keeps_running_worker():
 
     # Should return the worker_id — project is locked
     assert result == worker_id
-    # Keys should remain
-    assert await redis.hgetall(f"worker:meta:{worker_id}") != {}
+
+
+@pytest.mark.asyncio
+async def test_owner_fenced_lock_blocks_even_if_legacy_active_set_was_lost():
+    redis = aioredis.FakeRedis(decode_responses=True)
+    manager = WorkerManager(redis=redis, docker_client=_make_docker_mock())
+
+    await redis.set("workspace:lock:proj-fenced", "worker-fenced")
+
+    assert await manager._check_project_lock("proj-fenced") == "worker-fenced"
 
 
 @pytest.mark.asyncio

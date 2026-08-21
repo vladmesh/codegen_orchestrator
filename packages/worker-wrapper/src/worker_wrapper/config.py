@@ -4,6 +4,7 @@ from pathlib import Path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
+from shared.constants import Timeouts
 from shared.contracts.vocab import AgentType
 
 
@@ -32,9 +33,11 @@ class WorkerWrapperConfig(BaseSettings):
 
     # Optional execution settings
     poll_interval_ms: int = 500
-    # Fallback when WORKER_SUBPROCESS_TIMEOUT_SECONDS is unset; worker-manager
-    # normally forwards its own value. Sized for live LLM agents, not noop.
-    subprocess_timeout_seconds: int = 900
+    # The limit on one agent turn, and the only timer allowed to end a worker
+    # that is working. worker-manager forwards its own value; this is the same
+    # shared constant it derives that value from, so an unset variable cannot
+    # quietly enforce a different limit than the one the pipeline expects.
+    subprocess_timeout_seconds: int = Timeouts.AGENT_TURN
     http_server_port: int = 9090
     transcript_dir: str = "/artifacts/worker-transcripts"
     transcript_max_bytes: int = 5 * 1024 * 1024

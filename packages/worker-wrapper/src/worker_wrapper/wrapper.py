@@ -3,12 +3,13 @@ from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 from typing import Any
 
 import structlog
 
-from shared.contracts.queues.worker_result import WorkerFailedResult, WorkerResult
+from shared.contracts.queues.worker_result import WorkerFailedResult, WorkerResult, WorkerStopReason
 from shared.contracts.vocab import AgentType
 
 from .broker import WorkerBrokerClient
@@ -29,6 +30,28 @@ OLD_TASKS_DIR = "/workspace/.story/old_tasks"
 # to proxy, and no task to archive. Running any of them would either fail the
 # run outright or hand the QA agent a checkout it must not read.
 QA_WORKER_TYPE = "qa"
+
+# How long the wrapper waits for a killed agent's pipes to close before giving
+# up on its partial output. The process is already dead; this only bounds the
+# read of what it had written before it was.
+PARTIAL_OUTPUT_GRACE_SECONDS = 30
+
+
+class AgentTurnLimitExceeded(RuntimeError):
+    """The agent ran past the limit this turn was given, and was stopped.
+
+    A distinct type because this is the one failure that is a decision rather
+    than an accident: the work was going on and something chose to end it. The
+    limit travels with it so the attempt can record what it was measured
+    against instead of a bare sentence.
+    """
+
+    stop_reason = WorkerStopReason.AGENT_LIMIT_EXCEEDED
+
+    def __init__(self, limit_seconds: int):
+        self.limit_seconds = limit_seconds
+        super().__init__(f"Agent process exceeded its {limit_seconds}s turn limit")
+
 
 # The agent's subprocess environment is distinct from the wrapper's. Keep it
 # limited to CLI process basics plus the settings worker-manager deliberately
@@ -159,6 +182,8 @@ class WorkerWrapper:
         self._effort_metrics: dict[str, Any] = {}
         self._transcript_path: str | None = None
         self._transcript_truncated: bool | None = None
+        self._stop_reason: WorkerStopReason | None = None
+        self._agent_limit_seconds: int | None = None
 
     @property
     def is_qa_executor(self) -> bool:
@@ -227,9 +252,19 @@ class WorkerWrapper:
             await asyncio.sleep(self.config.poll_interval_ms / 1000)
 
     async def process_message(self, msg_id: str, data: dict):
-        """Process a single task message."""
-        logger.info("processing_task", msg_id=msg_id)
+        """Process a single task message.
 
+        The broker's leased input is the durable statement that this turn is in
+        flight. The wrapper does not pretend that an independent periodic timer
+        can prove the CLI is making progress.
+        """
+        logger.info("processing_task", msg_id=msg_id)
+        self._stop_reason = None
+        self._agent_limit_seconds = None
+        await self._run_turn(msg_id, data)
+
+    async def _run_turn(self, msg_id: str, data: dict):
+        """One turn: prepare the workspace, run the agent, report the result."""
         # Persist task context for crash recovery (Gap B)
         # We save task_id/request_id so DockerEventsListener can read them if container dies
         context_update = {}
@@ -299,11 +334,21 @@ class WorkerWrapper:
                 await self.execute_agent(data)
                 status = "completed"
                 error = None
+            except AgentTurnLimitExceeded as e:
+                logger.error(
+                    "agent_turn_limit_exceeded",
+                    worker_id=self.config.worker_id,
+                    limit_seconds=e.limit_seconds,
+                    stop_reason=e.stop_reason.value,
+                )
+                self._stop_reason = e.stop_reason
+                self._agent_limit_seconds = e.limit_seconds
+                error = str(e)
+                status = "failed"
             except Exception as e:
                 logger.error("execution_failed", error=str(e))
                 error = str(e)
                 status = "failed"
-
             # 5. Collect report and archive task (before publishing result)
             report = self._read_worker_report()
             if not self.is_qa_executor:
@@ -334,7 +379,13 @@ class WorkerWrapper:
             return status, error
 
         if error:
-            result = WorkerFailedResult(error=error, agent_stdout_tail=stdout_tail, **observability)
+            result = WorkerFailedResult(
+                error=error,
+                stop_reason=self._stop_reason,
+                agent_limit_seconds=self._agent_limit_seconds,
+                agent_stdout_tail=stdout_tail,
+                **observability,
+            )
             await self.broker.submit_output(lease_id, result)
             return status, error
 
@@ -739,6 +790,71 @@ class WorkerWrapper:
             logger.warning("git_branch_failed", error=str(e))
             return None
 
+    async def _collect_agent_output(self, proc) -> tuple[bytes, bytes, bool]:
+        """Run the agent to completion, or to its limit, and keep what it wrote.
+
+        Returns ``(stdout, stderr, limit_exceeded)``. On the limit path the
+        process is killed and the *same* ``communicate()`` is then awaited: its
+        pipes reach EOF the moment the process dies, so it hands back exactly
+        what the agent had produced up to that point. Abandoning it — the
+        previous behaviour — threw away the whole transcript of a turn that had
+        been working right up to the second it was stopped.
+        """
+        collecting = asyncio.ensure_future(proc.communicate())
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                asyncio.shield(collecting), timeout=self.config.subprocess_timeout_seconds
+            )
+            return stdout_bytes, stderr_bytes, False
+        except TimeoutError:
+            logger.error(
+                "agent_process_limit_reached",
+                worker_id=self.config.worker_id,
+                limit_seconds=self.config.subprocess_timeout_seconds,
+            )
+
+        await self._kill_agent_process_group(proc)
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                collecting, timeout=PARTIAL_OUTPUT_GRACE_SECONDS
+            )
+        except Exception as exc:
+            # The partial output is worth having, not worth hanging for. Say it
+            # is missing rather than pretending the turn produced nothing.
+            logger.warning(
+                "agent_partial_output_unavailable",
+                worker_id=self.config.worker_id,
+                error=str(exc),
+            )
+            collecting.cancel()
+            return b"", b"", True
+        return stdout_bytes, stderr_bytes, True
+
+    @staticmethod
+    async def _kill_agent_process_group(proc) -> None:
+        """Stop the CLI and every descendant that inherited its session.
+
+        A coding CLI commonly leaves a test runner or shell child alive. Killing
+        only the CLI retains its output pipe and lets it keep mutating the shared
+        workspace after a timed-out turn. ``start_new_session=True`` below makes
+        the CLI PID the process-group leader, so one signal settles the whole
+        turn. The fallback keeps the method testable with minimal process doubles.
+        """
+        try:
+            pid = proc.pid
+        except AttributeError:
+            proc.kill()
+        else:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+
     async def execute_agent(self, data: dict[str, Any]) -> None:
         """Execute the agent subprocess.
 
@@ -787,25 +903,10 @@ class WorkerWrapper:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=agent_env,
+            start_new_session=True,
         )
 
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=self.config.subprocess_timeout_seconds
-            )
-        except TimeoutError:
-            logger.error(
-                "agent_process_timed_out",
-                timeout=self.config.subprocess_timeout_seconds,
-            )
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
-            raise RuntimeError(
-                f"Agent process timed out after {self.config.subprocess_timeout_seconds} seconds"
-            ) from None
+        stdout_bytes, stderr_bytes, limit_exceeded = await self._collect_agent_output(proc)
         stdout = stdout_bytes.decode().strip()
         stderr = stderr_bytes.decode().strip()
         self._effort_metrics = extract_effort_metrics(stdout, stderr, self.config.agent_type.value)
@@ -829,6 +930,12 @@ class WorkerWrapper:
             if stderr:
                 combined = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
             self._agent_stdout_tail = combined[-max_tail:] if combined else None
+
+        if limit_exceeded:
+            # Everything the agent produced before it was stopped is already on
+            # disk and on the result: a turn that ran out of time still spent an
+            # hour of real work, and losing it costs the retry the same hour.
+            raise AgentTurnLimitExceeded(self.config.subprocess_timeout_seconds)
 
         if proc.returncode != 0:
             logger.error("agent_process_failed", exit_code=proc.returncode)

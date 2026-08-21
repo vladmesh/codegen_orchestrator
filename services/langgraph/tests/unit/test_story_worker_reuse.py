@@ -114,10 +114,10 @@ class TestDeveloperNodeWorkerReuse:
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_falls_back_to_spawn_when_worker_dead(
+    async def test_timeout_does_not_spawn_before_teardown_is_confirmed(
         self, mock_github_cls, mock_api, mock_spawn, mock_send_task
     ):
-        """When send_task_to_worker fails with timeout, fall back to request_spawn."""
+        """A timeout is only a teardown request, never spawn permission."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
@@ -130,16 +130,6 @@ class TestDeveloperNodeWorkerReuse:
             error_message="execution_timeout",
             worker_id="dev-existing-abc",
         )
-        # Fallback to spawn succeeds
-        mock_spawn.return_value = SpawnResult(
-            request_id="req-2",
-            success=True,
-            exit_code=0,
-            output="Done!",
-            commit_sha="ghi789",
-            worker_id="dev-new-xyz",
-        )
-
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
@@ -157,10 +147,10 @@ class TestDeveloperNodeWorkerReuse:
             }
         )
 
-        assert result["engineering_status"] == "done"
-        assert result["worker_id"] == "dev-new-xyz"
+        assert result["engineering_status"] == "failed"
+        assert result["errors"] == ["Development failed: execution_timeout"]
         mock_send_task.assert_called_once()
-        mock_spawn.assert_called_once()
+        mock_spawn.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
