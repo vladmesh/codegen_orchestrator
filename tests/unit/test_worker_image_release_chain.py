@@ -147,6 +147,7 @@ def test_backend_dind_is_a_required_predecessor_of_the_worker_release_marker():
     )
     assert backend["needs"] == ["fast-checks", "ci-contract"]
     assert "github.event_name == 'push'" in backend["if"]
+    assert "github.event_name == 'workflow_dispatch'" in backend["if"]
     assert "github.ref == 'refs/heads/main'" in backend["if"]
     assert not backend.get("continue-on-error")
 

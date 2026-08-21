@@ -892,6 +892,7 @@ def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
     for required in (
         "always()",
         "github.event_name == 'push'",
+        "github.event_name == 'workflow_dispatch'",
         "github.ref == 'refs/heads/main'",
         "needs.fast-checks.result == 'success'",
         "needs.ci-contract.result == 'success'",

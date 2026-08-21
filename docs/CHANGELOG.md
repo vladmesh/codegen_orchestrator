@@ -2,6 +2,11 @@
 
 ## 2026-08-21
 
+- [hotfix] A manual CI dispatch for `main` now runs the required backend
+  Docker-in-Docker suite as well as a main push. The release gate deliberately
+  refuses a skipped DinD result on `main`; the job had been limited to `push`,
+  which made a manual candidate or retry run fail closed for the wrong reason.
+
 - [hotfix] Worker images now ship the `shared.constants` module that
   `worker-wrapper` imports for its turn timeout. The common base image had copied
   only contracts, logging and diagnostics, so every worker crashed with
