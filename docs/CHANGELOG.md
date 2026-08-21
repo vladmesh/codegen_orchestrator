@@ -2,6 +2,20 @@
 
 ## 2026-08-21
 
+- [hotfix] Worker images now ship the `shared.constants` module that
+  `worker-wrapper` imports for its turn timeout. The common base image had copied
+  only contracts, logging and diagnostics, so every worker crashed with
+  `ModuleNotFoundError` before its agent CLI could start. A Docker-in-Docker
+  runtime regression now imports the wrapper from the built image itself while
+  retaining worker isolation: no Redis or other control-plane module is added.
+
+- [hotfix] A backend Docker-in-Docker failure can no longer release worker
+  images. The main-only worker runtime suite moved from a parallel workflow into
+  the `ci.yml` DAG; `Required CI Gate` now consumes it, and the worker marker
+  publisher remains downstream of that gate. A failed, cancelled or skipped DinD
+  job on main therefore leaves the SHA without a release marker and production
+  deploy refuses it before changing running services.
+
 - Engineering worker supervision now follows the input lease rather than a
   wrapper heartbeat or `task.updated_at`. The broker records the active turn
   with its worker, attempt, request, lease and absolute deadline; a reused

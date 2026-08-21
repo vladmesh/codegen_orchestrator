@@ -14,7 +14,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-BACKEND_INTEGRATION_WORKFLOW = ROOT / ".github" / "workflows" / "backend-integration.yml"
 BUILDX_RETRY_ACTION = ROOT / ".github" / "actions" / "setup-buildx-with-retry" / "action.yml"
 TEST_UNIT_LOCAL = ROOT / "scripts" / "test-unit-local.sh"
 MAKEFILE = ROOT / "Makefile"
@@ -36,8 +35,8 @@ SERVICE_COMPOSE_ROOTS = {
 # Integration compose files that deliberately stay out of the PR matrix.
 OUT_OF_PR_INTEGRATION_SUITES = {
     "backend-dind": (
-        "Docker-in-Docker suite, run by backend-integration.yml on pushes to main and "
-        "dispatchable by hand; too expensive to run on every pull request"
+        "Docker-in-Docker suite, run by ci.yml on pushes to main before worker-image "
+        "publication; too expensive to run on every pull request"
     ),
 }
 
@@ -157,6 +156,7 @@ EXPECTED_GATE_NEEDS = {
     "test-integration",
     "template-compatibility",
     "web-checks",
+    "test-backend-dind-integration",
 }
 EXPECTED_FILTERS = {
     "api",
@@ -878,35 +878,26 @@ def assert_integration_tests(jobs: dict[str, Any]) -> None:
             fail(f"backend integration matrix is missing trigger {output}")
 
 
-def assert_backend_dind_integration() -> None:
-    """The Docker-in-Docker suite runs itself on every push to main.
+def assert_backend_dind_integration(jobs: dict[str, Any]) -> None:
+    """The Docker-in-Docker suite is a main-only predecessor in CI's release DAG.
 
-    It is out of the pull request matrix on cost grounds, so a push to main is the
-    only automatic run it gets: that trigger has to be in the tree, unconditional,
-    and unable to report green by skipping. Hand dispatch stays, because the suite
-    is also the thing an engineer reruns while chasing a worker-ownership failure.
+    It remains out of the pull-request matrix on cost grounds. On main, though,
+    this job and ``merge-gate`` belong to one workflow graph, so a DinD failure
+    physically prevents ``publish-worker-images`` from reaching its marker step.
     """
-    if not BACKEND_INTEGRATION_WORKFLOW.is_file():
-        fail("backend Docker-in-Docker workflow is missing")
-    with BACKEND_INTEGRATION_WORKFLOW.open() as f:
-        workflow = yaml.safe_load(f)
-    if not isinstance(workflow, dict):
-        fail("backend Docker-in-Docker workflow root is not a mapping")
-    triggers = workflow.get(True, {})
-    if set(triggers) != {"push", "workflow_dispatch"}:
-        fail(
-            "backend Docker-in-Docker workflow must run on pushes and stay dispatchable "
-            "by hand, and on nothing else"
-        )
-    push = triggers.get("push") or {}
-    if set(push) != {"branches"} or push["branches"] != ["main"]:
-        fail("backend Docker-in-Docker workflow must run on every push to main and no other push")
-    jobs = workflow.get("jobs")
-    if not isinstance(jobs, dict):
-        fail("backend Docker-in-Docker workflow has no jobs mapping")
     job = require_job(jobs, "test-backend-dind-integration")
-    if job.get("if"):
-        fail("backend Docker-in-Docker job must not be conditional")
+    if job.get("needs") != ["fast-checks", "ci-contract"]:
+        fail("backend Docker-in-Docker job must wait for fast-checks and ci-contract")
+    condition = " ".join(str(job.get("if", "")).split())
+    for required in (
+        "always()",
+        "github.event_name == 'push'",
+        "github.ref == 'refs/heads/main'",
+        "needs.fast-checks.result == 'success'",
+        "needs.ci-contract.result == 'success'",
+    ):
+        if required not in condition:
+            fail(f"backend Docker-in-Docker job is missing required condition: {required}")
     if job.get("continue-on-error"):
         fail("backend Docker-in-Docker job must fail its run, not report advisory")
     run_step = step_by_id(job, "integration-tests")
@@ -921,8 +912,11 @@ def assert_backend_dind_integration() -> None:
         fail("backend Docker-in-Docker assertion must run with always()")
     if "steps.integration-tests.outcome" not in assert_step.get("run", ""):
         fail("backend Docker-in-Docker assertion must inspect the test outcome")
-    if SIMULATED_REGISTRY_FAILURE_INPUT in BACKEND_INTEGRATION_WORKFLOW.read_text():
-        fail("registry retry simulation must not skip the backend Docker-in-Docker suite")
+    buildx = step_by_id(job, "buildx")
+    if buildx.get("with", {}).get(SIMULATED_REGISTRY_FAILURE_INPUT) != (
+        "${{ inputs.simulate_first_attempt_registry_failure }}"
+    ):
+        fail("backend Docker-in-Docker job must receive the Buildx retry simulation input")
 
 
 def assert_buildx_retry(job: dict[str, Any]) -> None:
@@ -1018,7 +1012,7 @@ def main() -> None:
     assert_integration_tests(jobs)
     assert_test_suite_coverage(jobs)
     assert_pinned_base_images()
-    assert_backend_dind_integration()
+    assert_backend_dind_integration(jobs)
     assert_template_compatibility(jobs)
     assert_gate(jobs)
     print("CI gate contract ok")

@@ -460,6 +460,12 @@ Every green commit on `main` publishes the whole worker chain to GHCR under that
 (`publish-worker-images` in `.github/workflows/ci.yml`, via `infra/scripts/publish-worker-images.sh`).
 The tag is the SHA; nothing publishes a mutable `:latest`.
 
+On `main`, "green" includes the required `test-backend-dind-integration` job in the same CI DAG.
+`merge-gate` consumes that result before `publish-worker-images` is eligible to run, so a failed,
+cancelled, or skipped-on-main Docker-in-Docker worker check cannot write a worker release marker.
+The expensive job remains skipped outside `main`; that skip is accepted only there and is never a
+release authorization.
+
 **The release is the marker, not the tags.** Four tag pushes cannot be one registry transaction, so
 a pushed tag does not mean a commit was released. After all four images resolve, the publish job
 writes one more object — `worker-base-release:<sha>`, carrying the digest record of that release
