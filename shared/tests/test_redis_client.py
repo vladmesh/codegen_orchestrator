@@ -1,7 +1,6 @@
 """Unit tests for shared.redis.client.RedisStreamClient."""
 
 import asyncio
-from dataclasses import dataclass, field
 import json
 import time
 from typing import Literal
@@ -22,6 +21,7 @@ from shared.redis.client import (
     decode_redis_value,
     dlq_stream,
 )
+from shared.tests.redis_pel_scan import PelEntry, RedisPelScan
 
 
 class SampleMessage(BaseMessage):
@@ -543,47 +543,6 @@ class StrictDelete(BaseMessage):
     worker_id: str
 
 
-@dataclass
-class _PelEntry:
-    """One entry in a consumer group's PEL, as the scan below sees it."""
-
-    entry_id: str
-    idle_ms: int
-    fields: dict[str, str] = field(default_factory=lambda: {"data": "{}"})
-
-
-class _RedisPelScan:
-    """XAUTOCLAIM with the scan limit real Redis applies and fakeredis does not.
-
-    Redis walks at most about ``COUNT * 10`` PEL entries per call and then
-    answers with wherever it stopped, so a call can come back with an advanced
-    cursor, no claimed entries and no deleted ids. fakeredis instead filters the
-    whole PEL by idle time and returns ``start`` as the cursor whenever it
-    claimed nothing, which cannot express that answer. Reproduced against
-    ``redis:7.4.10-alpine``: eleven pending entries, the first ten refreshed,
-    the eleventh stale, ``COUNT 1`` -> ``cursor=<eleventh-id>, claimed=[],
-    deleted=[]``.
-    """
-
-    def __init__(self, entries: list[_PelEntry]):
-        self.entries = entries
-        self.start_ids: list[str] = []
-
-    async def __call__(self, stream, group, consumer, *, min_idle_time, start_id, count):
-        self.start_ids.append(start_id)
-        cursor = "0-0"
-        claimed: list[tuple[str, dict[str, str]]] = []
-        scanned = 0
-        for entry in (e for e in self.entries if e.entry_id >= start_id):
-            if scanned >= count * 10 or len(claimed) >= count:
-                cursor = entry.entry_id
-                break
-            scanned += 1
-            if entry.idle_ms >= min_idle_time:
-                claimed.append((entry.entry_id, entry.fields))
-        return [cursor, claimed, []]
-
-
 class TestReclaimRunsForTheConsumerLifetime:
     """XAUTOCLAIM used to run once, before the read loop. The generator is built
     once per process, so an entry that got stuck after start-up stayed in the
@@ -636,9 +595,9 @@ class TestReclaimRunsForTheConsumerLifetime:
         reclaimed — and since every sweep restarts at "0-0", it walked into the
         same prefix and stopped again for as long as the prefix stayed fresh.
         """
-        fresh = [_PelEntry(f"{1000 + i}-0", idle_ms=0) for i in range(10)]
-        stale = _PelEntry("1010-0", idle_ms=60_000, fields={"data": json.dumps({"key": "tail"})})
-        pel = _RedisPelScan([*fresh, stale])
+        fresh = [PelEntry(f"{1000 + i}-0", idle_ms=0) for i in range(10)]
+        stale = PelEntry("1010-0", idle_ms=60_000, fields={"data": json.dumps({"key": "tail"})})
+        pel = RedisPelScan([*fresh, stale])
         fake_redis.xautoclaim = pel
 
         received = []

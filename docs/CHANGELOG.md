@@ -2,6 +2,31 @@
 
 ## 2026-08-21
 
+- The PO consumer no longer keeps its own copy of the read loop. It was the last product consumer
+  reading `po:input` through a private `XAUTOCLAIM` copy, and it still carried exactly the defects
+  already fixed in `shared/redis/client.py`: reclaim only at start-up, a sweep that stopped on the
+  first page it could not claim from, a silent skip for a body-less claim, and an `XACK` that
+  destroyed a body it could not validate. The copy is gone — PO now reads through
+  `RedisStreamClient.consume_typed`, so the continuous sweep, the full PEL walk, both `XAUTOCLAIM`
+  response shapes, `stream:diagnostics:lost_entries`, the `po:input:dlq` quarantine before ACK and
+  the tolerance for a field a newer publisher added all come from the one implementation.
+  - **Concurrent dispatch keeps a lease instead of a second mechanism.** PO processes in
+    `asyncio.Task`s under a semaphore and per-user locks and ACKs in the task's `finally`, so an
+    entry is legitimately pending for as long as the graph runs. A naive recurring sweep would hand
+    that entry back to the process already working on it. Instead `RECLAIM_INTERVAL_MS =
+    PEL_TIMEOUT_MS // 2`: every sweep re-claims — and thereby renews — this process's own in-flight
+    entries strictly before the idle bar they are measured against, and the read loop recognises
+    the ids it has in flight and does not dispatch them twice. Renewal stops when the process
+    stops, so an entry left in flight by a dead PO is claimable by the next one after one
+    `PEL_TIMEOUT_MS`; liveness is a sign of work, not a reading of the clock.
+  - The existing secret elision is untouched: a validation failure still logs `loc`/`type` only,
+    the raw body never reaches a log, and the alert for a message still addressed by the removed
+    `user_id` field is raised by the same shared path.
+  - The `XAUTOCLAIM` scan model the sweep tests need (`RedisPelScan`) moved to
+    `shared/tests/redis_pel_scan.py` so the shared-client suite and the PO suite share one copy.
+  - `docs/CONTRACTS.md`, `docs/ERROR_HANDLING.md` and `ARCHITECTURE.md` no longer describe PO as
+    the documented exception to the unified consumer path.
+
 - A stream entry no longer disappears without a trace. Three defects in `shared/redis/client.py`
   shared one failure shape — the record is gone and there is nothing to look at — and are closed
   together because they patch each other's hole.

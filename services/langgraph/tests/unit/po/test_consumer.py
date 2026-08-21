@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
-import structlog
 
-from src.consumers import po as po_consumer
+from shared.contracts.queues.po import POUserMessage
 from src.consumers.po import _handle_message, _process_message, _repair_orphan_tool_calls
 
 
@@ -315,13 +313,20 @@ class TestHandleMessage:
 
 
 class TestProcessMessage:
+    """What happens once ``consume_typed`` has handed over a validated message.
+
+    Decoding, validation, the DLQ route for a poison body and the alert for a
+    message still addressed by the removed ``user_id`` are the shared client's
+    now; ``tests/unit/po/test_consumer_pel.py`` pins them where they live.
+    """
+
     @pytest.mark.asyncio
     async def test_acks_message_on_success(self, mock_graph, mock_client):
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
-        data = {"type": "user_message", "text": "hi", "telegram_chat_id": "u1", "request_id": "r1"}
+        message = POUserMessage(text="hi", telegram_chat_id="u1", request_id="r1")
 
-        await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
+        await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", message)
 
         mock_client.redis.xack.assert_called_once_with("po:input", "po-consumer", "msg-1")
 
@@ -330,9 +335,9 @@ class TestProcessMessage:
         mock_graph.ainvoke.side_effect = RuntimeError("LLM API down")
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
-        data = {"type": "user_message", "text": "hi", "telegram_chat_id": "u1", "request_id": "r1"}
+        message = POUserMessage(text="hi", telegram_chat_id="u1", request_id="r1")
 
-        await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
+        await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", message)
 
         # xack in finally — always called
         mock_client.redis.xack.assert_called_once()
@@ -342,61 +347,15 @@ class TestProcessMessage:
         mock_graph.ainvoke.side_effect = RuntimeError("boom")
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
-        data = {"type": "user_message", "text": "hi", "telegram_chat_id": "u1", "request_id": "r1"}
+        message = POUserMessage(text="hi", telegram_chat_id="u1", request_id="r1")
 
-        await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
+        await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", message)
 
         # Error response written
         xadd_calls = mock_client.publish_flat.call_args_list
         assert len(xadd_calls) == 1
         assert xadd_calls[0][0][0] == "po:response:r1"
         assert xadd_calls[0][0][1]["error"] == "true"
-
-    @pytest.mark.asyncio
-    async def test_validation_failure_logs_only_safe_errors(
-        self, mock_graph, mock_client, monkeypatch
-    ):
-        sem = asyncio.Semaphore(10)
-        user_locks: dict[str, asyncio.Lock] = {}
-        sentinel = "unique-context-ghp_secret_token"
-        data = {
-            "type": "unknown_kind",
-            "text": sentinel,
-            "telegram_chat_id": "u1",
-            "request_id": sentinel,
-            "task_id": sentinel,
-        }
-        logs = []
-
-        def warning_with_contextvars(event, **kwargs):
-            logs.append(
-                structlog.contextvars.merge_contextvars(
-                    None,
-                    "warning",
-                    {"event": event, **kwargs},
-                )
-            )
-
-        structlog.contextvars.clear_contextvars()
-        monkeypatch.setattr(po_consumer.logger, "warning", warning_with_contextvars)
-        try:
-            await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
-        finally:
-            structlog.contextvars.clear_contextvars()
-
-        mock_client.redis.xack.assert_called_once_with("po:input", "po-consumer", "msg-1")
-        mock_graph.ainvoke.assert_not_called()
-        mock_client.publish_flat.assert_not_called()
-
-        event = next(entry for entry in logs if entry["event"] == "po_input_validation_failed")
-        assert event["msg_id"] == "msg-1"
-        assert "data" not in event
-        assert event["errors"]
-        assert all(set(error) == {"type", "loc"} for error in event["errors"])
-
-        blob = json.dumps(logs, default=str)
-        assert sentinel not in blob
-        assert "input_value" not in blob
 
     @pytest.mark.asyncio
     async def test_per_user_serialization(self, mock_graph, mock_client):
@@ -417,13 +376,13 @@ class TestProcessMessage:
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
 
-        data1 = {"type": "user_message", "text": "m1", "telegram_chat_id": "u1", "request_id": "r1"}
-        data2 = {"type": "user_message", "text": "m2", "telegram_chat_id": "u1", "request_id": "r2"}
+        first = POUserMessage(text="m1", telegram_chat_id="u1", request_id="r1")
+        second = POUserMessage(text="m2", telegram_chat_id="u1", request_id="r2")
 
         # Run both concurrently — should be serialized for same user
         await asyncio.gather(
-            _process_message(mock_graph, mock_client, sem, user_locks, "id1", data1),
-            _process_message(mock_graph, mock_client, sem, user_locks, "id2", data2),
+            _process_message(mock_graph, mock_client, sem, user_locks, "id1", first),
+            _process_message(mock_graph, mock_client, sem, user_locks, "id2", second),
         )
 
         # Verify serialization: first must end before second starts

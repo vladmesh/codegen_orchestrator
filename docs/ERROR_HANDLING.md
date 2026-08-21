@@ -65,7 +65,7 @@ How errors "bubble up" from the low-level components to the user.
 
 ### C. Consumer Errors (Redis)
 
-All consumers use unified `RedisStreamClient.consume()` API with two ACK modes:
+All consumers read through the unified `RedisStreamClient.consume()` / `consume_typed()` API with two ACK modes:
 
 **Manual ACK (`auto_ack=False`)** — used by most consumers:
 1. The message is read but not ACKed automatically.
@@ -83,6 +83,7 @@ All consumers use unified `RedisStreamClient.consume()` API with two ACK modes:
 - A sweep walks the PEL to its end. `XAUTOCLAIM` stops scanning after about `COUNT * 10` entries, so a page whose entries are all still in flight with a healthy consumer answers with an advanced cursor, nothing claimed and no deleted ids. The sweep follows that cursor and stops only when the cursor is terminal (`0-0`) or stops moving. Ending the sweep on the first empty page instead would strand every stale entry behind a fresh prefix, and since each sweep restarts at `0-0` it would walk into the same prefix again for as long as that prefix stays fresh.
 - Sweep period: `reclaim_interval_ms`, defaulting to `pending_timeout_ms` floored at `MIN_RECLAIM_INTERVAL_MS` (1s). An entry cannot become claimable sooner than `pending_timeout_ms` after its last delivery, so sweeping faster buys nothing but round trips; sweeping at that period bounds the pickup delay at twice the timeout. The floor exists because a caller may pass `pending_timeout_ms=0` (the proactive listener does) and a zero period would put an `XAUTOCLAIM` on every turn of the loop.
 - A consumer that would rather not wait can pass `reclaim_interval_ms` explicitly.
+- **A consumer that dispatches concurrently owes the sweep a lease.** Most consumers process an entry inline, so an entry is only pending while the read loop is inside the handler and `pending_timeout_ms` alone tells a stuck entry from a live one. The PO consumer does not: it hands each entry to an `asyncio.Task` and ACKs in that task's `finally`, so an entry is legitimately pending for as long as the graph runs, and a sweep at `min_idle_time = pending_timeout_ms` would hand the process back work it is running. PO answers that with two things and no second mechanism — `RECLAIM_INTERVAL_MS = PEL_TIMEOUT_MS // 2`, so every sweep re-claims (and thereby renews) its own in-flight entries strictly before the idle bar they are measured against, and a set of the ids currently in flight in this process, which are recognised on the way back in and not dispatched again. Liveness is therefore a sign of work, not a reading of the clock: renewal stops when the process stops, and one `PEL_TIMEOUT_MS` later the entry is claimable by another PO.
 
 **Entry lost to a trim:**
 Every publish carries `MAXLEN ~ 1000` and the scheduler additionally runs `XTRIM MINID` by age; neither looks at the PEL first. `XAUTOCLAIM` then reports a pending entry whose body is gone — as `(id, None)` on Redis 6.2, in the third response element on Redis 7. Both shapes are logged as `stream_entry_lost_to_trim` and counted in the Redis hash `stream:diagnostics:lost_entries`, keyed `{stream}|{group}` (`RedisStreamClient.lost_entry_count`). The work itself is unrecoverable; what the counter buys is that a trim eating live work does not read as an idle queue.
@@ -157,8 +158,9 @@ PO sends user-facing lifecycle messages through `po:proactive`: deploy success, 
 **Naming Convention:** `{original_queue}:dlq`
 - `engineering:queue:dlq`
 - `deploy:queue:dlq`
+- `po:input:dlq`
 
-**Implemented for:** the typed consume path. `RedisStreamClient.consume_typed` writes every entry it refuses — bad JSON, failed validation, a message still addressed by the removed `user_id` — to `{stream}:dlq` before ACKing it. Nothing else writes to a DLQ yet: exhausted transient retries and service-level logic errors are handled by the owning consumer and do **not** produce a DLQ entry today.
+**Implemented for:** the typed consume path, which is what the PO consumer reads through too. `RedisStreamClient.consume_typed` writes every entry it refuses — bad JSON, failed validation, a message still addressed by the removed `user_id` — to `{stream}:dlq` before ACKing it. Nothing else writes to a DLQ yet: exhausted transient retries and service-level logic errors are handled by the owning consumer and do **not** produce a DLQ entry today.
 
 **Payload:** flat stream fields, not a nested JSON document:
 
