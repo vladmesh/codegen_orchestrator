@@ -128,10 +128,11 @@ The backend integration suite (`docker/test/integration/backend.yml`) runs the A
 LangGraph paths that do not create worker containers. It runs on relevant pull requests.
 
 `docker/test/integration/backend-dind.yml` covers worker-container creation and execution with
-Docker-in-Docker. `.github/workflows/backend-integration.yml` runs it on every push to `main` and on
-hand dispatch; it stays out of pull requests, where a privileged nested-daemon suite costs more than
-it protects. It is a separate workflow from `Required CI Gate`, so it reports on `main` rather than
-blocking a merge.
+Docker-in-Docker. `ci.yml` runs it as `test-backend-dind-integration` on every push to `main` and
+when CI is manually dispatched for `main`; it stays out of pull requests, where a privileged
+nested-daemon suite costs more than it protects. On `main`, `Required CI Gate` consumes that job
+before worker images may be released, so a failed DinD run blocks the release marker for the exact
+SHA it tested.
 Until secretary-774 supplies host-side gates with a real Docker socket, worker-path coverage comes
 from `make test-live-engineering` (`tests/live/test_pipeline_engineering.py`). Use
 `make test-live-pipeline` for the broader scaffold, engineering and deploy path. The default

@@ -30,6 +30,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+BACKEND_INTEGRATION_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "backend-integration.yml"
 SCRIPTS = REPO_ROOT / "infra" / "scripts"
 CHAIN = ("worker-base-common", "worker-base-claude", "worker-base-factory", "worker-base-codex")
 MARKER_IMAGE = "worker-base-release"
@@ -126,6 +127,42 @@ def test_ci_publishes_the_whole_chain_for_the_commit_it_builds():
     )
     assert upload["with"]["if-no-files-found"] == "error"
     assert upload["with"]["path"] == publish["env"]["DIGEST_FILE"]
+
+
+def test_backend_dind_is_a_required_predecessor_of_the_worker_release_marker():
+    """A failed DinD suite must make the same CI DAG refuse publication.
+
+    A separate push workflow can fail after (or beside) a green CI run, so it
+    cannot be a release precondition. The release gate must see this job's
+    result directly, and only a green main may treat it as satisfied.
+    """
+    workflow = yaml.safe_load(CI_WORKFLOW.read_text())
+    jobs = workflow["jobs"]
+    backend = jobs["test-backend-dind-integration"]
+    merge_gate = jobs["merge-gate"]
+    publish = jobs["publish-worker-images"]
+
+    assert not BACKEND_INTEGRATION_WORKFLOW.exists(), (
+        "the required backend DinD suite cannot live in a parallel workflow"
+    )
+    assert backend["needs"] == ["fast-checks", "ci-contract"]
+    assert "github.event_name == 'push'" in backend["if"]
+    assert "github.event_name == 'workflow_dispatch'" in backend["if"]
+    assert "github.ref == 'refs/heads/main'" in backend["if"]
+    assert not backend.get("continue-on-error")
+
+    assert "test-backend-dind-integration" in merge_gate["needs"]
+    required_results = next(
+        step["run"] for step in merge_gate["steps"] if step["name"] == "Check required jobs"
+    )
+    assert (
+        '["test-backend-dind-integration"]="${{ needs.test-backend-dind-integration.result }}"'
+        in required_results
+    )
+    assert (
+        '"$job" = "test-backend-dind-integration" ] && [ "${GITHUB_REF}" != "refs/heads/main"'
+    ) in required_results
+    assert publish["needs"] == "merge-gate"
 
 
 def test_the_chain_is_listed_once_and_both_halves_read_it():

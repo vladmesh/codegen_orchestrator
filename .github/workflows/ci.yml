@@ -486,6 +486,53 @@ jobs:
       - name: Build
         run: npm run build
 
+  # This suite exercises the worker image chain against a real Docker daemon. It
+  # is too expensive for every PR, but a worker release on main cannot bypass it:
+  # merge-gate consumes this job in the same DAG before it permits the marker.
+  test-backend-dind-integration:
+    name: Backend Docker-in-Docker Integration Tests
+    runs-on: ubuntu-latest
+    needs: [fast-checks, ci-contract]
+    if: >-
+      always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
+      && needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx with retry
+        id: buildx
+        uses: ./.github/actions/setup-buildx-with-retry
+        with:
+          simulate_first_attempt_registry_failure: ${{ inputs.simulate_first_attempt_registry_failure }}
+
+      - name: Run integration tests
+        id: integration-tests
+        run: make test-integration-backend-dind
+        env:
+          DOCKER_BUILDKIT: 1
+          COMPOSE_DOCKER_CLI_BUILD: 1
+          BUILDX_CACHE_TO: type=gha,mode=max,scope=integration-backend-dind
+          BUILDX_CACHE_FROM: type=gha,scope=integration-backend-dind
+
+      - name: Assert backend Docker-in-Docker integration test ran
+        if: always()
+        run: |
+          if [ "${{ steps.buildx.outcome }}" != "success" ]; then
+            echo "CI infrastructure failure: Docker image registry was unavailable while preparing Buildx after retries."
+            exit 1
+          fi
+          if [ "${{ steps.integration-tests.outcome }}" != "success" ]; then
+            echo "Backend Docker-in-Docker integration test did not complete successfully."
+            echo "Outcome: ${{ steps.integration-tests.outcome }}"
+            exit 1
+          fi
+
+      - name: Cleanup test containers
+        if: always()
+        run: docker compose -p codegen_orchestrator_test_backend-dind -f docker/test/integration/backend-dind.yml down -v --remove-orphans 2>/dev/null || true
+
   merge-gate:
     name: Required CI Gate
     runs-on: ubuntu-latest
@@ -497,6 +544,7 @@ jobs:
       - test-integration
       - template-compatibility
       - web-checks
+      - test-backend-dind-integration
     if: always()
     steps:
       - name: Check required jobs
@@ -509,15 +557,17 @@ jobs:
             ["test-integration"]="${{ needs.test-integration.result }}"
             ["template-compatibility"]="${{ needs.template-compatibility.result }}"
             ["web-checks"]="${{ needs.web-checks.result }}"
+            ["test-backend-dind-integration"]="${{ needs.test-backend-dind-integration.result }}"
           )
 
           failed=0
           for job in "${!results[@]}"; do
             result="${results[$job]}"
             echo "$job: $result"
-            # web-checks only runs when a frontend or the CI config changed;
-            # skipped there is the normal case, not a failure.
-            if [ "$result" = "skipped" ] && [ "$job" = "web-checks" ]; then
+            # web-checks runs only for frontend/CI changes. The DinD suite is
+            # deliberately main-only, but is mandatory on main before a worker
+            # release can be published. A skipped DinD suite on main is unsafe.
+            if [ "$result" = "skipped" ] && { [ "$job" = "web-checks" ] || { [ "$job" = "test-backend-dind-integration" ] && [ "${GITHUB_REF}" != "refs/heads/main" ]; }; }; then
               continue
             fi
             if [ "$result" != "success" ]; then

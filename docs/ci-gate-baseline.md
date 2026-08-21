@@ -49,17 +49,17 @@ Skipped-command guard:
 Backend-suite decision, 2026-07-26:
 
 - The backend suite is split by Docker dependency. `backend` is required on relevant pull requests; `backend-dind` contains worker-container tests and stays out of the pull request matrix.
-- `.github/workflows/backend-integration.yml` runs only `backend-dind`. Its test and assertion steps are unconditional, so a run cannot become green after silently skipping the suite. The CI contract verifies that the required CI matrix includes backend and that this workflow runs and asserts `make test-integration-backend-dind`.
-- The registry-failure simulation belongs only to the required CI workflow. It cannot exclude Docker-in-Docker work because the Docker-in-Docker workflow has no conditional test path.
+- `ci.yml` runs `backend-dind` as a main-only `test-backend-dind-integration` job on pushes and manual dispatches. Its test and assertion steps are non-advisory, so a run cannot become green after silently skipping the suite. `merge-gate` consumes that result, and `publish-worker-images` remains downstream of `merge-gate`; on main, a failed or skipped DinD job therefore cannot publish a worker release marker.
+- The registry-failure simulation reaches both CI Buildx users, including the DinD job. It cannot make a registry failure advisory: the following assertion fails the job after retry exhaustion.
 
 Docker-in-Docker on main, 2026-08-13:
 
-- `backend-integration.yml` also runs on every push to `main`, so the worker-ownership and run-evidence tests guard the exact SHA a release is cut from instead of waiting for a hand dispatch. The CI contract asserts that trigger, that the job and its test step are unconditional and not `continue-on-error`, and that hand dispatch still works.
+- The main-only `test-backend-dind-integration` job runs on every push to `main` and on a manual CI dispatch for `main`, so the worker-ownership and run-evidence tests guard the exact SHA a release is cut from and remain available for candidate and retry checks. The CI contract asserts its non-advisory shape and its edge into `Required CI Gate`.
 - It remains out of pull requests: a privileged nested-daemon suite on every PR costs more than it protects, and a push to `main` covers the release SHA.
-- It is a **separate workflow**, so it is not part of `Required CI Gate` and does not block a merge. It reports on `main` after the push. To have a release blocked by it, the suite would have to become a job of `ci.yml` (running on pushes to `main` only) whose result `merge-gate` inspects, and `Required CI Gate` would then be red on `main` for a Docker-in-Docker failure; alternatively `Backend Docker-in-Docker Integration Tests` could be added to branch protection as a required check, which would only work if the workflow also ran on pull requests. Both are decisions for the repository owner.
+- It is part of the CI release DAG, so it is not a parallel advisory workflow. A failure makes `Required CI Gate` red on `main`; publication is unreachable because the marker job depends on that gate.
 
 Manual coverage:
 
-- `workflow_dispatch` for `ci.yml` runs the full required service matrix and the five required integration suites. It does not run backend-dind.
-- Dispatch `Backend Docker-in-Docker Integration` separately to rerun the worker-container suite by hand.
+- `workflow_dispatch` for `ci.yml` on `main` runs the full required service matrix, the five required integration suites and `backend-dind`.
+- The worker-container suite remains in the same CI DAG for both main-push and manual candidate/retry runs; there is no separate workflow that could report independently of the release gate.
 - Live and e2e scenarios that require real LLMs, GitHub projects, VPS provisioning, Ansible deploys, or Telegram remain outside the required merge gate.
