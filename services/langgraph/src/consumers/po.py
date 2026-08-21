@@ -10,29 +10,27 @@ live there and are not reimplemented here.
 
 What is PO's own is dispatch. Every entry goes to an ``asyncio.Task`` under a
 semaphore and a per-user lock, and is ACKed in that task's ``finally``, so an
-entry stays pending for as long as the graph runs — minutes, legitimately. Any
-consumer's sweep would take such an entry at ``PEL_TIMEOUT_MS`` and start a
-second ``_process_message`` for work already running, so this module keeps two
-things beside the shared loop:
+entry stays pending for as long as the graph runs — minutes, legitimately. That
+is the one thing this module adds to the shared loop: ``_consume_po_input``
+remembers which ids are in flight *here*, because this process's own sweep
+brings such an entry back once it has been pending for ``PEL_TIMEOUT_MS``, and
+dispatching it again would run the same work twice on one event loop.
 
-- ``_renew_in_flight_leases`` resets the idle clock on the ids this process is
-  actually working on, every ``LEASE_RENEWAL_INTERVAL_MS``, which is strictly
-  shorter than the ``PEL_TIMEOUT_MS`` bar those sweeps measure against. It runs
-  on the same event loop as the work, so a process that dies — or a loop that
-  jams — stops renewing and the entry becomes claimable after one lease.
-- ``_consume_po_input`` remembers which ids are in flight *here* and does not
-  dispatch a second ``_process_message`` for one that reaches it anyway.
-
-A sweep cannot do the renewal's job: ``XAUTOCLAIM`` only ever returns entries
-whose idle time has *already* reached ``min_idle_time``, so the earliest a
-sweep could refresh an entry is the very instant every other consumer is
-allowed to take it.
+That set is a set inside one process, and the delivery contract says exactly as
+much. Between processes ``po:input`` is at-least-once, like every other stream
+on this client: an entry pending for ``PEL_TIMEOUT_MS`` is claimable by another
+PO's sweep whether or not this one is still working on it. Nothing here
+promises mutual exclusion between processes, and nothing here should — that
+needs ownership with fencing and a way to cancel the running graph, which is a
+question about the PO graph's external effects rather than a Redis detail.
+Today ``langgraph`` has no ``deploy.replicas`` and there is one PO process; if
+that changes, an overlap is not silent — the entry stays in the PEL and its
+delivery count grows.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import socket
 
@@ -64,78 +62,24 @@ MAX_CONCURRENT = 10
 # The identity of this process inside the consumer group. The PID alone is not
 # one: two standard containers are both PID 1, and two processes answering to
 # the same consumer name share one PEL, so each would read the other's in-flight
-# entries as its own and the renewal below would speak for work it is not doing.
+# entries as its own and neither the PEL nor a log would tell the two apart.
 CONSUMER_NAME = f"po-worker-{socket.gethostname()}-{os.getpid()}"
 
-# How long an entry must go undelivered before any consumer's sweep may take
-# it. That makes it the lease a live PO holds on the work it is running.
+# How long an entry must go undelivered before any consumer's sweep may take it.
 PEL_TIMEOUT_MS = 60_000
 
-# How often the sweep comes round looking for entries that really are stuck.
-# Half the lease rather than the shared client's default of one full lease,
-# which bounds the pickup delay for a stuck entry at 1.5 leases instead of 2 —
-# po:input is what a waiting user is on the other end of. It has nothing to do
-# with the renewal below: a sweep can only ever see an entry that has already
-# gone idle for a full lease.
+# How often the sweep comes round looking for entries that are stuck. Half the
+# timeout rather than the shared client's default of one full timeout, which
+# bounds the pickup delay for a stuck entry at 1.5 timeouts instead of 2 —
+# po:input is what a waiting user is on the other end of. It is a sweep period
+# and nothing more: what a sweep may take is decided by ``min_idle_time``, which
+# the shared client passes ``PEL_TIMEOUT_MS`` for, unchanged.
 RECLAIM_INTERVAL_MS = PEL_TIMEOUT_MS // 2
-
-# How often this process refreshes the lease on the entries it is working on.
-# Strictly shorter than the lease, with room for one missed turn.
-LEASE_RENEWAL_INTERVAL_MS = PEL_TIMEOUT_MS // 3
 
 READ_BLOCK_MS = 5_000
 READ_COUNT = 10
 
 _po_input_adapter = TypeAdapter(POInputMessage)
-
-
-async def _renew_in_flight_leases(
-    client: RedisStreamClient, in_flight: dict[str, asyncio.Task]
-) -> None:
-    """Keep this process's own work out of every sweep's reach.
-
-    ``XCLAIM ... 0 <ids> JUSTID`` is the operation for it: unlike ``XAUTOCLAIM``
-    it is not bound by an idle bar, so it can refresh an entry *before* the
-    entry becomes claimable rather than at the moment it already is; it takes no
-    body back over the wire; and it leaves the delivery count alone, so a
-    renewed entry is not mistaken for a redelivered one.
-
-    Only ids currently in ``in_flight`` are renewed and the dict is re-read on
-    every turn, so renewal stops the moment the task finishes. Between the ACK
-    inside that task and the callback that drops the id, a turn may still name
-    it — an id that is no longer pending is simply ignored by XCLAIM.
-
-    This is a task on the same event loop that runs the processing. A loop that
-    jams stops renewing, and the entry it was holding goes idle and becomes
-    claimable, which is the right outcome when the work is not progressing.
-
-    An entry trimmed out of the stream while we hold it is dropped from the PEL
-    by XCLAIM rather than reported as lost, and that is right here: its body is
-    already in memory in the task processing it, so nothing is unrecoverable.
-    The shared client's trim diagnostics are for the other case — an entry
-    nobody is working on, whose body is gone with it.
-    """
-    while True:
-        await asyncio.sleep(LEASE_RENEWAL_INTERVAL_MS / 1000)
-        message_ids = list(in_flight)
-        if not message_ids:
-            continue
-        try:
-            await client.redis.xclaim(
-                PO_INPUT_QUEUE,
-                PO_CONSUMER_GROUP,
-                CONSUMER_NAME,
-                min_idle_time=0,
-                message_ids=message_ids,
-                justid=True,
-            )
-        except Exception as e:
-            # Failing to renew only lets the entries age towards being
-            # claimable again, which is the safe direction; letting the error
-            # out would stop PO reading po:input at all.
-            logger.error("po_lease_renewal_failed", in_flight=len(message_ids), error=str(e))
-        else:
-            logger.debug("po_lease_renewed", in_flight=len(message_ids))
 
 
 async def _consume_po_input(
@@ -147,58 +91,56 @@ async def _consume_po_input(
     """Read po:input through the shared client and dispatch each entry.
 
     ``in_flight`` maps an entry id to the task processing it. It holds the only
-    strong reference to that task; it is the list ``_renew_in_flight_leases``
-    refreshes; and it is what tells an entry that belongs to work already
-    running here apart from one that needs dispatching. Every route an entry can
-    take into this loop — a fresh XREADGROUP delivery, a sweep handing back
-    something genuinely stuck, a redelivery of an id already in flight — ends at
-    the same two lines below, so the renewed set and the dispatched set cannot
-    drift apart. An id leaves the dict when its task finishes, success or
-    failure, which is after the ACK attempt.
+    strong reference to that task — asyncio keeps a weak one — and it is what
+    tells an entry that belongs to work already running here apart from one that
+    needs dispatching. Every route an entry can take into this loop — a fresh
+    XREADGROUP delivery, a sweep handing back something genuinely stuck, this
+    process's own sweep handing back an id it is still working on — ends at the
+    same two lines below. An id leaves the dict when its task finishes, success
+    or failure, which is after the ACK attempt.
+
+    What that buys and what it does not: inside this process, no entry ever gets
+    a second ``_process_message`` while the first one is running. Between
+    processes the delivery contract is the at-least-once every other consumer on
+    this client lives with — an entry pending for ``PEL_TIMEOUT_MS`` may be
+    claimed by another PO's sweep while this one is still working on it, and
+    ``in_flight`` cannot see that and does not claim to.
     """
     in_flight: dict[str, asyncio.Task] = {}
 
     def _dispatched(task: asyncio.Task, msg_id: str) -> None:
         # Runs for every ending: a clean ACK, and an ACK that raised out of the
-        # task's finally. Both stop the renewal — after a failed ACK the entry
-        # is still pending and must be allowed to age until somebody reclaims
-        # it, because nothing here is working on it any more.
+        # task's finally. After a failed ACK the entry is still pending and has
+        # to be allowed to age until a sweep reclaims it, because nothing here
+        # is working on it any more — so the id goes either way.
         in_flight.pop(msg_id, None)
         if not task.cancelled() and task.exception() is not None:
             logger.error("po_dispatch_failed", msg_id=msg_id, error=str(task.exception()))
 
-    renewal = asyncio.create_task(_renew_in_flight_leases(client, in_flight))
-    try:
-        async for message in client.consume_typed(
-            PO_INPUT_QUEUE,
-            PO_CONSUMER_GROUP,
-            CONSUMER_NAME,
-            _po_input_adapter,
-            block_ms=READ_BLOCK_MS,
-            count=READ_COUNT,
-            claim_pending=True,
-            pending_timeout_ms=PEL_TIMEOUT_MS,
-            reclaim_interval_ms=RECLAIM_INTERVAL_MS,
-        ):
-            if message is None:
-                continue
-            if message.message_id in in_flight:
-                # Work this process is still running. Renewal should keep the
-                # entry away from every sweep, including our own, but if one
-                # does reach us a second _process_message would double the work.
-                logger.debug("po_in_flight_entry_redelivered", msg_id=message.message_id)
-                continue
-            task = asyncio.create_task(
-                _process_message(graph, client, sem, user_locks, message.message_id, message.value)
-            )
-            in_flight[message.message_id] = task
-            task.add_done_callback(
-                lambda done, msg_id=message.message_id: _dispatched(done, msg_id)
-            )
-    finally:
-        renewal.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await renewal
+    async for message in client.consume_typed(
+        PO_INPUT_QUEUE,
+        PO_CONSUMER_GROUP,
+        CONSUMER_NAME,
+        _po_input_adapter,
+        block_ms=READ_BLOCK_MS,
+        count=READ_COUNT,
+        claim_pending=True,
+        pending_timeout_ms=PEL_TIMEOUT_MS,
+        reclaim_interval_ms=RECLAIM_INTERVAL_MS,
+    ):
+        if message is None:
+            continue
+        if message.message_id in in_flight:
+            # Our own sweep, coming back round to work that is still running
+            # here. Dispatching it again would run the same graph invocation
+            # twice on this event loop.
+            logger.debug("po_in_flight_entry_redelivered", msg_id=message.message_id)
+            continue
+        task = asyncio.create_task(
+            _process_message(graph, client, sem, user_locks, message.message_id, message.value)
+        )
+        in_flight[message.message_id] = task
+        task.add_done_callback(lambda done, msg_id=message.message_id: _dispatched(done, msg_id))
 
 
 async def run_po_consumer() -> None:
@@ -254,7 +196,7 @@ async def run_po_consumer() -> None:
     try:
         # The consumer group, the recurring PEL sweep and the NOGROUP recovery
         # are the shared client's; what PO adds is where an entry goes next and
-        # the lease that keeps it there while it is being worked on.
+        # the set of ids it already has in flight here.
         await _consume_po_input(graph, client, sem, user_locks)
     finally:
         await api_client.close()

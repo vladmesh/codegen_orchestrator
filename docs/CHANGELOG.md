@@ -10,22 +10,27 @@
   `RedisStreamClient.consume_typed`, so the continuous sweep, the full PEL walk, both `XAUTOCLAIM`
   response shapes, `stream:diagnostics:lost_entries`, the `po:input:dlq` quarantine before ACK and
   the tolerance for a field a newer publisher added all come from the one implementation.
-  - **Concurrent dispatch renews a lease instead of adding a second mechanism.** PO processes in
+  - **Concurrent dispatch is covered by the ids the loop has in flight.** PO processes in
     `asyncio.Task`s under a semaphore and per-user locks and ACKs in the task's `finally`, so an
-    entry is legitimately pending for as long as the graph runs, and any sweep — PO's own or
-    another PO process's — would take it back at `PEL_TIMEOUT_MS` and start the same work twice.
-    `_renew_in_flight_leases` refreshes the ids this process is actually working on with
-    `XCLAIM ... 0 <ids> JUSTID` every `LEASE_RENEWAL_INTERVAL_MS` (`PEL_TIMEOUT_MS // 3`), so their
-    idle time never reaches that bar. The sweep cannot stand in for this: `XAUTOCLAIM` only returns
-    entries that have *already* reached `min_idle_time`, so it could refresh one no sooner than the
-    instant everybody else may claim it. The renewal is a task on the same event loop as the
-    processing and re-reads the in-flight set every turn, so a dead process, a jammed loop or a
-    finished task — including one whose ACK raised — all stop it and the entry is claimable by the
-    next PO after one `PEL_TIMEOUT_MS`; liveness is a sign of work, not a reading of the clock. The
-    read loop still keeps its in-flight ids and refuses to dispatch one twice.
+    entry is legitimately pending for as long as the graph runs, and this process's own sweep finds
+    it idle past `PEL_TIMEOUT_MS` and hands it back. The read loop recognises such an id and does
+    not start a second `_process_message` for work already running. The id is dropped when the task
+    ends, success or failure, so an entry whose ACK raised goes back to ageing towards a reclaim,
+    and an entry left in flight by a process that died is claimable by the next PO after one
+    `PEL_TIMEOUT_MS`. `RECLAIM_INTERVAL_MS = PEL_TIMEOUT_MS // 2` is a sweep period and nothing
+    else — it bounds the pickup delay for a genuinely stuck entry at 1.5 timeouts instead of 2,
+    because `po:input` is what a waiting user is on the other end of.
+  - **The delivery contract for `po:input` is the at-least-once the other six consumers have.**
+    The in-flight set lives in one process and excludes a second dispatch *there*; it cannot
+    exclude another PO process, whose sweep may claim an entry that has been pending for
+    `PEL_TIMEOUT_MS` whatever this one is doing with it. Mutual exclusion between PO processes is
+    deliberately not built: it needs ownership with fencing and a way to cancel the running graph,
+    which is a decision about the graph's external effects rather than a Redis setting, and
+    `langgraph` has no `deploy.replicas`. An overlap would not be silent — the entry stays in the
+    PEL and its delivery count grows.
   - `CONSUMER_NAME` now carries the hostname as well as the PID. Two standard containers are both
     PID 1, and two processes answering to one consumer name share a PEL, so each would have read
-    the other's in-flight entries as its own.
+    the other's in-flight entries as its own and neither the PEL nor a log would tell them apart.
   - The existing secret elision is untouched: a validation failure still logs `loc`/`type` only,
     the raw body never reaches a log, and the alert for a message still addressed by the removed
     `user_id` field is raised by the same shared path.

@@ -8,13 +8,15 @@ tests pin that PO now gets them from there.
 
 The one thing PO does not get from the shared client is concurrent dispatch,
 and that is what makes a recurring sweep delicate here: an entry can be legally
-in flight for as long as the graph takes. PO answers that with an explicit
-renewal of the lease on the ids it is working on, which is checked at the ratio
-of thresholds production runs at — see
-``TestLeaseRenewalAtTheProductionRatio``. Most of the tests below are about
-something else and use a fixture that zeroes the thresholds so a sweep happens
-on every turn; that fixture is deliberately not used where the threshold itself
-is the subject.
+in flight for as long as the graph takes, so this process's own sweep comes back
+round to it. What PO answers that with is the in-flight set, and what it is
+worth is checked at the ratio of thresholds production runs at — see
+``TestTheInFlightSetAtTheProductionRatio``. That set is per process: delivery of
+``po:input`` between processes is at-least-once, exactly as it is for the six
+other consumers on this client, and nothing here asserts otherwise. Most of the
+tests below are about something else and use a fixture that zeroes the
+thresholds so a sweep happens on every turn; that fixture is deliberately not
+used where the threshold itself is the subject.
 """
 
 from __future__ import annotations
@@ -41,8 +43,8 @@ from src.consumers import po as po_consumer
 
 DLQ = dlq_stream(PO_INPUT_QUEUE)
 
-# A second live PO, by a name of its own: what protects an in-flight entry has
-# to protect it from another process, not only from this one's own bookkeeping.
+# A second live PO, by a name of its own: what a dead process leaves in the PEL
+# has to be reachable by another process, not only by this one.
 RIVAL_CONSUMER = "po-worker-rival"
 
 VALID_INPUT = {
@@ -64,36 +66,6 @@ async def _until(predicate, timeout: float = 5.0) -> bool:
             return True
         await asyncio.sleep(0.01)
     return False
-
-
-async def _rival_watch(redis, *, bar_ms: int, for_ms: int) -> tuple[list[str], int]:
-    """Run a second consumer's sweep at the availability bar and watch the PEL.
-
-    Returns what that rival managed to claim, and the highest idle time any
-    pending entry was seen with. The second number is the same statement
-    without the race: an entry only becomes claimable once its idle time
-    reaches the bar, so a lease that is really being renewed never gets there.
-    """
-    stolen: list[str] = []
-    max_idle = 0
-    deadline = time.monotonic() + for_ms / 1000
-    while time.monotonic() < deadline:
-        pending = await redis.xpending_range(
-            PO_INPUT_QUEUE, PO_CONSUMER_GROUP, min="-", max="+", count=10
-        )
-        for entry in pending:
-            max_idle = max(max_idle, entry["time_since_delivered"])
-        _cursor, claimed, *_ = await redis.xautoclaim(
-            PO_INPUT_QUEUE,
-            PO_CONSUMER_GROUP,
-            RIVAL_CONSUMER,
-            min_idle_time=bar_ms,
-            start_id="0-0",
-            count=10,
-        )
-        stolen.extend(entry_id for entry_id, _fields in claimed)
-        await asyncio.sleep(0.002)
-    return stolen, max_idle
 
 
 class _ReadGate:
@@ -236,7 +208,7 @@ async def po_run(fake_redis, po_graph, monkeypatch):
     monkeypatch.setattr("shared.config_store.ConfigStore", _NoConfigStore)
 
     # A sweep every turn, claiming anything nobody is holding right now, so a
-    # test does not have to wait out the production lease.
+    # test does not have to wait out the production timeout.
     monkeypatch.setattr(po_consumer, "PEL_TIMEOUT_MS", 0)
     monkeypatch.setattr(po_consumer, "RECLAIM_INTERVAL_MS", 0, raising=False)
     monkeypatch.setattr(po_consumer, "READ_BLOCK_MS", 10, raising=False)
@@ -433,15 +405,37 @@ def held(monkeypatch):
     release.set()
 
 
-class TestSweepDoesNotDuplicateOwnWork:
-    """AC3: the entry a task on this loop is still working on.
+class TestTheInFlightSetAtTheProductionRatio:
+    """AC3: what keeps this process from doubling its own work.
 
     PO dispatches through ``asyncio.create_task`` and acks in the task's
     ``finally``, so an entry is legitimately pending for as long as the graph
-    runs. A recurring sweep hands that entry straight back to this same process.
+    runs. Its own sweep therefore finds it idle past the bar and hands it back.
+    ``in_flight`` is what stops that from becoming a second
+    ``_process_message``.
+
+    Everywhere else in this file the fixture zeroes ``PEL_TIMEOUT_MS`` so a
+    sweep can claim on every turn and a test does not have to wait. That is the
+    wrong setting here: the whole question is what happens at the bar a sweep
+    measures idle time against, so the bar has to be real. Only the scale comes
+    down — the sweep period stays half the timeout, as it is in the module.
+
+    Nothing in this class claims mutual exclusion between processes. There is
+    none: ``po:input`` is at-least-once between processes like every other
+    stream on this client.
     """
 
-    async def test_an_entry_in_flight_is_reclaimed_but_not_processed_twice(self, po_run, held):
+    TIMEOUT_MS = 200
+    SWEEP_MS = TIMEOUT_MS // 2
+
+    @pytest.fixture
+    def production_ratio(self, monkeypatch):
+        monkeypatch.setattr(po_consumer, "PEL_TIMEOUT_MS", self.TIMEOUT_MS)
+        monkeypatch.setattr(po_consumer, "RECLAIM_INTERVAL_MS", self.SWEEP_MS)
+
+    async def test_our_own_sweep_does_not_dispatch_work_that_is_still_running(
+        self, po_run, held, production_ratio
+    ):
         reclaimed: list[str] = []
         real_xautoclaim = po_run.redis.xautoclaim
 
@@ -458,149 +452,44 @@ class TestSweepDoesNotDuplicateOwnWork:
         assert await _until(lambda: len(held.calls) == 1)
         entry_id = held.calls[0]
 
-        # Let several sweeps go by while the entry is still being worked on.
-        assert await _until(lambda: reclaimed.count(entry_id) >= 3), (
-            "the sweep never came back round to the in-flight entry"
+        # Let the entry go idle past the bar and be handed back, more than
+        # once, while the task that owns it is still running.
+        assert await _until(lambda: reclaimed.count(entry_id) >= 2, timeout=5.0), (
+            "the sweep never came back round to the entry this process is working on"
         )
-        await asyncio.sleep(0.05)
-
         assert held.calls == [entry_id], (
-            "the sweep dispatched a second _process_message for work already running"
+            "a redelivery started a second _process_message for work already running"
         )
 
-    async def test_an_entry_in_flight_when_the_process_dies_stays_reclaimable(self, po_run, held):
+    async def test_the_id_is_released_once_the_task_has_acked(self, po_run, production_ratio):
+        """A finished task must leave nothing behind that blocks the id.
+
+        The ACK here returns without removing the entry from the PEL, so the
+        sweep brings the same id back after one timeout. Only an id that has
+        left the in-flight set can be dispatched again, which is what the second
+        invocation proves.
+        """
+        acked: list[str] = []
+
+        async def ack_without_removing(_stream, _group, msg_id):
+            acked.append(msg_id)
+            return 0
+
+        po_run.redis.xack = ack_without_removing
         await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
         await po_run.start()
-        assert await _until(lambda: len(held.calls) == 1)
-        entry_id = held.calls[0]
 
-        owners = await po_run.redis.xpending_range(
-            PO_INPUT_QUEUE, PO_CONSUMER_GROUP, min="-", max="+", count=10
+        assert await _until(lambda: po_run.graph.ainvoke.await_count >= 1)
+        assert await _until(lambda: po_run.graph.ainvoke.await_count >= 2, timeout=5.0), (
+            "the id was never released after its task ended, so the redelivery was ignored"
         )
-        assert [owner["consumer"] for owner in owners] == [po_consumer.CONSUMER_NAME]
+        assert len(acked) >= 2
 
-        # The process dies with the entry in flight. Nothing renews it any more,
-        # so another process must be able to take it.
-        await po_run.stop()
-
-        cursor, claimed, *_ = await po_run.redis.xautoclaim(
-            PO_INPUT_QUEUE,
-            PO_CONSUMER_GROUP,
-            "po-worker-successor",
-            min_idle_time=0,
-            start_id="0-0",
-            count=10,
-        )
-        assert [claimed_id for claimed_id, _fields in claimed] == [entry_id], (
-            "an entry left in flight by a dead process was not reclaimable"
-        )
-
-
-class TestLeaseRenewalAtTheProductionRatio:
-    """AC3, at the relationship between thresholds that production runs at.
-
-    Everywhere else in this file the fixture zeroes ``PEL_TIMEOUT_MS`` so a
-    sweep can claim on every turn and a test does not have to wait out a lease.
-    That is exactly the wrong setting here: the whole question is what happens
-    at the bar a sweep measures idle time against, so the bar has to be real.
-    Only the scale is reduced — the renewal period stays a third of the lease,
-    as it is in the module.
-
-    What each test is really pinning is that the renewal is an operation of its
-    own over this process's in-flight ids, not a side effect of the sweep. The
-    sweep cannot be the renewal: ``XAUTOCLAIM`` only returns entries that have
-    already reached ``min_idle_time``, so the soonest it could refresh one is
-    the instant every other consumer may take it.
-    """
-
-    LEASE_MS = 300
-    RENEWAL_MS = LEASE_MS // 3
-
-    @pytest.fixture
-    def production_ratio(self, monkeypatch):
-        monkeypatch.setattr(po_consumer, "PEL_TIMEOUT_MS", self.LEASE_MS)
-        monkeypatch.setattr(po_consumer, "RECLAIM_INTERVAL_MS", self.LEASE_MS // 2)
-        monkeypatch.setattr(po_consumer, "LEASE_RENEWAL_INTERVAL_MS", self.RENEWAL_MS)
-
-    async def test_a_rival_consumer_cannot_take_work_this_process_is_running(
-        self, po_run, held, production_ratio
-    ):
-        """The entry stays out of reach for as long as the task is running."""
-        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
-        await po_run.start()
-        assert await _until(lambda: len(held.calls) == 1)
-        entry_id = held.calls[0]
-
-        stolen, max_idle = await _rival_watch(
-            po_run.redis, bar_ms=self.LEASE_MS, for_ms=self.LEASE_MS * 3
-        )
-
-        assert stolen == [], "a second consumer claimed an entry this process is still working on"
-        assert max_idle < self.LEASE_MS, (
-            f"the lease was allowed to lapse to {max_idle}ms while the work was still running"
-        )
-        assert held.calls == [entry_id], "the same entry was dispatched a second time"
-
-    async def test_an_entry_taken_by_the_sweep_is_renewed_like_any_other(
-        self, po_run, held, production_ratio
-    ):
-        """An entry that arrives through the sweep goes down the same route."""
-        await po_run.start()
-        await po_run.settled()
-
-        # Deliver to a consumer that then dies with it, so PO's own sweep is
-        # what brings the entry in rather than its ``>`` read.
-        po_run.gate.hold()
-        assert await _until(lambda: po_run.gate.waiting >= 1)
-        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
-        await po_run.gate.bypass(
-            PO_CONSUMER_GROUP, "po-worker-dead", {PO_INPUT_QUEUE: ">"}, count=1
-        )
-        po_run.gate.release()
-
-        assert await _until(lambda: len(held.calls) == 1, timeout=5.0), (
-            "the sweep never brought the stuck entry in"
-        )
-
-        stolen, max_idle = await _rival_watch(
-            po_run.redis, bar_ms=self.LEASE_MS, for_ms=self.LEASE_MS * 3
-        )
-        assert stolen == [], "an entry that came in through the sweep was not being renewed"
-        assert max_idle < self.LEASE_MS
-
-    async def test_an_entry_in_flight_when_the_process_dies_lapses_after_one_lease(
-        self, po_run, held, production_ratio
-    ):
-        """Renewal must not outlive the process — the cure would be worse."""
-        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
-        await po_run.start()
-        assert await _until(lambda: len(held.calls) == 1)
-        entry_id = held.calls[0]
-
-        await po_run.stop()
-        await asyncio.sleep(self.LEASE_MS * 1.5 / 1000)
-
-        _cursor, claimed, *_ = await po_run.redis.xautoclaim(
-            PO_INPUT_QUEUE,
-            PO_CONSUMER_GROUP,
-            RIVAL_CONSUMER,
-            min_idle_time=self.LEASE_MS,
-            start_id="0-0",
-            count=10,
-        )
-        assert [claimed_id for claimed_id, _fields in claimed] == [entry_id], (
-            "an entry left in flight by a dead process never became claimable"
-        )
-
-    async def test_a_task_that_ended_with_a_failed_ack_stops_being_renewed(
-        self, po_run, production_ratio
-    ):
-        """Renewal follows the task, not the entry.
-
-        The ACK lives in the task's ``finally``. When it raises, the entry is
-        still pending but nothing is working on it any more, so it has to go
-        back to ageing towards a reclaim instead of being held alive by a
-        renewal that has lost its task.
+    async def test_the_id_is_released_when_the_ack_fails(self, po_run, production_ratio):
+        """The ACK lives in the task's ``finally``; when it raises, the entry is
+        still pending but nothing is working on it any more, so the id has to go
+        too — otherwise the redelivery would be refused for the life of the
+        process and nobody would ever pick the entry up.
         """
 
         async def refuse_ack(*_args, **_kwargs):
@@ -613,10 +502,39 @@ class TestLeaseRenewalAtTheProductionRatio:
         assert await _until(lambda: po_run.graph.ainvoke.await_count >= 1)
         assert await po_run.pending() == 1
 
-        # Only a lapsed lease can bring it back: PO's own sweep asks for
-        # ``min_idle_time = PEL_TIMEOUT_MS`` like everyone else.
         assert await _until(lambda: po_run.graph.ainvoke.await_count >= 2, timeout=5.0), (
-            "an entry whose ACK failed was kept out of reach by a renewal with no task behind it"
+            "an entry whose ACK failed was held out of reach by an id nothing was working on"
+        )
+
+    async def test_an_entry_in_flight_when_the_process_dies_lapses_after_one_timeout(
+        self, po_run, held, production_ratio
+    ):
+        """Nothing sticky is left in Redis by a process that died: one timeout
+        after it stopped, its in-flight entry is claimable by another PO.
+        """
+        await po_run.redis.xadd(PO_INPUT_QUEUE, VALID_INPUT)
+        await po_run.start()
+        assert await _until(lambda: len(held.calls) == 1)
+        entry_id = held.calls[0]
+
+        owners = await po_run.redis.xpending_range(
+            PO_INPUT_QUEUE, PO_CONSUMER_GROUP, min="-", max="+", count=10
+        )
+        assert [owner["consumer"] for owner in owners] == [po_consumer.CONSUMER_NAME]
+
+        await po_run.stop()
+        await asyncio.sleep(self.TIMEOUT_MS * 1.5 / 1000)
+
+        _cursor, claimed, *_ = await po_run.redis.xautoclaim(
+            PO_INPUT_QUEUE,
+            PO_CONSUMER_GROUP,
+            RIVAL_CONSUMER,
+            min_idle_time=self.TIMEOUT_MS,
+            start_id="0-0",
+            count=10,
+        )
+        assert [claimed_id for claimed_id, _fields in claimed] == [entry_id], (
+            "an entry left in flight by a dead process never became claimable"
         )
 
 
@@ -624,8 +542,8 @@ class TestTheConsumerNameIdentifiesTheProcess:
     """Two live PO processes must not answer to one name.
 
     A consumer name is what the group keys a PEL by, so two processes sharing
-    one would read each other's in-flight entries as their own — and the
-    renewal would then speak for work the process is not doing.
+    one would read each other's in-flight entries as their own, and neither the
+    PEL nor a log would tell the two apart.
     """
 
     def test_the_name_is_not_the_pid_alone(self):
