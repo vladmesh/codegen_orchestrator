@@ -240,6 +240,7 @@ services:
         "tests/integration/backend/test_factory_agent.py",
         "tests/integration/backend/test_dev_env.py",
         "tests/integration/backend/test_task_injection.py",
+        "tests/integration/backend/test_worker_wrapper_runtime.py",
         "tests/integration/backend/test_worker_execution.py",
         "tests/integration/backend/test_worker_ownership_labels.py",
         "tests/integration/backend/test_run_ownership_propagation.py",

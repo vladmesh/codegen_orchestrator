@@ -65,6 +65,7 @@ RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 # shared.redis: workers have no Redis transport and therefore no Redis runtime
 # dependency.
 COPY shared/contracts /app/shared/contracts
+COPY shared/constants.py /app/shared/constants.py
 COPY shared/log_config /app/shared/log_config
 COPY shared/diagnostics.py /app/shared/diagnostics.py
 ENV PYTHONPATH=/app
