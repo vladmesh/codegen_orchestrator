@@ -248,6 +248,10 @@ async def set_bot_access(
     Use ``only_me`` without allowed_telegram_ids: the current user's Telegram ID is
     used. Use ``public`` without IDs. For ``custom``, pass the
     comma-separated base audience chosen by the user.
+
+    On an already-deployed bot this also rolls the new audience out to the
+    running service and waits (bounded): applied means live, anything else is
+    reported exactly as the server phrased it.
     """
     telegram_chat_id = str(config["configurable"]["telegram_chat_id"]).strip()
     if mode == "only_me":
@@ -264,42 +268,141 @@ async def set_bot_access(
     if resp.status_code == HTTP_UNPROCESSABLE:
         return f"Error: {resp.json()['detail']}"
     resp.raise_for_status()
-    return f"Bot access set to '{mode}' for project {project_id}."
+    body = resp.json()
+    audience = body.get("allowed_telegram_ids", allowed_telegram_ids)
+    prefix = f"Bot access set to '{body['mode']}' for project {project_id}."
+
+    rollout = body.get("rollout", ROLLOUT_NOT_DEPLOYED)
+    if rollout != ROLLOUT_PENDING:
+        return await _finish_mutation_response(
+            prefix=prefix,
+            audience=audience,
+            rollout=rollout,
+            detail="",
+            deferred=False,
+        )
+
+    telegram_chat_id = str(config["configurable"]["telegram_chat_id"])
+    rollout, detail, deferred = await _await_rollout(
+        api,
+        project_id,
+        body["rollout_run_id"],
+        config=config,
+        telegram_chat_id=telegram_chat_id,
+        project_ref=project_id,
+    )
+    return await _finish_mutation_response(
+        prefix=prefix,
+        audience=audience,
+        rollout=rollout,
+        detail=detail,
+        deferred=deferred,
+    )
 
 
-# How long the tool waits for a config-only rollout to land before it reports
-# pending instead of applied. A rollout is a redeploy of one running container:
-# normally a couple of minutes, never worth holding a conversation much longer.
-ROLLOUT_POLL_INTERVAL_SECONDS = 10.0
-ROLLOUT_TIMEOUT_SECONDS = 300.0
+# How long the tool waits for a config-only rollout to land before it hands the
+# outcome over to the proactive channel instead. The Telegram transport deletes
+# the `po:response:{request_id}` stream after PO_RESPONSE_TIMEOUT_S = 60, so a
+# synchronous answer must be well inside that window — the remaining margin is
+# what the graph's other work (tool calls before this one) may have spent.
+ROLLOUT_POLL_INTERVAL_SECONDS = 3.0
+ROLLOUT_SYNC_WAIT_SECONDS = 40.0
 
 
-async def _await_rollout(
+async def _poll_rollout_once(
     api, project_id: str, run_id: str, *, config: RunnableConfig
 ) -> tuple[str, str]:
-    """Poll a config-only rollout to a terminal answer, or time out as pending.
+    """One status poll. Transient failures return ("pending", reason) rather
+    than raising: an API blip must not be read as a rollout verdict.
 
-    Returns (status, detail). The status is the server's own verdict — applied,
-    failed or pending — read from the durable deploy run, never from the fact
-    that the database write committed.
+    A poll whose HTTP call itself fails is retried by `_await_rollout` only
+    until the same bounded deadline — a dead API must not stretch the reply
+    past the transport window.
     """
-    deadline = asyncio.get_running_loop().time() + ROLLOUT_TIMEOUT_SECONDS
-    while True:
+    try:
         poll = await api.get_raw(
             f"projects/{project_id}/config/bot-access/rollouts/{run_id}",
             headers=_user_headers(config),
         )
-        if poll.status_code == HTTP_NOT_FOUND:
-            return "failed", "the rollout run disappeared — it was never recorded"
-        poll.raise_for_status()
-        body = poll.json()
-        status = body.get("rollout", "pending")
-        detail = body.get("detail", "")
-        if status in {"applied", "failed"}:
-            return status, detail
+    except Exception as exc:
+        logger.warning("rollout_status_poll_failed", run_id=run_id, error=str(exc))
+        return ROLLOUT_PENDING, f"status check failed ({exc}); still trying"
+    if poll.status_code == HTTP_NOT_FOUND:
+        return ROLLOUT_FAILED, "the rollout run disappeared — it was never recorded"
+    # A non-404 error status is the API speaking, not the network flaking: it
+    # says the request itself is wrong, and retrying would only repeat it.
+    poll.raise_for_status()
+    body = poll.json()
+    return body.get("rollout", ROLLOUT_PENDING), body.get("detail", "")
+
+
+async def _await_rollout(
+    api,
+    project_id: str,
+    run_id: str,
+    *,
+    config: RunnableConfig,
+    telegram_chat_id: str,
+    project_ref: str = "",
+) -> tuple[str, str, bool]:
+    """Wait inside the transport window; hand a still-pending verdict onward.
+
+    Returns (status, detail, deferred). Deferred means the rollout had not
+    finished when the wait ended and its terminal outcome has been scheduled
+    for proactive delivery — the user hears the ending either way, just not
+    necessarily inside this reply. The scheduler sweep owns that delivery; it
+    reads the same durable run, so nothing depends on this process staying up.
+    """
+    deadline = asyncio.get_running_loop().time() + ROLLOUT_SYNC_WAIT_SECONDS
+    while True:
+        rollout, detail = await _poll_rollout_once(api, project_id, run_id, config=config)
+        if rollout in {ROLLOUT_APPLIED, ROLLOUT_FAILED}:
+            return rollout, detail, False
         if asyncio.get_running_loop().time() >= deadline:
-            return "pending", detail
+            await notify_rollout_pending(
+                project_id=project_id,
+                run_id=run_id,
+                telegram_chat_id=telegram_chat_id,
+                project_ref=project_ref,
+            )
+            return ROLLOUT_PENDING, detail, True
         await asyncio.sleep(ROLLOUT_POLL_INTERVAL_SECONDS)
+
+
+async def notify_rollout_pending(
+    *, project_id: str, run_id: str, telegram_chat_id: str, project_ref: str = ""
+) -> None:
+    """Record that this rollout's terminal outcome is still owed to the user.
+
+    The durable marker goes on the rollout run itself (idempotent: written
+    once and flipped to delivered by whoever reports first), and the scheduler
+    sweep turns it into a proactive message when the run reaches applied or
+    failed. The sweep reads the same durable run, so nothing depends on this
+    process staying up.
+    """
+    api = _get_api()
+    try:
+        await api.post_raw(
+            f"projects/{project_id}/config/bot-access/rollouts/{run_id}/notify-owed",
+            json={},
+            headers=_user_headers(_config_with_chat(telegram_chat_id)),
+        )
+    except Exception as exc:
+        # The marker write is best-effort from the tool: the sweep reconciles
+        # owed notifications from the run's records even if this call never
+        # lands, and the next status poll of this same rollout would owe it
+        # again if the conversation were still open.
+        logger.warning("rollout_notify_owe_failed", run_id=run_id, error=str(exc))
+        return
+    logger.info(
+        "rollout_terminal_notification_owed",
+        run_id=run_id,
+        project_id=project_id,
+    )
+
+
+def _config_with_chat(telegram_chat_id: str) -> dict:
+    return {"configurable": {"telegram_chat_id": telegram_chat_id}}
 
 
 def _rollout_report(status: str, detail: str) -> str:
@@ -319,6 +422,29 @@ def _rollout_report(status: str, detail: str) -> str:
         "in progress and check again in a few minutes — do not say the access "
         "changed live until it is confirmed."
     )
+
+
+async def _finish_mutation_response(
+    *,
+    prefix: str,
+    audience: str,
+    rollout: str,
+    detail: str,
+    deferred: bool,
+) -> str:
+    """Assemble the truthful final text for one mutation outcome."""
+    if rollout == ROLLOUT_NOT_DEPLOYED:
+        return (
+            f"{prefix} Current audience: {audience}. The project is not deployed, "
+            "so there is nothing to apply to — the audience takes effect at the "
+            "next deploy."
+        )
+    if rollout == ROLLOUT_APPLIED:
+        return f"{prefix} Current audience: {audience}. {_rollout_report(rollout, detail)}"
+    report = _rollout_report(rollout, detail)
+    if deferred:
+        report += " I will message you here as soon as the rollout finishes, whichever way it ends."
+    return f"{prefix} Current audience: {audience}. {report}"
 
 
 async def _mutate_bot_user(
@@ -360,23 +486,35 @@ async def _mutate_bot_user(
             f"nothing changed. Current audience: {audience}."
         )
 
-    rollout, detail = ROLLOUT_NOT_DEPLOYED, ""
-    if body["rollout"] == ROLLOUT_PENDING:
-        rollout, detail = await _await_rollout(
-            api, project_id, body["rollout_run_id"], config=config
-        )
-    elif body["rollout"] != ROLLOUT_NOT_DEPLOYED:
-        rollout = body["rollout"]
-
     verb = "added to" if operation == "added" else "removed from"
-    if rollout == ROLLOUT_NOT_DEPLOYED:
-        return (
-            f"Telegram ID {telegram_id} {verb} the audience. Current audience: {audience}. "
-            "The project is not deployed, so there is nothing to apply to — the "
-            "audience takes effect at the next deploy."
+    prefix = f"Telegram ID {telegram_id} {verb} the audience."
+    rollout = body["rollout"]
+
+    if rollout != ROLLOUT_PENDING:
+        return await _finish_mutation_response(
+            prefix=prefix,
+            audience=audience,
+            rollout=rollout,
+            detail="",
+            deferred=False,
         )
-    report = _rollout_report(rollout, detail)
-    return f"Telegram ID {telegram_id} {verb} the audience (now: {audience}). {report}"
+
+    telegram_chat_id = str(config["configurable"]["telegram_chat_id"])
+    rollout, detail, deferred = await _await_rollout(
+        api,
+        project_id,
+        body["rollout_run_id"],
+        config=config,
+        telegram_chat_id=telegram_chat_id,
+        project_ref=project_id,
+    )
+    return await _finish_mutation_response(
+        prefix=prefix,
+        audience=audience,
+        rollout=rollout,
+        detail=detail,
+        deferred=deferred,
+    )
 
 
 @tool

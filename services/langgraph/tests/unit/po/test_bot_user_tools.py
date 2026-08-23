@@ -44,7 +44,7 @@ def _fast_polling():
     """Keep rollout polls tight so tests never really wait."""
     with (
         patch.object(tools_projects, "ROLLOUT_POLL_INTERVAL_SECONDS", 0.0),
-        patch.object(tools_projects, "ROLLOUT_TIMEOUT_SECONDS", 0.5),
+        patch.object(tools_projects, "ROLLOUT_SYNC_WAIT_SECONDS", 0.2),
     ):
         yield
 
@@ -114,6 +114,65 @@ class TestAddBotUser:
         assert "has not finished" in result or "still being applied" in result
         # The tool never claims the change is live when it is not.
         assert "live on the running bot" not in result
+
+    @pytest.mark.asyncio
+    async def test_timed_out_pending_defers_the_outcome_proactively(self, mock_api_client):
+        """When the bounded wait ends pending, the ending is promised and the
+        notify-owed marker is written so the sweep delivers it later."""
+        mock_api_client.post_raw.side_effect = [
+            _make_response(
+                {
+                    "mode": "custom",
+                    "operation": "added",
+                    "audience": "42,84",
+                    "rollout": "pending",
+                    "rollout_run_id": "botrollout-2b",
+                }
+            ),
+            _make_response({"state": "owed"}),
+        ]
+        mock_api_client.get_raw.return_value = _make_response({"rollout": "pending", "detail": ""})
+
+        result = await add_bot_user.ainvoke(
+            {"project_id": "abc", "telegram_id": 84}, config=_make_config()
+        )
+
+        owed = mock_api_client.post_raw.call_args_list[1]
+        assert owed.args[0] == "projects/abc/config/bot-access/rollouts/botrollout-2b/notify-owed"
+        assert "message you here as soon as the rollout finishes" in result
+        assert "live on the running bot" not in result
+
+    @pytest.mark.asyncio
+    async def test_transient_status_poll_errors_do_not_end_the_wait(self, mock_api_client):
+        """An API blip during polling reads as still-pending, never as a verdict."""
+        mock_api_client.post_raw.return_value = _make_response(
+            {
+                "mode": "custom",
+                "operation": "added",
+                "audience": "42,84",
+                "rollout": "pending",
+                "rollout_run_id": "botrollout-2c",
+            }
+        )
+        responses = [
+            httpx.ConnectError("boom"),
+            _make_response({"rollout": "applied", "detail": ""}),
+        ]
+
+        async def flaky_get(*args, **kwargs):
+            item = responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        mock_api_client.get_raw.side_effect = flaky_get
+
+        result = await add_bot_user.ainvoke(
+            {"project_id": "abc", "telegram_id": 84}, config=_make_config()
+        )
+
+        assert mock_api_client.get_raw.call_count >= 2
+        assert "live on the running bot" in result
 
     @pytest.mark.asyncio
     async def test_not_deployed_project_says_config_only(self, mock_api_client):

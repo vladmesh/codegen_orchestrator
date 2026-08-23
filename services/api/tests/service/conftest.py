@@ -95,6 +95,23 @@ async def _tasks_project():
     return TASK_TEST_PROJECT_ID
 
 
+@pytest.fixture(scope="function", autouse=True)
+async def _ensure_app_redis():
+    """Ensure the app's Redis singleton survives every test.
+
+    ASGITransport tests skip the lifespan, so routes that publish to a queue
+    after committing (bot-audience rollouts) need this initialized. Some test
+    modules close the singleton in their own fixture teardown, which would
+    strand every later module — so the check runs per test and re-initializes
+    when a previous module closed it.
+    """
+    import src.dependencies as deps
+
+    if deps._redis_client is None:
+        await deps.init_redis()
+    yield
+
+
 @pytest.fixture(scope="session", autouse=True)
 async def _dispose_app_engine():
     """Dispose the app's module-level DB engine after all tests to avoid ResourceWarnings."""

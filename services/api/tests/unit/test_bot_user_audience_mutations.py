@@ -3,17 +3,23 @@
 `set_bot_access` replaces the whole audience and is right for the initial
 choice, but a conversation says "add user 84" — and a tool that makes the LLM
 reconstruct a comma-separated list can silently drop the other IDs. These tests
-pin the typed mutation endpoints: atomic under the project row lock, numeric
-validation, deduplication, no accidental public bot, and a config-only rollout
-of the already-deployed commit instead of an engineering story.
+pin handler wiring with mocked sessions; the real-SQL guarantees (cross-project
+isolation, cross-owner denial, durable publish intent) live in
+tests/service/test_bot_audience_rollouts.py.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+import contextlib
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 
+from shared.contracts.bot_rollout import (
+    BOT_ROLLOUT_METADATA_KEY,
+    BotRolloutPublishState,
+    BotRolloutRecord,
+)
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from src.database import get_async_session
 from src.dependencies import get_redis_client
@@ -29,6 +35,7 @@ def _project(config: dict) -> MagicMock:
     project = MagicMock()
     project.id = PROJECT_UUID
     project.config = config
+    project.owner_id = 1
     return project
 
 
@@ -55,6 +62,7 @@ class _ScriptedSession:
     def __init__(self, results):
         self._results = list(results)
         self.executed = []
+        self.added = []
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
         self.refresh = AsyncMock()
@@ -63,6 +71,7 @@ class _ScriptedSession:
         result = MagicMock()
         result.first.return_value = None
         result.all.return_value = []
+        result.scalars.return_value.first.return_value = None
         result.scalar_one_or_none.return_value = None
         return result
 
@@ -76,7 +85,7 @@ class _ScriptedSession:
         return None
 
     def add(self, *args, **kwargs):
-        pass
+        self.added.extend(args)
 
 
 def _client(session, redis=None):
@@ -91,17 +100,52 @@ def _drop_overrides():
     app.dependency_overrides.pop(get_redis_client, None)
 
 
+@contextlib.contextmanager
+def patch_recipient(chat_id: str):
+    """Pin the owner-notification resolution the rollout staging performs."""
+    from src.routers._recipients import ProjectRecipient
+
+    with patch(
+        "src.routers._bot_access.resolve_project_recipient",
+        new=AsyncMock(return_value=ProjectRecipient(telegram_chat_id=chat_id)),
+    ):
+        yield
+
+
+def _target_row(application_id: int, sha: str | None):
+    """A scripted answer to find_live_rollout_target's `.first()` query."""
+    result = MagicMock()
+    result.first = MagicMock(return_value=(application_id, sha) if sha is not None else None)
+    return result
+
+
+def _no_target():
+    """A scripted empty answer for the live-target lookup."""
+    result = MagicMock()
+    result.first.return_value = None
+    return result
+
+
+def _running_without_sha_answer(absent: bool):
+    """A scripted scalar_one_or_none answer for find_running_without_recorded_sha."""
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None if absent else 7
+    return result
+
+
 class TestAddBotUser:
     @pytest.mark.asyncio
     async def test_add_preserves_existing_ids_and_deduplicates(self):
         """Adding to "42" yields "42,84"; adding an existing ID changes nothing."""
         project = _project(_audience_private())
-        # Two requests: the first mutates (project read + deployment lookup),
-        # the second is the idempotent repeat (project read only, no write).
+        # Request 1 mutates: locked read + target lookup + running-without-SHA
+        # check + recipient resolution. Request 2 is the idempotent repeat:
+        # locked read only, no write.
         session = _ScriptedSession(
             [
                 _locked_project_result(project),
-                _locked_project_result(project),
+                _no_target(),
+                _running_without_sha_answer(absent=True),
                 _locked_project_result(project),
             ]
         )
@@ -131,6 +175,7 @@ class TestAddBotUser:
         assert duplicate.status_code == 200, duplicate.text
         assert duplicate.json()["operation"] == "already_present"
         assert duplicate.json()["audience"] == "42,84"
+        assert duplicate.json()["rollout"] == "not_deployed"
         assert project.config["env_overrides"]["TG_BOT_ALLOWED_TELEGRAM_IDS"] == "42,84"
 
     @pytest.mark.asyncio
@@ -138,7 +183,13 @@ class TestAddBotUser:
         """The mutation reads the audience under the same FOR UPDATE lock as every
         other config writer, so two concurrent adds cannot lose an ID."""
         project = _project(_audience_private())
-        session = _ScriptedSession([_locked_project_result(project), MagicMock(first=lambda: None)])
+        session = _ScriptedSession(
+            [
+                _locked_project_result(project),
+                _no_target(),
+                _running_without_sha_answer(absent=True),
+            ]
+        )
         _client(session)
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -216,7 +267,13 @@ class TestRemoveBotUser:
                 "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": "42,84"},
             }
         )
-        session = _ScriptedSession([_locked_project_result(project), MagicMock(first=lambda: None)])
+        session = _ScriptedSession(
+            [
+                _locked_project_result(project),
+                _no_target(),
+                _running_without_sha_answer(absent=True),
+            ]
+        )
         _client(session)
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
@@ -277,10 +334,13 @@ class TestConfigOnlyRollout:
         no engineering, and the audience travels in the project config the deploy
         resolver already reads."""
         project = _project(_audience_private())
-        deployment = MagicMock(application_id=7, deployed_sha=DEPLOYED_SHA, deployed_at=1)
-        target_row = MagicMock()
-        target_row.all = MagicMock(return_value=[(7, deployment)])
-        session = _ScriptedSession([_locked_project_result(project), target_row])
+        session = _ScriptedSession(
+            [
+                _locked_project_result(project),
+                # find_live_rollout_target returns this application and SHA.
+                _target_row(7, DEPLOYED_SHA),
+            ]
+        )
         redis = MagicMock()
         redis.publish_message = AsyncMock()
         _client(session, redis)
@@ -312,11 +372,21 @@ class TestConfigOnlyRollout:
         # The audience is project config, not a per-deploy override.
         assert msg.env_overrides == {}
         session.commit.assert_awaited_once()
+        run = session.added[0]
+        record = BotRolloutRecord.model_validate(run.run_metadata[BOT_ROLLOUT_METADATA_KEY])
+        assert record.publish is BotRolloutPublishState.PUBLISH_OWED
+        assert record.head_sha == DEPLOYED_SHA
 
     @pytest.mark.asyncio
     async def test_non_deployed_project_persists_the_config_without_pretending(self):
         project = _project(_audience_private())
-        session = _ScriptedSession([_locked_project_result(project), MagicMock(first=lambda: None)])
+        session = _ScriptedSession(
+            [
+                _locked_project_result(project),
+                _no_target(),
+                _running_without_sha_answer(absent=True),
+            ]
+        )
         redis = MagicMock()
         redis.publish_message = AsyncMock()
         _client(session, redis)
@@ -339,26 +409,35 @@ class TestConfigOnlyRollout:
     @pytest.mark.asyncio
     async def test_a_deployment_without_a_recorded_sha_cannot_roll_out(self):
         project = _project(_audience_private())
-        deployment = MagicMock(deployed_sha=None, deployed_at=1)
-        target_row = MagicMock()
-        target_row.all = MagicMock(return_value=[(7, deployment)])
-        session = _ScriptedSession([_locked_project_result(project), target_row])
+        session = _ScriptedSession(
+            [
+                _locked_project_result(project),
+                _no_target(),
+                _running_without_sha_answer(absent=False),
+            ]
+        )
         redis = MagicMock()
         redis.publish_message = AsyncMock()
         _client(session, redis)
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-                with patch_recipient("111"):
-                    resp = await c.post(
-                        f"/api/projects/{PROJECT_UUID}/config/bot-access/users",
-                        json={"telegram_id": 84},
-                        headers={"X-Internal-Key": "test-internal-key"},
-                    )
+                resp = await c.post(
+                    f"/api/projects/{PROJECT_UUID}/config/bot-access/users",
+                    json={"telegram_id": 84},
+                    headers={"X-Internal-Key": "test-internal-key"},
+                )
         finally:
             _drop_overrides()
 
         assert resp.status_code == HTTP_CONFLICT
         redis.publish_message.assert_not_called()
+
+
+def _run_query_result(run):
+    """A scripted answer for rollout_status's run lookup (scalar_one_or_none)."""
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=run)
+    return result
 
 
 class TestRolloutStatus:
@@ -383,11 +462,13 @@ class TestRolloutStatus:
 
     @pytest.mark.asyncio
     async def test_completed_success_reads_applied(self):
-        run_result = MagicMock()
-        run_result.scalars.return_value.first = MagicMock(
-            return_value=self._run("completed", {"deploy_outcome": "success"})
+        project = _project({})
+        session = _ScriptedSession(
+            [
+                _run_query_result(self._run("completed", {"deploy_outcome": "success"})),
+                _locked_project_result(project),
+            ]
         )
-        session = _ScriptedSession([run_result])
         resp = await self._get(session)
 
         assert resp.status_code == 200, resp.text
@@ -395,11 +476,10 @@ class TestRolloutStatus:
 
     @pytest.mark.asyncio
     async def test_failed_run_reads_failed_with_detail(self):
+        project = _project({})
         run = self._run("failed", {"deploy_outcome": "retry"})
         run.error_message = "deploy workflow failed"
-        run_result = MagicMock()
-        run_result.scalars.return_value.first = MagicMock(return_value=run)
-        session = _ScriptedSession([run_result])
+        session = _ScriptedSession([_run_query_result(run), _locked_project_result(project)])
         resp = await self._get(session)
 
         assert resp.status_code == 200, resp.text
@@ -408,9 +488,13 @@ class TestRolloutStatus:
 
     @pytest.mark.asyncio
     async def test_running_run_reads_pending(self):
-        run_result = MagicMock()
-        run_result.scalars.return_value.first = MagicMock(return_value=self._run("running", None))
-        session = _ScriptedSession([run_result])
+        project = _project({})
+        session = _ScriptedSession(
+            [
+                _run_query_result(self._run("running", None)),
+                _locked_project_result(project),
+            ]
+        )
         resp = await self._get(session)
 
         assert resp.status_code == 200, resp.text
@@ -418,24 +502,95 @@ class TestRolloutStatus:
 
     @pytest.mark.asyncio
     async def test_unknown_run_is_404(self):
-        run_result = MagicMock()
-        run_result.scalars.return_value.first = MagicMock(return_value=None)
-        session = _ScriptedSession([run_result])
+        session = _ScriptedSession([_run_query_result(None)])
         resp = await self._get(session)
 
         assert resp.status_code == 404
 
 
-def patch_recipient(chat_id: str):
-    """Pin the owner-notification resolution the rollout endpoint performs."""
-    from unittest.mock import patch
+class TestSetBotAccessIdempotent:
+    """A whole-audience set that matches the stored state is a no-op.
 
-    target = "src.routers.projects.resolve_project_recipient"
-    return patch(
-        target,
-        new=AsyncMock(
-            return_value=__import__(
-                "src.routers._recipients", fromlist=["ProjectRecipient"]
-            ).ProjectRecipient(telegram_chat_id=chat_id)
-        ),
-    )
+    This path used to raise an unhandled ValueError after the idempotency
+    check — a repeat of the same set_bot_access call returned HTTP 500.
+    """
+
+    async def _post(self, session, payload):
+        _client(session)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                return await c.post(
+                    f"/api/projects/{PROJECT_UUID}/config/bot-access",
+                    json=payload,
+                    headers={"X-Internal-Key": "test-internal-key"},
+                )
+        finally:
+            _drop_overrides()
+
+    @pytest.mark.asyncio
+    async def test_repeating_the_same_set_succeeds_without_writing(self):
+        project = _project(_audience_private())
+        # One locked read; nothing else is needed when nothing changes.
+        session = _ScriptedSession([_locked_project_result(project)])
+
+        resp = await self._post(session, {"mode": "only_me", "allowed_telegram_ids": "42"})
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["mode"] == "only_me"
+        assert body["allowed_telegram_ids"] == "42"
+        assert body["rollout"] == "not_deployed"
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_set_reports_an_outstanding_rollout_as_pending(self):
+        """'Nothing changed' must not mask an unpublished rollout from before."""
+        project = _project(_audience_private())
+        outstanding_run = MagicMock()
+        outstanding_run.id = "botrollout-outstanding1"
+        session = _ScriptedSession(
+            [
+                _locked_project_result(project),
+                # find_publish_owed_run finds the interrupted rollout.
+                _run_query_result(outstanding_run),
+            ]
+        )
+
+        resp = await self._post(session, {"mode": "only_me", "allowed_telegram_ids": "42"})
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["rollout"] == "pending"
+        assert body["rollout_run_id"] == "botrollout-outstanding1"
+
+    @pytest.mark.asyncio
+    async def test_changing_the_audience_still_launches_the_rollout(self):
+        project = _project(_audience_private())
+        session = _ScriptedSession(
+            [
+                _locked_project_result(project),
+                _no_target(),
+                _running_without_sha_answer(absent=True),
+            ]
+        )
+        redis = MagicMock()
+        redis.publish_message = AsyncMock()
+        _client(session, redis)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                with patch_recipient("111"):
+                    resp = await c.post(
+                        f"/api/projects/{PROJECT_UUID}/config/bot-access",
+                        json={"mode": "custom", "allowed_telegram_ids": "42,84"},
+                        headers={"X-Internal-Key": "test-internal-key"},
+                    )
+        finally:
+            _drop_overrides()
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["mode"] == "custom"
+        assert body["allowed_telegram_ids"] == "42,84"
+        # Nothing running: the write lands but there is nothing to roll out.
+        assert body["rollout"] == "not_deployed"
+        assert body["rollout_run_id"] is None

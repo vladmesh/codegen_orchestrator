@@ -54,6 +54,10 @@ class RunUpdate(BaseModel):
     """Schema for updating a run."""
 
     status: str | None = None
+    # Ownership stamping: a producer that creates work on a user's behalf (a
+    # bot-audience rollout, for one) records who it acts for, so the run's own
+    # access guard can decide who may read it.
+    user_id: int | None = None
     run_metadata: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     error_message: str | None = None

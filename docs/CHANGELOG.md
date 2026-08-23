@@ -30,6 +30,44 @@
     required to report applied, pending and failed differently — access is
     never called live merely because the transaction committed.
 
+- Bot-audience rollout hardening, after review:
+  - `set_bot_access` now goes through the same mutation/rollout orchestration
+    as the one-ID endpoints, so a public/private/custom switch on a running bot
+    also reaches the live containers instead of stopping at the database.
+  - The rollout target query is bound to the requested project through its
+    repositories — it can no longer pair this project's name with another
+    project's application or SHA. Multiple running applications resolve to the
+    most recently successful deployment; running-but-unattributable refuses
+    with 409.
+  - The rollout status endpoint proves `run.project_id == project_id` in SQL
+    and then applies the canonical project access check: another owner's (or
+    another project's) run id reads exactly like a missing one. Rollout runs
+    are stamped with the owner for audit.
+  - The commit/publish gap is closed by a durable publish-intent record on the
+    run (`shared/contracts/bot_rollout.py`), committed before any queue write.
+    The API settles the record to published right after its own write lands; a
+    scheduler sweep (`services/scheduler/src/tasks/bot_rollouts.py`) retries
+    only what never made it — until the stream accepts or three attempts are
+    spent (then an admin alert, and the run leaves the sweep's selection). A
+    retry that finds an unchanged-but-unapplied audience resumes this work
+    instead of saying "nothing changed".
+  - The PO tool's synchronous wait now fits the Telegram transport window
+    (~40 s inside the 60 s response-stream TTL). If the rollout is still
+    pending when the wait ends, an idempotent notify-owed marker is written on
+    the run and the sweep delivers the terminal outcome proactively — applied
+    or failed — so the user hears the ending even though the reply went out
+    earlier.
+  - Transient status-poll errors retry until the bounded deadline instead of
+    reading as a verdict; undeploy supervision skips rollout deploy runs so a
+    config redeploy cannot be misread as a teardown success/failure; the
+    bot-access domain moved out of the projects router into
+    `src/utils/bot_audience.py` + `src/routers/_bot_access.py` with shared
+    guards in `src/routers/projects_guards.py`.
+  - Real-SQL regression tests cover cross-project target isolation,
+    cross-project/cross-owner status denial, the publish-owed record and sweep
+    selection; scheduler unit tests cover publish retry, exhaustion+alert and
+    one-time terminal delivery.
+
 - [hotfix] A manual CI dispatch for `main` now runs the required backend
   Docker-in-Docker suite as well as a main push. The release gate deliberately
   refuses a skipped DinD result on `main`; the job had been limited to `push`,
