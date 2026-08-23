@@ -3,7 +3,7 @@
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.bot_access import parse_allowed_telegram_ids
 from shared.contracts.dto.base import TimestampedDTO
@@ -14,6 +14,7 @@ from shared.contracts.dto.project import ProjectCreate, ProjectStatus, ProjectUp
 
 __all__ = [
     "BotAccessRequest",
+    "BotUserMutationRequest",
     "MergeSecretsRequest",
     "ProjectBase",
     "ProjectCreate",
@@ -70,3 +71,21 @@ class BotAccessRequest(BaseModel):
         if self.mode == "public" and self.allowed_telegram_ids != "":
             raise ValueError("a public bot audience must be empty")
         return self
+
+
+# Telegram IDs are positive integers well above any port number; a 0 or negative
+# value is never a Telegram account id.
+MIN_TELEGRAM_ID = 1
+
+
+class BotUserMutationRequest(BaseModel):
+    """One typed Telegram ID to add to (or remove from) the chosen audience.
+
+    The body carries exactly one ID on purpose: the conversational operation is
+    "add user X", and a caller that wanted to replace the whole list would have
+    to use set_bot_access instead of smuggling a replacement through here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    telegram_id: int = Field(strict=True, ge=MIN_TELEGRAM_ID)

@@ -127,6 +127,9 @@ class InternalAPIClient(InternalAPITransport):
     async def patch_raw(self, path: str, **kwargs) -> httpx.Response:
         return await self.request_raw("PATCH", path, **kwargs)
 
+    async def delete_raw(self, path: str, **kwargs) -> httpx.Response:
+        return await self.request_raw("DELETE", path, **kwargs)
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()

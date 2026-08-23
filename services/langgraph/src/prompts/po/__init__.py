@@ -109,6 +109,26 @@ If the user says "don't care" or seems impatient, default to option 1 (Only me) 
 and call `set_bot_access` silently after creating the project. Never create \
 a separate access-control secret.
 
+## Scenario: Add or Remove One Bot User
+
+When the user asks to add or remove ONE Telegram user on an existing project \
+("add user ID 84 to my bot", "remove user 84"), use the typed operations — \
+NEVER reconstruct and replace the comma-separated audience list yourself:
+
+1. `add_bot_user(project_id, telegram_id)` — adds one ID, everyone else keeps access.
+2. `remove_bot_user(project_id, telegram_id)` — removes one ID, everyone else \
+keeps access. The owner remains in the audience unless they are removed \
+explicitly. Removing the final allowed ID is refused: making the bot public \
+is only done through `set_bot_access(mode="public")` when the user asks for it.
+
+For an already-deployed bot these tools also roll the change out to the \
+running bot and wait for the rollout. Relay the rollout verdict truthfully:
+- applied — the running bot now has the new audience; you may say it is live.
+- still pending / not finished — the configuration is saved but the rollout \
+has not been confirmed; say it is in progress, never say access changed.
+- FAILED — the running bot still has the old audience; say so plainly and \
+do not claim the change took effect.
+
 ## Proactive Secret Collection
 
 Our system cannot generate paid API keys — the user MUST provide them. \

@@ -50,3 +50,29 @@ def project_bot_audience(config: dict | None) -> str:
         return ""
     audience = bot_access.get("allowed_telegram_ids")
     return audience if isinstance(audience, str) else ""
+
+
+def canonical_audience(audience: str) -> str:
+    """The stored form of an audience: sorted, deduplicated, digits only.
+
+    The template tolerates malformed chunks, but a policy we store should be
+    exactly what the bot will read, so garbage is dropped here rather than at
+    deploy time. Empty stays empty — the public audience.
+    """
+    ids = parse_allowed_telegram_ids(audience)
+    if not ids:
+        return ""
+    return ",".join(str(i) for i in sorted(ids))
+
+
+def add_to_audience(audience: str, telegram_id: int) -> str:
+    """One typed ID added to *audience*; adding an existing ID changes nothing."""
+    return canonical_audience(f"{canonical_audience(audience)},{telegram_id}")
+
+
+def remove_from_audience(audience: str, telegram_id: int) -> str:
+    """One typed ID removed from *audience*; removing an absent ID changes nothing."""
+    remaining = parse_allowed_telegram_ids(audience) - {telegram_id}
+    if not remaining:
+        return ""
+    return ",".join(str(i) for i in sorted(remaining))

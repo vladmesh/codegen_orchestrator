@@ -52,7 +52,9 @@ async def test_bot_access_endpoint_records_each_contract_audience(
     )
 
     assert response.status_code == status.HTTP_200_OK
-    assert response.json() == {"mode": mode, "allowed_telegram_ids": audience}
+    assert response.json()["mode"] == mode
+    assert response.json()["allowed_telegram_ids"] == audience
+    assert response.json()["rollout"] == "not_deployed"
     project = await async_client.get(f"/api/projects/{project_id}")
     assert project.status_code == status.HTTP_200_OK
     assert project.json()["config"] == {

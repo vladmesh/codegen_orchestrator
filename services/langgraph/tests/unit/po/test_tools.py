@@ -1241,7 +1241,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 15
+        expected_count = 17
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1252,6 +1252,8 @@ class TestGetAllTools:
             "list_projects",
             "get_project",
             "set_bot_access",
+            "add_bot_user",
+            "remove_bot_user",
             "set_project_secret",
             "validate_telegram_token",
             "teardown_project",

@@ -1,4 +1,9 @@
-"""Projects router."""
+"""Projects router.
+
+Bot-audience endpoints (set/add/remove + rollout status) delegate to
+`._bot_access`, which owns the shared mutation/rollout orchestration; the
+guards they all share live in `.projects_guards`.
+"""
 
 import uuid
 
@@ -8,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.bot_rollout import BOT_ROLLOUT_METADATA_KEY
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult, TeardownStatus
 from shared.contracts.dto.repository import RepositoryRole
@@ -57,13 +63,20 @@ from ..dependencies import (
 )
 from ..schemas import (
     BotAccessRequest,
+    BotUserMutationRequest,
     MergeSecretsRequest,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
 )
+from ..utils.bot_audience import AudienceOperation
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import bot_liveness, looks_like_bot_token, validate_telegram_token
+from ._bot_access import (
+    mutate_bot_audience,
+    owe_rollout_notification,
+    rollout_status,
+)
 from ._recipients import resolve_project_recipient
 from .applications import UNDEPLOYABLE_STATUSES, stage_undeploy
 
@@ -71,9 +84,19 @@ logger = structlog.get_logger()
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
-_BOT_ALLOWED_IDS_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
 _LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
 _BOT_ACCESS_WRITE_DETAIL = "bot access is managed through /config/bot-access"
+
+
+def _mutation_response(outcome) -> dict:
+    """One wire shape for every mutation: the write and the rollout apart."""
+    return {
+        "mode": outcome.mode,
+        "operation": outcome.operation_value,
+        "audience": outcome.audience,
+        "rollout": outcome.rollout_status.value,
+        "rollout_run_id": outcome.rollout_run_id,
+    }
 
 
 async def _resolve_user(
@@ -470,7 +493,9 @@ def _vet_config_write(config: dict, project: Project | None) -> dict:
         stored_config.get("env_overrides", {}) if isinstance(stored_config, dict) else {}
     )
     stored_audience = (
-        stored_overrides.get(_BOT_ALLOWED_IDS_KEY) if isinstance(stored_overrides, dict) else None
+        stored_overrides.get("TG_BOT_ALLOWED_TELEGRAM_IDS")
+        if isinstance(stored_overrides, dict)
+        else None
     )
     incoming_access = config.get("bot_access")
     incoming_overrides = config.get("env_overrides", {})
@@ -485,13 +510,15 @@ def _vet_config_write(config: dict, project: Project | None) -> dict:
     if stored_audience is not None:
         if not isinstance(incoming_overrides, dict):
             raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
-        incoming_audience = incoming_overrides.get(_BOT_ALLOWED_IDS_KEY)
+        incoming_audience = incoming_overrides.get("TG_BOT_ALLOWED_TELEGRAM_IDS")
         if incoming_audience is not None and incoming_audience != stored_audience:
             raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
         overrides = dict(incoming_overrides)
-        overrides[_BOT_ALLOWED_IDS_KEY] = stored_audience
+        overrides["TG_BOT_ALLOWED_TELEGRAM_IDS"] = stored_audience
         vetted["env_overrides"] = overrides
-    elif isinstance(incoming_overrides, dict) and _BOT_ALLOWED_IDS_KEY in incoming_overrides:
+    elif (
+        isinstance(incoming_overrides, dict) and "TG_BOT_ALLOWED_TELEGRAM_IDS" in incoming_overrides
+    ):
         raise HTTPException(status_code=422, detail=_BOT_ACCESS_WRITE_DETAIL)
     return vetted
 
@@ -567,31 +594,141 @@ async def set_bot_access(
     body: BotAccessRequest,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
     _is_internal: bool = Depends(is_internal_service),
 ) -> dict:
-    """Store the selected bot audience as a deploy-time contract literal."""
-    project = await _load_locked_project(db, project_id)
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    """Store the selected bot audience as a deploy-time contract literal.
 
-    config = dict(project.config or {})
-    overrides = dict(config.get("env_overrides") or {})
-    overrides[_BOT_ALLOWED_IDS_KEY] = body.allowed_telegram_ids
-    config["env_overrides"] = overrides
-    config["bot_access"] = {
-        "mode": body.mode,
-        "allowed_telegram_ids": body.allowed_telegram_ids,
+    Same orchestration as the one-ID mutations: authorization and the
+    read-modify-write under the project row lock, then — when a bot is already
+    running — a configuration-only rollout of the deployed commit. The response
+    reports the rollout separately from the write; `pending` means the running
+    service has NOT been confirmed to carry this audience yet.
+    """
+    outcome, _staged = await mutate_bot_audience(
+        db,
+        project_id,
+        redis,
+        x_telegram_id=x_telegram_id,
+        is_internal=_is_internal,
+        operation=AudienceOperation.SET,
+        set_mode=body.mode,
+        set_audience=body.allowed_telegram_ids,
+    )
+    return {
+        "mode": outcome.mode,
+        "allowed_telegram_ids": outcome.audience,
+        "rollout": outcome.rollout_status.value,
+        "rollout_run_id": outcome.rollout_run_id,
     }
-    existing_secrets = config.get("secrets") or {}
-    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
-    if _LEGACY_BOT_AUDIENCE_KEY in existing_secrets:
-        del existing_secrets[_LEGACY_BOT_AUDIENCE_KEY]
-        config["secrets"] = encrypt_dict(existing_secrets) if existing_secrets else {}
-        logger.info("legacy_bot_access_replaced", project_id=str(project_id), mode=body.mode)
-    project.config = config
-    await db.commit()
 
-    logger.info("project_bot_access_set", project_id=str(project_id), mode=body.mode)
-    return {"mode": body.mode, "allowed_telegram_ids": body.allowed_telegram_ids}
+
+@router.post("/{project_id}/config/bot-access/users")
+async def add_bot_user(
+    project_id: uuid.UUID,
+    body: BotUserMutationRequest,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Add one Telegram ID to the chosen bot audience.
+
+    Atomic under the project row lock, so concurrent mutations cannot lose IDs.
+    Idempotent: adding an ID already present persists nothing new and launches
+    no second rollout — but an unfinished rollout from an earlier attempt is
+    reconciled by the scheduler sweep either way.
+    """
+    outcome, _staged = await mutate_bot_audience(
+        db,
+        project_id,
+        redis,
+        x_telegram_id=x_telegram_id,
+        is_internal=_is_internal,
+        operation=AudienceOperation.ADD,
+        telegram_id=body.telegram_id,
+    )
+    return _mutation_response(outcome)
+
+
+@router.delete("/{project_id}/config/bot-access/users/{telegram_id}")
+async def remove_bot_user(
+    project_id: uuid.UUID,
+    telegram_id: int,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Remove one Telegram ID from the chosen bot audience.
+
+    Removing the final allowed ID is refused: an empty private audience is the
+    public bot, and going public must be an explicit set_bot_access decision,
+    never the side effect of a removal. Removing an absent ID succeeds without
+    writing or rolling out — the state already matches the request.
+    """
+    if telegram_id < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="telegram_id must be a positive integer",
+        )
+    outcome, _staged = await mutate_bot_audience(
+        db,
+        project_id,
+        redis,
+        x_telegram_id=x_telegram_id,
+        is_internal=_is_internal,
+        operation=AudienceOperation.REMOVE,
+        telegram_id=telegram_id,
+    )
+    return _mutation_response(outcome)
+
+
+@router.get("/{project_id}/config/bot-access/rollouts/{run_id}")
+async def get_bot_audience_rollout(
+    project_id: uuid.UUID,
+    run_id: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Where a config-only audience rollout stands.
+
+    The run must belong to *this project*, and the canonical project access
+    check runs on top — so another owner's run id reads exactly like a missing
+    one. The answer comes from the durable deploy run: applied once the worker
+    recorded success, failed with its error, pending otherwise.
+    """
+    rollout, detail = await rollout_status(
+        db,
+        project_id,
+        run_id,
+        x_telegram_id=x_telegram_id,
+        is_internal=_is_internal,
+    )
+    return {"rollout": rollout.value, "detail": detail}
+
+
+@router.post("/{project_id}/config/bot-access/rollouts/{run_id}/notify-owed")
+async def owe_bot_audience_rollout_notification(
+    project_id: uuid.UUID,
+    run_id: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+) -> dict:
+    """Record that this rollout's terminal outcome still has to reach the owner.
+
+    Owner-checked like every other project route. Idempotent: a repeat never
+    resets a delivery already made.
+    """
+    return await owe_rollout_notification(
+        db,
+        project_id,
+        run_id,
+        x_telegram_id=x_telegram_id,
+        is_internal=_is_internal,
+    )
 
 
 @router.post("/{project_id}/telegram/token", response_model=TelegramTokenVerdict)
@@ -785,6 +922,11 @@ async def _stalled_undeploy_error(
     project lock is held by another deploy, and an application whose only undeploy
     was cancelled would otherwise sit in `undeploying` forever, with nothing to say
     so and no way for a retry to send it down again.
+
+    Configuration-only bot-audience rollouts also write deploy runs carrying the
+    same application id; they are not teardown attempts and are skipped here —
+    otherwise a rollout finishing between two teardown polls would read as "the
+    undeploy succeeded" or its failure as "the undeploy failed".
     """
     runs = (
         await db.execute(
@@ -794,7 +936,13 @@ async def _stalled_undeploy_error(
         )
     ).scalars()
     for run in runs:
-        if (run.run_metadata or {}).get("application_id") != application_id:
+        metadata = run.run_metadata or {}
+        if metadata.get("application_id") != application_id:
+            continue
+        if BOT_ROLLOUT_METADATA_KEY in metadata or (
+            metadata.get("triggered_by") == "bot_audience_rollout"
+        ):
+            # Not an undeploy: this run redeployed the application.
             continue
         if run.status not in (RunStatus.FAILED.value, RunStatus.CANCELLED.value):
             return None
