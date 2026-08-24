@@ -436,13 +436,29 @@ class DeveloperNode(FunctionalNode):
         config = project_spec.get("config") or {}
         agent_type = str(config.get("agent_type", "claude"))
         provider_by_agent = {"claude": "anthropic", "codex": "openai", "factory": "factory"}
+        claude_evidence = worker_result.claude_evidence
+        if claude_evidence is not None:
+            return {
+                key: value
+                for key, value in {
+                    "claude_evidence": claude_evidence.model_dump(mode="json"),
+                    "transcript_path": worker_result.transcript_path,
+                    "transcript_truncated": worker_result.transcript_truncated,
+                    "agent_profile": {
+                        "agent_type": agent_type,
+                        "provider": claude_evidence.provider,
+                        "model": claude_evidence.model,
+                        "adapter": "worker-wrapper",
+                    },
+                }.items()
+                if value is not None
+            }
         return {
             key: value
             for key, value in {
                 "input_tokens": worker_result.input_tokens,
                 "output_tokens": worker_result.output_tokens,
                 "total_tokens": worker_result.total_tokens,
-                "cost_usd": worker_result.cost_usd,
                 "transcript_path": worker_result.transcript_path,
                 "transcript_truncated": worker_result.transcript_truncated,
                 "agent_profile": {

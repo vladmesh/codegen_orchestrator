@@ -37,6 +37,30 @@ class TestSpawnResultFromOutput:
         assert result.logs_tail == "tail"
         assert result.gave_up_reason is None
 
+    def test_claude_evidence_maps_as_one_typed_payload(self):
+        result = spawn_result_from_output(
+            {
+                "status": "completed",
+                "commit_sha": "abc123",
+                "content": "Implemented feature",
+                "claude_evidence": {
+                    "provider": "anthropic",
+                    "input_tokens": 12,
+                    "output_tokens": 3,
+                    "total_tokens": 15,
+                    "cache_read_tokens": 4,
+                    "cache_write_tokens": 5,
+                    "cost_microusd": 40_001,
+                },
+            },
+            request_id="req-claude",
+            worker_id="dev-1",
+        )
+
+        assert result.claude_evidence is not None
+        assert result.claude_evidence.cost_microusd == 40_001
+        assert result.claude_evidence.cache_write_tokens == 5
+
     def test_failed_maps_to_error_message(self):
         result = spawn_result_from_output(
             {"status": "failed", "error": "Agent process failed"},

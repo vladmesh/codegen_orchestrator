@@ -131,12 +131,16 @@ async def test_terminal_engineering_run_preserves_provider_reported_cost(
     terminal = {
         "status": terminal_status,
         "engineering_attempt": {
-            "provider": "anthropic",
-            "model": "claude-sonnet",
-            "input_tokens": 12,
-            "output_tokens": 5,
-            "cost_microusd": 40_001,
-            "cost_source": "provider_reported",
+            "claude_evidence": {
+                "provider": "anthropic",
+                "model": "claude-sonnet",
+                "input_tokens": 12,
+                "output_tokens": 5,
+                "total_tokens": 17,
+                "cache_read_tokens": 4,
+                "cache_write_tokens": 3,
+                "cost_microusd": 40_001,
+            }
         },
     }
     assert (
@@ -150,6 +154,8 @@ async def test_terminal_engineering_run_preserves_provider_reported_cost(
     assert rows.status_code == HTTPStatus.OK
     assert rows.json()[0]["cost_microusd"] == 40_001
     assert rows.json()[0]["cost_source"] == "provider_reported"
+    assert rows.json()[0]["cache_read_tokens"] == 4
+    assert rows.json()[0]["cache_write_tokens"] == 3
     run = await async_client.get(f"/api/runs/{run_id}")
     assert run.json()["total_tokens"] == 17
     assert run.json()["cost_usd"] == pytest.approx(0.040001)

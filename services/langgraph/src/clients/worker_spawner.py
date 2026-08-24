@@ -24,6 +24,7 @@ from shared.contracts.queues.worker import (
     WorkerOwnership,
 )
 from shared.contracts.queues.worker_result import (
+    ClaudeResultEvidence,
     WorkerBlockedResult,
     WorkerCompletedResult,
     WorkerResult,
@@ -65,6 +66,7 @@ class SpawnResult:
     output_tokens: int | None = None
     total_tokens: int | None = None
     cost_usd: float | None = None
+    claude_evidence: ClaudeResultEvidence | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
     stop_reason: WorkerStopReason | None = None
@@ -144,6 +146,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             output_tokens=result.output_tokens,
             total_tokens=result.total_tokens,
             cost_usd=result.cost_usd,
+            claude_evidence=result.claude_evidence,
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
         )
@@ -161,6 +164,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             output_tokens=result.output_tokens,
             total_tokens=result.total_tokens,
             cost_usd=result.cost_usd,
+            claude_evidence=result.claude_evidence,
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
         )
@@ -180,6 +184,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         output_tokens=result.output_tokens,
         total_tokens=result.total_tokens,
         cost_usd=result.cost_usd,
+        claude_evidence=result.claude_evidence,
         transcript_path=result.transcript_path,
         transcript_truncated=result.transcript_truncated,
     )
