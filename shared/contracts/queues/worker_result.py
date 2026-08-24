@@ -25,11 +25,13 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence
+from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
 
 __all__ = [
     "WorkerResultStatus",
     "WorkerStopReason",
+    "ClaudeResultEvidence",
+    "FactoryResultEvidence",
     "WorkerCompletedResult",
     "WorkerFailedResult",
     "WorkerBlockedResult",
@@ -68,20 +70,32 @@ class _WorkerResultBase(BaseModel):
     total_tokens: int | None = None
     cost_usd: float | None = None
     claude_evidence: ClaudeResultEvidence | None = None
+    factory_evidence: FactoryResultEvidence | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
     def _prevent_mixed_claude_facts(cls, value: Any) -> Any:
-        if isinstance(value, dict) and value.get("claude_evidence") is not None:
+        if isinstance(value, dict):
+            evidence_fields = tuple(
+                field
+                for field in ("claude_evidence", "factory_evidence")
+                if value.get(field) is not None
+            )
+            if len(evidence_fields) > 1:
+                raise ValueError("only one provider evidence object is allowed")
+            if not evidence_fields:
+                return value
             mixed = {
                 field
                 for field in ("input_tokens", "output_tokens", "total_tokens", "cost_usd")
                 if value.get(field) is not None
             }
             if mixed:
-                raise ValueError("claude_evidence cannot be combined with flat effort metrics")
+                raise ValueError(
+                    f"{evidence_fields[0]} cannot be combined with flat effort metrics"
+                )
         return value
 
 

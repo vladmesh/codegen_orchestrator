@@ -51,8 +51,28 @@ ledger writer. The ledger rejects an evidence object combined with flat provider
 and rejects contradictory token totals, so no row can combine two Claude records.
 Malformed, absent, negative, or non-finite money leaves `cost_microusd` NULL with
 `cost_source=unknown`; valid model, token, and cache facts from that same object remain.
-Factory and Codex facts continue to use the explicit-unknown path until their own
-provider evidence contracts exist.
+Serializer-derived Claude flat projections that match the evidence remain valid;
+contradictory non-null flat facts are rejected.
+
+Factory accepts at most one whole `droid exec -o json` JSON document whose
+`type` is `result`. From that one object only, it may retain a string `model`
+and non-negative `usage.input_tokens`, `usage.output_tokens`,
+`usage.cache_read_input_tokens`, and `usage.cache_creation_input_tokens`.
+Each invalid field is unavailable independently. A total is derived only when
+both usable input and output components are present; a missing, partial, or
+inconsistent provider total is unavailable, while other safe facts from that
+same object remain. Malformed JSON, JSONL/multiple objects, and non-result
+output leave all Factory evidence unavailable. Factory `cost_usd`,
+`total_cost_usd`, or any other money-looking field is never persisted or
+converted. Factory evidence always writes `cost_source=unknown` with NULL
+`cost_microusd`.
+
+Codex has no stable non-interactive usage-output contract. Its stdout and stderr
+are never parsed for model, token, cache, or cost facts; selected `provider=openai`
+and configured model may still be retained. Factory likewise retains its selected
+provider and configured model when its valid result evidence has no model; a
+valid model in that result takes precedence. Both paths use the explicit-unknown
+cost contract.
 
 Project deletion never deletes accounting history. PostgreSQL detaches a ledger row's
 `run_id`, `project_id`, `story_id` and `task_id` when the corresponding project records

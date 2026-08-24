@@ -9,10 +9,12 @@ projects, works directly with the existing repository.
 import json
 
 from langchain_core.messages import AIMessage
+from pydantic import ValidationError
 import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_attempt import FactoryResultEvidence
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.worker import AgentType, WorkerOwnership
 
@@ -453,6 +455,31 @@ class DeveloperNode(FunctionalNode):
                 }.items()
                 if value is not None
             }
+        factory_evidence = worker_result.factory_evidence
+        if factory_evidence is not None:
+            configured_model = config.get("model_identifier") or config.get("model_name")
+            if factory_evidence.model is None and isinstance(configured_model, str):
+                try:
+                    factory_evidence = FactoryResultEvidence.model_validate(
+                        factory_evidence.model_dump() | {"model": configured_model}
+                    )
+                except ValidationError:
+                    pass
+            return {
+                key: value
+                for key, value in {
+                    "factory_evidence": factory_evidence.model_dump(mode="json"),
+                    "transcript_path": worker_result.transcript_path,
+                    "transcript_truncated": worker_result.transcript_truncated,
+                    "agent_profile": {
+                        "agent_type": agent_type,
+                        "provider": factory_evidence.provider,
+                        "model": factory_evidence.model,
+                        "adapter": "worker-wrapper",
+                    },
+                }.items()
+                if value is not None
+            }
         return {
             key: value
             for key, value in {
@@ -464,7 +491,11 @@ class DeveloperNode(FunctionalNode):
                 "agent_profile": {
                     "agent_type": agent_type,
                     "provider": config.get("llm_provider") or provider_by_agent.get(agent_type),
-                    "model": DeveloperNode._reported_model(worker_result.logs_tail)
+                    "model": (
+                        DeveloperNode._reported_model(worker_result.logs_tail)
+                        if agent_type == "claude"
+                        else None
+                    )
                     or config.get("model_identifier")
                     or config.get("model_name"),
                     "adapter": "worker-wrapper",

@@ -10,7 +10,7 @@ from typing import Any
 
 import structlog
 
-from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence
+from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
 from shared.diagnostics import redact_diagnostic
 
 _SECRET_NAME = re.compile(r"(?:key|secret|token|password|credential|authorization)", re.I)
@@ -26,57 +26,59 @@ def redact_transcript(text: str, environment: dict[str, str]) -> str:
 def extract_effort_metrics(stdout: str, stderr: str, agent_type: str) -> dict[str, Any]:
     """Return provider-reported usage, leaving unavailable values absent.
 
-    Claude's JSON result exposes ``usage`` and ``total_cost_usd``. Factory may
-    expose the same keys in its JSON output. Codex's non-interactive output in
-    the pinned CLI has no stable usage contract, so it intentionally returns no
-    fabricated metrics.
+    Claude's JSON result has an exact-cost evidence contract. Factory accepts
+    only one whole ``type=result`` JSON document, retaining its non-negative
+    model and usage facts without interpreting money. Codex's non-interactive
+    output has no stable usage contract, so it intentionally returns no facts.
     """
     if agent_type == "codex":
         return {}
     if agent_type == "claude":
         return _extract_claude_evidence(stdout)
-    payloads: list[dict[str, Any]] = []
-    # Claude --output-format json emits an indented JSON document. Parse it as
-    # a whole first; line-by-line parsing is only for JSONL-style adapters.
-    try:
-        value = json.loads(stdout)
-    except json.JSONDecodeError:
-        value = None
-    if isinstance(value, dict):
-        payloads.append(value)
-    for line in stdout.splitlines():
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            payloads.append(value)
-    for payload in reversed(payloads):
-        usage = payload.get("usage")
-        if not isinstance(usage, dict):
-            continue
-        input_tokens = usage.get("input_tokens")
-        output_tokens = usage.get("output_tokens")
-        total_tokens = usage.get("total_tokens")
-        if (
-            total_tokens is None
-            and isinstance(input_tokens, int)
-            and isinstance(output_tokens, int)
-        ):
-            total_tokens = input_tokens + output_tokens
-        result = {
-            key: value
-            for key, value in {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": total_tokens,
-                "cost_usd": payload.get("total_cost_usd", payload.get("cost_usd")),
-            }.items()
-            if value is not None
-        }
-        if result:
-            return result
+    if agent_type == "factory":
+        return _extract_factory_evidence(stdout)
     return {}
+
+
+def _extract_factory_evidence(stdout: str) -> dict[str, Any]:
+    """Parse only one Factory final-result JSON document.
+
+    ``droid exec -o json`` produces one object.  JSONL, leading diagnostics,
+    and non-result objects are deliberately unavailable rather than sources to
+    combine.  Factory money-looking fields are outside this evidence boundary.
+    """
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict) or payload.get("type") != "result":
+        return {}
+    usage = payload.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    try:
+        evidence = FactoryResultEvidence(
+            model=_factory_model(payload),
+            input_tokens=_nonnegative_int(usage.get("input_tokens")),
+            output_tokens=_nonnegative_int(usage.get("output_tokens")),
+            total_tokens=_nonnegative_int(usage.get("total_tokens")),
+            cache_read_tokens=_nonnegative_int(usage.get("cache_read_input_tokens")),
+            cache_write_tokens=_nonnegative_int(usage.get("cache_creation_input_tokens")),
+        )
+    except ValueError:
+        return {}
+    if not any(
+        getattr(evidence, field) is not None
+        for field in (
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+        )
+    ):
+        return {}
+    return {"factory_evidence": evidence}
 
 
 def _extract_claude_evidence(stdout: str) -> dict[str, Any]:
@@ -127,6 +129,12 @@ def _claude_model(payload: dict[str, Any]) -> str | None:
         return None
     models = [name for name in model_usage if isinstance(name, str)]
     return models[0] if len(models) == 1 else None
+
+
+def _factory_model(payload: dict[str, Any]) -> str | None:
+    """Keep a reported Factory model only when it satisfies its evidence type."""
+    model = payload.get("model")
+    return model if isinstance(model, str) and model else None
 
 
 def _micro_usd(value: Any) -> int | None:

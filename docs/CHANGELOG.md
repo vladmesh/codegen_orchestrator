@@ -2,6 +2,19 @@
 
 ## 2026-08-24
 
+- Factory result normalization now clears partial provider totals and derives a
+  coherent total only from valid input and output components, so malformed
+  usage cannot reject a terminal ledger write. Factory evidence with no valid
+  reported model now retains the selected configured model at the DeveloperNode
+  profile seam; a valid result model still takes precedence.
+
+- Factory `droid exec -o json` terminal results now retain a single typed
+  `type=result` object's available non-negative model, token, and cache facts
+  through the existing worker-result path to the engineering-attempt ledger.
+  Factory money-looking fields are discarded, so Factory and Codex attempts
+  keep explicit unknown cost with NULL micro-USD while retaining selected
+  provider/model profiles. Codex output remains unparsed.
+
 - Claude terminal results now carry one typed provider-evidence object from
   worker-wrapper through the existing worker-result and terminal Run paths to
   the append-only engineering-attempt ledger. Claude JSON money is parsed as

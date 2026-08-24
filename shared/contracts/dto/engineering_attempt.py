@@ -43,7 +43,40 @@ class ClaudeResultEvidence(BaseModel):
         return self
 
 
-_CLAUDE_FLAT_FACT_FIELDS = frozenset(
+class FactoryResultEvidence(BaseModel):
+    """Facts derived together from one Factory Droid JSON result object.
+
+    Factory does not currently expose a supported exact-cost contract.  Its
+    evidence therefore never carries money and always reaches the ledger as
+    explicit unknown cost.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["factory"] = "factory"
+    model: str | None = Field(default=None, min_length=1, max_length=255)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    cache_read_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_total_tokens(self) -> "FactoryResultEvidence":
+        """Normalize Factory totals before this evidence reaches the queue.
+
+        A result-level total cannot be attributed safely when either component
+        is unavailable. When both components are available, their sum is the
+        one coherent total the ledger accepts.
+        """
+        if self.input_tokens is not None and self.output_tokens is not None:
+            self.total_tokens = self.input_tokens + self.output_tokens
+        else:
+            self.total_tokens = None
+        return self
+
+
+_FLAT_FACT_FIELDS = frozenset(
     {
         "provider",
         "model",
@@ -77,13 +110,29 @@ class EngineeringAttemptLedgerInput(BaseModel):
     cost_microusd: int | None = Field(default=None, ge=0)
     cost_source: CostSource = CostSource.UNKNOWN
     claude_evidence: ClaudeResultEvidence | None = None
+    factory_evidence: FactoryResultEvidence | None = None
 
     @model_validator(mode="before")
     @classmethod
     def _prevent_mixed_claude_facts(cls, value: Any) -> Any:
-        if isinstance(value, dict) and value.get("claude_evidence") is not None:
+        if isinstance(value, dict):
+            evidence_fields = tuple(
+                field
+                for field in ("claude_evidence", "factory_evidence")
+                if value.get(field) is not None
+            )
+            if len(evidence_fields) > 1:
+                raise ValueError("only one provider evidence object is allowed")
+            if not evidence_fields:
+                return value
+            evidence_field = evidence_fields[0]
+            evidence_type = (
+                ClaudeResultEvidence
+                if evidence_field == "claude_evidence"
+                else FactoryResultEvidence
+            )
             try:
-                evidence = ClaudeResultEvidence.model_validate(value["claude_evidence"])
+                evidence = evidence_type.model_validate(value[evidence_field])
             except ValidationError:
                 # Let the field validator report malformed evidence precisely.
                 return value
@@ -95,26 +144,28 @@ class EngineeringAttemptLedgerInput(BaseModel):
                 "total_tokens": evidence.total_tokens,
                 "cache_read_tokens": evidence.cache_read_tokens,
                 "cache_write_tokens": evidence.cache_write_tokens,
-                "cost_microusd": evidence.cost_microusd,
+                "cost_microusd": getattr(evidence, "cost_microusd", None),
                 "cost_source": (
                     CostSource.PROVIDER_REPORTED
-                    if evidence.cost_microusd is not None
+                    if getattr(evidence, "cost_microusd", None) is not None
                     else CostSource.UNKNOWN
                 ),
             }
             mixed = {
                 field
-                for field in _CLAUDE_FLAT_FACT_FIELDS
+                for field in _FLAT_FACT_FIELDS
                 if value.get(field) is not None and value[field] != expected[field]
             }
             if mixed:
-                raise ValueError("claude_evidence cannot be combined with flat provider facts")
+                raise ValueError(
+                    "provider evidence cannot be combined with contradictory flat facts"
+                )
         return value
 
     @model_validator(mode="after")
     def _validate_provenance(self) -> "EngineeringAttemptLedgerInput":
-        if self.claude_evidence is not None:
-            evidence = self.claude_evidence
+        evidence = self.claude_evidence or self.factory_evidence
+        if evidence is not None:
             self.provider = evidence.provider
             self.model = evidence.model
             self.input_tokens = evidence.input_tokens
@@ -122,10 +173,10 @@ class EngineeringAttemptLedgerInput(BaseModel):
             self.total_tokens = evidence.total_tokens
             self.cache_read_tokens = evidence.cache_read_tokens
             self.cache_write_tokens = evidence.cache_write_tokens
-            self.cost_microusd = evidence.cost_microusd
+            self.cost_microusd = getattr(evidence, "cost_microusd", None)
             self.cost_source = (
                 CostSource.PROVIDER_REPORTED
-                if evidence.cost_microusd is not None
+                if getattr(evidence, "cost_microusd", None) is not None
                 else CostSource.UNKNOWN
             )
         known_usage = tuple(
