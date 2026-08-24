@@ -21,12 +21,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import time
 
 MIN_FREE_DISK_GB = 10
 # The stand deploys onto itself, so the same disk carries the orchestrator, the
 # worker images and every stack a run brings up.
-CLAUDE_EXPIRY_MARGIN_SECONDS = 24 * 3600
+CLAUDE_PROBE_TIMEOUT_SECONDS = 120
 
 
 def _fail(check: str, detail: str) -> tuple[str, bool, str]:
@@ -48,7 +47,16 @@ def check_contour() -> tuple[str, bool, str]:
     return _ok("contour", "stand")
 
 
-def check_claude_session(profile: str | None) -> tuple[str, bool, str]:
+def check_claude_session(profile: str | None, probe: bool = True) -> tuple[str, bool, str]:
+    """Judge the session by its refresh token, then by actually using it.
+
+    The access token is short-lived by design — around eight hours — and the CLI
+    exchanges the refresh token for a new one whenever it runs. So an expired
+    access token says nothing; a missing refresh token says the profile is dead
+    and needs `claude auth login`. What settles it is the probe: the stand idles
+    between runs, and the failure this check exists to catch is a refresh that no
+    longer works.
+    """
     if not profile:
         return _fail("claude session", "HOST_CLAUDE_DIR is unset")
     credentials = Path(profile) / ".credentials.json"
@@ -60,19 +68,27 @@ def check_claude_session(profile: str | None) -> tuple[str, bool, str]:
         return _fail("claude session", f"unreadable credentials: {exc}")
 
     oauth = data.get("claudeAiOauth") or {}
-    expires_at = oauth.get("expiresAt")
-    if not isinstance(expires_at, int | float):
-        # A session without a stated expiry is not proof of a broken one; the
-        # live check below is what decides.
-        return _ok("claude session", "present, no expiry stated")
-    remaining = expires_at / 1000 - time.time()
-    if remaining <= 0:
-        return _fail("claude session", "expired; run claude auth login")
-    if remaining < CLAUDE_EXPIRY_MARGIN_SECONDS:
-        return _fail(
-            "claude session", f"expires in {remaining / 3600:.1f}h; refresh before running"
+    if not oauth.get("refreshToken"):
+        return _fail("claude session", "no refresh token; run claude auth login")
+
+    if not probe:
+        return _ok("claude session", "refresh token present (not probed)")
+
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["claude", "-p", "reply with the single word: ready"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=CLAUDE_PROBE_TIMEOUT_SECONDS,
+            env={**os.environ, "CLAUDE_CONFIG_DIR": profile},
+            cwd="/tmp",  # noqa: S108 — the probe must not read a project's config
         )
-    return _ok("claude session", f"valid for {remaining / 3600:.0f}h")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _fail("claude session", f"probe failed: {exc}")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        return _fail("claude session", f"probe rejected: {detail[-1] if detail else 'no output'}")
+    return _ok("claude session", "probe answered")
 
 
 def check_codex_session(profile: str | None) -> tuple[str, bool, str]:
@@ -110,11 +126,15 @@ def check_docker() -> tuple[str, bool, str]:
 
 
 def main() -> int:
+    # The probe spends a little quota and a few seconds. It is on by default
+    # because a structural check alone has never been what goes wrong here.
+    probe = "--no-probe" not in sys.argv
+
     results = [
         check_contour(),
         check_docker(),
         check_disk(),
-        check_claude_session(os.environ.get("HOST_CLAUDE_DIR")),
+        check_claude_session(os.environ.get("HOST_CLAUDE_DIR"), probe=probe),
         check_codex_session(os.environ.get("HOST_CODEX_HOME")),
     ]
 
