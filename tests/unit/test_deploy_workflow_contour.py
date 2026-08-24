@@ -89,19 +89,35 @@ def test_provider_secrets_are_required_of_production_only():
     assert "TIME4VPS" not in yaml.dump(shared["env"])
 
 
-def test_a_non_production_contour_is_refused_a_provider_allowlist():
-    """Default-deny is what keeps a stand run away from a production server.
+def test_production_credentials_never_reach_another_contour():
+    """A repository secret is inherited by every environment that omits it.
 
-    An allowlist is the only thing that authorizes provisioning or reinstalling a
-    Time4VPS server. A stand that carried one could act on a machine it does not
-    own, so the deploy refuses to start rather than trusting it to be the right
-    list.
+    So leaving TIME4VPS_* and the bot token unset for the stand does not keep
+    them away — the stand silently inherits production's. The workflow has to
+    decide, and it writes empty values outside production. The first stand deploy
+    failed on exactly this inheritance.
     """
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    guard = steps["Refuse a provider allowlist outside production"]
+    env_script = steps["Write .env to server"]["with"]["script"]
+
+    for name in (
+        "TIME4VPS_MANAGED_SERVER_IDS",
+        "TIME4VPS_LOGIN",
+        "TIME4VPS_PASSWORD",
+        "TELEGRAM_BOT_TOKEN",
+    ):
+        line = f"{name}=${{{{ inputs.environment == 'production' && secrets.{name} || '' }}}}"
+        assert line in env_script, f"{name} is not gated on the contour"
+
+
+def test_the_written_env_is_verified_not_the_inputs():
+    """The check reads the file the services read, not the value that was sent."""
+    steps = {step["name"]: step for step in _deploy_job()["steps"]}
+    guard = steps["Verify the stand carries no production credentials"]
 
     assert guard["if"] == "${{ inputs.environment != 'production' }}"
-    assert "exit 1" in guard["run"]
+    assert "${{ env.DEPLOY_PATH }}/.env" in guard["with"]["script"]
+    assert "exit 1" in guard["with"]["script"]
 
 
 def test_the_contour_reaches_the_server_env():
