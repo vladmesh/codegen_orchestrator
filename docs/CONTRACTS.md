@@ -78,6 +78,39 @@ Project deletion never deletes accounting history. PostgreSQL detaches a ledger 
 `run_id`, `project_id`, `story_id` and `task_id` when the corresponding project records
 are hard-deleted; all accounting facts and the resolved `user_id` remain immutable.
 
+### Engineering budget policies
+
+`engineering_budget_policies` holds at most one durable policy row per `user_id`.
+`limit_microusd` is a non-negative integer number of micro-USD; budget requests never
+accept floating-point or dollar-denominated money. `state` is the typed
+`enabled`/`disabled` vocabulary and `version` is a non-null integer optimistic-lock
+version. The row is the future reservation lock target. This increment takes no
+reservation, dispatch decision, admission denial or charge, and stores no aggregate
+spend field.
+
+`PUT /api/engineering-budget-policies/{user_id}` is internal/admin only and requests
+the exact state with `{ "limit_microusd": integer, "state": "enabled" | "disabled",
+"version": integer? }`. Creation omits `version`. Repeating a state already stored is
+idempotent and leaves its version unchanged. A genuine change must carry the stored
+current version; a missing or stale version returns 409 without changing the row.
+This is the policy row/version reservation seam for later admission work. Disabled
+policies can be re-enabled through the same command.
+
+`GET /api/engineering-budget-policy` and `/balance` are self-only authenticated reads.
+Internal/admin callers may read a named user's policy or balance at
+`/api/engineering-budget-policies/{user_id}` and `/balance`; normal users cannot name
+another user and cannot write a policy. A missing policy returns `enforcement=unlimited`;
+a disabled one returns `enforcement=not_enforced`. Both have a null remaining amount and
+are distinct from `enforcement=enforced` with an enabled zero limit, whose balance is
+exhausted.
+
+Balances aggregate only `engineering_attempt_ledger.user_id`, so retained ledger rows
+continue to count after Project deletion. They return exact integer
+`known_spend_microusd`, `remaining_microusd`, `exhausted`,
+`unknown_cost_attempt_count`, and `incomplete_coverage`. Unknown attempts contribute no
+invented monetary amount. When coverage is incomplete, the reported remaining amount is
+not a proved safe upper reserve.
+
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 
 One `StrEnum` per cross-service concept. Producers and consumers import these

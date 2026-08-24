@@ -8,11 +8,17 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from shared.models import EngineeringAttemptLedger
 
-async def _user(client: AsyncClient, telegram_id: int) -> dict:
+
+async def _user(client: AsyncClient, telegram_id: int, *, is_admin: bool = False) -> dict:
     response = await client.post(
         "/api/users/",
-        json={"telegram_id": telegram_id, "username": f"ledger_{telegram_id}"},
+        json={
+            "telegram_id": telegram_id,
+            "username": f"ledger_{telegram_id}",
+            "is_admin": is_admin,
+        },
     )
     assert response.status_code == HTTPStatus.CREATED
     return response.json()
@@ -283,6 +289,190 @@ async def test_project_deletion_detaches_but_retains_engineering_ledger(
                 {"key": f"engineering-run:{run_id}"},
             )
 
+    balance = await async_client.get(f"/api/engineering-budget-policies/{owner['id']}/balance")
+    assert balance.status_code == HTTPStatus.OK, balance.text
+    assert balance.json() == {
+        "user_id": owner["id"],
+        "policy": None,
+        "enforcement": "unlimited",
+        "known_spend_microusd": 40_001,
+        "remaining_microusd": None,
+        "exhausted": False,
+        "unknown_cost_attempt_count": 0,
+        "incomplete_coverage": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_engineering_budget_policy_writes_are_versioned_and_idempotent(
+    async_client: AsyncClient,
+):
+    user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+
+    created = await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 100_000, "state": "enabled"},
+    )
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    assert created.json()["limit_microusd"] == 100_000
+    assert created.json()["state"] == "enabled"
+    assert created.json()["version"] == 1
+
+    non_integer = await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 100_000.0, "state": "enabled"},
+    )
+    assert non_integer.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+    same = await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 100_000, "state": "enabled"},
+    )
+    assert same.status_code == HTTPStatus.OK
+    assert same.json()["version"] == 1
+
+    stale = await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 50_000, "state": "enabled", "version": 2},
+    )
+    assert stale.status_code == HTTPStatus.CONFLICT
+    after_stale = await async_client.get(f"/api/engineering-budget-policies/{user['id']}")
+    assert after_stale.json()["policy"]["limit_microusd"] == 100_000
+    assert after_stale.json()["policy"]["version"] == 1
+
+    disabled = await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 100_000, "state": "disabled", "version": 1},
+    )
+    assert disabled.status_code == HTTPStatus.OK
+    assert disabled.json()["state"] == "disabled"
+    assert disabled.json()["version"] == 2
+
+    reenabled_zero = await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 0, "state": "enabled", "version": 2},
+    )
+    assert reenabled_zero.status_code == HTTPStatus.OK
+    assert reenabled_zero.json()["state"] == "enabled"
+    assert reenabled_zero.json()["version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_engineering_budget_balance_uses_ledger_user_id_and_marks_unknown_coverage(
+    async_client: AsyncClient, db_session
+):
+    from datetime import UTC, datetime
+
+    user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    other = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            EngineeringAttemptLedger(
+                idempotency_key=f"known-{uuid.uuid4().hex}",
+                user_id=user["id"],
+                owner_attribution="resolved",
+                role="engineering",
+                occurred_at=now,
+                provider="anthropic",
+                cost_microusd=40_001,
+                cost_source="provider_reported",
+            ),
+            EngineeringAttemptLedger(
+                idempotency_key=f"unknown-{uuid.uuid4().hex}",
+                user_id=user["id"],
+                owner_attribution="resolved",
+                role="engineering",
+                occurred_at=now,
+                cost_source="unknown",
+            ),
+            EngineeringAttemptLedger(
+                idempotency_key=f"other-{uuid.uuid4().hex}",
+                user_id=other["id"],
+                owner_attribution="resolved",
+                role="engineering",
+                occurred_at=now,
+                provider="anthropic",
+                cost_microusd=999_999,
+                cost_source="provider_reported",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 40_001, "state": "enabled"},
+    )
+    balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
+    assert balance.status_code == HTTPStatus.OK, balance.text
+    assert balance.json() == {
+        "user_id": user["id"],
+        "policy": {
+            "user_id": user["id"],
+            "limit_microusd": 40_001,
+            "state": "enabled",
+            "version": 1,
+        },
+        "enforcement": "enforced",
+        "known_spend_microusd": 40_001,
+        "remaining_microusd": 0,
+        "exhausted": True,
+        "unknown_cost_attempt_count": 1,
+        "incomplete_coverage": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_engineering_budget_policy_self_read_and_cross_user_refusal(
+    async_client: AsyncClient,
+):
+    owner = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    intruder = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    await async_client.put(
+        f"/api/engineering-budget-policies/{owner['id']}",
+        json={"limit_microusd": 100, "state": "enabled"},
+    )
+
+    own = await async_client.get(
+        "/api/engineering-budget-policy/balance",
+        headers={"X-Telegram-ID": str(owner["telegram_id"])},
+    )
+    assert own.status_code == HTTPStatus.OK
+    assert own.json()["user_id"] == owner["id"]
+
+    own_policy = await async_client.get(
+        "/api/engineering-budget-policy",
+        headers={"X-Telegram-ID": str(owner["telegram_id"])},
+    )
+    assert own_policy.status_code == HTTPStatus.OK
+    assert own_policy.json()["policy"]["user_id"] == owner["id"]
+
+    admin = await _user(async_client, uuid.uuid4().int % 1_000_000_000, is_admin=True)
+    admin_write = await async_client.put(
+        f"/api/engineering-budget-policies/{owner['id']}",
+        json={"limit_microusd": 101, "state": "enabled", "version": 1},
+        headers={"X-Telegram-ID": str(admin["telegram_id"])},
+    )
+    assert admin_write.status_code == HTTPStatus.OK
+    assert admin_write.json()["version"] == 2
+
+    for path in (
+        f"/api/engineering-budget-policies/{owner['id']}",
+        f"/api/engineering-budget-policies/{owner['id']}/balance",
+    ):
+        refused = await async_client.get(
+            path, headers={"X-Telegram-ID": str(intruder["telegram_id"])}
+        )
+        assert refused.status_code == HTTPStatus.FORBIDDEN
+
+    write_refused = await async_client.put(
+        f"/api/engineering-budget-policies/{owner['id']}",
+        json={"limit_microusd": 0, "state": "disabled", "version": 2},
+        headers={"X-Telegram-ID": str(owner["telegram_id"])},
+    )
+    assert write_refused.status_code == HTTPStatus.FORBIDDEN
+
 
 @pytest.mark.asyncio
 async def test_migration_backfills_only_terminal_runs_and_enforces_constraints(db_session):
@@ -378,6 +568,57 @@ async def test_migration_backfills_only_terminal_runs_and_enforces_constraints(d
                 "DELETE FROM engineering_attempt_ledger WHERE run_id = 'terminal-completed'",
             ):
                 with pytest.raises(DBAPIError, match="append-only"):
+                    with connection.begin_nested():
+                        connection.execute(text(sql))
+        finally:
+            migration.op = original_op
+            connection.execute(text(f"DROP SCHEMA {quoted_schema} CASCADE"))
+
+    await db_session.run_sync(run_migration)
+
+
+@pytest.mark.asyncio
+async def test_engineering_budget_policy_migration_enforces_row_constraints(db_session):
+    """The durable lock row cannot hold negative money or a non-version."""
+    import importlib.util
+    from pathlib import Path
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    schema = f"budget_policy_migration_{uuid.uuid4().hex}"
+    migration_path = (
+        Path(__file__).parents[2]
+        / "migrations/versions/f5e2d3c4b1a0_add_engineering_budget_policies.py"
+    )
+    spec = importlib.util.spec_from_file_location("budget_policy_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    def run_migration(session):
+        connection = session.connection()
+        quoted_schema = f'"{schema}"'
+        connection.execute(text(f"CREATE SCHEMA {quoted_schema}"))
+        connection.execute(text(f"SET LOCAL search_path TO {quoted_schema}, public"))
+        connection.execute(text("CREATE TABLE users (id integer PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO users VALUES (1), (2)"))
+        original_op = migration.op
+        migration.op = Operations(MigrationContext.configure(connection))
+        try:
+            migration.upgrade()
+            connection.execute(
+                text(
+                    "INSERT INTO engineering_budget_policies "
+                    "(user_id, limit_microusd, state, version) VALUES (1, 0, 'enabled', 1)"
+                )
+            )
+            for sql in (
+                "INSERT INTO engineering_budget_policies "
+                "(user_id, limit_microusd, state, version) VALUES (2, -1, 'enabled', 1)",
+                "UPDATE engineering_budget_policies SET version = 0 WHERE user_id = 1",
+            ):
+                with pytest.raises(IntegrityError):
                     with connection.begin_nested():
                         connection.execute(text(sql))
         finally:
