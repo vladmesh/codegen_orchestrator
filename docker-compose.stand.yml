@@ -13,3 +13,11 @@ services:
   # scales it to nothing instead.
   telegram_bot:
     scale: 0
+
+  # The live harness talks to http://localhost:8000. Production does not publish
+  # that port and its agent matrix works around it by running a second API
+  # container; a stand exists to be tested, so it publishes the port instead —
+  # on the loopback interface only, which ufw also keeps off the network.
+  api:
+    ports:
+      - "127.0.0.1:8000:8000"
