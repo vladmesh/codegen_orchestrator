@@ -30,6 +30,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
+from shared.live_contour import current_contour
 from shared.live_harness_cleanup import build_remote_cleanup_command
 from shared.queues import SCAFFOLD_QUEUE
 
@@ -346,7 +347,7 @@ async def create_noop_project(api: httpx.AsyncClient, api_internal: httpx.AsyncC
     return await create_pipeline_project(
         api,
         api_internal,
-        project_prefix="live-test",
+        project_prefix=current_contour().pipeline,
         description=NOOP_PROJECT_DESCRIPTION,
         agent_type="noop",
         task_title=NOOP_TASK_TITLE,
@@ -361,7 +362,7 @@ async def create_llm_backend_project(
     ctx = await create_pipeline_project(
         api,
         api_internal,
-        project_prefix="live-test-llm",
+        project_prefix=current_contour().llm_pipeline,
         description=LLM_BACKEND_PROJECT_DESCRIPTION,
         detailed_spec=LLM_BACKEND_DETAILED_SPEC,
         agent_type=live_worker_agent_type(),

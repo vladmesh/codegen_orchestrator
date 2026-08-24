@@ -1,0 +1,23 @@
+# Stand overlay: what the stand runs differently from production.
+#
+# Applied on top of docker-compose.yml and docker-compose.prod.yml, so it states
+# only the differences. Everything not named here is production's definition.
+
+services:
+  # The stand has no PO bot and must not borrow production's. Two long-polling
+  # clients on one token steal each other's updates, which would make the
+  # production bot lose messages — and the live pipeline never talks to this
+  # service anyway: mega and the agent matrix drive the PO tool boundary over
+  # HTTP. The service cannot simply be left tokenless either: it fails fast on a
+  # missing TELEGRAM_BOT_TOKEN (services/telegram_bot/src/main.py), so the stand
+  # scales it to nothing instead.
+  telegram_bot:
+    scale: 0
+
+  # The live harness talks to http://localhost:8000. Production does not publish
+  # that port and its agent matrix works around it by running a second API
+  # container; a stand exists to be tested, so it publishes the port instead —
+  # on the loopback interface only, which ufw also keeps off the network.
+  api:
+    ports:
+      - "127.0.0.1:8000:8000"

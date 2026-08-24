@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Check the stand can run a live pipeline before one is started.
+
+A mega run costs ten minutes and a worker's subscription quota. Every condition
+below is one that would otherwise be discovered halfway through it: an expired
+Claude session, a Codex profile the worker-manager refuses, a full disk. Failing
+here costs seconds and says what to fix.
+
+The subscriptions are the reason this exists. A stand idles between runs, and an
+idle session is exactly the one that goes stale — its tokens refresh when they
+are used, and nothing uses them.
+
+    ./scripts/stand_preflight.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+MIN_FREE_DISK_GB = 10
+# The stand deploys onto itself, so the same disk carries the orchestrator, the
+# worker images and every stack a run brings up.
+CLAUDE_PROBE_TIMEOUT_SECONDS = 120
+
+
+def _fail(check: str, detail: str) -> tuple[str, bool, str]:
+    return (check, False, detail)
+
+
+def _ok(check: str, detail: str = "") -> tuple[str, bool, str]:
+    return (check, True, detail)
+
+
+def check_contour() -> tuple[str, bool, str]:
+    contour = os.environ.get("LIVE_CONTOUR")
+    if contour != "stand":
+        return _fail(
+            "contour",
+            f"LIVE_CONTOUR={contour!r}; a stand run must name its own contour or it "
+            "would create — and sweep — production's names",
+        )
+    return _ok("contour", "stand")
+
+
+def check_claude_session(profile: str | None, probe: bool = True) -> tuple[str, bool, str]:
+    """Judge the session by its refresh token, then by actually using it.
+
+    The access token is short-lived by design — around eight hours — and the CLI
+    exchanges the refresh token for a new one whenever it runs. So an expired
+    access token says nothing; a missing refresh token says the profile is dead
+    and needs `claude auth login`. What settles it is the probe: the stand idles
+    between runs, and the failure this check exists to catch is a refresh that no
+    longer works.
+    """
+    if not profile:
+        return _fail("claude session", "HOST_CLAUDE_DIR is unset")
+    credentials = Path(profile) / ".credentials.json"
+    if not credentials.is_file():
+        return _fail("claude session", f"no .credentials.json in {profile}; run claude auth login")
+    try:
+        data = json.loads(credentials.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return _fail("claude session", f"unreadable credentials: {exc}")
+
+    oauth = data.get("claudeAiOauth") or {}
+    if not oauth.get("refreshToken"):
+        return _fail("claude session", "no refresh token; run claude auth login")
+
+    if not probe:
+        return _ok("claude session", "refresh token present (not probed)")
+
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["claude", "-p", "reply with the single word: ready"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=CLAUDE_PROBE_TIMEOUT_SECONDS,
+            env={**os.environ, "CLAUDE_CONFIG_DIR": profile},
+            cwd="/tmp",  # noqa: S108 — the probe must not read a project's config
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _fail("claude session", f"probe failed: {exc}")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        return _fail("claude session", f"probe rejected: {detail[-1] if detail else 'no output'}")
+    return _ok("claude session", "probe answered")
+
+
+def check_codex_session(profile: str | None) -> tuple[str, bool, str]:
+    """Apply the worker-manager's own rules, not a second copy of them."""
+    sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "worker-manager"))
+    try:
+        from src.codex_auth import validate_codex_host_session
+    except ImportError as exc:
+        return _fail("codex session", f"cannot import the worker-manager check: {exc}")
+    try:
+        validate_codex_host_session(profile)
+    except RuntimeError as exc:
+        return _fail("codex session", str(exc))
+    return _ok("codex session", profile or "")
+
+
+def check_disk() -> tuple[str, bool, str]:
+    free_gb = shutil.disk_usage("/").free / 1024**3
+    if free_gb < MIN_FREE_DISK_GB:
+        return _fail("disk", f"{free_gb:.1f} GB free, need {MIN_FREE_DISK_GB} GB")
+    return _ok("disk", f"{free_gb:.1f} GB free")
+
+
+def check_docker() -> tuple[str, bool, str]:
+    try:
+        subprocess.run(  # noqa: S603
+            ["docker", "info"],  # noqa: S607
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _fail("docker", str(exc))
+    return _ok("docker")
+
+
+def main() -> int:
+    # The probe spends a little quota and a few seconds. It is on by default
+    # because a structural check alone has never been what goes wrong here.
+    probe = "--no-probe" not in sys.argv
+
+    results = [
+        check_contour(),
+        check_docker(),
+        check_disk(),
+        check_claude_session(os.environ.get("HOST_CLAUDE_DIR"), probe=probe),
+        check_codex_session(os.environ.get("HOST_CODEX_HOME")),
+    ]
+
+    for name, passed, detail in results:
+        mark = "ok  " if passed else "FAIL"
+        print(f"{mark} {name}{f': {detail}' if detail else ''}")
+
+    return 0 if all(passed for _, passed, _ in results) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

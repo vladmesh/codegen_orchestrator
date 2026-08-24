@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 
-PROJECT_PREFIXES = ["live-test", "live-crud", "mega-test"]
 CLEANUP_API_URL = "http://localhost:8000"
 HTTP_OK = 200
 ORCHESTRATOR_ROOT = os.environ.get("ORCHESTRATOR_ROOT")
@@ -16,6 +15,7 @@ if not ORCHESTRATOR_ROOT:
     ORCHESTRATOR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ORCHESTRATOR_ROOT not in sys.path:
     sys.path.insert(0, ORCHESTRATOR_ROOT)
+from shared.live_contour import current_contour  # noqa: E402
 from shared.live_harness_cleanup import (  # noqa: E402
     REMOTE_CLEANUP_SCRIPT,
     build_remote_cleanup_command,
@@ -24,13 +24,17 @@ from shared.live_harness_cleanup import (  # noqa: E402
     tolerant_prefix_pattern,
     validate_managed_cleanup_target,
 )
-from shared.project_slug import project_slug_prefix  # noqa: E402
 
-GITHUB_ORG = "project-factory-organization"
+# One sweep, one contour. The prefixes and the organization both come from the
+# contour the process runs in, so a stand sweep can never address production's
+# projects — it does not know their names.
+CONTOUR = current_contour()
+PROJECT_PREFIXES = CONTOUR.project_prefixes
+GITHUB_ORG = os.environ.get("GITHUB_ORG", "project-factory-organization")
 # Deployed stacks are named by project slug, which truncates the title before the
 # project UUID, so `live-test-…` projects deploy as `live-te-…` directories and
 # containers. This is the only name an orphan still has once its DB rows are gone.
-DEPLOY_SLUG_PREFIXES = [project_slug_prefix(prefix) for prefix in PROJECT_PREFIXES]
+DEPLOY_SLUG_PREFIXES = CONTOUR.slug_prefixes
 # Same dash-or-underscore rule the remote scan matches with: one implementation,
 # so what the target reports and what this recognises cannot drift apart.
 _STACK_NAME_PATTERN = re.compile(
