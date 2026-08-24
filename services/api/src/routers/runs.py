@@ -76,7 +76,7 @@ class EngineeringAttemptRead(BaseModel):
 
     id: uuid.UUID
     idempotency_key: str
-    run_id: str
+    run_id: str | None
     project_id: uuid.UUID | None
     story_id: str | None
     task_id: str | None

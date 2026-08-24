@@ -40,6 +40,10 @@ from the ledger. Grafana's engineering effort panels read the ledger too. Histor
 backfill records only already terminal engineering Runs, so a queued or running Run can
 later record its actual final provider facts through the locked terminal writer.
 
+Project deletion never deletes accounting history. PostgreSQL detaches a ledger row's
+`run_id`, `project_id`, `story_id` and `task_id` when the corresponding project records
+are hard-deleted; all accounting facts and the resolved `user_id` remain immutable.
+
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 
 One `StrEnum` per cross-service concept. Producers and consumers import these

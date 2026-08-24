@@ -21,7 +21,7 @@ def upgrade() -> None:
         "engineering_attempt_ledger",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("idempotency_key", sa.String(length=320), nullable=False),
-        sa.Column("run_id", sa.String(length=255), nullable=False),
+        sa.Column("run_id", sa.String(length=255), nullable=True),
         sa.Column("project_id", sa.Uuid(), nullable=True),
         sa.Column("story_id", sa.String(length=255), nullable=True),
         sa.Column("task_id", sa.String(length=255), nullable=True),
@@ -44,10 +44,12 @@ def upgrade() -> None:
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
-        sa.ForeignKeyConstraint(["project_id"], ["projects.id"]),
-        sa.ForeignKeyConstraint(["run_id"], ["runs.id"]),
-        sa.ForeignKeyConstraint(["story_id"], ["stories.id"]),
-        sa.ForeignKeyConstraint(["task_id"], ["tasks.id"]),
+        # Hard project deletion retains accounting history.  Parent links are
+        # detached by PostgreSQL instead of deleting or rewriting the row.
+        sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["run_id"], ["runs.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["story_id"], ["stories.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["task_id"], ["tasks.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
         sa.CheckConstraint("role = 'engineering'", name="ck_engineering_attempt_role"),
         sa.CheckConstraint(
@@ -96,6 +98,31 @@ def upgrade() -> None:
         CREATE FUNCTION engineering_attempt_ledger_reject_mutation()
         RETURNS trigger AS $$
         BEGIN
+            IF TG_OP = 'UPDATE'
+               AND NEW.id = OLD.id
+               AND NEW.idempotency_key = OLD.idempotency_key
+               AND NEW.created_at = OLD.created_at
+               AND NEW.updated_at = OLD.updated_at
+               AND NEW.user_id IS NOT DISTINCT FROM OLD.user_id
+               AND NEW.owner_attribution = OLD.owner_attribution
+               AND NEW.role = OLD.role
+               AND NEW.occurred_at = OLD.occurred_at
+               AND NEW.provider IS NOT DISTINCT FROM OLD.provider
+               AND NEW.model IS NOT DISTINCT FROM OLD.model
+               AND NEW.input_tokens IS NOT DISTINCT FROM OLD.input_tokens
+               AND NEW.output_tokens IS NOT DISTINCT FROM OLD.output_tokens
+               AND NEW.total_tokens IS NOT DISTINCT FROM OLD.total_tokens
+               AND NEW.cache_read_tokens IS NOT DISTINCT FROM OLD.cache_read_tokens
+               AND NEW.cache_write_tokens IS NOT DISTINCT FROM OLD.cache_write_tokens
+               AND NEW.cost_microusd IS NOT DISTINCT FROM OLD.cost_microusd
+               AND NEW.cost_source = OLD.cost_source
+               AND (NEW.run_id IS NOT DISTINCT FROM OLD.run_id OR NEW.run_id IS NULL)
+               AND (NEW.project_id IS NOT DISTINCT FROM OLD.project_id OR NEW.project_id IS NULL)
+               AND (NEW.story_id IS NOT DISTINCT FROM OLD.story_id OR NEW.story_id IS NULL)
+               AND (NEW.task_id IS NOT DISTINCT FROM OLD.task_id OR NEW.task_id IS NULL)
+            THEN
+                RETURN NEW;
+            END IF;
             RAISE EXCEPTION 'engineering_attempt_ledger is append-only';
         END;
         $$ LANGUAGE plpgsql

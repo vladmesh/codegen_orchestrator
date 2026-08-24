@@ -29,17 +29,17 @@ class EngineeringAttemptLedger(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     idempotency_key: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
-    run_id: Mapped[str] = mapped_column(
-        String(255), ForeignKey("runs.id"), unique=True, nullable=False
+    run_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("runs.id", ondelete="SET NULL"), unique=True, nullable=True
     )
     project_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, ForeignKey("projects.id"), nullable=True, index=True
+        Uuid, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
     )
     story_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("stories.id"), nullable=True, index=True
+        String(255), ForeignKey("stories.id", ondelete="SET NULL"), nullable=True, index=True
     )
     task_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("tasks.id"), nullable=True, index=True
+        String(255), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True
     )
     user_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("users.id"), nullable=True, index=True

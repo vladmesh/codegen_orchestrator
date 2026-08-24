@@ -205,6 +205,70 @@ async def test_ledger_read_is_bounded(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_project_deletion_detaches_but_retains_engineering_ledger(
+    async_client: AsyncClient, db_session
+):
+    """Hard project deletion retains consumed-resource history without live links."""
+    owner = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    project = await _project(async_client, owner["telegram_id"])
+    run_id = f"eng-delete-{uuid.uuid4().hex}"
+    await async_client.post(
+        "/api/runs/",
+        json={"id": run_id, "type": "engineering", "project_id": project["id"]},
+    )
+    await async_client.patch(
+        f"/api/runs/{run_id}",
+        json={
+            "status": "completed",
+            "engineering_attempt": {
+                "provider": "anthropic",
+                "model": "claude-sonnet",
+                "input_tokens": 12,
+                "output_tokens": 5,
+                "cost_microusd": 40_001,
+                "cost_source": "provider_reported",
+            },
+        },
+    )
+
+    deleted = await async_client.delete(f"/api/projects/{project['id']}")
+
+    assert deleted.status_code == HTTPStatus.NO_CONTENT, deleted.text
+    row = (
+        await db_session.execute(
+            text(
+                "SELECT idempotency_key, run_id, project_id, story_id, task_id, user_id, "
+                "input_tokens, output_tokens, cost_microusd, cost_source "
+                "FROM engineering_attempt_ledger WHERE idempotency_key = :key"
+            ),
+            {"key": f"engineering-run:{run_id}"},
+        )
+    ).one()
+    assert row == (
+        f"engineering-run:{run_id}",
+        None,
+        None,
+        None,
+        None,
+        owner["id"],
+        12,
+        5,
+        40_001,
+        "provider_reported",
+    )
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        async with db_session.begin_nested():
+            await db_session.execute(
+                text(
+                    "UPDATE engineering_attempt_ledger SET provider = 'rewritten' "
+                    "WHERE idempotency_key = :key"
+                ),
+                {"key": f"engineering-run:{run_id}"},
+            )
+
+
+@pytest.mark.asyncio
 async def test_migration_backfills_only_terminal_runs_and_enforces_constraints(db_session):
     """Execute the revision against an isolated PostgreSQL schema with historical rows."""
     import importlib.util
