@@ -11,6 +11,10 @@
   from the same result remain available. The ledger rejects mixed or
   contradictory Claude facts, and terminal retries still use its first-write-
   wins writer.
+  - Serialized worker results may retain null legacy metric placeholders beside
+    Claude evidence. Their transport validation ignores only those nulls,
+    retains rejection of non-null mixed facts, and revalidates HTTP-attached
+    evidence as the typed object before broker submission.
 
 - Added the append-only engineering-attempt ledger. Terminal engineering Run
   updates write one idempotent record under the existing Run row lock,

@@ -10,6 +10,7 @@ from typing import Any
 
 import structlog
 
+from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence
 from shared.diagnostics import redact_diagnostic
 
 _SECRET_NAME = re.compile(r"(?:key|secret|token|password|credential|authorization)", re.I)
@@ -97,20 +98,19 @@ def _extract_claude_evidence(stdout: str) -> dict[str, Any]:
     input_tokens = _nonnegative_int(usage.get("input_tokens"))
     output_tokens = _nonnegative_int(usage.get("output_tokens"))
     model = _claude_model(payload)
-    evidence = {
-        "provider": "anthropic",
-        "model": model,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": (
+    evidence = ClaudeResultEvidence(
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=(
             input_tokens + output_tokens
             if input_tokens is not None and output_tokens is not None
             else None
         ),
-        "cache_read_tokens": _nonnegative_int(usage.get("cache_read_input_tokens")),
-        "cache_write_tokens": _nonnegative_int(usage.get("cache_creation_input_tokens")),
-        "cost_microusd": _micro_usd(payload.get("total_cost_usd")),
-    }
+        cache_read_tokens=_nonnegative_int(usage.get("cache_read_input_tokens")),
+        cache_write_tokens=_nonnegative_int(usage.get("cache_creation_input_tokens")),
+        cost_microusd=_micro_usd(payload.get("total_cost_usd")),
+    )
     return {"claude_evidence": evidence}
 
 

@@ -73,6 +73,17 @@ def test_claude_evidence_is_the_only_source_of_claude_cost_and_usage() -> None:
     assert attempt.cache_write_tokens == 5
 
 
+def test_serialized_claude_evidence_can_be_revalidated_with_null_flat_placeholders() -> None:
+    """A typed ledger payload remains valid after its normal wire serialization."""
+    attempt = EngineeringAttemptLedgerInput(
+        claude_evidence={"input_tokens": 12, "output_tokens": 3, "cost_microusd": 40_001}
+    )
+
+    wire = attempt.model_dump(mode="json")
+    assert wire["provider"] == "anthropic"
+    assert EngineeringAttemptLedgerInput.model_validate(wire).cost_microusd == 40_001
+
+
 @pytest.mark.parametrize(
     "payload",
     [

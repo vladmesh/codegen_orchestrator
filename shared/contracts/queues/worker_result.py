@@ -75,9 +75,11 @@ class _WorkerResultBase(BaseModel):
     @classmethod
     def _prevent_mixed_claude_facts(cls, value: Any) -> Any:
         if isinstance(value, dict) and value.get("claude_evidence") is not None:
-            mixed = {"input_tokens", "output_tokens", "total_tokens", "cost_usd"}.intersection(
-                value
-            )
+            mixed = {
+                field
+                for field in ("input_tokens", "output_tokens", "total_tokens", "cost_usd")
+                if value.get(field) is not None
+            }
             if mixed:
                 raise ValueError("claude_evidence cannot be combined with flat effort metrics")
         return value

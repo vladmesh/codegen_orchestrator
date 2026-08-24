@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 class CostSource(StrEnum):
@@ -82,7 +82,31 @@ class EngineeringAttemptLedgerInput(BaseModel):
     @classmethod
     def _prevent_mixed_claude_facts(cls, value: Any) -> Any:
         if isinstance(value, dict) and value.get("claude_evidence") is not None:
-            mixed = _CLAUDE_FLAT_FACT_FIELDS.intersection(value)
+            try:
+                evidence = ClaudeResultEvidence.model_validate(value["claude_evidence"])
+            except ValidationError:
+                # Let the field validator report malformed evidence precisely.
+                return value
+            expected = {
+                "provider": evidence.provider,
+                "model": evidence.model,
+                "input_tokens": evidence.input_tokens,
+                "output_tokens": evidence.output_tokens,
+                "total_tokens": evidence.total_tokens,
+                "cache_read_tokens": evidence.cache_read_tokens,
+                "cache_write_tokens": evidence.cache_write_tokens,
+                "cost_microusd": evidence.cost_microusd,
+                "cost_source": (
+                    CostSource.PROVIDER_REPORTED
+                    if evidence.cost_microusd is not None
+                    else CostSource.UNKNOWN
+                ),
+            }
+            mixed = {
+                field
+                for field in _CLAUDE_FLAT_FACT_FIELDS
+                if value.get(field) is not None and value[field] != expected[field]
+            }
             if mixed:
                 raise ValueError("claude_evidence cannot be combined with flat provider facts")
         return value

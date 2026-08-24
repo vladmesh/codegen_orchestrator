@@ -1,5 +1,7 @@
 from worker_wrapper.observability import extract_effort_metrics, redact_transcript, save_transcript
 
+from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence
+
 
 def test_missing_usage_is_kept_absent() -> None:
     """A provider without usage data must not be recorded as zero usage."""
@@ -15,17 +17,17 @@ def test_extracts_usage_from_indented_claude_json() -> None:
       "modelUsage": {"claude-sonnet-4-20250514": {"inputTokens": 120}}
     }"""
 
-    assert extract_effort_metrics(stdout, "", "claude") == {
-        "claude_evidence": {
-            "provider": "anthropic",
-            "model": "claude-sonnet-4-20250514",
-            "input_tokens": 120,
-            "output_tokens": 30,
-            "total_tokens": 150,
-            "cache_read_tokens": None,
-            "cache_write_tokens": None,
-            "cost_microusd": 12_300,
-        }
+    metrics = extract_effort_metrics(stdout, "", "claude")
+    assert isinstance(metrics["claude_evidence"], ClaudeResultEvidence)
+    assert metrics["claude_evidence"].model_dump(mode="json") == {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "total_tokens": 150,
+        "cache_read_tokens": None,
+        "cache_write_tokens": None,
+        "cost_microusd": 12_300,
     }
 
 
@@ -42,17 +44,17 @@ def test_claude_evidence_uses_decimal_micro_usd_and_forwards_cache_tokens() -> N
       }
     }"""
 
-    assert extract_effort_metrics(stdout, "", "claude") == {
-        "claude_evidence": {
-            "provider": "anthropic",
-            "model": "claude-opus-4-1",
-            "input_tokens": 120,
-            "output_tokens": 30,
-            "total_tokens": 150,
-            "cache_read_tokens": 40,
-            "cache_write_tokens": 50,
-            "cost_microusd": 12_346,
-        }
+    metrics = extract_effort_metrics(stdout, "", "claude")
+    assert isinstance(metrics["claude_evidence"], ClaudeResultEvidence)
+    assert metrics["claude_evidence"].model_dump(mode="json") == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-1",
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "total_tokens": 150,
+        "cache_read_tokens": 40,
+        "cache_write_tokens": 50,
+        "cost_microusd": 12_346,
     }
 
 
@@ -64,9 +66,10 @@ def test_claude_malformed_money_keeps_valid_usage_as_unknown() -> None:
     }"""
 
     evidence = extract_effort_metrics(stdout, "", "claude")["claude_evidence"]
-    assert evidence["input_tokens"] == 120
-    assert evidence["output_tokens"] == 30
-    assert evidence["cost_microusd"] is None
+    assert isinstance(evidence, ClaudeResultEvidence)
+    assert evidence.input_tokens == 120
+    assert evidence.output_tokens == 30
+    assert evidence.cost_microusd is None
 
 
 def test_claude_multiple_json_records_are_not_combined() -> None:
