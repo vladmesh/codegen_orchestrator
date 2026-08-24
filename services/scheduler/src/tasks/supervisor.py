@@ -62,6 +62,7 @@ from shared.contracts.queues.deploy import (
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.queues.qa import QAMessage, QAOutcome
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
 from shared.queues import (
     ARCHITECT_QUEUE,
@@ -383,7 +384,7 @@ async def _park_task_waiting_resources(
         owed = await owe_owner_notification(
             api_client,
             run,
-            event="task_impossible_capacity",
+            event=OwnerNotificationEvent.TASK_IMPOSSIBLE_CAPACITY,
             text=IMPOSSIBLE_CAPACITY_TASK_TEXT,
             story_id=task.story_id,
             project_id=str(task.project_id),
@@ -485,7 +486,7 @@ async def _request_resources_via_po(
     if not recipient.is_addressable:
         return
     event = POSystemEvent(
-        event="task_waiting_resources",
+        event=OwnerNotificationEvent.TASK_WAITING_RESOURCES,
         text=(
             "Engineering is waiting for server capacity. Tell the user that work will resume "
             "automatically when capacity becomes available."
@@ -515,7 +516,7 @@ async def _request_infrastructure_wait_via_po(
     recipient = await resolve_project_recipient(
         api_client,
         str(task.project_id),
-        event="task_waiting_infrastructure",
+        event=OwnerNotificationEvent.TASK_WAITING_INFRASTRUCTURE,
         story_id=task.story_id,
     )
     if not recipient.is_addressable:
@@ -667,7 +668,7 @@ async def _notify_resources_resumed_via_po(
     if not recipient.is_addressable:
         return
     event = POSystemEvent(
-        event="task_resources_resumed",
+        event=OwnerNotificationEvent.TASK_RESOURCES_RESUMED,
         text="Server capacity is available again. Tell the user that engineering has resumed.",
         task_id=task.id,
         story_id=task.story_id or "",
@@ -1186,7 +1187,7 @@ async def _handle_deploy_code_fix(
         owed = await owe_owner_notification(
             api_client,
             run,
-            event="story_engineering_budget_denied",
+            event=OwnerNotificationEvent.STORY_QUARANTINED,
             text=ENGINEERING_BUDGET_DENIED_TEXT,
             story_id=story_id,
             project_id=project_id,
@@ -1474,7 +1475,7 @@ async def _escalate_refused_deploy(
         owed = await owe_owner_notification(
             api_client,
             run,
-            event="story_impossible_capacity",
+            event=OwnerNotificationEvent.STORY_IMPOSSIBLE_CAPACITY,
             text=IMPOSSIBLE_CAPACITY_TEXT,
             story_id=story_id,
             project_id=project_id,
@@ -1688,7 +1689,7 @@ async def _request_user_secret_via_po(
         "once every secret is saved."
     )
     event = POSystemEvent(
-        event="story_waiting_user_secret",
+        event=OwnerNotificationEvent.STORY_WAITING_USER_SECRET,
         text=text,
         task_id=story_id,
         story_id=story_id,
@@ -1942,7 +1943,7 @@ async def supervise_testing_stories(
             owed = await owe_owner_notification(
                 api_client,
                 run,
-                event="story_completed",
+                event=OwnerNotificationEvent.STORY_COMPLETED,
                 text=_story_completed_text(run),
                 story_id=story_id,
                 project_id=project_id,
@@ -2098,7 +2099,7 @@ async def _quarantine_unverified_application(
     owed = await owe_owner_notification(
         api_client,
         run,
-        event="story_quarantined",
+        event=OwnerNotificationEvent.STORY_QUARANTINED,
         text=_quarantine_text(reason),
         story_id=story_id,
         project_id=project_id,
@@ -2179,7 +2180,7 @@ async def _handle_qa_failed(
         owed = await owe_owner_notification(
             api_client,
             run,
-            event="story_quarantined",
+            event=OwnerNotificationEvent.STORY_QUARANTINED,
             text=_fix_attempts_exhausted_text(summary, exhausted_limit),
             story_id=story_id,
             project_id=project_id,

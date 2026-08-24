@@ -13,6 +13,7 @@ from __future__ import annotations
 import structlog
 
 from shared.contracts.queues.po import POProactiveMessage, POSystemEvent, to_flat_fields
+from shared.contracts.vocab import OwnerNotificationEvent, POCallbackEvent
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -22,7 +23,7 @@ logger = structlog.get_logger(__name__)
 async def publish_callback_event(
     redis: RedisStreamClient,
     callback_stream: str | None,
-    event_type: str,
+    event_type: POCallbackEvent,
     task_id: str,
     message: str,
     *,
@@ -99,7 +100,7 @@ async def publish_story_event(
     redis: RedisStreamClient,
     *,
     telegram_chat_id: str,
-    event: str,
+    event: OwnerNotificationEvent,
     text: str,
     story_id: str = "",
     project_id: str = "",

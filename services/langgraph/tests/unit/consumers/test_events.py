@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+from pydantic import ValidationError
 import pytest
 
 from src.consumers._events import publish_callback_event
@@ -75,14 +76,21 @@ class TestPublishCallbackEvent:
         mock_redis.publish_flat.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_type_field_always_system_event(self, mock_redis):
-        """type field should always be 'system_event'."""
-        for event_type in ("progress", "completed", "failed", "error"):
+    async def test_type_field_always_system_event_for_known_callback_events(self, mock_redis):
+        """Callback events use the shared queue vocabulary."""
+        for event_type in ("progress", "completed", "failed"):
             mock_redis.publish_flat.reset_mock()
             await publish_callback_event(mock_redis, "test:stream", event_type, "task-1", "msg")
             fields = mock_redis.publish_flat.call_args[0][1]
             assert fields["type"] == "system_event"
             assert fields["event"] == event_type
+
+    @pytest.mark.asyncio
+    async def test_unknown_callback_event_is_rejected(self, mock_redis):
+        """An unrouteable event never enters ``po:input``."""
+        with pytest.raises(ValidationError):
+            await publish_callback_event(mock_redis, "test:stream", "error", "task-1", "msg")
+        mock_redis.publish_flat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_omits_empty_user_id(self, mock_redis):

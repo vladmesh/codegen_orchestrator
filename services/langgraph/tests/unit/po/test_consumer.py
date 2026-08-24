@@ -6,9 +6,11 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from pydantic import TypeAdapter
 import pytest
 
-from shared.contracts.queues.po import POUserMessage
+from shared.contracts.queues.po import POInputMessage, POSystemEvent, POUserMessage
+from shared.contracts.vocab import OwnerNotificationEvent
 from src.consumers.po import _handle_message, _process_message, _repair_orphan_tool_calls
 
 
@@ -74,7 +76,9 @@ class TestHandleMessage:
         [
             "story_completed",
             "story_failed",
+            "story_blocked",
             "story_quarantined",
+            "story_waiting_user_secret",
             "task_waiting_resources",
             "task_waiting_infrastructure",
             "task_impossible_capacity",
@@ -96,6 +100,32 @@ class TestHandleMessage:
         mock_graph.ainvoke.assert_called_once()
         msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
         assert f"system_event:{event_type}" in msg.content
+
+    @pytest.mark.asyncio
+    async def test_budget_denial_quarantine_event_is_routable_and_deliverable(
+        self, mock_graph, mock_client
+    ):
+        """The deploy-fix denial's durable event is accepted by PO end to end."""
+        notification = POSystemEvent(
+            event=OwnerNotificationEvent.STORY_QUARANTINED,
+            text="Engineering cannot start the deploy fix because the budget is exhausted.",
+            story_id="story-1",
+            project_id="project-1",
+            telegram_chat_id="user-1",
+        )
+        message = TypeAdapter(POInputMessage).validate_python(notification.model_dump(mode="json"))
+
+        await _handle_message(
+            mock_graph,
+            mock_client,
+            notification.telegram_chat_id,
+            message.model_dump(mode="json"),
+        )
+
+        mock_graph.ainvoke.assert_called_once()
+        delivered = mock_client.publish_flat.call_args
+        assert delivered.args[0] == "po:proactive"
+        assert delivered.args[1]["telegram_chat_id"] == "user-1"
 
     @pytest.mark.asyncio
     async def test_reminder_uses_human_message_with_prefix(self, mock_graph, mock_client):

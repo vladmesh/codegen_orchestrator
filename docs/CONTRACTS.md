@@ -152,6 +152,7 @@ instead of restating a `Literal[...]` or a local enum:
 | `ActionType` | `create`, `feature`, `fix` | `EngineeringMessage.action` |
 | `ResultStatus` | `success`, `failed`, `timeout` | `BaseResult.status` (and its subclasses) |
 | `LifecycleEvent` | `started`, `progress`, `completed`, `failed`, `stopped` (canonical member set) | via the field-specific subsets below |
+| `OwnerNotificationEvent` | routed `story_*` and `task_*` owner-notification events | `POSystemEvent`, scheduler owner-notification producers, PO consumer |
 
 `LifecycleEvent` is the canonical member set, but each wire accepts only the
 slice its producers emit — the subsets are `Literal[...]` over the enum members,
@@ -159,6 +160,17 @@ kept explicit so the historical per-field vocabularies are not merged:
 
 - `TaskProgressKind` (`started`/`progress`/`completed`/`failed`, no `stopped`) —
   `ProgressEvent.type`, `WorkerEvent.event_type`.
+
+`OwnerNotificationEvent` is the complete routed PO vocabulary: `story_completed`,
+`story_failed`, `story_blocked`, `story_quarantined`, `story_waiting_user_secret`,
+`task_waiting_resources`, `task_waiting_infrastructure`, `task_impossible_capacity`,
+`story_impossible_capacity` and `task_resources_resumed`. `POSystemEvent.event`
+accepts that vocabulary plus the three non-owner callback events (`progress`,
+`completed`, `failed`); no arbitrary event string is valid. The PO consumer routes
+only `OwnerNotificationEvent`, and `OwnerNotification.event` is that same typed
+vocabulary. Therefore an unknown owner-notification event is rejected before it can
+be recorded, published, or settled as delivered rather than being accepted by a
+producer and dropped by PO.
 
 Other vocabularies stay deliberately separate — they carry values the canonical
 enums do not, so merging them would broaden a field past what the wire supports:
@@ -1410,6 +1422,14 @@ task; the record lives on the engineering run, since the record belongs to whate
 outcome. Each path owes the message, commits the transition, then spends its first delivery attempt.
 A refusal escalated with `tell_owner=False` stays admin-only and owes nothing: there is no decision
 for the owner to make, and the seam does not invent a message.
+
+A deploy-fix engineering-budget denial takes the same durable path using
+`story_quarantined`, with budget-specific text. Its ordering is fixed: it first records the
+budget-denial quarantine reason, then writes the `OWED` record using the typed vocabulary, transitions
+the story to `waiting_human_review`, and only then attempts delivery. A publish failure leaves that
+record owed for `supervise_owed_owner_notifications`; only an accepted publish of a vocabulary member
+may settle it `DELIVERED`. The denial creates neither an engineering Run nor queue work and does not
+create a polling retry.
 
 The publishes that remain direct in `supervisor.py` are the non-terminal ones, and that is the whole
 list: `task_waiting_resources` and `task_waiting_infrastructure`, `task_resources_resumed`, and

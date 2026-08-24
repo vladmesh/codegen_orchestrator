@@ -46,6 +46,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.vocab import OwnerNotificationEvent
 
 #: run_metadata key the record lives under, alongside `qa_handoff`.
 OWNER_NOTIFICATION_KEY = "owner_notification"
@@ -81,7 +82,7 @@ class OwnerNotification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: The `POSystemEvent.event` name PO routes on.
-    event: str
+    event: OwnerNotificationEvent
     text: str
     story_id: str
     project_id: str

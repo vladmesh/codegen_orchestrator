@@ -21,6 +21,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from shared.contracts.recipient import RejectsLegacyRecipientField
+from shared.contracts.vocab import POSystemEventName
 
 # --- PO Input messages (po:input) ---
 
@@ -44,7 +45,7 @@ class POSystemEvent(RejectsLegacyRecipientField):
     """
 
     type: Literal["system_event"] = "system_event"
-    event: str
+    event: POSystemEventName
     text: str
     task_id: str = ""
     telegram_chat_id: str = ""

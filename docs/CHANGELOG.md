@@ -4,9 +4,18 @@
 
 - Supervisor deploy-fix redispatch now uses the same durable engineering-budget
   admission before it creates a Run or publishes work. A denial records the
-  balance context, parks the story in human review and owes its owner a notice;
-  pre-handoff failures release the exact deploy-fix reservation, while published
-  attempts continue to terminal known or unknown-cost settlement.
+  balance context, writes a typed `story_quarantined` owner notice, then parks
+  the story in human review before attempting delivery; pre-handoff failures
+  release the exact deploy-fix reservation, while published attempts continue
+  to terminal known or unknown-cost settlement.
+
+- PO owner-notification events now use one shared typed vocabulary. The
+  scheduler's durable and direct owner-message producers and the PO consumer
+  import it, `POSystemEvent` rejects arbitrary event names, and a durable
+  notification cannot be marked delivered for an event PO would drop. The
+  deploy-fix budget-denial path reuses `story_quarantined` with budget-specific
+  text, so its persisted reason, owed record, human-review transition and
+  recoverable delivery remain in that order.
 
 - Engineering-budget dispatch recovery now treats queue publication as the only
   handoff boundary: manual and scheduler failures before it release active holds,

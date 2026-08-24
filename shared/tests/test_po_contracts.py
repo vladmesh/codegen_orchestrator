@@ -3,6 +3,8 @@
 from pydantic import TypeAdapter, ValidationError
 import pytest
 
+from shared.contracts.dto.owner_notification import OwnerNotification
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.po import (
     POInputMessage,
     POProactiveMessage,
@@ -89,6 +91,24 @@ class TestPOSystemEvent:
         assert "task_id" not in fields
         assert "telegram_chat_id" not in fields
         assert "project_id" not in fields
+
+    def test_rejects_unknown_owner_notification_event(self):
+        """An owner notification cannot be accepted then dropped by PO."""
+        with pytest.raises(ValidationError):
+            POSystemEvent(event="story_engineering_budget_denied", text="budget exhausted")
+
+        with pytest.raises(ValidationError):
+            OwnerNotification.model_validate(
+                {
+                    "event": "story_engineering_budget_denied",
+                    "text": "budget exhausted",
+                    "story_id": "story-1",
+                    "project_id": "project-1",
+                    "terminal_status": StoryStatus.WAITING_HUMAN_REVIEW,
+                    "state": "owed",
+                    "owed_at": "2026-08-24T00:00:00+00:00",
+                }
+            )
 
 
 class TestPOReminderMessage:

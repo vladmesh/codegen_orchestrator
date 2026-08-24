@@ -511,9 +511,28 @@ class TestSuperviseDeployingStories:
             },
         )
         api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
-        assert any(
-            call.args[0] == PO_INPUT_QUEUE for call in redis_client.publish_flat.call_args_list
-        )
+        owner_events = [
+            call.args[1]
+            for call in redis_client.publish_flat.call_args_list
+            if call.args[0] == PO_INPUT_QUEUE
+        ]
+        assert owner_events == [
+            {
+                "type": "system_event",
+                "event": "story_quarantined",
+                "text": (
+                    "Engineering cannot start the deploy fix because this project's engineering "
+                    "budget is currently exhausted. Tell the user that the work is waiting "
+                    "for their review."
+                ),
+                "task_id": "story-1",
+                "telegram_chat_id": "900000001",
+                "owner_user_id": "1",
+                "story_id": "story-1",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "timestamp": ANY,
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_code_fix_publish_failure_releases_exact_admission_before_handoff(
