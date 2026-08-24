@@ -524,7 +524,7 @@ async def test_concurrent_boundary_admissions_have_one_winner(async_client: Asyn
 
 
 @pytest.mark.asyncio
-async def test_terminal_unknown_cost_retains_the_conservative_reservation(
+async def test_terminal_unknown_deploy_fix_retains_the_conservative_reservation(
     async_client: AsyncClient,
 ):
     user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
@@ -533,10 +533,11 @@ async def test_terminal_unknown_cost_retains_the_conservative_reservation(
         f"/api/engineering-budget-policies/{user['id']}",
         json={"limit_microusd": 100, "attempt_reservation_microusd": 60, "state": "enabled"},
     )
-    run_id = f"eng-unknown-reservation-{uuid.uuid4().hex}"
+    deploy_run_id = f"deploy-unknown-reservation-{uuid.uuid4().hex}"
+    run_id = f"eng-deploy-fix-{deploy_run_id}-1"
     admitted = await async_client.post(
         "/api/engineering-budget-policies/admissions",
-        json={"attempt_id": run_id, "project_id": project["id"], "task_id": "unknown-cost"},
+        json={"attempt_id": run_id, "project_id": project["id"], "task_id": run_id},
     )
     assert admitted.json()["outcome"] == "admitted"
     assert (

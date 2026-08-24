@@ -119,12 +119,15 @@ may release only a proven pre-handoff `active` hold.
 ledger. The pre-handoff boundary ends only when the engineering message has published.
 Dispatchers validate cheap local conditions first; after an admitted `active` hold, every
 exception or typed refusal before that boundary, including Run creation, recipient
-resolution and publishing, changes it to `released`. A scheduler denial has no Run or
-queue side effect and moves the task through `in_dev` to `waiting_human_review` with
-budget-denial context, so resumption is explicit human action rather than a polling retry.
-After successful publication the hold is never released by dispatch recovery, because
-provider work may have started. Terminal engineering ledger creation settles an active
-hold to `settled` for a known amount, or retains it as `unknown_final` when no terminal
+resolution and publishing, changes it to `released`. This applies to ordinary task
+dispatch and supervisor deploy-fix dispatch, whose stable attempt id is
+`eng-deploy-fix-{deploy_run_id}-{attempt}`. A scheduler denial has no Run or queue side
+effect and moves the affected task or deploy-fix story to `waiting_human_review` with
+budget-denial context and a durable owner notification, so resumption is explicit human
+action rather than a polling retry. After successful publication the hold is never
+released by dispatch recovery, because provider work may have started. Terminal
+engineering ledger creation settles an active hold to `settled` for a known amount, or
+retains it as `unknown_final` when no terminal
 cost is known. Retrying terminal delivery is idempotent, so ledger cost and a hold are
 never double-counted. An unknown-final hold is a conservative coverage value, never
 provider spend.

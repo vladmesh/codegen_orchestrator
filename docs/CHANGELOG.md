@@ -2,6 +2,12 @@
 
 ## 2026-08-24
 
+- Supervisor deploy-fix redispatch now uses the same durable engineering-budget
+  admission before it creates a Run or publishes work. A denial records the
+  balance context, parks the story in human review and owes its owner a notice;
+  pre-handoff failures release the exact deploy-fix reservation, while published
+  attempts continue to terminal known or unknown-cost settlement.
+
 - Engineering-budget dispatch recovery now treats queue publication as the only
   handoff boundary: manual and scheduler failures before it release active holds,
   including local refusals, Run creation and recipient resolution. Scheduler

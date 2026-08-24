@@ -26,6 +26,11 @@ from shared.contracts.bot_access import (
     project_bot_audience,
 )
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionCommand,
+    EngineeringBudgetAdmissionOutcome,
+)
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -96,6 +101,19 @@ DEPLOY_RETRY_KEY_PREFIX = "deploy:retries:"
 #: Where a deploy that carried an infrastructure wait forward started waiting.
 #: Stored in `run_metadata` so the bound survives every re-dispatch.
 INFRASTRUCTURE_WAIT_STARTED_KEY = "infrastructure_wait_started_at"
+
+# A Run which failed before its EngineeringMessage reached the queue is terminal
+# evidence for recovery, but never provider work. The reservation is released
+# before this status update so terminal finalization cannot turn it into an
+# unknown-cost hold.
+DEPLOY_FIX_PUBLISH_FAILED_ERROR = "deploy-fix publish failed"
+
+# The durable owner-notification record lives on the failed deploy Run, which
+# remains available after the denied fix parks the story in human review.
+ENGINEERING_BUDGET_DENIED_TEXT = (
+    "Engineering cannot start the deploy fix because this project's engineering budget is "
+    "currently exhausted. Tell the user that the work is waiting for their review."
+)
 
 
 class RefusedDeployAction(StrEnum):
@@ -1145,14 +1163,47 @@ async def _handle_deploy_code_fix(
         await _notify_admin_failure(run.id, project_id, "deploy fix retries exhausted")
         return False
 
-    # Transition story back to IN_PROGRESS
-    await api_client.transition_story(story_id, "start")
-
     error_details = result.error_details or "unknown deploy error"
     fix_task_id = f"eng-deploy-fix-{run.id}-{attempt + 1}"
+    admission = await api_client.admit_engineering_budget(
+        EngineeringBudgetAdmissionCommand(
+            attempt_id=fix_task_id,
+            project_id=project.id,
+            task_id=fix_task_id,
+            story_id=story_id,
+        )
+    )
+    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+        reason = {
+            "reason": "engineering_budget_denied",
+            "attempt_id": fix_task_id,
+            "known_spend_microusd": admission.known_spend_microusd,
+            "active_held_microusd": admission.active_held_microusd,
+            "available_microusd": admission.available_microusd,
+        }
+        log.info("deploy_fix_budget_denied", **reason)
+        await api_client.update_story(story_id, {"quarantine_reason": reason})
+        owed = await owe_owner_notification(
+            api_client,
+            run,
+            event="story_engineering_budget_denied",
+            text=ENGINEERING_BUDGET_DENIED_TEXT,
+            story_id=story_id,
+            project_id=project_id,
+            terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+            log=log,
+        )
+        await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+        await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
+        return False
 
-    # Create a run record for the fix task
+    # Every action from admission through publication is pre-handoff. It must
+    # release an admitted hold if it fails, because publication is the first
+    # point provider work could have started.
+    run_created = False
     try:
+        # Transition story back to IN_PROGRESS only for an admitted handoff.
+        await api_client.transition_story(story_id, "start")
         await api_client.create_run(
             {
                 "id": fix_task_id,
@@ -1162,29 +1213,41 @@ async def _handle_deploy_code_fix(
                 "status": RunStatus.QUEUED.value,
             }
         )
+        run_created = True
+        fix_recipient = await resolve_project_recipient(
+            api_client, project_id, event="deploy_code_fix", story_id=story_id
+        )
+        fix_msg = EngineeringMessage(
+            task_id=fix_task_id,
+            project_id=project_id,
+            initiating_run_id=initiating_run_id,
+            telegram_chat_id=fix_recipient.telegram_chat_id,
+            action="fix",
+            description=(
+                f"Deploy failed — fix the code so containers start cleanly.\n\n"
+                f"Error: {error_details}\n\n"
+                f"Run the service locally or check imports/dependencies before pushing."
+            ),
+            skip_deploy=False,
+            story_id=story_id,
+            deploy_fix_attempt=attempt + 1,
+        )
+        await redis_client.publish_message(ENGINEERING_QUEUE, fix_msg)
     except Exception:
-        log.warning("deploy_fix_run_create_failed", fix_task_id=fix_task_id, exc_info=True)
-
-    fix_recipient = await resolve_project_recipient(
-        api_client, project_id, event="deploy_code_fix", story_id=story_id
-    )
-    fix_msg = EngineeringMessage(
-        task_id=fix_task_id,
-        project_id=project_id,
-        initiating_run_id=initiating_run_id,
-        telegram_chat_id=fix_recipient.telegram_chat_id,
-        action="fix",
-        description=(
-            f"Deploy failed — fix the code so containers start cleanly.\n\n"
-            f"Error: {error_details}\n\n"
-            f"Run the service locally or check imports/dependencies before pushing."
-        ),
-        skip_deploy=False,
-        story_id=story_id,
-        deploy_fix_attempt=attempt + 1,
-    )
-
-    await redis_client.publish_message(ENGINEERING_QUEUE, fix_msg)
+        log.exception("deploy_fix_pre_handoff_failed", fix_task_id=fix_task_id)
+        await api_client.release_engineering_budget_admission(fix_task_id)
+        if run_created:
+            await api_client.update_run(
+                fix_task_id,
+                {
+                    "status": RunStatus.FAILED.value,
+                    "error_message": DEPLOY_FIX_PUBLISH_FAILED_ERROR,
+                    "result": EngineeringRunResult(
+                        engineering_status=EngineeringStatus.FAILED
+                    ).model_dump(mode="json"),
+                },
+            )
+        return False
     log.info("deploy_supervisor_code_fix", fix_task_id=fix_task_id, attempt=attempt + 1)
     return True
 
