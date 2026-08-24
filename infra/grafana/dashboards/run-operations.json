@@ -46,7 +46,7 @@
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
       "id": 5,
-      "targets": [{ "format": "table", "rawSql": "SELECT COALESCE(agent_profile->>'name', agent_profile->>'agent_type', 'not recorded') AS metric, CASE WHEN count(total_tokens) = 0 THEN NULL ELSE sum(total_tokens) END AS value FROM runs WHERE $__timeFilter(created_at) AND ('$run_type' = 'All' OR type IN (${run_type:sqlstring})) GROUP BY 1 ORDER BY 1", "refId": "A" }],
+      "targets": [{ "format": "table", "rawSql": "SELECT COALESCE(r.agent_profile->>'name', r.agent_profile->>'agent_type', l.provider, l.model, 'not recorded') AS metric, CASE WHEN count(CASE WHEN r.type = 'engineering' THEN l.total_tokens ELSE r.total_tokens END) = 0 THEN NULL ELSE sum(CASE WHEN r.type = 'engineering' THEN l.total_tokens ELSE r.total_tokens END) END AS value FROM runs r LEFT JOIN engineering_attempt_ledger l ON l.run_id = r.id WHERE $__timeFilter(r.created_at) AND ('$run_type' = 'All' OR r.type IN (${run_type:sqlstring})) GROUP BY 1 ORDER BY 1", "refId": "A" }],
       "title": "Tokens by head profile",
       "type": "bargauge"
     },
@@ -55,7 +55,7 @@
       "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4 }, "overrides": [] },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
       "id": 6,
-      "targets": [{ "format": "table", "rawSql": "SELECT COALESCE(agent_profile->>'name', agent_profile->>'agent_type', 'not recorded') AS metric, CASE WHEN count(cost_usd) = 0 THEN NULL ELSE sum(cost_usd) END AS value FROM runs WHERE $__timeFilter(created_at) AND ('$run_type' = 'All' OR type IN (${run_type:sqlstring})) GROUP BY 1 ORDER BY 1", "refId": "A" }],
+      "targets": [{ "format": "table", "rawSql": "SELECT COALESCE(r.agent_profile->>'name', r.agent_profile->>'agent_type', l.provider, l.model, 'not recorded') AS metric, CASE WHEN count(CASE WHEN r.type = 'engineering' THEN l.cost_microusd ELSE r.cost_usd * 1000000 END) = 0 THEN NULL ELSE sum(CASE WHEN r.type = 'engineering' THEN l.cost_microusd ELSE r.cost_usd * 1000000 END) / 1000000.0 END AS value FROM runs r LEFT JOIN engineering_attempt_ledger l ON l.run_id = r.id WHERE $__timeFilter(r.created_at) AND ('$run_type' = 'All' OR r.type IN (${run_type:sqlstring})) GROUP BY 1 ORDER BY 1", "refId": "A" }],
       "title": "Cost by head profile",
       "type": "bargauge"
     }

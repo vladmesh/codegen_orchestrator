@@ -67,6 +67,27 @@ class TestHandleEngineeringSuccess:
         assert patch["agent_profile"]["model"] == "claude-sonnet"
 
     @pytest.mark.asyncio
+    async def test_provider_reported_cost_is_preserved_as_micro_usd(self, mock_redis, mock_api):
+        """Worker-wrapper cost becomes canonical exact money, not a dropped float."""
+        from src.consumers.engineering import _fail_job
+
+        await _fail_job(
+            "eng-provider-cost",
+            "agent failed",
+            worker_observability={
+                "input_tokens": 12,
+                "total_tokens": 17,
+                "cost_usd": 0.040001,
+                "agent_profile": {"provider": "anthropic", "model": "claude-sonnet"},
+            },
+        )
+
+        attempt = mock_api.patch.call_args.kwargs["json"]["engineering_attempt"]
+        assert attempt["cost_source"] == "provider_reported"
+        assert attempt["cost_microusd"] == 40_001
+        assert "cost_usd" not in mock_api.patch.call_args.kwargs["json"]
+
+    @pytest.mark.asyncio
     async def test_missing_effort_metrics_are_saved_as_absent(self, mock_redis, mock_api):
         """A worker without provider usage must complete rather than invent zeroes."""
         from src.consumers.engineering import _handle_engineering_success

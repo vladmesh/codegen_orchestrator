@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 import structlog
 
@@ -50,21 +51,34 @@ class EngineeringSuccessParams:
 def _observability_patch(worker_observability: dict | None) -> dict:
     """Keep compatibility artifacts on Run and canonical usage in the ledger.
 
-    Worker-wrapper facts do not yet carry an exact-cost provenance, so the
-    ledger records their provider/model/usage with explicit unknown cost. The
-    old mutable token and float-cost columns are no longer written.
+    Provider-reported money is converted to the ledger's integer micro-USD
+    unit before it crosses the API boundary. Facts without a provider retain
+    their usage with explicit unknown cost; the mutable Run float is never
+    written as a competing source.
     """
     observability = worker_observability or {}
     profile = observability.get("agent_profile") or {}
+    provider = profile.get("provider")
+    cost_usd = observability.get("cost_usd")
+    attempt = {
+        "provider": provider,
+        "model": profile.get("model"),
+        "input_tokens": observability.get("input_tokens"),
+        "output_tokens": observability.get("output_tokens"),
+        "total_tokens": observability.get("total_tokens"),
+        "cost_source": "unknown",
+    }
+    if provider and cost_usd is not None:
+        attempt.update(
+            cost_microusd=int(
+                (Decimal(str(cost_usd)) * Decimal("1000000")).to_integral_value(
+                    rounding=ROUND_HALF_UP
+                )
+            ),
+            cost_source="provider_reported",
+        )
     return {
-        "engineering_attempt": {
-            "provider": profile.get("provider"),
-            "model": profile.get("model"),
-            "input_tokens": observability.get("input_tokens"),
-            "output_tokens": observability.get("output_tokens"),
-            "total_tokens": observability.get("total_tokens"),
-            "cost_source": "unknown",
-        },
+        "engineering_attempt": attempt,
         **{
             field: observability.get(field)
             for field in ("transcript_path", "transcript_truncated", "agent_profile")

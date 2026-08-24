@@ -28,6 +28,7 @@ COPY shared /app/shared
 
 # Copy source code
 COPY services/api/src ./src
+COPY services/api/migrations ./migrations
 COPY services/api/tests ./tests
 COPY services/api/pytest.ini ./
 

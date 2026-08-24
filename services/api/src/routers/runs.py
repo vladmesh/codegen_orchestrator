@@ -63,6 +63,11 @@ QA_SSH_GRANT_PAGE_MAX = 500
 # number of tries — so a page is all the bound the recovery sweep needs.
 OWNER_NOTIFICATION_PAGE_MAX = 500
 
+# Ledger rows are immutable history, but an unrestricted historical query can
+# still exhaust the API process. Keep this aligned with the router's bounded
+# selection endpoints.
+ENGINEERING_ATTEMPT_PAGE_MAX = 500
+
 
 class EngineeringAttemptRead(BaseModel):
     """Read-only representation of the canonical engineering ledger."""
@@ -242,6 +247,7 @@ async def list_engineering_attempts(
     run_id: str | None = None,
     occurred_after: datetime | None = None,
     occurred_before: datetime | None = None,
+    limit: int = Query(100, ge=1, le=ENGINEERING_ATTEMPT_PAGE_MAX),
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
@@ -276,7 +282,9 @@ async def list_engineering_attempts(
         query = query.where(EngineeringAttemptLedger.user_id == actor.id)
     elif user_id is not None:
         query = query.where(EngineeringAttemptLedger.user_id == user_id)
-    result = await db.execute(query.order_by(EngineeringAttemptLedger.occurred_at.desc()))
+    result = await db.execute(
+        query.order_by(EngineeringAttemptLedger.occurred_at.desc()).limit(limit)
+    )
     return list(result.scalars().all())
 
 
@@ -561,6 +569,18 @@ async def update_run(
     # update cannot pre-seed a timestamp for a later terminal transition.
     update_data = run_update.model_dump(exclude_unset=True)
     update_data.pop("completed_at", None)
+    if "user_id" in update_data and run.project_id is not None:
+        project = await db.get(Project, run.project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Run {run_id} has no persisted project owner",
+            )
+        if update_data["user_id"] != project.owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Project-bound runs must retain their persisted project owner",
+            )
     requested_status = update_data.get("status")
     engineering_attempt = run_update.engineering_attempt
     update_data.pop("engineering_attempt", None)

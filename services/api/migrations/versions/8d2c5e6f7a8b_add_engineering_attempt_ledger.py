@@ -88,6 +88,7 @@ def upgrade() -> None:
         FROM runs r
         LEFT JOIN projects p ON p.id = r.project_id
         WHERE r.type = 'engineering'
+          AND r.status IN ('completed', 'failed', 'cancelled')
         """
     )
 

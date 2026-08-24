@@ -33,6 +33,13 @@ class EngineeringAttemptLedgerInput(BaseModel):
 
     @model_validator(mode="after")
     def _validate_provenance(self) -> "EngineeringAttemptLedgerInput":
+        known_usage = tuple(
+            usage for usage in (self.input_tokens, self.output_tokens) if usage is not None
+        )
+        if self.total_tokens is not None and any(
+            self.total_tokens < usage for usage in known_usage
+        ):
+            raise ValueError("total_tokens cannot be less than a known usage component")
         if self.input_tokens is not None and self.output_tokens is not None:
             computed_total = self.input_tokens + self.output_tokens
             if self.total_tokens is None:

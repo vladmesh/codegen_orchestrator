@@ -34,6 +34,11 @@ float. `cost_source=provider_reported` requires both a provider and a monetary v
 may still retain provider, model and token facts. The old `runs` token/cost fields are
 compatibility observations only; new engineering terminal writes derive canonical
 accounting from this ledger and do not treat those mutable columns as a cost source.
+Worker-wrapper provider totals are rounded into this micro-USD unit before ingestion and
+are marked `provider_reported`; the Run API projects its retained float response back
+from the ledger. Grafana's engineering effort panels read the ledger too. Historical
+backfill records only already terminal engineering Runs, so a queued or running Run can
+later record its actual final provider facts through the locked terminal writer.
 
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 

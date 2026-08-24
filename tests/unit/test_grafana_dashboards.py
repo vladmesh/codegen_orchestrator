@@ -69,8 +69,8 @@ def test_runs_dashboard_exposes_outcomes_retries_and_effort_without_zero_fallbac
     } <= titles
     assert "runs" in queries
     assert "task_events" in queries
-    assert "total_tokens" in queries
-    assert "cost_usd" in queries
+    assert "engineering_attempt_ledger" in queries
+    assert "cost_microusd" in queries
     assert "agent_profile" in queries
     assert "NULLIF" in queries
     assert "COALESCE(total_tokens, 0)" not in queries

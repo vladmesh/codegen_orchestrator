@@ -25,6 +25,19 @@ def test_unknown_cost_keeps_usage_without_inventing_zero_cost() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
+        {"input_tokens": 10, "total_tokens": 9},
+        {"output_tokens": 10, "total_tokens": 9},
+    ],
+)
+def test_total_tokens_cannot_be_less_than_known_partial_usage(payload: dict) -> None:
+    """One available usage fact is enough to disprove a supplied total."""
+    with pytest.raises(ValidationError, match="total_tokens"):
+        EngineeringAttemptLedgerInput(**payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
         {"cost_source": "unknown", "cost_microusd": 0},
         {"cost_source": "provider_reported", "cost_microusd": 12},
         {

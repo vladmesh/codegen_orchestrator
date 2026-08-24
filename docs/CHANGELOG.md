@@ -2,6 +2,10 @@
 
 ## 2026-08-24
 
+- Fixed engineering-attempt ledger backfill to skip in-flight Runs, preserved provider-reported worker cost as integer micro-USD, guarded project-bound Run ownership on update, and bounded ledger reads.
+
+## 2026-08-24
+
 - Added the append-only engineering-attempt ledger. Terminal engineering Run
   updates now write one idempotent record under the existing Run row lock,
   attribute project-bound attempts from `Project.owner_id`, preserve unknown
