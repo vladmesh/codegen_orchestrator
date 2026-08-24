@@ -59,7 +59,8 @@ async def admit_engineering_attempt(
     if existing is not None:
         if not _same_payload(existing, command):
             raise ValueError("Admission attempt identity was reused with a different payload")
-        return _read(existing, None)
+        if existing.state is not EngineeringBudgetReservationState.RELEASED:
+            return _read(existing, None)
 
     project = await db.get(Project, command.project_id)
     if project is None:
@@ -70,16 +71,19 @@ async def admit_engineering_attempt(
         .with_for_update()
     )
     # A concurrent caller which waited for this policy lock must see the first
-    # result before calculating a second admission.
+    # result before calculating a second admission. Populate the identity map
+    # too: this session may have observed RELEASED before it blocked on the
+    # lock, while the lock holder has already re-armed that same row.
     existing = await db.scalar(
-        select(EngineeringBudgetReservation).where(
-            EngineeringBudgetReservation.attempt_id == command.attempt_id
-        )
+        select(EngineeringBudgetReservation)
+        .where(EngineeringBudgetReservation.attempt_id == command.attempt_id)
+        .execution_options(populate_existing=True)
     )
     if existing is not None:
         if not _same_payload(existing, command):
             raise ValueError("Admission attempt identity was reused with a different payload")
-        return _read(existing, None)
+        if existing.state is not EngineeringBudgetReservationState.RELEASED:
+            return _read(existing, None)
 
     known_spend = int(
         await db.scalar(
@@ -124,20 +128,32 @@ async def admit_engineering_attempt(
         else:
             outcome = EngineeringBudgetAdmissionOutcome.ADMITTED
             state = EngineeringBudgetReservationState.ACTIVE
-    reservation = EngineeringBudgetReservation(
-        idempotency_key=_reservation_key(command.attempt_id),
-        attempt_id=command.attempt_id,
-        user_id=project.owner_id,
-        project_id=command.project_id,
-        task_id=command.task_id,
-        story_id=command.story_id,
-        outcome=outcome,
-        state=state,
-        reservation_microusd=reserve,
-        known_spend_microusd=known_spend,
-        active_held_microusd=reserve if state is not None else 0,
-    )
-    db.add(reservation)
+    if existing is None:
+        reservation = EngineeringBudgetReservation(
+            idempotency_key=_reservation_key(command.attempt_id),
+            attempt_id=command.attempt_id,
+            user_id=project.owner_id,
+            project_id=command.project_id,
+            task_id=command.task_id,
+            story_id=command.story_id,
+            outcome=outcome,
+            state=state,
+            reservation_microusd=reserve,
+            known_spend_microusd=known_spend,
+            active_held_microusd=reserve if state is not None else 0,
+        )
+        db.add(reservation)
+    else:
+        # RELEASED establishes that the prior pre-handoff attempt did not start
+        # provider work. It cannot authorize a later handoff: overwrite its
+        # historical decision only while holding the same per-user policy lock
+        # used by a first admission.
+        reservation = existing
+        reservation.outcome = outcome
+        reservation.state = state
+        reservation.reservation_microusd = reserve
+        reservation.known_spend_microusd = known_spend
+        reservation.active_held_microusd = reserve if state is not None else 0
     return _read(reservation, available)
 
 
@@ -162,11 +178,16 @@ async def finalize_engineering_reservation(
         .where(EngineeringBudgetReservation.attempt_id == attempt_id)
         .with_for_update()
     )
-    if reservation is None or reservation.state in {
-        EngineeringBudgetReservationState.RELEASED,
-        EngineeringBudgetReservationState.UNKNOWN_FINAL,
-        EngineeringBudgetReservationState.SETTLED,
-    }:
+    if (
+        reservation is None
+        or reservation.state is None
+        or reservation.state
+        in {
+            EngineeringBudgetReservationState.RELEASED,
+            EngineeringBudgetReservationState.UNKNOWN_FINAL,
+            EngineeringBudgetReservationState.SETTLED,
+        }
+    ):
         return
     if cost_microusd is None:
         reservation.state = EngineeringBudgetReservationState.UNKNOWN_FINAL

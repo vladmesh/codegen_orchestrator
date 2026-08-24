@@ -111,15 +111,22 @@ task/story identifiers; it cannot name a hold amount or user. The API resolves t
 project owner, locks that user's policy row, then in one transaction aggregates immutable
 ledger cost plus `active` and `unknown_final` holds. The durable result is `admitted`,
 `denied`, `unlimited`, or `not_enforced`. Repeating the same identity and payload returns
-the stored decision; changing project/task/story under that identity conflicts. An enabled
-zero or otherwise unavailable balance denies. `POST .../admissions/{attempt_id}/release`
-may release only a proven pre-handoff `active` hold.
+the stored decision while its state is `active`, `unknown_final`, `settled`, or null;
+changing project/task/story under that identity conflicts. `released` takes precedence over
+its historical `admitted` decision: the next identical admission reacquires the policy-row
+lock, recalculates ledger cost plus chargeable holds, and atomically re-arms that same row
+to `active` or changes it to `denied`. An enabled zero or otherwise unavailable balance
+denies. `POST .../admissions/{attempt_id}/release` may release only a proven pre-handoff
+`active` hold.
 
 `engineering_budget_reservations` records those decisions separately from the immutable
 ledger. The pre-handoff boundary ends only when the engineering message has published.
 Dispatchers validate cheap local conditions first; after an admitted `active` hold, every
 exception or typed refusal before that boundary, including Run creation, recipient
-resolution and publishing, changes it to `released`. This applies to ordinary task
+resolution and publishing, changes it to `released`. A released row proves only that its
+previous handoff did not begin; a deterministic replay such as a deploy-fix dispatch must
+re-enter admission and obtain a newly `active` row before any story transition, Run creation
+or queue publication. This applies to ordinary task
 dispatch and supervisor deploy-fix dispatch, whose stable attempt id is
 `eng-deploy-fix-{deploy_run_id}-{attempt}`. A scheduler denial has no Run or queue side
 effect and moves the affected task or deploy-fix story to `waiting_human_review` with

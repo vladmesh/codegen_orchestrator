@@ -593,6 +593,97 @@ class TestSuperviseDeployingStories:
         api_client.update_run.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_code_fix_retries_a_released_identity_before_any_handoff(
+        self, api_client, redis_client
+    ):
+        """The next tick re-enters admission with the deterministic deploy-fix id."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                "deploy_fix_attempt": 0,
+            },
+        )
+        api_client.admit_engineering_budget.side_effect = [
+            _engineering_admission(),
+            _engineering_admission(),
+        ]
+        api_client.transition_story.side_effect = [RuntimeError("temporary API failure"), {}]
+
+        first = await supervise_deploying_stories(api_client, redis_client)
+        second = await supervise_deploying_stories(api_client, redis_client)
+
+        assert first["redispatched"] == 0
+        assert second["redispatched"] == 1
+        assert [
+            call.args[0].attempt_id for call in api_client.admit_engineering_budget.await_args_list
+        ] == ["eng-deploy-fix-deploy-1-1", "eng-deploy-fix-deploy-1-1"]
+        release_call = next(
+            index
+            for index, call in enumerate(api_client.mock_calls)
+            if call[0] == "release_engineering_budget_admission"
+        )
+        retry_admission_call = [
+            index
+            for index, call in enumerate(api_client.mock_calls)
+            if call[0] == "admit_engineering_budget"
+        ][1]
+        retry_run_call = next(
+            index for index, call in enumerate(api_client.mock_calls) if call[0] == "create_run"
+        )
+        assert release_call < retry_admission_call < retry_run_call
+        assert (
+            len(
+                [
+                    call
+                    for call in redis_client.publish_message.await_args_list
+                    if call.args[0] == ENGINEERING_QUEUE
+                ]
+            )
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_code_fix_re_admission_denial_has_no_engineering_handoff(
+        self, api_client, redis_client
+    ):
+        """A released identity that now denies is quarantined before a Run or publish."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                "deploy_fix_attempt": 0,
+            },
+        )
+        api_client.admit_engineering_budget.side_effect = [
+            _engineering_admission(),
+            _engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+        ]
+        api_client.transition_story.side_effect = RuntimeError("temporary API failure")
+
+        await supervise_deploying_stories(api_client, redis_client)
+        api_client.create_run.reset_mock()
+        redis_client.publish_message.reset_mock()
+        api_client.transition_story.side_effect = None
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 0
+        api_client.create_run.assert_not_awaited()
+        redis_client.publish_message.assert_not_awaited()
+        assert api_client.transition_story.await_args_list[-1].args == ("story-1", "human-review")
+
+    @pytest.mark.asyncio
     async def test_retry_republishes_deploy(self, api_client, redis_client):
         """RETRY outcome → new deploy run created, deploy message published."""
         from src.tasks.supervisor import supervise_deploying_stories

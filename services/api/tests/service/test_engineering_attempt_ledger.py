@@ -466,12 +466,29 @@ async def test_engineering_budget_holds_release_and_settle_without_double_counti
     balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
     assert balance.json()["active_held_microusd"] == 0
 
-    settled_id = f"eng-budget-settled-{uuid.uuid4().hex}"
-    settled = await async_client.post(
+    # RELEASED proves the first handoff did not start. Reusing that stable
+    # attempt identity must make a fresh decision, not reuse its historical
+    # admitted outcome without a hold.
+    readmitted = await async_client.post(
         "/api/engineering-budget-policies/admissions",
-        json={"attempt_id": settled_id, "project_id": project["id"], "task_id": "budget-settled"},
+        json={"attempt_id": first_id, "project_id": project["id"], "task_id": "budget-known"},
     )
-    assert settled.json()["outcome"] == "admitted"
+    assert readmitted.status_code == HTTPStatus.OK, readmitted.text
+    assert readmitted.json()["outcome"] == "admitted"
+    assert readmitted.json()["reservation_state"] == "active"
+    assert readmitted.json()["active_held_microusd"] == 60
+
+    active_replay = await async_client.post(
+        "/api/engineering-budget-policies/admissions",
+        json={"attempt_id": first_id, "project_id": project["id"], "task_id": "budget-known"},
+    )
+    assert active_replay.json()["outcome"] == "admitted"
+    assert active_replay.json()["reservation_state"] == "active"
+
+    balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
+    assert balance.json()["active_held_microusd"] == 60
+
+    settled_id = first_id
     created = await async_client.post(
         "/api/runs/",
         json={"id": settled_id, "type": "engineering", "project_id": project["id"]},
@@ -494,6 +511,128 @@ async def test_engineering_budget_holds_release_and_settle_without_double_counti
     assert balance.json()["active_held_microusd"] == 0
     assert balance.json()["unknown_final_held_microusd"] == 0
     assert balance.json()["remaining_microusd"] == 80
+    settled_replay = await async_client.post(
+        "/api/engineering-budget-policies/admissions",
+        json={"attempt_id": first_id, "project_id": project["id"], "task_id": "budget-known"},
+    )
+    assert settled_replay.json()["outcome"] == "admitted"
+    assert settled_replay.json()["reservation_state"] == "settled"
+
+
+@pytest.mark.asyncio
+async def test_released_admission_rechecks_availability_and_can_deny_without_a_run(
+    async_client: AsyncClient,
+):
+    """A released identity has no reusable authorization when the budget changed."""
+    user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    project = await _project(async_client, user["telegram_id"])
+    await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 60, "attempt_reservation_microusd": 60, "state": "enabled"},
+    )
+    attempt_id = f"eng-released-denied-{uuid.uuid4().hex}"
+    command = {"attempt_id": attempt_id, "project_id": project["id"], "task_id": "released-denied"}
+    admitted = await async_client.post("/api/engineering-budget-policies/admissions", json=command)
+    assert admitted.json()["reservation_state"] == "active"
+    assert (
+        await async_client.post(f"/api/engineering-budget-policies/admissions/{attempt_id}/release")
+    ).status_code == HTTPStatus.NO_CONTENT
+    changed_payload = await async_client.post(
+        "/api/engineering-budget-policies/admissions",
+        json={**command, "task_id": "different-released-task"},
+    )
+    assert changed_payload.status_code == HTTPStatus.CONFLICT
+
+    policy = await async_client.get(f"/api/engineering-budget-policies/{user['id']}")
+    assert (
+        await async_client.put(
+            f"/api/engineering-budget-policies/{user['id']}",
+            json={
+                "limit_microusd": 0,
+                "attempt_reservation_microusd": 60,
+                "state": "enabled",
+                "version": policy.json()["policy"]["version"],
+            },
+        )
+    ).status_code == HTTPStatus.OK
+
+    denied = await async_client.post("/api/engineering-budget-policies/admissions", json=command)
+    assert denied.status_code == HTTPStatus.OK, denied.text
+    assert denied.json()["outcome"] == "denied"
+    assert denied.json()["reservation_state"] is None
+    assert (await async_client.get(f"/api/runs/{attempt_id}")).status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_rearmed_deploy_fix_unknown_terminal_cost_retains_hold(async_client: AsyncClient):
+    """A retry after proven pre-handoff failure still holds unknown terminal coverage."""
+    user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    project = await _project(async_client, user["telegram_id"])
+    await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 100, "attempt_reservation_microusd": 60, "state": "enabled"},
+    )
+    run_id = f"eng-deploy-fix-rearmed-{uuid.uuid4().hex}-1"
+    command = {"attempt_id": run_id, "project_id": project["id"], "task_id": run_id}
+    assert (
+        await async_client.post("/api/engineering-budget-policies/admissions", json=command)
+    ).json()["reservation_state"] == "active"
+    assert (
+        await async_client.post(f"/api/engineering-budget-policies/admissions/{run_id}/release")
+    ).status_code == HTTPStatus.NO_CONTENT
+    rearmed = await async_client.post("/api/engineering-budget-policies/admissions", json=command)
+    assert rearmed.json()["reservation_state"] == "active"
+
+    assert (
+        await async_client.post(
+            "/api/runs/", json={"id": run_id, "type": "engineering", "project_id": project["id"]}
+        )
+    ).status_code == HTTPStatus.CREATED
+    assert (
+        await async_client.patch(f"/api/runs/{run_id}", json={"status": "failed"})
+    ).status_code == HTTPStatus.OK
+    balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
+    assert balance.json()["unknown_final_held_microusd"] == 60
+    unknown_replay = await async_client.post(
+        "/api/engineering-budget-policies/admissions", json=command
+    )
+    assert unknown_replay.json()["outcome"] == "admitted"
+    assert unknown_replay.json()["reservation_state"] == "unknown_final"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_retries_rearm_a_released_identity_once(async_client: AsyncClient):
+    """Concurrent retries serialize on the policy row and leave one active hold."""
+    user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    project = await _project(async_client, user["telegram_id"])
+    await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 100, "attempt_reservation_microusd": 60, "state": "enabled"},
+    )
+    attempt_id = f"eng-released-concurrent-{uuid.uuid4().hex}"
+    command = {
+        "attempt_id": attempt_id,
+        "project_id": project["id"],
+        "task_id": "released-concurrent",
+    }
+    assert (
+        await async_client.post("/api/engineering-budget-policies/admissions", json=command)
+    ).json()["reservation_state"] == "active"
+    assert (
+        await async_client.post(f"/api/engineering-budget-policies/admissions/{attempt_id}/release")
+    ).status_code == HTTPStatus.NO_CONTENT
+
+    async def readmit() -> dict:
+        response = await async_client.post(
+            "/api/engineering-budget-policies/admissions", json=command
+        )
+        assert response.status_code == HTTPStatus.OK, response.text
+        return response.json()
+
+    first, second = await asyncio.gather(readmit(), readmit())
+    assert [first["reservation_state"], second["reservation_state"]] == ["active", "active"]
+    balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
+    assert balance.json()["active_held_microusd"] == 60
 
 
 @pytest.mark.asyncio

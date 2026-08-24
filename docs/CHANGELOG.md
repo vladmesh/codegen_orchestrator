@@ -2,6 +2,14 @@
 
 ## 2026-08-24
 
+- Released engineering-budget reservations no longer replay their historical
+  `admitted` outcome as authorization. A repeated deterministic dispatch now
+  reacquires the policy lock and re-evaluates ledger spend plus chargeable
+  holds before atomically re-arming the existing reservation or denying it.
+  This preserves the hold through a deploy-fix retry after a proven
+  pre-handoff failure, including unknown terminal cost, without minting a new
+  attempt identity.
+
 - Supervisor deploy-fix redispatch now uses the same durable engineering-budget
   admission before it creates a Run or publishes work. A denial records the
   balance context, writes a typed `story_quarantined` owner notice, then parks
