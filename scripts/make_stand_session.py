@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --with telethon --python 3.11 python
+#!/usr/bin/env -S uv run --no-project --with telethon --python 3.12 python
 """Authorize a Telethon session for the stand and store it as a GitHub secret.
 
 The stand needs its own session string. Production's cannot be shared: two
@@ -37,6 +37,7 @@ REPO = "vladmesh/codegen_orchestrator"
 ENVIRONMENT = "stand"
 SECRET = "TELETHON_SESSION"  # noqa: S105 — the name of a secret, not its value
 PROD_SSH = "deploy@5wce.l.time4vps.cloud"
+PROD_SSH_KEY = str(Path.home() / ".ssh" / "codegen_server_ed25519")
 PROD_ENV = "/opt/codegen_orchestrator/.env"
 STATE = Path.home() / ".cache" / "stand-telethon-state.json"
 
@@ -48,7 +49,7 @@ def _app_credentials() -> tuple[int, str]:
     )
     # A fixed command with no user input; ssh is resolved from PATH by design.
     out = subprocess.run(  # noqa: S603
-        ["ssh", "-o", "BatchMode=yes", PROD_SSH, script],  # noqa: S607
+        ["ssh", "-i", PROD_SSH_KEY, "-o", "BatchMode=yes", PROD_SSH, script],  # noqa: S607
         capture_output=True,
         text=True,
         check=True,
