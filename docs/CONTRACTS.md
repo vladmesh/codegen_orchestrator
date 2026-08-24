@@ -116,12 +116,18 @@ zero or otherwise unavailable balance denies. `POST .../admissions/{attempt_id}/
 may release only a proven pre-handoff `active` hold.
 
 `engineering_budget_reservations` records those decisions separately from the immutable
-ledger. `active` holds start before queue publication; a known pre-handoff publish failure
-changes it to `released`. Terminal engineering ledger creation settles an active hold to
-`settled` for a known amount, or retains it as `unknown_final` when no terminal cost is
-known. Retrying terminal delivery is idempotent, so ledger cost and a hold are never
-double-counted. An unknown-final hold is a conservative coverage value, never provider
-spend.
+ledger. The pre-handoff boundary ends only when the engineering message has published.
+Dispatchers validate cheap local conditions first; after an admitted `active` hold, every
+exception or typed refusal before that boundary, including Run creation, recipient
+resolution and publishing, changes it to `released`. A scheduler denial has no Run or
+queue side effect and moves the task through `in_dev` to `waiting_human_review` with
+budget-denial context, so resumption is explicit human action rather than a polling retry.
+After successful publication the hold is never released by dispatch recovery, because
+provider work may have started. Terminal engineering ledger creation settles an active
+hold to `settled` for a known amount, or retains it as `unknown_final` when no terminal
+cost is known. Retrying terminal delivery is idempotent, so ledger cost and a hold are
+never double-counted. An unknown-final hold is a conservative coverage value, never
+provider spend.
 
 Balances aggregate `engineering_attempt_ledger.user_id` for exact actual
 `known_spend_microusd` and separately return `active_held_microusd`,

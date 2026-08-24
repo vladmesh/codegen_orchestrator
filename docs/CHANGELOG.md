@@ -2,6 +2,13 @@
 
 ## 2026-08-24
 
+- Engineering-budget dispatch recovery now treats queue publication as the only
+  handoff boundary: manual and scheduler failures before it release active holds,
+  including local refusals, Run creation and recipient resolution. Scheduler
+  budget denials move tasks through the legal `in_dev` transition to
+  `waiting_human_review` with auditable balance context, preventing polling
+  redispatch until an explicit human resume.
+
 - Engineering dispatch now makes a durable, server-authoritative budget admission before
   creating a Run or touching the engineering queue. Per-user policy locks aggregate
   immutable ledger cost with active and unknown-final reservation holds; zero available

@@ -16,9 +16,6 @@ down_revision: str | None = "f5e2d3c4b1a0"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_policy_state = postgresql.ENUM(
-    "enabled", "disabled", name="engineering_budget_policy_state", create_type=False
-)
 _reservation_state = postgresql.ENUM(
     "active",
     "released",
@@ -90,7 +87,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("attempt_id"),
     )
     op.create_index(
-        "ix_engineering_budget_reservation_user_id", "engineering_budget_reservations", ["user_id"]
+        "ix_engineering_budget_reservations_user_id", "engineering_budget_reservations", ["user_id"]
     )
     op.create_index(
         "ix_engineering_budget_reservation_user_state",
@@ -98,17 +95,17 @@ def upgrade() -> None:
         ["user_id", "state"],
     )
     op.create_index(
-        "ix_engineering_budget_reservation_project_id",
+        "ix_engineering_budget_reservations_project_id",
         "engineering_budget_reservations",
         ["project_id"],
     )
     op.create_index(
-        "ix_engineering_budget_reservation_story_id",
+        "ix_engineering_budget_reservations_story_id",
         "engineering_budget_reservations",
         ["story_id"],
     )
     op.create_index(
-        "ix_engineering_budget_reservation_task_id", "engineering_budget_reservations", ["task_id"]
+        "ix_engineering_budget_reservations_task_id", "engineering_budget_reservations", ["task_id"]
     )
 
 

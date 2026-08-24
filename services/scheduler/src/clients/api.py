@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import httpx
 
@@ -460,13 +461,18 @@ class SchedulerAPIClient(InternalAPIClient):
         return TaskDTO.model_validate(resp.json())
 
     async def transition_task(
-        self, task_id: str, to_status: str, actor: str = "architect"
+        self,
+        task_id: str,
+        to_status: str,
+        actor: str = "architect",
+        *,
+        details: dict[str, Any] | None = None,
     ) -> TaskDTO:
         resp = await self.request(
             "POST",
             f"tasks/{task_id}/transition",
             params={"to_status": to_status},
-            json={"actor": actor},
+            json={"actor": actor, "details": details or {}},
         )
         return TaskDTO.model_validate(resp.json())
 

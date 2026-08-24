@@ -271,9 +271,10 @@ async def _create_and_publish_run(
     This function creates one *attempt* inside it, and the message carries both:
     the attempt as `task_id`, the run as `initiating_run_id`.
 
-    Returns the run id. If publishing fails the run is closed as FAILED — nothing
-    would ever pick it up — and None is returned so the task stays in todo and the
-    next tick dispatches it with a fresh run.
+    Returns the run id. Any failure before queue handoff releases the reservation.
+    A created run is closed as FAILED because nothing can pick it up; the task stays
+    in todo and a later tick may make a fresh attempt. A budget denial instead routes
+    the task to human review and cannot retry automatically.
     """
     task_id = task.id
     story_id = task.story_id
@@ -297,6 +298,19 @@ async def _create_and_publish_run(
             active_held_microusd=admission.active_held_microusd,
             available_microusd=admission.available_microusd,
         )
+        await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+        await api_client.transition_task(
+            task_id,
+            TaskStatus.WAITING_HUMAN_REVIEW,
+            "dispatcher",
+            details={
+                "reason": "engineering_budget_denied",
+                "attempt_id": run_id,
+                "known_spend_microusd": admission.known_spend_microusd,
+                "active_held_microusd": admission.active_held_microusd,
+                "available_microusd": admission.available_microusd,
+            },
+        )
         return None
 
     run_metadata = {
@@ -306,50 +320,52 @@ async def _create_and_publish_run(
         **AttemptTurnMetadata(initiating_run_id=initiating_run_id).as_run_metadata(),
         "iteration": task.current_iteration,
     }
-    await api_client.create_run(
-        {
-            "id": run_id,
-            "type": RunType.ENGINEERING.value,
-            "project_id": project_id,
-            "task_id": task_id,
-            "run_metadata": run_metadata,
-        }
-    )
-
     action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
-    recipient = await resolve_project_recipient(
-        api_client, project_id, event="task_dispatch", story_id=story_id or ""
-    )
-    eng_msg = EngineeringMessage(
-        task_id=run_id,
-        project_id=project_id,
-        initiating_run_id=initiating_run_id,
-        telegram_chat_id=recipient.telegram_chat_id,
-        action=action,
-        description=description,
-        skip_deploy=True,  # Deploy handled at story level
-        planning_task_id=task_id,
-        story_id=story_id,
-        branch=f"story/{story_id}" if story_id else None,
-    )
+    run_created = False
     try:
+        await api_client.create_run(
+            {
+                "id": run_id,
+                "type": RunType.ENGINEERING.value,
+                "project_id": project_id,
+                "task_id": task_id,
+                "run_metadata": run_metadata,
+            }
+        )
+        run_created = True
+        recipient = await resolve_project_recipient(
+            api_client, project_id, event="task_dispatch", story_id=story_id or ""
+        )
+        eng_msg = EngineeringMessage(
+            task_id=run_id,
+            project_id=project_id,
+            initiating_run_id=initiating_run_id,
+            telegram_chat_id=recipient.telegram_chat_id,
+            action=action,
+            description=description,
+            skip_deploy=True,  # Deploy handled at story level
+            planning_task_id=task_id,
+            story_id=story_id,
+            branch=f"story/{story_id}" if story_id else None,
+        )
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
     except Exception:
-        log.exception("task_dispatch_publish_failed", run_id=run_id)
+        log.exception("task_dispatch_pre_handoff_failed", run_id=run_id)
         await api_client.release_engineering_budget_admission(run_id)
-        # Drop the iteration stamp: this run never made it onto the queue, so the
-        # next tick must dispatch a fresh one instead of recovering this one.
-        await api_client.update_run(
-            run_id,
-            {
-                "status": RunStatus.FAILED.value,
-                "error_message": PUBLISH_FAILED_ERROR,
-                "result": EngineeringRunResult(
-                    engineering_status=EngineeringStatus.FAILED
-                ).model_dump(mode="json"),
-                "run_metadata": {**run_metadata, "iteration": None, "publish_failed": True},
-            },
-        )
+        if run_created:
+            # Drop the iteration stamp: this run never made it onto the queue, so the
+            # next tick must dispatch a fresh one instead of recovering this one.
+            await api_client.update_run(
+                run_id,
+                {
+                    "status": RunStatus.FAILED.value,
+                    "error_message": PUBLISH_FAILED_ERROR,
+                    "result": EngineeringRunResult(
+                        engineering_status=EngineeringStatus.FAILED
+                    ).model_dump(mode="json"),
+                    "run_metadata": {**run_metadata, "iteration": None, "publish_failed": True},
+                },
+            )
         return None
     return run_id
 
