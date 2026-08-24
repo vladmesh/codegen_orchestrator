@@ -58,6 +58,8 @@ def _observability_patch(worker_observability: dict | None) -> dict:
     claude_evidence = observability.get("claude_evidence")
     if claude_evidence is not None:
         attempt = {"claude_evidence": claude_evidence}
+    elif (factory_evidence := observability.get("factory_evidence")) is not None:
+        attempt = {"factory_evidence": factory_evidence}
     else:
         profile = observability.get("agent_profile") or {}
         attempt = {

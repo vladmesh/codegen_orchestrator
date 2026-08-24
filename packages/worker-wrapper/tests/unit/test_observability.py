@@ -1,6 +1,7 @@
+import pytest
 from worker_wrapper.observability import extract_effort_metrics, redact_transcript, save_transcript
 
-from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence
+from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence, FactoryResultEvidence
 
 
 def test_missing_usage_is_kept_absent() -> None:
@@ -81,6 +82,48 @@ def test_claude_multiple_json_records_are_not_combined() -> None:
     )
 
     assert extract_effort_metrics(stdout, "", "claude") == {}
+
+
+def test_factory_retains_only_one_typed_result_object_without_money() -> None:
+    stdout = """{
+      "type": "result",
+      "model": "factory-model",
+      "usage": {
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "cache_read_input_tokens": 40,
+        "cache_creation_input_tokens": 50
+      },
+      "cost_usd": 0.0123
+    }"""
+
+    metrics = extract_effort_metrics(stdout, "", "factory")
+
+    assert isinstance(metrics["factory_evidence"], FactoryResultEvidence)
+    assert metrics["factory_evidence"].model_dump(mode="json") == {
+        "provider": "factory",
+        "model": "factory-model",
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "total_tokens": 150,
+        "cache_read_tokens": 40,
+        "cache_write_tokens": 50,
+    }
+    assert "cost_usd" not in metrics
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "not json",
+        'progress before result\n{"type":"result","usage":{"input_tokens":1}}',
+        '{"type":"result","usage":{"input_tokens":1}}\n{"type":"result","usage":{"output_tokens":2}}',
+        '{"type":"progress","usage":{"input_tokens":1}}',
+        '{"type":"result","usage":{"input_tokens":-1}}',
+    ],
+)
+def test_factory_malformed_or_ambiguous_output_yields_no_evidence(stdout: str) -> None:
+    assert extract_effort_metrics(stdout, "", "factory") == {}
 
 
 def test_transcript_redacts_environment_secret_values() -> None:

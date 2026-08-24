@@ -6,12 +6,16 @@ from unittest.mock import AsyncMock, patch
 from pydantic import ValidationError
 import pytest
 
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.queues.worker_result import (
     ClaudeResultEvidence,
+    FactoryResultEvidence,
+    WorkerBlockedResult,
     WorkerCompletedResult,
     WorkerFailedResult,
     WorkerResultAdapter,
+    WorkerStopReason,
     parse_worker_result,
 )
 from src.clients.worker_spawner import (
@@ -68,6 +72,108 @@ class TestSpawnResultFromOutput:
         assert result.claude_evidence is not None
         assert result.claude_evidence.cost_microusd == 40_001
         assert result.claude_evidence.cache_write_tokens == 5
+
+    @pytest.mark.parametrize(
+        "wrapper_result",
+        [
+            WorkerCompletedResult(commit_sha="abc123", content="Implemented feature"),
+            WorkerFailedResult(error="Agent crashed"),
+            WorkerFailedResult(
+                error="Agent timed out", stop_reason=WorkerStopReason.AGENT_LIMIT_EXCEEDED
+            ),
+            WorkerFailedResult(
+                error="Worker cancellation", stop_reason=WorkerStopReason.TURN_DEADLINE_EXCEEDED
+            ),
+            WorkerBlockedResult(block_reason="Missing credentials"),
+        ],
+    )
+    def test_factory_evidence_reaches_every_terminal_payload(self, wrapper_result):
+        evidence = FactoryResultEvidence(
+            model="factory-model",
+            input_tokens=12,
+            output_tokens=3,
+            cache_read_tokens=4,
+            cache_write_tokens=5,
+        )
+        wrapper_result = wrapper_result.model_copy(update={"factory_evidence": evidence})
+        wire = wrapper_result.model_dump(mode="json")
+
+        broker_result = parse_worker_result(wire)
+        spawn_result = spawn_result_from_output(wire, request_id="req-factory", worker_id="dev-1")
+        observability = DeveloperNode._worker_observability(
+            broker_result, {"config": {"agent_type": "factory", "model_identifier": "configured"}}
+        )
+        terminal_payload = _observability_patch(observability)["engineering_attempt"]
+        ledger_input = EngineeringAttemptLedgerInput.model_validate(terminal_payload)
+
+        assert spawn_result.factory_evidence == evidence
+        assert terminal_payload == {"factory_evidence": evidence.model_dump(mode="json")}
+        assert ledger_input.cost_source == "unknown"
+        assert ledger_input.cost_microusd is None
+
+    def test_codex_keeps_configured_model_without_parsing_its_output(self):
+        result = spawn_result_from_output(
+            {
+                "status": "failed",
+                "error": "Agent exited",
+                "agent_stdout_tail": '{"model":"untrusted-cli-model","usage":{"input_tokens":99}}',
+            },
+            request_id="req-codex",
+            worker_id="dev-1",
+        )
+
+        observability = DeveloperNode._worker_observability(
+            result,
+            {
+                "config": {
+                    "agent_type": "codex",
+                    "llm_provider": "openai",
+                    "model_identifier": "gpt-5-codex",
+                }
+            },
+        )
+        attempt = _observability_patch(observability)["engineering_attempt"]
+
+        assert attempt == {
+            "provider": "openai",
+            "model": "gpt-5-codex",
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+            "cost_source": "unknown",
+        }
+
+    def test_factory_without_usage_keeps_its_configured_profile(self):
+        result = spawn_result_from_output(
+            {"status": "failed", "error": "Agent exited"},
+            request_id="req-factory-profile",
+            worker_id="dev-1",
+        )
+
+        observability = DeveloperNode._worker_observability(
+            result,
+            {
+                "config": {
+                    "agent_type": "factory",
+                    "llm_provider": "factory",
+                    "model_identifier": "factory-configured-model",
+                }
+            },
+        )
+        attempt = _observability_patch(observability)["engineering_attempt"]
+
+        assert attempt == {
+            "provider": "factory",
+            "model": "factory-configured-model",
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+            "cost_source": "unknown",
+        }
 
     @pytest.mark.parametrize(
         "wrapper_result",

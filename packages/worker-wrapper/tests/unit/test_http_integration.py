@@ -16,6 +16,7 @@ from worker_wrapper.wrapper import WorkerWrapper
 
 from shared.contracts.queues.worker_result import (
     ClaudeResultEvidence,
+    FactoryResultEvidence,
     WorkerCompletedResult,
     WorkerResultStatus,
 )
@@ -196,6 +197,27 @@ class TestStdoutCapture:
 
         assert isinstance(result.claude_evidence, ClaudeResultEvidence)
         assert result.model_dump(mode="json")["claude_evidence"]["cost_microusd"] == 40_001
+
+    def test_attach_metadata_keeps_factory_evidence_typed_without_money(self):
+        result = WorkerWrapper._attach_metadata(
+            WorkerCompletedResult(commit_sha="abc123", content="Done"),
+            report=None,
+            stdout_tail=None,
+            observability={
+                "factory_evidence": {
+                    "model": "factory-model",
+                    "input_tokens": 12,
+                    "output_tokens": 3,
+                    "cache_read_tokens": 4,
+                    "cache_write_tokens": 5,
+                }
+            },
+        )
+
+        assert isinstance(result.factory_evidence, FactoryResultEvidence)
+        wire = result.model_dump(mode="json")
+        assert wire["factory_evidence"]["total_tokens"] == 15
+        assert "cost_usd" not in wire["factory_evidence"]
 
     async def test_codex_diagnostics_are_not_persisted_or_returned(self):
         raw_diagnostic = "refresh-token-must-not-leak"
