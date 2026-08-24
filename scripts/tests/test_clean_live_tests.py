@@ -741,3 +741,54 @@ def test_unprovable_manifest_still_lets_every_other_sweep_run(monkeypatch, tmp_p
         "clean_local_docker",
         "clean_local_workspaces",
     ]
+
+
+def _reloaded_for_contour(monkeypatch, contour):
+    """Re-import the sweep as it would start in `contour`.
+
+    The prefixes are module-level, resolved once at import, so the contour has to
+    be in the environment before the import — exactly as when the process starts.
+    """
+    import importlib
+
+    monkeypatch.setenv("LIVE_CONTOUR", contour)
+    return importlib.reload(clean_live_tests)
+
+
+def test_stand_sweep_cannot_address_production_projects(monkeypatch):
+    """The whole boundary while both contours share one GitHub organization.
+
+    A stand sweep must not know production's names — not match them and decline,
+    but not carry them at all, in the SQL it builds and in the stack names it
+    recognises.
+    """
+    try:
+        module = _reloaded_for_contour(monkeypatch, "stand")
+
+        assert module.PROJECT_PREFIXES == ["stand-test", "stand-crud"]
+        assert module.DEPLOY_SLUG_PREFIXES == ["stand-t-", "stand-c-"]
+
+        conditions = module._build_conditions()
+        assert "stand-test-%" in conditions
+        assert "live-test" not in conditions
+        assert "mega-test" not in conditions
+
+        assert not module._STACK_NAME_PATTERN.match("live-te-" + "0" * 32)
+        assert module._STACK_NAME_PATTERN.match("stand-t-" + "0" * 32)
+    finally:
+        monkeypatch.delenv("LIVE_CONTOUR", raising=False)
+        import importlib
+
+        importlib.reload(clean_live_tests)
+
+
+def test_production_sweep_is_unchanged_without_a_contour(monkeypatch):
+    """No `LIVE_CONTOUR` in the environment means the sweep production has always run."""
+    monkeypatch.delenv("LIVE_CONTOUR", raising=False)
+    import importlib
+
+    module = importlib.reload(clean_live_tests)
+
+    assert module.PROJECT_PREFIXES == ["live-test", "live-crud", "mega-test"]
+    assert module.DEPLOY_SLUG_PREFIXES == ["live-te-", "live-cr-", "mega-te-"]
+    assert not module._STACK_NAME_PATTERN.match("stand-t-" + "0" * 32)

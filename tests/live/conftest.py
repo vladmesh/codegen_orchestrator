@@ -24,6 +24,7 @@ from pipeline_helpers import (
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.live_contour import current_contour
 
 API_URL = "http://localhost:8000"
 TEST_TELEGRAM_ID = 999_000_001
@@ -167,7 +168,7 @@ async def create_test_project_context(api):
         "/api/projects/",
         json={
             "id": project_id,
-            "title": f"live-test-{secrets.token_hex(4)}",
+            "title": f"{current_contour().pipeline}-{secrets.token_hex(4)}",
             "initiating_run_id": manifest.run_id,
             "status": ProjectStatus.DRAFT,
             "config": {"description": "live test project"},
