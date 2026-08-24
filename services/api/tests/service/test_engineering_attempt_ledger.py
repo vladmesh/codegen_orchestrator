@@ -231,6 +231,16 @@ async def test_project_deletion_detaches_but_retains_engineering_ledger(
         },
     )
 
+    with pytest.raises(DBAPIError, match="append-only"):
+        async with db_session.begin_nested():
+            await db_session.execute(
+                text(
+                    "UPDATE engineering_attempt_ledger SET project_id = NULL "
+                    "WHERE idempotency_key = :key"
+                ),
+                {"key": f"engineering-run:{run_id}"},
+            )
+
     deleted = await async_client.delete(f"/api/projects/{project['id']}")
 
     assert deleted.status_code == HTTPStatus.NO_CONTENT, deleted.text

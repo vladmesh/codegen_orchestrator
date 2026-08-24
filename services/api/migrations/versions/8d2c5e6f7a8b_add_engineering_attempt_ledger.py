@@ -99,6 +99,10 @@ def upgrade() -> None:
         RETURNS trigger AS $$
         BEGIN
             IF TG_OP = 'UPDATE'
+               -- A foreign-key SET NULL action is invoked by PostgreSQL from
+               -- the parent delete trigger.  Direct ledger updates run at
+               -- depth one and must remain append-only violations.
+               AND pg_trigger_depth() > 1
                AND NEW.id = OLD.id
                AND NEW.idempotency_key = OLD.idempotency_key
                AND NEW.created_at = OLD.created_at
