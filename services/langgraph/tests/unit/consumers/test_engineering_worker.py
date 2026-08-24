@@ -60,10 +60,32 @@ class TestHandleEngineeringSuccess:
         )
 
         patch = mock_api.patch.call_args.kwargs["json"]
-        assert patch["input_tokens"] == 12
-        assert patch["total_tokens"] == 17
+        assert patch["engineering_attempt"]["input_tokens"] == 12
+        assert patch["engineering_attempt"]["total_tokens"] == 17
+        assert patch["engineering_attempt"]["cost_source"] == "unknown"
         assert patch["transcript_path"].endswith("req.log")
         assert patch["agent_profile"]["model"] == "claude-sonnet"
+
+    @pytest.mark.asyncio
+    async def test_provider_reported_cost_is_preserved_as_micro_usd(self, mock_redis, mock_api):
+        """Worker-wrapper cost becomes canonical exact money, not a dropped float."""
+        from src.consumers.engineering import _fail_job
+
+        await _fail_job(
+            "eng-provider-cost",
+            "agent failed",
+            worker_observability={
+                "input_tokens": 12,
+                "total_tokens": 17,
+                "cost_usd": 0.040001,
+                "agent_profile": {"provider": "anthropic", "model": "claude-sonnet"},
+            },
+        )
+
+        attempt = mock_api.patch.call_args.kwargs["json"]["engineering_attempt"]
+        assert attempt["cost_source"] == "provider_reported"
+        assert attempt["cost_microusd"] == 40_001
+        assert "cost_usd" not in mock_api.patch.call_args.kwargs["json"]
 
     @pytest.mark.asyncio
     async def test_missing_effort_metrics_are_saved_as_absent(self, mock_redis, mock_api):
@@ -87,10 +109,11 @@ class TestHandleEngineeringSuccess:
             for call in mock_api.patch.call_args_list
             if call.args[0] == "runs/eng-no-usage"
         )
-        assert run_patch["input_tokens"] is None
-        assert run_patch["output_tokens"] is None
-        assert run_patch["total_tokens"] is None
-        assert run_patch["cost_usd"] is None
+        attempt = run_patch["engineering_attempt"]
+        assert attempt["input_tokens"] is None
+        assert attempt["output_tokens"] is None
+        assert attempt["total_tokens"] is None
+        assert attempt["cost_source"] == "unknown"
 
     @pytest.mark.asyncio
     async def test_no_commit_sha_fails_fast(self, mock_redis, mock_api):

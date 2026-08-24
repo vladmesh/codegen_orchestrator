@@ -76,15 +76,13 @@ async def test_filter_runs_by_story_id(async_client: AsyncClient, _tasks_project
 
 
 @pytest.mark.asyncio
-async def test_list_runs_hides_unowned_runs_from_a_non_admin_caller(
+async def test_list_runs_hides_project_bound_runs_from_a_non_owner(
     async_client: AsyncClient, _tasks_project
 ):
-    """A non-admin X-Telegram-ID narrows the result even with a valid internal key.
+    """A project-bound run inherits its persisted project's owner.
 
-    pr_poller creates deploy runs with no user_id, so this rule answers `[]` for
-    them to any user-scoped caller. The live mega harness relies on it: it must
-    observe deploy runs as a plain internal service, never as its own non-admin
-    user, or it waits out a deploy that already succeeded (2026-07-16).
+    The named caller is a different user, so ownership narrowing still hides
+    the record from them even when their caller also carries the internal key.
     """
     telegram_id = 999000998
     await async_client.post(
@@ -105,7 +103,7 @@ async def test_list_runs_hides_unowned_runs_from_a_non_admin_caller(
         },
     )
     assert resp.status_code == HTTPStatus.CREATED
-    assert resp.json()["user_id"] is None
+    assert resp.json()["user_id"] is not None
 
     as_user = await async_client.get(
         "/api/runs/",

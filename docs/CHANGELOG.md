@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-08-24
+
+- Added the append-only engineering-attempt ledger. Terminal engineering Run
+  updates write one idempotent record under the existing Run row lock,
+  attribute project-bound attempts from `Project.owner_id`, preserve unknown
+  cost explicitly in integer micro-USD accounting, and expose filtered,
+  ownership-checked read-only ledger access at `GET /runs/engineering-attempts`.
+  Backfill skips in-flight Runs, and retained Run projections are bounded.
+  Hard deletion of a project detaches its ledger's deleted lifecycle links
+  while preserving its immutable accounting history and resolved user owner.
+
 ## 2026-08-21
 
 - Telegram bot audiences can now be changed conversationally, one user at a

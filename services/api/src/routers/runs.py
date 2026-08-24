@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -26,13 +27,14 @@ from shared.contracts.dto.deploy_dispatch import (
     DispatchSupersede,
     DispatchWithdrawal,
 )
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_KEY,
     OwnerNotificationState,
 )
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.models import Run, User
+from shared.models import EngineeringAttemptLedger, Project, Run, User
 
 from ..database import get_async_session
 from ..dependencies import is_internal_service, require_internal_or_admin, resolve_actor
@@ -60,6 +62,111 @@ QA_SSH_GRANT_PAGE_MAX = 500
 # itself — every attempt either delivers the message or spends one of a bounded
 # number of tries — so a page is all the bound the recovery sweep needs.
 OWNER_NOTIFICATION_PAGE_MAX = 500
+
+# Ledger rows are immutable history, but an unrestricted historical query can
+# still exhaust the API process. Keep this aligned with the router's bounded
+# selection endpoints.
+ENGINEERING_ATTEMPT_PAGE_MAX = 500
+
+
+class EngineeringAttemptRead(BaseModel):
+    """Read-only representation of the canonical engineering ledger."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    idempotency_key: str
+    run_id: str | None
+    project_id: uuid.UUID | None
+    story_id: str | None
+    task_id: str | None
+    user_id: int | None
+    owner_attribution: str
+    role: str
+    occurred_at: datetime
+    provider: str | None
+    model: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_microusd: int | None
+    cost_source: str
+
+
+def _engineering_attempt_key(run_id: str) -> str:
+    """Stable identity for the one engineering coding attempt owned by a Run."""
+    return f"engineering-run:{run_id}"
+
+
+async def _attach_ledger_compatibility(runs: list[Run], db: AsyncSession) -> None:
+    """Expose old Run observability fields as projections of the ledger.
+
+    The database columns remain for rolling compatibility only. New engineering
+    writes never populate them; API responses prefer the canonical ledger row.
+    """
+    if not runs:
+        return
+    rows = (
+        await db.execute(
+            select(EngineeringAttemptLedger).where(
+                EngineeringAttemptLedger.run_id.in_([run.id for run in runs])
+            )
+        )
+    ).scalars()
+    attempts = {attempt.run_id: attempt for attempt in rows}
+    for run in runs:
+        attempt = attempts.get(run.id)
+        if attempt is None:
+            continue
+        run._ledger_input_tokens = attempt.input_tokens
+        run._ledger_output_tokens = attempt.output_tokens
+        run._ledger_total_tokens = attempt.total_tokens
+        run._ledger_cost_usd = (
+            attempt.cost_microusd / 1_000_000 if attempt.cost_microusd is not None else None
+        )
+
+
+async def _record_engineering_attempt(
+    run: Run,
+    attempt: EngineeringAttemptLedgerInput | None,
+    db: AsyncSession,
+) -> None:
+    """Append the one ledger record while the terminal Run row is locked.
+
+    A retry sees the row written by the first delivery and performs no mutable
+    accounting write. The unique run/idempotency constraints remain the final
+    fence if a writer ever bypasses this seam.
+    """
+    existing = await db.scalar(
+        select(EngineeringAttemptLedger.id).where(EngineeringAttemptLedger.run_id == run.id)
+    )
+    if existing is not None:
+        return
+    facts = attempt or EngineeringAttemptLedgerInput()
+    project = await db.get(Project, run.project_id) if run.project_id is not None else None
+    db.add(
+        EngineeringAttemptLedger(
+            idempotency_key=_engineering_attempt_key(run.id),
+            run_id=run.id,
+            project_id=run.project_id,
+            story_id=run.story_id,
+            task_id=run.task_id,
+            user_id=project.owner_id if project is not None else None,
+            owner_attribution="resolved" if project is not None else "unknown",
+            occurred_at=run.completed_at or datetime.now(UTC),
+            provider=facts.provider,
+            model=facts.model,
+            input_tokens=facts.input_tokens,
+            output_tokens=facts.output_tokens,
+            total_tokens=facts.total_tokens,
+            cache_read_tokens=facts.cache_read_tokens,
+            cache_write_tokens=facts.cache_write_tokens,
+            cost_microusd=facts.cost_microusd,
+            cost_source=facts.cost_source.value,
+        )
+    )
 
 
 async def _check_run_access(
@@ -96,18 +203,27 @@ async def create_run(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
 ) -> Run:
     """Create a new run."""
+    run_data = run.model_dump()
+    if run.project_id is not None:
+        project = await db.get(Project, run.project_id)
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        # Project ownership is canonical. A caller cannot stamp a project-bound
+        # run with another user, whether accidentally or maliciously.
+        run_data["user_id"] = project.owner_id
+
     # Verify user exists if user_id provided
-    if run.user_id:
-        query = select(User).where(User.id == run.user_id)
+    if run_data["user_id"]:
+        query = select(User).where(User.id == run_data["user_id"])
         result = await db.execute(query)
         user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User with id {run.user_id} not found",
+                detail=f"User with id {run_data['user_id']} not found",
             )
 
-    db_run = Run(**run.model_dump())
+    db_run = Run(**run_data)
     db.add(db_run)
     await db.commit()
     await db.refresh(db_run)
@@ -120,6 +236,56 @@ async def create_run(
     )
 
     return db_run
+
+
+@router.get("/engineering-attempts", response_model=list[EngineeringAttemptRead])
+async def list_engineering_attempts(
+    user_id: int | None = None,
+    project_id: uuid.UUID | None = None,
+    story_id: str | None = None,
+    task_id: str | None = None,
+    run_id: str | None = None,
+    occurred_after: datetime | None = None,
+    occurred_before: datetime | None = None,
+    limit: int = Query(100, ge=1, le=ENGINEERING_ATTEMPT_PAGE_MAX),
+    db: AsyncSession = Depends(get_async_session),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    _is_internal: bool = Depends(is_internal_service),
+) -> list[EngineeringAttemptLedger]:
+    """List canonical engineering-attempt ledger rows. This router has no writer."""
+    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+    if run_id is not None and actor is not None and not actor.is_admin:
+        named_owner = await db.scalar(
+            select(EngineeringAttemptLedger.user_id).where(
+                EngineeringAttemptLedger.run_id == run_id
+            )
+        )
+        if named_owner is not None and named_owner != actor.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: not engineering attempt owner",
+            )
+    query = select(EngineeringAttemptLedger)
+    if project_id is not None:
+        query = query.where(EngineeringAttemptLedger.project_id == project_id)
+    if story_id is not None:
+        query = query.where(EngineeringAttemptLedger.story_id == story_id)
+    if task_id is not None:
+        query = query.where(EngineeringAttemptLedger.task_id == task_id)
+    if run_id is not None:
+        query = query.where(EngineeringAttemptLedger.run_id == run_id)
+    if occurred_after is not None:
+        query = query.where(EngineeringAttemptLedger.occurred_at >= occurred_after)
+    if occurred_before is not None:
+        query = query.where(EngineeringAttemptLedger.occurred_at <= occurred_before)
+    if actor is not None and not actor.is_admin:
+        query = query.where(EngineeringAttemptLedger.user_id == actor.id)
+    elif user_id is not None:
+        query = query.where(EngineeringAttemptLedger.user_id == user_id)
+    result = await db.execute(
+        query.order_by(EngineeringAttemptLedger.occurred_at.desc()).limit(limit)
+    )
+    return list(result.scalars().all())
 
 
 @router.get("/{run_id}", response_model=RunRead)
@@ -141,7 +307,7 @@ async def get_run(
         )
 
     await _check_run_access(run, x_telegram_id, db, is_internal=_is_internal)
-
+    await _attach_ledger_compatibility([run], db)
     return run
 
 
@@ -195,7 +361,7 @@ async def list_runs(
 
     result = await db.execute(query)
     runs = result.scalars().all()
-
+    await _attach_ledger_compatibility(list(runs), db)
     return list(runs)
 
 
@@ -366,7 +532,8 @@ def _has_recorded_outcome(run: Run) -> bool:
     must be allowed to record the first account of what happened outside.
     """
     return run.result is not None or (
-        run.type == RunType.QA.value and run.status in _TERMINAL_RUN_STATUSES
+        run.type in {RunType.QA.value, RunType.ENGINEERING.value}
+        and run.status in _TERMINAL_RUN_STATUSES
     )
 
 
@@ -402,12 +569,36 @@ async def update_run(
     # update cannot pre-seed a timestamp for a later terminal transition.
     update_data = run_update.model_dump(exclude_unset=True)
     update_data.pop("completed_at", None)
+    if "user_id" in update_data and run.project_id is not None:
+        project = await db.get(Project, run.project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Run {run_id} has no persisted project owner",
+            )
+        if update_data["user_id"] != project.owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Project-bound runs must retain their persisted project owner",
+            )
+    requested_status = update_data.get("status")
+    engineering_attempt = run_update.engineering_attempt
+    update_data.pop("engineering_attempt", None)
+    if engineering_attempt is not None and run.type != RunType.ENGINEERING.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="engineering_attempt is only valid for engineering runs",
+        )
+    if engineering_attempt is not None and requested_status not in _TERMINAL_RUN_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="engineering_attempt is only valid with a terminal engineering status",
+        )
 
     # A terminal run has produced its outcome and nothing may start work for it
     # again. Letting a blind write take it back to QUEUED or RUNNING is how a
     # cancelled deploy comes back: whoever cancelled it acted on the cancellation
     # being final, and the resurrected run then passes every later check.
-    requested_status = update_data.get("status")
     if (
         run.status in _TERMINAL_RUN_STATUSES
         and requested_status is not None
@@ -456,8 +647,15 @@ async def update_run(
         else:
             setattr(run, field, value)
 
+    # This is deliberately the only ledger writer. Every terminal engineering
+    # path, including cancellation and a repeated worker delivery, uses the
+    # same Run lock and transaction.
+    if run.type == RunType.ENGINEERING.value and run.status in _TERMINAL_RUN_STATUSES:
+        await _record_engineering_attempt(run, engineering_attempt, db)
+
     await db.commit()
     await db.refresh(run)
+    await _attach_ledger_compatibility([run], db)
 
     logger.info(
         "run_updated",

@@ -10,6 +10,7 @@ from .application_health_history import ApplicationHealthHistory
 from .base import Base
 from .brainstorm import Brainstorm
 from .deployment import Deployment
+from .engineering_attempt_ledger import EngineeringAttemptLedger
 from .incident import Incident, IncidentStatus, IncidentType
 from .port_allocation import PortAllocation
 from .project import Project
@@ -56,6 +57,7 @@ __all__ = [
     "IncidentStatus",
     "IncidentType",
     "Deployment",
+    "EngineeringAttemptLedger",
     "Story",
     "SystemConfig",
 ]

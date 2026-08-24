@@ -54,11 +54,17 @@ class TestGaveUpHandling:
             reason="blocked",
             telegram_chat_id="",
             redis=mock_redis,
-            worker_observability={"cost_usd": 0.04, "transcript_truncated": True},
+            worker_observability={
+                "cost_usd": 0.04,
+                "transcript_truncated": True,
+                "agent_profile": {"provider": "anthropic", "model": "claude-sonnet"},
+            },
         )
 
         patch = mock_api.patch.call_args.kwargs["json"]
-        assert patch["cost_usd"] == 0.04
+        assert patch["engineering_attempt"]["cost_source"] == "provider_reported"
+        assert patch["engineering_attempt"]["cost_microusd"] == 40_000
+        assert "cost_usd" not in patch
         assert patch["transcript_truncated"] is True
 
     @pytest.mark.asyncio
