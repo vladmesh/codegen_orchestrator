@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean danger-prod-reset \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean danger-prod-reset stand-preflight stand-register stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -357,6 +357,31 @@ test-live-pipeline:
 	@echo "Running ALL pipeline tests sequentially (~15 min)..."
 	@uv run pytest tests/live/test_pipeline_scaffold.py tests/live/test_pipeline_engineering.py tests/live/test_full_pipeline.py -v --tb=long -x -s
 
+
+# === Stand ===
+
+# Everything a live run needs before it is worth starting: the contour, the two
+# subscriptions, disk, docker. A stand idles between runs, and an idle session is
+# the one that goes stale — this is where that is found, not eight minutes into a
+# mega run.
+stand-preflight:
+	@LIVE_CONTOUR=stand \
+	HOST_CLAUDE_DIR=$${HOST_CLAUDE_DIR:-$$HOME/.claude-worker} \
+	HOST_CODEX_HOME=$${HOST_CODEX_HOME:-$$HOME/.codex-worker} \
+	uv run python scripts/stand_preflight.py
+
+# Register the stand as its own deploy target. Idempotent: a re-run converges.
+stand-register:
+	@LIVE_CONTOUR=stand uv run python scripts/register_stand_target.py $(ARGS)
+
+# The mega pipeline, in the stand's contour. Every resource it creates is named
+# `stand-…`, which is what keeps its sweep away from production's run.
+stand-e2e: stand-preflight
+	@LIVE_CONTOUR=stand uv run pytest tests/live/test_full_pipeline.py -v --tb=long -x -s
+
+# Sweep this contour and no other.
+stand-clean:
+	@LIVE_CONTOUR=stand uv run python scripts/clean_live_tests.py
 
 # Cleanup DB and artifacts left by live tests
 test-live-clean:
