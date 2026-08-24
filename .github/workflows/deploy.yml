@@ -110,21 +110,6 @@ jobs:
             exit 1
           fi
 
-      # A stand must not carry a provider allowlist. An empty one is the
-      # documented default-deny mode, and it is what keeps a stand run from
-      # reaching a production server: it knows no server it is allowed to touch.
-      - name: Refuse a provider allowlist outside production
-        if: ${{ inputs.environment != 'production' }}
-        shell: bash
-        env:
-          MANAGED_SERVER_IDS: ${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
-        run: |
-          set -euo pipefail
-          if [ -n "${MANAGED_SERVER_IDS}" ]; then
-            echo "TIME4VPS_MANAGED_SERVER_IDS must be empty outside production" >&2
-            exit 1
-          fi
-
       - name: Write .env to server
         uses: appleboy/ssh-action@v1
         with:
@@ -166,7 +151,10 @@ jobs:
             GITHUB_ORG=${{ secrets.GH_ORG }}
 
             # Telegram
-            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+            # Same inheritance, worse consequence: two long-polling clients on one
+            # token steal each other's updates, so a contour that is not the bot's
+            # owner must not receive it. The stand runs no telegram_bot at all.
+            TELEGRAM_BOT_TOKEN=${{ inputs.environment == 'production' && secrets.TELEGRAM_BOT_TOKEN || '' }}
             TELETHON_API_ID=${{ secrets.TELETHON_API_ID }}
             TELETHON_API_HASH=${{ secrets.TELETHON_API_HASH }}
             TELETHON_SESSION=${{ secrets.TELETHON_SESSION }}
@@ -183,9 +171,14 @@ jobs:
             # Infrastructure
             ORCHESTRATOR_HOSTNAME=${{ secrets.ORCHESTRATOR_HOSTNAME }}
             ORCHESTRATOR_PUBLIC_IP=${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
-            TIME4VPS_MANAGED_SERVER_IDS=${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
-            TIME4VPS_LOGIN=${{ secrets.TIME4VPS_LOGIN }}
-            TIME4VPS_PASSWORD=${{ secrets.TIME4VPS_PASSWORD }}
+            # Repository secrets are inherited by every environment that does not
+            # define its own, so a contour cannot be kept away from production's
+            # provider account by leaving these unset — it would silently inherit
+            # them. The workflow decides instead of the secret scope: outside
+            # production these are empty, which is the documented default-deny.
+            TIME4VPS_MANAGED_SERVER_IDS=${{ inputs.environment == 'production' && secrets.TIME4VPS_MANAGED_SERVER_IDS || '' }}
+            TIME4VPS_LOGIN=${{ inputs.environment == 'production' && secrets.TIME4VPS_LOGIN || '' }}
+            TIME4VPS_PASSWORD=${{ inputs.environment == 'production' && secrets.TIME4VPS_PASSWORD || '' }}
 
             # Registry
             REGISTRY_USER=${{ secrets.REGISTRY_USER }}
@@ -224,6 +217,30 @@ jobs:
             GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem
             ENVEOF
             chmod 600 ${{ env.DEPLOY_PATH }}/.env
+
+      # Checked on the file that was actually written, because that is what the
+      # services read. An allowlist is the only thing that authorizes reinstalling
+      # a provider server; a stand that carried one could act on a machine it does
+      # not own, and a bot token would fight production's for its updates.
+      - name: Verify the stand carries no production credentials
+        if: ${{ inputs.environment != 'production' }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ env.DEPLOY_SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            for name in TIME4VPS_MANAGED_SERVER_IDS TIME4VPS_LOGIN TIME4VPS_PASSWORD \
+                        TELEGRAM_BOT_TOKEN
+            do
+              value=$(grep -m1 "^${name}=" ${{ env.DEPLOY_PATH }}/.env | cut -d= -f2- || true)
+              if [ -n "${value}" ]; then
+                echo "FATAL: ${name} must be empty outside production" >&2
+                exit 1
+              fi
+            done
+            echo "no production credentials in this contour's .env"
 
       - name: Write secrets files to server
         uses: appleboy/ssh-action@v1
