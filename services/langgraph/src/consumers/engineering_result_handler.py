@@ -48,19 +48,28 @@ class EngineeringSuccessParams:
 
 
 def _observability_patch(worker_observability: dict | None) -> dict:
-    """Return nullable run fields without weakening the strict result DTO."""
+    """Keep compatibility artifacts on Run and canonical usage in the ledger.
+
+    Worker-wrapper facts do not yet carry an exact-cost provenance, so the
+    ledger records their provider/model/usage with explicit unknown cost. The
+    old mutable token and float-cost columns are no longer written.
+    """
     observability = worker_observability or {}
+    profile = observability.get("agent_profile") or {}
     return {
-        field: observability.get(field)
-        for field in (
-            "input_tokens",
-            "output_tokens",
-            "total_tokens",
-            "cost_usd",
-            "transcript_path",
-            "transcript_truncated",
-            "agent_profile",
-        )
+        "engineering_attempt": {
+            "provider": profile.get("provider"),
+            "model": profile.get("model"),
+            "input_tokens": observability.get("input_tokens"),
+            "output_tokens": observability.get("output_tokens"),
+            "total_tokens": observability.get("total_tokens"),
+            "cost_source": "unknown",
+        },
+        **{
+            field: observability.get(field)
+            for field in ("transcript_path", "transcript_truncated", "agent_profile")
+            if observability.get(field) is not None
+        },
     }
 
 

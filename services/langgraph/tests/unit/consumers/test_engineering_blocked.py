@@ -58,7 +58,10 @@ class TestGaveUpHandling:
         )
 
         patch = mock_api.patch.call_args.kwargs["json"]
-        assert patch["cost_usd"] == 0.04
+        # Legacy float cost has no exact provider provenance, so the ledger
+        # keeps explicit unknown cost rather than accepting a competing source.
+        assert patch["engineering_attempt"]["cost_source"] == "unknown"
+        assert "cost_usd" not in patch
         assert patch["transcript_truncated"] is True
 
     @pytest.mark.asyncio

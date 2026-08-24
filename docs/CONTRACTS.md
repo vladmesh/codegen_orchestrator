@@ -20,6 +20,21 @@ and types had drifted apart, and `PATCH /api/projects/{id}` answered 422 to ever
 now fails on any name defined under both trees; its `KNOWN_DUPLICATES` backlog is
 empty and may not grow.
 
+### Engineering-attempt ledger
+
+`engineering_attempt_ledger` is the append-only accounting record for one terminal
+engineering coding-agent attempt. Its stable idempotency key is
+`engineering-run:{run_id}` and both that key and `run_id` are unique. The API writes
+it only while it holds the terminal Run row lock, so repeated success, failure,
+timeout or cancellation delivery retains the first row rather than creating a second.
+
+Money is `cost_microusd`, an integer number of micro-USD (1 = 0.000001 USD), never a
+float. `cost_source=provider_reported` requires both a provider and a monetary value.
+`cost_source=unknown` requires the monetary value to be NULL: unknown is not zero and
+may still retain provider, model and token facts. The old `runs` token/cost fields are
+compatibility observations only; new engineering terminal writes derive canonical
+accounting from this ledger and do not treat those mutable columns as a cost source.
+
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 
 One `StrEnum` per cross-service concept. Producers and consumers import these

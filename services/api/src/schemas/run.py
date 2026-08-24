@@ -4,9 +4,10 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
 
 # The create schema is the contract; the API validates against that same object
 # rather than a look-alike of its own.
@@ -37,10 +38,18 @@ class RunBase(BaseModel):
     completed_at: datetime | None = None
     callback_stream: str | None = None
     iteration: int | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    total_tokens: int | None = None
-    cost_usd: float | None = None
+    input_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("_ledger_input_tokens", "input_tokens")
+    )
+    output_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("_ledger_output_tokens", "output_tokens")
+    )
+    total_tokens: int | None = Field(
+        default=None, validation_alias=AliasChoices("_ledger_total_tokens", "total_tokens")
+    )
+    cost_usd: float | None = Field(
+        default=None, validation_alias=AliasChoices("_ledger_cost_usd", "cost_usd")
+    )
     agent_profile: dict[str, Any] | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
@@ -72,3 +81,6 @@ class RunUpdate(BaseModel):
     agent_profile: dict[str, Any] | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
+    # Only terminal engineering updates may supply this. The API persists it in
+    # the same locked transaction as the terminal Run transition.
+    engineering_attempt: EngineeringAttemptLedgerInput | None = None

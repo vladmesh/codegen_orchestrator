@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-24
+
+- Added the append-only engineering-attempt ledger. Terminal engineering Run
+  updates now write one idempotent record under the existing Run row lock,
+  attribute project-bound attempts from `Project.owner_id`, preserve unknown
+  cost explicitly in integer micro-USD accounting, and expose filtered,
+  ownership-checked read-only ledger access at `GET /runs/engineering-attempts`.
+
 ## 2026-08-21
 
 - Telegram bot audiences can now be changed conversationally, one user at a

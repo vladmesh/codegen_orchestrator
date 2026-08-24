@@ -60,8 +60,9 @@ class TestHandleEngineeringSuccess:
         )
 
         patch = mock_api.patch.call_args.kwargs["json"]
-        assert patch["input_tokens"] == 12
-        assert patch["total_tokens"] == 17
+        assert patch["engineering_attempt"]["input_tokens"] == 12
+        assert patch["engineering_attempt"]["total_tokens"] == 17
+        assert patch["engineering_attempt"]["cost_source"] == "unknown"
         assert patch["transcript_path"].endswith("req.log")
         assert patch["agent_profile"]["model"] == "claude-sonnet"
 
@@ -87,10 +88,11 @@ class TestHandleEngineeringSuccess:
             for call in mock_api.patch.call_args_list
             if call.args[0] == "runs/eng-no-usage"
         )
-        assert run_patch["input_tokens"] is None
-        assert run_patch["output_tokens"] is None
-        assert run_patch["total_tokens"] is None
-        assert run_patch["cost_usd"] is None
+        attempt = run_patch["engineering_attempt"]
+        assert attempt["input_tokens"] is None
+        assert attempt["output_tokens"] is None
+        assert attempt["total_tokens"] is None
+        assert attempt["cost_source"] == "unknown"
 
     @pytest.mark.asyncio
     async def test_no_commit_sha_fails_fast(self, mock_redis, mock_api):
