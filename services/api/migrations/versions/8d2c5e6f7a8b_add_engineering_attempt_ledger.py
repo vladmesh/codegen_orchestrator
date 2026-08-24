@@ -91,7 +91,25 @@ def upgrade() -> None:
           AND r.status IN ('completed', 'failed', 'cancelled')
         """
     )
+    op.execute(
+        """
+        CREATE FUNCTION engineering_attempt_ledger_reject_mutation()
+        RETURNS trigger AS $$
+        BEGIN
+            RAISE EXCEPTION 'engineering_attempt_ledger is append-only';
+        END;
+        $$ LANGUAGE plpgsql
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER engineering_attempt_ledger_append_only
+        BEFORE UPDATE OR DELETE ON engineering_attempt_ledger
+        FOR EACH ROW EXECUTE FUNCTION engineering_attempt_ledger_reject_mutation()
+        """
+    )
 
 
 def downgrade() -> None:
     op.drop_table("engineering_attempt_ledger")
+    op.execute("DROP FUNCTION engineering_attempt_ledger_reject_mutation()")

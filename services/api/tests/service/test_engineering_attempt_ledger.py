@@ -6,7 +6,7 @@ import uuid
 from httpx import AsyncClient
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 
 async def _user(client: AsyncClient, telegram_id: int) -> dict:
@@ -291,6 +291,15 @@ async def test_migration_backfills_only_terminal_runs_and_enforces_constraints(d
                 except IntegrityError:
                     continue
                 raise AssertionError(f"database accepted invalid ledger row: {sql}")
+
+            for sql in (
+                "UPDATE engineering_attempt_ledger SET model = 'rewritten' "
+                "WHERE run_id = 'terminal-completed'",
+                "DELETE FROM engineering_attempt_ledger WHERE run_id = 'terminal-completed'",
+            ):
+                with pytest.raises(DBAPIError, match="append-only"):
+                    with connection.begin_nested():
+                        connection.execute(text(sql))
         finally:
             migration.op = original_op
             connection.execute(text(f"DROP SCHEMA {quoted_schema} CASCADE"))

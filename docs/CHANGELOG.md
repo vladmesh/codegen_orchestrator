@@ -2,7 +2,7 @@
 
 ## 2026-08-24
 
-- Fixed engineering-attempt ledger backfill to skip in-flight Runs, preserved provider-reported worker cost as integer micro-USD, guarded project-bound Run ownership on update, and bounded ledger reads.
+- Fixed engineering-attempt ledger backfill to skip in-flight Runs, preserved provider-reported worker cost as integer micro-USD, guarded project-bound Run ownership on update, bounded ledger reads, and enforced append-only persistence in PostgreSQL.
 
 ## 2026-08-24
 
