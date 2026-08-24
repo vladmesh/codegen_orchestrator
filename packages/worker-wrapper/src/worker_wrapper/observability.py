@@ -57,7 +57,7 @@ def _extract_factory_evidence(stdout: str) -> dict[str, Any]:
     usage = usage if isinstance(usage, dict) else {}
     try:
         evidence = FactoryResultEvidence(
-            model=payload.get("model") if isinstance(payload.get("model"), str) else None,
+            model=_factory_model(payload),
             input_tokens=_nonnegative_int(usage.get("input_tokens")),
             output_tokens=_nonnegative_int(usage.get("output_tokens")),
             total_tokens=_nonnegative_int(usage.get("total_tokens")),
@@ -129,6 +129,12 @@ def _claude_model(payload: dict[str, Any]) -> str | None:
         return None
     models = [name for name in model_usage if isinstance(name, str)]
     return models[0] if len(models) == 1 else None
+
+
+def _factory_model(payload: dict[str, Any]) -> str | None:
+    """Keep a reported Factory model only when it satisfies its evidence type."""
+    model = payload.get("model")
+    return model if isinstance(model, str) and model else None
 
 
 def _micro_usd(value: Any) -> int | None:

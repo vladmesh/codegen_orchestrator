@@ -111,6 +111,49 @@ class TestSpawnResultFromOutput:
         assert ledger_input.cost_source == "unknown"
         assert ledger_input.cost_microusd is None
 
+    @pytest.mark.parametrize(
+        "wrapper_result",
+        [
+            WorkerCompletedResult(commit_sha="abc123", content="Implemented feature"),
+            WorkerFailedResult(error="Agent crashed"),
+            WorkerFailedResult(
+                error="Agent timed out", stop_reason=WorkerStopReason.AGENT_LIMIT_EXCEEDED
+            ),
+            WorkerFailedResult(
+                error="Worker cancellation", stop_reason=WorkerStopReason.TURN_DEADLINE_EXCEEDED
+            ),
+            WorkerBlockedResult(block_reason="Missing credentials"),
+        ],
+    )
+    def test_partial_factory_evidence_is_terminal_safe_and_keeps_configured_model(
+        self, wrapper_result
+    ):
+        evidence = FactoryResultEvidence(input_tokens=10, total_tokens=5)
+        wrapper_result = wrapper_result.model_copy(update={"factory_evidence": evidence})
+        wire = wrapper_result.model_dump(mode="json")
+
+        broker_result = parse_worker_result(wire)
+        observability = DeveloperNode._worker_observability(
+            broker_result,
+            {"config": {"agent_type": "factory", "model_identifier": "configured-factory"}},
+        )
+        terminal_payload = _observability_patch(observability)["engineering_attempt"]
+        ledger_input = EngineeringAttemptLedgerInput.model_validate(terminal_payload)
+
+        assert terminal_payload["factory_evidence"] == {
+            "provider": "factory",
+            "model": "configured-factory",
+            "input_tokens": 10,
+            "output_tokens": None,
+            "total_tokens": None,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+        }
+        assert ledger_input.model == "configured-factory"
+        assert ledger_input.total_tokens is None
+        assert ledger_input.cost_source == "unknown"
+        assert ledger_input.cost_microusd is None
+
     def test_codex_keeps_configured_model_without_parsing_its_output(self):
         result = spawn_result_from_output(
             {

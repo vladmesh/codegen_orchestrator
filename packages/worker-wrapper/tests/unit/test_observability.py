@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from worker_wrapper.observability import extract_effort_metrics, redact_transcript, save_transcript
 
@@ -110,6 +112,33 @@ def test_factory_retains_only_one_typed_result_object_without_money() -> None:
         "cache_write_tokens": 50,
     }
     assert "cost_usd" not in metrics
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        (
+            {"input_tokens": 10, "total_tokens": 5},
+            {"input_tokens": 10, "output_tokens": None, "total_tokens": None},
+        ),
+        (
+            {"input_tokens": 100, "output_tokens": -5, "total_tokens": 95},
+            {"input_tokens": 100, "output_tokens": None, "total_tokens": None},
+        ),
+        (
+            {"input_tokens": 10, "output_tokens": 2, "total_tokens": 99},
+            {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+        ),
+    ],
+)
+def test_factory_normalizes_partial_or_inconsistent_usage_before_evidence(
+    usage: dict, expected: dict
+) -> None:
+    metrics = extract_effort_metrics(json.dumps({"type": "result", "usage": usage}), "", "factory")
+
+    evidence = metrics["factory_evidence"]
+    assert isinstance(evidence, FactoryResultEvidence)
+    assert evidence.model_dump(include=set(expected)) == expected
 
 
 @pytest.mark.parametrize(

@@ -9,10 +9,12 @@ projects, works directly with the existing repository.
 import json
 
 from langchain_core.messages import AIMessage
+from pydantic import ValidationError
 import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_attempt import FactoryResultEvidence
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.worker import AgentType, WorkerOwnership
 
@@ -455,6 +457,14 @@ class DeveloperNode(FunctionalNode):
             }
         factory_evidence = worker_result.factory_evidence
         if factory_evidence is not None:
+            configured_model = config.get("model_identifier") or config.get("model_name")
+            if factory_evidence.model is None and isinstance(configured_model, str):
+                try:
+                    factory_evidence = FactoryResultEvidence.model_validate(
+                        factory_evidence.model_dump() | {"model": configured_model}
+                    )
+                except ValidationError:
+                    pass
             return {
                 key: value
                 for key, value in {

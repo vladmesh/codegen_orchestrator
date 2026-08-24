@@ -2,6 +2,12 @@
 
 ## 2026-08-24
 
+- Factory result normalization now clears partial provider totals and derives a
+  coherent total only from valid input and output components, so malformed
+  usage cannot reject a terminal ledger write. Factory evidence with no valid
+  reported model now retains the selected configured model at the DeveloperNode
+  profile seam; a valid result model still takes precedence.
+
 - Factory `droid exec -o json` terminal results now retain a single typed
   `type=result` object's available non-negative model, token, and cache facts
   through the existing worker-result path to the engineering-attempt ledger.

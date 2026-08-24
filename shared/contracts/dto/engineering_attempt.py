@@ -63,12 +63,16 @@ class FactoryResultEvidence(BaseModel):
 
     @model_validator(mode="after")
     def _validate_total_tokens(self) -> "FactoryResultEvidence":
+        """Normalize Factory totals before this evidence reaches the queue.
+
+        A result-level total cannot be attributed safely when either component
+        is unavailable. When both components are available, their sum is the
+        one coherent total the ledger accepts.
+        """
         if self.input_tokens is not None and self.output_tokens is not None:
-            computed_total = self.input_tokens + self.output_tokens
-            if self.total_tokens is None:
-                self.total_tokens = computed_total
-            elif self.total_tokens != computed_total:
-                raise ValueError("total_tokens must equal input_tokens + output_tokens")
+            self.total_tokens = self.input_tokens + self.output_tokens
+        else:
+            self.total_tokens = None
         return self
 
 
