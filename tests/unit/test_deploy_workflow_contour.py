@@ -114,3 +114,18 @@ def test_the_contour_reaches_the_server_env():
 
 def test_deploys_of_one_contour_do_not_race():
     assert _workflow()["concurrency"]["group"] == "deploy-${{ inputs.environment }}"
+
+
+def test_a_contour_needs_no_registry_credential_of_its_own():
+    """The worker image release is readable without a per-contour secret.
+
+    The base images are public packages of this repository's owner, and where an
+    environment defines no GHCR_TOKEN the workflow's automatic token stands in —
+    which also still works if those packages are ever made private, since it is
+    scoped to this repository. Production keeps using its own secret.
+    """
+    steps = {step["name"]: step for step in _deploy_job()["steps"]}
+    pull = steps["Pull and verify worker base images for this revision"]
+
+    assert "GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}'" in pull["with"]["script"]
+    assert _deploy_job()["permissions"]["packages"] == "read"

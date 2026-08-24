@@ -1,4 +1,4 @@
-name: Deploy to Production
+name: Deploy
 
 on:
   workflow_dispatch:
@@ -10,20 +10,39 @@ on:
         type: choice
         options:
           - production
+          - stand
 
-env:
-  DEPLOY_PATH: /opt/codegen_orchestrator
+# One deploy per contour at a time. The contours run on different hosts, so they
+# do not queue behind each other — but two deploys racing on one host would fight
+# over the same .env and the same compose project.
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: production
+    environment: ${{ inputs.environment }}
+    # Only what the deploy actually does: read the worker image release. The
+    # automatic token stands in for GHCR_TOKEN where no environment defines one,
+    # so a contour needs no registry credential of its own.
+    permissions:
+      contents: read
+      packages: read
+    # Environment-scoped variables resolve only inside a job that declares the
+    # environment, so the per-contour paths live here and not at workflow level.
+    # The defaults are production's values: an environment that sets nothing
+    # deploys exactly as before.
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/codegen_orchestrator' }}
+      DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER || 'deploy' }}
+      COMPOSE_ARGS: ${{ vars.COMPOSE_ARGS || '-f docker-compose.yml -f docker-compose.prod.yml' }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Validate required production secrets
+      - name: Validate required secrets
         shell: bash
         env:
           REQUIRED_POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
@@ -36,9 +55,6 @@ jobs:
           REQUIRED_GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
           REQUIRED_LOKI_PUSH_USER: ${{ secrets.LOKI_PUSH_USER }}
           REQUIRED_LOKI_PUSH_PASSWORD_HASH: ${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
-          REQUIRED_TIME4VPS_MANAGED_SERVER_IDS: ${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
-          REQUIRED_TIME4VPS_LOGIN: ${{ secrets.TIME4VPS_LOGIN }}
-          REQUIRED_TIME4VPS_PASSWORD: ${{ secrets.TIME4VPS_PASSWORD }}
           REQUIRED_ORCHESTRATOR_PUBLIC_IP: ${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
           REQUIRED_GH_ORG: ${{ secrets.GH_ORG }}
           REQUIRED_WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
@@ -56,12 +72,34 @@ jobs:
             REQUIRED_GRAFANA_ADMIN_PASSWORD \
             REQUIRED_LOKI_PUSH_USER \
             REQUIRED_LOKI_PUSH_PASSWORD_HASH \
-            REQUIRED_TIME4VPS_MANAGED_SERVER_IDS \
-            REQUIRED_TIME4VPS_LOGIN \
-            REQUIRED_TIME4VPS_PASSWORD \
             REQUIRED_ORCHESTRATOR_PUBLIC_IP \
             REQUIRED_GH_ORG \
             REQUIRED_WORKER_BROKER_INTERNAL_TOKEN
+          do
+            if [ -z "${!name}" ]; then
+              missing+=("${name#REQUIRED_}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Missing required secrets for %s: %s\n' \
+              "${{ inputs.environment }}" "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Validate production provider secrets
+        if: ${{ inputs.environment == 'production' }}
+        shell: bash
+        env:
+          REQUIRED_TIME4VPS_MANAGED_SERVER_IDS: ${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
+          REQUIRED_TIME4VPS_LOGIN: ${{ secrets.TIME4VPS_LOGIN }}
+          REQUIRED_TIME4VPS_PASSWORD: ${{ secrets.TIME4VPS_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            REQUIRED_TIME4VPS_MANAGED_SERVER_IDS \
+            REQUIRED_TIME4VPS_LOGIN \
+            REQUIRED_TIME4VPS_PASSWORD
           do
             if [ -z "${!name}" ]; then
               missing+=("${name#REQUIRED_}")
@@ -72,11 +110,26 @@ jobs:
             exit 1
           fi
 
+      # A stand must not carry a provider allowlist. An empty one is the
+      # documented default-deny mode, and it is what keeps a stand run from
+      # reaching a production server: it knows no server it is allowed to touch.
+      - name: Refuse a provider allowlist outside production
+        if: ${{ inputs.environment != 'production' }}
+        shell: bash
+        env:
+          MANAGED_SERVER_IDS: ${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MANAGED_SERVER_IDS}" ]; then
+            echo "TIME4VPS_MANAGED_SERVER_IDS must be empty outside production" >&2
+            exit 1
+          fi
+
       - name: Write .env to server
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
@@ -122,6 +175,10 @@ jobs:
 
             # Encryption
             SECRETS_ENCRYPTION_KEY=${{ secrets.SECRETS_ENCRYPTION_KEY }}
+
+            # Which contour this installation is. Empty means production, so an
+            # environment that sets nothing keeps production's resource names.
+            LIVE_CONTOUR=${{ vars.LIVE_CONTOUR }}
 
             # Infrastructure
             ORCHESTRATOR_HOSTNAME=${{ secrets.ORCHESTRATOR_HOSTNAME }}
@@ -172,7 +229,7 @@ jobs:
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             sudo mkdir -p /opt/secrets
@@ -187,7 +244,7 @@ jobs:
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
@@ -207,11 +264,11 @@ jobs:
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ${{ env.DEPLOY_PATH }}
-            GHCR_TOKEN='${{ secrets.GHCR_TOKEN }}' \
+            GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}' \
             GHCR_OWNER='${{ github.repository_owner }}' \
             WORKER_IMAGE_TAG='${{ github.sha }}' \
             DIGEST_FILE='${{ env.DEPLOY_PATH }}/deployed-worker-images.json' \
@@ -232,7 +289,7 @@ jobs:
           printf '%s\n' "${SSH_PRIVATE_KEY}" > "${key}"
           chmod 600 "${key}"
           ssh -i "${key}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
-            "deploy@${PROD_HOST}" \
+            "${DEPLOY_SSH_USER}@${PROD_HOST}" \
             "cat ${{ env.DEPLOY_PATH }}/deployed-worker-images.json" > "${DIGEST_FILE}"
           {
             echo "### Deployed revision ${GIT_SHA}"
@@ -254,52 +311,50 @@ jobs:
         timeout-minutes: 15
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           command_timeout: 15m
           script: |
             cd ${{ env.DEPLOY_PATH }}
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+            docker compose ${{ env.COMPOSE_ARGS }} config --quiet
+            docker compose ${{ env.COMPOSE_ARGS }} build
 
       - name: Deploy
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ${{ env.DEPLOY_PATH }}
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans
+            docker compose ${{ env.COMPOSE_ARGS }} up -d --remove-orphans
 
       - name: Run migrations
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ${{ env.DEPLOY_PATH }}
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alembic upgrade head
+            docker compose ${{ env.COMPOSE_ARGS }} exec -T api alembic upgrade head
 
       - name: Health check
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             echo "Waiting for API to be healthy..."
+            cd ${{ env.DEPLOY_PATH }}
             timeout=60
-            while ! docker compose \
-              -f ${{ env.DEPLOY_PATH }}/docker-compose.yml \
-              -f ${{ env.DEPLOY_PATH }}/docker-compose.prod.yml \
+            while ! docker compose ${{ env.COMPOSE_ARGS }} \
               exec -T api curl -sf http://127.0.0.1:8000/health > /dev/null 2>&1
             do
               if [ $timeout -le 0 ]; then
                 echo "FATAL: API health check failed after 60s"
-                cd ${{ env.DEPLOY_PATH }}
-                docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=50 api
+                docker compose ${{ env.COMPOSE_ARGS }} logs --tail=50 api
                 exit 1
               fi
               sleep 2
@@ -313,11 +368,11 @@ jobs:
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ${{ env.DEPLOY_PATH }}
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api \
+            docker compose ${{ env.COMPOSE_ARGS }} exec -T api \
               python /app/scripts/seed_system_configs.py \
               --api-base-url http://localhost:8000 \
               --configs-path /app/scripts/system_configs.yaml
@@ -326,7 +381,7 @@ jobs:
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
-          username: deploy
+          username: ${{ env.DEPLOY_SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             docker image prune -f
