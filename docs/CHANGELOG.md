@@ -2,6 +2,43 @@
 
 ## 2026-08-24
 
+- Released engineering-budget reservations no longer replay their historical
+  `admitted` outcome as authorization. A repeated deterministic dispatch now
+  reacquires the policy lock and re-evaluates ledger spend plus chargeable
+  holds before atomically re-arming the existing reservation or denying it.
+  This preserves the hold through a deploy-fix retry after a proven
+  pre-handoff failure, including unknown terminal cost, without minting a new
+  attempt identity.
+
+- Supervisor deploy-fix redispatch now uses the same durable engineering-budget
+  admission before it creates a Run or publishes work. A denial records the
+  balance context, writes a typed `story_quarantined` owner notice, then parks
+  the story in human review before attempting delivery; pre-handoff failures
+  release the exact deploy-fix reservation, while published attempts continue
+  to terminal known or unknown-cost settlement.
+
+- PO owner-notification events now use one shared typed vocabulary. The
+  scheduler's durable and direct owner-message producers and the PO consumer
+  import it, `POSystemEvent` rejects arbitrary event names, and a durable
+  notification cannot be marked delivered for an event PO would drop. The
+  deploy-fix budget-denial path reuses `story_quarantined` with budget-specific
+  text, so its persisted reason, owed record, human-review transition and
+  recoverable delivery remain in that order.
+
+- Engineering-budget dispatch recovery now treats queue publication as the only
+  handoff boundary: manual and scheduler failures before it release active holds,
+  including local refusals, Run creation and recipient resolution. Scheduler
+  budget denials move tasks through the legal `in_dev` transition to
+  `waiting_human_review` with auditable balance context, preventing polling
+  redispatch until an explicit human resume.
+
+- Engineering dispatch now makes a durable, server-authoritative budget admission before
+  creating a Run or touching the engineering queue. Per-user policy locks aggregate
+  immutable ledger cost with active and unknown-final reservation holds; zero available
+  budget denies, and repeated attempt identities retain their first decision. Publish
+  failures release their pre-handoff hold, while terminal known costs settle it and
+  unknown terminal costs retain conservative coverage without being called actual spend.
+
 - Added durable per-user engineering-budget policies and a ledger-derived balance
   API. Policies use integer micro-USD limits, typed enabled/disabled state and
   optimistic versions; internal/admin writes are idempotent at the requested

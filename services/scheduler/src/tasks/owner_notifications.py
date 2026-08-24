@@ -59,6 +59,7 @@ from shared.contracts.dto.owner_notification import (
 )
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_INPUT_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -129,7 +130,7 @@ async def owe_owner_notification(
     api_client: SchedulerAPIClient,
     run,
     *,
-    event: str,
+    event: OwnerNotificationEvent,
     text: str,
     story_id: str,
     project_id: str,

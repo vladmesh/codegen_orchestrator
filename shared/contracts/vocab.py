@@ -102,6 +102,37 @@ class LifecycleEvent(StrEnum):
     STOPPED = "stopped"
 
 
+class OwnerNotificationEvent(StrEnum):
+    """User-facing PO events that can be durably owed by the supervisor.
+
+    This is deliberately the same vocabulary the PO consumer routes. A terminal
+    owner notification must be one of these values before it is persisted, so a
+    producer cannot settle an event PO would silently discard.
+    """
+
+    STORY_COMPLETED = "story_completed"
+    STORY_FAILED = "story_failed"
+    STORY_BLOCKED = "story_blocked"
+    STORY_QUARANTINED = "story_quarantined"
+    STORY_WAITING_USER_SECRET = "story_waiting_user_secret"  # noqa: S105
+    TASK_WAITING_RESOURCES = "task_waiting_resources"
+    TASK_WAITING_INFRASTRUCTURE = "task_waiting_infrastructure"
+    TASK_IMPOSSIBLE_CAPACITY = "task_impossible_capacity"
+    STORY_IMPOSSIBLE_CAPACITY = "story_impossible_capacity"
+    TASK_RESOURCES_RESUMED = "task_resources_resumed"
+
+
+class POCallbackEvent(StrEnum):
+    """Non-durable progress events carried by ``POSystemEvent``."""
+
+    PROGRESS = "progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+POSystemEventName = OwnerNotificationEvent | POCallbackEvent
+
+
 # Progress-style streams: task start → incremental progress → terminal outcome.
 # Used by ProgressEvent.type and WorkerEvent.event_type. No `stopped`.
 TaskProgressKind = Literal[

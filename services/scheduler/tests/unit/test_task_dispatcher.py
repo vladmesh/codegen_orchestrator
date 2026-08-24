@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionOutcome,
+    EngineeringBudgetAdmissionRead,
+)
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
@@ -103,6 +107,23 @@ def _repo(**overrides) -> RepositoryDTO:
     return RepositoryDTO.model_validate(defaults)
 
 
+def _admission(
+    outcome: EngineeringBudgetAdmissionOutcome = EngineeringBudgetAdmissionOutcome.ADMITTED,
+) -> EngineeringBudgetAdmissionRead:
+    return EngineeringBudgetAdmissionRead(
+        attempt_id="eng-budget-test",
+        user_id=1,
+        outcome=outcome,
+        reservation_microusd=10,
+        known_spend_microusd=0,
+        active_held_microusd=10 if outcome is EngineeringBudgetAdmissionOutcome.ADMITTED else 0,
+        available_microusd=90,
+        reservation_state=(
+            "active" if outcome is EngineeringBudgetAdmissionOutcome.ADMITTED else None
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -130,6 +151,7 @@ def api_client():
     client.get_applications_by_project.return_value = [{"id": 1, "status": "running"}]
     # Default: no live engineering run left over from a previous tick
     client.list_runs.return_value = []
+    client.admit_engineering_budget.return_value = _admission()
     return client
 
 
@@ -279,6 +301,46 @@ class TestDispatchTodoTasks:
 
         # Should transition task to in_dev
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
+
+    @pytest.mark.asyncio
+    async def test_budget_denial_moves_task_to_human_review_without_a_retry(
+        self, api_client, redis_client
+    ):
+        """Denial is terminal for automatic dispatch until a human resumes it."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.side_effect = [
+            [
+                _task(
+                    id="task-1",
+                    project_id=PROJ_ID,
+                    story_id="story-1",
+                    status="todo",
+                )
+            ],
+            [],
+        ]
+        api_client.get_task_events.return_value = []
+        api_client.admit_engineering_budget.return_value = _admission(
+            EngineeringBudgetAdmissionOutcome.DENIED
+        )
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        api_client.admit_engineering_budget.assert_awaited_once()
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+        first, second = api_client.transition_task.await_args_list
+        assert first.args == ("task-1", "in_dev", "dispatcher")
+        assert second.args == ("task-1", "waiting_human_review", "dispatcher")
+        assert second.kwargs["details"] == {
+            "reason": "engineering_budget_denied",
+            "attempt_id": api_client.admit_engineering_budget.await_args.args[0].attempt_id,
+            "known_spend_microusd": 0,
+            "active_held_microusd": 0,
+            "available_microusd": 90,
+        }
 
     @pytest.mark.asyncio
     async def test_dispatches_refactor_task_as_feature_action(self, api_client, redis_client):
@@ -682,6 +744,51 @@ class TestDispatchPartialFailure:
         # The run never reached the queue, so it must not look dispatched
         assert patch["run_metadata"]["iteration"] is None
         # Task must stay in todo — nothing is working on it
+        api_client.transition_task.assert_not_called()
+        api_client.release_engineering_budget_admission.assert_awaited_once_with(run_id)
+
+    @pytest.mark.asyncio
+    async def test_run_creation_failure_releases_the_pre_handoff_reservation(
+        self, api_client, redis_client
+    ):
+        """No Run row means the admitted hold has proved no provider work started."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        api_client.create_run.side_effect = RuntimeError("API unavailable")
+
+        assert await dispatch_todo_tasks(api_client, redis_client) == 0
+
+        assert (
+            api_client.release_engineering_budget_admission.await_args.args[0]
+            == api_client.admit_engineering_budget.await_args.args[0].attempt_id
+        )
+        redis_client.publish_message.assert_not_called()
+        api_client.transition_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recipient_failure_releases_the_pre_handoff_reservation(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """Recipient resolution is before queue handoff and must compensate its hold."""
+        from src.tasks import task_dispatcher
+
+        api_client.get_tasks_by_status.return_value = [self._todo_task()]
+        api_client.get_task_events.return_value = []
+        monkeypatch.setattr(
+            task_dispatcher,
+            "resolve_project_recipient",
+            AsyncMock(side_effect=RuntimeError("recipient unavailable")),
+        )
+
+        assert await task_dispatcher.dispatch_todo_tasks(api_client, redis_client) == 0
+
+        assert (
+            api_client.release_engineering_budget_admission.await_args.args[0]
+            == api_client.create_run.await_args.args[0]["id"]
+        )
+        redis_client.publish_message.assert_not_called()
         api_client.transition_task.assert_not_called()
 
     @pytest.mark.asyncio

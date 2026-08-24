@@ -6,6 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionCommand,
+    EngineeringBudgetAdmissionOutcome,
+)
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.models import Project, Run, TaskEvent
@@ -14,6 +18,10 @@ from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
 from ..dependencies import get_redis_client
+from ..engineering_budget_admission import (
+    admit_engineering_attempt,
+    release_pre_handoff_reservation,
+)
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
@@ -31,6 +39,17 @@ _COMPLETE_PATH: dict[str, list[str]] = {
     TaskStatus.IN_CI: [TaskStatus.TESTING, TaskStatus.DONE],
     TaskStatus.TESTING: [TaskStatus.DONE],
 }
+
+
+async def _release_pre_handoff_failure(run_id: str, db: AsyncSession) -> None:
+    """Recover an admitted hold when the engineering message never left this API."""
+    await db.rollback()
+    try:
+        await release_pre_handoff_reservation(run_id, db)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("worker_spawn_reservation_release_failed", run_id=run_id)
 
 
 @action_router.post("/{task_id}/start", response_model=TaskRead)
@@ -221,57 +240,92 @@ async def spawn_worker(
     # that predates run ownership must not leave a half-started attempt behind.
     initiating_run_id = initiating_run_or_conflict(project)
 
-    # Transition to IN_DEV if needed
+    # Validate every local refusal before admission.  These checks do not modify
+    # the task, so a bad status cannot consume a reservation.
     startable = {TaskStatus.BACKLOG, TaskStatus.TODO}
-    if TaskStatus(task.status) in startable:
-        if task.status == TaskStatus.BACKLOG:
-            await create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, {}, db)
-            task.status = TaskStatus.TODO
-        validate_transition(task.status, TaskStatus.IN_DEV)
-        old_status = task.status
-        task.status = TaskStatus.IN_DEV
-        await create_status_event(task, old_status, TaskStatus.IN_DEV, body.actor, {}, db)
-    elif task.status != TaskStatus.IN_DEV:
+    task_status = TaskStatus(task.status)
+    if task_status in startable:
+        if task_status is TaskStatus.BACKLOG:
+            validate_transition(TaskStatus.BACKLOG, TaskStatus.TODO)
+            task_status = TaskStatus.TODO
+        validate_transition(task_status, TaskStatus.IN_DEV)
+    elif task_status is not TaskStatus.IN_DEV:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot spawn worker for task in status '{task.status}'",
         )
 
-    # Create Run
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
-    run = Run(
-        id=run_id,
-        type="engineering",
-        project_id=task.project_id,
-        task_id=task.id,
-        story_id=getattr(task, "story_id", None),
-        run_metadata={
-            "triggered_by": "admin",
-            "task_id": task.id,
-        },
-    )
-    db.add(run)
-    await db.commit()
-    await db.refresh(task)
-    await db.refresh(run)
-
-    # Publish to engineering queue
-    msg = EngineeringMessage(
-        task_id=run_id,
-        project_id=str(task.project_id),
-        initiating_run_id=initiating_run_id,
-        telegram_chat_id=await resolve_project_chat_id(
+    try:
+        admission = await admit_engineering_attempt(
+            EngineeringBudgetAdmissionCommand(
+                attempt_id=run_id,
+                project_id=task.project_id,
+                task_id=task.id,
+                story_id=task.story_id,
+            ),
             db,
-            task.project_id,
-            event="worker_spawned",
-            story_id=task.story_id or "",
-        ),
-        action=task.type or "feature",
-        description=body.description or task.description,
-        planning_task_id=task.id,
-        story_id=getattr(task, "story_id", None) or None,
-    )
-    await redis.publish_message(ENGINEERING_QUEUE, msg)
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    await db.commit()
+    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+        logger.info(
+            "worker_spawn_budget_denied",
+            task_id=task.id,
+            run_id=run_id,
+            available_microusd=admission.available_microusd,
+        )
+        return {"admission": admission.model_dump(mode="json")}
+
+    try:
+        # Transition to IN_DEV if needed.
+        if TaskStatus(task.status) in startable:
+            if task.status == TaskStatus.BACKLOG:
+                await create_status_event(
+                    task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, {}, db
+                )
+                task.status = TaskStatus.TODO
+            old_status = task.status
+            task.status = TaskStatus.IN_DEV
+            await create_status_event(task, old_status, TaskStatus.IN_DEV, body.actor, {}, db)
+
+        run = Run(
+            id=run_id,
+            type="engineering",
+            project_id=task.project_id,
+            task_id=task.id,
+            story_id=getattr(task, "story_id", None),
+            run_metadata={"triggered_by": "admin", "task_id": task.id},
+        )
+        db.add(run)
+        await db.commit()
+        await db.refresh(task)
+        await db.refresh(run)
+
+        msg = EngineeringMessage(
+            task_id=run_id,
+            project_id=str(task.project_id),
+            initiating_run_id=initiating_run_id,
+            telegram_chat_id=await resolve_project_chat_id(
+                db,
+                task.project_id,
+                event="worker_spawned",
+                story_id=task.story_id or "",
+            ),
+            action=task.type or "feature",
+            description=body.description or task.description,
+            planning_task_id=task.id,
+            story_id=getattr(task, "story_id", None) or None,
+        )
+        await redis.publish_message(ENGINEERING_QUEUE, msg)
+    except Exception as error:
+        await _release_pre_handoff_failure(run_id, db)
+        logger.exception("worker_spawn_pre_handoff_failed", task_id=task_id, run_id=run_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Engineering handoff could not be published",
+        ) from error
 
     logger.info("worker_spawned", task_id=task.id, run_id=run_id, actor=body.actor)
     return {

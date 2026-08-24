@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import httpx
 
@@ -11,6 +12,10 @@ from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import (
     DeployDispatchSupersede,
     DeployDispatchWithdrawal,
+)
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionCommand,
+    EngineeringBudgetAdmissionRead,
 )
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
@@ -118,6 +123,17 @@ class SchedulerAPIClient(InternalAPIClient):
         return ServerDTO.model_validate(resp.json())
 
     # --- Runs ---
+
+    async def admit_engineering_budget(
+        self, command: EngineeringBudgetAdmissionCommand
+    ) -> EngineeringBudgetAdmissionRead:
+        resp = await self.request(
+            "POST", "engineering-budget-policies/admissions", json=command.model_dump(mode="json")
+        )
+        return EngineeringBudgetAdmissionRead.model_validate(resp.json())
+
+    async def release_engineering_budget_admission(self, attempt_id: str) -> None:
+        await self.request("POST", f"engineering-budget-policies/admissions/{attempt_id}/release")
 
     async def create_run(self, run_data: dict) -> RunDTO:
         resp = await self.request("POST", "runs/", json=run_data)
@@ -445,13 +461,18 @@ class SchedulerAPIClient(InternalAPIClient):
         return TaskDTO.model_validate(resp.json())
 
     async def transition_task(
-        self, task_id: str, to_status: str, actor: str = "architect"
+        self,
+        task_id: str,
+        to_status: str,
+        actor: str = "architect",
+        *,
+        details: dict[str, Any] | None = None,
     ) -> TaskDTO:
         resp = await self.request(
             "POST",
             f"tasks/{task_id}/transition",
             params={"to_status": to_status},
-            json={"actor": actor},
+            json={"actor": actor, "details": details or {}},
         )
         return TaskDTO.model_validate(resp.json())
 

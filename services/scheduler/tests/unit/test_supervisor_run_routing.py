@@ -22,6 +22,11 @@ from _run_routing_factories import (
 import pytest
 
 from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionOutcome,
+    EngineeringBudgetAdmissionRead,
+    EngineeringBudgetReservationState,
+)
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
@@ -29,7 +34,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.user import UserDTO
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
-from shared.queues import DEPLOY_QUEUE, PO_INPUT_QUEUE
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE
 from shared.tests.allocation_routing_cases import (
     REFUSAL_ROUTING_CASES,
     refused_deploy_result,
@@ -47,6 +52,26 @@ _WAITING_SECRET_RESULT = {
         {"key": "TELEGRAM_BOT_TOKEN", "description": "Telegram bot token from @BotFather"},
     ],
 }
+
+
+def _engineering_admission(
+    outcome: EngineeringBudgetAdmissionOutcome = EngineeringBudgetAdmissionOutcome.ADMITTED,
+) -> EngineeringBudgetAdmissionRead:
+    """A typed admission result, so a deleted dispatch guard cannot pass silently."""
+    return EngineeringBudgetAdmissionRead(
+        attempt_id="eng-deploy-fix-deploy-1-1",
+        user_id=1,
+        outcome=outcome,
+        reservation_microusd=60 if outcome is EngineeringBudgetAdmissionOutcome.ADMITTED else 0,
+        known_spend_microusd=40,
+        active_held_microusd=60 if outcome is EngineeringBudgetAdmissionOutcome.ADMITTED else 0,
+        available_microusd=60,
+        reservation_state=(
+            EngineeringBudgetReservationState.ACTIVE
+            if outcome is EngineeringBudgetAdmissionOutcome.ADMITTED
+            else None
+        ),
+    )
 
 
 def _resolved_user(user_id: int) -> UserDTO:
@@ -398,7 +423,7 @@ class TestSuperviseDeployingStories:
 
     @pytest.mark.asyncio
     async def test_code_fix_redispatches_to_engineering(self, api_client, redis_client):
-        """CODE_FIX outcome → story IN_PROGRESS, engineering message published."""
+        """CODE_FIX admission precedes its exact-id run and engineering handoff."""
         from src.tasks.supervisor import supervise_deploying_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -414,18 +439,249 @@ class TestSuperviseDeployingStories:
         )
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
+        api_client.admit_engineering_budget.return_value = _engineering_admission()
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 1
+        admission = api_client.admit_engineering_budget.await_args.args[0]
+        assert admission.attempt_id == "eng-deploy-fix-deploy-1-1"
+        assert admission.task_id == admission.attempt_id
+        assert admission.story_id == "story-1"
+        assert admission.project_id == _make_project().id
+        admission_call = next(
+            index
+            for index, call in enumerate(api_client.mock_calls)
+            if call[0] == "admit_engineering_budget"
+        )
+        create_run_call = next(
+            index for index, call in enumerate(api_client.mock_calls) if call[0] == "create_run"
+        )
+        assert admission_call < create_run_call
         api_client.transition_story.assert_called_once_with("story-1", "start")
-
-        from shared.queues import ENGINEERING_QUEUE
 
         eng_calls = [
             c for c in redis_client.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
         ]
         assert len(eng_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_code_fix_budget_denial_parks_story_without_engineering_handoff(
+        self, api_client, redis_client
+    ):
+        """A denied deploy fix leaves no Run, queue work, or retryable deploy state."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                "error_details": "ImportError: no module",
+                "deploy_fix_attempt": 0,
+            },
+        )
+        api_client.admit_engineering_budget.return_value = _engineering_admission(
+            EngineeringBudgetAdmissionOutcome.DENIED
+        )
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 0
+        assert result["failed"] == 1
+        api_client.create_run.assert_not_awaited()
+        api_client.release_engineering_budget_admission.assert_not_awaited()
+        assert not [
+            call
+            for call in redis_client.publish_message.call_args_list
+            if call.args[0] == ENGINEERING_QUEUE
+        ]
+        api_client.update_story.assert_awaited_once_with(
+            "story-1",
+            {
+                "quarantine_reason": {
+                    "reason": "engineering_budget_denied",
+                    "attempt_id": "eng-deploy-fix-deploy-1-1",
+                    "known_spend_microusd": 40,
+                    "active_held_microusd": 0,
+                    "available_microusd": 60,
+                }
+            },
+        )
+        api_client.transition_story.assert_awaited_once_with("story-1", "human-review")
+        owner_events = [
+            call.args[1]
+            for call in redis_client.publish_flat.call_args_list
+            if call.args[0] == PO_INPUT_QUEUE
+        ]
+        assert owner_events == [
+            {
+                "type": "system_event",
+                "event": "story_quarantined",
+                "text": (
+                    "Engineering cannot start the deploy fix because this project's engineering "
+                    "budget is currently exhausted. Tell the user that the work is waiting "
+                    "for their review."
+                ),
+                "task_id": "story-1",
+                "telegram_chat_id": "900000001",
+                "owner_user_id": "1",
+                "story_id": "story-1",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "timestamp": ANY,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_code_fix_publish_failure_releases_exact_admission_before_handoff(
+        self, api_client, redis_client
+    ):
+        """A failed deploy-fix publish proves no provider work started, so release its hold."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                "deploy_fix_attempt": 0,
+            },
+        )
+        api_client.admit_engineering_budget.return_value = _engineering_admission()
+        redis_client.publish_message.side_effect = RuntimeError("redis unavailable")
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 0
+        api_client.release_engineering_budget_admission.assert_awaited_once_with(
+            "eng-deploy-fix-deploy-1-1"
+        )
+        api_client.update_run.assert_awaited_once()
+        assert api_client.update_run.await_args.args[0] == "eng-deploy-fix-deploy-1-1"
+
+    @pytest.mark.asyncio
+    async def test_code_fix_run_creation_failure_releases_exact_admission_before_handoff(
+        self, api_client, redis_client
+    ):
+        """A deploy-fix Run failure is pre-handoff and cannot strand an active hold."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                "deploy_fix_attempt": 0,
+            },
+        )
+        api_client.admit_engineering_budget.return_value = _engineering_admission()
+        api_client.create_run.side_effect = RuntimeError("api unavailable")
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 0
+        api_client.release_engineering_budget_admission.assert_awaited_once_with(
+            "eng-deploy-fix-deploy-1-1"
+        )
+        redis_client.publish_message.assert_not_awaited()
+        api_client.update_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_code_fix_retries_a_released_identity_before_any_handoff(
+        self, api_client, redis_client
+    ):
+        """The next tick re-enters admission with the deterministic deploy-fix id."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                "deploy_fix_attempt": 0,
+            },
+        )
+        api_client.admit_engineering_budget.side_effect = [
+            _engineering_admission(),
+            _engineering_admission(),
+        ]
+        api_client.transition_story.side_effect = [RuntimeError("temporary API failure"), {}]
+
+        first = await supervise_deploying_stories(api_client, redis_client)
+        second = await supervise_deploying_stories(api_client, redis_client)
+
+        assert first["redispatched"] == 0
+        assert second["redispatched"] == 1
+        assert [
+            call.args[0].attempt_id for call in api_client.admit_engineering_budget.await_args_list
+        ] == ["eng-deploy-fix-deploy-1-1", "eng-deploy-fix-deploy-1-1"]
+        release_call = next(
+            index
+            for index, call in enumerate(api_client.mock_calls)
+            if call[0] == "release_engineering_budget_admission"
+        )
+        retry_admission_call = [
+            index
+            for index, call in enumerate(api_client.mock_calls)
+            if call[0] == "admit_engineering_budget"
+        ][1]
+        retry_run_call = next(
+            index for index, call in enumerate(api_client.mock_calls) if call[0] == "create_run"
+        )
+        assert release_call < retry_admission_call < retry_run_call
+        assert (
+            len(
+                [
+                    call
+                    for call in redis_client.publish_message.await_args_list
+                    if call.args[0] == ENGINEERING_QUEUE
+                ]
+            )
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_code_fix_re_admission_denial_has_no_engineering_handoff(
+        self, api_client, redis_client
+    ):
+        """A released identity that now denies is quarantined before a Run or publish."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                "deploy_fix_attempt": 0,
+            },
+        )
+        api_client.admit_engineering_budget.side_effect = [
+            _engineering_admission(),
+            _engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+        ]
+        api_client.transition_story.side_effect = RuntimeError("temporary API failure")
+
+        await supervise_deploying_stories(api_client, redis_client)
+        api_client.create_run.reset_mock()
+        redis_client.publish_message.reset_mock()
+        api_client.transition_story.side_effect = None
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 0
+        api_client.create_run.assert_not_awaited()
+        redis_client.publish_message.assert_not_awaited()
+        assert api_client.transition_story.await_args_list[-1].args == ("story-1", "human-review")
 
     @pytest.mark.asyncio
     async def test_retry_republishes_deploy(self, api_client, redis_client):

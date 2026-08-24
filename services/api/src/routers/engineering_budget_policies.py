@@ -7,13 +7,25 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionCommand,
+    EngineeringBudgetAdmissionRead,
     EngineeringBudgetPolicyCommand,
     EngineeringBudgetPolicyState,
+    EngineeringBudgetReservationState,
 )
-from shared.models import EngineeringAttemptLedger, EngineeringBudgetPolicy, User
+from shared.models import (
+    EngineeringAttemptLedger,
+    EngineeringBudgetPolicy,
+    EngineeringBudgetReservation,
+    User,
+)
 
 from ..database import get_async_session
 from ..dependencies import get_current_user, require_internal_or_admin
+from ..engineering_budget_admission import (
+    admit_engineering_attempt,
+    release_pre_handoff_reservation,
+)
 from ..schemas.engineering_budget_policy import (
     EngineeringBudgetBalanceRead,
     EngineeringBudgetPolicyLookup,
@@ -50,7 +62,7 @@ async def _policy_lookup(user_id: int, db: AsyncSession) -> EngineeringBudgetPol
 
 
 async def _balance(user_id: int, db: AsyncSession) -> EngineeringBudgetBalanceRead:
-    """Aggregate only immutable ledger facts attributed to this user."""
+    """Keep actual ledger spend distinct from conservative reservation coverage."""
     policy = await _get_policy(user_id, db)
     known_spend, unknown_attempts = (
         await db.execute(
@@ -62,23 +74,49 @@ async def _balance(user_id: int, db: AsyncSession) -> EngineeringBudgetBalanceRe
     ).one()
     known_spend_microusd = int(known_spend)
     unknown_cost_attempt_count = int(unknown_attempts)
+    active_held_microusd, unknown_final_held_microusd = (
+        await db.execute(
+            select(
+                func.coalesce(
+                    func.sum(EngineeringBudgetReservation.active_held_microusd).filter(
+                        EngineeringBudgetReservation.state
+                        == EngineeringBudgetReservationState.ACTIVE
+                    ),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(EngineeringBudgetReservation.active_held_microusd).filter(
+                        EngineeringBudgetReservation.state
+                        == EngineeringBudgetReservationState.UNKNOWN_FINAL
+                    ),
+                    0,
+                ),
+            ).where(EngineeringBudgetReservation.user_id == user_id)
+        )
+    ).one()
+    active_held_microusd = int(active_held_microusd)
+    unknown_final_held_microusd = int(unknown_final_held_microusd)
+    held_microusd = active_held_microusd + unknown_final_held_microusd
     enforcement = _enforcement(policy)
     if enforcement != "enforced":
         remaining_microusd = None
         exhausted = False
     else:
         assert policy is not None
-        remaining_microusd = max(policy.limit_microusd - known_spend_microusd, 0)
-        exhausted = known_spend_microusd >= policy.limit_microusd
+        remaining_microusd = max(policy.limit_microusd - known_spend_microusd - held_microusd, 0)
+        exhausted = known_spend_microusd + held_microusd >= policy.limit_microusd
     return EngineeringBudgetBalanceRead(
         user_id=user_id,
         policy=_policy_read(policy) if policy is not None else None,
         enforcement=enforcement,
         known_spend_microusd=known_spend_microusd,
+        active_held_microusd=active_held_microusd,
+        unknown_final_held_microusd=unknown_final_held_microusd,
+        available_microusd=remaining_microusd,
         remaining_microusd=remaining_microusd,
         exhausted=exhausted,
         unknown_cost_attempt_count=unknown_cost_attempt_count,
-        incomplete_coverage=unknown_cost_attempt_count > 0,
+        incomplete_coverage=unknown_cost_attempt_count > 0 or unknown_final_held_microusd > 0,
     )
 
 
@@ -116,6 +154,7 @@ async def put_engineering_budget_policy(
         policy = EngineeringBudgetPolicy(
             user_id=user_id,
             limit_microusd=command.limit_microusd,
+            attempt_reservation_microusd=command.attempt_reservation_microusd,
             state=command.state,
             version=1,
         )
@@ -125,7 +164,11 @@ async def put_engineering_budget_policy(
         response.status_code = HTTPStatus.CREATED
         return policy
 
-    if policy.limit_microusd == command.limit_microusd and policy.state is command.state:
+    if (
+        policy.limit_microusd == command.limit_microusd
+        and policy.attempt_reservation_microusd == command.attempt_reservation_microusd
+        and policy.state is command.state
+    ):
         return policy
     if command.version != policy.version:
         raise HTTPException(
@@ -133,11 +176,41 @@ async def put_engineering_budget_policy(
             detail="Policy version is stale or missing",
         )
     policy.limit_microusd = command.limit_microusd
+    policy.attempt_reservation_microusd = command.attempt_reservation_microusd
     policy.state = command.state
     policy.version += 1
     await db.commit()
     await db.refresh(policy)
     return policy
+
+
+@router.post("/admissions", response_model=EngineeringBudgetAdmissionRead)
+async def admit_engineering_budget(
+    command: EngineeringBudgetAdmissionCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> EngineeringBudgetAdmissionRead:
+    """Atomically decide and reserve before an engineering handoff."""
+    try:
+        admission = await admit_engineering_attempt(command, db)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    await db.commit()
+    return admission
+
+
+@router.post("/admissions/{attempt_id}/release", status_code=status.HTTP_204_NO_CONTENT)
+async def release_engineering_budget_admission(
+    attempt_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> Response:
+    """Record proven pre-handoff failure without inventing a provider cost."""
+    await release_pre_handoff_reservation(attempt_id, db)
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{user_id}", response_model=EngineeringBudgetPolicyLookup)

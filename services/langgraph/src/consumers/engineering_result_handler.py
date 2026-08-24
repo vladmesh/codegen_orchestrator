@@ -15,6 +15,7 @@ from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.worker_result import WorkerStopReason
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -268,7 +269,7 @@ async def handle_worker_gave_up(
             await publish_story_event(
                 redis,
                 telegram_chat_id=telegram_chat_id,
-                event="story_blocked",
+                event=OwnerNotificationEvent.STORY_BLOCKED,
                 text=(
                     f"Task hit a blocker: {reason[:200]}. "
                     "Our specialist is reviewing — work will continue once resolved."

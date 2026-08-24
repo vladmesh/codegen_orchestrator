@@ -45,6 +45,7 @@ from shared.contracts.queues.po import (
     proactive_from_input,
     to_flat_fields,
 )
+from shared.contracts.vocab import OwnerNotificationEvent
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.notifications import notify_admins_best_effort
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
@@ -304,21 +305,9 @@ async def _handle_message(
     msg_type = data.get("type", "user_message")
     event = data.get("event", "")
 
-    # Let user-facing lifecycle events through so PO can craft their wording.
-    # Drop other system events — PO checks ordinary task status via reminders.
-    _STORY_EVENTS = {
-        "story_completed",
-        "story_failed",
-        "story_blocked",
-        "story_quarantined",
-        "story_waiting_user_secret",
-        "task_waiting_resources",
-        "task_waiting_infrastructure",
-        "task_impossible_capacity",
-        "story_impossible_capacity",
-        "task_resources_resumed",
-    }
-    if msg_type == "system_event" and event not in _STORY_EVENTS:
+    # Let only shared owner-notification events through so PO can craft their
+    # wording. Other validated progress events are not owner notifications.
+    if msg_type == "system_event" and event not in OwnerNotificationEvent:
         logger.info(
             "po_system_event_dropped",
             telegram_chat_id=telegram_chat_id,

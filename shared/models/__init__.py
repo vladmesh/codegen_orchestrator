@@ -12,6 +12,7 @@ from .brainstorm import Brainstorm
 from .deployment import Deployment
 from .engineering_attempt_ledger import EngineeringAttemptLedger
 from .engineering_budget_policy import EngineeringBudgetPolicy
+from .engineering_budget_reservation import EngineeringBudgetReservation
 from .incident import Incident, IncidentStatus, IncidentType
 from .port_allocation import PortAllocation
 from .project import Project
@@ -60,6 +61,7 @@ __all__ = [
     "Deployment",
     "EngineeringAttemptLedger",
     "EngineeringBudgetPolicy",
+    "EngineeringBudgetReservation",
     "Story",
     "SystemConfig",
 ]

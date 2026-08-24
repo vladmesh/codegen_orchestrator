@@ -14,6 +14,7 @@ class EngineeringBudgetPolicyRead(BaseModel):
 
     user_id: int
     limit_microusd: int
+    attempt_reservation_microusd: int
     state: EngineeringBudgetPolicyState
     version: int
 
@@ -30,6 +31,9 @@ class EngineeringBudgetBalanceRead(EngineeringBudgetPolicyLookup):
     """Exact known spend plus explicit unknown-cost coverage."""
 
     known_spend_microusd: int
+    active_held_microusd: int
+    unknown_final_held_microusd: int
+    available_microusd: int | None
     remaining_microusd: int | None
     exhausted: bool
     unknown_cost_attempt_count: int

@@ -83,14 +83,15 @@ are hard-deleted; all accounting facts and the resolved `user_id` remain immutab
 `engineering_budget_policies` holds at most one durable policy row per `user_id`.
 `limit_microusd` is a non-negative integer number of micro-USD; budget requests never
 accept floating-point or dollar-denominated money. `state` is the typed
-`enabled`/`disabled` vocabulary and `version` is a non-null integer optimistic-lock
-version. The row is the future reservation lock target. This increment takes no
-reservation, dispatch decision, admission denial or charge, and stores no aggregate
-spend field.
+`enabled`/`disabled` vocabulary, `attempt_reservation_microusd` is the server-owned
+non-negative amount held for one engineering attempt, and `version` is a non-null
+integer optimistic-lock version. The policy row is the per-user admission lock; it
+never stores aggregate spend.
 
 `PUT /api/engineering-budget-policies/{user_id}` is internal/admin only and requests
-the exact state with `{ "limit_microusd": integer, "state": "enabled" | "disabled",
-"version": integer? }`. Creation omits `version`. Repeating a state already stored is
+the exact state with `{ "limit_microusd": integer, "attempt_reservation_microusd":
+integer, "state": "enabled" | "disabled", "version": integer? }`. Creation omits
+`version`. Repeating a state already stored is
 idempotent and leaves its version unchanged. A genuine change must carry the stored
 current version; a missing or stale version returns 409 without changing the row.
 This is the policy row/version reservation seam for later admission work. Disabled
@@ -104,12 +105,48 @@ a disabled one returns `enforcement=not_enforced`. Both have a null remaining am
 are distinct from `enforcement=enforced` with an enabled zero limit, whose balance is
 exhausted.
 
-Balances aggregate only `engineering_attempt_ledger.user_id`, so retained ledger rows
-continue to count after Project deletion. They return exact integer
-`known_spend_microusd`, `remaining_microusd`, `exhausted`,
-`unknown_cost_attempt_count`, and `incomplete_coverage`. Unknown attempts contribute no
-invented monetary amount. When coverage is incomplete, the reported remaining amount is
-not a proved safe upper reserve.
+`POST /api/engineering-budget-policies/admissions` is internal/admin only. Its typed
+command names the immutable `attempt_id` (the engineering Run id), project, and optional
+task/story identifiers; it cannot name a hold amount or user. The API resolves the
+project owner, locks that user's policy row, then in one transaction aggregates immutable
+ledger cost plus `active` and `unknown_final` holds. The durable result is `admitted`,
+`denied`, `unlimited`, or `not_enforced`. Repeating the same identity and payload returns
+the stored decision while its state is `active`, `unknown_final`, `settled`, or null;
+changing project/task/story under that identity conflicts. `released` takes precedence over
+its historical `admitted` decision: the next identical admission reacquires the policy-row
+lock, recalculates ledger cost plus chargeable holds, and atomically re-arms that same row
+to `active` or changes it to `denied`. An enabled zero or otherwise unavailable balance
+denies. `POST .../admissions/{attempt_id}/release` may release only a proven pre-handoff
+`active` hold.
+
+`engineering_budget_reservations` records those decisions separately from the immutable
+ledger. The pre-handoff boundary ends only when the engineering message has published.
+Dispatchers validate cheap local conditions first; after an admitted `active` hold, every
+exception or typed refusal before that boundary, including Run creation, recipient
+resolution and publishing, changes it to `released`. A released row proves only that its
+previous handoff did not begin; a deterministic replay such as a deploy-fix dispatch must
+re-enter admission and obtain a newly `active` row before any story transition, Run creation
+or queue publication. This applies to ordinary task
+dispatch and supervisor deploy-fix dispatch, whose stable attempt id is
+`eng-deploy-fix-{deploy_run_id}-{attempt}`. A scheduler denial has no Run or queue side
+effect and moves the affected task or deploy-fix story to `waiting_human_review` with
+budget-denial context and a durable owner notification, so resumption is explicit human
+action rather than a polling retry. After successful publication the hold is never
+released by dispatch recovery, because provider work may have started. Terminal
+engineering ledger creation settles an active hold to `settled` for a known amount, or
+retains it as `unknown_final` when no terminal
+cost is known. Retrying terminal delivery is idempotent, so ledger cost and a hold are
+never double-counted. An unknown-final hold is a conservative coverage value, never
+provider spend.
+
+Balances aggregate `engineering_attempt_ledger.user_id` for exact actual
+`known_spend_microusd` and separately return `active_held_microusd`,
+`unknown_final_held_microusd`, `available_microusd` (also retained as
+`remaining_microusd`), `exhausted`,
+`unknown_cost_attempt_count`, and `incomplete_coverage`. Retained ledger rows continue to
+count after Project deletion. Unknown attempts contribute no invented monetary amount;
+when coverage is incomplete, the reported remaining amount is not a proved safe upper
+reserve.
 
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 
@@ -122,6 +159,7 @@ instead of restating a `Literal[...]` or a local enum:
 | `ActionType` | `create`, `feature`, `fix` | `EngineeringMessage.action` |
 | `ResultStatus` | `success`, `failed`, `timeout` | `BaseResult.status` (and its subclasses) |
 | `LifecycleEvent` | `started`, `progress`, `completed`, `failed`, `stopped` (canonical member set) | via the field-specific subsets below |
+| `OwnerNotificationEvent` | routed `story_*` and `task_*` owner-notification events | `POSystemEvent`, scheduler owner-notification producers, PO consumer |
 
 `LifecycleEvent` is the canonical member set, but each wire accepts only the
 slice its producers emit — the subsets are `Literal[...]` over the enum members,
@@ -129,6 +167,17 @@ kept explicit so the historical per-field vocabularies are not merged:
 
 - `TaskProgressKind` (`started`/`progress`/`completed`/`failed`, no `stopped`) —
   `ProgressEvent.type`, `WorkerEvent.event_type`.
+
+`OwnerNotificationEvent` is the complete routed PO vocabulary: `story_completed`,
+`story_failed`, `story_blocked`, `story_quarantined`, `story_waiting_user_secret`,
+`task_waiting_resources`, `task_waiting_infrastructure`, `task_impossible_capacity`,
+`story_impossible_capacity` and `task_resources_resumed`. `POSystemEvent.event`
+accepts that vocabulary plus the three non-owner callback events (`progress`,
+`completed`, `failed`); no arbitrary event string is valid. The PO consumer routes
+only `OwnerNotificationEvent`, and `OwnerNotification.event` is that same typed
+vocabulary. Therefore an unknown owner-notification event is rejected before it can
+be recorded, published, or settled as delivered rather than being accepted by a
+producer and dropped by PO.
 
 Other vocabularies stay deliberately separate — they carry values the canonical
 enums do not, so merging them would broaden a field past what the wire supports:
@@ -1380,6 +1429,14 @@ task; the record lives on the engineering run, since the record belongs to whate
 outcome. Each path owes the message, commits the transition, then spends its first delivery attempt.
 A refusal escalated with `tell_owner=False` stays admin-only and owes nothing: there is no decision
 for the owner to make, and the seam does not invent a message.
+
+A deploy-fix engineering-budget denial takes the same durable path using
+`story_quarantined`, with budget-specific text. Its ordering is fixed: it first records the
+budget-denial quarantine reason, then writes the `OWED` record using the typed vocabulary, transitions
+the story to `waiting_human_review`, and only then attempts delivery. A publish failure leaves that
+record owed for `supervise_owed_owner_notifications`; only an accepted publish of a vocabulary member
+may settle it `DELIVERED`. The denial creates neither an engineering Run nor queue work and does not
+create a polling retry.
 
 The publishes that remain direct in `supervisor.py` are the non-terminal ones, and that is the whole
 list: `task_waiting_resources` and `task_waiting_infrastructure`, `task_resources_resumed`, and
