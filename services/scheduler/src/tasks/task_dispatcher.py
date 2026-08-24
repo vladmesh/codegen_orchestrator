@@ -19,6 +19,10 @@ import uuid
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionCommand,
+    EngineeringBudgetAdmissionOutcome,
+)
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -276,6 +280,25 @@ async def _create_and_publish_run(
     project_id = str(task.project_id)
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
+    admission = await api_client.admit_engineering_budget(
+        EngineeringBudgetAdmissionCommand(
+            attempt_id=run_id,
+            project_id=task.project_id,
+            task_id=task_id,
+            story_id=story_id,
+        )
+    )
+    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+        log.info(
+            "task_dispatch_budget_denied",
+            run_id=run_id,
+            task_id=task_id,
+            known_spend_microusd=admission.known_spend_microusd,
+            active_held_microusd=admission.active_held_microusd,
+            available_microusd=admission.available_microusd,
+        )
+        return None
+
     run_metadata = {
         "triggered_by": "dispatcher",
         "story_id": story_id,
@@ -313,6 +336,7 @@ async def _create_and_publish_run(
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
     except Exception:
         log.exception("task_dispatch_publish_failed", run_id=run_id)
+        await api_client.release_engineering_budget_admission(run_id)
         # Drop the iteration stamp: this run never made it onto the queue, so the
         # next tick must dispatch a fresh one instead of recovering this one.
         await api_client.update_run(

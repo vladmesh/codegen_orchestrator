@@ -2,6 +2,13 @@
 
 ## 2026-08-24
 
+- Engineering dispatch now makes a durable, server-authoritative budget admission before
+  creating a Run or touching the engineering queue. Per-user policy locks aggregate
+  immutable ledger cost with active and unknown-final reservation holds; zero available
+  budget denies, and repeated attempt identities retain their first decision. Publish
+  failures release their pre-handoff hold, while terminal known costs settle it and
+  unknown terminal costs retain conservative coverage without being called actual spend.
+
 - Added durable per-user engineering-budget policies and a ledger-derived balance
   API. Policies use integer micro-USD limits, typed enabled/disabled state and
   optimistic versions; internal/admin writes are idempotent at the requested

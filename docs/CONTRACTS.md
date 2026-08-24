@@ -83,14 +83,15 @@ are hard-deleted; all accounting facts and the resolved `user_id` remain immutab
 `engineering_budget_policies` holds at most one durable policy row per `user_id`.
 `limit_microusd` is a non-negative integer number of micro-USD; budget requests never
 accept floating-point or dollar-denominated money. `state` is the typed
-`enabled`/`disabled` vocabulary and `version` is a non-null integer optimistic-lock
-version. The row is the future reservation lock target. This increment takes no
-reservation, dispatch decision, admission denial or charge, and stores no aggregate
-spend field.
+`enabled`/`disabled` vocabulary, `attempt_reservation_microusd` is the server-owned
+non-negative amount held for one engineering attempt, and `version` is a non-null
+integer optimistic-lock version. The policy row is the per-user admission lock; it
+never stores aggregate spend.
 
 `PUT /api/engineering-budget-policies/{user_id}` is internal/admin only and requests
-the exact state with `{ "limit_microusd": integer, "state": "enabled" | "disabled",
-"version": integer? }`. Creation omits `version`. Repeating a state already stored is
+the exact state with `{ "limit_microusd": integer, "attempt_reservation_microusd":
+integer, "state": "enabled" | "disabled", "version": integer? }`. Creation omits
+`version`. Repeating a state already stored is
 idempotent and leaves its version unchanged. A genuine change must carry the stored
 current version; a missing or stale version returns 409 without changing the row.
 This is the policy row/version reservation seam for later admission work. Disabled
@@ -104,12 +105,32 @@ a disabled one returns `enforcement=not_enforced`. Both have a null remaining am
 are distinct from `enforcement=enforced` with an enabled zero limit, whose balance is
 exhausted.
 
-Balances aggregate only `engineering_attempt_ledger.user_id`, so retained ledger rows
-continue to count after Project deletion. They return exact integer
-`known_spend_microusd`, `remaining_microusd`, `exhausted`,
-`unknown_cost_attempt_count`, and `incomplete_coverage`. Unknown attempts contribute no
-invented monetary amount. When coverage is incomplete, the reported remaining amount is
-not a proved safe upper reserve.
+`POST /api/engineering-budget-policies/admissions` is internal/admin only. Its typed
+command names the immutable `attempt_id` (the engineering Run id), project, and optional
+task/story identifiers; it cannot name a hold amount or user. The API resolves the
+project owner, locks that user's policy row, then in one transaction aggregates immutable
+ledger cost plus `active` and `unknown_final` holds. The durable result is `admitted`,
+`denied`, `unlimited`, or `not_enforced`. Repeating the same identity and payload returns
+the stored decision; changing project/task/story under that identity conflicts. An enabled
+zero or otherwise unavailable balance denies. `POST .../admissions/{attempt_id}/release`
+may release only a proven pre-handoff `active` hold.
+
+`engineering_budget_reservations` records those decisions separately from the immutable
+ledger. `active` holds start before queue publication; a known pre-handoff publish failure
+changes it to `released`. Terminal engineering ledger creation settles an active hold to
+`settled` for a known amount, or retains it as `unknown_final` when no terminal cost is
+known. Retrying terminal delivery is idempotent, so ledger cost and a hold are never
+double-counted. An unknown-final hold is a conservative coverage value, never provider
+spend.
+
+Balances aggregate `engineering_attempt_ledger.user_id` for exact actual
+`known_spend_microusd` and separately return `active_held_microusd`,
+`unknown_final_held_microusd`, `available_microusd` (also retained as
+`remaining_microusd`), `exhausted`,
+`unknown_cost_attempt_count`, and `incomplete_coverage`. Retained ledger rows continue to
+count after Project deletion. Unknown attempts contribute no invented monetary amount;
+when coverage is incomplete, the reported remaining amount is not a proved safe upper
+reserve.
 
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 

@@ -296,6 +296,9 @@ async def test_project_deletion_detaches_but_retains_engineering_ledger(
         "policy": None,
         "enforcement": "unlimited",
         "known_spend_microusd": 40_001,
+        "active_held_microusd": 0,
+        "unknown_final_held_microusd": 0,
+        "available_microusd": None,
         "remaining_microusd": None,
         "exhausted": False,
         "unknown_cost_attempt_count": 0,
@@ -311,29 +314,47 @@ async def test_engineering_budget_policy_writes_are_versioned_and_idempotent(
 
     created = await async_client.put(
         f"/api/engineering-budget-policies/{user['id']}",
-        json={"limit_microusd": 100_000, "state": "enabled"},
+        json={
+            "limit_microusd": 100_000,
+            "attempt_reservation_microusd": 10_000,
+            "state": "enabled",
+        },
     )
     assert created.status_code == HTTPStatus.CREATED, created.text
     assert created.json()["limit_microusd"] == 100_000
+    assert created.json()["attempt_reservation_microusd"] == 10_000
     assert created.json()["state"] == "enabled"
     assert created.json()["version"] == 1
 
     non_integer = await async_client.put(
         f"/api/engineering-budget-policies/{user['id']}",
-        json={"limit_microusd": 100_000.0, "state": "enabled"},
+        json={
+            "limit_microusd": 100_000.0,
+            "attempt_reservation_microusd": 10_000,
+            "state": "enabled",
+        },
     )
     assert non_integer.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
     same = await async_client.put(
         f"/api/engineering-budget-policies/{user['id']}",
-        json={"limit_microusd": 100_000, "state": "enabled"},
+        json={
+            "limit_microusd": 100_000,
+            "attempt_reservation_microusd": 10_000,
+            "state": "enabled",
+        },
     )
     assert same.status_code == HTTPStatus.OK
     assert same.json()["version"] == 1
 
     stale = await async_client.put(
         f"/api/engineering-budget-policies/{user['id']}",
-        json={"limit_microusd": 50_000, "state": "enabled", "version": 2},
+        json={
+            "limit_microusd": 50_000,
+            "attempt_reservation_microusd": 10_000,
+            "state": "enabled",
+            "version": 2,
+        },
     )
     assert stale.status_code == HTTPStatus.CONFLICT
     after_stale = await async_client.get(f"/api/engineering-budget-policies/{user['id']}")
@@ -342,7 +363,12 @@ async def test_engineering_budget_policy_writes_are_versioned_and_idempotent(
 
     disabled = await async_client.put(
         f"/api/engineering-budget-policies/{user['id']}",
-        json={"limit_microusd": 100_000, "state": "disabled", "version": 1},
+        json={
+            "limit_microusd": 100_000,
+            "attempt_reservation_microusd": 10_000,
+            "state": "disabled",
+            "version": 1,
+        },
     )
     assert disabled.status_code == HTTPStatus.OK
     assert disabled.json()["state"] == "disabled"
@@ -350,11 +376,121 @@ async def test_engineering_budget_policy_writes_are_versioned_and_idempotent(
 
     reenabled_zero = await async_client.put(
         f"/api/engineering-budget-policies/{user['id']}",
-        json={"limit_microusd": 0, "state": "enabled", "version": 2},
+        json={
+            "limit_microusd": 0,
+            "attempt_reservation_microusd": 10_000,
+            "state": "enabled",
+            "version": 2,
+        },
     )
     assert reenabled_zero.status_code == HTTPStatus.OK
     assert reenabled_zero.json()["state"] == "enabled"
     assert reenabled_zero.json()["version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_engineering_budget_admission_reserves_before_handoff_and_is_idempotent(
+    async_client: AsyncClient,
+):
+    """An enabled zero budget denies before any dispatch-side effect is possible."""
+    user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={"limit_microusd": 0, "attempt_reservation_microusd": 1, "state": "enabled"},
+    )
+    project = await _project(async_client, user["telegram_id"])
+    command = {
+        "attempt_id": f"eng-budget-admission-{uuid.uuid4().hex}",
+        "project_id": project["id"],
+        "task_id": "budget-admission-task",
+    }
+    denied = await async_client.post("/api/engineering-budget-policies/admissions", json=command)
+    assert denied.status_code == HTTPStatus.OK, denied.text
+    assert denied.json()["outcome"] == "denied"
+
+    repeated = await async_client.post("/api/engineering-budget-policies/admissions", json=command)
+    assert repeated.status_code == HTTPStatus.OK, repeated.text
+    assert repeated.json()["attempt_id"] == denied.json()["attempt_id"]
+    assert repeated.json()["outcome"] == denied.json()["outcome"] == "denied"
+
+    conflict = await async_client.post(
+        "/api/engineering-budget-policies/admissions",
+        json={**command, "task_id": "different-task"},
+    )
+    assert conflict.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_engineering_budget_holds_release_and_settle_without_double_counting(
+    async_client: AsyncClient,
+):
+    user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
+    project = await _project(async_client, user["telegram_id"])
+    await async_client.put(
+        f"/api/engineering-budget-policies/{user['id']}",
+        json={
+            "limit_microusd": 100,
+            "attempt_reservation_microusd": 60,
+            "state": "enabled",
+        },
+    )
+    first_id = f"eng-budget-known-{uuid.uuid4().hex}"
+    admitted = await async_client.post(
+        "/api/engineering-budget-policies/admissions",
+        json={"attempt_id": first_id, "project_id": project["id"], "task_id": "budget-known"},
+    )
+    assert admitted.status_code == HTTPStatus.OK, admitted.text
+    assert admitted.json()["outcome"] == "admitted"
+
+    balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
+    assert balance.json()["known_spend_microusd"] == 0
+    assert balance.json()["active_held_microusd"] == 60
+    assert balance.json()["remaining_microusd"] == 40
+
+    second = await async_client.post(
+        "/api/engineering-budget-policies/admissions",
+        json={
+            "attempt_id": f"eng-budget-denied-{uuid.uuid4().hex}",
+            "project_id": project["id"],
+            "task_id": "x",
+        },
+    )
+    assert second.json()["outcome"] == "denied"
+    released = await async_client.post(
+        f"/api/engineering-budget-policies/admissions/{first_id}/release"
+    )
+    assert released.status_code == HTTPStatus.NO_CONTENT
+    balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
+    assert balance.json()["active_held_microusd"] == 0
+
+    settled_id = f"eng-budget-settled-{uuid.uuid4().hex}"
+    settled = await async_client.post(
+        "/api/engineering-budget-policies/admissions",
+        json={"attempt_id": settled_id, "project_id": project["id"], "task_id": "budget-settled"},
+    )
+    assert settled.json()["outcome"] == "admitted"
+    created = await async_client.post(
+        "/api/runs/",
+        json={"id": settled_id, "type": "engineering", "project_id": project["id"]},
+    )
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    terminal = await async_client.patch(
+        f"/api/runs/{settled_id}",
+        json={
+            "status": "completed",
+            "engineering_attempt": {
+                "provider": "anthropic",
+                "cost_microusd": 20,
+                "cost_source": "provider_reported",
+            },
+        },
+    )
+    assert terminal.status_code == HTTPStatus.OK, terminal.text
+    balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
+    assert balance.json()["known_spend_microusd"] == 20
+    assert balance.json()["active_held_microusd"] == 0
+    assert balance.json()["unknown_final_held_microusd"] == 0
+    assert balance.json()["remaining_microusd"] == 80
 
 
 @pytest.mark.asyncio
@@ -402,7 +538,7 @@ async def test_engineering_budget_balance_uses_ledger_user_id_and_marks_unknown_
 
     await async_client.put(
         f"/api/engineering-budget-policies/{user['id']}",
-        json={"limit_microusd": 40_001, "state": "enabled"},
+        json={"limit_microusd": 40_001, "attempt_reservation_microusd": 10_000, "state": "enabled"},
     )
     balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
     assert balance.status_code == HTTPStatus.OK, balance.text
@@ -411,11 +547,15 @@ async def test_engineering_budget_balance_uses_ledger_user_id_and_marks_unknown_
         "policy": {
             "user_id": user["id"],
             "limit_microusd": 40_001,
+            "attempt_reservation_microusd": 10_000,
             "state": "enabled",
             "version": 1,
         },
         "enforcement": "enforced",
         "known_spend_microusd": 40_001,
+        "active_held_microusd": 0,
+        "unknown_final_held_microusd": 0,
+        "available_microusd": 0,
         "remaining_microusd": 0,
         "exhausted": True,
         "unknown_cost_attempt_count": 1,
@@ -431,7 +571,7 @@ async def test_engineering_budget_policy_self_read_and_cross_user_refusal(
     intruder = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
     await async_client.put(
         f"/api/engineering-budget-policies/{owner['id']}",
-        json={"limit_microusd": 100, "state": "enabled"},
+        json={"limit_microusd": 100, "attempt_reservation_microusd": 10, "state": "enabled"},
     )
 
     own = await async_client.get(
@@ -451,7 +591,12 @@ async def test_engineering_budget_policy_self_read_and_cross_user_refusal(
     admin = await _user(async_client, uuid.uuid4().int % 1_000_000_000, is_admin=True)
     admin_write = await async_client.put(
         f"/api/engineering-budget-policies/{owner['id']}",
-        json={"limit_microusd": 101, "state": "enabled", "version": 1},
+        json={
+            "limit_microusd": 101,
+            "attempt_reservation_microusd": 10,
+            "state": "enabled",
+            "version": 1,
+        },
         headers={"X-Telegram-ID": str(admin["telegram_id"])},
     )
     assert admin_write.status_code == HTTPStatus.OK
@@ -468,7 +613,12 @@ async def test_engineering_budget_policy_self_read_and_cross_user_refusal(
 
     write_refused = await async_client.put(
         f"/api/engineering-budget-policies/{owner['id']}",
-        json={"limit_microusd": 0, "state": "disabled", "version": 2},
+        json={
+            "limit_microusd": 0,
+            "attempt_reservation_microusd": 10,
+            "state": "disabled",
+            "version": 2,
+        },
         headers={"X-Telegram-ID": str(owner["telegram_id"])},
     )
     assert write_refused.status_code == HTTPStatus.FORBIDDEN

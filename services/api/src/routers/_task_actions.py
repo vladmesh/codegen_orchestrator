@@ -6,6 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionCommand,
+    EngineeringBudgetAdmissionOutcome,
+)
 from shared.contracts.dto.task import TaskEventType, TaskStatus
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.models import Project, Run, TaskEvent
@@ -14,6 +18,10 @@ from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
 from ..dependencies import get_redis_client
+from ..engineering_budget_admission import (
+    admit_engineering_attempt,
+    release_pre_handoff_reservation,
+)
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
@@ -221,6 +229,29 @@ async def spawn_worker(
     # that predates run ownership must not leave a half-started attempt behind.
     initiating_run_id = initiating_run_or_conflict(project)
 
+    run_id = f"eng-{uuid.uuid4().hex[:12]}"
+    try:
+        admission = await admit_engineering_attempt(
+            EngineeringBudgetAdmissionCommand(
+                attempt_id=run_id,
+                project_id=task.project_id,
+                task_id=task.id,
+                story_id=task.story_id,
+            ),
+            db,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    await db.commit()
+    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+        logger.info(
+            "worker_spawn_budget_denied",
+            task_id=task.id,
+            run_id=run_id,
+            available_microusd=admission.available_microusd,
+        )
+        return {"admission": admission.model_dump(mode="json")}
+
     # Transition to IN_DEV if needed
     startable = {TaskStatus.BACKLOG, TaskStatus.TODO}
     if TaskStatus(task.status) in startable:
@@ -238,7 +269,6 @@ async def spawn_worker(
         )
 
     # Create Run
-    run_id = f"eng-{uuid.uuid4().hex[:12]}"
     run = Run(
         id=run_id,
         type="engineering",
@@ -271,7 +301,16 @@ async def spawn_worker(
         planning_task_id=task.id,
         story_id=getattr(task, "story_id", None) or None,
     )
-    await redis.publish_message(ENGINEERING_QUEUE, msg)
+    try:
+        await redis.publish_message(ENGINEERING_QUEUE, msg)
+    except Exception as error:
+        await release_pre_handoff_reservation(run_id, db)
+        await db.commit()
+        logger.exception("worker_spawn_publish_failed", task_id=task.id, run_id=run_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Engineering handoff could not be published",
+        ) from error
 
     logger.info("worker_spawned", task_id=task.id, run_id=run_id, actor=body.actor)
     return {

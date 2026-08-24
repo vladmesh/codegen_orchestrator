@@ -38,6 +38,7 @@ from shared.models import EngineeringAttemptLedger, Project, Run, User
 
 from ..database import get_async_session
 from ..dependencies import is_internal_service, require_internal_or_admin, resolve_actor
+from ..engineering_budget_admission import finalize_engineering_reservation
 from ..schemas import RunCreate, RunRead, RunUpdate
 
 logger = structlog.get_logger()
@@ -652,6 +653,8 @@ async def update_run(
     # same Run lock and transaction.
     if run.type == RunType.ENGINEERING.value and run.status in _TERMINAL_RUN_STATUSES:
         await _record_engineering_attempt(run, engineering_attempt, db)
+        facts = engineering_attempt or EngineeringAttemptLedgerInput()
+        await finalize_engineering_reservation(run.id, facts.cost_microusd, db)
 
     await db.commit()
     await db.refresh(run)

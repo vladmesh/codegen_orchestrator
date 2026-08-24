@@ -12,6 +12,10 @@ from shared.contracts.dto.deploy_dispatch import (
     DeployDispatchSupersede,
     DeployDispatchWithdrawal,
 )
+from shared.contracts.dto.engineering_budget_policy import (
+    EngineeringBudgetAdmissionCommand,
+    EngineeringBudgetAdmissionRead,
+)
 from shared.contracts.dto.incident import IncidentDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
@@ -118,6 +122,17 @@ class SchedulerAPIClient(InternalAPIClient):
         return ServerDTO.model_validate(resp.json())
 
     # --- Runs ---
+
+    async def admit_engineering_budget(
+        self, command: EngineeringBudgetAdmissionCommand
+    ) -> EngineeringBudgetAdmissionRead:
+        resp = await self.request(
+            "POST", "engineering-budget-policies/admissions", json=command.model_dump(mode="json")
+        )
+        return EngineeringBudgetAdmissionRead.model_validate(resp.json())
+
+    async def release_engineering_budget_admission(self, attempt_id: str) -> None:
+        await self.request("POST", f"engineering-budget-policies/admissions/{attempt_id}/release")
 
     async def create_run(self, run_data: dict) -> RunDTO:
         resp = await self.request("POST", "runs/", json=run_data)
