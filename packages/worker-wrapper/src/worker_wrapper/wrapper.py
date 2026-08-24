@@ -430,7 +430,11 @@ class WorkerWrapper:
         if stdout_tail:
             updates["agent_stdout_tail"] = stdout_tail
         updates.update(observability)
-        return result.model_copy(update=updates) if updates else result
+        if not updates:
+            return result
+        # HTTP results predate Claude evidence. Revalidate after adding wrapper
+        # metadata so the queue always receives the declared typed contract.
+        return type(result).model_validate({**result.model_dump(mode="python"), **updates})
 
     def _observability_metadata(self) -> dict[str, Any]:
         metadata = dict(self._effort_metrics)

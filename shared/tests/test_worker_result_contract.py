@@ -6,6 +6,7 @@ from pydantic import ValidationError
 import pytest
 
 from shared.contracts.queues.worker_result import (
+    ClaudeResultEvidence,
     WorkerBlockedResult,
     WorkerCompletedResult,
     WorkerFailedResult,
@@ -50,6 +51,36 @@ class TestWorkerResultRoundTrip:
         assert parsed.status == WorkerResultStatus.REJECTED
         assert parsed.block_reason == "REGISTRY_PASSWORD empty"
 
+    @pytest.mark.parametrize(
+        "result",
+        [
+            WorkerCompletedResult(commit_sha="abc123", content="Implemented feature"),
+            WorkerFailedResult(error="Agent crashed"),
+        ],
+    )
+    def test_serialized_claude_evidence_round_trips_with_null_flat_metric_placeholders(
+        self, result
+    ):
+        """Wrapper serialization keeps null flat fields beside typed Claude evidence."""
+        result = result.model_copy(
+            update={
+                "claude_evidence": ClaudeResultEvidence(
+                    model="claude-sonnet",
+                    input_tokens=12,
+                    output_tokens=3,
+                    cache_read_tokens=4,
+                    cache_write_tokens=5,
+                    cost_microusd=40_001,
+                )
+            }
+        )
+
+        wire = result.model_dump(mode="json")
+        assert wire["input_tokens"] is None
+        parsed = parse_worker_result(wire)
+
+        assert parsed.claude_evidence == result.claude_evidence
+
 
 class TestWorkerResultValidation:
     """Invalid payloads are rejected, not coerced."""
@@ -81,3 +112,14 @@ class TestWorkerResultValidation:
     def test_blocked_requires_reason(self):
         with pytest.raises(ValidationError):
             parse_worker_result({"status": "blocked"})
+
+    def test_non_null_flat_metrics_remain_incompatible_with_claude_evidence(self):
+        with pytest.raises(ValidationError, match="claude_evidence"):
+            parse_worker_result(
+                {
+                    "status": "failed",
+                    "error": "Agent crashed",
+                    "claude_evidence": {"cost_microusd": 40_001},
+                    "input_tokens": 12,
+                }
+            )

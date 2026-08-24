@@ -67,25 +67,73 @@ class TestHandleEngineeringSuccess:
         assert patch["agent_profile"]["model"] == "claude-sonnet"
 
     @pytest.mark.asyncio
-    async def test_provider_reported_cost_is_preserved_as_micro_usd(self, mock_redis, mock_api):
-        """Worker-wrapper cost becomes canonical exact money, not a dropped float."""
+    async def test_claude_evidence_is_preserved_as_micro_usd(self, mock_redis, mock_api):
+        """A failed attempt forwards the single Claude evidence object unchanged."""
         from src.consumers.engineering import _fail_job
 
         await _fail_job(
             "eng-provider-cost",
             "agent failed",
             worker_observability={
-                "input_tokens": 12,
-                "total_tokens": 17,
-                "cost_usd": 0.040001,
-                "agent_profile": {"provider": "anthropic", "model": "claude-sonnet"},
+                "claude_evidence": {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet",
+                    "input_tokens": 12,
+                    "output_tokens": 5,
+                    "total_tokens": 17,
+                    "cache_read_tokens": 4,
+                    "cache_write_tokens": 3,
+                    "cost_microusd": 40_001,
+                },
             },
         )
 
         attempt = mock_api.patch.call_args.kwargs["json"]["engineering_attempt"]
-        assert attempt["cost_source"] == "provider_reported"
-        assert attempt["cost_microusd"] == 40_001
-        assert "cost_usd" not in mock_api.patch.call_args.kwargs["json"]
+        assert attempt == {
+            "claude_evidence": {
+                "provider": "anthropic",
+                "model": "claude-sonnet",
+                "input_tokens": 12,
+                "output_tokens": 5,
+                "total_tokens": 17,
+                "cache_read_tokens": 4,
+                "cache_write_tokens": 3,
+                "cost_microusd": 40_001,
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_success_forwards_the_same_claude_evidence(self, mock_redis, mock_api):
+        from src.consumers.engineering import _handle_engineering_success
+
+        evidence = {
+            "provider": "anthropic",
+            "model": "claude-sonnet",
+            "input_tokens": 12,
+            "output_tokens": 5,
+            "total_tokens": 17,
+            "cache_read_tokens": 4,
+            "cache_write_tokens": 3,
+            "cost_microusd": 40_001,
+        }
+        await _handle_engineering_success(
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": "a" * 40},
+                task_id="eng-claude-success",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=True,
+                worker_observability={"claude_evidence": evidence},
+            )
+        )
+
+        patch = next(
+            call.kwargs["json"]
+            for call in mock_api.patch.call_args_list
+            if call.args[0] == "runs/eng-claude-success"
+        )
+        assert patch["engineering_attempt"] == {"claude_evidence": evidence}
 
     @pytest.mark.asyncio
     async def test_missing_effort_metrics_are_saved_as_absent(self, mock_redis, mock_api):

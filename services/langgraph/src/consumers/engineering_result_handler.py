@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal
 
 import structlog
 
@@ -51,32 +50,26 @@ class EngineeringSuccessParams:
 def _observability_patch(worker_observability: dict | None) -> dict:
     """Keep compatibility artifacts on Run and canonical usage in the ledger.
 
-    Provider-reported money is converted to the ledger's integer micro-USD
-    unit before it crosses the API boundary. Facts without a provider retain
-    their usage with explicit unknown cost; the mutable Run float is never
-    written as a competing source.
+    Claude evidence already carries a Decimal-derived integer micro-USD value
+    from its one final-result object. Other agents retain available facts with
+    explicit unknown cost; the mutable Run float is never a cost source.
     """
     observability = worker_observability or {}
-    profile = observability.get("agent_profile") or {}
-    provider = profile.get("provider")
-    cost_usd = observability.get("cost_usd")
-    attempt = {
-        "provider": provider,
-        "model": profile.get("model"),
-        "input_tokens": observability.get("input_tokens"),
-        "output_tokens": observability.get("output_tokens"),
-        "total_tokens": observability.get("total_tokens"),
-        "cost_source": "unknown",
-    }
-    if provider and cost_usd is not None:
-        attempt.update(
-            cost_microusd=int(
-                (Decimal(str(cost_usd)) * Decimal("1000000")).to_integral_value(
-                    rounding=ROUND_HALF_UP
-                )
-            ),
-            cost_source="provider_reported",
-        )
+    claude_evidence = observability.get("claude_evidence")
+    if claude_evidence is not None:
+        attempt = {"claude_evidence": claude_evidence}
+    else:
+        profile = observability.get("agent_profile") or {}
+        attempt = {
+            "provider": profile.get("provider"),
+            "model": profile.get("model"),
+            "input_tokens": observability.get("input_tokens"),
+            "output_tokens": observability.get("output_tokens"),
+            "total_tokens": observability.get("total_tokens"),
+            "cache_read_tokens": observability.get("cache_read_tokens"),
+            "cache_write_tokens": observability.get("cache_write_tokens"),
+            "cost_source": "unknown",
+        }
     return {
         "engineering_attempt": attempt,
         **{

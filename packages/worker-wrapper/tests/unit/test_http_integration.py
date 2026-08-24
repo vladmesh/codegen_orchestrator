@@ -15,6 +15,7 @@ from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
 
 from shared.contracts.queues.worker_result import (
+    ClaudeResultEvidence,
     WorkerCompletedResult,
     WorkerResultStatus,
 )
@@ -184,6 +185,17 @@ class TestStdoutCapture:
         result = output_calls[0][0][1]
         assert result.status == WorkerResultStatus.FAILED
         assert result.agent_stdout_tail == "Partial output before crash"
+
+    def test_attach_metadata_keeps_claude_evidence_typed_for_the_http_result_path(self):
+        result = WorkerWrapper._attach_metadata(
+            WorkerCompletedResult(commit_sha="abc123", content="Done"),
+            report=None,
+            stdout_tail=None,
+            observability={"claude_evidence": {"cost_microusd": 40_001}},
+        )
+
+        assert isinstance(result.claude_evidence, ClaudeResultEvidence)
+        assert result.model_dump(mode="json")["claude_evidence"]["cost_microusd"] == 40_001
 
     async def test_codex_diagnostics_are_not_persisted_or_returned(self):
         raw_diagnostic = "refresh-token-must-not-leak"

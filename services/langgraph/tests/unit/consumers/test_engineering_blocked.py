@@ -55,16 +55,23 @@ class TestGaveUpHandling:
             telegram_chat_id="",
             redis=mock_redis,
             worker_observability={
-                "cost_usd": 0.04,
+                "claude_evidence": {
+                    "provider": "anthropic",
+                    "input_tokens": 12,
+                    "output_tokens": 3,
+                    "total_tokens": 15,
+                    "cache_read_tokens": 4,
+                    "cache_write_tokens": 5,
+                    "cost_microusd": 40_000,
+                },
                 "transcript_truncated": True,
                 "agent_profile": {"provider": "anthropic", "model": "claude-sonnet"},
             },
         )
 
         patch = mock_api.patch.call_args.kwargs["json"]
-        assert patch["engineering_attempt"]["cost_source"] == "provider_reported"
-        assert patch["engineering_attempt"]["cost_microusd"] == 40_000
-        assert "cost_usd" not in patch
+        assert patch["engineering_attempt"]["claude_evidence"]["cost_microusd"] == 40_000
+        assert patch["engineering_attempt"]["claude_evidence"]["cache_read_tokens"] == 4
         assert patch["transcript_truncated"] is True
 
     @pytest.mark.asyncio

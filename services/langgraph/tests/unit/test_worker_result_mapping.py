@@ -7,13 +7,21 @@ from pydantic import ValidationError
 import pytest
 
 from shared.contracts.queues.worker import WorkerOwnership
-from shared.contracts.queues.worker_result import WorkerResultAdapter
+from shared.contracts.queues.worker_result import (
+    ClaudeResultEvidence,
+    WorkerCompletedResult,
+    WorkerFailedResult,
+    WorkerResultAdapter,
+    parse_worker_result,
+)
 from src.clients.worker_spawner import (
     WorkerOutputDecodeError,
     _safe_validation_errors,
     _wait_for_response,
     spawn_result_from_output,
 )
+from src.consumers.engineering_result_handler import _observability_patch
+from src.nodes.developer import DeveloperNode
 
 
 class TestSpawnResultFromOutput:
@@ -36,6 +44,58 @@ class TestSpawnResultFromOutput:
         assert result.worker_report == "REPORT"
         assert result.logs_tail == "tail"
         assert result.gave_up_reason is None
+
+    def test_claude_evidence_maps_as_one_typed_payload(self):
+        result = spawn_result_from_output(
+            {
+                "status": "completed",
+                "commit_sha": "abc123",
+                "content": "Implemented feature",
+                "claude_evidence": {
+                    "provider": "anthropic",
+                    "input_tokens": 12,
+                    "output_tokens": 3,
+                    "total_tokens": 15,
+                    "cache_read_tokens": 4,
+                    "cache_write_tokens": 5,
+                    "cost_microusd": 40_001,
+                },
+            },
+            request_id="req-claude",
+            worker_id="dev-1",
+        )
+
+        assert result.claude_evidence is not None
+        assert result.claude_evidence.cost_microusd == 40_001
+        assert result.claude_evidence.cache_write_tokens == 5
+
+    @pytest.mark.parametrize(
+        "wrapper_result",
+        [
+            WorkerCompletedResult(commit_sha="abc123", content="Implemented feature"),
+            WorkerFailedResult(error="Agent crashed"),
+        ],
+    )
+    def test_serialized_claude_evidence_reaches_canonical_terminal_payload(self, wrapper_result):
+        """The wrapper, broker and LangGraph all retain one typed evidence object."""
+        evidence = ClaudeResultEvidence(
+            model="claude-sonnet",
+            input_tokens=12,
+            output_tokens=3,
+            cache_read_tokens=4,
+            cache_write_tokens=5,
+            cost_microusd=40_001,
+        )
+        wrapper_result = wrapper_result.model_copy(update={"claude_evidence": evidence})
+        wire = wrapper_result.model_dump(mode="json")
+
+        broker_result = parse_worker_result(wire)
+        spawn_result = spawn_result_from_output(wire, request_id="req-claude", worker_id="dev-1")
+        observability = DeveloperNode._worker_observability(broker_result, {"config": {}})
+        terminal_payload = _observability_patch(observability)["engineering_attempt"]
+
+        assert spawn_result.claude_evidence == evidence
+        assert terminal_payload == {"claude_evidence": evidence.model_dump(mode="json")}
 
     def test_failed_maps_to_error_message(self):
         result = spawn_result_from_output(

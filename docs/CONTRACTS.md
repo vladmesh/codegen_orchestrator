@@ -40,6 +40,20 @@ from the ledger. Grafana's engineering effort panels read the ledger too. Histor
 backfill records only already terminal engineering Runs, so a queued or running Run can
 later record its actual final provider facts through the locked terminal writer.
 
+Claude is the one provider with a currently supported exact-cost evidence path.
+Worker-wrapper parses exactly one documented Claude `type=result` JSON object and uses
+only its `model` (or its sole `modelUsage` key), `total_cost_usd`, and `usage` fields:
+`input_tokens`, `output_tokens`, `cache_read_input_tokens`, and
+`cache_creation_input_tokens`. It parses the JSON monetary number as `Decimal`, rounds
+it to integer `cost_microusd` before the worker-result queue, and carries those facts as
+one `claude_evidence` object through every terminal engineering consumer to the locked
+ledger writer. The ledger rejects an evidence object combined with flat provider facts,
+and rejects contradictory token totals, so no row can combine two Claude records.
+Malformed, absent, negative, or non-finite money leaves `cost_microusd` NULL with
+`cost_source=unknown`; valid model, token, and cache facts from that same object remain.
+Factory and Codex facts continue to use the explicit-unknown path until their own
+provider evidence contracts exist.
+
 Project deletion never deletes accounting history. PostgreSQL detaches a ledger row's
 `run_id`, `project_id`, `story_id` and `task_id` when the corresponding project records
 are hard-deleted; all accounting facts and the resolved `user_id` remain immutable.

@@ -2,6 +2,20 @@
 
 ## 2026-08-24
 
+- Claude terminal results now carry one typed provider-evidence object from
+  worker-wrapper through the existing worker-result and terminal Run paths to
+  the append-only engineering-attempt ledger. Claude JSON money is parsed as
+  `Decimal` and converted to integer micro-USD before the queue boundary;
+  cache-read and cache-write tokens are retained. Invalid monetary evidence is
+  explicit unknown cost, never zero or an inferred tariff, while valid facts
+  from the same result remain available. The ledger rejects mixed or
+  contradictory Claude facts, and terminal retries still use its first-write-
+  wins writer.
+  - Serialized worker results may retain null legacy metric placeholders beside
+    Claude evidence. Their transport validation ignores only those nulls,
+    retains rejection of non-null mixed facts, and revalidates HTTP-attached
+    evidence as the typed object before broker submission.
+
 - Added the append-only engineering-attempt ledger. Terminal engineering Run
   updates write one idempotent record under the existing Run row lock,
   attribute project-bound attempts from `Project.owner_id`, preserve unknown

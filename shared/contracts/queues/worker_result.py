@@ -21,9 +21,11 @@ key is a poison payload, not a field to ignore.
 """
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+
+from shared.contracts.dto.engineering_attempt import ClaudeResultEvidence
 
 __all__ = [
     "WorkerResultStatus",
@@ -65,8 +67,22 @@ class _WorkerResultBase(BaseModel):
     output_tokens: int | None = None
     total_tokens: int | None = None
     cost_usd: float | None = None
+    claude_evidence: ClaudeResultEvidence | None = None
     transcript_path: str | None = None
     transcript_truncated: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _prevent_mixed_claude_facts(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("claude_evidence") is not None:
+            mixed = {
+                field
+                for field in ("input_tokens", "output_tokens", "total_tokens", "cost_usd")
+                if value.get(field) is not None
+            }
+            if mixed:
+                raise ValueError("claude_evidence cannot be combined with flat effort metrics")
+        return value
 
 
 class WorkerCompletedResult(_WorkerResultBase):
