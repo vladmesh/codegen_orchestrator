@@ -2,6 +2,13 @@
 
 ## 2026-08-24
 
+- Added durable per-user engineering-budget policies and a ledger-derived balance
+  API. Policies use integer micro-USD limits, typed enabled/disabled state and
+  optimistic versions; internal/admin writes are idempotent at the requested
+  state and reject stale mutations. Self-only reads and named admin/internal
+  reads expose exact known spend, unknown-cost coverage and the explicit
+  unlimited/not-enforced distinction without adding a mutable spend counter.
+
 - Factory result normalization now clears partial provider totals and derives a
   coherent total only from valid input and output components, so malformed
   usage cannot reject a terminal ledger write. Factory evidence with no valid
