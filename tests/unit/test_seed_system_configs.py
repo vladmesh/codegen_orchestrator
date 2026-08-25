@@ -123,7 +123,6 @@ def test_api_service_test_overlay_explicitly_overrides_every_work_admission_key(
 
     assert values == {
         "work_admission.max_projects_per_user": 10000,
-        "work_admission.max_active_managed_servers": 10000,
         "work_admission.max_concurrent_paid_runs": 10000,
         "work_admission.emergency_stop": False,
     }

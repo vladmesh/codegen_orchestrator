@@ -27,10 +27,6 @@ from shared.contracts.bot_access import (
 )
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.engineering_budget_policy import (
-    EngineeringBudgetAdmissionCommand,
-    EngineeringBudgetAdmissionOutcome,
-)
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -52,7 +48,7 @@ from shared.contracts.dto.run_result import (
 )
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.contracts.dto.work_admission import WorkAdmissionOutcome
+from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import (
     DeployAction,
@@ -973,14 +969,6 @@ async def _handle_deploy_success_story(
     # Its id is derived from the deploy run, so the retry lands on the same run
     # instead of creating a second one for the same deploy.
     qa_run_id = _qa_run_id_for_deploy(run.id)
-    count_admission = await api_client.admit_paid_work(qa_run_id)
-    if count_admission.outcome is not WorkAdmissionOutcome.ADMITTED:
-        log.info(
-            "qa_handoff_count_admission_refused",
-            qa_run_id=qa_run_id,
-            reason=count_admission.reason.value if count_admission.reason else None,
-        )
-        return False
     qa_recipient = await resolve_project_recipient(
         api_client, project_id, event="qa_dispatch", story_id=story_id
     )
@@ -1005,20 +993,27 @@ async def _handle_deploy_success_story(
         if grant_needed
         else None,
     )
-    await api_client.create_run_if_absent(
-        {
-            "id": qa_run_id,
-            "type": RunType.QA.value,
-            "project_id": project_id,
-            "story_id": story_id,
-            "status": RunStatus.QUEUED.value,
-            "run_metadata": {
+    started = await api_client.start_paid_run(
+        PaidRunStartCommand(
+            id=qa_run_id,
+            type=RunType.QA,
+            project_id=uuid.UUID(project_id),
+            story_id=story_id,
+            run_metadata={
                 "application_id": application_id,
                 QA_HANDOFF_KEY: plan.model_dump(mode="json"),
             },
-        }
+        )
     )
-
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        log.info(
+            "qa_handoff_count_admission_refused",
+            qa_run_id=qa_run_id,
+            reason=(
+                started.admission.reason.value if started.admission.reason is not None else None
+            ),
+        )
+        return False
     await api_client.transition_story(story_id, "test")
 
     await _execute_qa_handoff(api_client, redis_client, qa_run_id, plan, log)
@@ -1175,23 +1170,22 @@ async def _handle_deploy_code_fix(
 
     error_details = result.error_details or "unknown deploy error"
     fix_task_id = f"eng-deploy-fix-{run.id}-{attempt + 1}"
-    admission = await api_client.admit_engineering_budget(
-        EngineeringBudgetAdmissionCommand(
-            attempt_id=fix_task_id,
-            project_id=project.id,
+    started = await api_client.start_paid_run(
+        PaidRunStartCommand(
+            id=fix_task_id,
+            type=RunType.ENGINEERING,
+            project_id=uuid.UUID(project.id),
             task_id=fix_task_id,
             story_id=story_id,
+            run_metadata={"deploy_fix_attempt": attempt + 1},
         )
     )
-    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
         reason = {
-            "reason": "engineering_budget_denied",
+            "reason": started.admission.reason.value if started.admission.reason else "denied",
             "attempt_id": fix_task_id,
-            "known_spend_microusd": admission.known_spend_microusd,
-            "active_held_microusd": admission.active_held_microusd,
-            "available_microusd": admission.available_microusd,
         }
-        log.info("deploy_fix_budget_denied", **reason)
+        log.info("deploy_fix_admission_refused", **reason)
         await api_client.update_story(story_id, {"quarantine_reason": reason})
         owed = await owe_owner_notification(
             api_client,
@@ -1214,15 +1208,6 @@ async def _handle_deploy_code_fix(
     try:
         # Transition story back to IN_PROGRESS only for an admitted handoff.
         await api_client.transition_story(story_id, "start")
-        await api_client.create_run(
-            {
-                "id": fix_task_id,
-                "type": RunType.ENGINEERING.value,
-                "project_id": project_id,
-                "story_id": story_id,
-                "status": RunStatus.QUEUED.value,
-            }
-        )
         run_created = True
         fix_recipient = await resolve_project_recipient(
             api_client, project_id, event="deploy_code_fix", story_id=story_id

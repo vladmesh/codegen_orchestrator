@@ -5,17 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
-from shared.contracts.dto.server import ServerStatus
 from shared.contracts.dto.work_admission import (
+    PaidRunStartCommand,
+    PaidRunStartRead,
     WorkAdmissionOutcome,
     WorkAdmissionRead,
     WorkAdmissionReason,
 )
-from shared.models import Project, Run, Server, SystemConfig, User, WorkAdmissionAudit
+from shared.models import Project, Run, SystemConfig, User, WorkAdmissionAudit
 
 EMERGENCY_STOP_KEY = "work_admission.emergency_stop"
 MAX_PROJECTS_KEY = "work_admission.max_projects_per_user"
-MAX_MANAGED_SERVERS_KEY = "work_admission.max_active_managed_servers"
 MAX_PAID_RUNS_KEY = "work_admission.max_concurrent_paid_runs"
 
 
@@ -60,7 +60,10 @@ async def _stop_or_continue(
     db: AsyncSession, subject: str, *, user_id: int | None = None, reference_id: str | None = None
 ) -> WorkAdmissionRead | None:
     controls = await _controls(db, EMERGENCY_STOP_KEY)
-    if controls[EMERGENCY_STOP_KEY] is True:
+    enabled = controls[EMERGENCY_STOP_KEY]
+    if not isinstance(enabled, bool):
+        raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
+    if enabled:
         return await _audit(
             db,
             subject,
@@ -109,41 +112,81 @@ async def admit_project_creation(
     )
 
 
-async def admit_server_provisioning(handle: str, db: AsyncSession) -> WorkAdmissionRead:
-    """Serialize provisioning starts against the active managed-server ceiling."""
-    stopped = await _stop_or_continue(db, "provisioning", reference_id=handle)
+async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> PaidRunStartRead:
+    """Atomically decide and create one queued engineering or QA run.
+
+    The config-row lock is retained through the Run INSERT and caller commit, so
+    no successful decision can escape without occupying a counted slot.
+    """
+    stopped = await _stop_or_continue(db, "paid_work", reference_id=command.id)
     if stopped is not None:
-        return stopped
-    controls = await _controls(db, MAX_MANAGED_SERVERS_KEY)
+        return PaidRunStartRead(admission=stopped)
+    controls = await _controls(db, MAX_PAID_RUNS_KEY)
     count = int(
         await db.scalar(
             select(func.count())
-            .select_from(Server)
+            .select_from(Run)
             .where(
-                Server.is_managed.is_(True),
-                Server.status.not_in(
-                    (ServerStatus.MISSING.value, ServerStatus.DECOMMISSIONED.value)
-                ),
+                Run.type.in_((RunType.ENGINEERING.value, RunType.QA.value)),
+                Run.status.in_((RunStatus.QUEUED.value, RunStatus.RUNNING.value)),
             )
         )
         or 0
     )
-    if count > _limit(controls[MAX_MANAGED_SERVERS_KEY], MAX_MANAGED_SERVERS_KEY):
-        return await _audit(
-            db,
-            "provisioning",
-            WorkAdmissionRead(
-                outcome=WorkAdmissionOutcome.DENIED,
-                reason=WorkAdmissionReason.MANAGED_SERVER_LIMIT,
-            ),
-            reference_id=handle,
+    if count >= _limit(controls[MAX_PAID_RUNS_KEY], MAX_PAID_RUNS_KEY):
+        return PaidRunStartRead(
+            admission=await _audit(
+                db,
+                "paid_work",
+                WorkAdmissionRead(
+                    outcome=WorkAdmissionOutcome.DEFERRED,
+                    reason=WorkAdmissionReason.PAID_WORK_LIMIT,
+                    retryable=True,
+                ),
+                reference_id=command.id,
+            )
         )
-    return await _audit(
-        db,
-        "provisioning",
-        WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
-        reference_id=handle,
+
+    if command.type is RunType.ENGINEERING:
+        from shared.contracts.dto.engineering_budget_policy import (
+            EngineeringBudgetAdmissionCommand,
+            EngineeringBudgetAdmissionOutcome,
+        )
+
+        from .engineering_budget_admission import admit_engineering_attempt
+
+        budget = await admit_engineering_attempt(
+            EngineeringBudgetAdmissionCommand(
+                attempt_id=command.id,
+                project_id=command.project_id,
+                task_id=command.task_id,
+                story_id=command.story_id,
+            ),
+            db,
+        )
+        if budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+            return PaidRunStartRead(
+                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED)
+            )
+
+    run = Run(
+        id=command.id,
+        type=command.type.value,
+        status=RunStatus.QUEUED.value,
+        project_id=command.project_id,
+        story_id=command.story_id,
+        task_id=command.task_id,
+        run_metadata=command.run_metadata,
+        callback_stream=command.callback_stream,
     )
+    db.add(run)
+    admitted = await _audit(
+        db,
+        "paid_work",
+        WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
+        reference_id=command.id,
+    )
+    return PaidRunStartRead(admission=admitted, run_id=run.id)
 
 
 async def admit_paid_work(run_id: str, db: AsyncSession) -> WorkAdmissionRead:

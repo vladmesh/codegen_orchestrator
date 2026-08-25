@@ -6,12 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.engineering_budget_policy import (
-    EngineeringBudgetAdmissionCommand,
-    EngineeringBudgetAdmissionOutcome,
-)
 from shared.contracts.dto.task import TaskEventType, TaskStatus
-from shared.contracts.dto.work_admission import WorkAdmissionOutcome
+from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.models import Project, Run, TaskEvent
 from shared.queues import ENGINEERING_QUEUE
@@ -19,14 +15,11 @@ from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
 from ..dependencies import get_redis_client
-from ..engineering_budget_admission import (
-    admit_engineering_attempt,
-    release_pre_handoff_reservation,
-)
+from ..engineering_budget_admission import release_pre_handoff_reservation
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
-from ..work_admission import admit_paid_work
+from ..work_admission import start_paid_run
 from ._ownership import initiating_run_or_conflict
 from ._recipients import resolve_project_chat_id
 from ._task_helpers import create_status_event, get_task, to_read, validate_transition
@@ -258,37 +251,26 @@ async def spawn_worker(
         )
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
-    count_admission = await admit_paid_work(run_id, db)
-    if count_admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+    started = await start_paid_run(
+        PaidRunStartCommand(
+            id=run_id,
+            type="engineering",
+            project_id=task.project_id,
+            task_id=task.id,
+            story_id=getattr(task, "story_id", None),
+            run_metadata={"triggered_by": "admin", "task_id": task.id},
+        ),
+        db,
+    )
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
         await db.commit()
         logger.info(
             "worker_spawn_count_admission_refused",
             task_id=task.id,
             run_id=run_id,
-            reason=count_admission.reason.value if count_admission.reason else None,
+            reason=started.admission.reason.value if started.admission.reason else None,
         )
-        return {"admission": count_admission.model_dump(mode="json")}
-    try:
-        admission = await admit_engineering_attempt(
-            EngineeringBudgetAdmissionCommand(
-                attempt_id=run_id,
-                project_id=task.project_id,
-                task_id=task.id,
-                story_id=task.story_id,
-            ),
-            db,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-    await db.commit()
-    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
-        logger.info(
-            "worker_spawn_budget_denied",
-            task_id=task.id,
-            run_id=run_id,
-            available_microusd=admission.available_microusd,
-        )
-        return {"admission": admission.model_dump(mode="json")}
+        return {"admission": started.admission.model_dump(mode="json")}
 
     try:
         # Transition to IN_DEV if needed.
@@ -302,16 +284,10 @@ async def spawn_worker(
             task.status = TaskStatus.IN_DEV
             await create_status_event(task, old_status, TaskStatus.IN_DEV, body.actor, {}, db)
 
-        run = Run(
-            id=run_id,
-            type="engineering",
-            project_id=task.project_id,
-            task_id=task.id,
-            story_id=getattr(task, "story_id", None),
-            run_metadata={"triggered_by": "admin", "task_id": task.id},
-        )
-        db.add(run)
         await db.commit()
+        run = await db.get(Run, run_id)
+        if run is None:
+            raise RuntimeError("Paid run disappeared before worker handoff")
         await db.refresh(task)
         await db.refresh(run)
 

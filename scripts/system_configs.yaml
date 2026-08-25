@@ -11,11 +11,6 @@
   category: work_admission
   description: "Maximum non-archived projects for one non-admin user"
 
-- key: work_admission.max_active_managed_servers
-  value: 10
-  category: work_admission
-  description: "Maximum active managed servers allowed to provision"
-
 - key: work_admission.max_concurrent_paid_runs
   value: 5
   category: work_admission

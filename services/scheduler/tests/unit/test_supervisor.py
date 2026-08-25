@@ -14,7 +14,11 @@ from _run_routing_factories import _make_repo, _make_story, _make_task
 import pytest
 
 from shared.contracts.dto.server import ServerDTO
-from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
+from shared.contracts.dto.work_admission import (
+    PaidRunStartRead,
+    WorkAdmissionOutcome,
+    WorkAdmissionRead,
+)
 from shared.tests.allocation_routing_cases import (
     REFUSAL_ROUTING_CASES,
     REFUSED_DEPLOY_MIN_DISK_MB,
@@ -44,7 +48,9 @@ def api_client():
     # that publishes a terminal owner notice reads the story back before it
     # publishes, so the double has to answer that read like the API would.
     client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
-    client.admit_paid_work.return_value = WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED)
+    client.start_paid_run.return_value = PaidRunStartRead(
+        admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="eng-test"
+    )
     return client
 
 

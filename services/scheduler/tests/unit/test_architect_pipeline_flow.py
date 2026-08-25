@@ -16,7 +16,11 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
-from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
+from shared.contracts.dto.work_admission import (
+    PaidRunStartRead,
+    WorkAdmissionOutcome,
+    WorkAdmissionRead,
+)
 
 _NOW = datetime.now(UTC)
 _PROJ_ID = "00000000-0000-0000-0000-000000000001"
@@ -85,8 +89,8 @@ class TestDispatcherPipelineFlow:
         project.config = {"workspace_ready": True}
         project.initiating_run_id = "live-run-1"
         client.get_project.return_value = project
-        client.admit_paid_work.return_value = WorkAdmissionRead(
-            outcome=WorkAdmissionOutcome.ADMITTED
+        client.start_paid_run.return_value = PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="eng-test"
         )
         return client
 

@@ -7,13 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.contracts.dto.work_admission import (
     EmergencyStopCommand,
     EmergencyStopRead,
-    WorkAdmissionRead,
+    PaidRunStartCommand,
+    PaidRunStartRead,
 )
 from shared.models import SystemConfig
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
-from ..work_admission import EMERGENCY_STOP_KEY, admit_paid_work
+from ..work_admission import EMERGENCY_STOP_KEY, start_paid_run
 
 router = APIRouter(prefix="/work-admission", tags=["work-admission"])
 
@@ -33,7 +34,9 @@ async def get_emergency_stop(
     _: None = Depends(require_internal_or_admin),
 ) -> EmergencyStopRead:
     config = await _stop_config(db)
-    return EmergencyStopRead(enabled=config.value is True)
+    if not isinstance(config.value, bool):
+        raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
+    return EmergencyStopRead(enabled=config.value)
 
 
 @router.put("/emergency-stop", response_model=EmergencyStopRead)
@@ -48,12 +51,12 @@ async def put_emergency_stop(
     return EmergencyStopRead(enabled=command.enabled)
 
 
-@router.post("/paid/{run_id}", response_model=WorkAdmissionRead)
-async def admit_paid_run(
-    run_id: str,
+@router.post("/paid-runs", response_model=PaidRunStartRead)
+async def start_paid_run_endpoint(
+    command: PaidRunStartCommand,
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
-) -> WorkAdmissionRead:
-    admission = await admit_paid_work(run_id, db)
+) -> PaidRunStartRead:
+    result = await start_paid_run(command, db)
     await db.commit()
-    return admission
+    return result

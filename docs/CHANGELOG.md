@@ -5,9 +5,11 @@
 ### Added
 
 - One-time promo-code registration that atomically arms an enabled engineering budget policy.
-- Count-based work admission ceilings for projects, managed-server provisioning,
-  and concurrent engineering/QA runs, with an internal/admin emergency-stop API
-  and durable typed decision audit records.
+- Count-based work admission for projects and concurrent engineering/QA runs,
+  with an internal/admin emergency-stop API and durable typed decision audit
+  records. Paid runs now start through one transactional API command, which
+  holds the counted slot through queued-Run creation and checks engineering
+  money only after the count gate.
 
 ## 2026-08-24
 

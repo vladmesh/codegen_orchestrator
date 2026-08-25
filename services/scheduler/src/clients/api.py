@@ -32,7 +32,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessObservation,
 )
 from shared.contracts.dto.user import UserDTO
-from shared.contracts.dto.work_admission import WorkAdmissionRead
+from shared.contracts.dto.work_admission import PaidRunStartCommand, PaidRunStartRead
 from src.config import get_settings
 
 
@@ -133,9 +133,11 @@ class SchedulerAPIClient(InternalAPIClient):
         )
         return EngineeringBudgetAdmissionRead.model_validate(resp.json())
 
-    async def admit_paid_work(self, run_id: str) -> WorkAdmissionRead:
-        resp = await self.request("POST", f"work-admission/paid/{run_id}")
-        return WorkAdmissionRead.model_validate(resp.json())
+    async def start_paid_run(self, command: PaidRunStartCommand) -> PaidRunStartRead:
+        resp = await self.request(
+            "POST", "work-admission/paid-runs", json=command.model_dump(mode="json")
+        )
+        return PaidRunStartRead.model_validate(resp.json())
 
     async def release_engineering_budget_admission(self, attempt_id: str) -> None:
         await self.request("POST", f"engineering-budget-policies/admissions/{attempt_id}/release")

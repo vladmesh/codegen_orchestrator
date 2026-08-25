@@ -19,10 +19,6 @@ import uuid
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.engineering_budget_policy import (
-    EngineeringBudgetAdmissionCommand,
-    EngineeringBudgetAdmissionOutcome,
-)
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -32,7 +28,7 @@ from shared.contracts.dto.project import (
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
-from shared.contracts.dto.work_admission import WorkAdmissionOutcome
+from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType
 from shared.contracts.worker_turn import AttemptTurnMetadata
@@ -282,47 +278,6 @@ async def _create_and_publish_run(
     project_id = str(task.project_id)
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
-    count_admission = await api_client.admit_paid_work(run_id)
-    if count_admission.outcome is not WorkAdmissionOutcome.ADMITTED:
-        log.info(
-            "task_dispatch_count_admission_refused",
-            run_id=run_id,
-            task_id=task_id,
-            reason=count_admission.reason.value if count_admission.reason else None,
-        )
-        return None
-    admission = await api_client.admit_engineering_budget(
-        EngineeringBudgetAdmissionCommand(
-            attempt_id=run_id,
-            project_id=task.project_id,
-            task_id=task_id,
-            story_id=story_id,
-        )
-    )
-    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
-        log.info(
-            "task_dispatch_budget_denied",
-            run_id=run_id,
-            task_id=task_id,
-            known_spend_microusd=admission.known_spend_microusd,
-            active_held_microusd=admission.active_held_microusd,
-            available_microusd=admission.available_microusd,
-        )
-        await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
-        await api_client.transition_task(
-            task_id,
-            TaskStatus.WAITING_HUMAN_REVIEW,
-            "dispatcher",
-            details={
-                "reason": "engineering_budget_denied",
-                "attempt_id": run_id,
-                "known_spend_microusd": admission.known_spend_microusd,
-                "active_held_microusd": admission.active_held_microusd,
-                "available_microusd": admission.available_microusd,
-            },
-        )
-        return None
-
     run_metadata = {
         "triggered_by": "dispatcher",
         "story_id": story_id,
@@ -330,18 +285,29 @@ async def _create_and_publish_run(
         **AttemptTurnMetadata(initiating_run_id=initiating_run_id).as_run_metadata(),
         "iteration": task.current_iteration,
     }
+    started = await api_client.start_paid_run(
+        PaidRunStartCommand(
+            id=run_id,
+            type=RunType.ENGINEERING,
+            project_id=task.project_id,
+            task_id=task_id,
+            story_id=story_id,
+            run_metadata=run_metadata,
+        )
+    )
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        log.info(
+            "task_dispatch_count_admission_refused",
+            run_id=run_id,
+            task_id=task_id,
+            reason=(
+                started.admission.reason.value if started.admission.reason is not None else None
+            ),
+        )
+        return None
     action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
     run_created = False
     try:
-        await api_client.create_run(
-            {
-                "id": run_id,
-                "type": RunType.ENGINEERING.value,
-                "project_id": project_id,
-                "task_id": task_id,
-                "run_metadata": run_metadata,
-            }
-        )
         run_created = True
         recipient = await resolve_project_recipient(
             api_client, project_id, event="task_dispatch", story_id=story_id or ""

@@ -1,8 +1,12 @@
 """Typed outcomes of the count-based work admission gate."""
 
 from enum import StrEnum
+from typing import Any
+import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from .run import RunType
 
 
 class WorkAdmissionOutcome(StrEnum):
@@ -42,3 +46,22 @@ class EmergencyStopRead(BaseModel):
     """Current emergency-stop state."""
 
     enabled: bool
+
+
+class PaidRunStartCommand(BaseModel):
+    """The only command that may create a queued paid coding-agent run."""
+
+    id: str
+    type: RunType
+    project_id: uuid.UUID
+    story_id: str | None = None
+    task_id: str | None = None
+    run_metadata: dict[str, Any] = Field(default_factory=dict)
+    callback_stream: str | None = None
+
+
+class PaidRunStartRead(BaseModel):
+    """Atomic paid-run start result; an admitted outcome includes its new run."""
+
+    admission: WorkAdmissionRead
+    run_id: str | None = None

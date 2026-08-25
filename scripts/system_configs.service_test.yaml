@@ -9,11 +9,6 @@
   category: work_admission
   description: "Service-test maximum non-archived projects for one non-admin user"
 
-- key: work_admission.max_active_managed_servers
-  value: 10000
-  category: work_admission
-  description: "Service-test maximum active managed servers allowed to provision"
-
 - key: work_admission.max_concurrent_paid_runs
   value: 10000
   category: work_admission

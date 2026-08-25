@@ -15,6 +15,8 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.run import RunType
+from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAMessage
 from shared.models import (
@@ -43,6 +45,7 @@ from ..schemas.actions import AdminAction
 from ..schemas.repository import RepositoryRead
 from ..schemas.run import RunRead
 from ..utils.telegram_binding import release_bot_binding
+from ..work_admission import start_paid_run
 from ._ownership import initiating_run_or_conflict
 from ._recipients import ProjectRecipient, resolve_project_chat_id
 
@@ -577,16 +580,23 @@ async def run_e2e(
         )
     initiating_run_id = initiating_run_or_conflict(project)
 
-    # Create Run
     run_id = f"qa-{uuid.uuid4().hex[:12]}"
-    run = Run(
-        id=run_id,
-        type="qa",
-        project_id=repo.project_id,
-        run_metadata={"triggered_by": "admin", "application_id": application_id},
+    started = await start_paid_run(
+        PaidRunStartCommand(
+            id=run_id,
+            type=RunType.QA,
+            project_id=repo.project_id,
+            run_metadata={"triggered_by": "admin", "application_id": application_id},
+        ),
+        db,
     )
-    db.add(run)
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        await db.commit()
+        return {"admission": started.admission.model_dump(mode="json")}
     await db.commit()
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise RuntimeError("Paid QA run disappeared before publication")
     await db.refresh(run)
     await db.refresh(app)
 
