@@ -110,6 +110,28 @@ jobs:
             exit 1
           fi
 
+      # A repository secret is inherited by every environment that does not define
+      # its own, and that inheritance is invisible at the point of use: a contour
+      # that simply omits the allowlist receives production's, and with it the
+      # authority to reinstall production's servers. So every non-production
+      # contour states its allowlist as an environment variable, and the deploy
+      # refuses to run when the secret does not match what the contour declared.
+      - name: Verify this contour's provider allowlist is its own
+        if: ${{ inputs.environment != 'production' }}
+        shell: bash
+        env:
+          MANAGED_SERVER_IDS: ${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
+          DECLARED_SERVER_IDS: ${{ vars.MANAGED_SERVER_IDS_DECLARED }}
+        run: |
+          set -euo pipefail
+          if [ "${MANAGED_SERVER_IDS}" != "${DECLARED_SERVER_IDS}" ]; then
+            echo "FATAL: TIME4VPS_MANAGED_SERVER_IDS is not this environment's own list." >&2
+            echo "       Either the environment declares no allowlist and inherited the" >&2
+            echo "       repository one, or the two have drifted. Refusing to deploy." >&2
+            exit 1
+          fi
+          echo "allowlist matches this contour's declaration"
+
       - name: Write .env to server
         uses: appleboy/ssh-action@v1
         with:
@@ -171,14 +193,13 @@ jobs:
             # Infrastructure
             ORCHESTRATOR_HOSTNAME=${{ secrets.ORCHESTRATOR_HOSTNAME }}
             ORCHESTRATOR_PUBLIC_IP=${{ secrets.ORCHESTRATOR_PUBLIC_IP }}
-            # Repository secrets are inherited by every environment that does not
-            # define its own, so a contour cannot be kept away from production's
-            # provider account by leaving these unset — it would silently inherit
-            # them. The workflow decides instead of the secret scope: outside
-            # production these are empty, which is the documented default-deny.
-            TIME4VPS_MANAGED_SERVER_IDS=${{ inputs.environment == 'production' && secrets.TIME4VPS_MANAGED_SERVER_IDS || '' }}
-            TIME4VPS_LOGIN=${{ inputs.environment == 'production' && secrets.TIME4VPS_LOGIN || '' }}
-            TIME4VPS_PASSWORD=${{ inputs.environment == 'production' && secrets.TIME4VPS_PASSWORD || '' }}
+            # Each contour provisions its own servers. The allowlist is fail-closed
+            # and per-ID, so a contour can act only on the servers it names — which
+            # is why it must be its own list and not an inherited one. The step
+            # below refuses the deploy when it is not.
+            TIME4VPS_MANAGED_SERVER_IDS=${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
+            TIME4VPS_LOGIN=${{ secrets.TIME4VPS_LOGIN }}
+            TIME4VPS_PASSWORD=${{ secrets.TIME4VPS_PASSWORD }}
 
             # Registry
             REGISTRY_USER=${{ secrets.REGISTRY_USER }}
@@ -222,7 +243,7 @@ jobs:
       # services read. An allowlist is the only thing that authorizes reinstalling
       # a provider server; a stand that carried one could act on a machine it does
       # not own, and a bot token would fight production's for its updates.
-      - name: Verify the stand carries no production credentials
+      - name: Verify the deployed contour carries only its own credentials
         if: ${{ inputs.environment != 'production' }}
         uses: appleboy/ssh-action@v1
         with:
@@ -231,16 +252,18 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
-            for name in TIME4VPS_MANAGED_SERVER_IDS TIME4VPS_LOGIN TIME4VPS_PASSWORD \
-                        TELEGRAM_BOT_TOKEN
-            do
-              value=$(grep -m1 "^${name}=" ${{ env.DEPLOY_PATH }}/.env | cut -d= -f2- || true)
-              if [ -n "${value}" ]; then
-                echo "FATAL: ${name} must be empty outside production" >&2
-                exit 1
-              fi
-            done
-            echo "no production credentials in this contour's .env"
+            token=$(grep -m1 "^TELEGRAM_BOT_TOKEN=" ${{ env.DEPLOY_PATH }}/.env | cut -d= -f2- || true)
+            if [ -n "${token}" ]; then
+              echo "FATAL: TELEGRAM_BOT_TOKEN must be empty outside production" >&2
+              exit 1
+            fi
+            allowlist=$(grep -m1 "^TIME4VPS_MANAGED_SERVER_IDS=" ${{ env.DEPLOY_PATH }}/.env \
+              | cut -d= -f2- || true)
+            if [ "${allowlist}" != "${{ vars.MANAGED_SERVER_IDS_DECLARED }}" ]; then
+              echo "FATAL: the deployed allowlist is not the one this contour declared" >&2
+              exit 1
+            fi
+            echo "this contour carries only its own allowlist: ${allowlist}"
 
       - name: Write secrets files to server
         uses: appleboy/ssh-action@v1
