@@ -8,6 +8,7 @@ import uuid
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import select, text
 
@@ -99,18 +100,27 @@ async def test_lk_bearer_cannot_impersonate_for_promo_or_policy(async_client) ->
         "Authorization": f"Bearer {token}",
         "X-Telegram-ID": str(target.json()["telegram_id"]),
     }
-    minted = await async_client.post(
-        "/api/promo-codes/batch",
-        json={"quantity": 1, "credits_microusd": 1, "attempt_reservation_microusd": 1},
-        headers=headers,
-    )
-    assert minted.status_code == HTTPStatus.FORBIDDEN
-    policy = await async_client.put(
-        f"/api/engineering-budget-policies/{target.json()['id']}",
-        json={"limit_microusd": 1, "attempt_reservation_microusd": 1, "state": "enabled"},
-        headers=headers,
-    )
-    assert policy.status_code == HTTPStatus.FORBIDDEN
+    from src.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as bearer_client:
+        own = await bearer_client.get(
+            "/api/engineering-budget-policy", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert own.status_code == HTTPStatus.OK
+        minted = await bearer_client.post(
+            "/api/promo-codes/batch",
+            json={"quantity": 1, "credits_microusd": 1, "attempt_reservation_microusd": 1},
+            headers=headers,
+        )
+        assert minted.status_code == HTTPStatus.FORBIDDEN
+        policy = await bearer_client.put(
+            f"/api/engineering-budget-policies/{target.json()['id']}",
+            json={"limit_microusd": 1, "attempt_reservation_microusd": 1, "state": "enabled"},
+            headers=headers,
+        )
+        assert policy.status_code == HTTPStatus.FORBIDDEN
 
 
 @pytest.mark.asyncio
