@@ -491,8 +491,9 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.return_value = _engineering_admission(
-            EngineeringBudgetAdmissionOutcome.DENIED
+        api_client.start_paid_run.return_value = PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
+            engineering_budget=_engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
         )
 
         result = await supervise_deploying_stories(api_client, redis_client)

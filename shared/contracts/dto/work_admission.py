@@ -6,6 +6,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .engineering_budget_policy import EngineeringBudgetAdmissionRead
 from .run import RunType
 
 
@@ -65,3 +66,4 @@ class PaidRunStartRead(BaseModel):
 
     admission: WorkAdmissionRead
     run_id: str | None = None
+    engineering_budget: EngineeringBudgetAdmissionRead | None = None

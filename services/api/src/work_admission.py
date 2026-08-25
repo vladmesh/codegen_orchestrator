@@ -166,7 +166,8 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         )
         if budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
             return PaidRunStartRead(
-                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED)
+                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
+                engineering_budget=budget,
             )
 
     run = Run(

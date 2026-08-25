@@ -1174,17 +1174,28 @@ async def _handle_deploy_code_fix(
         PaidRunStartCommand(
             id=fix_task_id,
             type=RunType.ENGINEERING,
-            project_id=uuid.UUID(project.id),
+            project_id=project.id,
             task_id=fix_task_id,
             story_id=story_id,
             run_metadata={"deploy_fix_attempt": attempt + 1},
         )
     )
     if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        budget = started.engineering_budget
         reason = {
-            "reason": started.admission.reason.value if started.admission.reason else "denied",
+            "reason": (
+                "engineering_budget_denied"
+                if budget is not None
+                else (started.admission.reason.value if started.admission.reason else "denied")
+            ),
             "attempt_id": fix_task_id,
         }
+        if budget is not None:
+            reason.update(
+                known_spend_microusd=budget.known_spend_microusd,
+                active_held_microusd=budget.active_held_microusd,
+                available_microusd=budget.available_microusd,
+            )
         log.info("deploy_fix_admission_refused", **reason)
         await api_client.update_story(story_id, {"quarantine_reason": reason})
         owed = await owe_owner_notification(
