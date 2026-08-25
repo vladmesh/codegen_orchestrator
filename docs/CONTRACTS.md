@@ -148,6 +148,35 @@ count after Project deletion. Unknown attempts contribute no invented monetary a
 when coverage is incomplete, the reported remaining amount is not a proved safe upper
 reserve.
 
+### Promo codes
+
+`promo_codes` are the sole registration path for a non-owner Telegram user. A
+code compares case-insensitively and may be redeemed once. It carries integer
+`credits_microusd >= 0` and a strictly positive
+`attempt_reservation_microusd`; activation atomically creates the user, redeems
+the code, and creates that user's enabled engineering-budget policy at version
+1. Registration failures return typed `promo_code_required`,
+`promo_code_not_found`, or `promo_code_redeemed` verdicts, so callers do not
+confuse a missing code with a spent one. An `ADMIN_TELEGRAM_IDS` owner is the
+only no-code exception. Existing users are not changed by an ordinary upsert;
+supplying a code to a user who already has a policy is rejected and leaves that
+code unredeemed.
+
+Internal services or administrators mint and inspect codes at
+`POST /api/promo-codes/batch` and `GET /api/promo-codes`. Ordinary users have no
+code-management surface. An internal service acting for itself (valid internal
+key without `X-Telegram-ID`) may create a technical user without a code; that
+user deliberately has no policy (`enforcement=unlimited`) until an operator
+explicitly arms it. Existing production users are armed with the existing
+policy endpoint, for example:
+
+```bash
+curl -X PUT "$API_BASE_URL/api/engineering-budget-policies/42" \
+  -H "X-Internal-Key: $INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"limit_microusd":5000000,"attempt_reservation_microusd":250000,"state":"enabled"}'
+```
+
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 
 One `StrEnum` per cross-service concept. Producers and consumers import these

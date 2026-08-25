@@ -1,18 +1,87 @@
 """Users router."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import User
+from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetPolicyState
+from shared.models import EngineeringBudgetPolicy, PromoCode, User
 
+from ..config import get_settings
 from ..database import get_async_session
 from ..dependencies import is_internal_service
 from ..schemas import UserCreate, UserRead, UserUpsert
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+def _is_owner_registration(telegram_id: int, internal_service: bool) -> bool:
+    """Only the bot's internal owner registration bypasses promo redemption."""
+    return internal_service and telegram_id in get_settings().get_admin_ids()
+
+
+def _requires_promo(internal_service: bool, named_telegram_id: int | None) -> bool:
+    """Only a named actor, rather than a service acting for itself, needs a code."""
+    return not (internal_service and named_telegram_id is None)
+
+
+def _new_user(user_in: UserCreate | UserUpsert, *, force_non_admin: bool = False) -> User:
+    """Construct users in one place so admission never changes authorization."""
+    is_admin = (
+        False
+        if force_non_admin
+        else (bool(user_in.is_admin) or user_in.telegram_id in get_settings().get_admin_ids())
+    )
+    return User(
+        telegram_id=user_in.telegram_id,
+        username=user_in.username,
+        first_name=user_in.first_name,
+        last_name=user_in.last_name,
+        is_admin=is_admin,
+    )
+
+
+def _promo_error(status_code: int, code: str) -> None:
+    """Return a stable, machine-readable registration verdict."""
+    raise HTTPException(status_code=status_code, detail={"code": code})
+
+
+async def _redeem_promo_and_create_user(
+    user_in: UserCreate | UserUpsert,
+    db: AsyncSession,
+) -> User:
+    """Redeem a code, create its user and arm the existing policy in one transaction."""
+    if not user_in.promo_code:
+        _promo_error(status.HTTP_403_FORBIDDEN, "promo_code_required")
+    normalized = user_in.promo_code.strip().upper()
+    promo = await db.scalar(
+        select(PromoCode).where(func.upper(PromoCode.code) == normalized).with_for_update()
+    )
+    if promo is None:
+        _promo_error(status.HTTP_404_NOT_FOUND, "promo_code_not_found")
+    if promo.redeemed_by_user_id is not None:
+        _promo_error(status.HTTP_409_CONFLICT, "promo_code_redeemed")
+    user = _new_user(user_in, force_non_admin=True)
+    db.add(user)
+    await db.flush()
+    existing_policy = await db.get(EngineeringBudgetPolicy, user.id)
+    if existing_policy is not None:
+        _promo_error(status.HTTP_409_CONFLICT, "user_already_has_policy")
+    db.add(
+        EngineeringBudgetPolicy(
+            user_id=user.id,
+            limit_microusd=promo.credits_microusd,
+            attempt_reservation_microusd=promo.attempt_reservation_microusd,
+            state=EngineeringBudgetPolicyState.ENABLED,
+            version=1,
+        )
+    )
+    promo.redeemed_by_user_id = user.id
+    promo.redeemed_at = datetime.now(UTC)
+    return user
 
 
 def _reject_admin_flag_from_outside(*, decides_admin: bool, is_internal: bool) -> None:
@@ -35,6 +104,7 @@ def _reject_admin_flag_from_outside(*, decides_admin: bool, is_internal: bool) -
 async def create_user(
     user_in: UserCreate,
     is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> User:
     """Create a new user."""
@@ -51,15 +121,27 @@ async def create_user(
             detail="User with this telegram_id already exists",
         )
 
-    user = User(
-        telegram_id=user_in.telegram_id,
-        username=user_in.username,
-        first_name=user_in.first_name,
-        last_name=user_in.last_name,
-        is_admin=user_in.is_admin,
-    )
-    db.add(user)
-    await db.commit()
+    if _is_owner_registration(user_in.telegram_id, is_internal) or not _requires_promo(
+        is_internal, x_telegram_id
+    ):
+        user = _new_user(user_in)
+        db.add(user)
+    else:
+        try:
+            user = await _redeem_promo_and_create_user(user_in, db)
+        except HTTPException:
+            await db.rollback()
+            raise
+        except IntegrityError:
+            await db.rollback()
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_registered")
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        if user_in.promo_code:
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_registered")
+        raise error
     await db.refresh(user)
     return user
 
@@ -68,6 +150,7 @@ async def create_user(
 async def upsert_user(
     user_in: UserUpsert,
     is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> User:
     """Create or update user by telegram_id."""
@@ -82,6 +165,8 @@ async def upsert_user(
     user = result.scalar_one_or_none()
 
     if user:
+        if user_in.promo_code and await db.get(EngineeringBudgetPolicy, user.id) is not None:
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_has_policy")
         # Update existing user
         user.username = user_in.username
         user.first_name = user_in.first_name
@@ -89,18 +174,28 @@ async def upsert_user(
         if user_in.is_admin is not None:
             user.is_admin = user_in.is_admin
         user.last_seen = datetime.utcnow()
-    else:
-        # Create new user
-        user = User(
-            telegram_id=user_in.telegram_id,
-            username=user_in.username,
-            first_name=user_in.first_name,
-            last_name=user_in.last_name,
-            is_admin=user_in.is_admin if user_in.is_admin is not None else False,
-        )
+    elif _is_owner_registration(user_in.telegram_id, is_internal) or not _requires_promo(
+        is_internal, x_telegram_id
+    ):
+        user = _new_user(user_in)
         db.add(user)
+    else:
+        try:
+            user = await _redeem_promo_and_create_user(user_in, db)
+        except HTTPException:
+            await db.rollback()
+            raise
+        except IntegrityError:
+            await db.rollback()
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_registered")
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        if user_in.promo_code:
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_registered")
+        raise error
     await db.refresh(user)
     return user
 

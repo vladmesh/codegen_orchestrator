@@ -21,6 +21,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -79,8 +80,6 @@ async def _post_rag_message(payload: dict) -> None:
 
 async def start(update: Update, context) -> None:
     """Handle /start command - show main menu."""
-    if update.effective_user:
-        await _ensure_user_registered(update.effective_user)
     user_is_admin = is_admin(context)
     await update.message.reply_text(
         "🏠 <b>Главное меню</b>\n\n"
@@ -93,8 +92,6 @@ async def start(update: Update, context) -> None:
 
 async def menu(update: Update, context) -> None:
     """Handle /menu command - show main menu."""
-    if update.effective_user:
-        await _ensure_user_registered(update.effective_user)
     user_is_admin = is_admin(context)
     await update.message.reply_text(
         "🏠 <b>Главное меню</b>\n\nВыберите действие:",
@@ -141,28 +138,6 @@ async def dashboard(update: Update, context) -> None:
         reply_markup=keyboard,
         parse_mode=ParseMode.HTML,
     )
-
-
-async def _ensure_user_registered(tg_user) -> None:
-    """Upsert user in database via API."""
-    settings = get_settings()
-    admin_ids = settings.get_admin_ids()
-    is_admin_user = tg_user.id in admin_ids
-
-    payload = {
-        "telegram_id": tg_user.id,
-        "username": tg_user.username,
-        "first_name": tg_user.first_name,
-        "last_name": tg_user.last_name,
-        "is_admin": is_admin_user,
-    }
-
-    headers = {"X-Telegram-ID": str(tg_user.id)}
-
-    try:
-        await api_client.post_json("users/upsert", headers=headers, json=payload)
-    except httpx.HTTPError as e:
-        logger.warning("user_registration_failed", error=str(e))
 
 
 async def _keep_typing(bot, chat_id: int, max_duration_s: float = 120.0) -> None:
@@ -318,14 +293,6 @@ async def _send_to_po_and_wait(
 async def handle_message(update: Update, context) -> None:
     """Handle incoming messages - send to PO ReactAgent via Redis Streams."""
     global _stream_client
-
-    # Auth check
-    if not await auth_middleware(update, context):
-        return
-
-    # Ensure user is registered in DB
-    if update.effective_user:
-        await _ensure_user_registered(update.effective_user)
 
     # Check if admin is in "add user" flow — handle separately
     if context.user_data.get("awaiting_add_user"):
@@ -506,8 +473,8 @@ def main() -> None:
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("dashboard", dashboard))
 
-    # Global Auth Middleware (runs first for everything else)
-    app.add_handler(MessageHandler(filters.ALL, lambda u, c: auth_middleware(u, c)), group=-1)
+    # One update-level gate covers messages, commands and callback queries.
+    app.add_handler(TypeHandler(Update, auth_middleware), group=-1)
 
     # Callback query handler for inline buttons
     app.add_handler(CallbackQueryHandler(handle_callback_query))

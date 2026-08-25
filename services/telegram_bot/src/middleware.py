@@ -37,6 +37,39 @@ async def _check_user_in_db(telegram_id: int) -> dict | None:
         return None
 
 
+def _promo_from_update(update: Update) -> str | None:
+    """Treat an unknown user's text as a code, including `/start <code>`."""
+    text = update.message.text if update.message else None
+    if not text:
+        return None
+    if text.startswith("/start"):
+        parts = text.split(maxsplit=1)
+        return parts[1] if len(parts) > 1 else None
+    return text
+
+
+async def _upsert_user(tg_user, promo_code: str | None = None) -> bool:
+    """Ask the API to register an owner or redeem an unknown user's code."""
+    settings = get_settings()
+    payload = {
+        "telegram_id": tg_user.id,
+        "username": tg_user.username,
+        "first_name": tg_user.first_name,
+        "last_name": tg_user.last_name,
+        "is_admin": tg_user.id in settings.get_admin_ids(),
+    }
+    if promo_code:
+        payload["promo_code"] = promo_code
+    try:
+        await api_client.post_json(
+            "users/upsert", headers={"X-Telegram-ID": str(tg_user.id)}, json=payload
+        )
+        return True
+    except httpx.HTTPError as error:
+        logger.warning("user_registration_failed", telegram_id=tg_user.id, error=str(error))
+        return False
+
+
 async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Check if user is allowed to interact with bot.
 
@@ -45,7 +78,9 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     2. If telegram_id exists in DB → regular user, basic access
     3. Otherwise → blocked
 
-    Sets context.user_data[USER_IS_ADMIN_KEY] = True/False for downstream handlers.
+    The database lookup is the sole source of truth for ordinary registration.
+    An unknown update is consumed here as a promo attempt and never reaches a
+    downstream handler.
 
     Returns True if user is authorized, False otherwise.
     """
@@ -59,6 +94,8 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # Check 1: Is user an admin (from env)?
     if admin_ids and user_id in admin_ids:
+        if not await _upsert_user(update.effective_user):
+            raise ApplicationHandlerStop()
         context.user_data[USER_IS_ADMIN_KEY] = True
         logger.debug("admin_access_granted", telegram_id=user_id)
         return True
@@ -78,24 +115,19 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return True
 
     # Check 3: Fail-closed - block unknown users
-    logger.warning(
-        "unauthorized_access_attempt",
+    logger.info(
+        "unregistered_user_pending_promo",
         telegram_id=user_id,
         username=update.effective_user.username,
     )
 
-    if update.message:
-        await update.message.reply_text(
-            "🚫 <b>Доступ запрещён</b>\n\n"
-            "Вы не зарегистрированы в системе.\n"
-            "Обратитесь к администратору для получения доступа.\n\n"
-            f"Ваш ID: <code>{user_id}</code>",
-            parse_mode="HTML",
-        )
+    promo_code = _promo_from_update(update)
+    if promo_code and await _upsert_user(update.effective_user, promo_code):
+        await update.message.reply_text("Промокод активирован. Добро пожаловать!")
+    elif update.message:
+        await update.message.reply_text("Чтобы начать, пришлите одноразовый промокод.")
     elif update.callback_query:
-        await update.callback_query.answer("🚫 Доступ запрещён", show_alert=True)
-
-    # Stop further processing
+        await update.callback_query.answer("Сначала активируйте промокод", show_alert=True)
     raise ApplicationHandlerStop()
 
 
