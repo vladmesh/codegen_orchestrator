@@ -21,8 +21,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 MIN_FREE_DISK_GB = 10
+# The statuses shared/server_admission.py admits a project application on.
+ADMITTING_STATUSES = frozenset({"active", "ready", "in_use"})
+DEFAULT_API_URL = "http://127.0.0.1:8000"
 # The stand deploys onto itself, so the same disk carries the orchestrator, the
 # worker images and every stack a run brings up.
 CLAUDE_PROBE_TIMEOUT_SECONDS = 120
@@ -105,6 +110,48 @@ def check_codex_session(profile: str | None) -> tuple[str, bool, str]:
     return _ok("codex session", profile or "")
 
 
+def check_deploy_target(api_url: str, internal_key: str | None) -> tuple[str, bool, str]:
+    """A live run needs a server the allocator will actually admit.
+
+    Admission (shared/server_admission.py) wants a managed server whose status
+    admits and whose software provisioning is recorded complete. Without one,
+    every task parks on `waiting_resources` and the run dies at its own timeout
+    with nothing to show — which is how two runs were spent before this check
+    existed.
+    """
+    if not internal_key:
+        return _fail("deploy target", "INTERNAL_API_KEY is unset, cannot ask the API")
+
+    request = urllib.request.Request(  # noqa: S310 — operator-supplied http(s) URL
+        f"{api_url}/api/servers/",
+        headers={"X-Internal-Key": internal_key},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+            servers = json.loads(response.read())
+    except (OSError, json.JSONDecodeError) as exc:
+        return _fail("deploy target", f"cannot read the server list: {exc}")
+
+    admitting = [
+        server
+        for server in servers
+        if server.get("is_managed")
+        and server.get("status") in ADMITTING_STATUSES
+        and (server.get("labels") or {}).get("provisioning_phase") == "complete"
+    ]
+    if not admitting:
+        seen = ", ".join(
+            f"{s.get('handle')}={s.get('status')}"
+            f"/{(s.get('labels') or {}).get('provisioning_phase', '-')}"
+            f"/managed={bool(s.get('is_managed'))}"
+            for s in servers
+        )
+        return _fail("deploy target", f"no server the allocator would admit; saw: {seen or 'none'}")
+
+    handles = ", ".join(str(server.get("handle")) for server in admitting)
+    return _ok("deploy target", handles)
+
+
 def check_disk() -> tuple[str, bool, str]:
     free_gb = shutil.disk_usage("/").free / 1024**3
     if free_gb < MIN_FREE_DISK_GB:
@@ -134,6 +181,10 @@ def main() -> int:
         check_contour(),
         check_docker(),
         check_disk(),
+        check_deploy_target(
+            os.environ.get("STAND_API_URL", DEFAULT_API_URL),
+            os.environ.get("INTERNAL_API_KEY"),
+        ),
         check_claude_session(os.environ.get("HOST_CLAUDE_DIR"), probe=probe),
         check_codex_session(os.environ.get("HOST_CODEX_HOME")),
     ]

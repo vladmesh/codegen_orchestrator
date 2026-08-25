@@ -1,0 +1,127 @@
+name: Stand e2e
+
+# The run list should say what was run without opening anything.
+run-name: Stand e2e ${{ inputs.suite }}${{ inputs.suite == 'custom' && format(' ({0})', inputs.target) || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'What to run'
+        required: true
+        default: 'mega'
+        type: choice
+        options:
+          - mega
+          - llm
+          - matrix
+          - custom
+      target:
+        description: 'pytest target, when suite is custom'
+        required: false
+        type: string
+      worker:
+        description: 'Coding agent (ignored by mega and matrix)'
+        required: false
+        default: 'claude'
+        type: choice
+        options:
+          - claude
+          - codex
+      qa:
+        description: 'QA executor (ignored by mega and matrix)'
+        required: false
+        default: 'codex'
+        type: choice
+        options:
+          - claude
+          - codex
+      skip_sweep:
+        description: 'Leave the run’s resources in place for inspection'
+        required: false
+        default: false
+        type: boolean
+
+# One e2e at a time. They share a stand, a target server and one subscription
+# per agent; two at once would fight over all three.
+concurrency:
+  group: stand-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    environment: stand
+    # The matrix is four full pipeline runs.
+    timeout-minutes: 180
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/codegen_orchestrator' }}
+      DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER || 'dev' }}
+    steps:
+      # The suite is a named one or a pytest target; `custom` is how the second
+      # kind is spelled in a dropdown, and it has to name a target.
+      - name: Resolve the suite
+        id: suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.suite }}" = "custom" ]; then
+            if [ -z "${{ inputs.target }}" ]; then
+              echo "FATAL: suite=custom needs a pytest target" >&2
+              exit 1
+            fi
+            echo "value=${{ inputs.target }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.suite }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run it on the stand
+        uses: appleboy/ssh-action@v1
+        timeout-minutes: 176
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ env.DEPLOY_SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 175m
+          script: |
+            set -euo pipefail
+            cd ${{ env.DEPLOY_PATH }}
+            export PATH="$HOME/.local/bin:$PATH"
+            make stand-run \
+              SUITE='${{ steps.suite.outputs.value }}' \
+              WORKER='${{ inputs.worker }}' \
+              QA='${{ inputs.qa }}' \
+              ARGS='${{ inputs.skip_sweep && '--skip-sweep' || '' }}'
+
+      # Collected whatever the result was: a failed run is the one whose logs are
+      # worth keeping, and the stand's disk is swept on a schedule.
+      - name: Collect the run directory
+        if: always()
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          STAND_HOST: ${{ secrets.PROD_HOST }}
+        run: |
+          set -euo pipefail
+          key="$(mktemp)"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${key}"
+          chmod 600 "${key}"
+          mkdir -p run
+          scp -i "${key}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -r \
+            "${DEPLOY_SSH_USER}@${STAND_HOST}:~/e2e-runs/latest/*" run/ || true
+          if [ -f run/report.tsv ]; then
+            {
+              echo "### ${{ inputs.suite }}"
+              echo
+              echo '```'
+              cat run/report.tsv
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the run directory
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stand-e2e-${{ inputs.suite }}-${{ github.run_id }}
+          path: run/
+          if-no-files-found: warn
