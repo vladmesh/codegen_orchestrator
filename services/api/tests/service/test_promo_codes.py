@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import select, text
 
 from shared.models import User
+from src.dependencies import create_lk_jwt
 
 
 @pytest.mark.asyncio
@@ -87,6 +88,29 @@ async def test_service_created_user_is_not_admin_without_an_admin_grant(async_cl
     )
     assert created.status_code == HTTPStatus.CREATED, created.text
     assert created.json()["is_admin"] is False
+
+
+@pytest.mark.asyncio
+async def test_lk_bearer_cannot_impersonate_for_promo_or_policy(async_client) -> None:
+    ordinary = await async_client.post("/api/users/", json={"telegram_id": 810_000_031})
+    target = await async_client.post("/api/users/", json={"telegram_id": 810_000_032})
+    token = create_lk_jwt(ordinary.json()["id"])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Telegram-ID": str(target.json()["telegram_id"]),
+    }
+    minted = await async_client.post(
+        "/api/promo-codes/batch",
+        json={"quantity": 1, "credits_microusd": 1, "attempt_reservation_microusd": 1},
+        headers=headers,
+    )
+    assert minted.status_code == HTTPStatus.FORBIDDEN
+    policy = await async_client.put(
+        f"/api/engineering-budget-policies/{target.json()['id']}",
+        json={"limit_microusd": 1, "attempt_reservation_microusd": 1, "state": "enabled"},
+        headers=headers,
+    )
+    assert policy.status_code == HTTPStatus.FORBIDDEN
 
 
 @pytest.mark.asyncio
