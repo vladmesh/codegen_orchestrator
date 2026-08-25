@@ -2,6 +2,7 @@
 
 import asyncio
 from http import HTTPStatus
+import uuid
 
 import pytest
 
@@ -89,3 +90,47 @@ async def test_concurrent_redemption_has_one_winner(async_client) -> None:
     loser = next(response for response in responses if response.status_code != HTTPStatus.OK)
     assert loser.status_code == HTTPStatus.CONFLICT
     assert loser.json()["detail"]["code"] == "promo_code_redeemed"
+
+
+@pytest.mark.asyncio
+async def test_unknown_cost_keeps_promo_reservation_held(async_client) -> None:
+    minted = await async_client.post(
+        "/api/promo-codes/batch",
+        json={"quantity": 1, "credits_microusd": 10, "attempt_reservation_microusd": 10},
+    )
+    activated = await async_client.post(
+        "/api/users/upsert",
+        json={"telegram_id": 810_000_021, "promo_code": minted.json()[0]["code"]},
+    )
+    user = activated.json()
+    project = await async_client.post(
+        "/api/projects/",
+        json={
+            "id": str(uuid.uuid4()),
+            "title": "Promo hold",
+            "initiating_run_id": f"init-{uuid.uuid4().hex}",
+            "config": {},
+        },
+        headers={"X-Telegram-ID": str(user["telegram_id"])},
+    )
+    attempt_id = f"promo-unknown-{uuid.uuid4().hex}"
+    admission = await async_client.post(
+        "/api/engineering-budget-policies/admissions",
+        json={"attempt_id": attempt_id, "project_id": project.json()["id"], "task_id": attempt_id},
+    )
+    assert admission.json()["reservation_state"] == "active"
+    assert (
+        await async_client.post(
+            "/api/runs/",
+            json={"id": attempt_id, "type": "engineering", "project_id": project.json()["id"]},
+        )
+    ).status_code == HTTPStatus.CREATED
+    assert (
+        await async_client.patch(
+            f"/api/runs/{attempt_id}",
+            json={"status": "failed", "engineering_attempt": {"cost_source": "unknown"}},
+        )
+    ).status_code == HTTPStatus.OK
+    balance = await async_client.get(f"/api/engineering-budget-policies/{user['id']}/balance")
+    assert balance.json()["unknown_final_held_microusd"] == 10
+    assert balance.json()["exhausted"] is True
