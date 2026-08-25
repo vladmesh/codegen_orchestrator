@@ -13,6 +13,11 @@ if [ "$ENVIRONMENT" = "test" ]; then
     python /app/scripts/seed_system_configs.py \
         --api-base-url http://localhost:8000 \
         --configs-path /app/scripts/system_configs.yaml
+    if [ -n "$SYSTEM_CONFIGS_TEST_OVERLAY" ]; then
+        python /app/scripts/seed_system_configs.py \
+            --api-base-url http://localhost:8000 \
+            --configs-path "$SYSTEM_CONFIGS_TEST_OVERLAY"
+    fi
     wait "$api_pid"
     exit $?
 fi

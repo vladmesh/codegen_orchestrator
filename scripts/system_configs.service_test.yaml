@@ -1,0 +1,25 @@
+# Overrides for the shared API service-test database.
+#
+# Service tests intentionally retain records across the suite to exercise APIs
+# against an evolving dataset. These ceilings remain enabled in the test
+# contour, but use explicit high values so unrelated scenarios do not exhaust
+# an operational production limit. Admission tests set their own low value.
+- key: work_admission.max_projects_per_user
+  value: 10000
+  category: work_admission
+  description: "Service-test maximum non-archived projects for one non-admin user"
+
+- key: work_admission.max_active_managed_servers
+  value: 10000
+  category: work_admission
+  description: "Service-test maximum active managed servers allowed to provision"
+
+- key: work_admission.max_concurrent_paid_runs
+  value: 10000
+  category: work_admission
+  description: "Service-test maximum queued or running engineering and QA coding-agent runs"
+
+- key: work_admission.emergency_stop
+  value: false
+  category: work_admission
+  description: "Service-test operator switch that blocks new admitted work"

@@ -42,7 +42,7 @@ COPY services/api/src ./src
 COPY services/api/migrations ./migrations
 COPY services/api/alembic.ini ./alembic.ini
 COPY services/api/entrypoint.sh /entrypoint.sh
-COPY scripts/seed_system_configs.py scripts/system_configs.yaml /app/scripts/
+COPY scripts/seed_system_configs.py scripts/system_configs.yaml scripts/system_configs.service_test.yaml /app/scripts/
 RUN chmod +x /entrypoint.sh
 
 # Expose port
