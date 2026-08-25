@@ -9,7 +9,9 @@ import uuid
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
+
+from shared.models import User
 
 
 @pytest.mark.asyncio
@@ -85,6 +87,17 @@ async def test_service_created_user_is_not_admin_without_an_admin_grant(async_cl
     )
     assert created.status_code == HTTPStatus.CREATED, created.text
     assert created.json()["is_admin"] is False
+
+
+@pytest.mark.asyncio
+async def test_rag_unknown_telegram_user_is_not_registered(async_client, db_session) -> None:
+    telegram_id = 810_000_099
+    response = await async_client.post(
+        "/api/rag/messages",
+        json={"telegram_id": telegram_id, "role": "user", "message_text": "blocked"},
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+    assert await db_session.scalar(select(User).where(User.telegram_id == telegram_id)) is None
 
 
 @pytest.mark.asyncio
