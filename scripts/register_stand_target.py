@@ -77,7 +77,14 @@ def main() -> int:
         "is_managed": True,
         "status": "ready",
         "notes": "The stand itself. Prepared by hand; the provisioner never runs here.",
-        "labels": {"contour": "stand"},
+        # `provisioning_phase` is what admission reads (shared/server_admission.py):
+        # a server without it is never allocated, and the provisioner is normally
+        # its only writer. The stand does not run the provisioner, so the label
+        # states here what the playbook would have recorded — the host has docker,
+        # the deploy account, /opt/services and the monitoring baseline the health
+        # checker polls. Claiming it without preparing the host would park every
+        # task on an allocation that cannot work.
+        "labels": {"contour": "stand", "provisioning_phase": "complete"},
     }
 
     try:
