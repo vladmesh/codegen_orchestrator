@@ -32,6 +32,7 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE
@@ -122,6 +123,7 @@ def api_client():
     # back and found in the status the transition put it in, so the double
     # answers that read the way the API would after the escalation committed.
     client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
+    client.admit_paid_work.return_value = WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED)
     return client
 
 

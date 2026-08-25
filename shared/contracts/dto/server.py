@@ -5,6 +5,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.work_admission import WorkAdmissionRead
 
 SSHUser = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[a-z_][a-z0-9_-]*$")]
 
@@ -102,6 +103,7 @@ class ProvisioningAttemptReservationResult(BaseModel):
     reserved: bool
     provisioning_attempts: int
     episode_id: str | None = None
+    admission: WorkAdmissionRead | None = None
 
 
 class ProvisioningAttemptReset(BaseModel):

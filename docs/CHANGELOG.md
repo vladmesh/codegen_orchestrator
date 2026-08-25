@@ -5,6 +5,9 @@
 ### Added
 
 - One-time promo-code registration that atomically arms an enabled engineering budget policy.
+- Count-based work admission ceilings for projects, managed-server provisioning,
+  and concurrent engineering/QA runs, with an internal/admin emergency-stop API
+  and durable typed decision audit records.
 
 ## 2026-08-24
 

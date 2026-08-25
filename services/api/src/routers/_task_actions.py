@@ -11,6 +11,7 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionOutcome,
 )
 from shared.contracts.dto.task import TaskEventType, TaskStatus
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.models import Project, Run, TaskEvent
 from shared.queues import ENGINEERING_QUEUE
@@ -25,6 +26,7 @@ from ..engineering_budget_admission import (
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
+from ..work_admission import admit_paid_work
 from ._ownership import initiating_run_or_conflict
 from ._recipients import resolve_project_chat_id
 from ._task_helpers import create_status_event, get_task, to_read, validate_transition
@@ -256,6 +258,16 @@ async def spawn_worker(
         )
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
+    count_admission = await admit_paid_work(run_id, db)
+    if count_admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        await db.commit()
+        logger.info(
+            "worker_spawn_count_admission_refused",
+            task_id=task.id,
+            run_id=run_id,
+            reason=count_admission.reason.value if count_admission.reason else None,
+        )
+        return {"admission": count_admission.model_dump(mode="json")}
     try:
         admission = await admit_engineering_attempt(
             EngineeringBudgetAdmissionCommand(

@@ -80,6 +80,33 @@ are hard-deleted; all accounting facts and the resolved `user_id` remain immutab
 
 ### Engineering budget policies
 
+### Count-based work admission
+
+`work_admission` is independent of engineering money and writes no financial
+reservation. It is the only count-based gate, called before project creation,
+server-provisioning attempt reservation, engineering dispatch, and QA dispatch.
+Every decision is stored in `work_admission_audits` with a typed outcome and
+reason. `admitted` starts work, `deferred` leaves a paid-work attempt eligible
+for a later dispatch, and `denied` refuses it without changing existing work.
+
+The deployed defaults in `scripts/system_configs.yaml` are:
+
+- `work_admission.max_projects_per_user=3`, measured as non-archived projects
+  owned by one non-admin user. Deleted projects are absent and archived projects
+  do not count; administrators are unlimited.
+- `work_admission.max_active_managed_servers=10`, measured globally across
+  managed servers other than missing or decommissioned inventory entries.
+- `work_admission.max_concurrent_paid_runs=5`, measured globally as queued or
+  running `engineering` and `qa` runs together.
+- `work_admission.emergency_stop=false`. Internal/admin callers read and set
+  this one operator switch at `/api/work-admission/emergency-stop`; while true,
+  no new project, provisioning attempt, engineering run, or QA run is admitted.
+  It never changes existing rows, workspaces, containers, or runs.
+
+Engineering dispatch asks this count gate before its existing monetary
+`admit_engineering_attempt` gate, so a count-based refusal cannot create a
+financial reservation. QA and provisioning never enter the monetary gate.
+
 `engineering_budget_policies` holds at most one durable policy row per `user_id`.
 `limit_microusd` is a non-negative integer number of micro-USD; budget requests never
 accept floating-point or dollar-denominated money. `state` is the typed

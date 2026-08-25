@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
 
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
 from shared.contracts.vocab import AgentType
 from src.database import get_async_session
 from src.main import app
@@ -61,6 +62,15 @@ PROJECT_PAYLOAD = {
 def _cleanup_overrides():
     yield
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _allow_count_admission(monkeypatch):
+    monkeypatch.setattr(
+        projects,
+        "admit_project_creation",
+        AsyncMock(return_value=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED)),
+    )
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,7 @@ from shared.contracts.dto.project import (
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.vocab import ActionType
 from shared.contracts.worker_turn import AttemptTurnMetadata
@@ -281,6 +282,15 @@ async def _create_and_publish_run(
     project_id = str(task.project_id)
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
+    count_admission = await api_client.admit_paid_work(run_id)
+    if count_admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        log.info(
+            "task_dispatch_count_admission_refused",
+            run_id=run_id,
+            task_id=task_id,
+            reason=count_admission.reason.value if count_admission.reason else None,
+        )
+        return None
     admission = await api_client.admit_engineering_budget(
         EngineeringBudgetAdmissionCommand(
             attempt_id=run_id,

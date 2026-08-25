@@ -2,11 +2,24 @@ import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservation,
     ProvisioningAttemptReset,
 )
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
+from src.routers import servers
 from src.routers.servers import reserve_provisioning_attempt, reset_provisioning_attempts
+
+
+@pytest.fixture(autouse=True)
+def _allow_count_admission(monkeypatch):
+    monkeypatch.setattr(
+        servers,
+        "admit_server_provisioning",
+        AsyncMock(return_value=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED)),
+    )
 
 
 async def test_reservation_uses_conditional_atomic_increment():

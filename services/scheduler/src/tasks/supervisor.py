@@ -52,6 +52,7 @@ from shared.contracts.dto.run_result import (
 )
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import (
     DeployAction,
@@ -972,6 +973,14 @@ async def _handle_deploy_success_story(
     # Its id is derived from the deploy run, so the retry lands on the same run
     # instead of creating a second one for the same deploy.
     qa_run_id = _qa_run_id_for_deploy(run.id)
+    count_admission = await api_client.admit_paid_work(qa_run_id)
+    if count_admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        log.info(
+            "qa_handoff_count_admission_refused",
+            qa_run_id=qa_run_id,
+            reason=count_admission.reason.value if count_admission.reason else None,
+        )
+        return False
     qa_recipient = await resolve_project_recipient(
         api_client, project_id, event="qa_dispatch", story_id=story_id
     )

@@ -25,6 +25,7 @@ from shared.contracts.dto.telegram import (
     TelegramTokenVerdict,
     TokenVerdictStatus,
 )
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.contracts.vocab import AgentType
 from shared.crypto import decrypt_dict, encrypt_dict
@@ -72,6 +73,7 @@ from ..schemas import (
 from ..utils.bot_audience import AudienceOperation
 from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, release_bot_binding
 from ..utils.telegram_token import bot_liveness, looks_like_bot_token, validate_telegram_token
+from ..work_admission import admit_project_creation
 from ._bot_access import (
     mutate_bot_audience,
     owe_rollout_notification,
@@ -204,6 +206,19 @@ async def create_project(
                 detail=f"User with telegram_id {x_telegram_id} not found",
             )
         owner_id = user.id
+
+        admission = await admit_project_creation(user.id, user.is_admin, db)
+        if admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+            await db.commit()
+            logger.info(
+                "project_creation_admission_denied",
+                owner_id=user.id,
+                reason=admission.reason.value if admission.reason else None,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"admission": admission.model_dump(mode="json")},
+            )
 
         project = Project(
             id=project_id,

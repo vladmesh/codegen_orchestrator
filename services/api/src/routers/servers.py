@@ -17,6 +17,7 @@ from shared.contracts.dto.server import (
     ServerStatus,
     SSHUser,
 )
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
 from shared.provisioning_policy import server_is_provisioning_allowed
@@ -33,6 +34,7 @@ from ..schemas import (
     ServerCreate,
     ServerRead,
 )
+from ..work_admission import admit_server_provisioning
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -114,6 +116,15 @@ async def reserve_provisioning_attempt(
     _: None = Depends(require_internal_or_admin),
 ) -> ProvisioningAttemptReservationResult:
     """Atomically reserve an attempt if the current episode has capacity."""
+    admission = await admit_server_provisioning(handle, db)
+    if admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        await db.commit()
+        return ProvisioningAttemptReservationResult(
+            reserved=False,
+            provisioning_attempts=0,
+            episode_id=None,
+            admission=admission,
+        )
     new_episode_id = str(uuid4())
     statement = (
         update(Server)
