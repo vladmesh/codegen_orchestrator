@@ -19,6 +19,7 @@ import uuid
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -285,17 +286,36 @@ async def _create_and_publish_run(
         **AttemptTurnMetadata(initiating_run_id=initiating_run_id).as_run_metadata(),
         "iteration": task.current_iteration,
     }
-    started = await api_client.start_paid_run(
-        PaidRunStartCommand(
-            id=run_id,
-            type=RunType.ENGINEERING,
-            project_id=task.project_id,
-            task_id=task_id,
-            story_id=story_id,
-            run_metadata=run_metadata,
+    try:
+        started = await api_client.start_paid_run(
+            PaidRunStartCommand(
+                id=run_id,
+                type=RunType.ENGINEERING,
+                project_id=task.project_id,
+                task_id=task_id,
+                story_id=story_id,
+                run_metadata=run_metadata,
+            )
         )
-    )
+    except Exception:
+        log.exception("task_dispatch_paid_start_failed", run_id=run_id)
+        return None
     if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        budget = started.engineering_budget
+        if budget is not None and budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            await api_client.transition_task(
+                task_id,
+                TaskStatus.WAITING_HUMAN_REVIEW,
+                "dispatcher",
+                details={
+                    "reason": "engineering_budget_denied",
+                    "attempt_id": budget.attempt_id,
+                    "known_spend_microusd": budget.known_spend_microusd,
+                    "active_held_microusd": budget.active_held_microusd,
+                    "available_microusd": budget.available_microusd,
+                },
+            )
         log.info(
             "task_dispatch_count_admission_refused",
             run_id=run_id,

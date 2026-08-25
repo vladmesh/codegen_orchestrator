@@ -1170,16 +1170,20 @@ async def _handle_deploy_code_fix(
 
     error_details = result.error_details or "unknown deploy error"
     fix_task_id = f"eng-deploy-fix-{run.id}-{attempt + 1}"
-    started = await api_client.start_paid_run(
-        PaidRunStartCommand(
-            id=fix_task_id,
-            type=RunType.ENGINEERING,
-            project_id=project.id,
-            task_id=fix_task_id,
-            story_id=story_id,
-            run_metadata={"deploy_fix_attempt": attempt + 1},
+    try:
+        started = await api_client.start_paid_run(
+            PaidRunStartCommand(
+                id=fix_task_id,
+                type=RunType.ENGINEERING,
+                project_id=project.id,
+                task_id=fix_task_id,
+                story_id=story_id,
+                run_metadata={"deploy_fix_attempt": attempt + 1},
+            )
         )
-    )
+    except Exception:
+        log.exception("deploy_fix_paid_start_failed", run_id=fix_task_id)
+        return False
     if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
         budget = started.engineering_budget
         reason = {

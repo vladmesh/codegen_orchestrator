@@ -657,8 +657,8 @@ class TestSuperviseWaitingResourceTasks:
             "eng-capacity-failed",
             {"run_metadata": {"iteration": None, "task_id": "task-1"}},
         )
-        api_client.create_run.assert_awaited_once()
-        assert api_client.create_run.call_args.args[0]["run_metadata"]["iteration"] == 1
+        api_client.start_paid_run.assert_awaited_once()
+        assert api_client.start_paid_run.call_args.args[0].run_metadata["iteration"] == 1
 
     @pytest.mark.asyncio
     async def test_reparking_preserves_original_resource_wait_start(self, api_client, redis_client):

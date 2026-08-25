@@ -94,7 +94,7 @@ class TestLiveWorkerSurvivesASupervisorTick:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 0
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
 
@@ -111,7 +111,7 @@ class TestLiveWorkerSurvivesASupervisorTick:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 0
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
 
@@ -132,5 +132,5 @@ class TestGenuineRetryStillDispatches:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.create_run.assert_called_once()
+        api_client.start_paid_run.assert_called_once()
         redis_client.publish_message.assert_called_once()

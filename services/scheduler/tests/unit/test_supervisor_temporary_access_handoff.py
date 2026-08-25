@@ -597,7 +597,12 @@ class TestTheQARunIsWrittenBeforeTheStoryMoves:
         api_client.get_project.return_value = _project("42")
 
         order = []
-        api_client.create_run_if_absent.side_effect = lambda data: order.append("run")
+        api_client.start_paid_run.side_effect = lambda data: (
+            order.append("run")
+            or PaidRunStartRead(
+                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id=data.id
+            )
+        )
         api_client.transition_story.side_effect = lambda *a: order.append("transition")
         api_client.create_temporary_access_grant.side_effect = lambda payload: (
             order.append("grant") or _stored_grant(payload)
@@ -629,7 +634,7 @@ class TestTheQARunIsWrittenBeforeTheStoryMoves:
         await supervise_deploying_stories(api_client, redis_client)
         await supervise_deploying_stories(api_client, redis_client)
 
-        run_ids = {c.args[0]["id"] for c in api_client.create_run_if_absent.call_args_list}
+        run_ids = {c.args[0].id for c in api_client.start_paid_run.call_args_list}
         grant_ids = {c.args[0].id for c in api_client.create_temporary_access_grant.call_args_list}
         assert len(run_ids) == 1
         assert len(grant_ids) == 1

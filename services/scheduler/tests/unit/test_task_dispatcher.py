@@ -211,7 +211,7 @@ class TestDispatchTodoTasks:
 
         msg = redis_client.publish_message.call_args[0][1]
         assert msg.initiating_run_id == "live-run-1"
-        assert msg.task_id == api_client.create_run.call_args[0][0]["id"]
+        assert msg.task_id == api_client.start_paid_run.call_args[0][0].id
         assert msg.task_id != msg.initiating_run_id
 
     @pytest.mark.asyncio
@@ -236,7 +236,7 @@ class TestDispatchTodoTasks:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 0
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -269,7 +269,7 @@ class TestDispatchTodoTasks:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 0
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -290,19 +290,18 @@ class TestDispatchTodoTasks:
             )
         ]
         api_client.get_task_events.return_value = []
-        api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
         api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
         # Should create a run
-        api_client.create_run.assert_called_once()
-        run_data = api_client.create_run.call_args[0][0]
-        assert run_data["type"] == "engineering"
-        assert run_data["project_id"] == PROJ_ID
+        api_client.start_paid_run.assert_called_once()
+        run_data = api_client.start_paid_run.call_args[0][0]
+        assert run_data.type.value == "engineering"
+        assert str(run_data.project_id) == PROJ_ID
         # task_id links the run to the task so the next tick's guard can find it
-        assert run_data["task_id"] == "task-1"
+        assert run_data.task_id == "task-1"
 
         # Should publish to engineering queue
         redis_client.publish_message.assert_called_once()
@@ -329,22 +328,22 @@ class TestDispatchTodoTasks:
             [],
         ]
         api_client.get_task_events.return_value = []
-        api_client.admit_engineering_budget.return_value = _admission(
-            EngineeringBudgetAdmissionOutcome.DENIED
+        api_client.start_paid_run.return_value = PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
+            engineering_budget=_admission(EngineeringBudgetAdmissionOutcome.DENIED),
         )
 
         assert await dispatch_todo_tasks(api_client, redis_client) == 0
         assert await dispatch_todo_tasks(api_client, redis_client) == 0
 
-        api_client.admit_engineering_budget.assert_awaited_once()
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_awaited_once()
         redis_client.publish_message.assert_not_called()
         first, second = api_client.transition_task.await_args_list
         assert first.args == ("task-1", "in_dev", "dispatcher")
         assert second.args == ("task-1", "waiting_human_review", "dispatcher")
         assert second.kwargs["details"] == {
             "reason": "engineering_budget_denied",
-            "attempt_id": api_client.admit_engineering_budget.await_args.args[0].attempt_id,
+            "attempt_id": "eng-budget-test",
             "known_spend_microusd": 0,
             "active_held_microusd": 0,
             "available_microusd": 90,
@@ -367,7 +366,7 @@ class TestDispatchTodoTasks:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.create_run.assert_called_once()
+        api_client.start_paid_run.assert_called_once()
         eng_msg = redis_client.publish_message.call_args[0][1]
         assert eng_msg.action is ActionType.FEATURE
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
@@ -394,7 +393,7 @@ class TestDispatchTodoTasks:
         await dispatch_todo_tasks(api_client, redis_client)
 
         # Should NOT create a run
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -424,7 +423,7 @@ class TestDispatchTodoTasks:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -455,7 +454,7 @@ class TestDispatchTodoTasks:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -482,13 +481,12 @@ class TestDispatchTodoTasks:
                 details={"commit_sha": "abc", "summary": "Done"},
             )
         ]
-        api_client.create_run.return_value = {"id": "run-2"}
         api_client.transition_task.return_value = {}
         api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.create_run.assert_called_once()
+        api_client.start_paid_run.assert_called_once()
         redis_client.publish_message.assert_called_once()
 
     @pytest.mark.asyncio
@@ -524,7 +522,6 @@ class TestDispatchTodoTasks:
                 },
             )
         ]
-        api_client.create_run.return_value = {"id": "run-2"}
         api_client.transition_task.return_value = {}
         api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
@@ -553,7 +550,6 @@ class TestDispatchTodoTasks:
             )
         ]
         api_client.get_task_events.return_value = []
-        api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
         api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
@@ -579,7 +575,6 @@ class TestDispatchTodoTasks:
                 status="todo",
             )
         ]
-        api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
 
         await dispatch_todo_tasks(api_client, redis_client)
@@ -618,7 +613,7 @@ class TestDispatchTodoTasks:
         await dispatch_todo_tasks(api_client, redis_client)
 
         # Should NOT dispatch — story has a gave_up task awaiting human
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -644,14 +639,13 @@ class TestDispatchTodoTasks:
             _task(id="task-2", status="todo", story_id="story-1", project_id=PROJ_ID),
         ]
         api_client.get_task_events.return_value = []
-        api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
         api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
         # Should dispatch — normal failure doesn't block siblings
-        api_client.create_run.assert_called_once()
+        api_client.start_paid_run.assert_called_once()
         redis_client.publish_message.assert_called_once()
 
 
@@ -676,7 +670,6 @@ class TestBranchInDispatch:
             )
         ]
         api_client.get_task_events.return_value = []
-        api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
         api_client.get_story.return_value = _story(id="story-abc", project_id=PROJ_ID)
 
@@ -703,7 +696,6 @@ class TestBranchInDispatch:
                 status="todo",
             )
         ]
-        api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
 
         await dispatch_todo_tasks(api_client, redis_client)
@@ -742,7 +734,7 @@ class TestDispatchPartialFailure:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 0
-        run_id = api_client.create_run.call_args[0][0]["id"]
+        run_id = api_client.start_paid_run.call_args[0][0].id
         api_client.update_run.assert_called_once()
         patched_run_id, patch = api_client.update_run.call_args[0]
         assert patched_run_id == run_id
@@ -764,14 +756,11 @@ class TestDispatchPartialFailure:
 
         api_client.get_tasks_by_status.return_value = [self._todo_task()]
         api_client.get_task_events.return_value = []
-        api_client.create_run.side_effect = RuntimeError("API unavailable")
+        api_client.start_paid_run.side_effect = RuntimeError("API unavailable")
 
         assert await dispatch_todo_tasks(api_client, redis_client) == 0
 
-        assert (
-            api_client.release_engineering_budget_admission.await_args.args[0]
-            == api_client.admit_engineering_budget.await_args.args[0].attempt_id
-        )
+        api_client.release_engineering_budget_admission.assert_not_awaited()
         redis_client.publish_message.assert_not_called()
         api_client.transition_task.assert_not_called()
 
@@ -794,7 +783,7 @@ class TestDispatchPartialFailure:
 
         assert (
             api_client.release_engineering_budget_admission.await_args.args[0]
-            == api_client.create_run.await_args.args[0]["id"]
+            == api_client.start_paid_run.await_args.args[0].id
         )
         redis_client.publish_message.assert_not_called()
         api_client.transition_task.assert_not_called()
@@ -814,13 +803,13 @@ class TestDispatchPartialFailure:
         api_client.list_runs.return_value = [
             self._prior_run_from_patch(run_id, patch),
         ]
-        api_client.create_run.reset_mock()
+        api_client.start_paid_run.reset_mock()
         redis_client.publish_message.side_effect = None
 
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.create_run.assert_called_once()
+        api_client.start_paid_run.assert_called_once()
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
 
     @pytest.mark.asyncio
@@ -835,7 +824,7 @@ class TestDispatchPartialFailure:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.create_run.assert_called_once()
+        api_client.start_paid_run.assert_called_once()
         redis_client.publish_message.assert_called_once()
         assert api_client.transition_task.call_count == 2
 
@@ -882,7 +871,7 @@ class TestDispatchPartialFailure:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
         # Guard asked about this task's engineering runs, whatever their status
@@ -908,7 +897,7 @@ class TestDispatchPartialFailure:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
         assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
             "in_dev",
@@ -930,7 +919,7 @@ class TestDispatchPartialFailure:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
         assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
             "in_dev",
@@ -950,7 +939,7 @@ class TestDispatchPartialFailure:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         assert [c[0][1] for c in api_client.transition_task.call_args_list] == [
             "in_dev",
             "waiting_human_review",
@@ -970,8 +959,8 @@ class TestDispatchPartialFailure:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 1
-        api_client.create_run.assert_called_once()
-        assert api_client.create_run.call_args[0][0]["run_metadata"]["iteration"] == 1
+        api_client.start_paid_run.assert_called_once()
+        assert api_client.start_paid_run.call_args[0][0].run_metadata["iteration"] == 1
         redis_client.publish_message.assert_called_once()
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
 
@@ -1212,7 +1201,7 @@ class TestDispatchSkipsGaveUpSibling:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        api_client.create_run.assert_not_called()
+        api_client.start_paid_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
 
@@ -1239,7 +1228,6 @@ class TestPollMergedPRs:
             _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=42),
         ]
         api_client.transition_story.return_value = {}
-        api_client.create_run.return_value = {}
 
         mock_github = AsyncMock()
         mock_github.get_pull_request.return_value = {
@@ -1283,7 +1271,6 @@ class TestPollMergedPRs:
             _story(id="story-2", project_id=PROJ_ID, status="pr_review", pr_number=43),
         ]
         api_client.transition_story.return_value = {}
-        api_client.create_run.return_value = {}
 
         mock_github = AsyncMock()
         mock_github.get_pull_request.return_value = {
@@ -1368,7 +1355,6 @@ class TestPollMergedPRs:
             _story(id="story-2", project_id=proj2_id, status="pr_review", pr_number=10),
         ]
         api_client.transition_story.return_value = {}
-        api_client.create_run.return_value = {}
 
         mock_github = AsyncMock()
         mock_github.get_pull_request.side_effect = [

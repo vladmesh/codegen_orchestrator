@@ -176,11 +176,12 @@ class TestSuperviseDeployingStories:
         assert result["tested"] == 1
         api_client.transition_story.assert_called_once_with("story-1", "test")
 
-        # QA run should be created
-        api_client.create_run_if_absent.assert_called_once()
-        run_data = api_client.create_run_if_absent.call_args[0][0]
-        assert run_data["type"] == RunType.QA.value
-        assert run_data["story_id"] == "story-1"
+        # The canonical command is the only paid-run creation path.
+        api_client.start_paid_run.assert_awaited_once()
+        api_client.create_run_if_absent.assert_not_called()
+        run_data = api_client.start_paid_run.call_args[0][0]
+        assert run_data.type is RunType.QA
+        assert run_data.story_id == "story-1"
 
         # QA message should be published with run_id
         from shared.queues import QA_QUEUE
@@ -198,7 +199,7 @@ class TestSuperviseDeployingStories:
         assert qa_msg.initiating_run_id != qa_msg.run_id
         # The criteria travel on the message — QA does not resolve them itself.
         assert qa_msg.acceptance_criteria == BASELINE_ACCEPTANCE_CRITERIA
-        metadata = api_client.create_run_if_absent.call_args.args[0]["run_metadata"]
+        metadata = api_client.start_paid_run.call_args.args[0].run_metadata
         assert metadata["application_id"] == 42
         # The plan is stored with the run, so a restart can finish this handoff.
         assert QAHandoffPlan.model_validate(metadata[QA_HANDOFF_KEY]).access is None
@@ -446,26 +447,16 @@ class TestSuperviseDeployingStories:
             },
         )
         api_client.transition_story.return_value = {}
-        api_client.create_run.return_value = {}
-        api_client.admit_engineering_budget.return_value = _engineering_admission()
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 1
-        admission = api_client.admit_engineering_budget.await_args.args[0]
-        assert admission.attempt_id == "eng-deploy-fix-deploy-1-1"
-        assert admission.task_id == admission.attempt_id
-        assert admission.story_id == "story-1"
-        assert admission.project_id == _make_project().id
-        admission_call = next(
-            index
-            for index, call in enumerate(api_client.mock_calls)
-            if call[0] == "admit_engineering_budget"
-        )
-        create_run_call = next(
-            index for index, call in enumerate(api_client.mock_calls) if call[0] == "create_run"
-        )
-        assert admission_call < create_run_call
+        command = api_client.start_paid_run.await_args.args[0]
+        assert command.id == "eng-deploy-fix-deploy-1-1"
+        assert command.task_id == command.id
+        assert command.story_id == "story-1"
+        assert command.project_id == _make_project().id
+        api_client.create_run.assert_not_awaited()
         api_client.transition_story.assert_called_once_with("story-1", "start")
 
         eng_calls = [
@@ -560,7 +551,6 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.return_value = _engineering_admission()
         redis_client.publish_message.side_effect = RuntimeError("redis unavailable")
 
         result = await supervise_deploying_stories(api_client, redis_client)
@@ -589,15 +579,12 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.return_value = _engineering_admission()
-        api_client.create_run.side_effect = RuntimeError("api unavailable")
+        api_client.start_paid_run.side_effect = RuntimeError("api unavailable")
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 0
-        api_client.release_engineering_budget_admission.assert_awaited_once_with(
-            "eng-deploy-fix-deploy-1-1"
-        )
+        api_client.release_engineering_budget_admission.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
         api_client.update_run.assert_not_awaited()
 
@@ -618,10 +605,6 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.side_effect = [
-            _engineering_admission(),
-            _engineering_admission(),
-        ]
         api_client.transition_story.side_effect = [RuntimeError("temporary API failure"), {}]
 
         first = await supervise_deploying_stories(api_client, redis_client)
@@ -629,23 +612,19 @@ class TestSuperviseDeployingStories:
 
         assert first["redispatched"] == 0
         assert second["redispatched"] == 1
-        assert [
-            call.args[0].attempt_id for call in api_client.admit_engineering_budget.await_args_list
-        ] == ["eng-deploy-fix-deploy-1-1", "eng-deploy-fix-deploy-1-1"]
+        assert [call.args[0].id for call in api_client.start_paid_run.await_args_list] == [
+            "eng-deploy-fix-deploy-1-1",
+            "eng-deploy-fix-deploy-1-1",
+        ]
         release_call = next(
             index
             for index, call in enumerate(api_client.mock_calls)
             if call[0] == "release_engineering_budget_admission"
         )
-        retry_admission_call = [
-            index
-            for index, call in enumerate(api_client.mock_calls)
-            if call[0] == "admit_engineering_budget"
+        retry_start_call = [
+            index for index, call in enumerate(api_client.mock_calls) if call[0] == "start_paid_run"
         ][1]
-        retry_run_call = next(
-            index for index, call in enumerate(api_client.mock_calls) if call[0] == "create_run"
-        )
-        assert release_call < retry_admission_call < retry_run_call
+        assert release_call < retry_start_call
         assert (
             len(
                 [
@@ -674,9 +653,15 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.side_effect = [
-            _engineering_admission(),
-            _engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+        api_client.start_paid_run.side_effect = [
+            PaidRunStartRead(
+                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
+                run_id="eng-deploy-fix-deploy-1-1",
+            ),
+            PaidRunStartRead(
+                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
+                engineering_budget=_engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+            ),
         ]
         api_client.transition_story.side_effect = RuntimeError("temporary API failure")
 
