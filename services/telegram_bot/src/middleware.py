@@ -9,7 +9,7 @@ Two-tier authorization:
 import httpx
 import structlog
 from telegram import Update
-from telegram.ext import ApplicationHandlerStop, ContextTypes
+from telegram.ext import ContextTypes
 
 from .clients.api import api_client
 from .config import get_settings
@@ -18,6 +18,7 @@ logger = structlog.get_logger()
 
 # Context key for storing user info
 USER_IS_ADMIN_KEY = "user_is_admin"
+USER_IS_REGISTERED_KEY = "user_is_registered"
 
 
 async def _check_user_in_db(telegram_id: int) -> dict | None:
@@ -60,6 +61,7 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Check 1: Is user an admin (from env)?
     if admin_ids and user_id in admin_ids:
         context.user_data[USER_IS_ADMIN_KEY] = True
+        context.user_data[USER_IS_REGISTERED_KEY] = False
         logger.debug("admin_access_granted", telegram_id=user_id)
         return True
 
@@ -69,6 +71,7 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # User exists in DB - grant access based on their is_admin flag
         is_admin = db_user.get("is_admin", False)
         context.user_data[USER_IS_ADMIN_KEY] = is_admin
+        context.user_data[USER_IS_REGISTERED_KEY] = True
         logger.debug(
             "user_access_granted",
             telegram_id=user_id,
@@ -78,25 +81,15 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return True
 
     # Check 3: Fail-closed - block unknown users
-    logger.warning(
-        "unauthorized_access_attempt",
+    logger.info(
+        "unregistered_user_pending_promo",
         telegram_id=user_id,
         username=update.effective_user.username,
     )
 
-    if update.message:
-        await update.message.reply_text(
-            "🚫 <b>Доступ запрещён</b>\n\n"
-            "Вы не зарегистрированы в системе.\n"
-            "Обратитесь к администратору для получения доступа.\n\n"
-            f"Ваш ID: <code>{user_id}</code>",
-            parse_mode="HTML",
-        )
-    elif update.callback_query:
-        await update.callback_query.answer("🚫 Доступ запрещён", show_alert=True)
-
-    # Stop further processing
-    raise ApplicationHandlerStop()
+    context.user_data[USER_IS_ADMIN_KEY] = False
+    context.user_data[USER_IS_REGISTERED_KEY] = False
+    return True
 
 
 def is_admin(context: ContextTypes.DEFAULT_TYPE) -> bool:

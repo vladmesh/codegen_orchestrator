@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- One-time promo-code registration that atomically arms an enabled engineering budget policy.
+
 ## 2026-08-24
 
 - Released engineering-budget reservations no longer replay their historical

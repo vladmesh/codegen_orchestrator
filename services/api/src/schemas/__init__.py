@@ -26,6 +26,7 @@ from .project import (
     ProjectRead,
     ProjectUpdate,
 )
+from .promo_code import PromoCodeBatchCreate, PromoCodeRead
 from .rag import RAGDocsIngest, RAGDocsIngestResult, RAGMessageCreate, RAGMessageRead
 from .run import RunCreate, RunRead, RunUpdate
 from .server import MetricsHistoryCreate, MetricsHistoryRead, ServerCreate, ServerRead
@@ -93,6 +94,8 @@ __all__ = [
     "AllocateNextPortRequest",
     "PortAllocationCreate",
     "PortAllocationRead",
+    "PromoCodeBatchCreate",
+    "PromoCodeRead",
     "APIKeyCreate",
     "APIKeyRead",
     "IncidentCreate",

@@ -37,7 +37,7 @@ from .clients.api import api_client  # noqa: E402
 from .config import get_settings  # noqa: E402
 from .handlers import handle_add_user_input, handle_callback_query  # noqa: E402
 from .keyboards import main_menu_keyboard  # noqa: E402
-from .middleware import auth_middleware, is_admin  # noqa: E402
+from .middleware import USER_IS_REGISTERED_KEY, auth_middleware, is_admin  # noqa: E402
 from .notifications import ProvisionerNotifier  # noqa: E402
 from .proactive import (  # noqa: E402
     PROACTIVE_RECLAIM_IDLE_MS,
@@ -80,7 +80,11 @@ async def _post_rag_message(payload: dict) -> None:
 async def start(update: Update, context) -> None:
     """Handle /start command - show main menu."""
     if update.effective_user:
-        await _ensure_user_registered(update.effective_user)
+        promo_code = context.args[0] if context.args else None
+        if not context.user_data.get(USER_IS_REGISTERED_KEY, False):
+            if not await _ensure_user_registered(update.effective_user, promo_code):
+                await update.message.reply_text("Чтобы начать, пришлите одноразовый промокод.")
+                return
     user_is_admin = is_admin(context)
     await update.message.reply_text(
         "🏠 <b>Главное меню</b>\n\n"
@@ -94,7 +98,9 @@ async def start(update: Update, context) -> None:
 async def menu(update: Update, context) -> None:
     """Handle /menu command - show main menu."""
     if update.effective_user:
-        await _ensure_user_registered(update.effective_user)
+        if not context.user_data.get(USER_IS_REGISTERED_KEY, False):
+            await update.message.reply_text("Чтобы начать, пришлите одноразовый промокод.")
+            return
     user_is_admin = is_admin(context)
     await update.message.reply_text(
         "🏠 <b>Главное меню</b>\n\nВыберите действие:",
@@ -143,8 +149,8 @@ async def dashboard(update: Update, context) -> None:
     )
 
 
-async def _ensure_user_registered(tg_user) -> None:
-    """Upsert user in database via API."""
+async def _ensure_user_registered(tg_user, promo_code: str | None = None) -> bool:
+    """Register through a promo code, returning whether the user may proceed."""
     settings = get_settings()
     admin_ids = settings.get_admin_ids()
     is_admin_user = tg_user.id in admin_ids
@@ -156,13 +162,17 @@ async def _ensure_user_registered(tg_user) -> None:
         "last_name": tg_user.last_name,
         "is_admin": is_admin_user,
     }
+    if promo_code:
+        payload["promo_code"] = promo_code
 
     headers = {"X-Telegram-ID": str(tg_user.id)}
 
     try:
         await api_client.post_json("users/upsert", headers=headers, json=payload)
+        return True
     except httpx.HTTPError as e:
         logger.warning("user_registration_failed", error=str(e))
+        return False
 
 
 async def _keep_typing(bot, chat_id: int, max_duration_s: float = 120.0) -> None:
@@ -323,9 +333,20 @@ async def handle_message(update: Update, context) -> None:
     if not await auth_middleware(update, context):
         return
 
-    # Ensure user is registered in DB
+    # A known user may continue.  An unknown user may only spend this message as
+    # a promo code; it is never forwarded to PO either way.
     if update.effective_user:
-        await _ensure_user_registered(update.effective_user)
+        if not context.user_data.get(USER_IS_REGISTERED_KEY, False):
+            if await _ensure_user_registered(update.effective_user, update.message.text):
+                context.user_data[USER_IS_REGISTERED_KEY] = True
+                await update.message.reply_text("Промокод активирован. Добро пожаловать!")
+            else:
+                await update.message.reply_text(
+                    "Не удалось активировать код. Проверьте его и пришлите ещё раз."
+                )
+            return
+        if not await _ensure_user_registered(update.effective_user):
+            return
 
     # Check if admin is in "add user" flow — handle separately
     if context.user_data.get("awaiting_add_user"):

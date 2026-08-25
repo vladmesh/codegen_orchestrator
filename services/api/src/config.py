@@ -40,6 +40,16 @@ class Settings(BaseSettings):
     # the developer-worker default without changing the PO request contract.
     default_agent_type: AgentType = default_agent_type_field()
 
+    admin_telegram_ids: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
+
+    def get_admin_ids(self) -> set[int]:
+        """Parse the bot's owner list for the registration exception."""
+        return {
+            int(value.strip())
+            for value in self.admin_telegram_ids.split(",")
+            if value.strip().isdigit()
+        }
+
 
 @lru_cache
 def get_settings() -> Settings:
