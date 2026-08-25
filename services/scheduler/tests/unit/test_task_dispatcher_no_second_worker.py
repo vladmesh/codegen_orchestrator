@@ -17,6 +17,7 @@ from _run_routing_factories import _make_project, _make_run, _make_task
 import pytest
 
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -29,6 +30,7 @@ def api_client():
     )
     client.get_tasks_by_story.return_value = []
     client.get_task_events.return_value = []
+    client.admit_paid_work.return_value = WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED)
     return client
 
 

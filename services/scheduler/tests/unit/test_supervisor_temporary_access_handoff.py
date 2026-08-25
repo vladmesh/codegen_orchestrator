@@ -31,6 +31,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessStatus,
 )
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmissionRead
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
@@ -108,6 +109,7 @@ def api_client():
     # The completed story as the API holds it after the transition: the seam
     # that hands the product over reads it back before it publishes anything.
     client.get_story.return_value = _make_story(id="story-1", status="completed")
+    client.admit_paid_work.return_value = WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED)
     return client
 
 
