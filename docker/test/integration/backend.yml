@@ -81,6 +81,7 @@ services:
       args:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     environment:
+      - ENVIRONMENT=test
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=

@@ -41,6 +41,7 @@ services:
         SOURCE_HASH: ${WORKER_SOURCE_HASH:-}
     command: ["/entrypoint.sh"]
     environment:
+      - ENVIRONMENT=test
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
