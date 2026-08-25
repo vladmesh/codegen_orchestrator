@@ -32,6 +32,7 @@ services:
     command: ["/entrypoint.sh"]
     environment:
       - ENVIRONMENT=test
+      - SEED_SYSTEM_CONFIGS_ON_START=true
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test

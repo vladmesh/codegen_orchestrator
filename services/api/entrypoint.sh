@@ -4,7 +4,7 @@ set -e
 cd /app
 alembic upgrade head
 
-if [ "$ENVIRONMENT" = "test" ]; then
+if [ "$ENVIRONMENT" = "test" ] && [ "$SEED_SYSTEM_CONFIGS_ON_START" = "true" ]; then
     uvicorn src.main:app --host 0.0.0.0 --port 8000 &
     api_pid=$!
     until curl --fail --silent http://localhost:8000/health >/dev/null; do
