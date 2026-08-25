@@ -94,7 +94,9 @@ async def test_service_created_user_is_not_admin_without_an_admin_grant(async_cl
 @pytest.mark.asyncio
 async def test_lk_bearer_cannot_impersonate_for_promo_or_policy(async_client) -> None:
     ordinary = await async_client.post("/api/users/", json={"telegram_id": 810_000_031})
-    target = await async_client.post("/api/users/", json={"telegram_id": 810_000_032})
+    target = await async_client.post(
+        "/api/users/", json={"telegram_id": 810_000_032, "is_admin": True}
+    )
     token = create_lk_jwt(ordinary.json()["id"])
     headers = {
         "Authorization": f"Bearer {token}",
@@ -113,6 +115,11 @@ async def test_lk_bearer_cannot_impersonate_for_promo_or_policy(async_client) ->
             },
         )
         assert own.status_code == HTTPStatus.OK
+        own_balance = await bearer_client.get(
+            "/api/engineering-budget-policy/balance",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert own_balance.status_code == HTTPStatus.OK
         minted = await bearer_client.post(
             "/api/promo-codes/batch",
             json={"quantity": 1, "credits_microusd": 1, "attempt_reservation_microusd": 1},
@@ -125,6 +132,12 @@ async def test_lk_bearer_cannot_impersonate_for_promo_or_policy(async_client) ->
             headers=headers,
         )
         assert policy.status_code == HTTPStatus.FORBIDDEN
+        foreign_policy = await bearer_client.get("/api/engineering-budget-policy", headers=headers)
+        foreign_balance = await bearer_client.get(
+            "/api/engineering-budget-policy/balance", headers=headers
+        )
+        assert foreign_policy.status_code == HTTPStatus.FORBIDDEN
+        assert foreign_balance.status_code == HTTPStatus.FORBIDDEN
 
 
 @pytest.mark.asyncio

@@ -119,13 +119,24 @@ async def require_internal_or_admin(
 
 
 async def get_current_user(
-    x_telegram_id: int = Header(..., alias="X-Telegram-ID"),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
     db: AsyncSession = Depends(get_async_session),
 ) -> User:
     """Get current user from X-Telegram-ID header.
 
     Raises 422 if header missing, 404 if user not found.
     """
+    if credentials is not None:
+        bearer_user = await get_lk_user(credentials=credentials, db=db)
+        if x_telegram_id is not None and x_telegram_id != bearer_user.telegram_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Actor mismatch")
+        return bearer_user
+    if x_telegram_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="X-Telegram-ID required"
+        )
+
     query = select(User).where(User.telegram_id == x_telegram_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
