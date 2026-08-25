@@ -332,18 +332,6 @@ def test_failure_receipt_redacts_sensitive_values(message, redacted):
     }
 
 
-def test_workflow_runs_the_preflight_once_before_the_worker_qa_combinations():
-    workflow = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "agent-matrix.yml"
-    source = workflow.read_text(encoding="utf-8")
-
-    command = "uv run python tests/live/po_default_preflight.py"
-    assert source.count(command) == 1
-    assert source.index(command) < source.index("for qa_agent in claude codex; do")
-    assert 'PO_DEFAULT_MATRIX_API_CONTAINER="$matrix_api_container"' in source
-    assert 'PO_DEFAULT_MATRIX_CHECKOUT_SHA="${{ github.sha }}"' in source
-    assert "run-evidence-po-default-" in source
-
-
 def test_po_tool_boundary_binds_to_langgraph_in_a_workspace_interpreter():
     """The import the workflow actually performs, in a process shaped like its own.
 

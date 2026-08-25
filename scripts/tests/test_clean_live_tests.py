@@ -792,3 +792,55 @@ def test_production_sweep_is_unchanged_without_a_contour(monkeypatch):
     assert module.PROJECT_PREFIXES == ["live-test", "live-crud", "mega-test"]
     assert module.DEPLOY_SLUG_PREFIXES == ["live-te-", "live-cr-", "mega-te-"]
     assert not module._STACK_NAME_PATTERN.match("stand-t-" + "0" * 32)
+
+
+def test_a_repository_whose_project_row_is_gone_is_still_residue():
+    """The database-driven half cannot see it, and it is the common leftover.
+
+    A run killed between deleting its rows and deleting its repository leaves
+    exactly this, and production's own sync then alerts about the orphan forever
+    because it shares the organization.
+    """
+    residue = clean_live_tests.contour_repo_residue(
+        [
+            "live-te-" + "0" * 32,
+            "fortune-teller-bot",
+            "service-template",
+            "live-cr-" + "1" * 32,
+        ]
+    )
+
+    assert residue == ["live-cr-" + "1" * 32, "live-te-" + "0" * 32]
+
+
+def test_a_repository_that_merely_starts_like_a_test_project_is_not_residue():
+    """Deleting someone's repository because its name rhymes is unrecoverable."""
+    assert clean_live_tests.contour_repo_residue(["live-team-notes", "live-test-docs"]) == []
+
+
+def test_another_contour_is_not_this_contour_s_residue(monkeypatch):
+    try:
+        module = _reloaded_for_contour(monkeypatch, "stand")
+
+        assert module.contour_repo_residue(["live-te-" + "0" * 32]) == []
+        assert module.contour_repo_residue(["stand-t-" + "0" * 32]) == ["stand-t-" + "0" * 32]
+    finally:
+        monkeypatch.delenv("LIVE_CONTOUR", raising=False)
+        import importlib
+
+        importlib.reload(clean_live_tests)
+
+
+def test_the_test_user_s_ledger_goes_before_the_test_user():
+    """The ledger references the user; deleting the user first fails the sweep.
+
+    And a failed sweep is not a partial sweep — it raises, so every phase after
+    the database was never reached.
+    """
+    import inspect
+
+    source = inspect.getsource(clean_live_tests.clean_database)
+    ledger = source.index("engineering_attempt_ledger")
+    user = source.index("DELETE FROM users")
+
+    assert ledger < user

@@ -44,6 +44,10 @@ class Contour:
     pipeline: str
     crud: str
     legacy: tuple[str, ...] = ()
+    #: Whether a live run may create resources in this contour. Production may
+    #: not: live runs create projects, repositories and deployed stacks and then
+    #: delete them, and production carries real users' data.
+    allows_live_runs: bool = True
 
     @property
     def llm_pipeline(self) -> str:
@@ -65,7 +69,15 @@ CONTOURS: dict[str, Contour] = {
     # Production keeps the names it has always used. `mega-test` predates the
     # current harness and creates nothing today; it stays so old residue is
     # still sweepable.
-    "prod": Contour(name="prod", pipeline="live-test", crud="live-crud", legacy=("mega-test",)),
+    # Production keeps its names so residue from before that rule is still
+    # sweepable, but no live run may create anything here.
+    "prod": Contour(
+        name="prod",
+        pipeline="live-test",
+        crud="live-crud",
+        legacy=("mega-test",),
+        allows_live_runs=False,
+    ),
     # The stand shares production's organization, so its names must be readable
     # at a glance and distinct within the first seven characters: `stand-t-`
     # against `stand-c-`.
@@ -86,6 +98,27 @@ def current_contour() -> Contour:
     except KeyError:
         known = ", ".join(sorted(CONTOURS))
         raise ValueError(f"unknown {CONTOUR_ENV}={name!r}; known contours: {known}") from None
+
+
+def require_live_contour() -> Contour:
+    """Return the contour a live run may create resources in, or refuse.
+
+    E2E belongs on the stand. A live run creates projects, repositories, servers
+    and deployed stacks and then deletes them; production carries real users'
+    projects and real users' data, and a sweep that matched one name too many
+    there would take them with it.
+
+    This is deliberately a refusal at creation, not at cleanup: production's
+    names stay known so residue left from before this rule can still be removed.
+    """
+    contour = current_contour()
+    if not contour.allows_live_runs:
+        raise RuntimeError(
+            f"live runs are not allowed in the {contour.name!r} contour: it holds real "
+            f"users' data. Set {CONTOUR_ENV} to a contour that owns test resources "
+            "(the stand) and run there."
+        )
+    return contour
 
 
 def assert_prefixes_distinct(contours: list[Contour] | None = None) -> None:

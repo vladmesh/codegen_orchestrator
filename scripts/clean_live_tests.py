@@ -412,7 +412,76 @@ def get_test_projects():
     return projects
 
 
+def contour_repo_residue(names: list[str]) -> list[str]:
+    """Repository names in the organization this contour owns.
+
+    Repositories are named by project slug, so this matches the same truncated
+    prefixes a deployed stack is matched by, and the same 32-hex project id — a
+    repository merely starting like a test project is not residue.
+    """
+    return sorted(name for name in names if _STACK_NAME_PATTERN.match(name))
+
+
+def list_org_repositories() -> list[str]:
+    """Ask GitHub what is actually there, whatever the database knows.
+
+    The database-driven half only sees repositories whose project row still
+    exists. A run killed between deleting its rows and deleting its repository —
+    or one whose teardown failed halfway — leaves a repository nothing can name
+    afterwards, and production's own sync then alerts about it forever.
+    """
+    script = f"""
+import asyncio, sys
+sys.path.insert(0, '/app')
+from shared.clients.github import GitHubAppClient
+import httpx
+
+async def listing():
+    gh = GitHubAppClient()
+    token = await gh.get_org_token('{GITHUB_ORG}')
+    names = []
+    async with httpx.AsyncClient() as client:
+        page = 1
+        while True:
+            resp = await client.get(
+                f"https://api.github.com/orgs/{GITHUB_ORG}/repos?per_page=100&page={{page}}",
+                headers={{'Authorization': f'token {{token}}'}},
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            names.extend(repo['name'] for repo in batch)
+            page += 1
+    for name in names:
+        print(name)
+
+asyncio.run(listing())
+"""
+    result = run_cmd(
+        ["docker", "compose", "exec", "-T", "api", "python", "-c", script],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise CleanupFailure(f"could not list the organization's repositories: {result.stderr}")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def delete_github_repos(repo_names):
+    """Delete this contour's repositories: the known ones and the stranded ones.
+
+    `repo_names` comes from the database and therefore names only repositories
+    whose project row still exists. The organization is asked as well, because a
+    run killed between deleting its rows and deleting its repository leaves one
+    that nothing can name afterwards — and, while contours share an
+    organization, production's sync then alerts about that orphan forever.
+    """
+    residue = contour_repo_residue(list_org_repositories())
+    orphans = sorted(set(residue) - set(repo_names))
+    if orphans:
+        print(f"{len(orphans)} repositories have no project row: {', '.join(orphans)}")
+    repo_names = sorted(set(repo_names) | set(residue))
+
     if not repo_names:
         return
     print(f"Deleting {len(repo_names)} GitHub repositories...")
@@ -493,6 +562,13 @@ def clean_database():
     )
     stmts.append(f"DELETE FROM repositories WHERE project_id IN ({sub});")
     stmts.append(f"DELETE FROM projects WHERE {conditions};")  # noqa: S608
+    # The ledger references the user, so the user cannot go first. Deleting a
+    # run's rows and then failing here left every later phase unrun: the sweep
+    # raises, and what it had not reached yet stayed on the stand.
+    stmts.append(
+        "DELETE FROM engineering_attempt_ledger WHERE user_id IN "
+        "(SELECT id FROM users WHERE telegram_id = 999000001);"
+    )
     stmts.append("DELETE FROM users WHERE telegram_id = 999000001;")
     sql = "\n".join(stmts)
     result = run_cmd(

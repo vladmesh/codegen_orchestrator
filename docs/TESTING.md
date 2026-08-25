@@ -108,6 +108,16 @@ E2E tests are NOT in CI — they require a running stack + real LLM calls.
 
 ## Live Pipeline Tests
 
+**Live runs belong on the stand, never on production.** They create projects,
+repositories, servers and deployed stacks and then delete them; production carries
+real users' data. `shared/live_contour.py` enforces this rather than trusting the
+operator: creating a live resource raises unless `LIVE_CONTOUR` names a contour
+that owns test resources. Production's names stay readable to the sweep so residue
+from before that rule can still be removed.
+
+The stand is `LIVE_CONTOUR=stand`; `make stand-preflight`, `make stand-e2e` and
+`make stand-clean` set it for you.
+
 Structured 3-tier test suite in `tests/live/` — tests real services without LLM calls.
 
 | Tier | Makefile target | Tests | Duration | What it covers |

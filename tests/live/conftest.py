@@ -8,6 +8,7 @@ Pipeline helpers (create_noop_project, trigger_scaffold, etc.) are in
 pipeline_helpers.py — importable by test modules directly.
 """
 
+import os
 from pathlib import Path
 import secrets
 import subprocess
@@ -24,7 +25,15 @@ from pipeline_helpers import (
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
-from shared.live_contour import current_contour
+from shared.live_contour import CONTOUR_ENV, require_live_contour
+
+# Every run of this suite names its resources through a contour, offline
+# regressions included: they exercise the harness, and the harness asks. Their
+# names never reach a real system because every call is mocked, but a default is
+# still needed, and it must not be production — naming production here would
+# make the suite refuse to collect rather than run. A real live run sets this
+# explicitly; production stays refused either way.
+os.environ.setdefault(CONTOUR_ENV, "stand")
 
 API_URL = "http://localhost:8000"
 TEST_TELEGRAM_ID = 999_000_001
@@ -168,7 +177,7 @@ async def create_test_project_context(api):
         "/api/projects/",
         json={
             "id": project_id,
-            "title": f"{current_contour().pipeline}-{secrets.token_hex(4)}",
+            "title": f"{require_live_contour().pipeline}-{secrets.token_hex(4)}",
             "initiating_run_id": manifest.run_id,
             "status": ProjectStatus.DRAFT,
             "config": {"description": "live test project"},
