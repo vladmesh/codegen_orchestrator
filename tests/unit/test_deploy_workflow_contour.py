@@ -89,34 +89,52 @@ def test_provider_secrets_are_required_of_production_only():
     assert "TIME4VPS" not in yaml.dump(shared["env"])
 
 
-def test_production_credentials_never_reach_another_contour():
-    """A repository secret is inherited by every environment that omits it.
+def test_the_bot_token_never_reaches_another_contour():
+    """Two long-polling clients on one token steal each other's updates.
 
-    So leaving TIME4VPS_* and the bot token unset for the stand does not keep
-    them away — the stand silently inherits production's. The workflow has to
-    decide, and it writes empty values outside production. The first stand deploy
-    failed on exactly this inheritance.
+    A repository secret is inherited by every environment that omits it, so
+    leaving the token unset for the stand would hand it production's.
     """
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
     env_script = steps["Write .env to server"]["with"]["script"]
 
-    for name in (
-        "TIME4VPS_MANAGED_SERVER_IDS",
-        "TIME4VPS_LOGIN",
-        "TIME4VPS_PASSWORD",
-        "TELEGRAM_BOT_TOKEN",
-    ):
-        line = f"{name}=${{{{ inputs.environment == 'production' && secrets.{name} || '' }}}}"
-        assert line in env_script, f"{name} is not gated on the contour"
+    gated = (
+        "TELEGRAM_BOT_TOKEN=${{ inputs.environment == 'production' "
+        "&& secrets.TELEGRAM_BOT_TOKEN || '' }}"
+    )
+    assert gated in env_script
+
+
+def test_a_contour_may_only_use_the_allowlist_it_declared():
+    """The same inheritance, where it authorizes reinstalling a server.
+
+    A contour that declares no allowlist receives production's — and with it the
+    authority over production's machines. Inheritance cannot be seen at the point
+    of use, so the contour states its list as a variable and the deploy refuses
+    when the secret does not match it. Checked before anything is written.
+    """
+    steps = {step["name"]: step for step in _deploy_job()["steps"]}
+    guard = steps["Verify this contour's provider allowlist is its own"]
+
+    assert guard["if"] == PRODUCTION_ONLY.replace("==", "!=")
+    assert guard["env"]["MANAGED_SERVER_IDS"] == "${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}"
+    assert guard["env"]["DECLARED_SERVER_IDS"] == "${{ vars.MANAGED_SERVER_IDS_DECLARED }}"
+    assert "exit 1" in guard["run"]
+
+    names = [step["name"] for step in _deploy_job()["steps"]]
+    assert names.index("Verify this contour's provider allowlist is its own") < names.index(
+        "Write .env to server"
+    )
 
 
 def test_the_written_env_is_verified_not_the_inputs():
     """The check reads the file the services read, not the value that was sent."""
     steps = {step["name"]: step for step in _deploy_job()["steps"]}
-    guard = steps["Verify the stand carries no production credentials"]
+    guard = steps["Verify the deployed contour carries only its own credentials"]
 
-    assert guard["if"] == "${{ inputs.environment != 'production' }}"
+    assert guard["if"] == PRODUCTION_ONLY.replace("==", "!=")
     assert "${{ env.DEPLOY_PATH }}/.env" in guard["with"]["script"]
+    assert "MANAGED_SERVER_IDS_DECLARED" in guard["with"]["script"]
     assert "exit 1" in guard["with"]["script"]
 
 
