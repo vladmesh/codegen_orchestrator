@@ -831,16 +831,17 @@ def test_another_contour_is_not_this_contour_s_residue(monkeypatch):
         importlib.reload(clean_live_tests)
 
 
-def test_the_test_user_s_ledger_goes_before_the_test_user():
-    """The ledger references the user; deleting the user first fails the sweep.
+def test_the_sweep_never_deletes_from_the_append_only_ledger():
+    """The ledger is append-only by a database rule, and that rule is deliberate.
 
-    And a failed sweep is not a partial sweep — it raises, so every phase after
-    the database was never reached.
+    Deleting the referenced user unconditionally made the sweep raise — and a
+    raising sweep is not a partial one: every phase after the database went
+    unrun. The user is a fixture reused by every run, so it goes only while
+    nothing points at it.
     """
     import inspect
 
     source = inspect.getsource(clean_live_tests.clean_database)
-    ledger = source.index("engineering_attempt_ledger")
-    user = source.index("DELETE FROM users")
 
-    assert ledger < user
+    assert "DELETE FROM engineering_attempt_ledger" not in source
+    assert "NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger" in source
