@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetPolicyState
@@ -131,7 +132,16 @@ async def create_user(
         except HTTPException:
             await db.rollback()
             raise
-    await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_registered")
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        if user_in.promo_code:
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_registered")
+        raise error
     await db.refresh(user)
     return user
 
@@ -175,8 +185,17 @@ async def upsert_user(
         except HTTPException:
             await db.rollback()
             raise
+        except IntegrityError:
+            await db.rollback()
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_registered")
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        if user_in.promo_code:
+            _promo_error(status.HTTP_409_CONFLICT, "user_already_registered")
+        raise error
     await db.refresh(user)
     return user
 

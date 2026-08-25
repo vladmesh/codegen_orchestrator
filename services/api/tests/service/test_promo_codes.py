@@ -157,6 +157,32 @@ async def test_concurrent_redemption_has_one_winner(async_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_different_codes_for_one_user_are_typed(async_client) -> None:
+    minted = await async_client.post(
+        "/api/promo-codes/batch",
+        json={"quantity": 2, "credits_microusd": 1, "attempt_reservation_microusd": 1},
+    )
+    first_code, second_code = (item["code"] for item in minted.json())
+    headers = {"X-Telegram-ID": "810000013"}
+    first, second = await asyncio.gather(
+        async_client.post(
+            "/api/users/upsert",
+            json={"telegram_id": 810_000_013, "promo_code": first_code},
+            headers=headers,
+        ),
+        async_client.post(
+            "/api/users/upsert",
+            json={"telegram_id": 810_000_013, "promo_code": second_code},
+            headers=headers,
+        ),
+    )
+    assert sum(response.status_code == HTTPStatus.OK for response in (first, second)) == 1
+    loser = next(response for response in (first, second) if response.status_code != HTTPStatus.OK)
+    assert loser.status_code == HTTPStatus.CONFLICT
+    assert loser.json()["detail"]["code"] == "user_already_registered"
+
+
+@pytest.mark.asyncio
 async def test_unknown_cost_keeps_promo_reservation_held(async_client) -> None:
     minted = await async_client.post(
         "/api/promo-codes/batch",
