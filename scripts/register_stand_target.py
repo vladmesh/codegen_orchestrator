@@ -26,8 +26,14 @@ import sys
 import urllib.error
 import urllib.request
 
-# Capacity is what the allocator is allowed to hand out, not what the box has:
-# the orchestrator itself lives here and must keep its own room.
+# Capacity is the number the allocator does arithmetic against, not a limit the
+# host enforces. A project is admitted when
+#   capacity_ram_mb >= used_ram_mb + min_ram_mb + allocation_ram_reserve_mb
+# which for a default project is used + 768 MB. The orchestrator itself occupies
+# about 1.8 GB of this box's 3.8 GB, so the 2048 that looked conservative could
+# never admit anything: every task parked on insufficient_free_memory while the
+# machine sat idle. The honest number is most of the machine, with the swap file
+# behind it absorbing what a worker adds during a run.
 HTTP_BAD_REQUEST = 400  # what the API answers when the handle is already taken
 
 DEFAULTS = {
@@ -36,7 +42,7 @@ DEFAULTS = {
     "public_ip": "212.24.101.230",
     "ssh_user": "stand-deploy",
     "capacity_cpu": 2,
-    "capacity_ram_mb": 2048,
+    "capacity_ram_mb": 3400,
     "capacity_disk_mb": 20480,
 }
 
@@ -96,7 +102,20 @@ def main() -> int:
         # so a re-run after a stand rebuild converges rather than needing a delete.
         updates = {
             key: payload[key]
-            for key in ("host", "public_ip", "ssh_user", "ssh_key", "status", "labels")
+            # Capacity travels with the rest: without it a re-run silently
+            # reverted a value corrected by hand, which is how the admission
+            # label was lost between two deploys.
+            for key in (
+                "host",
+                "public_ip",
+                "ssh_user",
+                "ssh_key",
+                "status",
+                "labels",
+                "capacity_cpu",
+                "capacity_ram_mb",
+                "capacity_disk_mb",
+            )
         }
         server = _request(
             f"{args.api_url}/api/servers/{args.handle}", internal_key, "PATCH", updates
