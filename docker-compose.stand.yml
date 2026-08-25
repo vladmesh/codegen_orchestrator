@@ -21,3 +21,13 @@ services:
   api:
     ports:
       - "127.0.0.1:8000:8000"
+    # Two vCPUs bringing up twenty containers at once. Production's window is
+    # about twenty-five seconds from container start (start_period 5s, ten tries
+    # two seconds apart), which the stand's API misses on a cold deploy — and
+    # everything that depends on it then refuses to start at all. The check
+    # itself is production's; only the patience differs.
+    healthcheck:
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
