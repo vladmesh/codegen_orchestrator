@@ -2,9 +2,14 @@
 
 import asyncio
 from http import HTTPStatus
+import importlib.util
+from pathlib import Path
 import uuid
 
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 import pytest
+from sqlalchemy import text
 
 
 @pytest.mark.asyncio
@@ -70,6 +75,57 @@ async def test_promo_activation_arms_policy_and_cannot_be_reused(async_client) -
     assert codes.status_code == HTTPStatus.OK
     second = next(item for item in codes.json() if item["code"] == second_code)
     assert second["redeemed_by_user_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_service_created_user_is_not_admin_without_an_admin_grant(async_client) -> None:
+    created = await async_client.post(
+        "/api/users/",
+        json={"telegram_id": 810_000_003, "first_name": "Service user"},
+    )
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    assert created.json()["is_admin"] is False
+
+
+@pytest.mark.asyncio
+async def test_promo_code_migration_upgrades_and_downgrades(db_session) -> None:
+    migration_path = (
+        Path(__file__).parents[2] / "migrations/versions/f6e7d8c9b0a1_add_promo_codes.py"
+    )
+    spec = importlib.util.spec_from_file_location("promo_code_migration", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    def run_migration(session):
+        connection = session.connection()
+        schema_name = f"promo_migration_{uuid.uuid4().hex}"
+        schema = f'"{schema_name}"'
+        connection.execute(text(f"CREATE SCHEMA {schema}"))
+        connection.execute(text(f"SET LOCAL search_path TO {schema}, public"))
+        connection.execute(text("CREATE TABLE users (id integer PRIMARY KEY)"))
+        original_op = migration.op
+        migration.op = Operations(MigrationContext.configure(connection))
+        try:
+            migration.upgrade()
+            assert (
+                connection.execute(
+                    text(f"SELECT to_regclass('{schema_name}.promo_codes')")
+                ).scalar()
+                == "promo_codes"
+            )
+            migration.downgrade()
+            assert (
+                connection.execute(
+                    text(f"SELECT to_regclass('{schema_name}.promo_codes')")
+                ).scalar()
+                is None
+            )
+        finally:
+            migration.op = original_op
+            connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+
+    await db_session.run_sync(run_migration)
 
 
 @pytest.mark.asyncio

@@ -22,9 +22,25 @@ def _is_owner_registration(telegram_id: int, internal_service: bool) -> bool:
     return internal_service and telegram_id in get_settings().get_admin_ids()
 
 
-def _requires_promo(named_telegram_id: int | None) -> bool:
-    """A caller naming a Telegram actor must pass the bot registration gate."""
-    return named_telegram_id is not None
+def _requires_promo(internal_service: bool, named_telegram_id: int | None) -> bool:
+    """Only a named actor, rather than a service acting for itself, needs a code."""
+    return not (internal_service and named_telegram_id is None)
+
+
+def _new_user(user_in: UserCreate | UserUpsert, *, force_non_admin: bool = False) -> User:
+    """Construct users in one place so admission never changes authorization."""
+    is_admin = (
+        False
+        if force_non_admin
+        else (bool(user_in.is_admin) or user_in.telegram_id in get_settings().get_admin_ids())
+    )
+    return User(
+        telegram_id=user_in.telegram_id,
+        username=user_in.username,
+        first_name=user_in.first_name,
+        last_name=user_in.last_name,
+        is_admin=is_admin,
+    )
 
 
 def _promo_error(status_code: int, code: str) -> None:
@@ -47,13 +63,7 @@ async def _redeem_promo_and_create_user(
         _promo_error(status.HTTP_404_NOT_FOUND, "promo_code_not_found")
     if promo.redeemed_by_user_id is not None:
         _promo_error(status.HTTP_409_CONFLICT, "promo_code_redeemed")
-    user = User(
-        telegram_id=user_in.telegram_id,
-        username=user_in.username,
-        first_name=user_in.first_name,
-        last_name=user_in.last_name,
-        is_admin=False,
-    )
+    user = _new_user(user_in, force_non_admin=True)
     db.add(user)
     await db.flush()
     existing_policy = await db.get(EngineeringBudgetPolicy, user.id)
@@ -111,15 +121,9 @@ async def create_user(
         )
 
     if _is_owner_registration(user_in.telegram_id, is_internal) or not _requires_promo(
-        x_telegram_id
+        is_internal, x_telegram_id
     ):
-        user = User(
-            telegram_id=user_in.telegram_id,
-            username=user_in.username,
-            first_name=user_in.first_name,
-            last_name=user_in.last_name,
-            is_admin=True,
-        )
+        user = _new_user(user_in)
         db.add(user)
     else:
         try:
@@ -161,15 +165,9 @@ async def upsert_user(
             user.is_admin = user_in.is_admin
         user.last_seen = datetime.utcnow()
     elif _is_owner_registration(user_in.telegram_id, is_internal) or not _requires_promo(
-        x_telegram_id
+        is_internal, x_telegram_id
     ):
-        user = User(
-            telegram_id=user_in.telegram_id,
-            username=user_in.username,
-            first_name=user_in.first_name,
-            last_name=user_in.last_name,
-            is_admin=True,
-        )
+        user = _new_user(user_in)
         db.add(user)
     else:
         try:
