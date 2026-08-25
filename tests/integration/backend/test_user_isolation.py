@@ -20,7 +20,6 @@ async def seed_users(user_api_client):
         resp = await user_api_client.post(
             "/api/users/upsert",
             json={"telegram_id": tg_id, "username": f"testuser-{tg_id}"},
-            headers={"X-Telegram-ID": str(tg_id)},
         )
         assert resp.status_code in (200, 201), f"Failed to upsert user {tg_id}: {resp.text}"
         users.append(resp.json())

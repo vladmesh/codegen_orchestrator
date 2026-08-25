@@ -106,7 +106,11 @@ async def test_lk_bearer_cannot_impersonate_for_promo_or_policy(async_client) ->
         transport=ASGITransport(app=app), base_url="http://test"
     ) as bearer_client:
         own = await bearer_client.get(
-            "/api/engineering-budget-policy", headers={"Authorization": f"Bearer {token}"}
+            "/api/engineering-budget-policy",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Telegram-ID": str(ordinary.json()["telegram_id"]),
+            },
         )
         assert own.status_code == HTTPStatus.OK
         minted = await bearer_client.post(
