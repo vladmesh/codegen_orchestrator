@@ -17,6 +17,11 @@ from ..schemas import UserCreate, UserRead, UserUpsert
 router = APIRouter(prefix="/users", tags=["users"])
 
 
+def _is_owner_registration(telegram_id: int, internal_service: bool) -> bool:
+    """Only the bot's internal owner registration bypasses promo redemption."""
+    return internal_service and telegram_id in get_settings().get_admin_ids()
+
+
 def _promo_error(status_code: int, code: str) -> None:
     """Return a stable, machine-readable registration verdict."""
     raise HTTPException(status_code=status_code, detail={"code": code})
@@ -99,7 +104,7 @@ async def create_user(
             detail="User with this telegram_id already exists",
         )
 
-    if user_in.telegram_id in get_settings().get_admin_ids() and is_internal:
+    if _is_owner_registration(user_in.telegram_id, is_internal):
         user = User(
             telegram_id=user_in.telegram_id,
             username=user_in.username,
@@ -146,7 +151,7 @@ async def upsert_user(
         if user_in.is_admin is not None:
             user.is_admin = user_in.is_admin
         user.last_seen = datetime.utcnow()
-    elif user_in.telegram_id in get_settings().get_admin_ids() and is_internal:
+    elif _is_owner_registration(user_in.telegram_id, is_internal):
         user = User(
             telegram_id=user_in.telegram_id,
             username=user_in.username,

@@ -7,9 +7,11 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +28,7 @@ class PromoCode(Base):
             "attempt_reservation_microusd > 0", name="ck_promo_code_attempt_reservation"
         ),
         UniqueConstraint("redeemed_by_user_id", name="uq_promo_code_redeemed_by_user"),
+        Index("uq_promo_codes_normalized_code", text("upper(code)"), unique=True),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

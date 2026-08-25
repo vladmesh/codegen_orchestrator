@@ -17,13 +17,14 @@ def mock_settings():
 
 
 @pytest.mark.asyncio
-async def test_auth_middleware_allowed_user(mock_settings):
+async def test_auth_middleware_allowed_owner(mock_settings):
     """Test auth_middleware allows whitelisted user."""
     update = MagicMock()
     update.effective_user.id = 123456789
     context = MagicMock()
 
-    result = await auth_middleware(update, context)
+    with patch("src.middleware._upsert_user", new=AsyncMock(return_value=True)):
+        result = await auth_middleware(update, context)
 
     assert result is True
 
@@ -41,7 +42,7 @@ async def test_auth_middleware_denied_user(mock_settings):
         await auth_middleware(update, context)
 
     update.message.reply_text.assert_called_once()
-    assert "Доступ запрещён" in update.message.reply_text.call_args[0][0]
+    assert "промокод" in update.message.reply_text.call_args[0][0]
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 """Service coverage for promo-gated registration."""
 
+import asyncio
 from http import HTTPStatus
 
 import pytest
@@ -64,3 +65,27 @@ async def test_promo_activation_arms_policy_and_cannot_be_reused(async_client) -
     assert codes.status_code == HTTPStatus.OK
     second = next(item for item in codes.json() if item["code"] == second_code)
     assert second["redeemed_by_user_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_redemption_has_one_winner(async_client) -> None:
+    minted = await async_client.post(
+        "/api/promo-codes/batch",
+        json={"quantity": 1, "credits_microusd": 1_000_000, "attempt_reservation_microusd": 1},
+    )
+    code = minted.json()[0]["code"]
+
+    first, second = await asyncio.gather(
+        async_client.post(
+            "/api/users/upsert", json={"telegram_id": 810_000_011, "promo_code": code}
+        ),
+        async_client.post(
+            "/api/users/upsert", json={"telegram_id": 810_000_012, "promo_code": code}
+        ),
+    )
+
+    responses = [first, second]
+    assert sum(response.status_code == HTTPStatus.OK for response in responses) == 1
+    loser = next(response for response in responses if response.status_code != HTTPStatus.OK)
+    assert loser.status_code == HTTPStatus.CONFLICT
+    assert loser.json()["detail"]["code"] == "promo_code_redeemed"

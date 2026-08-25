@@ -3,8 +3,9 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from telegram.ext import ApplicationHandlerStop
 
-from src import main
+from src import middleware
 
 
 @pytest.mark.asyncio
@@ -18,12 +19,10 @@ async def test_unregistered_message_is_not_sent_to_po(monkeypatch) -> None:
     context = AsyncMock()
     context.user_data = {}
 
-    monkeypatch.setattr(main, "auth_middleware", AsyncMock(return_value=True))
-    monkeypatch.setattr(main, "_ensure_user_registered", AsyncMock(return_value=False))
-    send_to_po = AsyncMock()
-    monkeypatch.setattr(main, "_send_to_po_and_wait", send_to_po)
+    monkeypatch.setattr(middleware, "_check_user_in_db", AsyncMock(return_value=None))
+    monkeypatch.setattr(middleware, "_upsert_user", AsyncMock(return_value=False))
 
-    await main.handle_message(update, context)
+    with pytest.raises(ApplicationHandlerStop):
+        await middleware.auth_middleware(update, context)
 
-    send_to_po.assert_not_awaited()
     update.message.reply_text.assert_awaited()
