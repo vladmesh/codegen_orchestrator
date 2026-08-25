@@ -21,6 +21,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -293,10 +294,6 @@ async def handle_message(update: Update, context) -> None:
     """Handle incoming messages - send to PO ReactAgent via Redis Streams."""
     global _stream_client
 
-    # Auth check
-    if not await auth_middleware(update, context):
-        return
-
     # Check if admin is in "add user" flow — handle separately
     if context.user_data.get("awaiting_add_user"):
         await handle_add_user_input(update, context)
@@ -476,8 +473,8 @@ def main() -> None:
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("dashboard", dashboard))
 
-    # Global Auth Middleware (runs first for everything else)
-    app.add_handler(MessageHandler(filters.ALL, lambda u, c: auth_middleware(u, c)), group=-1)
+    # One update-level gate covers messages, commands and callback queries.
+    app.add_handler(TypeHandler(Update, auth_middleware), group=-1)
 
     # Callback query handler for inline buttons
     app.add_handler(CallbackQueryHandler(handle_callback_query))

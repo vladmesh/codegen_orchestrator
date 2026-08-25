@@ -402,14 +402,17 @@ async def handle_add_user_input(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    # Call API to create user
+    # Mint a code; the recipient must register through the canonical promo gate.
     try:
-        await api_client.post_json(
-            "users/",
-            json={"telegram_id": new_telegram_id},
+        codes = await api_client.post_json(
+            "promo-codes/batch",
+            json={"quantity": 1, "credits_microusd": 0, "attempt_reservation_microusd": 1},
         )
+        promo_code = codes[0]["code"]
         context.user_data.pop("awaiting_add_user", None)
-        await update.message.reply_text(f"✅ Пользователь {new_telegram_id} добавлен.")
+        await update.message.reply_text(
+            f"✅ Промокод для {new_telegram_id}: <code>{promo_code}</code>", parse_mode="HTML"
+        )
         logger.info(
             "user_added_by_admin",
             admin_id=update.effective_user.id,

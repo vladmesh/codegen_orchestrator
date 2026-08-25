@@ -103,9 +103,10 @@ async def create_rag_message(
         result = await db.execute(query)
         user = result.scalar_one_or_none()
         if not user:
-            user = User(telegram_id=message_in.telegram_id)
-            db.add(user)
-            await db.flush()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"telegram_id {message_in.telegram_id} not found",
+            )
 
     rag_message = RAGMessage(
         user_id=user.id,

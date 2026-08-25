@@ -15,6 +15,8 @@ from shared.redis.client import RedisStreamClient
 from .config import get_settings
 from .database import get_async_session
 
+_optional_bearer_scheme = HTTPBearer(auto_error=False)
+
 # ---------------------------------------------------------------------------
 # Redis client singleton
 # ---------------------------------------------------------------------------
@@ -93,9 +95,19 @@ async def resolve_actor(
 async def require_internal_or_admin(
     _is_internal: bool = Depends(is_internal_service),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
     db: AsyncSession = Depends(get_async_session),
 ) -> None:
     """Allow internal services acting for themselves, and admin users."""
+    if credentials is not None and not _is_internal:
+        bearer_user = await get_lk_user(credentials=credentials, db=db)
+        if x_telegram_id is not None and x_telegram_id != bearer_user.telegram_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Actor mismatch")
+        if not bearer_user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
+            )
+        return
     actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
     if actor is None:
         return
@@ -144,7 +156,6 @@ _bearer_scheme = HTTPBearer()
 
 # The gate below has to tell "no token" from "bad token", so it reads the header
 # without turning a missing one into an error of its own.
-_optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 LK_JWT_ALGORITHM = "HS256"
 LK_JWT_TTL = dt.timedelta(hours=24)
