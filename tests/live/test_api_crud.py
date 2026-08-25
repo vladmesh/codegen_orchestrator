@@ -8,14 +8,14 @@ import pytest
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.live_contour import current_contour
+from shared.live_contour import require_live_contour
 
 
 @pytest.mark.asyncio
 async def test_create_and_get_project(api):
     """Create a project via API and retrieve it."""
     project_id = str(uuid.uuid4())
-    name = f"{current_contour().crud}-{secrets.token_hex(4)}"
+    name = f"{require_live_contour().crud}-{secrets.token_hex(4)}"
 
     resp = await api.post(
         "/api/projects/",

@@ -1116,9 +1116,9 @@ def release_evidence(root: Path | None = None) -> dict:
         "record": record.as_dict(),
         "note": (
             "The record names the released digests the host pulled and verified. "
-            "agent-matrix.yml additionally rebuilds the worker chain locally for the "
-            "duration of the matrix, so the image a worker actually ran is the one "
-            "under workers[].image, not necessarily a digest named here."
+            "A run that rebuilds the worker chain locally leaves the image a worker "
+            "actually ran under workers[].image, which is then not necessarily a "
+            "digest named here."
         ),
     }
 

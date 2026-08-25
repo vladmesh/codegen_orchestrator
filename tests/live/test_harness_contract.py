@@ -38,6 +38,7 @@ from shared.contracts.service_ports import (
     SERVICE_MODULE_PORT_ROLES,
     PortServiceRole,
 )
+from shared.live_contour import require_live_contour
 
 # Every test here drives the harness against fakes, so the run needs no credential
 # to start — see the guard in conftest.pytest_collection_modifyitems.
@@ -1385,7 +1386,7 @@ async def test_llm_backend_project_uses_real_worker_backend_only_config(monkeypa
 
     project_payload = requests[0][1]
     config = project_payload["config"]
-    assert project_payload["title"].startswith("live-test-llm-")
+    assert project_payload["title"].startswith(f"{require_live_contour().llm_pipeline}-")
     assert config["modules"] == ["backend"]
     assert config["agent_type"] == "claude"
     assert "user-provided secrets" in config["detailed_spec"]
@@ -3167,44 +3168,3 @@ def test_live_modules_do_not_compose_auth_headers_of_their_own():
         source = (live_dir / name).read_text()
         assert "AUTH_HEADERS" not in source, f"{name} composes the user header itself"
         assert "internal_headers" not in source, f"{name} composes the internal key itself"
-
-
-def test_production_agent_matrix_exposes_only_an_ephemeral_api():
-    """The production override hides port 8000, so the host harness needs a sidecar.
-
-    The matrix must not recreate or expose the primary API merely to run tests,
-    and the temporary listener must be covered by the workflow's EXIT cleanup.
-    """
-    root = resolve_repo_root(Path(__file__))
-    workflow = (root / ".github/workflows/agent-matrix.yml").read_text(encoding="utf-8")
-
-    assert 'matrix_api_container="codegen-agent-matrix-api-${{ github.run_id }}"' in workflow
-    assert "trap cleanup_matrix EXIT" in workflow
-    assert 'docker rm -f "$matrix_api_container"' in workflow
-    assert "-p 127.0.0.1:8000:8000 api" in workflow
-    assert "curl -fsS http://127.0.0.1:8000/health" in workflow
-    assert "up -d --no-deps --force-recreate api" not in workflow
-
-
-def test_production_agent_matrix_preserves_failure_evidence_and_has_read_only_diagnostics():
-    root = resolve_repo_root(Path(__file__))
-    workflow = (root / ".github/workflows/agent-matrix.yml").read_text(encoding="utf-8")
-
-    assert "diagnostics_only:" in workflow
-    assert "if: ${{ !inputs.diagnostics_only }}" in workflow
-    assert "if: ${{ inputs.diagnostics_only }}" in workflow
-    assert "Debug dump for QA=%s worker=%s" in workflow
-    assert "matrix_api_sidecar=absent" in workflow
-    assert "head -n 4" in workflow
-
-
-def test_production_agent_matrix_builds_exact_source_workers_and_cleans_only_live_test_deaths():
-    root = resolve_repo_root(Path(__file__))
-    workflow = (root / ".github/workflows/agent-matrix.yml").read_text(encoding="utf-8")
-
-    assert "make rebuild-worker-images" in workflow
-    assert "make check-worker-images" in workflow
-    assert "--filter label=com.codegen.type=worker" in workflow
-    assert "--filter status=exited" in workflow
-    assert "--filter name=worker-dev-live-te-" in workflow
-    assert "docker container prune" not in workflow

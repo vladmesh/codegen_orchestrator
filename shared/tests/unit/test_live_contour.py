@@ -8,6 +8,7 @@ from shared.live_contour import (
     Contour,
     assert_prefixes_distinct,
     current_contour,
+    require_live_contour,
 )
 from shared.project_slug import generate_project_slug, project_slug_prefix
 
@@ -98,3 +99,36 @@ def test_generated_titles_carry_their_contour_prefix():
         ):
             slug = generate_project_slug(f"{prefix}-a1b2c3d4", uuid.uuid4())
             assert slug.startswith(slug_prefix)
+
+
+def test_production_refuses_to_host_a_live_run(monkeypatch):
+    """E2E creates and deletes projects, repositories and stacks. Not here.
+
+    Production holds real users' projects and real users' data. The refusal is
+    at creation and names the contour, so the fix — run it on the stand — is in
+    the error itself.
+    """
+    monkeypatch.delenv(CONTOUR_ENV, raising=False)
+
+    with pytest.raises(RuntimeError, match="not allowed in the 'prod' contour"):
+        require_live_contour()
+
+
+def test_the_stand_hosts_live_runs(monkeypatch):
+    monkeypatch.setenv(CONTOUR_ENV, "stand")
+
+    assert require_live_contour().name == "stand"
+
+
+def test_production_names_stay_sweepable(monkeypatch):
+    """The refusal must not strand what production already carries.
+
+    Residue created before this rule is still addressed by production's names,
+    so cleanup keeps reading them — only creation is refused.
+    """
+    monkeypatch.delenv(CONTOUR_ENV, raising=False)
+
+    contour = current_contour()
+
+    assert contour.project_prefixes == ["live-test", "live-crud", "mega-test"]
+    assert contour.slug_prefixes == ["live-te-", "live-cr-", "mega-te-"]
