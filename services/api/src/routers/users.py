@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,11 @@ router = APIRouter(prefix="/users", tags=["users"])
 def _is_owner_registration(telegram_id: int, internal_service: bool) -> bool:
     """Only the bot's internal owner registration bypasses promo redemption."""
     return internal_service and telegram_id in get_settings().get_admin_ids()
+
+
+def _requires_promo(named_telegram_id: int | None) -> bool:
+    """A caller naming a Telegram actor must pass the bot registration gate."""
+    return named_telegram_id is not None
 
 
 def _promo_error(status_code: int, code: str) -> None:
@@ -88,6 +93,7 @@ def _reject_admin_flag_from_outside(*, decides_admin: bool, is_internal: bool) -
 async def create_user(
     user_in: UserCreate,
     is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> User:
     """Create a new user."""
@@ -104,7 +110,9 @@ async def create_user(
             detail="User with this telegram_id already exists",
         )
 
-    if _is_owner_registration(user_in.telegram_id, is_internal):
+    if _is_owner_registration(user_in.telegram_id, is_internal) or not _requires_promo(
+        x_telegram_id
+    ):
         user = User(
             telegram_id=user_in.telegram_id,
             username=user_in.username,
@@ -128,6 +136,7 @@ async def create_user(
 async def upsert_user(
     user_in: UserUpsert,
     is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> User:
     """Create or update user by telegram_id."""
@@ -151,7 +160,9 @@ async def upsert_user(
         if user_in.is_admin is not None:
             user.is_admin = user_in.is_admin
         user.last_seen = datetime.utcnow()
-    elif _is_owner_registration(user_in.telegram_id, is_internal):
+    elif _is_owner_registration(user_in.telegram_id, is_internal) or not _requires_promo(
+        x_telegram_id
+    ):
         user = User(
             telegram_id=user_in.telegram_id,
             username=user_in.username,

@@ -23,6 +23,7 @@ async def test_promo_activation_arms_policy_and_cannot_be_reused(async_client) -
     required = await async_client.post(
         "/api/users/upsert",
         json={"telegram_id": 810_000_001, "first_name": "Missing"},
+        headers={"X-Telegram-ID": "810000001"},
     )
     assert required.status_code == HTTPStatus.FORBIDDEN
     assert required.json()["detail"]["code"] == "promo_code_required"
@@ -34,6 +35,7 @@ async def test_promo_activation_arms_policy_and_cannot_be_reused(async_client) -
             "first_name": "Activated",
             "promo_code": first_code.lower(),
         },
+        headers={"X-Telegram-ID": "810000001"},
     )
     assert activated.status_code == HTTPStatus.OK, activated.text
     user_id = activated.json()["id"]
@@ -51,6 +53,7 @@ async def test_promo_activation_arms_policy_and_cannot_be_reused(async_client) -
     reused = await async_client.post(
         "/api/users/",
         json={"telegram_id": 810_000_002, "promo_code": first_code},
+        headers={"X-Telegram-ID": "810000002"},
     )
     assert reused.status_code == HTTPStatus.CONFLICT
     assert reused.json()["detail"]["code"] == "promo_code_redeemed"
@@ -58,6 +61,7 @@ async def test_promo_activation_arms_policy_and_cannot_be_reused(async_client) -
     topped_up = await async_client.post(
         "/api/users/upsert",
         json={"telegram_id": 810_000_001, "promo_code": second_code},
+        headers={"X-Telegram-ID": "810000001"},
     )
     assert topped_up.status_code == HTTPStatus.CONFLICT
     assert topped_up.json()["detail"]["code"] == "user_already_has_policy"
@@ -78,10 +82,14 @@ async def test_concurrent_redemption_has_one_winner(async_client) -> None:
 
     first, second = await asyncio.gather(
         async_client.post(
-            "/api/users/upsert", json={"telegram_id": 810_000_011, "promo_code": code}
+            "/api/users/upsert",
+            json={"telegram_id": 810_000_011, "promo_code": code},
+            headers={"X-Telegram-ID": "810000011"},
         ),
         async_client.post(
-            "/api/users/upsert", json={"telegram_id": 810_000_012, "promo_code": code}
+            "/api/users/upsert",
+            json={"telegram_id": 810_000_012, "promo_code": code},
+            headers={"X-Telegram-ID": "810000012"},
         ),
     )
 
@@ -101,6 +109,7 @@ async def test_unknown_cost_keeps_promo_reservation_held(async_client) -> None:
     activated = await async_client.post(
         "/api/users/upsert",
         json={"telegram_id": 810_000_021, "promo_code": minted.json()[0]["code"]},
+        headers={"X-Telegram-ID": "810000021"},
     )
     user = activated.json()
     project = await async_client.post(

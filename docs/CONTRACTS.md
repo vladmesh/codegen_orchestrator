@@ -164,7 +164,10 @@ code unredeemed.
 
 Internal services or administrators mint and inspect codes at
 `POST /api/promo-codes/batch` and `GET /api/promo-codes`. Ordinary users have no
-code-management surface. Existing production users are armed with the existing
+code-management surface. An internal service acting for itself (valid internal
+key without `X-Telegram-ID`) may create a technical user without a code; that
+user deliberately has no policy (`enforcement=unlimited`) until an operator
+explicitly arms it. Existing production users are armed with the existing
 policy endpoint, for example:
 
 ```bash
