@@ -328,13 +328,6 @@ LIVE_OFFLINE_IGNORE_FLAGS = \
 	--ignore=tests/live/test_supervisor.py
 
 # Offline live regressions: no running stack or external Redis required.
-#
-# They still name resources through the contour, because the harness they
-# exercise does. Any contour that owns test resources will do — production is
-# refused, which is the point: the suite must not be runnable as production even
-# when every call is mocked.
-LIVE_CONTOUR ?= stand
-export LIVE_CONTOUR
 N ?= ""
 test-live:
 ifeq ($(N),"")
