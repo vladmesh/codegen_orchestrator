@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean danger-prod-reset stand-preflight stand-register stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean danger-prod-reset stand-preflight stand-register stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -374,10 +374,29 @@ stand-preflight:
 stand-register:
 	@LIVE_CONTOUR=stand uv run python scripts/register_stand_target.py $(ARGS)
 
-# The mega pipeline, in the stand's contour. Every resource it creates is named
-# `stand-…`, which is what keeps its sweep away from production's run.
-stand-e2e: stand-preflight
-	@LIVE_CONTOUR=stand uv run pytest tests/live/test_full_pipeline.py -v --tb=long -x -s
+# One entry point for every e2e on the stand. SUITE is a named suite — mega, llm,
+# matrix — or any pytest target, so a new scenario needs no new plumbing.
+#
+#   make stand-run SUITE=mega
+#   make stand-run SUITE=llm WORKER=codex QA=claude
+#   make stand-run SUITE=matrix
+#   make stand-run SUITE=tests/live/test_api_crud.py
+#
+# A mega takes ten minutes and the matrix an hour — longer than an SSH session
+# reliably lives — so run it detached and read the log it names:
+#
+#   setsid nohup make stand-run SUITE=matrix > /dev/null 2>&1 &
+#   tail -f ~/e2e-runs/latest/run.log
+SUITE ?= mega
+WORKER ?= claude
+QA ?= codex
+stand-run:
+	@set -a; . ./.env; set +a; \
+	uv run python scripts/stand_run.py --suite "$(SUITE)" --worker "$(WORKER)" --qa "$(QA)" $(ARGS)
+
+# Kept as the short name for the plain mega.
+stand-e2e:
+	@$(MAKE) stand-run SUITE=mega
 
 # Sweep this contour and no other.
 stand-clean:
