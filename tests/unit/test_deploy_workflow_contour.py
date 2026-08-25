@@ -163,3 +163,12 @@ def test_a_contour_needs_no_registry_credential_of_its_own():
 
     assert "GHCR_TOKEN='${{ secrets.GHCR_TOKEN || github.token }}'" in pull["with"]["script"]
     assert _deploy_job()["permissions"]["packages"] == "read"
+
+
+def test_a_run_says_which_contour_it_deployed():
+    """One workflow serves both contours, so the run list must not be ambiguous.
+
+    Without this the history is a column of identical "Deploy" entries and the
+    only way to tell production from the stand is to open the run.
+    """
+    assert _workflow()["run-name"] == "Deploy ${{ inputs.environment }}"

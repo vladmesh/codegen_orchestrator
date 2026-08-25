@@ -1,5 +1,10 @@
 name: Deploy
 
+# Both contours run this one workflow, so the run list would otherwise show a
+# column of identical "Deploy" entries with no way to tell which machine each
+# one touched.
+run-name: Deploy ${{ inputs.environment }}
+
 on:
   workflow_dispatch:
     inputs:
