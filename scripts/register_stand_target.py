@@ -46,7 +46,7 @@ def _request(url: str, key: str, method: str, payload: dict) -> dict:
         url,
         method=method,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "X-Internal-API-Key": key},
+        headers={"Content-Type": "application/json", "X-Internal-Key": key},
     )
     with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
         return json.loads(response.read())
