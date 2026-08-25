@@ -204,11 +204,6 @@ async def create_run(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
 ) -> Run:
     """Create a new run."""
-    if run.type in (RunType.ENGINEERING.value, RunType.QA.value):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Paid coding-agent runs must use the paid-run start command",
-        )
     run_data = run.model_dump()
     if run.project_id is not None:
         project = await db.get(Project, run.project_id)
