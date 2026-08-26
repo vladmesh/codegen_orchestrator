@@ -202,6 +202,13 @@ count after Project deletion. Unknown attempts contribute no invented monetary a
 when coverage is incomplete, the reported remaining amount is not a proved safe upper
 reserve.
 
+User-facing balance consumers present exact known spend and the server-calculated
+`remaining_microusd`. They do not expose or recompute the split between active and
+unknown-final holds. A non-zero unknown-attempt count or incomplete coverage is shown as
+an explicit warning. PO reads this same self-only balance before creating or reopening
+paid work; an exhausted balance or less than one attempt reservation is a pre-work
+refusal rather than a story that is knowingly sent into the admission quarantine.
+
 ### Promo codes
 
 `promo_codes` are the sole registration path for a non-owner Telegram user. A

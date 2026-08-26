@@ -26,6 +26,7 @@ from telegram.ext import (
 )
 
 from shared.contracts.queues.po import POUserMessage, to_flat_fields
+from shared.engineering_budget_display import format_microusd
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
 from shared.redis import decode_redis_fields
 from shared.redis_client import RedisStreamClient
@@ -138,6 +139,51 @@ async def dashboard(update: Update, context) -> None:
         reply_markup=keyboard,
         parse_mode=ParseMode.HTML,
     )
+
+
+async def balance(update: Update, context) -> None:
+    """Show the authenticated user's ledger-derived engineering balance."""
+    telegram_id = update.effective_user.id
+    try:
+        data = await api_client.get_json(
+            "engineering-budget-policy/balance",
+            headers={"X-Telegram-ID": str(telegram_id)},
+        )
+    except httpx.HTTPError as error:
+        logger.warning(
+            "engineering_budget_balance_failed", telegram_id=telegram_id, error=str(error)
+        )
+        await update.message.reply_text("Не удалось получить баланс. Попробуйте позже.")
+        return
+
+    lines = [
+        "💰 Баланс разработки",
+        "",
+        f"Потрачено: {format_microusd(data['known_spend_microusd'])}",
+    ]
+    enforcement = data["enforcement"]
+    if enforcement == "enforced":
+        lines.append(f"Доступно сейчас: {format_microusd(data['remaining_microusd'])}")
+        if data["exhausted"]:
+            lines.append("Лимит исчерпан.")
+    elif enforcement == "not_enforced":
+        lines.append("Лимит сейчас отключён.")
+    else:
+        lines.append("Доступно: без ограничений — лимит не установлен.")
+
+    unknown_attempts = data["unknown_cost_attempt_count"]
+    if unknown_attempts:
+        lines.extend(
+            [
+                "",
+                f"⚠️ Попыток с неизвестной стоимостью: {unknown_attempts}. "
+                "Фактические расходы могут быть выше.",
+            ]
+        )
+    elif data["incomplete_coverage"]:
+        lines.extend(["", "⚠️ Часть расходов ещё уточняется."])
+
+    await update.message.reply_text("\n".join(lines))
 
 
 async def _keep_typing(bot, chat_id: int, max_duration_s: float = 120.0) -> None:
@@ -472,6 +518,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("dashboard", dashboard))
+    app.add_handler(CommandHandler("balance", balance))
 
     # One update-level gate covers messages, commands and callback queries.
     app.add_handler(TypeHandler(Update, auth_middleware), group=-1)

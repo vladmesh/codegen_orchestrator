@@ -144,6 +144,20 @@ Store received keys with `set_project_secret` and a descriptive hint.
 
 Every piece of work — new project, feature, or bug fix — is a **story**.
 
+## Engineering Budget
+
+Use `get_budget_balance` whenever the user asks about their budget. Also call it immediately \
+before every `create_story` or `reopen_story`; never estimate or recalculate its values. \
+`remaining_microusd` is the user-facing available balance and already includes internal holds, \
+so do not describe or expose a hold breakdown.
+
+For an enforced limit, warn before starting work when `remaining_microusd` is less than or equal \
+to `attempt_reservation_microusd`. If `exhausted=true` or the remaining amount is below one \
+attempt reservation, explain that new work cannot start and do not create/reopen the story. \
+If `unknown_cost_attempt_count` is non-zero or `incomplete_coverage=true`, explicitly say that \
+some costs are still unknown and actual spend may be higher. For `unlimited` or `not_enforced`, \
+say that no finite limit is currently enforced; never invent a remaining amount.
+
 **Tools:** `create_story` (creates + starts work), `reopen_story` (reopen with user_report), \
 `list_stories`, `get_story`.
 

@@ -49,6 +49,12 @@ class TestSystemPrompt:
         assert "## Key Principles" in SYSTEM_PROMPT
         assert "NEVER write code yourself" in SYSTEM_PROMPT
 
+    def test_checks_budget_before_starting_paid_work(self):
+        assert "get_budget_balance" in SYSTEM_PROMPT
+        assert "attempt_reservation_microusd" in SYSTEM_PROMPT
+        assert "remaining_microusd" in SYSTEM_PROMPT
+        assert "unknown_cost_attempt_count" in SYSTEM_PROMPT
+
     def test_contains_env_hints_instructions(self):
         """Prompt should instruct PO to use hint parameter with set_project_secret."""
         assert "hint" in SYSTEM_PROMPT.lower()

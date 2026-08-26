@@ -4,6 +4,14 @@
 
 ### Added
 
+- Users can now inspect their ledger-derived engineering balance with the
+  Telegram `/balance` command. It shows exact known spend and the API-calculated
+  available amount without exposing the internal reservation split, and warns
+  when cost coverage is incomplete.
+- PO now has a self-only balance tool and must check it before creating or
+  reopening paid work. It warns before a single-attempt reservation would
+  exhaust the available amount and does not start work that the budget gate
+  would reject.
 - One-time promo-code registration that atomically arms an enabled engineering budget policy.
 - Count-based work admission for projects and concurrent engineering/QA runs,
   with an internal/admin emergency-stop API and durable typed decision audit

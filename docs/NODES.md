@@ -34,6 +34,9 @@ project and freeing the token.
 - `reopen_story`: reopening a completed story with a user_report (the context of the problem)
 - `list_stories`, `get_story`: viewing stories, the tasks attached to them and their runs (with id, status, type, error, timing)
 - `get_run_status`: the detailed status of a specific engineering/deploy run
+- `get_budget_balance`: the current user's exact known engineering spend and API-calculated
+available amount. PO checks it before starting or reopening paid work and warns about low or
+incomplete cost coverage without exposing reservation internals.
 - `set_reminder`: deferred checks through a Redis ZSET
 - `notify_user`: proactive message to user via `po:proactive` stream
 - `web_search`: searching the documentation of external APIs through DuckDuckGo
