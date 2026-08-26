@@ -18,6 +18,7 @@ from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
+from shared.engineering_budget_display import format_microusd
 from shared.queues import PO_PROACTIVE_QUEUE, PO_REMINDERS_KEY
 
 # Re-export project tools
@@ -118,6 +119,49 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
 
 
 @tool
+async def get_budget_balance(*, config: RunnableConfig) -> str:
+    """Read the current user's engineering spend and available budget.
+
+    Call this to answer budget questions and immediately before creating or
+    reopening a story. The returned remaining amount already accounts for all
+    internal holds; do not recalculate it.
+    """
+    response = await _get_api().get_raw(
+        "engineering-budget-policy/balance",
+        headers=_user_headers(config),
+    )
+    response.raise_for_status()
+    data = response.json()
+    policy = data.get("policy") or {}
+
+    fields = [
+        f"enforcement={data['enforcement']}",
+        (
+            f"known_spend_microusd={data['known_spend_microusd']} "
+            f"({format_microusd(data['known_spend_microusd'])})"
+        ),
+    ]
+    remaining = data["remaining_microusd"]
+    if remaining is None:
+        fields.append("remaining_microusd=null (no enforced finite limit)")
+    else:
+        fields.append(f"remaining_microusd={remaining} ({format_microusd(remaining)})")
+    reservation = policy.get("attempt_reservation_microusd")
+    if reservation is not None:
+        fields.append(
+            f"attempt_reservation_microusd={reservation} ({format_microusd(reservation)})"
+        )
+    fields.extend(
+        [
+            f"exhausted={str(data['exhausted']).lower()}",
+            f"unknown_cost_attempt_count={data['unknown_cost_attempt_count']}",
+            f"incomplete_coverage={str(data['incomplete_coverage']).lower()}",
+        ]
+    )
+    return "\n".join(fields)
+
+
+@tool
 def web_search(query: str, max_results: int = 5) -> str:
     """Search the web using DuckDuckGo.
 
@@ -165,6 +209,7 @@ def get_all_tools() -> list:
         reopen_story,
         get_story,
         get_run_status,
+        get_budget_balance,
         set_reminder,
         notify_user,
         web_search,
@@ -195,6 +240,7 @@ __all__ = [
     "reopen_story",
     "get_story",
     "get_run_status",
+    "get_budget_balance",
     # Utility tools
     "set_reminder",
     "notify_user",

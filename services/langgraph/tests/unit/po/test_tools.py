@@ -14,6 +14,7 @@ from src.agents.po.tools import (
     create_project,
     create_story,
     get_all_tools,
+    get_budget_balance,
     get_project,
     get_run_status,
     get_story,
@@ -1241,7 +1242,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 17
+        expected_count = 18
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1262,7 +1263,55 @@ class TestGetAllTools:
             "reopen_story",
             "get_story",
             "get_run_status",
+            "get_budget_balance",
             "set_reminder",
             "notify_user",
             "web_search",
         }
+
+
+class TestGetBudgetBalance:
+    @pytest.mark.asyncio
+    async def test_reads_only_the_callers_self_balance(self, mock_api_client):
+        mock_api_client.get_raw.return_value = _make_response(
+            {
+                "enforcement": "enforced",
+                "policy": {"attempt_reservation_microusd": 5_000_000},
+                "known_spend_microusd": 12_340_001,
+                "remaining_microusd": 32_659_999,
+                "exhausted": False,
+                "unknown_cost_attempt_count": 0,
+                "incomplete_coverage": False,
+            }
+        )
+
+        result = await get_budget_balance.ainvoke({}, config=_make_config("42"))
+
+        mock_api_client.get_raw.assert_awaited_once_with(
+            "engineering-budget-policy/balance",
+            headers={"X-Telegram-ID": "42"},
+        )
+        assert "known_spend_microusd=12340001 ($12.340001)" in result
+        assert "remaining_microusd=32659999 ($32.659999)" in result
+        assert "attempt_reservation_microusd=5000000 ($5.00)" in result
+        assert "active_held_microusd" not in result
+        assert "unknown_final_held_microusd" not in result
+
+    @pytest.mark.asyncio
+    async def test_preserves_unknown_cost_warning(self, mock_api_client):
+        mock_api_client.get_raw.return_value = _make_response(
+            {
+                "enforcement": "enforced",
+                "policy": {"attempt_reservation_microusd": 5_000_000},
+                "known_spend_microusd": 10_000_000,
+                "remaining_microusd": 0,
+                "exhausted": True,
+                "unknown_cost_attempt_count": 2,
+                "incomplete_coverage": True,
+            }
+        )
+
+        result = await get_budget_balance.ainvoke({}, config=_make_config("42"))
+
+        assert "unknown_cost_attempt_count=2" in result
+        assert "incomplete_coverage=true" in result
