@@ -781,8 +781,9 @@ class TestDispatchPartialFailure:
 
         assert await task_dispatcher.dispatch_todo_tasks(api_client, redis_client) == 0
 
+        api_client.abort_paid_run_pre_handoff.assert_awaited_once()
         assert (
-            api_client.release_engineering_budget_admission.await_args.args[0]
+            api_client.abort_paid_run_pre_handoff.await_args.args[0]
             == api_client.start_paid_run.await_args.args[0].id
         )
         redis_client.publish_message.assert_not_called()
@@ -798,11 +799,11 @@ class TestDispatchPartialFailure:
         redis_client.publish_message.side_effect = RuntimeError("redis is down")
         await dispatch_todo_tasks(api_client, redis_client)
 
-        # The compensated run is stored as the dispatcher left it
-        run_id, patch = api_client.update_run.call_args[0]
-        api_client.list_runs.return_value = [
-            self._prior_run_from_patch(run_id, patch),
-        ]
+        # The atomic abort leaves a terminal run, so the next tick starts anew.
+        from shared.contracts.dto.run import RunStatus
+
+        api_client.abort_paid_run_pre_handoff.assert_awaited_once()
+        api_client.list_runs.return_value = [self._prior_run(RunStatus.FAILED)]
         api_client.start_paid_run.reset_mock()
         redis_client.publish_message.side_effect = None
 
