@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
+from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.work_admission import (
@@ -21,6 +22,9 @@ from shared.models import (
     User,
     WorkAdmissionAudit,
 )
+
+from .config import get_settings
+from .executor_resolver import resolve_executor_decision
 
 EMERGENCY_STOP_KEY = "work_admission.emergency_stop"
 MAX_PROJECTS_KEY = "work_admission.max_projects_per_user"
@@ -192,7 +196,9 @@ async def _replay_paid_start(
         ):
             return None
     return PaidRunStartRead(
-        admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id=existing.id
+        admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
+        run_id=existing.id,
+        executor_decision=ExecutorDecision.from_run_metadata(existing.run_metadata),
     )
 
 
@@ -207,17 +213,19 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     if replay is not None:
         return replay
 
-    project = await db.scalar(select(Project).where(Project.id == command.project_id))
-    if project is None:
-        raise RuntimeError(f"Project {command.project_id} does not exist")
-    user_id = project.owner_id
-
     # The stop row serializes starts. Recheck after taking it: another request
     # with the same id may have committed while this one waited for the lock.
+    # Resolve only after this replay so concurrent starts cannot make a discarded
+    # decision before the Run that owns the first decision is committed.
     controls = await _controls(db, EMERGENCY_STOP_KEY)
     replay = await _replay_paid_start(command, payload, db)
     if replay is not None:
         return replay
+    project = await db.scalar(select(Project).where(Project.id == command.project_id))
+    if project is None:
+        raise RuntimeError(f"Project {command.project_id} does not exist")
+    user_id = project.owner_id
+    decision = resolve_executor_decision(command.type, project.config, get_settings())
     enabled = controls[EMERGENCY_STOP_KEY]
     if not isinstance(enabled, bool):
         raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
@@ -307,7 +315,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
             project_id=command.project_id,
             story_id=command.story_id,
             task_id=command.task_id,
-            run_metadata=command.run_metadata,
+            run_metadata={**command.run_metadata, **decision.as_run_metadata()},
             callback_stream=command.callback_stream,
         )
         db.add(run)
@@ -329,7 +337,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         reference_id=command.id,
         command_payload=payload,
     )
-    return PaidRunStartRead(admission=admitted, run_id=run.id)
+    return PaidRunStartRead(admission=admitted, run_id=run.id, executor_decision=decision)
 
 
 async def abort_paid_run_pre_handoff(run_id: str, reason: str, db: AsyncSession) -> None:

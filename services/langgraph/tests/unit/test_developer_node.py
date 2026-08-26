@@ -13,8 +13,10 @@ import uuid
 import pytest
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.run import RunType
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import SpawnResult
@@ -76,6 +78,13 @@ def _make_state(*, action="create", status=ProjectStatus.ACTIVE.value, modules=N
         # owner respectively.
         "run_id": "eng-1",
         "ownership": WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
+        "executor_decision": ExecutorDecision(
+            attempt_kind=RunType.ENGINEERING,
+            agent_type=AgentType.CLAUDE,
+            source=ExecutorDecisionSource.API_DEFAULT,
+            policy_version="v1",
+            reason="Engineering executor selected by API DEFAULT_AGENT_TYPE.",
+        ),
         "errors": [],
     }
 
@@ -85,7 +94,7 @@ class TestDeveloperAgentRouting:
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_codex_project_config_reaches_worker_spawn(
+    async def test_persisted_codex_decision_reaches_worker_spawn_even_if_project_changes(
         self, mock_github_cls, mock_api, mock_spawn
     ):
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
@@ -99,7 +108,10 @@ class TestDeveloperAgentRouting:
             commit_sha="abc123",
         )
         state = _make_state()
-        state["project_spec"]["config"]["agent_type"] = "codex"
+        state["executor_decision"] = state["executor_decision"].model_copy(
+            update={"agent_type": AgentType.CODEX}
+        )
+        state["project_spec"]["config"]["agent_type"] = "claude"
 
         from src.nodes.developer import DeveloperNode
 
@@ -109,7 +121,21 @@ class TestDeveloperAgentRouting:
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
-    async def test_unknown_project_agent_fails_without_spawning(self, mock_spawn):
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_invalid_project_config_cannot_replace_the_persisted_decision(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
         state = _make_state()
         state["project_spec"]["config"]["agent_type"] = "mystery"
 
@@ -117,9 +143,8 @@ class TestDeveloperAgentRouting:
 
         result = await DeveloperNode().run(state)
 
-        assert result["engineering_status"] == EngineeringStatus.FAILED
-        assert any("mystery" in error for error in result["errors"])
-        mock_spawn.assert_not_awaited()
+        assert result["engineering_status"] == EngineeringStatus.DONE
+        mock_spawn.assert_awaited_once()
 
 
 class TestDeveloperNodeCommitValidation:

@@ -14,6 +14,7 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.queues.worker_result import WorkerStopReason
 
@@ -64,6 +65,10 @@ class EngineeringState(TypedDict):
     # this attempt) and only read here: no node derives ownership of its own,
     # so the container's labels cannot disagree with what asked for the work.
     ownership: WorkerOwnership
+
+    # Paid-start policy persisted this before the Run was created. No node may
+    # choose an executor from mutable project configuration.
+    executor_decision: ExecutorDecision
 
     # Story branch name (e.g. "story/{story_id}")
     branch: str | None

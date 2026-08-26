@@ -35,6 +35,8 @@ import pytest
 os.environ.setdefault("API_BASE_URL", "http://localhost:8001")
 os.environ.setdefault("INTERNAL_API_KEY", "test-key")
 
+from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
+from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import QABlockerCategory, QARunResult
 from shared.contracts.queues.qa import QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
@@ -445,6 +447,17 @@ async def test_qa_consumer_quarantines_a_write_trace(tmp_path):
     api_client = AsyncMock()
     api_client.patch = AsyncMock()
     api_client.get_project = AsyncMock(return_value=SimpleNamespace(slug="app", config={}))
+    api_client.get_run = AsyncMock(
+        return_value=SimpleNamespace(
+            run_metadata=ExecutorDecision(
+                attempt_kind=RunType.QA,
+                agent_type=AgentType.CLAUDE,
+                source=ExecutorDecisionSource.QA_API_SETTING,
+                policy_version="v1",
+                reason="QA executor selected by API QA_EXECUTOR_AGENT_TYPE.",
+            ).as_run_metadata()
+        )
+    )
 
     with (
         patch("src.consumers.qa.api_client", api_client),

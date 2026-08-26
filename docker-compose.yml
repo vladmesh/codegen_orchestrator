@@ -17,6 +17,7 @@ services:
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LK_JWT_SECRET: ${LK_JWT_SECRET}
+      QA_EXECUTOR_AGENT_TYPE: ${QA_EXECUTOR_AGENT_TYPE:-codex}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: api
     depends_on:

@@ -160,6 +160,19 @@ def api(request):
                 run_id="qa-run-1", started=True, run_status=RunStatus.RUNNING
             )
         )
+        mock.get_run = AsyncMock(
+            return_value=SimpleNamespace(
+                run_metadata={
+                    "executor_decision": {
+                        "attempt_kind": "qa",
+                        "agent_type": "claude",
+                        "source": "qa_api_setting",
+                        "policy_version": "v1",
+                        "reason": "QA executor selected by API QA_EXECUTOR_AGENT_TYPE.",
+                    }
+                }
+            )
+        )
         mock.record_provisioning_failure = AsyncMock(return_value=None)
         yield mock
 

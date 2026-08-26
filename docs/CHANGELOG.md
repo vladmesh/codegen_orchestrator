@@ -4,6 +4,11 @@
 
 ### Added
 
+- Paid engineering and QA runs now receive an immutable typed executor decision
+  at admission. Engineering preserves valid project pins or the API default;
+  QA uses the API-side Codex-default setting. Worker launchers read the
+  persisted decision by Run id, so later configuration changes cannot switch a
+  queued attempt.
 - Users can now inspect their ledger-derived engineering balance with the
   Telegram `/balance` command. It shows exact known spend and the API-calculated
   available amount without exposing the internal reservation split, and warns

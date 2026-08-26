@@ -133,6 +133,37 @@ Engineering's count check precedes its existing monetary
 `admit_engineering_attempt` inside that same command, so a count-based refusal
 cannot create a financial reservation. QA never enters the monetary gate.
 
+### Paid-run executor decisions
+
+Every admitted engineering or QA Run receives one immutable
+`run_metadata.executor_decision` record, declared by
+`shared.contracts.dto.executor_decision.EXECUTOR_DECISION_METADATA_KEY`:
+
+```python
+class ExecutorDecision(BaseModel):
+    attempt_kind: Literal[RunType.ENGINEERING, RunType.QA]
+    agent_type: AgentType
+    source: ExecutorDecisionSource  # project_pin | api_default | qa_api_setting
+    policy_version: Literal["v1"]
+    reason: str
+```
+
+The `start_paid_run` transaction resolves this record after loading the Project
+and before engineering budget admission, paid-slot occupation, Run insertion,
+or queue handoff. Engineering uses a valid `Project.config.agent_type` pin or
+the API's `DEFAULT_AGENT_TYPE`; QA uses the API's
+`QA_EXECUTOR_AGENT_TYPE` (Codex by default). The type rejects unsupported
+pairs, including Factory for QA. A live same-id replay returns the stored
+snapshot without resolving configuration again, and generic Run metadata
+updates may merge operational keys but cannot replace or partially alter this
+record.
+
+`EngineeringMessage.task_id` and `QAMessage.run_id` are stable references to
+the paid Run. Their consumers load the snapshot by that reference before an
+engineering or exploratory-QA worker launches. They never select an executor
+from mutable project or consumer-process configuration, so a configuration
+change after admission cannot switch a queued attempt.
+
 `engineering_budget_policies` holds at most one durable policy row per `user_id`.
 `limit_microusd` is a non-negative integer number of micro-USD; budget requests never
 accept floating-point or dollar-denominated money. `state` is the typed
@@ -1204,6 +1235,10 @@ class EngineeringResult(BaseResult):
 - `feature` — add feature to existing project: develop → CI → deploy (no scaffolding)
 - `fix` — fix issue in existing project: develop → CI → deploy (no scaffolding)
 
+The message's `task_id` is also the stable reference used by the engineering
+consumer to load the immutable paid-run executor decision before it asks
+worker-manager to launch a developer worker.
+
 **Flags:**
 - `skip_deploy=True` — skip auto-deploy after CI passes (develop → CI only)
 - `planning_task_id` — when set, engineering worker updates task status (in_dev → done/failed) and writes `iteration_end` events. Dispatcher-created runs always set this + `skip_deploy=True` (deploy handled at story level).
@@ -1622,6 +1657,10 @@ class QAMessage(BaseMessage):
     bot_username: str | None = None
     qa_attempt: int = 0
 ```
+
+The message's `run_id` is the stable reference used by the QA consumer to load
+the immutable paid-run executor decision before it launches the exploratory QA
+worker. Health-only HTTP checks launch no executor.
 
 **Acceptance criteria:** `Repository.acceptance_criteria` is the single source of truth for what QA tests. `POST /api/repositories/` seeds every repository with `BASELINE_ACCEPTANCE_CRITERIA` (`shared/contracts/acceptance.py`), so a story that never reached the architect still has criteria; the architect's `update_acceptance_criteria` tool extends the list as stories add functionality. Story and task criteria describe work to be done and are not what QA runs.
 

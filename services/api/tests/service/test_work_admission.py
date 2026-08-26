@@ -117,7 +117,13 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
     )
     assert started.status_code == HTTPStatus.OK, started.text
     assert started.json()["run_id"] == canonical_id
-    assert await db_session.scalar(select(Run).where(Run.id == canonical_id)) is not None
+    decision = started.json()["executor_decision"]
+    assert decision["attempt_kind"] == "qa"
+    assert decision["agent_type"] == "codex"
+    assert decision["source"] == "qa_api_setting"
+    run = await db_session.scalar(select(Run).where(Run.id == canonical_id))
+    assert run is not None
+    assert run.run_metadata["executor_decision"] == decision
     # Delivery bookkeeping is mutable engine state, not part of the caller's
     # command identity.  The canonical payload remains in the admission audit.
     assert (
@@ -133,6 +139,7 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
     )
     assert replay.status_code == HTTPStatus.OK, replay.text
     assert replay.json()["run_id"] == canonical_id
+    assert replay.json()["executor_decision"] == decision
     assert (await db_session.scalars(select(Run.id).where(Run.id == canonical_id))).all() == [
         canonical_id
     ]
@@ -148,6 +155,21 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
     )
     assert conflict.status_code == HTTPStatus.CONFLICT
     assert conflict.json()["detail"]["code"] == "paid_run_command_conflict"
+
+    immutable = await async_client.patch(
+        f"/api/runs/{canonical_id}",
+        json={"run_metadata": {"executor_decision": {"agent_type": "claude"}}},
+    )
+    assert immutable.status_code == HTTPStatus.CONFLICT
+
+    erased = await async_client.patch(f"/api/runs/{canonical_id}", json={"run_metadata": None})
+    assert erased.status_code == HTTPStatus.CONFLICT
+    persisted = await async_client.get(f"/api/runs/{canonical_id}")
+    assert persisted.status_code == HTTPStatus.OK, persisted.text
+    assert persisted.json()["run_metadata"] == {
+        "executor_decision": decision,
+        "qa_dispatched_at": "2026-08-26T00:00:00+00:00",
+    }
 
 
 @pytest.mark.asyncio
@@ -295,6 +317,65 @@ async def test_concurrent_paid_run_starts_hold_the_last_slot(
         ) == occupied_count + 1
     finally:
         await _set_config(db_session, "work_admission.max_concurrent_paid_runs", 10000)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_paid_start_resolves_once_and_replays_first_decision(
+    async_client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """The control lock must serialize selection as well as Run insertion."""
+    from src import work_admission
+    from src.executor_resolver import resolve_executor_decision as resolve
+
+    telegram_id = 830_000_007
+    project_id = str(uuid.uuid4())
+    assert (
+        await async_client.post(
+            "/api/users/", json={"telegram_id": telegram_id, "username": "resolver-race"}
+        )
+    ).status_code == HTTPStatus.CREATED
+    assert (
+        await async_client.post(
+            "/api/projects/",
+            headers={"X-Telegram-ID": str(telegram_id)},
+            json={
+                "id": project_id,
+                "title": "Resolver race",
+                "initiating_run_id": str(uuid.uuid4()),
+                "status": "active",
+                "config": {},
+            },
+        )
+    ).status_code == HTTPStatus.CREATED
+
+    calls = []
+
+    def counting_resolver(*args, **kwargs):
+        decision = resolve(*args, **kwargs)
+        calls.append(decision)
+        return decision.model_copy(update={"reason": f"resolver call {len(calls)}"})
+
+    monkeypatch.setattr(work_admission, "resolve_executor_decision", counting_resolver)
+    command = {
+        "id": f"qa-resolver-race-{uuid.uuid4().hex}",
+        "type": "qa",
+        "project_id": project_id,
+    }
+    barrier = asyncio.Barrier(2)
+
+    async def start() -> dict:
+        await barrier.wait()
+        response = await async_client.post("/api/work-admission/paid-runs", json=command)
+        assert response.status_code == HTTPStatus.OK, response.text
+        return response.json()
+
+    first, second = await asyncio.gather(start(), start())
+    assert len(calls) == 1
+    assert first["executor_decision"] == second["executor_decision"]
+    assert first["executor_decision"]["reason"] == "resolver call 1"
+    run = await db_session.scalar(select(Run).where(Run.id == command["id"]))
+    assert run is not None
+    assert run.run_metadata["executor_decision"] == first["executor_decision"]
 
 
 @pytest.mark.asyncio
