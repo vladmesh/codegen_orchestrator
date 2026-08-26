@@ -195,7 +195,13 @@ async def test_paid_run_refusal_is_a_durable_russian_owner_record_and_replays(
         assert audit.user_id == user.json()["id"]
         assert audit.reason == "emergency_stop"
         assert audit.message == "Запуск новой работы временно остановлен оператором."
-        assert audit.command_payload == payload
+        assert audit.command_payload == {
+            **payload,
+            "story_id": None,
+            "task_id": None,
+            "run_metadata": {},
+            "callback_stream": None,
+        }
         assert await db_session.scalar(select(Run).where(Run.id == run_id)) is None
     finally:
         await _set_config(db_session, "work_admission.emergency_stop", False)
