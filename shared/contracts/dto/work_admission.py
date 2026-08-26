@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .engineering_budget_policy import EngineeringBudgetAdmissionRead
 from .run import RunType
@@ -47,6 +47,12 @@ class EmergencyStopRead(BaseModel):
     """Current emergency-stop state."""
 
     enabled: bool
+
+
+class WorkAdmissionControlCommand(BaseModel):
+    """Typed write for a protected work-admission control."""
+
+    value: StrictBool | StrictInt
 
 
 class PaidRunStartCommand(BaseModel):
