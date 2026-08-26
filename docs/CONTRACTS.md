@@ -173,13 +173,14 @@ denies. `POST .../admissions/{attempt_id}/release` may release only a proven pre
 `active` hold.
 
 `engineering_budget_reservations` records those decisions separately from the immutable
-ledger. The pre-handoff boundary ends only when the engineering message has published.
-Dispatchers validate cheap local conditions first; after an admitted `active` hold, every
-exception or typed refusal before that boundary, including Run creation, recipient
-resolution and publishing, changes it to `released`. A released row proves only that its
-previous handoff did not begin; a deterministic replay such as a deploy-fix dispatch must
-re-enter admission and obtain a newly `active` row before any story transition, Run creation
-or queue publication. This applies to ordinary task
+ledger. The pre-handoff boundary ends before an engineering message is submitted to the
+queue. Dispatchers validate cheap local conditions first; after an admitted `active` hold,
+a typed refusal or an exception proven to occur before that queue call — including Run
+creation and recipient resolution — changes it to `released`. An exception from publication
+has an unknown broker outcome and does not release the hold or cancel the queued Run. A
+released row proves only that its previous handoff did not begin; a deterministic replay such
+as a deploy-fix dispatch must re-enter admission and obtain a newly `active` row before any
+story transition, Run creation or queue publication. This applies to ordinary task
 dispatch and supervisor deploy-fix dispatch, whose stable attempt id is
 `eng-deploy-fix-{deploy_run_id}-{attempt}`. A scheduler denial has no Run or queue side
 effect and moves the affected task or deploy-fix story to `waiting_human_review` with

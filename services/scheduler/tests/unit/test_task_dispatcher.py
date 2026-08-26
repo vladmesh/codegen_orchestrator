@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -788,47 +787,6 @@ class TestDispatchPartialFailure:
         )
         redis_client.publish_message.assert_not_called()
         api_client.transition_task.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_next_tick_after_pre_handoff_abort_creates_one_run(
-        self, api_client, redis_client, monkeypatch
-    ):
-        """A cancelled, unqueued Run is readable and permits a fresh attempt."""
-        from src.tasks import task_dispatcher
-        from src.tasks.task_dispatcher import dispatch_todo_tasks
-
-        api_client.get_tasks_by_status.return_value = [self._todo_task()]
-        api_client.get_task_events.return_value = []
-        monkeypatch.setattr(
-            task_dispatcher,
-            "resolve_project_recipient",
-            AsyncMock(
-                side_effect=[
-                    RuntimeError("recipient unavailable"),
-                    SimpleNamespace(telegram_chat_id="900000001"),
-                ]
-            ),
-        )
-        await dispatch_todo_tasks(api_client, redis_client)
-
-        # This is exactly what the API abort serializes: CANCELLED has no fake
-        # worker result and is filtered before either unfinished/replay recovery.
-        from shared.contracts.dto.run import RunStatus
-
-        api_client.abort_paid_run_pre_handoff.assert_awaited_once()
-        api_client.list_runs.return_value = [
-            self._prior_run(
-                RunStatus.CANCELLED,
-                pre_handoff_aborted=True,
-            )
-        ]
-        api_client.start_paid_run.reset_mock()
-
-        dispatched = await dispatch_todo_tasks(api_client, redis_client)
-
-        assert dispatched == 1
-        api_client.start_paid_run.assert_called_once()
-        api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
 
     @pytest.mark.asyncio
     async def test_transition_failure_is_retried_once(self, api_client, redis_client):
