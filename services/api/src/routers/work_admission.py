@@ -1,6 +1,7 @@
 """Internal/admin commands for paid-work admission and its operator controls."""
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.work_admission import (
@@ -40,6 +41,13 @@ _CONTROL_FIELDS = {
     ENGINEERING_EXECUTOR_OVERRIDE_KEY: "engineering_executor_override",
     QA_EXECUTOR_OVERRIDE_KEY: "qa_executor_override",
 }
+_CONTROL_DESCRIPTIONS = {
+    EMERGENCY_STOP_KEY: "Emergency stop for new projects, engineering and QA work",
+    MAX_PROJECTS_KEY: "Maximum number of projects per user",
+    MAX_PAID_RUNS_KEY: "Maximum number of concurrent engineering and QA runs",
+    ENGINEERING_EXECUTOR_OVERRIDE_KEY: "Global executor override for engineering attempts",
+    QA_EXECUTOR_OVERRIDE_KEY: "Global executor override for QA attempts",
+}
 
 
 def _paid_work_controls(values: dict[str, object]) -> PaidWorkControlsRead:
@@ -60,17 +68,39 @@ async def _replace_paid_work_controls(
     command: PaidWorkControlsCommand, actor: str, db: AsyncSession
 ) -> PaidWorkControlsRead:
     """Lock all paid controls in key order, mutate, and append one fact per change."""
-    values = await _controls(db, *PAID_WORK_CONTROL_KEYS)
-    _paid_work_controls(values)
     requested = command.model_dump(mode="json")
+    rows = (
+        await db.scalars(
+            select(SystemConfig)
+            .where(SystemConfig.key.in_(PAID_WORK_CONTROL_KEYS))
+            .order_by(SystemConfig.key)
+            .with_for_update()
+        )
+    ).all()
+    values = {row.key: row.value for row in rows}
+    for key, field in _CONTROL_FIELDS.items():
+        if key not in values:
+            value = requested[field]
+            db.add(
+                SystemConfig(
+                    key=key,
+                    value=value,
+                    category="work_admission",
+                    description=_CONTROL_DESCRIPTIONS[key],
+                    updated_by="work_admission_control",
+                )
+            )
+            values[key] = value
+    _paid_work_controls(values)
     for key, field in _CONTROL_FIELDS.items():
         before = values[key]
         after = requested[field]
         if before == after:
             continue
-        row = await db.get(SystemConfig, key)
-        if row is None:  # _controls already makes this unreachable.
-            raise RuntimeError(f"Missing work admission config: {key}")
+        row = next((row for row in rows if row.key == key), None)
+        if row is None:
+            # Newly initialized values above already equal the requested state.
+            continue
         row.value = after
         db.add(
             WorkAdmissionAudit(
@@ -140,13 +170,22 @@ async def put_work_admission_control(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if not isinstance(command.value, int) or isinstance(command.value, bool) or command.value < 0:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
-    values = await _controls(db, MAX_PROJECTS_KEY)
-    row = await db.get(SystemConfig, key)
+    row = await db.scalar(select(SystemConfig).where(SystemConfig.key == key).with_for_update())
     if row is None:
-        raise RuntimeError(f"Missing work admission config: {key}")
+        row = SystemConfig(
+            key=key,
+            value=command.value,
+            category="work_admission",
+            description=_CONTROL_DESCRIPTIONS[key],
+            updated_by="work_admission_control",
+        )
+        db.add(row)
+        await db.commit()
+        return {"key": key, "value": command.value, "previous": None}
+    previous = row.value
     row.value = command.value
     await db.commit()
-    return {"key": key, "value": command.value, "previous": values[key]}
+    return {"key": key, "value": command.value, "previous": previous}
 
 
 @router.post("/paid-runs", response_model=PaidRunStartRead)

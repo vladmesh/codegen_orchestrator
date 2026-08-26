@@ -25,6 +25,14 @@ _WORK_ADMISSION_KEYS = {
     "work_admission.emergency_stop",
     "work_admission.max_projects_per_user",
     "work_admission.max_concurrent_paid_runs",
+    "work_admission.engineering_executor_override",
+    "work_admission.qa_executor_override",
+}
+_PAID_WORK_CONTROL_FIELDS = {
+    "work_admission.emergency_stop": "emergency_stop",
+    "work_admission.max_concurrent_paid_runs": "max_concurrent_paid_runs",
+    "work_admission.engineering_executor_override": "engineering_executor_override",
+    "work_admission.qa_executor_override": "qa_executor_override",
 }
 
 
@@ -75,6 +83,7 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
     created = 0
     updated = 0
     unchanged = 0
+    paid_work_controls: dict[str, object] = {}
 
     # Seeding is an internal call like any other, so it goes through the transport
     # that carries X-Internal-Key: every route under /api requires a caller.
@@ -83,6 +92,11 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
         for config in configs:
             key = config["key"]
             value = config["value"]
+
+            field = _PAID_WORK_CONTROL_FIELDS.get(key)
+            if field is not None:
+                paid_work_controls[field] = value
+                continue
 
             try:
                 exists, db_value = _current_value(client, key)
@@ -119,6 +133,29 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
             except (httpx.RequestError, RuntimeError) as e:
                 print(f"  Request error for '{key}': {e}")
                 success = False
+
+        if paid_work_controls:
+            missing_fields = set(_PAID_WORK_CONTROL_FIELDS.values()) - paid_work_controls.keys()
+            if missing_fields:
+                print(
+                    "  Paid-work controls are incomplete in the seed file: "
+                    + ", ".join(sorted(missing_fields))
+                )
+                success = False
+            else:
+                try:
+                    resp = client.request_raw(
+                        "PUT", "work-admission/controls", json=paid_work_controls
+                    )
+                    if resp.status_code != httpx.codes.OK:
+                        print(
+                            "  Failed to write paid-work controls: "
+                            f"{resp.status_code} - {resp.text}"
+                        )
+                        success = False
+                except httpx.RequestError as e:
+                    print(f"  Request error for paid-work controls: {e}")
+                    success = False
     finally:
         client.close()
 

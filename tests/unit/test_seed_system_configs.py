@@ -128,3 +128,42 @@ def test_api_service_test_overlay_explicitly_overrides_every_work_admission_key(
         "work_admission.engineering_executor_override": "none",
         "work_admission.qa_executor_override": "none",
     }
+
+
+def test_paid_work_controls_seed_through_the_complete_typed_command(tmp_path, db, monkeypatch):
+    """A blank database must not need generic CRUD for protected controls."""
+    configs = [
+        _config("work_admission.emergency_stop", False),
+        _config("work_admission.max_concurrent_paid_runs", 7),
+        _config("work_admission.engineering_executor_override", "claude"),
+        _config("work_admission.qa_executor_override", "codex"),
+    ]
+    path = _write_configs(tmp_path, configs)
+    typed_requests: list[dict] = []
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/controls":
+            if request.method == "GET":
+                return httpx.Response(500, json={"detail": "controls are not initialized"})
+            assert request.method == "PUT"
+            typed_requests.append(json.loads(request.content.decode()))
+            return httpx.Response(200, json=typed_requests[-1])
+        raise AssertionError(
+            f"protected controls used generic CRUD: {request.method} {request.url}"
+        )
+
+    transport = httpx.MockTransport(handler)
+    with patch.object(
+        seeder.httpx, "Client", lambda *a, **kw: _REAL_CLIENT(transport=transport, **kw)
+    ):
+        assert seeder.seed_system_configs(API_BASE_URL, path) is True
+
+    assert typed_requests == [
+        {
+            "emergency_stop": False,
+            "max_concurrent_paid_runs": 7,
+            "engineering_executor_override": "claude",
+            "qa_executor_override": "codex",
+        }
+    ]

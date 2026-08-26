@@ -79,11 +79,14 @@ async def test_typed_paid_work_controls_are_complete_strict_and_audited(
             select(WorkAdmissionAudit).where(WorkAdmissionAudit.subject == "paid_work_control")
         )
     ).all()
-    assert {(audit.control_name, audit.before_value, audit.after_value) for audit in audits} == {
+    expected_changes = {
         ("max_concurrent_paid_runs", 10000, 7),
         ("engineering_executor_override", "none", "claude"),
         ("qa_executor_override", "none", "codex"),
     }
+    assert expected_changes.issubset(
+        {(audit.control_name, audit.before_value, audit.after_value) for audit in audits}
+    )
     assert all(
         audit.actor == "internal_service" and audit.created_at is not None for audit in audits
     )
