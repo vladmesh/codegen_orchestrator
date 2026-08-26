@@ -46,6 +46,11 @@ class PaidRunIdentityExpired(Exception):
     """A terminal attempt id cannot be reused for a new paid attempt."""
 
 
+def _command_metadata(metadata: dict | None) -> dict:
+    """Exclude engine bookkeeping from the immutable caller command payload."""
+    return {key: value for key, value in (metadata or {}).items() if key != "pre_handoff_aborted"}
+
+
 async def _controls(db: AsyncSession, *keys: str) -> dict[str, object]:
     rows = (
         await db.scalars(select(SystemConfig).where(SystemConfig.key.in_(keys)).with_for_update())
@@ -165,7 +170,7 @@ async def _replay_paid_start(
             and existing.project_id == command.project_id
             and existing.story_id == command.story_id
             and existing.task_id == command.task_id
-            and existing.run_metadata == command.run_metadata
+            and _command_metadata(existing.run_metadata) == command.run_metadata
             and existing.callback_stream == command.callback_stream
         )
         if not same_command:

@@ -97,7 +97,8 @@ control locks. An existing Run is replayed only when it is `queued` or
 they never cache a denial. A retry after a stop is lifted or a capacity slot is
 freed therefore evaluates the controls again. A terminal Run is never reopened:
 its identity returns the typed `paid_run_identity_expired` conflict and a caller
-must create a new attempt identity.
+must create a new attempt identity. A changed payload under a terminal identity
+returns `paid_run_command_conflict` before that expiry outcome.
 
 For scheduler dispatch and QA handoff, an addressable refusal writes its owed
 owner-notification record before the task/story transitions that park work;
