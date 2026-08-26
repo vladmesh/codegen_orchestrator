@@ -138,12 +138,10 @@ async def admit_project_creation(
     )
 
 
-async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> PaidRunStartRead:
-    """Atomically decide and create one queued engineering or QA run.
-
-    The config-row lock is retained through the Run INSERT and caller commit, so
-    no successful decision can escape without occupying a counted slot.
-    """
+async def _replay_paid_start(
+    command: PaidRunStartCommand, payload: dict, db: AsyncSession
+) -> PaidRunStartRead | None:
+    """Return the prior immutable result, if this command id was already decided."""
     existing = await db.scalar(select(Run).where(Run.id == command.id).with_for_update())
     if existing is not None:
         same_command = (
@@ -159,8 +157,6 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         return PaidRunStartRead(
             admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id=existing.id
         )
-
-    payload = command.model_dump(mode="json")
     previous_refusal = await db.scalar(
         select(WorkAdmissionAudit)
         .where(
@@ -169,37 +165,64 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         )
         .with_for_update()
     )
-    if previous_refusal is not None:
-        if previous_refusal.command_payload != payload:
-            raise PaidRunCommandConflict(command.id)
-        reason = (
-            WorkAdmissionReason(previous_refusal.reason)
-            if previous_refusal.reason is not None
-            else None
+    if previous_refusal is None:
+        return None
+    if previous_refusal.command_payload != payload:
+        raise PaidRunCommandConflict(command.id)
+    reason = (
+        WorkAdmissionReason(previous_refusal.reason)
+        if previous_refusal.reason is not None
+        else None
+    )
+    return PaidRunStartRead(
+        admission=WorkAdmissionRead(
+            outcome=WorkAdmissionOutcome(previous_refusal.outcome),
+            reason=reason,
+            retryable=reason is WorkAdmissionReason.PAID_WORK_LIMIT,
+            message=previous_refusal.message,
         )
-        return PaidRunStartRead(
-            admission=WorkAdmissionRead(
-                outcome=WorkAdmissionOutcome(previous_refusal.outcome),
-                reason=reason,
-                retryable=reason is WorkAdmissionReason.PAID_WORK_LIMIT,
-                message=previous_refusal.message,
-            )
-        )
+    )
+
+
+async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> PaidRunStartRead:
+    """Atomically decide and create one queued engineering or QA run.
+
+    The config-row lock is retained through the Run INSERT and caller commit, so
+    no successful decision can escape without occupying a counted slot.
+    """
+    payload = command.model_dump(mode="json")
+    replay = await _replay_paid_start(command, payload, db)
+    if replay is not None:
+        return replay
 
     project = await db.scalar(select(Project).where(Project.id == command.project_id))
     if project is None:
         raise RuntimeError(f"Project {command.project_id} does not exist")
     user_id = project.owner_id
 
-    stopped = await _stop_or_continue(
-        db,
-        "paid_work",
-        user_id=user_id,
-        reference_id=command.id,
-        command_payload=payload,
-    )
-    if stopped is not None:
-        return PaidRunStartRead(admission=stopped)
+    # The stop row serializes starts. Recheck after taking it: another request
+    # with the same id may have committed while this one waited for the lock.
+    controls = await _controls(db, EMERGENCY_STOP_KEY)
+    replay = await _replay_paid_start(command, payload, db)
+    if replay is not None:
+        return replay
+    enabled = controls[EMERGENCY_STOP_KEY]
+    if not isinstance(enabled, bool):
+        raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
+    if enabled:
+        return PaidRunStartRead(
+            admission=await _audit(
+                db,
+                "paid_work",
+                WorkAdmissionRead(
+                    outcome=WorkAdmissionOutcome.DENIED,
+                    reason=WorkAdmissionReason.EMERGENCY_STOP,
+                ),
+                user_id=user_id,
+                reference_id=command.id,
+                command_payload=payload,
+            )
+        )
     controls = await _controls(db, MAX_PAID_RUNS_KEY)
     count = int(
         await db.scalar(
