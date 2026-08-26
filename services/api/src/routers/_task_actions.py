@@ -15,11 +15,10 @@ from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
 from ..dependencies import get_redis_client
-from ..engineering_budget_admission import release_pre_handoff_reservation
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
-from ..work_admission import start_paid_run
+from ..work_admission import abort_paid_run_pre_handoff, start_paid_run
 from ._ownership import initiating_run_or_conflict
 from ._recipients import resolve_project_chat_id
 from ._task_helpers import create_status_event, get_task, to_read, validate_transition
@@ -37,10 +36,10 @@ _COMPLETE_PATH: dict[str, list[str]] = {
 
 
 async def _release_pre_handoff_failure(run_id: str, db: AsyncSession) -> None:
-    """Recover an admitted hold when the engineering message never left this API."""
+    """Close the unpublished Run and release its hold in one transaction."""
     await db.rollback()
     try:
-        await release_pre_handoff_reservation(run_id, db)
+        await abort_paid_run_pre_handoff(run_id, "Engineering handoff could not be published", db)
         await db.commit()
     except Exception:
         await db.rollback()

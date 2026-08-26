@@ -330,3 +330,17 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         command_payload=payload,
     )
     return PaidRunStartRead(admission=admitted, run_id=run.id)
+
+
+async def abort_paid_run_pre_handoff(run_id: str, reason: str, db: AsyncSession) -> None:
+    """Atomically close an unpublished paid run and release its engineering hold."""
+    run = await db.scalar(select(Run).where(Run.id == run_id).with_for_update())
+    if run is None:
+        return
+    if run.status in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
+        run.status = RunStatus.FAILED.value
+        run.error_message = reason
+    if run.type == RunType.ENGINEERING.value:
+        from .engineering_budget_admission import release_pre_handoff_reservation
+
+        await release_pre_handoff_reservation(run_id, db)

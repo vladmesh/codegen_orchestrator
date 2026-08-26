@@ -45,7 +45,7 @@ from ..schemas.actions import AdminAction
 from ..schemas.repository import RepositoryRead
 from ..schemas.run import RunRead
 from ..utils.telegram_binding import release_bot_binding
-from ..work_admission import start_paid_run
+from ..work_admission import abort_paid_run_pre_handoff, start_paid_run
 from ._ownership import initiating_run_or_conflict
 from ._recipients import ProjectRecipient, resolve_project_chat_id
 
@@ -610,7 +610,15 @@ async def run_e2e(
         run_id=run_id,
         bot_username=repo.bot_username,
     )
-    await redis.publish_message(QA_QUEUE, msg)
+    try:
+        await redis.publish_message(QA_QUEUE, msg)
+    except Exception as exc:
+        await abort_paid_run_pre_handoff(run_id, "QA handoff could not be published", db)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="QA handoff could not be published",
+        ) from exc
 
     logger.info("e2e_requested", app_id=application_id, run_id=run_id, actor=body.actor)
     return {
