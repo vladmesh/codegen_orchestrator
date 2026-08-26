@@ -39,7 +39,7 @@ async def _release_pre_handoff_failure(run_id: str, db: AsyncSession) -> None:
     """Close the unpublished Run and release its hold in one transaction."""
     await db.rollback()
     try:
-        await abort_paid_run_pre_handoff(run_id, "Engineering handoff could not be published", db)
+        await abort_paid_run_pre_handoff(run_id, "Engineering handoff preparation failed", db)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -306,13 +306,24 @@ async def spawn_worker(
             planning_task_id=task.id,
             story_id=getattr(task, "story_id", None) or None,
         )
-        await redis.publish_message(ENGINEERING_QUEUE, msg)
     except Exception as error:
+        # Everything here precedes the queue call.  A publish exception is not
+        # proof that no worker received the message, so it is handled below.
         await _release_pre_handoff_failure(run_id, db)
-        logger.exception("worker_spawn_pre_handoff_failed", task_id=task_id, run_id=run_id)
+        logger.exception(
+            "worker_spawn_pre_handoff_preparation_failed", task_id=task_id, run_id=run_id
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Engineering handoff could not be published",
+        ) from error
+    try:
+        await redis.publish_message(ENGINEERING_QUEUE, msg)
+    except Exception as error:
+        logger.exception("worker_spawn_publish_outcome_unknown", task_id=task_id, run_id=run_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Engineering handoff could not be confirmed",
         ) from error
 
     logger.info("worker_spawned", task_id=task.id, run_id=run_id, actor=body.actor)

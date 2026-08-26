@@ -107,8 +107,11 @@ synchronously, while the command still records its audit reason.
 
 Known limitations: if a process dies after the paid-run command commits and
 before handoff, its queued Run continues to occupy the ceiling until manual
-intervention; a handled delivery failure closes the Run and releases its hold
-through one atomic internal abort command.
+intervention. The atomic internal abort command is used only when preparation
+failed before any queue call; it marks the Run `cancelled` and releases its
+hold. A publication exception has an unknown broker outcome, so the queued Run
+and its active hold remain for normal unfinished-run recovery rather than being
+incorrectly cancelled.
 Refusal notification is attached to the project's initiating Run, so a second
 task refusal for that project can be suppressed and a standalone task has no
 owner notification.

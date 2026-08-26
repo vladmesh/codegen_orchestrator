@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -731,9 +732,9 @@ class TestDispatchPartialFailure:
         )
 
     @pytest.mark.asyncio
-    async def test_publish_failure_fails_run_and_keeps_task_todo(self, api_client, redis_client):
-        """Publish blows up → the created run is closed, the task stays dispatchable."""
-        from src.tasks.task_dispatcher import PUBLISH_FAILED_ERROR, dispatch_todo_tasks
+    async def test_publish_failure_keeps_the_run_owned_for_recovery(self, api_client, redis_client):
+        """A lost publish response is not evidence that a worker did not start."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [self._todo_task()]
         api_client.get_task_events.return_value = []
@@ -742,9 +743,8 @@ class TestDispatchPartialFailure:
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
         assert dispatched == 0
-        run_id = api_client.start_paid_run.call_args[0][0].id
-        api_client.abort_paid_run_pre_handoff.assert_awaited_once_with(run_id, PUBLISH_FAILED_ERROR)
-        # Task must stay in todo — nothing is working on it
+        api_client.abort_paid_run_pre_handoff.assert_not_awaited()
+        # The task stays in todo until unfinished-run recovery confirms ownership.
         api_client.transition_task.assert_not_called()
 
     @pytest.mark.asyncio
@@ -790,28 +790,39 @@ class TestDispatchPartialFailure:
         api_client.transition_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_next_tick_after_publish_failure_creates_one_run(self, api_client, redis_client):
-        """The failed run is terminal, so the next tick dispatches cleanly once."""
+    async def test_next_tick_after_pre_handoff_abort_creates_one_run(
+        self, api_client, redis_client, monkeypatch
+    ):
+        """A cancelled, unqueued Run is readable and permits a fresh attempt."""
+        from src.tasks import task_dispatcher
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [self._todo_task()]
         api_client.get_task_events.return_value = []
-        redis_client.publish_message.side_effect = RuntimeError("redis is down")
+        monkeypatch.setattr(
+            task_dispatcher,
+            "resolve_project_recipient",
+            AsyncMock(
+                side_effect=[
+                    RuntimeError("recipient unavailable"),
+                    SimpleNamespace(telegram_chat_id="900000001"),
+                ]
+            ),
+        )
         await dispatch_todo_tasks(api_client, redis_client)
 
-        # The atomic abort leaves a terminal run, so the next tick starts anew.
+        # This is exactly what the API abort serializes: CANCELLED has no fake
+        # worker result and is filtered before either unfinished/replay recovery.
         from shared.contracts.dto.run import RunStatus
 
         api_client.abort_paid_run_pre_handoff.assert_awaited_once()
         api_client.list_runs.return_value = [
             self._prior_run(
-                RunStatus.FAILED,
-                result={"engineering_status": "failed"},
+                RunStatus.CANCELLED,
                 pre_handoff_aborted=True,
             )
         ]
         api_client.start_paid_run.reset_mock()
-        redis_client.publish_message.side_effect = None
 
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 

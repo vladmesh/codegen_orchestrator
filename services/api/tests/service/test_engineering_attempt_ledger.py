@@ -728,11 +728,22 @@ async def test_manual_invalid_task_is_refused_before_budget_admission(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["recipient", "publish"])
-async def test_manual_pre_handoff_failures_release_the_admitted_reservation(
-    async_client: AsyncClient, db_session, monkeypatch, failure: str
+@pytest.mark.parametrize(
+    ("failure", "reservation_state", "run_status"),
+    [
+        ("recipient", "released", "cancelled"),
+        ("publish", "active", "queued"),
+    ],
+)
+async def test_manual_handoff_failure_only_aborts_before_queue_attempt(
+    async_client: AsyncClient,
+    db_session,
+    monkeypatch,
+    failure: str,
+    reservation_state: str,
+    run_status: str,
 ):
-    """Manual recipient and queue failures prove no provider work could have started."""
+    """Only preparation failures prove that the broker has not accepted work."""
     from src.routers import _task_actions
 
     user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
@@ -756,7 +767,7 @@ async def test_manual_pre_handoff_failures_release_the_admitted_reservation(
         monkeypatch.setattr(
             RedisStreamClient,
             "publish_message",
-            AsyncMock(side_effect=RuntimeError("redis unavailable")),
+            AsyncMock(side_effect=RuntimeError("redis response lost")),
         )
 
     refused = await async_client.post(
@@ -769,11 +780,11 @@ async def test_manual_pre_handoff_failures_release_the_admitted_reservation(
         )
     )
     assert reservation is not None
-    assert reservation.state == "released"
-    assert reservation.active_held_microusd == 0
+    assert reservation.state == reservation_state
+    assert reservation.active_held_microusd == (0 if failure == "recipient" else 60)
     run = await db_session.scalar(select(Run).where(Run.id == reservation.attempt_id))
     assert run is not None
-    assert run.status == "failed"
+    assert run.status == run_status
 
 
 @pytest.mark.asyncio

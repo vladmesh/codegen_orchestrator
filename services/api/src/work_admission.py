@@ -46,11 +46,6 @@ class PaidRunIdentityExpired(Exception):
     """A terminal attempt id cannot be reused for a new paid attempt."""
 
 
-def _command_metadata(metadata: dict | None) -> dict:
-    """Exclude engine bookkeeping from the immutable caller command payload."""
-    return {key: value for key, value in (metadata or {}).items() if key != "pre_handoff_aborted"}
-
-
 async def _controls(db: AsyncSession, *keys: str) -> dict[str, object]:
     rows = (
         await db.scalars(select(SystemConfig).where(SystemConfig.key.in_(keys)).with_for_update())
@@ -164,17 +159,6 @@ async def _replay_paid_start(
     refusal: controls must decide every retry anew.
     """
     existing = await db.scalar(select(Run).where(Run.id == command.id).with_for_update())
-    if existing is not None:
-        same_command = (
-            existing.type == command.type.value
-            and existing.project_id == command.project_id
-            and existing.story_id == command.story_id
-            and existing.task_id == command.task_id
-            and _command_metadata(existing.run_metadata) == command.run_metadata
-            and existing.callback_stream == command.callback_stream
-        )
-        if not same_command:
-            raise PaidRunCommandConflict(command.id)
     prior_payloads = (
         await db.scalars(
             select(WorkAdmissionAudit.command_payload).where(
@@ -183,9 +167,14 @@ async def _replay_paid_start(
             )
         )
     ).all()
-    if any(
-        prior_payload is not None and prior_payload != payload for prior_payload in prior_payloads
-    ):
+    # The audit is the immutable command record.  A Run's metadata is deliberately
+    # mutable: dispatchers add delivery stamps and workers add operational facts.
+    # Comparing it here would turn engine bookkeeping into a caller conflict.
+    if any(prior_payload != payload for prior_payload in prior_payloads):
+        raise PaidRunCommandConflict(command.id)
+    if existing is not None and not prior_payloads:
+        # Runs created outside this command have no immutable command identity and
+        # must not become replays merely because their current fields happen to fit.
         raise PaidRunCommandConflict(command.id)
     if existing is None:
         return None
@@ -349,7 +338,10 @@ async def abort_paid_run_pre_handoff(run_id: str, reason: str, db: AsyncSession)
     if run is None:
         return
     if run.status in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
-        run.status = RunStatus.FAILED.value
+        # CANCELLED is the only terminal status that deliberately carries no
+        # worker result.  This state means the message was proven not to have
+        # reached a queue; FAILED would claim a worker outcome that does not exist.
+        run.status = RunStatus.CANCELLED.value
         run.error_message = reason
         run.run_metadata = {**(run.run_metadata or {}), "pre_handoff_aborted": True}
     if run.type == RunType.ENGINEERING.value:

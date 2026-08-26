@@ -118,6 +118,14 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
     assert started.status_code == HTTPStatus.OK, started.text
     assert started.json()["run_id"] == canonical_id
     assert await db_session.scalar(select(Run).where(Run.id == canonical_id)) is not None
+    # Delivery bookkeeping is mutable engine state, not part of the caller's
+    # command identity.  The canonical payload remains in the admission audit.
+    assert (
+        await async_client.patch(
+            f"/api/runs/{canonical_id}",
+            json={"run_metadata": {"qa_dispatched_at": "2026-08-26T00:00:00+00:00"}},
+        )
+    ).status_code == HTTPStatus.OK
 
     replay = await async_client.post(
         "/api/work-admission/paid-runs",
@@ -396,6 +404,19 @@ async def test_released_deploy_fix_identity_reacquires_its_hold_before_requeuein
     await abort_paid_run_pre_handoff(fix_task_id, "handoff failed", db_session)
     await db_session.commit()
     assert reservation.state == "released"
+    # The scheduler reads this through its API client before deciding whether a
+    # todo task needs a new dispatch.  Abort must therefore serialize a terminal
+    # state that the shared RunDTO accepts without inventing a worker result.
+    listed = await async_client.get("/api/runs/", params={"project_id": project_id})
+    assert listed.status_code == HTTPStatus.OK, listed.text
+    aborted = next(item for item in listed.json() if item["id"] == fix_task_id)
+    assert aborted["status"] == "cancelled"
+    assert aborted["result"] is None
+    # SchedulerAPIClient validates this same response as RunDTO before its
+    # unfinished/dispatched filters decide to issue the next attempt.
+    from shared.contracts.dto.run import RunDTO
+
+    assert RunDTO.model_validate(aborted).status.value == "cancelled"
 
     replay = await async_client.post("/api/work-admission/paid-runs", json=payload)
     assert replay.status_code == HTTPStatus.CONFLICT

@@ -611,13 +611,22 @@ async def run_e2e(
             run_id=run_id,
             bot_username=repo.bot_username,
         )
-        await redis.publish_message(QA_QUEUE, msg)
     except Exception as exc:
-        await abort_paid_run_pre_handoff(run_id, "QA handoff could not be published", db)
+        # This block is preparation only.  Once publication is attempted the
+        # broker may have accepted it despite an exception reaching us.
+        await abort_paid_run_pre_handoff(run_id, "QA handoff preparation failed", db)
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="QA handoff could not be published",
+        ) from exc
+    try:
+        await redis.publish_message(QA_QUEUE, msg)
+    except Exception as exc:
+        logger.exception("e2e_publish_outcome_unknown", app_id=application_id, run_id=run_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="QA handoff could not be confirmed",
         ) from exc
 
     logger.info("e2e_requested", app_id=application_id, run_id=run_id, actor=body.actor)

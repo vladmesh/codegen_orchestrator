@@ -539,14 +539,11 @@ class TestSuperviseDeployingStories:
         ]
 
     @pytest.mark.asyncio
-    async def test_code_fix_publish_failure_releases_exact_admission_before_handoff(
+    async def test_code_fix_publish_failure_keeps_exact_admission_for_recovery(
         self, api_client, redis_client
     ):
-        """A failed deploy-fix publish proves no provider work started, so release its hold."""
-        from src.tasks.supervisor import (
-            DEPLOY_FIX_PUBLISH_FAILED_ERROR,
-            supervise_deploying_stories,
-        )
+        """A failed publish response cannot prove the deploy-fix was not accepted."""
+        from src.tasks.supervisor import supervise_deploying_stories
 
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
@@ -563,9 +560,7 @@ class TestSuperviseDeployingStories:
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 0
-        api_client.abort_paid_run_pre_handoff.assert_awaited_once_with(
-            "eng-deploy-fix-deploy-1-1", DEPLOY_FIX_PUBLISH_FAILED_ERROR
-        )
+        api_client.abort_paid_run_pre_handoff.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_code_fix_run_creation_failure_releases_exact_admission_before_handoff(

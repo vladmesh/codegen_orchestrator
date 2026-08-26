@@ -484,7 +484,7 @@ class TestRunE2E:
         runs = (await db_session.scalars(select(Run).where(Run.type == "qa"))).all()
         matching = [run for run in runs if (run.run_metadata or {}).get("application_id") == app_id]
         assert len(matching) == 1
-        assert matching[0].status == "failed"
+        assert matching[0].status == "cancelled"
         assert (
             await db_session.scalar(
                 select(func.count())

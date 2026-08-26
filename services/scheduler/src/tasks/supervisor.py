@@ -103,7 +103,7 @@ INFRASTRUCTURE_WAIT_STARTED_KEY = "infrastructure_wait_started_at"
 # evidence for recovery, but never provider work. The reservation is released
 # before this status update so terminal finalization cannot turn it into an
 # unknown-cost hold.
-DEPLOY_FIX_PUBLISH_FAILED_ERROR = "deploy-fix publish failed"
+DEPLOY_FIX_PRE_HANDOFF_PREPARATION_FAILED_ERROR = "deploy-fix handoff preparation failed"
 
 # The durable owner-notification record lives on the failed deploy Run, which
 # remains available after the denied fix parks the story in human review.
@@ -1228,14 +1228,9 @@ async def _handle_deploy_code_fix(
         await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
         return False
 
-    # Every action from admission through publication is pre-handoff. It must
-    # release an admitted hold if it fails, because publication is the first
-    # point provider work could have started.
-    run_created = False
     try:
         # Transition story back to IN_PROGRESS only for an admitted handoff.
         await api_client.transition_story(story_id, "start")
-        run_created = True
         fix_recipient = await resolve_project_recipient(
             api_client, project_id, event="deploy_code_fix", story_id=story_id
         )
@@ -1254,13 +1249,18 @@ async def _handle_deploy_code_fix(
             story_id=story_id,
             deploy_fix_attempt=attempt + 1,
         )
+    except Exception:
+        # Preparation is demonstrably before any queue call, so this is safe to
+        # abort. Keep publication outside this block: its outcome is unknowable.
+        log.exception("deploy_fix_pre_handoff_preparation_failed", fix_task_id=fix_task_id)
+        await api_client.abort_paid_run_pre_handoff(
+            fix_task_id, DEPLOY_FIX_PRE_HANDOFF_PREPARATION_FAILED_ERROR
+        )
+        return False
+    try:
         await redis_client.publish_message(ENGINEERING_QUEUE, fix_msg)
     except Exception:
-        log.exception("deploy_fix_pre_handoff_failed", fix_task_id=fix_task_id)
-        if run_created:
-            await api_client.abort_paid_run_pre_handoff(
-                fix_task_id, DEPLOY_FIX_PUBLISH_FAILED_ERROR
-            )
+        log.exception("deploy_fix_publish_outcome_unknown", fix_task_id=fix_task_id)
         return False
     log.info("deploy_supervisor_code_fix", fix_task_id=fix_task_id, attempt=attempt + 1)
     return True

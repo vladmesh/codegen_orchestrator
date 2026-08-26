@@ -97,8 +97,9 @@ logger = structlog.get_logger(__name__)
 # either has not picked it up yet or is working on it.
 _LIVE_RUN_STATUSES = (RunStatus.QUEUED, RunStatus.RUNNING)
 
-# error_message written on a run whose EngineeringMessage never reached the queue.
-PUBLISH_FAILED_ERROR = "dispatch publish failed"
+# This is used only before calling the queue; a publication failure is never proof
+# that the message did not land and must not be routed through the abort command.
+PRE_HANDOFF_PREPARATION_FAILED_ERROR = "dispatch handoff preparation failed"
 
 
 def _dispatch_interval() -> int:
@@ -276,8 +277,8 @@ async def _create_and_publish_run(
     This function creates one *attempt* inside it, and the message carries both:
     the attempt as `task_id`, the run as `initiating_run_id`.
 
-    Returns the run id. Any failure before queue handoff releases the reservation.
-    A created run is closed as FAILED because nothing can pick it up; the task stays
+    Returns the run id. Only a failure before attempting queue handoff releases the
+    reservation. A created run is closed as CANCELLED because nothing can pick it up; the task stays
     in todo and a later tick may make a fresh attempt. A budget denial instead routes
     the task to human review and cannot retry automatically.
     """
@@ -362,10 +363,8 @@ async def _create_and_publish_run(
             ),
         )
         return None
-    action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
-    run_created = False
     try:
-        run_created = True
+        action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
         recipient = await resolve_project_recipient(
             api_client, project_id, event="task_dispatch", story_id=story_id or ""
         )
@@ -381,11 +380,18 @@ async def _create_and_publish_run(
             story_id=story_id,
             branch=f"story/{story_id}" if story_id else None,
         )
+    except Exception:
+        # This block contains only work proven to precede any queue call.  Do
+        # not include publication: a lost publish response has an unknown outcome.
+        log.exception("task_dispatch_pre_handoff_preparation_failed", run_id=run_id)
+        await api_client.abort_paid_run_pre_handoff(run_id, PRE_HANDOFF_PREPARATION_FAILED_ERROR)
+        return None
+    try:
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
     except Exception:
-        log.exception("task_dispatch_pre_handoff_failed", run_id=run_id)
-        if run_created:
-            await api_client.abort_paid_run_pre_handoff(run_id, PUBLISH_FAILED_ERROR)
+        # Publication may have reached Redis before its response was lost.  Keep
+        # the queued Run and active hold so normal unfinished-run recovery owns it.
+        log.exception("task_dispatch_publish_outcome_unknown", run_id=run_id)
         return None
     return run_id
 
