@@ -13,13 +13,9 @@ import time
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.models import Run
-
-_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@db:5432/postgres"
 
 
 async def _create_run(
@@ -28,25 +24,23 @@ async def _create_run(
     project_id: str | None,
     planning_task_id: str | None = None,
 ):
-    """Seed the worker fixture directly; it is not a paid-run producer test."""
-    engine = create_async_engine(_DATABASE_URL)
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with session_factory() as session:
-            session.add(
-                Run(
-                    id=run_id,
-                    type="engineering",
-                    project_id=project_id,
-                    run_metadata={
-                        "triggered_by": "integration_test",
-                        "task_id": planning_task_id,
-                    },
-                )
-            )
-            await session.commit()
-    finally:
-        await engine.dispose()
+    """Create the engineering fixture through the paid-run boundary."""
+    assert project_id is not None
+    response = await api_client.post(
+        "/api/work-admission/paid-runs",
+        json={
+            "id": run_id,
+            "type": "engineering",
+            "project_id": project_id,
+            "task_id": planning_task_id,
+            "run_metadata": {
+                "triggered_by": "integration_test",
+                "task_id": planning_task_id,
+            },
+        },
+    )
+    assert response.status_code == 200, f"Failed to create run: {response.text}"
+    assert response.json()["run_id"] == run_id
 
 
 async def _get_run(api_client, run_id: str) -> dict:
@@ -150,10 +144,10 @@ class TestLangGraphIntegration:
             project_id=project["id"],
         )
 
-        # Create run WITHOUT project_id (Run.project_id has FK constraint,
-        # so we can't use a fake UUID). The engineering worker looks up
-        # the project by msg.project_id, not run.project_id.
-        await _create_run(api_client, run_id, project_id=None, planning_task_id=task["id"])
+        # The canonical start command needs a real owning project. The worker
+        # still resolves the project from the queued message, so the fixture
+        # keeps that message pointed at the missing UUID.
+        await _create_run(api_client, run_id, project["id"], planning_task_id=task["id"])
 
         # Queue message referencing non-existent project
         msg = EngineeringMessage(
