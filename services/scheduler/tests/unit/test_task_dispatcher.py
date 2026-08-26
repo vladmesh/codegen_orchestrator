@@ -316,17 +316,25 @@ class TestDispatchTodoTasks:
         """Denial is terminal for automatic dispatch until a human resumes it."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
-        api_client.get_tasks_by_status.side_effect = [
-            [
-                _task(
-                    id="task-1",
-                    project_id=PROJ_ID,
-                    story_id="story-1",
-                    status="todo",
-                )
-            ],
-            [],
-        ]
+        state = {
+            "task": _task(
+                id="task-1",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                status="todo",
+            )
+        }
+
+        async def list_todo_tasks(*_args, **_kwargs):
+            return [state["task"]] if state["task"].status == "todo" else []
+
+        async def apply_transition(task_id, status, *_args, **_kwargs):
+            assert task_id == "task-1"
+            state["task"] = state["task"].model_copy(update={"status": status})
+            return {}
+
+        api_client.get_tasks_by_status.side_effect = list_todo_tasks
+        api_client.transition_task.side_effect = apply_transition
         api_client.get_task_events.return_value = []
         api_client.start_paid_run.return_value = PaidRunStartRead(
             admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
@@ -348,6 +356,7 @@ class TestDispatchTodoTasks:
             "active_held_microusd": 0,
             "available_microusd": 90,
         }
+        assert state["task"].status == "waiting_human_review"
 
     @pytest.mark.asyncio
     async def test_dispatches_refactor_task_as_feature_action(self, api_client, redis_client):
