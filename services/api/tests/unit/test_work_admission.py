@@ -11,7 +11,7 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionOutcome,
     WorkAdmissionReason,
 )
-from src.work_admission import admit_paid_work, admit_project_creation, start_paid_run
+from src.work_admission import admit_project_creation, start_paid_run
 
 
 def _rows(values: dict[str, object]) -> MagicMock:
@@ -20,28 +20,6 @@ def _rows(values: dict[str, object]) -> MagicMock:
         SimpleNamespace(key=key, value=value) for key, value in values.items()
     ]
     return result
-
-
-@pytest.mark.asyncio
-async def test_paid_work_limit_defers_and_writes_a_typed_audit_record():
-    db = AsyncMock()
-    db.add = MagicMock()
-    db.scalars.return_value = _rows(
-        {
-            "work_admission.emergency_stop": False,
-            "work_admission.max_concurrent_paid_runs": 2,
-        }
-    )
-    db.scalar.return_value = 2
-
-    admission = await admit_paid_work("eng-1", db)
-
-    assert admission.outcome is WorkAdmissionOutcome.DEFERRED
-    assert admission.reason is WorkAdmissionReason.PAID_WORK_LIMIT
-    assert admission.retryable is True
-    audit = db.add.call_args.args[0]
-    assert audit.subject == "paid_work"
-    assert audit.reason == "paid_work_limit"
 
 
 @pytest.mark.asyncio
@@ -67,7 +45,7 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted():
             "work_admission.max_concurrent_paid_runs": 1,
         }
     )
-    db.scalar.return_value = 0
+    db.scalar.side_effect = [None, SimpleNamespace(owner_id=7), 0]
 
     result = await start_paid_run(
         PaidRunStartCommand(

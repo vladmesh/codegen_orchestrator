@@ -15,6 +15,10 @@
 
 - Updated paid-run test fixtures to use the transactional paid-run command;
   fixtures that only require a Run record now use a non-paid type.
+- Paid-run starts now replay an identical stable command idempotently and reject
+  conflicting payloads; the obsolete standalone paid-work admission oracle was
+  removed. Emergency-stop writes are strict booleans and admission controls are
+  protected from the generic configuration mutation API.
 
 ## 2026-08-24
 

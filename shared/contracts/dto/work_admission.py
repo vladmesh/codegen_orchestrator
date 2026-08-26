@@ -1,10 +1,10 @@
 """Typed outcomes of the count-based work admission gate."""
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from .engineering_budget_policy import EngineeringBudgetAdmissionRead
 from .run import RunType
@@ -23,8 +23,8 @@ class WorkAdmissionReason(StrEnum):
 
     EMERGENCY_STOP = "emergency_stop"
     PROJECT_LIMIT = "project_limit"
-    MANAGED_SERVER_LIMIT = "managed_server_limit"
     PAID_WORK_LIMIT = "paid_work_limit"
+    ENGINEERING_BUDGET_DENIED = "engineering_budget_denied"
 
 
 class WorkAdmissionRead(BaseModel):
@@ -40,7 +40,7 @@ class WorkAdmissionRead(BaseModel):
 class EmergencyStopCommand(BaseModel):
     """The operator's exact desired emergency-stop state."""
 
-    enabled: bool
+    enabled: StrictBool
 
 
 class EmergencyStopRead(BaseModel):
@@ -53,7 +53,7 @@ class PaidRunStartCommand(BaseModel):
     """The only command that may create a queued paid coding-agent run."""
 
     id: str
-    type: RunType
+    type: Literal[RunType.ENGINEERING, RunType.QA]
     project_id: uuid.UUID
     story_id: str | None = None
     task_id: str | None = None

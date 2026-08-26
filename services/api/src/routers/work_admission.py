@@ -1,6 +1,6 @@
 """Internal/admin surface for count-based work admission and emergency stop."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +14,7 @@ from shared.models import SystemConfig
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
-from ..work_admission import EMERGENCY_STOP_KEY, start_paid_run
+from ..work_admission import EMERGENCY_STOP_KEY, PaidRunCommandConflict, start_paid_run
 
 router = APIRouter(prefix="/work-admission", tags=["work-admission"])
 
@@ -57,6 +57,12 @@ async def start_paid_run_endpoint(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> PaidRunStartRead:
-    result = await start_paid_run(command, db)
+    try:
+        result = await start_paid_run(command, db)
+    except PaidRunCommandConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "paid_run_command_conflict", "id": str(exc)},
+        ) from exc
     await db.commit()
     return result

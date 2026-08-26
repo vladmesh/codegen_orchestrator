@@ -6,29 +6,23 @@ import uuid
 
 from httpx import AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import EngineeringBudgetReservation, Run
+from shared.models import EngineeringBudgetReservation, Run, SystemConfig
 
 
-async def _set_config(client: AsyncClient, key: str, value: int | bool) -> None:
-    response = await client.post(
-        "/api/system-configs/",
-        json={
-            "key": key,
-            "value": value,
-            "category": "work_admission",
-            "description": "Service test override",
-            "updated_by": "test",
-        },
-    )
-    assert response.status_code == HTTPStatus.CREATED, response.text
+async def _set_config(db_session: AsyncSession, key: str, value: int | bool) -> None:
+    config = await db_session.get(SystemConfig, key)
+    assert config is not None
+    config.value = value
+    await db_session.commit()
 
 
 @pytest.mark.asyncio
 async def test_concurrent_project_creations_cannot_pass_the_same_user_ceiling(
     async_client: AsyncClient,
+    db_session: AsyncSession,
 ):
     """The per-user row lock admits only one request when one slot remains."""
     telegram_id = 830_000_001
@@ -37,7 +31,7 @@ async def test_concurrent_project_creations_cannot_pass_the_same_user_ceiling(
     )
     assert created.status_code == HTTPStatus.CREATED, created.text
 
-    await _set_config(async_client, "work_admission.max_projects_per_user", 1)
+    await _set_config(db_session, "work_admission.max_projects_per_user", 1)
     try:
 
         async def create_project() -> int:
@@ -63,7 +57,7 @@ async def test_concurrent_project_creations_cannot_pass_the_same_user_ceiling(
         statuses = await asyncio.gather(create_project(), create_project())
         assert sorted(statuses) == [HTTPStatus.CREATED, HTTPStatus.CONFLICT]
     finally:
-        await _set_config(async_client, "work_admission.max_projects_per_user", 10000)
+        await _set_config(db_session, "work_admission.max_projects_per_user", 10000)
 
 
 @pytest.mark.asyncio
@@ -117,3 +111,100 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
     assert started.status_code == HTTPStatus.OK, started.text
     assert started.json()["run_id"] == canonical_id
     assert await db_session.scalar(select(Run).where(Run.id == canonical_id)) is not None
+
+    replay = await async_client.post(
+        "/api/work-admission/paid-runs",
+        json={"id": canonical_id, "type": "qa", "project_id": project_id},
+    )
+    assert replay.status_code == HTTPStatus.OK, replay.text
+    assert replay.json()["run_id"] == canonical_id
+    assert (await db_session.scalars(select(Run.id).where(Run.id == canonical_id))).all() == [
+        canonical_id
+    ]
+
+    conflict = await async_client.post(
+        "/api/work-admission/paid-runs",
+        json={
+            "id": canonical_id,
+            "type": "qa",
+            "project_id": project_id,
+            "run_metadata": {"different": True},
+        },
+    )
+    assert conflict.status_code == HTTPStatus.CONFLICT
+    assert conflict.json()["detail"]["code"] == "paid_run_command_conflict"
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_requires_strict_bool_and_rejects_generic_mutation(
+    async_client: AsyncClient,
+):
+    invalid = await async_client.put(
+        "/api/work-admission/emergency-stop", json={"enabled": "false"}
+    )
+    assert invalid.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+    protected = await async_client.patch(
+        "/api/system-configs/work_admission.emergency_stop", json={"value": "false"}
+    )
+    assert protected.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_concurrent_paid_run_starts_hold_the_last_slot(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """Two real HTTP commands released at one barrier cannot overbook a paid slot."""
+    telegram_id = 830_000_003
+    project_id = str(uuid.uuid4())
+    assert (
+        await async_client.post(
+            "/api/users/", json={"telegram_id": telegram_id, "username": "paid-run-race"}
+        )
+    ).status_code == HTTPStatus.CREATED
+    assert (
+        await async_client.post(
+            "/api/projects/",
+            headers={"X-Telegram-ID": str(telegram_id)},
+            json={
+                "id": project_id,
+                "title": "Paid Run Race",
+                "initiating_run_id": str(uuid.uuid4()),
+                "status": "active",
+                "config": {},
+            },
+        )
+    ).status_code == HTTPStatus.CREATED
+
+    occupied_id = f"qa-occupied-{uuid.uuid4().hex}"
+    db_session.add(
+        Run(id=occupied_id, type="qa", status="queued", project_id=project_id, run_metadata={})
+    )
+    await db_session.commit()
+    await _set_config(db_session, "work_admission.max_concurrent_paid_runs", 2)
+    barrier = asyncio.Barrier(2)
+    try:
+
+        async def start() -> dict:
+            await barrier.wait()
+            response = await async_client.post(
+                "/api/work-admission/paid-runs",
+                json={"id": f"qa-race-{uuid.uuid4().hex}", "type": "qa", "project_id": project_id},
+            )
+            assert response.status_code == HTTPStatus.OK, response.text
+            return response.json()
+
+        first, second = await asyncio.gather(start(), start())
+        assert sorted((first["admission"]["outcome"], second["admission"]["outcome"])) == [
+            "admitted",
+            "deferred",
+        ]
+        assert (
+            await db_session.scalar(
+                select(func.count())
+                .select_from(Run)
+                .where(Run.type.in_(("engineering", "qa")), Run.status.in_(("queued", "running")))
+            )
+        ) == 2
+    finally:
+        await _set_config(db_session, "work_admission.max_concurrent_paid_runs", 10000)

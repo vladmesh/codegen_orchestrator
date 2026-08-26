@@ -19,6 +19,10 @@ MAX_PROJECTS_KEY = "work_admission.max_projects_per_user"
 MAX_PAID_RUNS_KEY = "work_admission.max_concurrent_paid_runs"
 
 
+class PaidRunCommandConflict(Exception):
+    """A stable paid-run id was replayed with different immutable input."""
+
+
 async def _controls(db: AsyncSession, *keys: str) -> dict[str, object]:
     rows = (
         await db.scalars(select(SystemConfig).where(SystemConfig.key.in_(keys)).with_for_update())
@@ -118,7 +122,28 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     The config-row lock is retained through the Run INSERT and caller commit, so
     no successful decision can escape without occupying a counted slot.
     """
-    stopped = await _stop_or_continue(db, "paid_work", reference_id=command.id)
+    existing = await db.scalar(select(Run).where(Run.id == command.id).with_for_update())
+    if existing is not None:
+        same_command = (
+            existing.type == command.type.value
+            and existing.project_id == command.project_id
+            and existing.story_id == command.story_id
+            and existing.task_id == command.task_id
+            and existing.run_metadata == command.run_metadata
+            and existing.callback_stream == command.callback_stream
+        )
+        if not same_command:
+            raise PaidRunCommandConflict(command.id)
+        return PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id=existing.id
+        )
+
+    project = await db.scalar(select(Project).where(Project.id == command.project_id))
+    if project is None:
+        raise RuntimeError(f"Project {command.project_id} does not exist")
+    user_id = project.owner_id
+
+    stopped = await _stop_or_continue(db, "paid_work", user_id=user_id, reference_id=command.id)
     if stopped is not None:
         return PaidRunStartRead(admission=stopped)
     controls = await _controls(db, MAX_PAID_RUNS_KEY)
@@ -143,6 +168,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
                     reason=WorkAdmissionReason.PAID_WORK_LIMIT,
                     retryable=True,
                 ),
+                user_id=user_id,
                 reference_id=command.id,
             )
         )
@@ -165,8 +191,18 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
             db,
         )
         if budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+            admission = await _audit(
+                db,
+                "paid_work",
+                WorkAdmissionRead(
+                    outcome=WorkAdmissionOutcome.DENIED,
+                    reason=WorkAdmissionReason.ENGINEERING_BUDGET_DENIED,
+                ),
+                user_id=user_id,
+                reference_id=command.id,
+            )
             return PaidRunStartRead(
-                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
+                admission=admission,
                 engineering_budget=budget,
             )
 
@@ -185,42 +221,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         db,
         "paid_work",
         WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
+        user_id=user_id,
         reference_id=command.id,
     )
     return PaidRunStartRead(admission=admitted, run_id=run.id)
-
-
-async def admit_paid_work(run_id: str, db: AsyncSession) -> WorkAdmissionRead:
-    """Admit an engineering or QA run; reaching the limit defers rather than fails it."""
-    stopped = await _stop_or_continue(db, "paid_work", reference_id=run_id)
-    if stopped is not None:
-        return stopped
-    controls = await _controls(db, MAX_PAID_RUNS_KEY)
-    count = int(
-        await db.scalar(
-            select(func.count())
-            .select_from(Run)
-            .where(
-                Run.type.in_((RunType.ENGINEERING.value, RunType.QA.value)),
-                Run.status.in_((RunStatus.QUEUED.value, RunStatus.RUNNING.value)),
-            )
-        )
-        or 0
-    )
-    if count >= _limit(controls[MAX_PAID_RUNS_KEY], MAX_PAID_RUNS_KEY):
-        return await _audit(
-            db,
-            "paid_work",
-            WorkAdmissionRead(
-                outcome=WorkAdmissionOutcome.DEFERRED,
-                reason=WorkAdmissionReason.PAID_WORK_LIMIT,
-                retryable=True,
-            ),
-            reference_id=run_id,
-        )
-    return await _audit(
-        db,
-        "paid_work",
-        WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
-        reference_id=run_id,
-    )

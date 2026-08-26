@@ -11,6 +11,22 @@ from ..schemas.system_config import SystemConfigCreate, SystemConfigRead, System
 
 router = APIRouter(prefix="/system-configs", tags=["system-configs"])
 
+PROTECTED_WORK_ADMISSION_KEYS = frozenset(
+    {
+        "work_admission.emergency_stop",
+        "work_admission.max_projects_per_user",
+        "work_admission.max_concurrent_paid_runs",
+    }
+)
+
+
+def _reject_protected_key(key: str) -> None:
+    if key in PROTECTED_WORK_ADMISSION_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Work-admission configuration must use its typed command",
+        )
+
 
 @router.post("/", response_model=SystemConfigRead, status_code=status.HTTP_201_CREATED)
 async def create_or_update_system_config(
@@ -18,6 +34,7 @@ async def create_or_update_system_config(
     db: AsyncSession = Depends(get_async_session),
 ) -> SystemConfig:
     """Create a system config, or update if key already exists (upsert)."""
+    _reject_protected_key(data.key)
     existing = await db.get(SystemConfig, data.key)
     if existing:
         for field, val in data.model_dump(exclude={"key"}).items():
@@ -69,6 +86,7 @@ async def update_system_config(
     db: AsyncSession = Depends(get_async_session),
 ) -> SystemConfig:
     """Update a system config."""
+    _reject_protected_key(key)
     config = await db.get(SystemConfig, key)
     if not config:
         raise HTTPException(
@@ -91,6 +109,7 @@ async def delete_system_config(
     db: AsyncSession = Depends(get_async_session),
 ) -> None:
     """Delete a system config."""
+    _reject_protected_key(key)
     config = await db.get(SystemConfig, key)
     if not config:
         raise HTTPException(

@@ -19,7 +19,7 @@
 - key: work_admission.emergency_stop
   value: false
   category: work_admission
-  description: "Operator switch that blocks new projects, provisioning, engineering and QA work"
+  description: "Operator switch that blocks new projects, engineering and QA work"
 
 - key: scheduler.dispatch_interval_seconds
   value: 30
