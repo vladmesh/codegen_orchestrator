@@ -392,9 +392,15 @@ async def test_released_deploy_fix_identity_reacquires_its_hold_before_requeuein
     assert reservation.state == "released"
 
     replay = await async_client.post("/api/work-admission/paid-runs", json=payload)
-    assert replay.status_code == HTTPStatus.OK, replay.text
-    run = await db_session.scalar(select(Run).where(Run.id == fix_task_id))
-    assert run is not None and run.status == "queued"
-    await db_session.refresh(reservation)
-    assert reservation.state == "active"
-    assert reservation.active_held_microusd == 60
+    assert replay.status_code == HTTPStatus.CONFLICT
+    assert replay.json()["detail"]["code"] == "paid_run_identity_expired"
+    next_payload = {**payload, "id": f"{fix_task_id}-2"}
+    next_attempt = await async_client.post("/api/work-admission/paid-runs", json=next_payload)
+    assert next_attempt.status_code == HTTPStatus.OK, next_attempt.text
+    next_reservation = await db_session.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == next_payload["id"]
+        )
+    )
+    assert next_reservation is not None and next_reservation.state == "active"
+    assert next_reservation.active_held_microusd == 60

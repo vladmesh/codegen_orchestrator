@@ -32,7 +32,7 @@ from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_redis_client
+from ..dependencies import get_redis_client, require_internal_or_admin
 from ..schemas import (
     ApplicationCreate,
     ApplicationHealthHistoryCreate,
@@ -534,6 +534,7 @@ async def run_e2e(
     body: AdminAction | None = None,
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
+    _: None = Depends(require_internal_or_admin),
 ) -> dict:
     """Run E2E tests on a deployed application.
 
@@ -594,23 +595,22 @@ async def run_e2e(
         await db.commit()
         return {"admission": started.admission.model_dump(mode="json")}
     await db.commit()
-    run = await db.get(Run, run_id)
-    if run is None:
-        raise RuntimeError("Paid QA run disappeared before publication")
-    await db.refresh(run)
-    await db.refresh(app)
-
-    msg = QAMessage(
-        project_id=str(repo.project_id),
-        initiating_run_id=initiating_run_id,
-        telegram_chat_id=await resolve_project_chat_id(db, repo.project_id, event="qa_run"),
-        deployed_url=deployed_url,
-        application_id=application_id,
-        acceptance_criteria=acceptance_criteria,
-        run_id=run_id,
-        bot_username=repo.bot_username,
-    )
     try:
+        run = await db.get(Run, run_id)
+        if run is None:
+            raise RuntimeError("Paid QA run disappeared before publication")
+        await db.refresh(run)
+        await db.refresh(app)
+        msg = QAMessage(
+            project_id=str(repo.project_id),
+            initiating_run_id=initiating_run_id,
+            telegram_chat_id=await resolve_project_chat_id(db, repo.project_id, event="qa_run"),
+            deployed_url=deployed_url,
+            application_id=application_id,
+            acceptance_criteria=acceptance_criteria,
+            run_id=run_id,
+            bot_username=repo.bot_username,
+        )
         await redis.publish_message(QA_QUEUE, msg)
     except Exception as exc:
         await abort_paid_run_pre_handoff(run_id, "QA handoff could not be published", db)

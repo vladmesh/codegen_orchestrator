@@ -14,7 +14,7 @@ from shared.queues import ENGINEERING_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_redis_client
+from ..dependencies import get_redis_client, require_internal_or_admin
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
@@ -213,6 +213,7 @@ async def spawn_worker(
     body: SpawnWorkerRequest | None = None,
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
+    _: None = Depends(require_internal_or_admin),
 ) -> dict:
     """Spawn an engineering worker for a task.
 

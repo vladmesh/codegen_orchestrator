@@ -42,6 +42,10 @@ class PaidRunCommandConflict(Exception):
     """A stable paid-run id was replayed with different immutable input."""
 
 
+class PaidRunIdentityExpired(Exception):
+    """A terminal attempt id cannot be reused for a new paid attempt."""
+
+
 async def _controls(db: AsyncSession, *keys: str) -> dict[str, object]:
     rows = (
         await db.scalars(select(SystemConfig).where(SystemConfig.key.in_(keys)).with_for_update())
@@ -181,7 +185,7 @@ async def _replay_paid_start(
     if existing is None:
         return None
     if existing.status not in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
-        return None
+        raise PaidRunIdentityExpired(command.id)
     if command.type is RunType.ENGINEERING:
         reservation = await db.scalar(
             select(EngineeringBudgetReservation)
@@ -314,6 +318,8 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         )
         db.add(run)
     else:
+        if restarting.status not in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
+            raise PaidRunIdentityExpired(command.id)
         run = restarting
         run.status = RunStatus.QUEUED.value
         run.result = None

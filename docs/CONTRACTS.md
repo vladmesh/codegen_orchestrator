@@ -95,8 +95,9 @@ control locks. An existing Run is replayed only when it is `queued` or
 `running` and, for a budgeted engineering attempt, its reservation is still
 `active`. Audit rows preserve command identity for payload-conflict detection;
 they never cache a denial. A retry after a stop is lifted or a capacity slot is
-freed therefore evaluates the controls again. A released reservation or a
-terminal Run is re-admitted atomically before its Run can be queued again.
+freed therefore evaluates the controls again. A terminal Run is never reopened:
+its identity returns the typed `paid_run_identity_expired` conflict and a caller
+must create a new attempt identity.
 
 Scheduler dispatch and QA handoff have no live caller, so a non-admission is
 persisted and delivered to the owner through the durable owner-notification

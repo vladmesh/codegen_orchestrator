@@ -20,6 +20,7 @@ from ..work_admission import (
     MAX_PAID_RUNS_KEY,
     MAX_PROJECTS_KEY,
     PaidRunCommandConflict,
+    PaidRunIdentityExpired,
     start_paid_run,
 )
 
@@ -115,6 +116,11 @@ async def start_paid_run_endpoint(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "paid_run_command_conflict", "id": str(exc)},
+        ) from exc
+    except PaidRunIdentityExpired as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "paid_run_identity_expired", "id": str(exc)},
         ) from exc
     await db.commit()
     return result
