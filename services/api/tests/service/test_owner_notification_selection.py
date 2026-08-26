@@ -78,10 +78,11 @@ async def _qa_run(
     if notification is not None:
         metadata[OWNER_NOTIFICATION_KEY] = notification
     created = await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={"id": run_id, "type": "qa", "project_id": project_id, "run_metadata": metadata},
     )
-    assert created.status_code == status.HTTP_201_CREATED
+    assert created.status_code == status.HTTP_200_OK
+    assert created.json()["admission"]["outcome"] == "admitted"
 
     # Aged in place: every test here is about a record that was written long
     # before anything came back for it still being work.

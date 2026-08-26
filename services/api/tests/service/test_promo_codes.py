@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import select, text
 
-from shared.models import User
+from shared.models import Run, User
 from src.dependencies import create_lk_jwt
 
 
@@ -247,7 +247,7 @@ async def test_concurrent_different_codes_for_one_user_are_typed(async_client) -
 
 
 @pytest.mark.asyncio
-async def test_unknown_cost_keeps_promo_reservation_held(async_client) -> None:
+async def test_unknown_cost_keeps_promo_reservation_held(async_client, db_session) -> None:
     minted = await async_client.post(
         "/api/promo-codes/batch",
         json={"quantity": 1, "credits_microusd": 10, "attempt_reservation_microusd": 10},
@@ -274,12 +274,15 @@ async def test_unknown_cost_keeps_promo_reservation_held(async_client) -> None:
         json={"attempt_id": attempt_id, "project_id": project.json()["id"], "task_id": attempt_id},
     )
     assert admission.json()["reservation_state"] == "active"
-    assert (
-        await async_client.post(
-            "/api/runs/",
-            json={"id": attempt_id, "type": "engineering", "project_id": project.json()["id"]},
+    db_session.add(
+        Run(
+            id=attempt_id,
+            type="engineering",
+            project_id=project.json()["id"],
+            status="queued",
         )
-    ).status_code == HTTPStatus.CREATED
+    )
+    await db_session.commit()
     assert (
         await async_client.patch(
             f"/api/runs/{attempt_id}",

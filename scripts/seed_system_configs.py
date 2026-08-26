@@ -21,6 +21,11 @@ import yaml
 from shared.clients.internal_api import InternalAPISyncClient
 
 CONFIG_PATH = Path(__file__).resolve().parent / "system_configs.yaml"
+_WORK_ADMISSION_KEYS = {
+    "work_admission.emergency_stop",
+    "work_admission.max_projects_per_user",
+    "work_admission.max_concurrent_paid_runs",
+}
 
 
 def load_configs(path: Path) -> list[dict]:
@@ -92,8 +97,15 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
                     "description": config["description"],
                     "updated_by": "seed",
                 }
-                resp = client.request_raw("POST", "system-configs/", json=payload)
-                if resp.status_code != httpx.codes.CREATED:
+                if key in _WORK_ADMISSION_KEYS:
+                    resp = client.request_raw(
+                        "PUT", f"work-admission/controls/{key}", json={"value": value}
+                    )
+                    expected_status = httpx.codes.OK
+                else:
+                    resp = client.request_raw("POST", "system-configs/", json=payload)
+                    expected_status = httpx.codes.CREATED
+                if resp.status_code != expected_status:
                     print(f"  Failed to write '{key}': {resp.status_code} - {resp.text}")
                     success = False
                     continue

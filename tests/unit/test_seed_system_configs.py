@@ -15,6 +15,7 @@ import yaml
 from scripts import seed_system_configs as seeder
 
 API_BASE_URL = "http://api:8000"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Captured before patching: the seeder shares the httpx module object with us,
 # so the factories below would otherwise call themselves.
@@ -113,3 +114,15 @@ def test_write_failure_is_reported(tmp_path, db, capsys):
         assert seeder.seed_system_configs(API_BASE_URL, path) is False
 
     assert "Failed to write" in capsys.readouterr().out
+
+
+def test_api_service_test_overlay_explicitly_overrides_every_work_admission_key():
+    """The shared service-test database must not exhaust production ceilings."""
+    configs = seeder.load_configs(REPO_ROOT / "scripts/system_configs.service_test.yaml")
+    values = {config["key"]: config["value"] for config in configs}
+
+    assert values == {
+        "work_admission.max_projects_per_user": 10000,
+        "work_admission.max_concurrent_paid_runs": 10000,
+        "work_admission.emergency_stop": False,
+    }

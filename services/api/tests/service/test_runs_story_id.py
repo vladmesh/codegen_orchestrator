@@ -141,7 +141,7 @@ async def test_create_run_with_task_id_is_filterable(async_client: AsyncClient, 
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
     resp = await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={
             "id": run_id,
             "type": "engineering",
@@ -149,8 +149,10 @@ async def test_create_run_with_task_id_is_filterable(async_client: AsyncClient, 
             "task_id": task_id,
         },
     )
-    assert resp.status_code == HTTPStatus.CREATED
-    assert resp.json()["task_id"] == task_id
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["admission"]["outcome"] == "admitted"
+    created = await async_client.get(f"/api/runs/{run_id}")
+    assert created.json()["task_id"] == task_id
 
     resp = await async_client.get(
         "/api/runs/",
@@ -180,7 +182,7 @@ async def test_patch_run_metadata_is_persisted(async_client: AsyncClient, _tasks
     """
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
     resp = await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={
             "id": run_id,
             "type": "engineering",
@@ -188,7 +190,8 @@ async def test_patch_run_metadata_is_persisted(async_client: AsyncClient, _tasks
             "run_metadata": {"triggered_by": "dispatcher", "iteration": 1},
         },
     )
-    assert resp.status_code == HTTPStatus.CREATED
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["admission"]["outcome"] == "admitted"
 
     resp = await async_client.patch(
         f"/api/runs/{run_id}",

@@ -25,6 +25,7 @@ from . import (
     tasks,
     temporary_access,
     users,
+    work_admission,
 )
 
 __all__ = [
@@ -52,4 +53,5 @@ __all__ = [
     "tasks",
     "temporary_access",
     "users",
+    "work_admission",
 ]

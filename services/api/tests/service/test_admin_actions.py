@@ -11,8 +11,10 @@ import uuid
 from httpx import ASGITransport, AsyncClient
 import pytest
 from redis.asyncio import Redis
+from sqlalchemy import func, select
 
 from shared.contracts.acceptance import BASELINE_ACCEPTANCE_CRITERIA
+from shared.models import Run, WorkAdmissionAudit
 
 TASK_TEST_TELEGRAM_ID = 999000999
 TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
@@ -222,6 +224,59 @@ class TestSpawnWorker:
         resp = await client.post(f"/api/tasks/{task_id}/spawn-worker")
         assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
+    @pytest.mark.asyncio
+    async def test_ordinary_lk_bearer_cannot_start_paid_operator_actions(
+        self, client, redis, server_handle, _ensure_project, db_session
+    ):
+        """The global bearer gate is not authority to create paid work."""
+        from src.dependencies import create_lk_jwt
+        from src.main import app
+
+        ordinary = await client.post(
+            "/api/users/",
+            json={"telegram_id": uuid.uuid4().int % 1_000_000_000, "username": "ordinary-lk"},
+        )
+        assert ordinary.status_code == HTTPStatus.CREATED, ordinary.text
+        task = await client.post(
+            "/api/tasks/",
+            json={
+                "project_id": TASK_TEST_PROJECT_ID,
+                "title": "Unauthorised worker spawn",
+                "type": "feature",
+            },
+        )
+        assert task.status_code == HTTPStatus.CREATED, task.text
+        app_id = await _create_running_app(client, server_handle)
+
+        before_runs = await db_session.scalar(select(func.count()).select_from(Run))
+        before_audits = await db_session.scalar(
+            select(func.count()).select_from(WorkAdmissionAudit)
+        )
+        before_engineering = await redis.xlen("engineering:queue")
+        before_qa = await redis.xlen("qa:queue")
+        token = create_lk_jwt(ordinary.json()["id"])
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as bearer_client:
+            spawned = await bearer_client.post(
+                f"/api/tasks/{task.json()['id']}/spawn-worker", json={"actor": "ordinary"}
+            )
+            e2e = await bearer_client.post(
+                f"/api/applications/{app_id}/run-e2e", json={"actor": "ordinary"}
+            )
+
+        assert spawned.status_code == HTTPStatus.FORBIDDEN
+        assert e2e.status_code == HTTPStatus.FORBIDDEN
+        assert await db_session.scalar(select(func.count()).select_from(Run)) == before_runs
+        assert (
+            await db_session.scalar(select(func.count()).select_from(WorkAdmissionAudit))
+            == before_audits
+        )
+        assert await redis.xlen("engineering:queue") == before_engineering
+        assert await redis.xlen("qa:queue") == before_qa
+
 
 # ---------------------------------------------------------------------------
 # stop / undeploy / redeploy
@@ -405,6 +460,40 @@ class TestRunE2E:
 
         runs = await client.get(f"/api/applications/{app_id}/runs")
         assert runs.json() == []
+
+    @pytest.mark.asyncio
+    async def test_run_e2e_recipient_resolution_failure_aborts_paid_run(
+        self, client, redis, server_handle, db_session, monkeypatch
+    ):
+        """A failure before QA publication leaves neither a live Run nor a slot."""
+        from unittest.mock import AsyncMock
+
+        from src.routers import applications
+
+        app_id = await _create_running_app(client, server_handle)
+        before_messages = await redis.xlen("qa:queue")
+        monkeypatch.setattr(
+            applications,
+            "resolve_project_chat_id",
+            AsyncMock(side_effect=RuntimeError("chat resolver unavailable")),
+        )
+
+        response = await client.post(f"/api/applications/{app_id}/run-e2e", json={"actor": "test"})
+
+        assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+        runs = (await db_session.scalars(select(Run).where(Run.type == "qa"))).all()
+        matching = [run for run in runs if (run.run_metadata or {}).get("application_id") == app_id]
+        assert len(matching) == 1
+        assert matching[0].status == "cancelled"
+        assert (
+            await db_session.scalar(
+                select(func.count())
+                .select_from(Run)
+                .where(Run.id == matching[0].id, Run.status.in_(("queued", "running")))
+            )
+            == 0
+        )
+        assert await redis.xlen("qa:queue") == before_messages
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ from .system_config import SystemConfig
 from .task import Task, TaskEvent
 from .temporary_access_grant import TemporaryAccessGrant
 from .user import User
+from .work_admission_audit import WorkAdmissionAudit
 
 __all__ = [
     "AgentConfig",
@@ -57,6 +58,7 @@ __all__ = [
     "TemporaryAccessGrant",
     "APIKey",
     "User",
+    "WorkAdmissionAudit",
     "Incident",
     "IncidentStatus",
     "IncidentType",
