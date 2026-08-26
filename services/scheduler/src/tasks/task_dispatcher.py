@@ -28,17 +28,22 @@ from shared.contracts.dto.project import (
 )
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.contracts.vocab import ActionType
+from shared.contracts.vocab import ActionType, OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
 from .bot_rollouts import reconcile_bot_rollouts
-from .owner_notifications import supervise_owed_owner_notifications
+from .owner_notifications import (
+    deliver_owed_notification,
+    owe_owner_notification,
+    supervise_owed_owner_notifications,
+)
 from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
@@ -324,6 +329,21 @@ async def _create_and_publish_run(
                 started.admission.reason.value if started.admission.reason is not None else None
             ),
         )
+        if task.story_id and started.admission.message:
+            source_run = await api_client.get_run(initiating_run_id)
+            owed = await owe_owner_notification(
+                api_client,
+                source_run,
+                event=OwnerNotificationEvent.STORY_QUARANTINED,
+                text=started.admission.message,
+                story_id=task.story_id,
+                project_id=project_id,
+                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+                task_id=task_id,
+                log=log,
+            )
+            await api_client.transition_story(task.story_id, "human-review")
+            await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
         return None
     action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
     run_created = False

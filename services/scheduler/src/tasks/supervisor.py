@@ -1013,6 +1013,19 @@ async def _handle_deploy_success_story(
                 started.admission.reason.value if started.admission.reason is not None else None
             ),
         )
+        if started.admission.message:
+            owed = await owe_owner_notification(
+                api_client,
+                run,
+                event=OwnerNotificationEvent.STORY_QUARANTINED,
+                text=started.admission.message,
+                story_id=story_id,
+                project_id=project_id,
+                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+                log=log,
+            )
+            await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+            await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
         return False
     await api_client.transition_story(story_id, "test")
 

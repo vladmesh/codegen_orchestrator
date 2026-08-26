@@ -98,6 +98,11 @@ they never cache a denial. A retry after a stop is lifted or a capacity slot is
 freed therefore evaluates the controls again. A released reservation or a
 terminal Run is re-admitted atomically before its Run can be queued again.
 
+Scheduler dispatch and QA handoff have no live caller, so a non-admission is
+persisted and delivered to the owner through the durable owner-notification
+path; operator-facing spawn-worker and run-e2e instead return the typed result
+synchronously, while the command still records its audit reason.
+
 The deployed defaults in `scripts/system_configs.yaml` are:
 
 - `work_admission.max_projects_per_user=3`, measured as non-archived projects
