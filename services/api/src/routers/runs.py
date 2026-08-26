@@ -645,10 +645,17 @@ async def update_run(
                 ),
             )
 
-    metadata_update = update_data.get("run_metadata")
-    if isinstance(metadata_update, dict) and EXECUTOR_DECISION_METADATA_KEY in metadata_update:
-        existing_decision = (run.run_metadata or {}).get(EXECUTOR_DECISION_METADATA_KEY)
-        if metadata_update[EXECUTOR_DECISION_METADATA_KEY] != existing_decision:
+    if "run_metadata" in update_data:
+        metadata_update = update_data["run_metadata"]
+        existing_metadata = run.run_metadata or {}
+        if EXECUTOR_DECISION_METADATA_KEY in existing_metadata and (
+            not isinstance(metadata_update, dict)
+            or (
+                EXECUTOR_DECISION_METADATA_KEY in metadata_update
+                and metadata_update[EXECUTOR_DECISION_METADATA_KEY]
+                != existing_metadata[EXECUTOR_DECISION_METADATA_KEY]
+            )
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Run executor decision is immutable after paid-run creation",

@@ -213,18 +213,19 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     if replay is not None:
         return replay
 
+    # The stop row serializes starts. Recheck after taking it: another request
+    # with the same id may have committed while this one waited for the lock.
+    # Resolve only after this replay so concurrent starts cannot make a discarded
+    # decision before the Run that owns the first decision is committed.
+    controls = await _controls(db, EMERGENCY_STOP_KEY)
+    replay = await _replay_paid_start(command, payload, db)
+    if replay is not None:
+        return replay
     project = await db.scalar(select(Project).where(Project.id == command.project_id))
     if project is None:
         raise RuntimeError(f"Project {command.project_id} does not exist")
     user_id = project.owner_id
     decision = resolve_executor_decision(command.type, project.config, get_settings())
-
-    # The stop row serializes starts. Recheck after taking it: another request
-    # with the same id may have committed while this one waited for the lock.
-    controls = await _controls(db, EMERGENCY_STOP_KEY)
-    replay = await _replay_paid_start(command, payload, db)
-    if replay is not None:
-        return replay
     enabled = controls[EMERGENCY_STOP_KEY]
     if not isinstance(enabled, bool):
         raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
