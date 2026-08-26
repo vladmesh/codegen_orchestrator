@@ -152,7 +152,7 @@ async def test_emergency_stop_requires_strict_bool_and_rejects_generic_mutation(
 
 
 @pytest.mark.asyncio
-async def test_paid_run_refusal_is_a_durable_russian_owner_record_and_replays(
+async def test_paid_run_refusal_is_durable_but_the_same_command_rechecks_the_stop(
     async_client: AsyncClient, db_session: AsyncSession
 ):
     telegram_id = 830_000_004
@@ -203,6 +203,12 @@ async def test_paid_run_refusal_is_a_durable_russian_owner_record_and_replays(
             "callback_stream": None,
         }
         assert await db_session.scalar(select(Run).where(Run.id == run_id)) is None
+        await _set_config(db_session, "work_admission.emergency_stop", False)
+        restarted = await async_client.post("/api/work-admission/paid-runs", json=payload)
+        assert restarted.status_code == HTTPStatus.OK, restarted.text
+        assert restarted.json()["run_id"] == run_id
+        run = await db_session.scalar(select(Run).where(Run.id == run_id))
+        assert run is not None and run.status == "queued"
     finally:
         await _set_config(db_session, "work_admission.emergency_stop", False)
 
@@ -273,5 +279,60 @@ async def test_concurrent_paid_run_starts_hold_the_last_slot(
                 .where(Run.type.in_(("engineering", "qa")), Run.status.in_(("queued", "running")))
             )
         ) == occupied_count + 1
+    finally:
+        await _set_config(db_session, "work_admission.max_concurrent_paid_runs", 10000)
+
+
+@pytest.mark.asyncio
+async def test_same_paid_command_rechecks_a_released_capacity_slot(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    telegram_id = 830_000_005
+    project_id = str(uuid.uuid4())
+    assert (
+        await async_client.post(
+            "/api/users/", json={"telegram_id": telegram_id, "username": "paid-retry"}
+        )
+    ).status_code == HTTPStatus.CREATED
+    assert (
+        await async_client.post(
+            "/api/projects/",
+            headers={"X-Telegram-ID": str(telegram_id)},
+            json={
+                "id": project_id,
+                "title": "Paid retry",
+                "initiating_run_id": str(uuid.uuid4()),
+                "status": "active",
+                "config": {},
+            },
+        )
+    ).status_code == HTTPStatus.CREATED
+    occupied = Run(
+        id=f"qa-capacity-{uuid.uuid4().hex}",
+        type="qa",
+        status="queued",
+        project_id=project_id,
+        run_metadata={},
+    )
+    db_session.add(occupied)
+    await db_session.commit()
+    occupied_count = int(
+        await db_session.scalar(
+            select(func.count())
+            .select_from(Run)
+            .where(Run.type.in_(("engineering", "qa")), Run.status.in_(("queued", "running")))
+        )
+        or 0
+    )
+    await _set_config(db_session, "work_admission.max_concurrent_paid_runs", occupied_count)
+    try:
+        payload = {"id": f"qa-retry-{uuid.uuid4().hex}", "type": "qa", "project_id": project_id}
+        refused = await async_client.post("/api/work-admission/paid-runs", json=payload)
+        assert refused.json()["admission"]["reason"] == "paid_work_limit"
+        occupied.status = "completed"
+        await db_session.commit()
+        admitted = await async_client.post("/api/work-admission/paid-runs", json=payload)
+        assert admitted.status_code == HTTPStatus.OK, admitted.text
+        assert admitted.json()["run_id"] == payload["id"]
     finally:
         await _set_config(db_session, "work_admission.max_concurrent_paid_runs", 10000)

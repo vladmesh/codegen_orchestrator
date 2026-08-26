@@ -3,6 +3,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.work_admission import (
@@ -12,7 +13,14 @@ from shared.contracts.dto.work_admission import (
     WorkAdmissionRead,
     WorkAdmissionReason,
 )
-from shared.models import Project, Run, SystemConfig, User, WorkAdmissionAudit
+from shared.models import (
+    EngineeringBudgetReservation,
+    Project,
+    Run,
+    SystemConfig,
+    User,
+    WorkAdmissionAudit,
+)
 
 EMERGENCY_STOP_KEY = "work_admission.emergency_stop"
 MAX_PROJECTS_KEY = "work_admission.max_projects_per_user"
@@ -141,7 +149,11 @@ async def admit_project_creation(
 async def _replay_paid_start(
     command: PaidRunStartCommand, payload: dict, db: AsyncSession
 ) -> PaidRunStartRead | None:
-    """Return the prior immutable result, if this command id was already decided."""
+    """Return only a still-live start with its still-active engineering hold.
+
+    Audit records retain command identity for conflicts but never cache a
+    refusal: controls must decide every retry anew.
+    """
     existing = await db.scalar(select(Run).where(Run.id == command.id).with_for_update())
     if existing is not None:
         same_command = (
@@ -154,33 +166,35 @@ async def _replay_paid_start(
         )
         if not same_command:
             raise PaidRunCommandConflict(command.id)
-        return PaidRunStartRead(
-            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id=existing.id
+    prior_payloads = (
+        await db.scalars(
+            select(WorkAdmissionAudit.command_payload).where(
+                WorkAdmissionAudit.subject == "paid_work",
+                WorkAdmissionAudit.reference_id == command.id,
+            )
         )
-    previous_refusal = await db.scalar(
-        select(WorkAdmissionAudit)
-        .where(
-            WorkAdmissionAudit.subject == "paid_work",
-            WorkAdmissionAudit.reference_id == command.id,
-        )
-        .with_for_update()
-    )
-    if previous_refusal is None:
-        return None
-    if previous_refusal.command_payload != payload:
+    ).all()
+    if any(
+        prior_payload is not None and prior_payload != payload for prior_payload in prior_payloads
+    ):
         raise PaidRunCommandConflict(command.id)
-    reason = (
-        WorkAdmissionReason(previous_refusal.reason)
-        if previous_refusal.reason is not None
-        else None
-    )
-    return PaidRunStartRead(
-        admission=WorkAdmissionRead(
-            outcome=WorkAdmissionOutcome(previous_refusal.outcome),
-            reason=reason,
-            retryable=reason is WorkAdmissionReason.PAID_WORK_LIMIT,
-            message=previous_refusal.message,
+    if existing is None:
+        return None
+    if existing.status not in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
+        return None
+    if command.type is RunType.ENGINEERING:
+        reservation = await db.scalar(
+            select(EngineeringBudgetReservation)
+            .where(EngineeringBudgetReservation.attempt_id == command.id)
+            .with_for_update()
         )
+        if (
+            reservation is not None
+            and reservation.state is not EngineeringBudgetReservationState.ACTIVE
+        ):
+            return None
+    return PaidRunStartRead(
+        admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id=existing.id
     )
 
 
@@ -224,6 +238,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
             )
         )
     controls = await _controls(db, MAX_PAID_RUNS_KEY)
+    restarting = await db.scalar(select(Run).where(Run.id == command.id).with_for_update())
     count = int(
         await db.scalar(
             select(func.count())
@@ -231,6 +246,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
             .where(
                 Run.type.in_((RunType.ENGINEERING.value, RunType.QA.value)),
                 Run.status.in_((RunStatus.QUEUED.value, RunStatus.RUNNING.value)),
+                Run.id != command.id if restarting is not None else True,
             )
         )
         or 0
@@ -285,17 +301,26 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
                 engineering_budget=budget,
             )
 
-    run = Run(
-        id=command.id,
-        type=command.type.value,
-        status=RunStatus.QUEUED.value,
-        project_id=command.project_id,
-        story_id=command.story_id,
-        task_id=command.task_id,
-        run_metadata=command.run_metadata,
-        callback_stream=command.callback_stream,
-    )
-    db.add(run)
+    if restarting is None:
+        run = Run(
+            id=command.id,
+            type=command.type.value,
+            status=RunStatus.QUEUED.value,
+            project_id=command.project_id,
+            story_id=command.story_id,
+            task_id=command.task_id,
+            run_metadata=command.run_metadata,
+            callback_stream=command.callback_stream,
+        )
+        db.add(run)
+    else:
+        run = restarting
+        run.status = RunStatus.QUEUED.value
+        run.result = None
+        run.error_message = None
+        run.error_traceback = None
+        run.started_at = None
+        run.completed_at = None
     admitted = await _audit(
         db,
         "paid_work",

@@ -90,6 +90,14 @@ creates the queued Run before the transaction commits. No separate successful
 paid-work admission exists. Every count decision is stored in
 `work_admission_audits` with a typed outcome and reason.
 
+Paid-run retries are decided only by that command while it holds the admission
+control locks. An existing Run is replayed only when it is `queued` or
+`running` and, for a budgeted engineering attempt, its reservation is still
+`active`. Audit rows preserve command identity for payload-conflict detection;
+they never cache a denial. A retry after a stop is lifted or a capacity slot is
+freed therefore evaluates the controls again. A released reservation or a
+terminal Run is re-admitted atomically before its Run can be queued again.
+
 The deployed defaults in `scripts/system_configs.yaml` are:
 
 - `work_admission.max_projects_per_user=3`, measured as non-archived projects

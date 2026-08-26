@@ -20,8 +20,9 @@
   removed. Emergency-stop writes are strict booleans and admission controls are
   protected from the generic configuration mutation API.
 - Paid-work refusals now persist their command identity, project owner, typed
-  reason and Russian owner-facing text, so a replay returns the same durable
-  decision without creating a Run.
+  reason and Russian owner-facing text without caching a transient outcome.
+- A paid-run retry now rechecks controls rather than caching a prior refusal;
+  it only reuses a live Run whose engineering reservation remains active.
 
 ## 2026-08-24
 

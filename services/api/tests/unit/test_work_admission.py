@@ -39,13 +39,13 @@ async def test_project_stop_is_checked_before_the_project_count():
 async def test_paid_run_start_adds_the_queued_run_before_returning_admitted():
     db = AsyncMock()
     db.add = MagicMock()
-    db.scalars.return_value = _rows(
-        {
-            "work_admission.emergency_stop": False,
-            "work_admission.max_concurrent_paid_runs": 1,
-        }
-    )
-    db.scalar.side_effect = [None, None, SimpleNamespace(owner_id=7), None, None, 0]
+    db.scalars.side_effect = [
+        _rows({}),
+        _rows({"work_admission.emergency_stop": False}),
+        _rows({}),
+        _rows({"work_admission.max_concurrent_paid_runs": 1}),
+    ]
+    db.scalar.side_effect = [None, SimpleNamespace(owner_id=7), None, None, 0]
 
     result = await start_paid_run(
         PaidRunStartCommand(
