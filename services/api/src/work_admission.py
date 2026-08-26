@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
-from shared.contracts.dto.executor_decision import ExecutorDecision
+from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorOverride
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.work_admission import (
@@ -29,6 +29,18 @@ from .executor_resolver import resolve_executor_decision
 EMERGENCY_STOP_KEY = "work_admission.emergency_stop"
 MAX_PROJECTS_KEY = "work_admission.max_projects_per_user"
 MAX_PAID_RUNS_KEY = "work_admission.max_concurrent_paid_runs"
+ENGINEERING_EXECUTOR_OVERRIDE_KEY = "work_admission.engineering_executor_override"
+QA_EXECUTOR_OVERRIDE_KEY = "work_admission.qa_executor_override"
+PAID_WORK_CONTROL_KEYS = tuple(
+    sorted(
+        (
+            EMERGENCY_STOP_KEY,
+            MAX_PAID_RUNS_KEY,
+            ENGINEERING_EXECUTOR_OVERRIDE_KEY,
+            QA_EXECUTOR_OVERRIDE_KEY,
+        )
+    )
+)
 
 _REFUSAL_MESSAGES = {
     WorkAdmissionReason.EMERGENCY_STOP: "Запуск новой работы временно остановлен оператором.",
@@ -52,7 +64,12 @@ class PaidRunIdentityExpired(Exception):
 
 async def _controls(db: AsyncSession, *keys: str) -> dict[str, object]:
     rows = (
-        await db.scalars(select(SystemConfig).where(SystemConfig.key.in_(keys)).with_for_update())
+        await db.scalars(
+            select(SystemConfig)
+            .where(SystemConfig.key.in_(keys))
+            .order_by(SystemConfig.key)
+            .with_for_update()
+        )
     ).all()
     values = {row.key: row.value for row in rows}
     missing = set(keys) - values.keys()
@@ -90,6 +107,15 @@ def _limit(value: object, key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise RuntimeError(f"{key} must be a non-negative integer")
     return value
+
+
+def _override(value: object, key: str) -> ExecutorOverride:
+    if not isinstance(value, str):
+        raise RuntimeError(f"{key} must be none, claude, or codex")
+    try:
+        return ExecutorOverride(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{key} must be none, claude, or codex") from exc
 
 
 async def _stop_or_continue(
@@ -213,11 +239,11 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     if replay is not None:
         return replay
 
-    # The stop row serializes starts. Recheck after taking it: another request
-    # with the same id may have committed while this one waited for the lock.
+    # The complete paid-control set serializes starts. Recheck after taking it:
+    # another request with the same id may have committed while this one waited.
     # Resolve only after this replay so concurrent starts cannot make a discarded
     # decision before the Run that owns the first decision is committed.
-    controls = await _controls(db, EMERGENCY_STOP_KEY)
+    controls = await _controls(db, *PAID_WORK_CONTROL_KEYS)
     replay = await _replay_paid_start(command, payload, db)
     if replay is not None:
         return replay
@@ -225,7 +251,17 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
     if project is None:
         raise RuntimeError(f"Project {command.project_id} does not exist")
     user_id = project.owner_id
-    decision = resolve_executor_decision(command.type, project.config, get_settings())
+    override_key = (
+        ENGINEERING_EXECUTOR_OVERRIDE_KEY
+        if command.type is RunType.ENGINEERING
+        else QA_EXECUTOR_OVERRIDE_KEY
+    )
+    decision = resolve_executor_decision(
+        command.type,
+        project.config,
+        get_settings(),
+        global_override=_override(controls[override_key], override_key),
+    )
     enabled = controls[EMERGENCY_STOP_KEY]
     if not isinstance(enabled, bool):
         raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
@@ -243,7 +279,6 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
                 command_payload=payload,
             )
         )
-    controls = await _controls(db, MAX_PAID_RUNS_KEY)
     restarting = await db.scalar(select(Run).where(Run.id == command.id).with_for_update())
     count = int(
         await db.scalar(

@@ -41,9 +41,15 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted():
     db.add = MagicMock()
     db.scalars.side_effect = [
         _rows({}),
-        _rows({"work_admission.emergency_stop": False}),
+        _rows(
+            {
+                "work_admission.emergency_stop": False,
+                "work_admission.max_concurrent_paid_runs": 1,
+                "work_admission.engineering_executor_override": "none",
+                "work_admission.qa_executor_override": "none",
+            }
+        ),
         _rows({}),
-        _rows({"work_admission.max_concurrent_paid_runs": 1}),
     ]
     db.scalar.side_effect = [None, None, SimpleNamespace(owner_id=7, config={}), None, 0]
 

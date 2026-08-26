@@ -118,6 +118,26 @@ async def require_internal_or_admin(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
 
+async def get_internal_or_admin_actor(
+    _is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+    db: AsyncSession = Depends(get_async_session),
+) -> str:
+    """Authorize a paid-work control change and return its durable actor identity."""
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+    )
+    if actor is None:
+        return "internal_service"
+    if not actor.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return f"admin:{actor.id}"
+
+
 async def get_current_user(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),

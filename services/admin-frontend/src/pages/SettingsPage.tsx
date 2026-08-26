@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn, relativeTime } from '@/lib/utils'
-import type { SystemConfig, AgentConfig } from '@/types/api'
+import type { SystemConfig, AgentConfig, ExecutorOverride, PaidWorkControls } from '@/types/api'
 
 // ---------------------------------------------------------------------------
 // Tabs
@@ -60,10 +60,21 @@ function SystemConfigsTab() {
   })
 
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>
-  if (!configs?.length) return <p className="text-muted-foreground">No configs found</p>
+
+  const protectedKeys = new Set([
+    'work_admission.emergency_stop',
+    'work_admission.max_concurrent_paid_runs',
+    'work_admission.engineering_executor_override',
+    'work_admission.qa_executor_override',
+  ])
+  const editableConfigs = (configs ?? []).filter((config) => !protectedKeys.has(config.key))
+
+  if (!editableConfigs.length) {
+    return <PaidWorkControlsCard />
+  }
 
   // Group by category
-  const grouped = configs.reduce<Record<string, SystemConfig[]>>((acc, c) => {
+  const grouped = editableConfigs.reduce<Record<string, SystemConfig[]>>((acc, c) => {
     ;(acc[c.category] ??= []).push(c)
     return acc
   }, {})
@@ -72,10 +83,104 @@ function SystemConfigsTab() {
 
   return (
     <div className="space-y-4">
+      <PaidWorkControlsCard />
       {categories.map((cat) => (
         <CategorySection key={cat} category={cat} configs={grouped[cat]} />
       ))}
     </div>
+  )
+}
+
+function PaidWorkControlsCard() {
+  const queryClient = useQueryClient()
+  const [draft, setDraft] = useState<PaidWorkControls | null>(null)
+  const controlsQuery = useQuery({
+    queryKey: ['paid-work-controls'],
+    queryFn: () => api.get<PaidWorkControls>('/work-admission/controls'),
+  })
+  const controls = draft ?? controlsQuery.data
+  const mutation = useMutation({
+    mutationFn: (next: PaidWorkControls) => api.put<PaidWorkControls>('/work-admission/controls', next),
+    onSuccess: (committed) => {
+      setDraft(committed)
+      queryClient.setQueryData(['paid-work-controls'], committed)
+      queryClient.invalidateQueries({ queryKey: ['paid-work-controls'] })
+    },
+  })
+
+  if (controlsQuery.isLoading || !controls) return <p className="text-muted-foreground">Loading paid-work controls...</p>
+
+  const update = (next: PaidWorkControls, disruptive: boolean) => {
+    if (disruptive && !window.confirm('This changes admission for new paid work. Continue?')) return
+    mutation.mutate(next)
+  }
+  const updateOverride = (field: 'engineering_executor_override' | 'qa_executor_override', value: ExecutorOverride) => {
+    update({ ...controls, [field]: value }, value !== 'none')
+  }
+
+  return (
+    <Card className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Paid-work controls</h2>
+        <p className="mt-1 text-xs text-muted-foreground">Changes apply to new attempts only.</p>
+      </div>
+      {mutation.isError && <p role="alert" className="text-sm text-red-400">{mutation.error.message || 'Unable to save controls.'}</p>}
+      <label className="flex items-center justify-between gap-4 text-sm">
+        <span>Emergency stop</span>
+        <input
+          type="checkbox"
+          checked={controls.emergency_stop}
+          disabled={mutation.isPending}
+          onChange={(event) => update({ ...controls, emergency_stop: event.target.checked }, true)}
+        />
+      </label>
+      <label className="flex items-center justify-between gap-4 text-sm">
+        <span>Maximum concurrent paid runs</span>
+        <input
+          aria-label="Maximum concurrent paid runs"
+          type="number"
+          min="0"
+          value={controls.max_concurrent_paid_runs}
+          disabled={mutation.isPending}
+          onChange={(event) => {
+            const value = Number(event.target.value)
+            if (Number.isInteger(value) && value >= 0) setDraft({ ...controls, max_concurrent_paid_runs: value })
+          }}
+          onBlur={() => draft && update(draft, false)}
+          className="w-24 rounded border border-border bg-background px-2 py-1 text-right"
+        />
+      </label>
+      <OverrideSelect
+        label="Engineering executor override"
+        value={controls.engineering_executor_override}
+        disabled={mutation.isPending}
+        onChange={(value) => updateOverride('engineering_executor_override', value)}
+      />
+      <OverrideSelect
+        label="QA executor override"
+        value={controls.qa_executor_override}
+        disabled={mutation.isPending}
+        onChange={(value) => updateOverride('qa_executor_override', value)}
+      />
+    </Card>
+  )
+}
+
+function OverrideSelect({ label, value, disabled, onChange }: {
+  label: string
+  value: ExecutorOverride
+  disabled: boolean
+  onChange: (value: ExecutorOverride) => void
+}) {
+  return (
+    <label className="flex items-center justify-between gap-4 text-sm">
+      <span>{label}</span>
+      <select aria-label={label} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as ExecutorOverride)} className="rounded border border-border bg-background px-2 py-1">
+        <option value="none">Use legacy policy</option>
+        <option value="claude">Claude</option>
+        <option value="codex">Codex</option>
+      </select>
+    </label>
   )
 }
 

@@ -21,3 +21,11 @@ class WorkAdmissionAudit(Base):
     reference_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     command_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    control_name: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    before_value: Mapped[dict | list | str | int | float | bool | None] = mapped_column(
+        JSON, nullable=True
+    )
+    after_value: Mapped[dict | list | str | int | float | bool | None] = mapped_column(
+        JSON, nullable=True
+    )
+    actor: Mapped[str | None] = mapped_column(String(128), nullable=True)

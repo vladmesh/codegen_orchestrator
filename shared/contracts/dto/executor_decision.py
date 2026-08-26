@@ -18,6 +18,15 @@ class ExecutorDecisionSource(StrEnum):
     PROJECT_PIN = "project_pin"
     API_DEFAULT = "api_default"
     QA_API_SETTING = "qa_api_setting"
+    GLOBAL_OVERRIDE = "global_override"
+
+
+class ExecutorOverride(StrEnum):
+    """The only operator-selected break-glass executors for paid attempts."""
+
+    NONE = "none"
+    CLAUDE = "claude"
+    CODEX = "codex"
 
 
 class ExecutorDecision(BaseModel):
@@ -26,7 +35,7 @@ class ExecutorDecision(BaseModel):
     attempt_kind: Literal[RunType.ENGINEERING, RunType.QA]
     agent_type: AgentType
     source: ExecutorDecisionSource
-    policy_version: Literal["v1"]
+    policy_version: Literal["v1", "v2"]
     reason: str = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")

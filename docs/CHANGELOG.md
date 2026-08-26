@@ -4,6 +4,11 @@
 
 ### Added
 
+- Internal/admin Settings now exposes one typed, audited paid-work control
+  state: emergency stop, concurrent paid-run ceiling, and independent
+  engineering/QA executor overrides. Overrides are `none`, `claude`, or
+  `codex`, take precedence only for new Runs, and reset to the legacy policy
+  without restart or deploy.
 - Paid engineering and QA runs now receive an immutable typed executor decision
   at admission. Engineering preserves valid project pins or the API default;
   QA uses the API-side Codex-default setting. Worker launchers read the

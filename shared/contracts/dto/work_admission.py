@@ -7,7 +7,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .engineering_budget_policy import EngineeringBudgetAdmissionRead
-from .executor_decision import ExecutorDecision
+from .executor_decision import ExecutorDecision, ExecutorOverride
 from .run import RunType
 
 
@@ -42,6 +42,8 @@ class WorkAdmissionRead(BaseModel):
 class EmergencyStopCommand(BaseModel):
     """The operator's exact desired emergency-stop state."""
 
+    model_config = ConfigDict(extra="forbid")
+
     enabled: StrictBool
 
 
@@ -51,8 +53,25 @@ class EmergencyStopRead(BaseModel):
     enabled: bool
 
 
+class PaidWorkControlsRead(BaseModel):
+    """Complete paid-work controls visible to internal services and administrators."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    emergency_stop: StrictBool
+    max_concurrent_paid_runs: StrictInt = Field(ge=0)
+    engineering_executor_override: ExecutorOverride
+    qa_executor_override: ExecutorOverride
+
+
+class PaidWorkControlsCommand(PaidWorkControlsRead):
+    """An atomic replacement of the paid-work control state."""
+
+
 class WorkAdmissionControlCommand(BaseModel):
     """Typed write for a protected work-admission control."""
+
+    model_config = ConfigDict(extra="forbid")
 
     value: StrictBool | StrictInt
 

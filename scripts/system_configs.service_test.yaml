@@ -18,3 +18,13 @@
   value: false
   category: work_admission
   description: "Service-test operator switch that blocks new admitted work"
+
+- key: work_admission.engineering_executor_override
+  value: "none"
+  category: work_admission
+  description: "Service-test global executor override for engineering attempts"
+
+- key: work_admission.qa_executor_override
+  value: "none"
+  category: work_admission
+  description: "Service-test global executor override for QA attempts"

@@ -21,6 +21,16 @@
   category: work_admission
   description: "Operator switch that blocks new projects, engineering and QA work"
 
+- key: work_admission.engineering_executor_override
+  value: "none"
+  category: work_admission
+  description: "Global break-glass executor override for new engineering attempts"
+
+- key: work_admission.qa_executor_override
+  value: "none"
+  category: work_admission
+  description: "Global break-glass executor override for new QA attempts"
+
 - key: scheduler.dispatch_interval_seconds
   value: 30
   category: scheduler

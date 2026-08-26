@@ -125,4 +125,6 @@ def test_api_service_test_overlay_explicitly_overrides_every_work_admission_key(
         "work_admission.max_projects_per_user": 10000,
         "work_admission.max_concurrent_paid_runs": 10000,
         "work_admission.emergency_stop": False,
+        "work_admission.engineering_executor_override": "none",
+        "work_admission.qa_executor_override": "none",
     }

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shared.contracts.dto.executor_decision import ExecutorDecisionSource
+from shared.contracts.dto.executor_decision import ExecutorDecisionSource, ExecutorOverride
 from shared.contracts.dto.run import RunType
 from shared.contracts.vocab import AgentType
 from src.executor_resolver import ExecutorResolutionError, resolve_executor_decision
@@ -58,3 +58,39 @@ def test_qa_rejects_factory_before_a_run_can_be_created():
                 default_agent_type=AgentType.CLAUDE, qa_executor_agent_type=AgentType.FACTORY
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("attempt_kind", "override", "expected"),
+    [
+        (RunType.ENGINEERING, ExecutorOverride.CLAUDE, AgentType.CLAUDE),
+        (RunType.QA, ExecutorOverride.CODEX, AgentType.CODEX),
+    ],
+)
+def test_global_override_precedes_legacy_executor_inputs(attempt_kind, override, expected):
+    decision = resolve_executor_decision(
+        attempt_kind,
+        {"agent_type": AgentType.FACTORY.value},
+        SimpleNamespace(
+            default_agent_type=AgentType.FACTORY, qa_executor_agent_type=AgentType.CLAUDE
+        ),
+        global_override=override,
+    )
+
+    assert decision.agent_type is expected
+    assert decision.source is ExecutorDecisionSource.GLOBAL_OVERRIDE
+    assert decision.policy_version == "v2"
+
+
+def test_none_override_preserves_factory_on_the_legacy_engineering_path():
+    decision = resolve_executor_decision(
+        RunType.ENGINEERING,
+        {"agent_type": AgentType.FACTORY.value},
+        SimpleNamespace(
+            default_agent_type=AgentType.CODEX, qa_executor_agent_type=AgentType.CLAUDE
+        ),
+        global_override=ExecutorOverride.NONE,
+    )
+
+    assert decision.agent_type is AgentType.FACTORY
+    assert decision.source is ExecutorDecisionSource.PROJECT_PIN
