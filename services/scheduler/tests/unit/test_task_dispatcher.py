@@ -803,7 +803,9 @@ class TestDispatchPartialFailure:
         from shared.contracts.dto.run import RunStatus
 
         api_client.abort_paid_run_pre_handoff.assert_awaited_once()
-        api_client.list_runs.return_value = [self._prior_run(RunStatus.FAILED)]
+        api_client.list_runs.return_value = [
+            self._prior_run(RunStatus.FAILED, result={"engineering_status": "failed"})
+        ]
         api_client.start_paid_run.reset_mock()
         redis_client.publish_message.side_effect = None
 
