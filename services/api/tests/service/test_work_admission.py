@@ -181,7 +181,17 @@ async def test_concurrent_paid_run_starts_hold_the_last_slot(
         Run(id=occupied_id, type="qa", status="queued", project_id=project_id, run_metadata={})
     )
     await db_session.commit()
-    await _set_config(db_session, "work_admission.max_concurrent_paid_runs", 2)
+    occupied_count = int(
+        await db_session.scalar(
+            select(func.count())
+            .select_from(Run)
+            .where(Run.type.in_(("engineering", "qa")), Run.status.in_(("queued", "running")))
+        )
+        or 0
+    )
+    # The service database is shared by the suite.  Its existing paid runs are
+    # already occupied slots; this test supplies exactly one additional N-1 slot.
+    await _set_config(db_session, "work_admission.max_concurrent_paid_runs", occupied_count + 1)
     barrier = asyncio.Barrier(2)
     try:
 
@@ -205,6 +215,6 @@ async def test_concurrent_paid_run_starts_hold_the_last_slot(
                 .select_from(Run)
                 .where(Run.type.in_(("engineering", "qa")), Run.status.in_(("queued", "running")))
             )
-        ) == 2
+        ) == occupied_count + 1
     finally:
         await _set_config(db_session, "work_admission.max_concurrent_paid_runs", 10000)
