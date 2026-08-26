@@ -1206,7 +1206,7 @@ async def _handle_deploy_code_fix(
             api_client,
             run,
             event=OwnerNotificationEvent.STORY_QUARANTINED,
-            text=ENGINEERING_BUDGET_DENIED_TEXT,
+            text=started.admission.message or ENGINEERING_BUDGET_DENIED_TEXT,
             story_id=story_id,
             project_id=project_id,
             terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
