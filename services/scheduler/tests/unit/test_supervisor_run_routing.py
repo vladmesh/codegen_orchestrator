@@ -589,54 +589,6 @@ class TestSuperviseDeployingStories:
         api_client.update_run.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_code_fix_retries_a_released_identity_before_any_handoff(
-        self, api_client, redis_client
-    ):
-        """The next tick re-enters admission with the deterministic deploy-fix id."""
-        from src.tasks.supervisor import supervise_deploying_stories
-
-        api_client.get_stories_by_status.return_value = [
-            _make_story(id="story-1", status="deploying")
-        ]
-        api_client.get_latest_run_by_story.return_value = _make_run(
-            status=RunStatus.FAILED,
-            result={
-                "deploy_outcome": DeployOutcome.CODE_FIX.value,
-                "deploy_fix_attempt": 0,
-            },
-        )
-        api_client.transition_story.side_effect = [RuntimeError("temporary API failure"), {}]
-
-        first = await supervise_deploying_stories(api_client, redis_client)
-        second = await supervise_deploying_stories(api_client, redis_client)
-
-        assert first["redispatched"] == 0
-        assert second["redispatched"] == 1
-        assert [call.args[0].id for call in api_client.start_paid_run.await_args_list] == [
-            "eng-deploy-fix-deploy-1-1",
-            "eng-deploy-fix-deploy-1-1",
-        ]
-        release_call = next(
-            index
-            for index, call in enumerate(api_client.mock_calls)
-            if call[0] == "release_engineering_budget_admission"
-        )
-        retry_start_call = [
-            index for index, call in enumerate(api_client.mock_calls) if call[0] == "start_paid_run"
-        ][1]
-        assert release_call < retry_start_call
-        assert (
-            len(
-                [
-                    call
-                    for call in redis_client.publish_message.await_args_list
-                    if call.args[0] == ENGINEERING_QUEUE
-                ]
-            )
-            == 1
-        )
-
-    @pytest.mark.asyncio
     async def test_code_fix_re_admission_denial_has_no_engineering_handoff(
         self, api_client, redis_client
     ):

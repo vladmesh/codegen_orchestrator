@@ -336,3 +336,65 @@ async def test_same_paid_command_rechecks_a_released_capacity_slot(
         assert admitted.json()["run_id"] == payload["id"]
     finally:
         await _set_config(db_session, "work_admission.max_concurrent_paid_runs", 10000)
+
+
+@pytest.mark.asyncio
+async def test_released_deploy_fix_identity_reacquires_its_hold_before_requeueing(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    """A released deploy-fix id cannot authorize its terminal Run by replay alone."""
+    from src.work_admission import abort_paid_run_pre_handoff
+
+    telegram_id = 830_000_006
+    project_id = str(uuid.uuid4())
+    user = await async_client.post(
+        "/api/users/", json={"telegram_id": telegram_id, "username": "fix-retry"}
+    )
+    assert user.status_code == HTTPStatus.CREATED
+    assert (
+        await async_client.post(
+            "/api/projects/",
+            headers={"X-Telegram-ID": str(telegram_id)},
+            json={
+                "id": project_id,
+                "title": "Deploy fix retry",
+                "initiating_run_id": str(uuid.uuid4()),
+                "status": "active",
+                "config": {},
+            },
+        )
+    ).status_code == HTTPStatus.CREATED
+    assert (
+        await async_client.put(
+            f"/api/engineering-budget-policies/{user.json()['id']}",
+            json={"limit_microusd": 100, "attempt_reservation_microusd": 60, "state": "enabled"},
+        )
+    ).status_code == HTTPStatus.OK
+    fix_task_id = f"eng-deploy-fix-{uuid.uuid4().hex}-1"
+    payload = {
+        "id": fix_task_id,
+        "type": "engineering",
+        "project_id": project_id,
+        "task_id": fix_task_id,
+        "story_id": "story-deploy-fix",
+        "run_metadata": {"deploy_fix_attempt": 1},
+    }
+    first = await async_client.post("/api/work-admission/paid-runs", json=payload)
+    assert first.status_code == HTTPStatus.OK, first.text
+    reservation = await db_session.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == fix_task_id
+        )
+    )
+    assert reservation is not None and reservation.state == "active"
+    await abort_paid_run_pre_handoff(fix_task_id, "handoff failed", db_session)
+    await db_session.commit()
+    assert reservation.state == "released"
+
+    replay = await async_client.post("/api/work-admission/paid-runs", json=payload)
+    assert replay.status_code == HTTPStatus.OK, replay.text
+    run = await db_session.scalar(select(Run).where(Run.id == fix_task_id))
+    assert run is not None and run.status == "queued"
+    await db_session.refresh(reservation)
+    assert reservation.state == "active"
+    assert reservation.active_held_microusd == 60
