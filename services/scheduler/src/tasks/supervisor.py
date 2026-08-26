@@ -26,7 +26,6 @@ from shared.contracts.bot_access import (
     project_bot_audience,
 )
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -1258,17 +1257,9 @@ async def _handle_deploy_code_fix(
         await redis_client.publish_message(ENGINEERING_QUEUE, fix_msg)
     except Exception:
         log.exception("deploy_fix_pre_handoff_failed", fix_task_id=fix_task_id)
-        await api_client.release_engineering_budget_admission(fix_task_id)
         if run_created:
-            await api_client.update_run(
-                fix_task_id,
-                {
-                    "status": RunStatus.FAILED.value,
-                    "error_message": DEPLOY_FIX_PUBLISH_FAILED_ERROR,
-                    "result": EngineeringRunResult(
-                        engineering_status=EngineeringStatus.FAILED
-                    ).model_dump(mode="json"),
-                },
+            await api_client.abort_paid_run_pre_handoff(
+                fix_task_id, DEPLOY_FIX_PUBLISH_FAILED_ERROR
             )
         return False
     log.info("deploy_supervisor_code_fix", fix_task_id=fix_task_id, attempt=attempt + 1)

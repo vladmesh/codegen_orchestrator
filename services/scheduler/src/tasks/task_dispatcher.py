@@ -18,7 +18,6 @@ import uuid
 
 import structlog
 
-from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
 from shared.contracts.dto.project import (
     ProjectDTO,
@@ -27,7 +26,6 @@ from shared.contracts.dto.project import (
     require_initiating_run,
 )
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
-from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
@@ -306,6 +304,21 @@ async def _create_and_publish_run(
         log.exception("task_dispatch_paid_start_failed", run_id=run_id)
         return None
     if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        if task.story_id and started.admission.message:
+            source_run = await api_client.get_run(initiating_run_id)
+            owed = await owe_owner_notification(
+                api_client,
+                source_run,
+                event=OwnerNotificationEvent.STORY_QUARANTINED,
+                text=started.admission.message,
+                story_id=task.story_id,
+                project_id=project_id,
+                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+                task_id=task_id,
+                log=log,
+            )
+            await api_client.transition_story(task.story_id, "human-review")
+            await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
         budget = started.engineering_budget
         if budget is not None and budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
             await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
@@ -344,21 +357,6 @@ async def _create_and_publish_run(
                 started.admission.reason.value if started.admission.reason is not None else None
             ),
         )
-        if task.story_id and started.admission.message:
-            source_run = await api_client.get_run(initiating_run_id)
-            owed = await owe_owner_notification(
-                api_client,
-                source_run,
-                event=OwnerNotificationEvent.STORY_QUARANTINED,
-                text=started.admission.message,
-                story_id=task.story_id,
-                project_id=project_id,
-                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
-                task_id=task_id,
-                log=log,
-            )
-            await api_client.transition_story(task.story_id, "human-review")
-            await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
         return None
     action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
     run_created = False
@@ -382,21 +380,8 @@ async def _create_and_publish_run(
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
     except Exception:
         log.exception("task_dispatch_pre_handoff_failed", run_id=run_id)
-        await api_client.release_engineering_budget_admission(run_id)
         if run_created:
-            # Drop the iteration stamp: this run never made it onto the queue, so the
-            # next tick must dispatch a fresh one instead of recovering this one.
-            await api_client.update_run(
-                run_id,
-                {
-                    "status": RunStatus.FAILED.value,
-                    "error_message": PUBLISH_FAILED_ERROR,
-                    "result": EngineeringRunResult(
-                        engineering_status=EngineeringStatus.FAILED
-                    ).model_dump(mode="json"),
-                    "run_metadata": {**run_metadata, "iteration": None, "publish_failed": True},
-                },
-            )
+            await api_client.abort_paid_run_pre_handoff(run_id, PUBLISH_FAILED_ERROR)
         return None
     return run_id
 

@@ -1,6 +1,6 @@
 """Internal/admin surface for count-based work admission and emergency stop."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from ..work_admission import (
     MAX_PROJECTS_KEY,
     PaidRunCommandConflict,
     PaidRunIdentityExpired,
+    abort_paid_run_pre_handoff,
     start_paid_run,
 )
 
@@ -124,3 +125,14 @@ async def start_paid_run_endpoint(
         ) from exc
     await db.commit()
     return result
+
+
+@router.post("/paid-runs/{run_id}/abort-pre-handoff", status_code=status.HTTP_204_NO_CONTENT)
+async def abort_paid_run_pre_handoff_endpoint(
+    run_id: str,
+    reason: str = Body(embed=True),
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> None:
+    await abort_paid_run_pre_handoff(run_id, reason, db)
+    await db.commit()

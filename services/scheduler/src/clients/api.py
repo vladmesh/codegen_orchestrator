@@ -142,6 +142,11 @@ class SchedulerAPIClient(InternalAPIClient):
     async def release_engineering_budget_admission(self, attempt_id: str) -> None:
         await self.request("POST", f"engineering-budget-policies/admissions/{attempt_id}/release")
 
+    async def abort_paid_run_pre_handoff(self, run_id: str, reason: str) -> None:
+        await self.request(
+            "POST", f"work-admission/paid-runs/{run_id}/abort-pre-handoff", json={"reason": reason}
+        )
+
     async def create_run(self, run_data: dict) -> RunDTO:
         resp = await self.request("POST", "runs/", json=run_data)
         return RunDTO.model_validate(resp.json())
