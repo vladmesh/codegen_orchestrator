@@ -9,7 +9,13 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import EngineeringBudgetReservation, Run, SystemConfig, WorkAdmissionAudit
+from shared.models import (
+    EngineeringAttemptLedger,
+    EngineeringBudgetReservation,
+    Run,
+    SystemConfig,
+    WorkAdmissionAudit,
+)
 
 
 async def _set_config(db_session: AsyncSession, key: str, value: int | bool) -> None:
@@ -404,3 +410,90 @@ async def test_released_deploy_fix_identity_reacquires_its_hold_before_requeuein
     )
     assert next_reservation is not None and next_reservation.state == "active"
     assert next_reservation.active_held_microusd == 60
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal", "reservation_state"),
+    [
+        (
+            {
+                "status": "completed",
+                "engineering_attempt": {
+                    "provider": "anthropic",
+                    "cost_microusd": 20,
+                    "cost_source": "provider_reported",
+                },
+            },
+            "settled",
+        ),
+        ({"status": "failed"}, "unknown_final"),
+    ],
+    ids=["known-cost", "unknown-final"],
+)
+async def test_terminal_paid_run_identity_requires_a_new_attempt_identity(
+    async_client: AsyncClient,
+    db_session: AsyncSession,
+    terminal: dict,
+    reservation_state: str,
+):
+    """A terminal attempt is never reopened or accounted for a second time."""
+    telegram_id = uuid.uuid4().int % 1_000_000_000
+    project_id = str(uuid.uuid4())
+    user = await async_client.post(
+        "/api/users/", json={"telegram_id": telegram_id, "username": f"terminal-{telegram_id}"}
+    )
+    assert user.status_code == HTTPStatus.CREATED, user.text
+    project = await async_client.post(
+        "/api/projects/",
+        headers={"X-Telegram-ID": str(telegram_id)},
+        json={
+            "id": project_id,
+            "title": "Terminal paid-run identity",
+            "initiating_run_id": str(uuid.uuid4()),
+            "status": "active",
+            "config": {},
+        },
+    )
+    assert project.status_code == HTTPStatus.CREATED, project.text
+    assert (
+        await async_client.put(
+            f"/api/engineering-budget-policies/{user.json()['id']}",
+            json={"limit_microusd": 100, "attempt_reservation_microusd": 60, "state": "enabled"},
+        )
+    ).status_code == HTTPStatus.CREATED
+
+    run_id = f"eng-terminal-{uuid.uuid4().hex}"
+    command = {"id": run_id, "type": "engineering", "project_id": project_id}
+    started = await async_client.post("/api/work-admission/paid-runs", json=command)
+    assert started.status_code == HTTPStatus.OK, started.text
+    finished = await async_client.patch(f"/api/runs/{run_id}", json=terminal)
+    assert finished.status_code == HTTPStatus.OK, finished.text
+
+    before_runs = await db_session.scalar(select(func.count()).select_from(Run))
+    before_reservations = await db_session.scalar(
+        select(func.count()).select_from(EngineeringBudgetReservation)
+    )
+    before_ledger = await db_session.scalar(
+        select(func.count()).select_from(EngineeringAttemptLedger)
+    )
+
+    replay = await async_client.post("/api/work-admission/paid-runs", json=command)
+    assert replay.status_code == HTTPStatus.CONFLICT, replay.text
+    assert replay.json()["detail"]["code"] == "paid_run_identity_expired"
+    assert await db_session.scalar(select(func.count()).select_from(Run)) == before_runs
+    assert (
+        await db_session.scalar(select(func.count()).select_from(EngineeringBudgetReservation))
+        == before_reservations
+    )
+    assert (
+        await db_session.scalar(select(func.count()).select_from(EngineeringAttemptLedger))
+        == before_ledger
+    )
+    reservation = await db_session.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == run_id
+        )
+    )
+    assert reservation is not None
+    assert reservation.state == reservation_state
