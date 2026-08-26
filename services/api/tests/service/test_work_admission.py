@@ -375,8 +375,8 @@ async def test_released_deploy_fix_identity_reacquires_its_hold_before_requeuein
         "id": fix_task_id,
         "type": "engineering",
         "project_id": project_id,
-        "task_id": fix_task_id,
-        "story_id": "story-deploy-fix",
+        "task_id": None,
+        "story_id": None,
         "run_metadata": {"deploy_fix_attempt": 1},
     }
     first = await async_client.post("/api/work-admission/paid-runs", json=payload)
