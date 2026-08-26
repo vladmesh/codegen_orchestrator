@@ -25,6 +25,12 @@ from ..work_admission import (
 
 router = APIRouter(prefix="/work-admission", tags=["work-admission"])
 
+_CONTROL_DESCRIPTIONS = {
+    EMERGENCY_STOP_KEY: "Emergency stop for new projects, engineering and QA work",
+    MAX_PROJECTS_KEY: "Maximum number of projects per user",
+    MAX_PAID_RUNS_KEY: "Maximum number of concurrent engineering and QA runs",
+}
+
 
 async def _stop_config(db: AsyncSession) -> SystemConfig:
     config = await db.scalar(
@@ -80,8 +86,19 @@ async def put_work_admission_control(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     config = await db.get(SystemConfig, key)
     if config is None:
-        raise RuntimeError(f"Missing work admission config: {key}")
-    config.value = command.value
+        # Protected controls may only be initialized through this typed route.
+        # This lets the deploy seed establish them without reopening the generic
+        # system-config mutation API as a bypass.
+        config = SystemConfig(
+            key=key,
+            value=command.value,
+            category="work_admission",
+            description=_CONTROL_DESCRIPTIONS[key],
+            updated_by="work_admission_control",
+        )
+        db.add(config)
+    else:
+        config.value = command.value
     await db.commit()
     return {"key": key, "value": command.value}
 
