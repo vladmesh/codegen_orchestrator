@@ -733,7 +733,6 @@ class TestDispatchPartialFailure:
     @pytest.mark.asyncio
     async def test_publish_failure_fails_run_and_keeps_task_todo(self, api_client, redis_client):
         """Publish blows up → the created run is closed, the task stays dispatchable."""
-        from shared.contracts.dto.run import RunStatus
         from src.tasks.task_dispatcher import PUBLISH_FAILED_ERROR, dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [self._todo_task()]
@@ -744,17 +743,9 @@ class TestDispatchPartialFailure:
 
         assert dispatched == 0
         run_id = api_client.start_paid_run.call_args[0][0].id
-        api_client.update_run.assert_called_once()
-        patched_run_id, patch = api_client.update_run.call_args[0]
-        assert patched_run_id == run_id
-        assert patch["status"] == RunStatus.FAILED.value
-        assert patch["error_message"] == PUBLISH_FAILED_ERROR
-        assert patch["result"]["engineering_status"] == "failed"
-        # The run never reached the queue, so it must not look dispatched
-        assert patch["run_metadata"]["iteration"] is None
+        api_client.abort_paid_run_pre_handoff.assert_awaited_once_with(run_id, PUBLISH_FAILED_ERROR)
         # Task must stay in todo — nothing is working on it
         api_client.transition_task.assert_not_called()
-        api_client.release_engineering_budget_admission.assert_awaited_once_with(run_id)
 
     @pytest.mark.asyncio
     async def test_run_creation_failure_releases_the_pre_handoff_reservation(

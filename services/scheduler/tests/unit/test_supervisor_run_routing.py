@@ -155,7 +155,9 @@ class TestSuperviseDeployingStories:
     @pytest.mark.asyncio
     async def test_success_transitions_to_testing(self, api_client, redis_client):
         """SUCCESS outcome → story TESTING, QA message published."""
-        from src.tasks.supervisor import supervise_deploying_stories
+        from src.tasks.supervisor import (
+            supervise_deploying_stories,
+        )
 
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
@@ -207,7 +209,9 @@ class TestSuperviseDeployingStories:
     @pytest.mark.asyncio
     async def test_criteria_are_resolved_before_the_story_moves(self, api_client, redis_client):
         """The handoff carries the repository's criteria, whatever they say."""
-        from src.tasks.supervisor import supervise_deploying_stories
+        from src.tasks.supervisor import (
+            supervise_deploying_stories,
+        )
 
         criteria = "- GET /health returns 200\n- Telegram: /start responds with welcome"
         api_client.get_stories_by_status.return_value = [
@@ -539,7 +543,10 @@ class TestSuperviseDeployingStories:
         self, api_client, redis_client
     ):
         """A failed deploy-fix publish proves no provider work started, so release its hold."""
-        from src.tasks.supervisor import supervise_deploying_stories
+        from src.tasks.supervisor import (
+            DEPLOY_FIX_PUBLISH_FAILED_ERROR,
+            supervise_deploying_stories,
+        )
 
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
@@ -556,11 +563,9 @@ class TestSuperviseDeployingStories:
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 0
-        api_client.release_engineering_budget_admission.assert_awaited_once_with(
-            "eng-deploy-fix-deploy-1-1"
+        api_client.abort_paid_run_pre_handoff.assert_awaited_once_with(
+            "eng-deploy-fix-deploy-1-1", DEPLOY_FIX_PUBLISH_FAILED_ERROR
         )
-        api_client.update_run.assert_awaited_once()
-        assert api_client.update_run.await_args.args[0] == "eng-deploy-fix-deploy-1-1"
 
     @pytest.mark.asyncio
     async def test_code_fix_run_creation_failure_releases_exact_admission_before_handoff(
