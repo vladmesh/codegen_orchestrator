@@ -562,14 +562,19 @@ def clean_database():
     )
     stmts.append(f"DELETE FROM repositories WHERE project_id IN ({sub});")
     stmts.append(f"DELETE FROM projects WHERE {conditions};")  # noqa: S608
-    # The ledger references the user, so the user cannot go first. Deleting a
-    # run's rows and then failing here left every later phase unrun: the sweep
-    # raises, and what it had not reached yet stayed on the stand.
+    # The synthetic test user is a fixture reused by every run, not residue of
+    # one, and the attempt ledger that references it is append-only by design —
+    # a database rule refuses to delete from it, and rightly so. So the user goes
+    # only while nothing points at it; once a run has recorded an attempt, the
+    # row stays and the next run reuses it.
+    #
+    # Deleting the user unconditionally made the whole sweep raise, and a raising
+    # sweep is not a partial one: every phase after the database went unrun and
+    # its residue stayed on the stand.
     stmts.append(
-        "DELETE FROM engineering_attempt_ledger WHERE user_id IN "
-        "(SELECT id FROM users WHERE telegram_id = 999000001);"
+        "DELETE FROM users WHERE telegram_id = 999000001 "
+        "AND NOT EXISTS (SELECT 1 FROM engineering_attempt_ledger l WHERE l.user_id = users.id);"
     )
-    stmts.append("DELETE FROM users WHERE telegram_id = 999000001;")
     sql = "\n".join(stmts)
     result = run_cmd(
         [
