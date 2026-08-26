@@ -18,7 +18,8 @@ services:
   admin-frontend:
     # Operator access goes through an SSH tunnel until the admin UI has an
     # authenticated TLS route in Caddy. Never publish Basic Auth over HTTP.
-    ports: !reset []
+    ports: !override
+      - "127.0.0.1:3001:80"
 
   user-dashboard:
     # Public access is served by Caddy at /lk; a direct port would bypass TLS

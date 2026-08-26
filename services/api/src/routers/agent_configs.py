@@ -7,9 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.models import AgentConfig
 
 from ..database import get_async_session
+from ..dependencies import require_internal_or_admin
 from ..schemas.agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 
-router = APIRouter(prefix="/agent-configs", tags=["agent-configs"])
+router = APIRouter(
+    prefix="/agent-configs",
+    tags=["agent-configs"],
+    dependencies=[Depends(require_internal_or_admin)],
+)
 
 
 @router.post("/", response_model=AgentConfigRead, status_code=status.HTTP_201_CREATED)

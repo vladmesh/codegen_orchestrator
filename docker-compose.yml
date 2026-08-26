@@ -538,7 +538,7 @@ services:
     ports:
       - "3001:80"
     environment:
-      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       # The proxy authenticates to the API on behalf of whoever passed basic auth.
       INTERNAL_API_KEY: ${INTERNAL_API_KEY}

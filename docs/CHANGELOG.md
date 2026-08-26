@@ -21,6 +21,11 @@
 
 ### Fixed
 
+- Production admin access now binds only to `127.0.0.1:3001` for SSH forwarding;
+  Caddy does not expose it. Analytics, agent-configuration, service-deployment,
+  and queue-debug routes now require an administrator or internal service, while
+  nginx Basic Auth and its required admin credentials continue to protect every
+  admin surface.
 - Updated paid-run test fixtures to use the transactional paid-run command;
   fixtures that only require a Run record now use a non-paid type.
 - Paid-run starts now replay an identical stable command idempotently and reject

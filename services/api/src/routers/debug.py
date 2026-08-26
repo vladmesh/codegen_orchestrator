@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 import redis.asyncio as aioredis
 import structlog
 
@@ -12,8 +12,9 @@ from shared.queues import QUEUE_TOPOLOGY
 from shared.redis import decode_redis_fields
 
 from ..config import get_settings
+from ..dependencies import require_internal_or_admin
 
-router = APIRouter(tags=["debug"])
+router = APIRouter(tags=["debug"], dependencies=[Depends(require_internal_or_admin)])
 logger = structlog.get_logger(__name__)
 
 HIGH_PENDING_THRESHOLD = 100
