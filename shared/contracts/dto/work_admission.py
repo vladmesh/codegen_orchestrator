@@ -7,6 +7,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .engineering_budget_policy import EngineeringBudgetAdmissionRead
+from .executor_decision import ExecutorDecision
 from .run import RunType
 
 
@@ -74,3 +75,4 @@ class PaidRunStartRead(BaseModel):
     admission: WorkAdmissionRead
     run_id: str | None = None
     engineering_budget: EngineeringBudgetAdmissionRead | None = None
+    executor_decision: ExecutorDecision | None = None

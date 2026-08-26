@@ -13,8 +13,9 @@ from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason, EngineeringRunResult
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import WorkerOwnership
@@ -139,6 +140,15 @@ async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDT
     return allocated
 
 
+async def _load_engineering_executor_decision(task_id: str) -> ExecutorDecision:
+    """Read the persisted paid-start policy before the developer graph can launch."""
+    run = await api_client.get_run(task_id)
+    decision = ExecutorDecision.from_run_metadata(run.run_metadata)
+    if decision.attempt_kind is not RunType.ENGINEERING:
+        raise ValueError("expected engineering attempt")
+    return decision
+
+
 async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single engineering job by running Engineering Subgraph."""
     from ..subgraphs.engineering import create_engineering_subgraph
@@ -187,6 +197,15 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         project = await api_client.get_project(project_id, **_parse_telegram_id(telegram_chat_id))
         if not project:
             return await _fail_job(task_id, f"Project {project_id} not found", planning_task_id)
+
+        try:
+            executor_decision = await _load_engineering_executor_decision(task_id)
+        except ValueError as exc:
+            return await _fail_job(
+                task_id,
+                f"Invalid executor decision snapshot: {exc}",
+                planning_task_id,
+            )
 
         if not description:
             description = (project.config or {}).get("description", "")
@@ -247,6 +266,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             # this value; none of them recomputes it, so nothing downstream can
             # substitute a different identity.
             "ownership": WorkerOwnership.for_engineering(msg),
+            "executor_decision": executor_decision,
             "commit_sha": None,
             "worker_id": existing_worker_id,
             "engineering_status": EngineeringStatus.IDLE,

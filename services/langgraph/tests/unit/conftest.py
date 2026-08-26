@@ -3,11 +3,14 @@
 import os
 from pathlib import Path
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from shared.config_store import ConfigStore
+from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
+from shared.contracts.dto.run import RunType
+from shared.contracts.vocab import AgentType
 
 # Add /app to sys.path so that 'src' module can be imported.
 # This is needed because the volume mount for tests doesn't include the src module.
@@ -28,3 +31,30 @@ def mock_deploy_config_store(monkeypatch):
     store.get_int.return_value = 3600
     monkeypatch.setattr(deploy, "_config", store)
     return store
+
+
+@pytest.fixture(autouse=True)
+def paid_run_executor_for_legacy_unit_states(monkeypatch):
+    """Keep pre-decision unit fixtures focused on their stated behavior."""
+    from src.consumers import engineering
+    from src.nodes.developer import DeveloperNode
+
+    engineering_decision = ExecutorDecision(
+        attempt_kind=RunType.ENGINEERING,
+        agent_type=AgentType.CLAUDE,
+        source=ExecutorDecisionSource.API_DEFAULT,
+        policy_version="v1",
+        reason="Engineering executor selected by API DEFAULT_AGENT_TYPE.",
+    )
+    original_run = DeveloperNode.run
+
+    async def run_with_decision(self, state):
+        state.setdefault("executor_decision", engineering_decision)
+        return await original_run(self, state)
+
+    monkeypatch.setattr(DeveloperNode, "run", run_with_decision)
+    monkeypatch.setattr(
+        engineering,
+        "_load_engineering_executor_decision",
+        AsyncMock(return_value=engineering_decision),
+    )

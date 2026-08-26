@@ -16,7 +16,7 @@ from shared.config import (
     redis_url_field,
     telegram_token_field,
 )
-from shared.contracts.vocab import AgentType
+from shared.contracts.vocab import AgentType, QAExecutorAgentType
 
 
 class Settings(BaseSettings):
@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Project creation resolves this at request time, so deployments can change
     # the developer-worker default without changing the PO request contract.
     default_agent_type: AgentType = default_agent_type_field()
+
+    # QA executor policy belongs at paid-run admission, not in the later
+    # consumer process. Keep the existing setting name/default while the QA
+    # worker still needs its unrelated runtime configuration.
+    qa_executor_agent_type: QAExecutorAgentType = AgentType.CODEX
 
     admin_telegram_ids: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
 

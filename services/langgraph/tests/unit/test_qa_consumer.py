@@ -18,8 +18,9 @@ import respx
 
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.deploy_dispatch import DeployRunStart
+from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
@@ -130,6 +131,17 @@ def mock_api_client():
         mock.start_run = AsyncMock(
             return_value=DeployRunStart(
                 run_id="qa-run-1", started=True, run_status=RunStatus.RUNNING
+            )
+        )
+        mock.get_run = AsyncMock(
+            return_value=SimpleNamespace(
+                run_metadata=ExecutorDecision(
+                    attempt_kind=RunType.QA,
+                    agent_type=AgentType.CLAUDE,
+                    source=ExecutorDecisionSource.QA_API_SETTING,
+                    policy_version="v1",
+                    reason="QA executor selected by API QA_EXECUTOR_AGENT_TYPE.",
+                ).as_run_metadata()
             )
         )
         mock.create_task = AsyncMock(return_value={"id": "task-fix-1"})
@@ -265,6 +277,28 @@ class TestTheExecutorIsOwnedByTheInitiatingRun:
         assert ownership.run_id == qa_message_data["initiating_run_id"]
         assert ownership.attempt_id == qa_message_data["run_id"]
         assert ownership.project_id == qa_message_data["project_id"]
+
+    @pytest.mark.asyncio
+    async def test_persisted_qa_decision_controls_the_worker_spawn(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """Changing the consumer's configuration cannot switch a queued QA Run."""
+        from src.consumers._qa_runner import QAResult
+
+        mock_api_client.get_run.return_value = SimpleNamespace(
+            run_metadata=ExecutorDecision(
+                attempt_kind=RunType.QA,
+                agent_type=AgentType.CODEX,
+                source=ExecutorDecisionSource.QA_API_SETTING,
+                policy_version="v1",
+                reason="QA executor selected by API QA_EXECUTOR_AGENT_TYPE.",
+            ).as_run_metadata()
+        )
+        with patch("src.consumers.qa.run_qa_centrally", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
+
+        assert mock_run.call_args.kwargs["runtime"].executor_agent_type is AgentType.CODEX
 
 
 class TestProcessQAJobPass:

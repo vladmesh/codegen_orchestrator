@@ -11,7 +11,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
+from shared.contracts.dto.run import RunType
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.vocab import AgentType
 from tests.unit.factories import make_project, make_repository
 
 
@@ -58,6 +61,13 @@ class TestBlockedFlowEndToEnd:
                 "run_id": "eng-1",
                 "ownership": WorkerOwnership(
                     project_id="proj-1", run_id="live-1", attempt_id="eng-1"
+                ),
+                "executor_decision": ExecutorDecision(
+                    attempt_kind=RunType.ENGINEERING,
+                    agent_type=AgentType.CLAUDE,
+                    source=ExecutorDecisionSource.API_DEFAULT,
+                    policy_version="v1",
+                    reason="Engineering executor selected by API DEFAULT_AGENT_TYPE.",
                 ),
                 "description": "Add payment processing",
             }

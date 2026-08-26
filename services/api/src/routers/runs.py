@@ -28,6 +28,7 @@ from shared.contracts.dto.deploy_dispatch import (
     DispatchWithdrawal,
 )
 from shared.contracts.dto.engineering_attempt import EngineeringAttemptLedgerInput
+from shared.contracts.dto.executor_decision import EXECUTOR_DECISION_METADATA_KEY
 from shared.contracts.dto.owner_notification import (
     OWNER_NOTIFICATION_KEY,
     OwnerNotificationState,
@@ -642,6 +643,15 @@ async def update_run(
                     f"Run {run_id} is {run.status} and has recorded its outcome; "
                     f"cannot rewrite {', '.join(rewritten)}"
                 ),
+            )
+
+    metadata_update = update_data.get("run_metadata")
+    if isinstance(metadata_update, dict) and EXECUTOR_DECISION_METADATA_KEY in metadata_update:
+        existing_decision = (run.run_metadata or {}).get(EXECUTOR_DECISION_METADATA_KEY)
+        if metadata_update[EXECUTOR_DECISION_METADATA_KEY] != existing_decision:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Run executor decision is immutable after paid-run creation",
             )
 
     for field, value in update_data.items():

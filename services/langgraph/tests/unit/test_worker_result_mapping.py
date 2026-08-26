@@ -18,6 +18,7 @@ from shared.contracts.queues.worker_result import (
     WorkerStopReason,
     parse_worker_result,
 )
+from shared.contracts.vocab import AgentType
 from src.clients.worker_spawner import (
     WorkerOutputDecodeError,
     _safe_validation_errors,
@@ -101,7 +102,7 @@ class TestSpawnResultFromOutput:
         broker_result = parse_worker_result(wire)
         spawn_result = spawn_result_from_output(wire, request_id="req-factory", worker_id="dev-1")
         observability = DeveloperNode._worker_observability(
-            broker_result, {"config": {"agent_type": "factory", "model_identifier": "configured"}}
+            broker_result, {"config": {"model_identifier": "configured"}}, AgentType.FACTORY
         )
         terminal_payload = _observability_patch(observability)["engineering_attempt"]
         ledger_input = EngineeringAttemptLedgerInput.model_validate(terminal_payload)
@@ -135,7 +136,8 @@ class TestSpawnResultFromOutput:
         broker_result = parse_worker_result(wire)
         observability = DeveloperNode._worker_observability(
             broker_result,
-            {"config": {"agent_type": "factory", "model_identifier": "configured-factory"}},
+            {"config": {"model_identifier": "configured-factory"}},
+            AgentType.FACTORY,
         )
         terminal_payload = _observability_patch(observability)["engineering_attempt"]
         ledger_input = EngineeringAttemptLedgerInput.model_validate(terminal_payload)
@@ -169,11 +171,11 @@ class TestSpawnResultFromOutput:
             result,
             {
                 "config": {
-                    "agent_type": "codex",
                     "llm_provider": "openai",
                     "model_identifier": "gpt-5-codex",
                 }
             },
+            AgentType.CODEX,
         )
         attempt = _observability_patch(observability)["engineering_attempt"]
 
@@ -199,11 +201,11 @@ class TestSpawnResultFromOutput:
             result,
             {
                 "config": {
-                    "agent_type": "factory",
                     "llm_provider": "factory",
                     "model_identifier": "factory-configured-model",
                 }
             },
+            AgentType.FACTORY,
         )
         attempt = _observability_patch(observability)["engineering_attempt"]
 
@@ -240,7 +242,9 @@ class TestSpawnResultFromOutput:
 
         broker_result = parse_worker_result(wire)
         spawn_result = spawn_result_from_output(wire, request_id="req-claude", worker_id="dev-1")
-        observability = DeveloperNode._worker_observability(broker_result, {"config": {}})
+        observability = DeveloperNode._worker_observability(
+            broker_result, {"config": {}}, AgentType.CLAUDE
+        )
         terminal_payload = _observability_patch(observability)["engineering_attempt"]
 
         assert spawn_result.claude_evidence == evidence

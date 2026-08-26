@@ -91,18 +91,10 @@ class DeveloperNode(FunctionalNode):
         project_description = config.get("description", "")
         modules = config.get("modules", ["backend"])
 
-        # Agent type from project config (default: claude)
-        agent_type_str = config.get("agent_type", "claude")
-        try:
-            agent_type = AgentType(agent_type_str)
-        except ValueError:
-            error = f"Unknown developer agent_type: {agent_type_str!r}"
-            logger.error("unknown_developer_agent_type", agent_type=agent_type_str)
-            return {
-                "messages": [AIMessage(content=error)],
-                "engineering_status": EngineeringStatus.FAILED,
-                "errors": state.get("errors", []) + [error],
-            }
+        # The consumer read this run's immutable paid-start policy from its
+        # persisted snapshot. Project configuration may now change without
+        # switching a queued attempt's executor.
+        agent_type = state["executor_decision"].agent_type
 
         action = state.get("action", "create")
         feature_description = state.get("description")
@@ -344,6 +336,7 @@ class DeveloperNode(FunctionalNode):
         worker_result, project_name: str, repo_full_name: str, state: dict
     ) -> dict:
         """Convert a WorkerResult into a graph state update dict."""
+        agent_type = state["executor_decision"].agent_type
         if worker_result.success:
             if not worker_result.commit_sha:
                 logger.error(
@@ -361,7 +354,7 @@ class DeveloperNode(FunctionalNode):
                     "errors": state.get("errors", [])
                     + ["Worker reported success but no commit was made"],
                     "worker_observability": DeveloperNode._worker_observability(
-                        worker_result, state.get("project_spec") or {}
+                        worker_result, state.get("project_spec") or {}, agent_type
                     ),
                 }
 
@@ -384,7 +377,7 @@ class DeveloperNode(FunctionalNode):
                 "worker_id": worker_result.worker_id,
                 "worker_report": worker_result.worker_report,
                 "worker_observability": DeveloperNode._worker_observability(
-                    worker_result, state.get("project_spec") or {}
+                    worker_result, state.get("project_spec") or {}, agent_type
                 ),
             }
 
@@ -401,7 +394,7 @@ class DeveloperNode(FunctionalNode):
                 "worker_id": worker_result.worker_id,
                 "worker_report": worker_result.worker_report,
                 "worker_observability": DeveloperNode._worker_observability(
-                    worker_result, state.get("project_spec") or {}
+                    worker_result, state.get("project_spec") or {}, agent_type
                 ),
                 "errors": state.get("errors", [])
                 + [f"Worker gave up: {worker_result.gave_up_reason}"],
@@ -428,15 +421,15 @@ class DeveloperNode(FunctionalNode):
             "stop_reason": worker_result.stop_reason,
             "agent_limit_seconds": worker_result.agent_limit_seconds,
             "worker_observability": DeveloperNode._worker_observability(
-                worker_result, state.get("project_spec") or {}
+                worker_result, state.get("project_spec") or {}, agent_type
             ),
         }
 
     @staticmethod
-    def _worker_observability(worker_result, project_spec: dict) -> dict:
+    def _worker_observability(worker_result, project_spec: dict, agent_type: AgentType) -> dict:
         """Keep provider metrics separate from the strict engineering result."""
         config = project_spec.get("config") or {}
-        agent_type = str(config.get("agent_type", "claude"))
+        agent_type_value = agent_type.value
         provider_by_agent = {"claude": "anthropic", "codex": "openai", "factory": "factory"}
         claude_evidence = worker_result.claude_evidence
         if claude_evidence is not None:
@@ -447,7 +440,7 @@ class DeveloperNode(FunctionalNode):
                     "transcript_path": worker_result.transcript_path,
                     "transcript_truncated": worker_result.transcript_truncated,
                     "agent_profile": {
-                        "agent_type": agent_type,
+                        "agent_type": agent_type_value,
                         "provider": claude_evidence.provider,
                         "model": claude_evidence.model,
                         "adapter": "worker-wrapper",
@@ -472,7 +465,7 @@ class DeveloperNode(FunctionalNode):
                     "transcript_path": worker_result.transcript_path,
                     "transcript_truncated": worker_result.transcript_truncated,
                     "agent_profile": {
-                        "agent_type": agent_type,
+                        "agent_type": agent_type_value,
                         "provider": factory_evidence.provider,
                         "model": factory_evidence.model,
                         "adapter": "worker-wrapper",
@@ -489,11 +482,12 @@ class DeveloperNode(FunctionalNode):
                 "transcript_path": worker_result.transcript_path,
                 "transcript_truncated": worker_result.transcript_truncated,
                 "agent_profile": {
-                    "agent_type": agent_type,
-                    "provider": config.get("llm_provider") or provider_by_agent.get(agent_type),
+                    "agent_type": agent_type_value,
+                    "provider": config.get("llm_provider")
+                    or provider_by_agent.get(agent_type_value),
                     "model": (
                         DeveloperNode._reported_model(worker_result.logs_tail)
-                        if agent_type == "claude"
+                        if agent_type is AgentType.CLAUDE
                         else None
                     )
                     or config.get("model_identifier")

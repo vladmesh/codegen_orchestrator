@@ -12,16 +12,19 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.acceptance import parse_health_only_criteria
+from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.dto.incident import IncidentCreate, IncidentType
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrant
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QAFailedCheck, QARunResult
 from shared.contracts.dto.telegram import BotLivenessState
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.vocab import AgentType
 from shared.notifications import notify_admins_best_effort
 from shared.qa_identity import (
     QA_SSH_USER_LABEL,
@@ -147,16 +150,16 @@ class RunGrantJournal:
         )
 
 
-def _resolve_qa_runtime() -> QARuntimeConfig:
+def _resolve_qa_runtime(executor_agent_type: AgentType) -> QARuntimeConfig:
     """Say who performs this run and how they reach this runtime.
 
-    Nothing here can fail, and nothing here reads `QA_LLM_*`. The executor is
-    the coding agent assigned to testing — Codex by default, Claude Code when
-    `QA_EXECUTOR_AGENT_TYPE=claude` explicitly selects it — and its subscription session is a
-    directory on the management host that worker-manager mounts into the
-    executor container. The API triplet is an optional fallback and is read only
-    after that executor has actually failed, which is why an unset triplet is a
-    perfectly ordinary production configuration and blocks nothing.
+    Nothing here can fail, and nothing here selects an executor. The coding
+    agent was chosen by the API's paid-run resolver and persisted on the Run;
+    its subscription session is a directory on the management host that
+    worker-manager mounts into the executor container. The API triplet is an
+    optional fallback and is read only after that executor has actually failed,
+    which is why an unset triplet is a perfectly ordinary production
+    configuration and blocks nothing.
 
     A missing Telethon setup is not fatal either — a deployment without a bot
     never needs it — so it is reported by the bot preflight, the only place it
@@ -169,7 +172,7 @@ def _resolve_qa_runtime() -> QARuntimeConfig:
         logger.info("qa_telethon_not_configured", detail=str(exc))
         credentials = None
     return QARuntimeConfig(
-        executor_agent_type=settings.qa_executor_agent_type,
+        executor_agent_type=executor_agent_type,
         capability_host=settings.qa_capability_host,
         telethon_env=credentials,
     )
@@ -384,7 +387,17 @@ async def _run_exploratory_qa(
         )
         return None, missing_identity
 
-    runtime = _resolve_qa_runtime()
+    executor_decision = await _load_qa_executor_decision(msg.run_id)
+    if executor_decision is None:
+        return None, QABlocker(
+            category=QABlockerCategory.UNKNOWN,
+            attempted="read the QA executor decision snapshot",
+            sent="QAMessage.run_id",
+            received="agent QA requires a paid Run id",
+        )
+    if isinstance(executor_decision, QABlocker):
+        return None, executor_decision
+    runtime = _resolve_qa_runtime(executor_decision.agent_type)
 
     established_facts: list[str] = []
     if msg.bot_username:
@@ -435,6 +448,30 @@ async def _run_exploratory_qa(
     if qa_result.blocker is not None and qa_result.blocker.category in QA_INFRASTRUCTURE_BLOCKERS:
         await _alert_admins_qa_infrastructure(msg=msg, blocker=qa_result.blocker)
     return qa_result, None
+
+
+async def _load_qa_executor_decision(run_id: str) -> ExecutorDecision | QABlocker | None:
+    """Return the immutable QA executor snapshot, or a durable blocker."""
+    if not run_id:
+        return None
+    run = await api_client.get_run(run_id)
+    try:
+        decision = ExecutorDecision.from_run_metadata(run.run_metadata)
+    except (ValueError, ValidationError) as exc:
+        return QABlocker(
+            category=QABlockerCategory.UNKNOWN,
+            attempted="read the QA executor decision snapshot",
+            sent="Run.run_metadata.executor_decision",
+            received=f"invalid snapshot: {exc}",
+        )
+    if decision.attempt_kind is not RunType.QA:
+        return QABlocker(
+            category=QABlockerCategory.UNKNOWN,
+            attempted="read the QA executor decision snapshot",
+            sent="Run.run_metadata.executor_decision",
+            received="snapshot is not for a QA attempt",
+        )
+    return decision
 
 
 async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:

@@ -117,7 +117,13 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
     )
     assert started.status_code == HTTPStatus.OK, started.text
     assert started.json()["run_id"] == canonical_id
-    assert await db_session.scalar(select(Run).where(Run.id == canonical_id)) is not None
+    decision = started.json()["executor_decision"]
+    assert decision["attempt_kind"] == "qa"
+    assert decision["agent_type"] == "codex"
+    assert decision["source"] == "qa_api_setting"
+    run = await db_session.scalar(select(Run).where(Run.id == canonical_id))
+    assert run is not None
+    assert run.run_metadata["executor_decision"] == decision
     # Delivery bookkeeping is mutable engine state, not part of the caller's
     # command identity.  The canonical payload remains in the admission audit.
     assert (
@@ -133,6 +139,7 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
     )
     assert replay.status_code == HTTPStatus.OK, replay.text
     assert replay.json()["run_id"] == canonical_id
+    assert replay.json()["executor_decision"] == decision
     assert (await db_session.scalars(select(Run.id).where(Run.id == canonical_id))).all() == [
         canonical_id
     ]
@@ -148,6 +155,12 @@ async def test_generic_runs_reject_paid_types_while_canonical_start_creates_qa_r
     )
     assert conflict.status_code == HTTPStatus.CONFLICT
     assert conflict.json()["detail"]["code"] == "paid_run_command_conflict"
+
+    immutable = await async_client.patch(
+        f"/api/runs/{canonical_id}",
+        json={"run_metadata": {"executor_decision": {"agent_type": "claude"}}},
+    )
+    assert immutable.status_code == HTTPStatus.CONFLICT
 
 
 @pytest.mark.asyncio
