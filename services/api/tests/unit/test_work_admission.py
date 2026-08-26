@@ -45,7 +45,7 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted():
             "work_admission.max_concurrent_paid_runs": 1,
         }
     )
-    db.scalar.side_effect = [None, SimpleNamespace(owner_id=7), 0]
+    db.scalar.side_effect = [None, None, SimpleNamespace(owner_id=7), 0]
 
     result = await start_paid_run(
         PaidRunStartCommand(

@@ -18,6 +18,17 @@ EMERGENCY_STOP_KEY = "work_admission.emergency_stop"
 MAX_PROJECTS_KEY = "work_admission.max_projects_per_user"
 MAX_PAID_RUNS_KEY = "work_admission.max_concurrent_paid_runs"
 
+_REFUSAL_MESSAGES = {
+    WorkAdmissionReason.EMERGENCY_STOP: "Запуск новой работы временно остановлен оператором.",
+    WorkAdmissionReason.PROJECT_LIMIT: "Достигнут лимит активных проектов. Попробуйте позже.",
+    WorkAdmissionReason.PAID_WORK_LIMIT: (
+        "Достигнут лимит одновременной платной работы. Попробуйте позже."
+    ),
+    WorkAdmissionReason.ENGINEERING_BUDGET_DENIED: (
+        "Недостаточно доступного бюджета для запуска инженерной задачи."
+    ),
+}
+
 
 class PaidRunCommandConflict(Exception):
     """A stable paid-run id was replayed with different immutable input."""
@@ -41,7 +52,10 @@ async def _audit(
     *,
     user_id: int | None = None,
     reference_id: str | None = None,
+    command_payload: dict | None = None,
 ) -> WorkAdmissionRead:
+    if decision.reason is not None and decision.message is None:
+        decision = decision.model_copy(update={"message": _REFUSAL_MESSAGES[decision.reason]})
     db.add(
         WorkAdmissionAudit(
             subject=subject,
@@ -49,6 +63,8 @@ async def _audit(
             reason=decision.reason.value if decision.reason else None,
             user_id=user_id,
             reference_id=reference_id,
+            command_payload=command_payload,
+            message=decision.message,
         )
     )
     return decision
@@ -61,7 +77,12 @@ def _limit(value: object, key: str) -> int:
 
 
 async def _stop_or_continue(
-    db: AsyncSession, subject: str, *, user_id: int | None = None, reference_id: str | None = None
+    db: AsyncSession,
+    subject: str,
+    *,
+    user_id: int | None = None,
+    reference_id: str | None = None,
+    command_payload: dict | None = None,
 ) -> WorkAdmissionRead | None:
     controls = await _controls(db, EMERGENCY_STOP_KEY)
     enabled = controls[EMERGENCY_STOP_KEY]
@@ -77,6 +98,7 @@ async def _stop_or_continue(
             ),
             user_id=user_id,
             reference_id=reference_id,
+            command_payload=command_payload,
         )
     return None
 
@@ -138,12 +160,44 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
             admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id=existing.id
         )
 
+    payload = command.model_dump(mode="json")
+    previous_refusal = await db.scalar(
+        select(WorkAdmissionAudit)
+        .where(
+            WorkAdmissionAudit.subject == "paid_work",
+            WorkAdmissionAudit.reference_id == command.id,
+        )
+        .with_for_update()
+    )
+    if previous_refusal is not None:
+        if previous_refusal.command_payload != payload:
+            raise PaidRunCommandConflict(command.id)
+        reason = (
+            WorkAdmissionReason(previous_refusal.reason)
+            if previous_refusal.reason is not None
+            else None
+        )
+        return PaidRunStartRead(
+            admission=WorkAdmissionRead(
+                outcome=WorkAdmissionOutcome(previous_refusal.outcome),
+                reason=reason,
+                retryable=reason is WorkAdmissionReason.PAID_WORK_LIMIT,
+                message=previous_refusal.message,
+            )
+        )
+
     project = await db.scalar(select(Project).where(Project.id == command.project_id))
     if project is None:
         raise RuntimeError(f"Project {command.project_id} does not exist")
     user_id = project.owner_id
 
-    stopped = await _stop_or_continue(db, "paid_work", user_id=user_id, reference_id=command.id)
+    stopped = await _stop_or_continue(
+        db,
+        "paid_work",
+        user_id=user_id,
+        reference_id=command.id,
+        command_payload=payload,
+    )
     if stopped is not None:
         return PaidRunStartRead(admission=stopped)
     controls = await _controls(db, MAX_PAID_RUNS_KEY)
@@ -170,6 +224,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
                 ),
                 user_id=user_id,
                 reference_id=command.id,
+                command_payload=payload,
             )
         )
 
@@ -200,6 +255,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
                 ),
                 user_id=user_id,
                 reference_id=command.id,
+                command_payload=payload,
             )
             return PaidRunStartRead(
                 admission=admission,
@@ -223,5 +279,6 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
         user_id=user_id,
         reference_id=command.id,
+        command_payload=payload,
     )
     return PaidRunStartRead(admission=admitted, run_id=run.id)

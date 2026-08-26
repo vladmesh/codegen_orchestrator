@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import String
+from sqlalchemy import JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -19,3 +19,5 @@ class WorkAdmissionAudit(Base):
     reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     user_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
     reference_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    command_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)

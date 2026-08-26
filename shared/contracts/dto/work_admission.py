@@ -35,6 +35,7 @@ class WorkAdmissionRead(BaseModel):
     outcome: WorkAdmissionOutcome
     reason: WorkAdmissionReason | None = None
     retryable: bool = False
+    message: str | None = None
 
 
 class EmergencyStopCommand(BaseModel):

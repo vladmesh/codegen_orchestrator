@@ -19,6 +19,9 @@
   conflicting payloads; the obsolete standalone paid-work admission oracle was
   removed. Emergency-stop writes are strict booleans and admission controls are
   protected from the generic configuration mutation API.
+- Paid-work refusals now persist their command identity, project owner, typed
+  reason and Russian owner-facing text, so a replay returns the same durable
+  decision without creating a Run.
 
 ## 2026-08-24
 

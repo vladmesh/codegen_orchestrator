@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import EngineeringBudgetReservation, Run, SystemConfig
+from shared.models import EngineeringBudgetReservation, Run, SystemConfig, WorkAdmissionAudit
 
 
 async def _set_config(db_session: AsyncSession, key: str, value: int | bool) -> None:
@@ -51,6 +51,7 @@ async def test_concurrent_project_creations_cannot_pass_the_same_user_ceiling(
                     "outcome": "denied",
                     "reason": "project_limit",
                     "retryable": False,
+                    "message": "Достигнут лимит активных проектов. Попробуйте позже.",
                 }
             return response.status_code
 
@@ -148,6 +149,56 @@ async def test_emergency_stop_requires_strict_bool_and_rejects_generic_mutation(
         "/api/system-configs/work_admission.emergency_stop", json={"value": "false"}
     )
     assert protected.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_paid_run_refusal_is_a_durable_russian_owner_record_and_replays(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    telegram_id = 830_000_004
+    project_id = str(uuid.uuid4())
+    user = await async_client.post(
+        "/api/users/", json={"telegram_id": telegram_id, "username": "admission-owner"}
+    )
+    assert user.status_code == HTTPStatus.CREATED
+    assert (
+        await async_client.post(
+            "/api/projects/",
+            headers={"X-Telegram-ID": str(telegram_id)},
+            json={
+                "id": project_id,
+                "title": "Admission owner",
+                "initiating_run_id": str(uuid.uuid4()),
+                "status": "active",
+                "config": {},
+            },
+        )
+    ).status_code == HTTPStatus.CREATED
+    run_id = f"qa-refused-{uuid.uuid4().hex}"
+    await _set_config(db_session, "work_admission.emergency_stop", True)
+    try:
+        payload = {"id": run_id, "type": "qa", "project_id": project_id}
+        refused = await async_client.post("/api/work-admission/paid-runs", json=payload)
+        assert refused.status_code == HTTPStatus.OK, refused.text
+        assert refused.json()["admission"] == {
+            "outcome": "denied",
+            "reason": "emergency_stop",
+            "retryable": False,
+            "message": "Запуск новой работы временно остановлен оператором.",
+        }
+        replay = await async_client.post("/api/work-admission/paid-runs", json=payload)
+        assert replay.json() == refused.json()
+        audit = await db_session.scalar(
+            select(WorkAdmissionAudit).where(WorkAdmissionAudit.reference_id == run_id)
+        )
+        assert audit is not None
+        assert audit.user_id == user.json()["id"]
+        assert audit.reason == "emergency_stop"
+        assert audit.message == "Запуск новой работы временно остановлен оператором."
+        assert audit.command_payload == payload
+        assert await db_session.scalar(select(Run).where(Run.id == run_id)) is None
+    finally:
+        await _set_config(db_session, "work_admission.emergency_stop", False)
 
 
 @pytest.mark.asyncio
