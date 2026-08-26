@@ -369,7 +369,7 @@ async def test_released_deploy_fix_identity_reacquires_its_hold_before_requeuein
             f"/api/engineering-budget-policies/{user.json()['id']}",
             json={"limit_microusd": 100, "attempt_reservation_microusd": 60, "state": "enabled"},
         )
-    ).status_code == HTTPStatus.OK
+    ).status_code == HTTPStatus.CREATED
     fix_task_id = f"eng-deploy-fix-{uuid.uuid4().hex}-1"
     payload = {
         "id": fix_task_id,
