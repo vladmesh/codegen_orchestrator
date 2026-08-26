@@ -141,6 +141,8 @@ async def _find_unfinished_run(api_client: SchedulerAPIClient, task: TaskDTO) ->
     """
     runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
     for run in runs:
+        if run.run_metadata.get("pre_handoff_aborted"):
+            continue
         if run.status in _LIVE_RUN_STATUSES:
             return run
     return None
@@ -158,6 +160,8 @@ async def _find_dispatched_run(api_client: SchedulerAPIClient, task: TaskDTO) ->
     """
     runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
     for run in runs:
+        if run.run_metadata.get("pre_handoff_aborted"):
+            continue
         if run.run_metadata.get("iteration") == task.current_iteration:
             return run
     return None

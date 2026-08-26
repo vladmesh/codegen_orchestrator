@@ -346,6 +346,7 @@ async def abort_paid_run_pre_handoff(run_id: str, reason: str, db: AsyncSession)
     if run.status in {RunStatus.QUEUED.value, RunStatus.RUNNING.value}:
         run.status = RunStatus.FAILED.value
         run.error_message = reason
+        run.run_metadata = {**(run.run_metadata or {}), "pre_handoff_aborted": True}
     if run.type == RunType.ENGINEERING.value:
         from .engineering_budget_admission import release_pre_handoff_reservation
 

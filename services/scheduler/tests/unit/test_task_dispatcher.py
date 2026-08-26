@@ -804,7 +804,11 @@ class TestDispatchPartialFailure:
 
         api_client.abort_paid_run_pre_handoff.assert_awaited_once()
         api_client.list_runs.return_value = [
-            self._prior_run(RunStatus.FAILED, result={"engineering_status": "failed"})
+            self._prior_run(
+                RunStatus.FAILED,
+                result={"engineering_status": "failed"},
+                pre_handoff_aborted=True,
+            )
         ]
         api_client.start_paid_run.reset_mock()
         redis_client.publish_message.side_effect = None
@@ -847,7 +851,7 @@ class TestDispatchPartialFailure:
         )
 
     @staticmethod
-    def _prior_run(status, *, iteration: int = 0, result=None):
+    def _prior_run(status, *, iteration: int = 0, result=None, pre_handoff_aborted: bool = False):
         from _run_routing_factories import _make_run
 
         from shared.contracts.dto.run import RunType
@@ -857,7 +861,11 @@ class TestDispatchPartialFailure:
             type=RunType.ENGINEERING,
             status=status,
             result=result,
-            run_metadata={"triggered_by": "dispatcher", "iteration": iteration},
+            run_metadata={
+                "triggered_by": "dispatcher",
+                "iteration": iteration,
+                "pre_handoff_aborted": pre_handoff_aborted,
+            },
         )
 
     async def test_next_tick_after_transition_failure_only_transitions(
