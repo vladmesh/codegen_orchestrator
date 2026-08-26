@@ -13,9 +13,13 @@ import time
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.engineering import EngineeringMessage
+from shared.models import Run
+
+_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@db:5432/postgres"
 
 
 async def _create_run(
@@ -24,20 +28,25 @@ async def _create_run(
     project_id: str | None,
     planning_task_id: str | None = None,
 ):
-    """Create a Run record via API (replicates what task_dispatcher does)."""
-    body: dict = {
-        "id": run_id,
-        "type": "engineering",
-        "run_metadata": {
-            "triggered_by": "integration_test",
-            "task_id": planning_task_id,
-        },
-    }
-    if project_id is not None:
-        body["project_id"] = project_id
-    resp = await api_client.post("/api/runs/", json=body)
-    assert resp.status_code == 201, f"Failed to create run: {resp.text}"
-    return resp.json()
+    """Seed the worker fixture directly; it is not a paid-run producer test."""
+    engine = create_async_engine(_DATABASE_URL)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            session.add(
+                Run(
+                    id=run_id,
+                    type="engineering",
+                    project_id=project_id,
+                    run_metadata={
+                        "triggered_by": "integration_test",
+                        "task_id": planning_task_id,
+                    },
+                )
+            )
+            await session.commit()
+    finally:
+        await engine.dispose()
 
 
 async def _get_run(api_client, run_id: str) -> dict:

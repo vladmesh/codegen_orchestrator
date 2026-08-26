@@ -50,10 +50,11 @@ async def _project_with_run(async_client: AsyncClient) -> tuple[str, str]:
 
     run_id = f"qa-{uuid.uuid4().hex[:8]}"
     run = await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={"id": run_id, "type": "qa", "project_id": project_id},
     )
-    assert run.status_code == status.HTTP_201_CREATED
+    assert run.status_code == status.HTTP_200_OK
+    assert run.json()["admission"]["outcome"] == "admitted"
     return project_id, run_id
 
 

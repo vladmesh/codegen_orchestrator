@@ -82,10 +82,11 @@ async def _qa_run(
     if grant is not None:
         metadata[QA_SSH_GRANT_KEY] = grant
     created = await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={"id": run_id, "type": "qa", "project_id": project_id, "run_metadata": metadata},
     )
-    assert created.status_code == status.HTTP_201_CREATED
+    assert created.status_code == status.HTTP_200_OK
+    assert created.json()["admission"]["outcome"] == "admitted"
 
     if result is not None:
         settled = await async_client.patch(

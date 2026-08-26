@@ -11,6 +11,11 @@
   holds the counted slot through queued-Run creation and checks engineering
   money only after the count gate.
 
+### Fixed
+
+- Updated paid-run test fixtures to use the transactional paid-run command;
+  fixtures that only require a Run record now use a non-paid type.
+
 ## 2026-08-24
 
 - Released engineering-budget reservations no longer replay their historical
