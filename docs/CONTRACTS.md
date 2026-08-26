@@ -103,6 +103,13 @@ persisted and delivered to the owner through the durable owner-notification
 path; operator-facing spawn-worker and run-e2e instead return the typed result
 synchronously, while the command still records its audit reason.
 
+Known limitations: if a process dies after the paid-run command commits and
+before handoff, its queued Run continues to occupy the ceiling until manual
+intervention; a handled delivery failure closes the Run and releases its hold.
+Refusal notification is attached to the project's initiating Run, so a second
+task refusal for that project can be suppressed and a standalone task has no
+owner notification.
+
 The deployed defaults in `scripts/system_configs.yaml` are:
 
 - `work_admission.max_projects_per_user=3`, measured as non-archived projects

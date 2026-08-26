@@ -321,6 +321,21 @@ async def _create_and_publish_run(
                     "available_microusd": budget.available_microusd,
                 },
             )
+        else:
+            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            await api_client.transition_task(
+                task_id,
+                TaskStatus.WAITING_HUMAN_REVIEW,
+                "dispatcher",
+                details={
+                    "reason": (
+                        started.admission.reason.value
+                        if started.admission.reason is not None
+                        else "paid_work_denied"
+                    ),
+                    "attempt_id": run_id,
+                },
+            )
         log.info(
             "task_dispatch_count_admission_refused",
             run_id=run_id,

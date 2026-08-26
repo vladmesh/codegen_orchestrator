@@ -23,6 +23,8 @@
   reason and Russian owner-facing text without caching a transient outcome.
 - A paid-run retry now rechecks controls rather than caching a prior refusal;
   it only reuses a live Run whose engineering reservation remains active.
+- Scheduler admission refusals now park their Task as well as the Story, and a
+  handled pre-handoff publish failure closes the Run with its released hold.
 
 ## 2026-08-24
 

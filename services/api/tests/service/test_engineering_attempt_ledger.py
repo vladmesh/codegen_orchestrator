@@ -771,6 +771,9 @@ async def test_manual_pre_handoff_failures_release_the_admitted_reservation(
     assert reservation is not None
     assert reservation.state == "released"
     assert reservation.active_held_microusd == 0
+    run = await db_session.scalar(select(Run).where(Run.id == reservation.attempt_id))
+    assert run is not None
+    assert run.status == "failed"
 
 
 @pytest.mark.asyncio
