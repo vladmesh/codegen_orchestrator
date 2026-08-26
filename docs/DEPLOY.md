@@ -8,6 +8,42 @@
 - Git clone: `git clone <repo> /opt/codegen_orchestrator`
 - Ports 80/443 open (Caddy handles TLS)
 
+## Admin access over SSH
+
+The admin frontend has no public Caddy route. Production Compose binds it only to
+the server loopback interface, and nginx Basic Auth protects the SPA, `/api/`,
+`/wm-api/`, and `/grafana/`. Connect from an operator workstation with:
+
+```bash
+ssh -N -L 3001:127.0.0.1:3001 deploy@PROD_HOST
+```
+
+Open [http://127.0.0.1:3001](http://127.0.0.1:3001) locally and authenticate with
+the required `ADMIN_USER` and `ADMIN_PASSWORD` from the production environment.
+
+Before handing access to an operator, check the listener on the server:
+
+```bash
+sudo ss -ltn '( sport = :3001 )'
+```
+
+It must show `127.0.0.1:3001`, never `0.0.0.0:3001`, `[::]:3001`, or a public
+interface. While the tunnel is running, an unauthenticated request must return
+401 and a credentialed request must succeed:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/
+curl -fsSI -u "$ADMIN_USER:$ADMIN_PASSWORD" http://127.0.0.1:3001/
+```
+
+Confirm Caddy has no admin route before deployment:
+
+```bash
+rg -n 'admin-frontend|handle /api|handle /wm-api|handle /grafana' infra/Caddyfile
+```
+
+The command must print no matches. Do not add a Caddy route for these surfaces.
+
 ## Managed project deploy target
 
 The provisioner prepares `/opt/services` for the `Server.ssh_user` configured on
@@ -263,6 +299,8 @@ would otherwise sign dashboard tokens with a known key.
 |--------|-------------|
 | `ADMIN_USER` | Admin panel basic auth username |
 | `ADMIN_PASSWORD` | Admin panel basic auth password |
+
+Both values are mandatory. The admin frontend fails to start if either is empty.
 
 ### Observability
 

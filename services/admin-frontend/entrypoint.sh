@@ -1,7 +1,10 @@
 #!/bin/sh
 set -e
 
-ADMIN_USER="${ADMIN_USER:-admin}"
+if [ -z "$ADMIN_USER" ]; then
+    echo "ERROR: ADMIN_USER environment variable is required" >&2
+    exit 1
+fi
 
 if [ -z "$ADMIN_PASSWORD" ]; then
     echo "ERROR: ADMIN_PASSWORD environment variable is required" >&2

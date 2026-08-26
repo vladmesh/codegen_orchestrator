@@ -10,9 +10,14 @@ from sqlalchemy.orm import joinedload
 from shared.models import Deployment
 
 from ..database import get_async_session
+from ..dependencies import require_internal_or_admin
 from ..schemas import DeploymentCreate, DeploymentRead, DeploymentUpdate
 
-router = APIRouter(prefix="/service-deployments", tags=["deployments"])
+router = APIRouter(
+    prefix="/service-deployments",
+    tags=["deployments"],
+    dependencies=[Depends(require_internal_or_admin)],
+)
 
 
 @router.post("/", response_model=DeploymentRead, status_code=status.HTTP_201_CREATED)

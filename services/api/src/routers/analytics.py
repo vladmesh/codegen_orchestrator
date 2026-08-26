@@ -13,6 +13,7 @@ from shared.models.analytics_hourly import AnalyticsHourly
 from shared.models.analytics_known_users import AnalyticsKnownUsers
 
 from ..database import get_async_session
+from ..dependencies import require_internal_or_admin
 from ..schemas.analytics import (
     AnalyticsDailyCreate,
     AnalyticsDailyRead,
@@ -22,7 +23,11 @@ from ..schemas.analytics import (
     AnalyticsKnownUsersBatchUpsert,
 )
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(
+    prefix="/analytics",
+    tags=["analytics"],
+    dependencies=[Depends(require_internal_or_admin)],
+)
 
 
 # --- Hourly ---
