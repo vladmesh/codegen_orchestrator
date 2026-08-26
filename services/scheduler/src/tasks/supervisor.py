@@ -26,11 +26,6 @@ from shared.contracts.bot_access import (
     project_bot_audience,
 )
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.engineering_budget_policy import (
-    EngineeringBudgetAdmissionCommand,
-    EngineeringBudgetAdmissionOutcome,
-)
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -52,6 +47,7 @@ from shared.contracts.dto.run_result import (
 )
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import (
     DeployAction,
@@ -107,7 +103,7 @@ INFRASTRUCTURE_WAIT_STARTED_KEY = "infrastructure_wait_started_at"
 # evidence for recovery, but never provider work. The reservation is released
 # before this status update so terminal finalization cannot turn it into an
 # unknown-cost hold.
-DEPLOY_FIX_PUBLISH_FAILED_ERROR = "deploy-fix publish failed"
+DEPLOY_FIX_PRE_HANDOFF_PREPARATION_FAILED_ERROR = "deploy-fix handoff preparation failed"
 
 # The durable owner-notification record lives on the failed deploy Run, which
 # remains available after the denied fix parks the story in human review.
@@ -996,20 +992,40 @@ async def _handle_deploy_success_story(
         if grant_needed
         else None,
     )
-    await api_client.create_run_if_absent(
-        {
-            "id": qa_run_id,
-            "type": RunType.QA.value,
-            "project_id": project_id,
-            "story_id": story_id,
-            "status": RunStatus.QUEUED.value,
-            "run_metadata": {
+    started = await api_client.start_paid_run(
+        PaidRunStartCommand(
+            id=qa_run_id,
+            type=RunType.QA,
+            project_id=uuid.UUID(project_id),
+            story_id=story_id,
+            run_metadata={
                 "application_id": application_id,
                 QA_HANDOFF_KEY: plan.model_dump(mode="json"),
             },
-        }
+        )
     )
-
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        log.info(
+            "qa_handoff_count_admission_refused",
+            qa_run_id=qa_run_id,
+            reason=(
+                started.admission.reason.value if started.admission.reason is not None else None
+            ),
+        )
+        if started.admission.message:
+            owed = await owe_owner_notification(
+                api_client,
+                run,
+                event=OwnerNotificationEvent.STORY_QUARANTINED,
+                text=started.admission.message,
+                story_id=story_id,
+                project_id=project_id,
+                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+                log=log,
+            )
+            await api_client.transition_story(story_id, STORY_HUMAN_REVIEW_ACTION)
+            await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
+        return False
     await api_client.transition_story(story_id, "test")
 
     await _execute_qa_handoff(api_client, redis_client, qa_run_id, plan, log)
@@ -1166,29 +1182,43 @@ async def _handle_deploy_code_fix(
 
     error_details = result.error_details or "unknown deploy error"
     fix_task_id = f"eng-deploy-fix-{run.id}-{attempt + 1}"
-    admission = await api_client.admit_engineering_budget(
-        EngineeringBudgetAdmissionCommand(
-            attempt_id=fix_task_id,
-            project_id=project.id,
-            task_id=fix_task_id,
-            story_id=story_id,
+    try:
+        started = await api_client.start_paid_run(
+            PaidRunStartCommand(
+                id=fix_task_id,
+                type=RunType.ENGINEERING,
+                project_id=project.id,
+                task_id=fix_task_id,
+                story_id=story_id,
+                run_metadata={"deploy_fix_attempt": attempt + 1},
+            )
         )
-    )
-    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+    except Exception:
+        log.exception("deploy_fix_paid_start_failed", run_id=fix_task_id)
+        return False
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        budget = started.engineering_budget
         reason = {
-            "reason": "engineering_budget_denied",
+            "reason": (
+                "engineering_budget_denied"
+                if budget is not None
+                else (started.admission.reason.value if started.admission.reason else "denied")
+            ),
             "attempt_id": fix_task_id,
-            "known_spend_microusd": admission.known_spend_microusd,
-            "active_held_microusd": admission.active_held_microusd,
-            "available_microusd": admission.available_microusd,
         }
-        log.info("deploy_fix_budget_denied", **reason)
+        if budget is not None:
+            reason.update(
+                known_spend_microusd=budget.known_spend_microusd,
+                active_held_microusd=budget.active_held_microusd,
+                available_microusd=budget.available_microusd,
+            )
+        log.info("deploy_fix_admission_refused", **reason)
         await api_client.update_story(story_id, {"quarantine_reason": reason})
         owed = await owe_owner_notification(
             api_client,
             run,
             event=OwnerNotificationEvent.STORY_QUARANTINED,
-            text=ENGINEERING_BUDGET_DENIED_TEXT,
+            text=started.admission.message or ENGINEERING_BUDGET_DENIED_TEXT,
             story_id=story_id,
             project_id=project_id,
             terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
@@ -1198,23 +1228,9 @@ async def _handle_deploy_code_fix(
         await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
         return False
 
-    # Every action from admission through publication is pre-handoff. It must
-    # release an admitted hold if it fails, because publication is the first
-    # point provider work could have started.
-    run_created = False
     try:
         # Transition story back to IN_PROGRESS only for an admitted handoff.
         await api_client.transition_story(story_id, "start")
-        await api_client.create_run(
-            {
-                "id": fix_task_id,
-                "type": RunType.ENGINEERING.value,
-                "project_id": project_id,
-                "story_id": story_id,
-                "status": RunStatus.QUEUED.value,
-            }
-        )
-        run_created = True
         fix_recipient = await resolve_project_recipient(
             api_client, project_id, event="deploy_code_fix", story_id=story_id
         )
@@ -1233,21 +1249,18 @@ async def _handle_deploy_code_fix(
             story_id=story_id,
             deploy_fix_attempt=attempt + 1,
         )
+    except Exception:
+        # Preparation is demonstrably before any queue call, so this is safe to
+        # abort. Keep publication outside this block: its outcome is unknowable.
+        log.exception("deploy_fix_pre_handoff_preparation_failed", fix_task_id=fix_task_id)
+        await api_client.abort_paid_run_pre_handoff(
+            fix_task_id, DEPLOY_FIX_PRE_HANDOFF_PREPARATION_FAILED_ERROR
+        )
+        return False
+    try:
         await redis_client.publish_message(ENGINEERING_QUEUE, fix_msg)
     except Exception:
-        log.exception("deploy_fix_pre_handoff_failed", fix_task_id=fix_task_id)
-        await api_client.release_engineering_budget_admission(fix_task_id)
-        if run_created:
-            await api_client.update_run(
-                fix_task_id,
-                {
-                    "status": RunStatus.FAILED.value,
-                    "error_message": DEPLOY_FIX_PUBLISH_FAILED_ERROR,
-                    "result": EngineeringRunResult(
-                        engineering_status=EngineeringStatus.FAILED
-                    ).model_dump(mode="json"),
-                },
-            )
+        log.exception("deploy_fix_publish_outcome_unknown", fix_task_id=fix_task_id)
         return False
     log.info("deploy_supervisor_code_fix", fix_task_id=fix_task_id, attempt=attempt + 1)
     return True

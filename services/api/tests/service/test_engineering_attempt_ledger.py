@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Task
+from shared.models import EngineeringAttemptLedger, EngineeringBudgetReservation, Run, Task
 from shared.redis.client import RedisStreamClient
 
 
@@ -52,7 +52,7 @@ async def test_project_bound_run_uses_project_owner_not_supplied_user(async_clie
         "/api/runs/",
         json={
             "id": f"eng-{uuid.uuid4().hex}",
-            "type": "engineering",
+            "type": "deploy",
             "project_id": project["id"],
             "user_id": other["id"],
         },
@@ -77,10 +77,10 @@ async def test_terminal_engineering_run_writes_one_unknown_cost_ledger_row(
     project = await _project(async_client, owner["telegram_id"])
     run_id = f"eng-{uuid.uuid4().hex}"
     created = await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={"id": run_id, "type": "engineering", "project_id": project["id"]},
     )
-    assert created.status_code == HTTPStatus.CREATED
+    assert created.status_code == HTTPStatus.OK
     terminal = {
         "status": "failed",
         "error_message": "timed out",
@@ -134,7 +134,7 @@ async def test_terminal_engineering_run_preserves_provider_reported_cost(
     project = await _project(async_client, owner["telegram_id"])
     run_id = f"eng-provider-{uuid.uuid4().hex}"
     await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={"id": run_id, "type": "engineering", "project_id": project["id"]},
     )
     terminal = {
@@ -177,7 +177,7 @@ async def test_ledger_filters_and_owner_authorization(async_client: AsyncClient)
     project = await _project(async_client, owner["telegram_id"])
     run_id = f"eng-{uuid.uuid4().hex}"
     await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={"id": run_id, "type": "engineering", "project_id": project["id"]},
     )
     await async_client.patch(f"/api/runs/{run_id}", json={"status": "cancelled"})
@@ -204,7 +204,7 @@ async def test_ledger_read_is_bounded(async_client: AsyncClient):
     for _ in range(2):
         run_id = f"eng-page-{uuid.uuid4().hex}"
         await async_client.post(
-            "/api/runs/",
+            "/api/work-admission/paid-runs",
             json={"id": run_id, "type": "engineering", "project_id": project["id"]},
         )
         assert (
@@ -228,7 +228,7 @@ async def test_project_deletion_detaches_but_retains_engineering_ledger(
     project = await _project(async_client, owner["telegram_id"])
     run_id = f"eng-delete-{uuid.uuid4().hex}"
     await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={"id": run_id, "type": "engineering", "project_id": project["id"]},
     )
     await async_client.patch(
@@ -425,7 +425,7 @@ async def test_engineering_budget_admission_reserves_before_handoff_and_is_idemp
 
 @pytest.mark.asyncio
 async def test_engineering_budget_holds_release_and_settle_without_double_counting(
-    async_client: AsyncClient,
+    async_client: AsyncClient, db_session
 ):
     user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
     project = await _project(async_client, user["telegram_id"])
@@ -489,11 +489,10 @@ async def test_engineering_budget_holds_release_and_settle_without_double_counti
     assert balance.json()["active_held_microusd"] == 60
 
     settled_id = first_id
-    created = await async_client.post(
-        "/api/runs/",
-        json={"id": settled_id, "type": "engineering", "project_id": project["id"]},
+    db_session.add(
+        Run(id=settled_id, type="engineering", project_id=project["id"], status="queued")
     )
-    assert created.status_code == HTTPStatus.CREATED, created.text
+    await db_session.commit()
     terminal = await async_client.patch(
         f"/api/runs/{settled_id}",
         json={
@@ -564,7 +563,9 @@ async def test_released_admission_rechecks_availability_and_can_deny_without_a_r
 
 
 @pytest.mark.asyncio
-async def test_rearmed_deploy_fix_unknown_terminal_cost_retains_hold(async_client: AsyncClient):
+async def test_rearmed_deploy_fix_unknown_terminal_cost_retains_hold(
+    async_client: AsyncClient, db_session
+):
     """A retry after proven pre-handoff failure still holds unknown terminal coverage."""
     user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
     project = await _project(async_client, user["telegram_id"])
@@ -583,11 +584,8 @@ async def test_rearmed_deploy_fix_unknown_terminal_cost_retains_hold(async_clien
     rearmed = await async_client.post("/api/engineering-budget-policies/admissions", json=command)
     assert rearmed.json()["reservation_state"] == "active"
 
-    assert (
-        await async_client.post(
-            "/api/runs/", json={"id": run_id, "type": "engineering", "project_id": project["id"]}
-        )
-    ).status_code == HTTPStatus.CREATED
+    db_session.add(Run(id=run_id, type="engineering", project_id=project["id"], status="queued"))
+    await db_session.commit()
     assert (
         await async_client.patch(f"/api/runs/{run_id}", json={"status": "failed"})
     ).status_code == HTTPStatus.OK
@@ -664,7 +662,7 @@ async def test_concurrent_boundary_admissions_have_one_winner(async_client: Asyn
 
 @pytest.mark.asyncio
 async def test_terminal_unknown_deploy_fix_retains_the_conservative_reservation(
-    async_client: AsyncClient,
+    async_client: AsyncClient, db_session
 ):
     user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
     project = await _project(async_client, user["telegram_id"])
@@ -679,11 +677,8 @@ async def test_terminal_unknown_deploy_fix_retains_the_conservative_reservation(
         json={"attempt_id": run_id, "project_id": project["id"], "task_id": run_id},
     )
     assert admitted.json()["outcome"] == "admitted"
-    assert (
-        await async_client.post(
-            "/api/runs/", json={"id": run_id, "type": "engineering", "project_id": project["id"]}
-        )
-    ).status_code == HTTPStatus.CREATED
+    db_session.add(Run(id=run_id, type="engineering", project_id=project["id"], status="queued"))
+    await db_session.commit()
     assert (
         await async_client.patch(f"/api/runs/{run_id}", json={"status": "failed"})
     ).status_code == HTTPStatus.OK
@@ -733,11 +728,22 @@ async def test_manual_invalid_task_is_refused_before_budget_admission(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["recipient", "publish"])
-async def test_manual_pre_handoff_failures_release_the_admitted_reservation(
-    async_client: AsyncClient, db_session, monkeypatch, failure: str
+@pytest.mark.parametrize(
+    ("failure", "reservation_state", "run_status"),
+    [
+        ("recipient", "released", "cancelled"),
+        ("publish", "active", "queued"),
+    ],
+)
+async def test_manual_handoff_failure_only_aborts_before_queue_attempt(
+    async_client: AsyncClient,
+    db_session,
+    monkeypatch,
+    failure: str,
+    reservation_state: str,
+    run_status: str,
 ):
-    """Manual recipient and queue failures prove no provider work could have started."""
+    """Only preparation failures prove that the broker has not accepted work."""
     from src.routers import _task_actions
 
     user = await _user(async_client, uuid.uuid4().int % 1_000_000_000)
@@ -761,7 +767,7 @@ async def test_manual_pre_handoff_failures_release_the_admitted_reservation(
         monkeypatch.setattr(
             RedisStreamClient,
             "publish_message",
-            AsyncMock(side_effect=RuntimeError("redis unavailable")),
+            AsyncMock(side_effect=RuntimeError("redis response lost")),
         )
 
     refused = await async_client.post(
@@ -774,8 +780,11 @@ async def test_manual_pre_handoff_failures_release_the_admitted_reservation(
         )
     )
     assert reservation is not None
-    assert reservation.state == "released"
-    assert reservation.active_held_microusd == 0
+    assert reservation.state == reservation_state
+    assert reservation.active_held_microusd == (0 if failure == "recipient" else 60)
+    run = await db_session.scalar(select(Run).where(Run.id == reservation.attempt_id))
+    assert run is not None
+    assert run.status == run_status
 
 
 @pytest.mark.asyncio

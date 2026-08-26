@@ -24,20 +24,23 @@ async def _create_run(
     project_id: str | None,
     planning_task_id: str | None = None,
 ):
-    """Create a Run record via API (replicates what task_dispatcher does)."""
-    body: dict = {
-        "id": run_id,
-        "type": "engineering",
-        "run_metadata": {
-            "triggered_by": "integration_test",
+    """Create the engineering fixture through the paid-run boundary."""
+    assert project_id is not None
+    response = await api_client.post(
+        "/api/work-admission/paid-runs",
+        json={
+            "id": run_id,
+            "type": "engineering",
+            "project_id": project_id,
             "task_id": planning_task_id,
+            "run_metadata": {
+                "triggered_by": "integration_test",
+                "task_id": planning_task_id,
+            },
         },
-    }
-    if project_id is not None:
-        body["project_id"] = project_id
-    resp = await api_client.post("/api/runs/", json=body)
-    assert resp.status_code == 201, f"Failed to create run: {resp.text}"
-    return resp.json()
+    )
+    assert response.status_code == 200, f"Failed to create run: {response.text}"
+    assert response.json()["run_id"] == run_id
 
 
 async def _get_run(api_client, run_id: str) -> dict:
@@ -141,10 +144,10 @@ class TestLangGraphIntegration:
             project_id=project["id"],
         )
 
-        # Create run WITHOUT project_id (Run.project_id has FK constraint,
-        # so we can't use a fake UUID). The engineering worker looks up
-        # the project by msg.project_id, not run.project_id.
-        await _create_run(api_client, run_id, project_id=None, planning_task_id=task["id"])
+        # The canonical start command needs a real owning project. The worker
+        # still resolves the project from the queued message, so the fixture
+        # keeps that message pointed at the missing UUID.
+        await _create_run(api_client, run_id, project["id"], planning_task_id=task["id"])
 
         # Queue message referencing non-existent project
         msg = EngineeringMessage(

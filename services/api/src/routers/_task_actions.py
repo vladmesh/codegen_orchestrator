@@ -6,25 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.engineering_budget_policy import (
-    EngineeringBudgetAdmissionCommand,
-    EngineeringBudgetAdmissionOutcome,
-)
 from shared.contracts.dto.task import TaskEventType, TaskStatus
+from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.models import Project, Run, TaskEvent
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_redis_client
-from ..engineering_budget_admission import (
-    admit_engineering_attempt,
-    release_pre_handoff_reservation,
-)
+from ..dependencies import get_redis_client, require_internal_or_admin
 from ..schemas.actions import SpawnWorkerRequest
 from ..schemas.run import RunRead
 from ..schemas.task import TaskRead, TaskResume, TaskTransition
+from ..work_admission import abort_paid_run_pre_handoff, start_paid_run
 from ._ownership import initiating_run_or_conflict
 from ._recipients import resolve_project_chat_id
 from ._task_helpers import create_status_event, get_task, to_read, validate_transition
@@ -42,10 +36,10 @@ _COMPLETE_PATH: dict[str, list[str]] = {
 
 
 async def _release_pre_handoff_failure(run_id: str, db: AsyncSession) -> None:
-    """Recover an admitted hold when the engineering message never left this API."""
+    """Close the unpublished Run and release its hold in one transaction."""
     await db.rollback()
     try:
-        await release_pre_handoff_reservation(run_id, db)
+        await abort_paid_run_pre_handoff(run_id, "Engineering handoff preparation failed", db)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -219,6 +213,7 @@ async def spawn_worker(
     body: SpawnWorkerRequest | None = None,
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
+    _: None = Depends(require_internal_or_admin),
 ) -> dict:
     """Spawn an engineering worker for a task.
 
@@ -256,27 +251,26 @@ async def spawn_worker(
         )
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
-    try:
-        admission = await admit_engineering_attempt(
-            EngineeringBudgetAdmissionCommand(
-                attempt_id=run_id,
-                project_id=task.project_id,
-                task_id=task.id,
-                story_id=task.story_id,
-            ),
-            db,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-    await db.commit()
-    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+    started = await start_paid_run(
+        PaidRunStartCommand(
+            id=run_id,
+            type="engineering",
+            project_id=task.project_id,
+            task_id=task.id,
+            story_id=getattr(task, "story_id", None),
+            run_metadata={"triggered_by": "admin", "task_id": task.id},
+        ),
+        db,
+    )
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        await db.commit()
         logger.info(
-            "worker_spawn_budget_denied",
+            "worker_spawn_count_admission_refused",
             task_id=task.id,
             run_id=run_id,
-            available_microusd=admission.available_microusd,
+            reason=started.admission.reason.value if started.admission.reason else None,
         )
-        return {"admission": admission.model_dump(mode="json")}
+        return {"admission": started.admission.model_dump(mode="json")}
 
     try:
         # Transition to IN_DEV if needed.
@@ -290,16 +284,10 @@ async def spawn_worker(
             task.status = TaskStatus.IN_DEV
             await create_status_event(task, old_status, TaskStatus.IN_DEV, body.actor, {}, db)
 
-        run = Run(
-            id=run_id,
-            type="engineering",
-            project_id=task.project_id,
-            task_id=task.id,
-            story_id=getattr(task, "story_id", None),
-            run_metadata={"triggered_by": "admin", "task_id": task.id},
-        )
-        db.add(run)
         await db.commit()
+        run = await db.get(Run, run_id)
+        if run is None:
+            raise RuntimeError("Paid run disappeared before worker handoff")
         await db.refresh(task)
         await db.refresh(run)
 
@@ -318,13 +306,24 @@ async def spawn_worker(
             planning_task_id=task.id,
             story_id=getattr(task, "story_id", None) or None,
         )
-        await redis.publish_message(ENGINEERING_QUEUE, msg)
     except Exception as error:
+        # Everything here precedes the queue call.  A publish exception is not
+        # proof that no worker received the message, so it is handled below.
         await _release_pre_handoff_failure(run_id, db)
-        logger.exception("worker_spawn_pre_handoff_failed", task_id=task_id, run_id=run_id)
+        logger.exception(
+            "worker_spawn_pre_handoff_preparation_failed", task_id=task_id, run_id=run_id
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Engineering handoff could not be published",
+        ) from error
+    try:
+        await redis.publish_message(ENGINEERING_QUEUE, msg)
+    except Exception as error:
+        logger.exception("worker_spawn_publish_outcome_unknown", task_id=task_id, run_id=run_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Engineering handoff could not be confirmed",
         ) from error
 
     logger.info("worker_spawned", task_id=task.id, run_id=run_id, actor=body.actor)

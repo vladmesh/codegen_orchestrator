@@ -80,6 +80,59 @@ are hard-deleted; all accounting facts and the resolved `user_id` remain immutab
 
 ### Engineering budget policies
 
+### Count-based work admission
+
+`work_admission` is independent of engineering money. Project creation uses its
+per-user lock directly. Paid coding-agent work uses `POST /api/work-admission/paid-runs`:
+the command locks the controls, checks the emergency stop and concurrent-run
+ceiling, performs engineering's existing money admission when applicable, then
+creates the queued Run before the transaction commits. No separate successful
+paid-work admission exists. Every count decision is stored in
+`work_admission_audits` with a typed outcome and reason.
+
+Paid-run retries are decided only by that command while it holds the admission
+control locks. An existing Run is replayed only when it is `queued` or
+`running` and, for a budgeted engineering attempt, its reservation is still
+`active`. Audit rows preserve command identity for payload-conflict detection;
+they never cache a denial. A retry after a stop is lifted or a capacity slot is
+freed therefore evaluates the controls again. A terminal Run is never reopened:
+its identity returns the typed `paid_run_identity_expired` conflict and a caller
+must create a new attempt identity. A changed payload under a terminal identity
+returns `paid_run_command_conflict` before that expiry outcome.
+
+For scheduler dispatch and QA handoff, an addressable refusal writes its owed
+owner-notification record before the task/story transitions that park work;
+operator-facing spawn-worker and run-e2e instead return the typed result
+synchronously, while the command still records its audit reason.
+
+Known limitations: if a process dies after the paid-run command commits and
+before handoff, its queued Run continues to occupy the ceiling until manual
+intervention. The atomic internal abort command is used only when preparation
+failed before any queue call; it marks the Run `cancelled` and releases its
+hold. A publication exception has an unknown broker outcome, so the queued Run
+and its active hold remain for normal unfinished-run recovery rather than being
+incorrectly cancelled.
+Refusal notification is attached to the project's initiating Run, so a second
+task refusal for that project can be suppressed and a standalone task has no
+owner notification.
+
+The deployed defaults in `scripts/system_configs.yaml` are:
+
+- `work_admission.max_projects_per_user=3`, measured as non-archived projects
+  owned by one non-admin user. Deleted projects are absent and archived projects
+  do not count; administrators are unlimited.
+- `work_admission.max_concurrent_paid_runs=5`, measured globally as queued or
+  running `engineering` and `qa` runs together.
+- `work_admission.emergency_stop=false`. Internal/admin callers read and set
+  this one operator switch at `/api/work-admission/emergency-stop`; while true,
+  no new project, engineering run, or QA run is admitted. The stored value must
+  be a boolean; malformed configuration fails closed.
+  It never changes existing rows, workspaces, containers, or runs.
+
+Engineering's count check precedes its existing monetary
+`admit_engineering_attempt` inside that same command, so a count-based refusal
+cannot create a financial reservation. QA never enters the monetary gate.
+
 `engineering_budget_policies` holds at most one durable policy row per `user_id`.
 `limit_microusd` is a non-negative integer number of micro-USD; budget requests never
 accept floating-point or dollar-denominated money. `state` is the typed
@@ -120,13 +173,14 @@ denies. `POST .../admissions/{attempt_id}/release` may release only a proven pre
 `active` hold.
 
 `engineering_budget_reservations` records those decisions separately from the immutable
-ledger. The pre-handoff boundary ends only when the engineering message has published.
-Dispatchers validate cheap local conditions first; after an admitted `active` hold, every
-exception or typed refusal before that boundary, including Run creation, recipient
-resolution and publishing, changes it to `released`. A released row proves only that its
-previous handoff did not begin; a deterministic replay such as a deploy-fix dispatch must
-re-enter admission and obtain a newly `active` row before any story transition, Run creation
-or queue publication. This applies to ordinary task
+ledger. The pre-handoff boundary ends before an engineering message is submitted to the
+queue. Dispatchers validate cheap local conditions first; after an admitted `active` hold,
+a typed refusal or an exception proven to occur before that queue call — including Run
+creation and recipient resolution — changes it to `released`. An exception from publication
+has an unknown broker outcome and does not release the hold or cancel the queued Run. A
+released row proves only that its previous handoff did not begin; a deterministic replay such
+as a deploy-fix dispatch must re-enter admission and obtain a newly `active` row before any
+story transition, Run creation or queue publication. This applies to ordinary task
 dispatch and supervisor deploy-fix dispatch, whose stable attempt id is
 `eng-deploy-fix-{deploy_run_id}-{attempt}`. A scheduler denial has no Run or queue side
 effect and moves the affected task or deploy-fix story to `waiting_human_review` with
@@ -147,6 +201,35 @@ Balances aggregate `engineering_attempt_ledger.user_id` for exact actual
 count after Project deletion. Unknown attempts contribute no invented monetary amount;
 when coverage is incomplete, the reported remaining amount is not a proved safe upper
 reserve.
+
+### Promo codes
+
+`promo_codes` are the sole registration path for a non-owner Telegram user. A
+code compares case-insensitively and may be redeemed once. It carries integer
+`credits_microusd >= 0` and a strictly positive
+`attempt_reservation_microusd`; activation atomically creates the user, redeems
+the code, and creates that user's enabled engineering-budget policy at version
+1. Registration failures return typed `promo_code_required`,
+`promo_code_not_found`, or `promo_code_redeemed` verdicts, so callers do not
+confuse a missing code with a spent one. An `ADMIN_TELEGRAM_IDS` owner is the
+only no-code exception. Existing users are not changed by an ordinary upsert;
+supplying a code to a user who already has a policy is rejected and leaves that
+code unredeemed.
+
+Internal services or administrators mint and inspect codes at
+`POST /api/promo-codes/batch` and `GET /api/promo-codes`. Ordinary users have no
+code-management surface. An internal service acting for itself (valid internal
+key without `X-Telegram-ID`) may create a technical user without a code; that
+user deliberately has no policy (`enforcement=unlimited`) until an operator
+explicitly arms it. Existing production users are armed with the existing
+policy endpoint, for example:
+
+```bash
+curl -X PUT "$API_BASE_URL/api/engineering-budget-policies/42" \
+  -H "X-Internal-Key: $INTERNAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"limit_microusd":5000000,"attempt_reservation_microusd":250000,"state":"enabled"}'
+```
 
 ### Canonical vocabularies (`shared/contracts/vocab.py`)
 

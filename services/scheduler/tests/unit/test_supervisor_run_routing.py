@@ -32,6 +32,11 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.dto.work_admission import (
+    PaidRunStartRead,
+    WorkAdmissionOutcome,
+    WorkAdmissionRead,
+)
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAOutcome
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE
@@ -122,6 +127,9 @@ def api_client():
     # back and found in the status the transition put it in, so the double
     # answers that read the way the API would after the escalation committed.
     client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
+    client.start_paid_run.return_value = PaidRunStartRead(
+        admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="qa-test"
+    )
     return client
 
 
@@ -147,7 +155,9 @@ class TestSuperviseDeployingStories:
     @pytest.mark.asyncio
     async def test_success_transitions_to_testing(self, api_client, redis_client):
         """SUCCESS outcome → story TESTING, QA message published."""
-        from src.tasks.supervisor import supervise_deploying_stories
+        from src.tasks.supervisor import (
+            supervise_deploying_stories,
+        )
 
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
@@ -168,11 +178,12 @@ class TestSuperviseDeployingStories:
         assert result["tested"] == 1
         api_client.transition_story.assert_called_once_with("story-1", "test")
 
-        # QA run should be created
-        api_client.create_run_if_absent.assert_called_once()
-        run_data = api_client.create_run_if_absent.call_args[0][0]
-        assert run_data["type"] == RunType.QA.value
-        assert run_data["story_id"] == "story-1"
+        # The canonical command is the only paid-run creation path.
+        api_client.start_paid_run.assert_awaited_once()
+        api_client.create_run_if_absent.assert_not_called()
+        run_data = api_client.start_paid_run.call_args[0][0]
+        assert run_data.type is RunType.QA
+        assert run_data.story_id == "story-1"
 
         # QA message should be published with run_id
         from shared.queues import QA_QUEUE
@@ -190,7 +201,7 @@ class TestSuperviseDeployingStories:
         assert qa_msg.initiating_run_id != qa_msg.run_id
         # The criteria travel on the message — QA does not resolve them itself.
         assert qa_msg.acceptance_criteria == BASELINE_ACCEPTANCE_CRITERIA
-        metadata = api_client.create_run_if_absent.call_args.args[0]["run_metadata"]
+        metadata = api_client.start_paid_run.call_args.args[0].run_metadata
         assert metadata["application_id"] == 42
         # The plan is stored with the run, so a restart can finish this handoff.
         assert QAHandoffPlan.model_validate(metadata[QA_HANDOFF_KEY]).access is None
@@ -198,7 +209,9 @@ class TestSuperviseDeployingStories:
     @pytest.mark.asyncio
     async def test_criteria_are_resolved_before_the_story_moves(self, api_client, redis_client):
         """The handoff carries the repository's criteria, whatever they say."""
-        from src.tasks.supervisor import supervise_deploying_stories
+        from src.tasks.supervisor import (
+            supervise_deploying_stories,
+        )
 
         criteria = "- GET /health returns 200\n- Telegram: /start responds with welcome"
         api_client.get_stories_by_status.return_value = [
@@ -438,26 +451,16 @@ class TestSuperviseDeployingStories:
             },
         )
         api_client.transition_story.return_value = {}
-        api_client.create_run.return_value = {}
-        api_client.admit_engineering_budget.return_value = _engineering_admission()
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 1
-        admission = api_client.admit_engineering_budget.await_args.args[0]
-        assert admission.attempt_id == "eng-deploy-fix-deploy-1-1"
-        assert admission.task_id == admission.attempt_id
-        assert admission.story_id == "story-1"
-        assert admission.project_id == _make_project().id
-        admission_call = next(
-            index
-            for index, call in enumerate(api_client.mock_calls)
-            if call[0] == "admit_engineering_budget"
-        )
-        create_run_call = next(
-            index for index, call in enumerate(api_client.mock_calls) if call[0] == "create_run"
-        )
-        assert admission_call < create_run_call
+        command = api_client.start_paid_run.await_args.args[0]
+        assert command.id == "eng-deploy-fix-deploy-1-1"
+        assert command.task_id == command.id
+        assert command.story_id == "story-1"
+        assert command.project_id == _make_project().id
+        api_client.create_run.assert_not_awaited()
         api_client.transition_story.assert_called_once_with("story-1", "start")
 
         eng_calls = [
@@ -483,8 +486,9 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.return_value = _engineering_admission(
-            EngineeringBudgetAdmissionOutcome.DENIED
+        api_client.start_paid_run.return_value = PaidRunStartRead(
+            admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
+            engineering_budget=_engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
         )
 
         result = await supervise_deploying_stories(api_client, redis_client)
@@ -535,10 +539,10 @@ class TestSuperviseDeployingStories:
         ]
 
     @pytest.mark.asyncio
-    async def test_code_fix_publish_failure_releases_exact_admission_before_handoff(
+    async def test_code_fix_publish_failure_keeps_exact_admission_for_recovery(
         self, api_client, redis_client
     ):
-        """A failed deploy-fix publish proves no provider work started, so release its hold."""
+        """A failed publish response cannot prove the deploy-fix was not accepted."""
         from src.tasks.supervisor import supervise_deploying_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -551,17 +555,12 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.return_value = _engineering_admission()
         redis_client.publish_message.side_effect = RuntimeError("redis unavailable")
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 0
-        api_client.release_engineering_budget_admission.assert_awaited_once_with(
-            "eng-deploy-fix-deploy-1-1"
-        )
-        api_client.update_run.assert_awaited_once()
-        assert api_client.update_run.await_args.args[0] == "eng-deploy-fix-deploy-1-1"
+        api_client.abort_paid_run_pre_handoff.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_code_fix_run_creation_failure_releases_exact_admission_before_handoff(
@@ -580,73 +579,14 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.return_value = _engineering_admission()
-        api_client.create_run.side_effect = RuntimeError("api unavailable")
+        api_client.start_paid_run.side_effect = RuntimeError("api unavailable")
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["redispatched"] == 0
-        api_client.release_engineering_budget_admission.assert_awaited_once_with(
-            "eng-deploy-fix-deploy-1-1"
-        )
+        api_client.release_engineering_budget_admission.assert_not_awaited()
         redis_client.publish_message.assert_not_awaited()
         api_client.update_run.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_code_fix_retries_a_released_identity_before_any_handoff(
-        self, api_client, redis_client
-    ):
-        """The next tick re-enters admission with the deterministic deploy-fix id."""
-        from src.tasks.supervisor import supervise_deploying_stories
-
-        api_client.get_stories_by_status.return_value = [
-            _make_story(id="story-1", status="deploying")
-        ]
-        api_client.get_latest_run_by_story.return_value = _make_run(
-            status=RunStatus.FAILED,
-            result={
-                "deploy_outcome": DeployOutcome.CODE_FIX.value,
-                "deploy_fix_attempt": 0,
-            },
-        )
-        api_client.admit_engineering_budget.side_effect = [
-            _engineering_admission(),
-            _engineering_admission(),
-        ]
-        api_client.transition_story.side_effect = [RuntimeError("temporary API failure"), {}]
-
-        first = await supervise_deploying_stories(api_client, redis_client)
-        second = await supervise_deploying_stories(api_client, redis_client)
-
-        assert first["redispatched"] == 0
-        assert second["redispatched"] == 1
-        assert [
-            call.args[0].attempt_id for call in api_client.admit_engineering_budget.await_args_list
-        ] == ["eng-deploy-fix-deploy-1-1", "eng-deploy-fix-deploy-1-1"]
-        release_call = next(
-            index
-            for index, call in enumerate(api_client.mock_calls)
-            if call[0] == "release_engineering_budget_admission"
-        )
-        retry_admission_call = [
-            index
-            for index, call in enumerate(api_client.mock_calls)
-            if call[0] == "admit_engineering_budget"
-        ][1]
-        retry_run_call = next(
-            index for index, call in enumerate(api_client.mock_calls) if call[0] == "create_run"
-        )
-        assert release_call < retry_admission_call < retry_run_call
-        assert (
-            len(
-                [
-                    call
-                    for call in redis_client.publish_message.await_args_list
-                    if call.args[0] == ENGINEERING_QUEUE
-                ]
-            )
-            == 1
-        )
 
     @pytest.mark.asyncio
     async def test_code_fix_re_admission_denial_has_no_engineering_handoff(
@@ -665,9 +605,15 @@ class TestSuperviseDeployingStories:
                 "deploy_fix_attempt": 0,
             },
         )
-        api_client.admit_engineering_budget.side_effect = [
-            _engineering_admission(),
-            _engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+        api_client.start_paid_run.side_effect = [
+            PaidRunStartRead(
+                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED),
+                run_id="eng-deploy-fix-deploy-1-1",
+            ),
+            PaidRunStartRead(
+                admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.DENIED),
+                engineering_budget=_engineering_admission(EngineeringBudgetAdmissionOutcome.DENIED),
+            ),
         ]
         api_client.transition_story.side_effect = RuntimeError("temporary API failure")
 

@@ -14,6 +14,7 @@ from . import (
     lk,
     lk_auth,
     projects,
+    promo_codes,
     rag,
     repositories,
     runs,
@@ -24,6 +25,7 @@ from . import (
     tasks,
     temporary_access,
     users,
+    work_admission,
 )
 
 __all__ = [
@@ -40,6 +42,7 @@ __all__ = [
     "lk",
     "lk_auth",
     "projects",
+    "promo_codes",
     "rag",
     "repositories",
     "runs",
@@ -50,4 +53,5 @@ __all__ = [
     "tasks",
     "temporary_access",
     "users",
+    "work_admission",
 ]

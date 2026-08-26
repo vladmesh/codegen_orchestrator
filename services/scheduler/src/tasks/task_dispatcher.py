@@ -18,11 +18,7 @@ import uuid
 
 import structlog
 
-from shared.contracts.dto.engineering import EngineeringStatus
-from shared.contracts.dto.engineering_budget_policy import (
-    EngineeringBudgetAdmissionCommand,
-    EngineeringBudgetAdmissionOutcome,
-)
+from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetAdmissionOutcome
 from shared.contracts.dto.project import (
     ProjectDTO,
     ProjectPredatesRunOwnership,
@@ -30,17 +26,22 @@ from shared.contracts.dto.project import (
     require_initiating_run,
 )
 from shared.contracts.dto.run import RunDTO, RunStatus, RunType
-from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskDTO, TaskStatus, TaskType
+from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.contracts.vocab import ActionType
+from shared.contracts.vocab import ActionType, OwnerNotificationEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
 from .bot_rollouts import reconcile_bot_rollouts
-from .owner_notifications import supervise_owed_owner_notifications
+from .owner_notifications import (
+    deliver_owed_notification,
+    owe_owner_notification,
+    supervise_owed_owner_notifications,
+)
 from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
@@ -96,8 +97,9 @@ logger = structlog.get_logger(__name__)
 # either has not picked it up yet or is working on it.
 _LIVE_RUN_STATUSES = (RunStatus.QUEUED, RunStatus.RUNNING)
 
-# error_message written on a run whose EngineeringMessage never reached the queue.
-PUBLISH_FAILED_ERROR = "dispatch publish failed"
+# This is used only before calling the queue; a publication failure is never proof
+# that the message did not land and must not be routed through the abort command.
+PRE_HANDOFF_PREPARATION_FAILED_ERROR = "dispatch handoff preparation failed"
 
 
 def _dispatch_interval() -> int:
@@ -140,6 +142,8 @@ async def _find_unfinished_run(api_client: SchedulerAPIClient, task: TaskDTO) ->
     """
     runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
     for run in runs:
+        if run.run_metadata.get("pre_handoff_aborted"):
+            continue
         if run.status in _LIVE_RUN_STATUSES:
             return run
     return None
@@ -157,6 +161,8 @@ async def _find_dispatched_run(api_client: SchedulerAPIClient, task: TaskDTO) ->
     """
     runs = await api_client.list_runs(task_id=task.id, run_type=RunType.ENGINEERING.value)
     for run in runs:
+        if run.run_metadata.get("pre_handoff_aborted"):
+            continue
         if run.run_metadata.get("iteration") == task.current_iteration:
             return run
     return None
@@ -271,8 +277,8 @@ async def _create_and_publish_run(
     This function creates one *attempt* inside it, and the message carries both:
     the attempt as `task_id`, the run as `initiating_run_id`.
 
-    Returns the run id. Any failure before queue handoff releases the reservation.
-    A created run is closed as FAILED because nothing can pick it up; the task stays
+    Returns the run id. Only a failure before attempting queue handoff releases the
+    reservation. A created run is closed as CANCELLED because nothing can pick it up; the task stays
     in todo and a later tick may make a fresh attempt. A budget denial instead routes
     the task to human review and cannot retry automatically.
     """
@@ -281,38 +287,6 @@ async def _create_and_publish_run(
     project_id = str(task.project_id)
 
     run_id = f"eng-{uuid.uuid4().hex[:12]}"
-    admission = await api_client.admit_engineering_budget(
-        EngineeringBudgetAdmissionCommand(
-            attempt_id=run_id,
-            project_id=task.project_id,
-            task_id=task_id,
-            story_id=story_id,
-        )
-    )
-    if admission.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
-        log.info(
-            "task_dispatch_budget_denied",
-            run_id=run_id,
-            task_id=task_id,
-            known_spend_microusd=admission.known_spend_microusd,
-            active_held_microusd=admission.active_held_microusd,
-            available_microusd=admission.available_microusd,
-        )
-        await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
-        await api_client.transition_task(
-            task_id,
-            TaskStatus.WAITING_HUMAN_REVIEW,
-            "dispatcher",
-            details={
-                "reason": "engineering_budget_denied",
-                "attempt_id": run_id,
-                "known_spend_microusd": admission.known_spend_microusd,
-                "active_held_microusd": admission.active_held_microusd,
-                "available_microusd": admission.available_microusd,
-            },
-        )
-        return None
-
     run_metadata = {
         "triggered_by": "dispatcher",
         "story_id": story_id,
@@ -320,19 +294,77 @@ async def _create_and_publish_run(
         **AttemptTurnMetadata(initiating_run_id=initiating_run_id).as_run_metadata(),
         "iteration": task.current_iteration,
     }
-    action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
-    run_created = False
     try:
-        await api_client.create_run(
-            {
-                "id": run_id,
-                "type": RunType.ENGINEERING.value,
-                "project_id": project_id,
-                "task_id": task_id,
-                "run_metadata": run_metadata,
-            }
+        started = await api_client.start_paid_run(
+            PaidRunStartCommand(
+                id=run_id,
+                type=RunType.ENGINEERING,
+                project_id=task.project_id,
+                task_id=task_id,
+                story_id=story_id,
+                run_metadata=run_metadata,
+            )
         )
-        run_created = True
+    except Exception:
+        log.exception("task_dispatch_paid_start_failed", run_id=run_id)
+        return None
+    if started.admission.outcome is not WorkAdmissionOutcome.ADMITTED:
+        if task.story_id and started.admission.message:
+            source_run = await api_client.get_run(initiating_run_id)
+            owed = await owe_owner_notification(
+                api_client,
+                source_run,
+                event=OwnerNotificationEvent.STORY_QUARANTINED,
+                text=started.admission.message,
+                story_id=task.story_id,
+                project_id=project_id,
+                terminal_status=StoryStatus.WAITING_HUMAN_REVIEW,
+                task_id=task_id,
+                log=log,
+            )
+            await api_client.transition_story(task.story_id, "human-review")
+            await deliver_owed_notification(api_client, redis_client, source_run.id, owed, log)
+        budget = started.engineering_budget
+        if budget is not None and budget.outcome is EngineeringBudgetAdmissionOutcome.DENIED:
+            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            await api_client.transition_task(
+                task_id,
+                TaskStatus.WAITING_HUMAN_REVIEW,
+                "dispatcher",
+                details={
+                    "reason": "engineering_budget_denied",
+                    "attempt_id": budget.attempt_id,
+                    "known_spend_microusd": budget.known_spend_microusd,
+                    "active_held_microusd": budget.active_held_microusd,
+                    "available_microusd": budget.available_microusd,
+                },
+            )
+        else:
+            await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
+            await api_client.transition_task(
+                task_id,
+                TaskStatus.WAITING_HUMAN_REVIEW,
+                "dispatcher",
+                details={
+                    "reason": (
+                        started.admission.reason.value
+                        if started.admission.reason is not None
+                        else "paid_work_denied"
+                    ),
+                    "attempt_id": run_id,
+                },
+            )
+        log.info(
+            "task_dispatch_count_admission_refused",
+            run_id=run_id,
+            task_id=task_id,
+            reason=(
+                started.admission.reason.value if started.admission.reason is not None else None
+            ),
+        )
+        return None
+    try:
+        action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
         recipient = await resolve_project_recipient(
             api_client, project_id, event="task_dispatch", story_id=story_id or ""
         )
@@ -348,24 +380,18 @@ async def _create_and_publish_run(
             story_id=story_id,
             branch=f"story/{story_id}" if story_id else None,
         )
+    except Exception:
+        # This block contains only work proven to precede any queue call.  Do
+        # not include publication: a lost publish response has an unknown outcome.
+        log.exception("task_dispatch_pre_handoff_preparation_failed", run_id=run_id)
+        await api_client.abort_paid_run_pre_handoff(run_id, PRE_HANDOFF_PREPARATION_FAILED_ERROR)
+        return None
+    try:
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
     except Exception:
-        log.exception("task_dispatch_pre_handoff_failed", run_id=run_id)
-        await api_client.release_engineering_budget_admission(run_id)
-        if run_created:
-            # Drop the iteration stamp: this run never made it onto the queue, so the
-            # next tick must dispatch a fresh one instead of recovering this one.
-            await api_client.update_run(
-                run_id,
-                {
-                    "status": RunStatus.FAILED.value,
-                    "error_message": PUBLISH_FAILED_ERROR,
-                    "result": EngineeringRunResult(
-                        engineering_status=EngineeringStatus.FAILED
-                    ).model_dump(mode="json"),
-                    "run_metadata": {**run_metadata, "iteration": None, "publish_failed": True},
-                },
-            )
+        # Publication may have reached Redis before its response was lost.  Keep
+        # the queued Run and active hold so normal unfinished-run recovery owns it.
+        log.exception("task_dispatch_publish_outcome_unknown", run_id=run_id)
         return None
     return run_id
 

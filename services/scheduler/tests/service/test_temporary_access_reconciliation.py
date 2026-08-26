@@ -20,12 +20,13 @@ from shared.contracts.dto.deploy_dispatch import (
     DISPATCH_LEASE_EXPIRES_AT_KEY,
     DISPATCH_SUPERSEDED_AT_KEY,
 )
-from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlockerCategory
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantCreate,
     TemporaryAccessStatus,
 )
+from shared.contracts.dto.work_admission import PaidRunStartCommand
 from shared.contracts.queues.env_observation import (
     EnvObservationOutcome,
     EnvObservationResult,
@@ -151,7 +152,12 @@ async def _project(api_client) -> str:
 
 
 async def _run(api_client, project_id: str, run_id: str, run_type: str) -> str:
-    await api_client.create_run({"id": run_id, "type": run_type, "project_id": project_id})
+    if run_type in {"engineering", "qa"}:
+        await api_client.start_paid_run(
+            PaidRunStartCommand(id=run_id, type=RunType(run_type), project_id=project_id)
+        )
+    else:
+        await api_client.create_run({"id": run_id, "type": run_type, "project_id": project_id})
     return run_id
 
 

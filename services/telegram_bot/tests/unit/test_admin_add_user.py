@@ -65,7 +65,7 @@ class TestAddUserInput:
     """Test text handler for receiving telegram_id."""
 
     @pytest.mark.asyncio
-    async def test_valid_telegram_id_creates_user(self):
+    async def test_valid_telegram_id_mints_a_promo_code(self):
         from src.handlers import handle_add_user_input
 
         update = MagicMock()
@@ -77,18 +77,16 @@ class TestAddUserInput:
         context.user_data = {"awaiting_add_user": True}
 
         with patch("src.handlers.api_client") as mock_api:
-            mock_api.post_json = AsyncMock(
-                return_value={"id": 1, "telegram_id": 123456789, "is_admin": False}
-            )
+            mock_api.post_json = AsyncMock(return_value=[{"code": "PROMO-CODE"}])
             await handle_add_user_input(update, context)
 
         mock_api.post_json.assert_called_once()
         call_args = mock_api.post_json.call_args
-        assert call_args[0][0] == "users/"
-        assert call_args[1]["json"]["telegram_id"] == 123456789
+        assert call_args[0][0] == "promo-codes/batch"
+        assert call_args[1]["json"]["quantity"] == 1
         assert context.user_data.get("awaiting_add_user") is None
         update.message.reply_text.assert_called_once()
-        assert "123456789" in update.message.reply_text.call_args[0][0]
+        assert "PROMO-CODE" in update.message.reply_text.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_invalid_input_asks_again(self):

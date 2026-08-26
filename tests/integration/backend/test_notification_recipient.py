@@ -102,7 +102,6 @@ async def _owner_and_project(api_client) -> tuple[int, str]:
     """Register the owner and a project, returning (internal user id, project id)."""
     resp = await api_client.post(
         "/api/users/upsert",
-        headers={"X-Telegram-ID": str(OWNER_TELEGRAM_ID)},
         json={
             "telegram_id": OWNER_TELEGRAM_ID,
             "username": "recipient-owner",

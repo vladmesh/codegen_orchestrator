@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- One-time promo-code registration that atomically arms an enabled engineering budget policy.
+- Count-based work admission for projects and concurrent engineering/QA runs,
+  with an internal/admin emergency-stop API and durable typed decision audit
+  records. Paid runs now start through one transactional API command, which
+  holds the counted slot through queued-Run creation and checks engineering
+  money only after the count gate.
+
+### Fixed
+
+- Updated paid-run test fixtures to use the transactional paid-run command;
+  fixtures that only require a Run record now use a non-paid type.
+- Paid-run starts now replay an identical stable command idempotently and reject
+  conflicting payloads; the obsolete standalone paid-work admission oracle was
+  removed. Emergency-stop writes are strict booleans and admission controls are
+  protected from the generic configuration mutation API.
+- Paid-work refusals now persist their command identity, project owner, typed
+  reason and Russian owner-facing text without caching a transient outcome.
+- A paid-run retry now rechecks controls rather than caching a prior refusal;
+  it only reuses a live Run whose engineering reservation remains active.
+- Scheduler admission refusals now park their Task as well as the Story, and a
+  handled pre-handoff publish failure closes the Run with its released hold.
+
 ## 2026-08-24
 
 - Released engineering-budget reservations no longer replay their historical

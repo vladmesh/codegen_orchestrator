@@ -30,6 +30,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessRevokeReason,
     TemporaryAccessStatus,
 )
+from shared.contracts.dto.work_admission import PaidRunStartCommand
 from shared.contracts.queues.env_observation import (
     EnvObservationOutcome,
     EnvObservationResult,
@@ -205,18 +206,19 @@ async def _delivered_story(api_client) -> tuple[str, str, str, str]:
         bot_username=BOT_USERNAME,
         run_id=qa_run_id,
     )
-    await api_client.create_run(
-        {
-            "id": qa_run_id,
-            "type": "qa",
-            "project_id": project_id,
-            "story_id": story_id,
-            "run_metadata": {
+    started = await api_client.start_paid_run(
+        PaidRunStartCommand(
+            id=qa_run_id,
+            type="qa",
+            project_id=project_id,
+            story_id=story_id,
+            run_metadata={
                 "application_id": application_id,
                 QA_HANDOFF_KEY: QAHandoffPlan(qa_message=qa_message).model_dump(mode="json"),
             },
-        }
+        )
     )
+    assert started.run_id == qa_run_id
     # The QA worker's verdict on the product: it works.
     await api_client.update_run(
         qa_run_id,

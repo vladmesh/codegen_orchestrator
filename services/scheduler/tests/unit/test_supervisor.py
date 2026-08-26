@@ -14,6 +14,11 @@ from _run_routing_factories import _make_repo, _make_story, _make_task
 import pytest
 
 from shared.contracts.dto.server import ServerDTO
+from shared.contracts.dto.work_admission import (
+    PaidRunStartRead,
+    WorkAdmissionOutcome,
+    WorkAdmissionRead,
+)
 from shared.tests.allocation_routing_cases import (
     REFUSAL_ROUTING_CASES,
     REFUSED_DEPLOY_MIN_DISK_MB,
@@ -43,6 +48,9 @@ def api_client():
     # that publishes a terminal owner notice reads the story back before it
     # publishes, so the double has to answer that read like the API would.
     client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
+    client.start_paid_run.return_value = PaidRunStartRead(
+        admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="eng-test"
+    )
     return client
 
 
@@ -649,8 +657,8 @@ class TestSuperviseWaitingResourceTasks:
             "eng-capacity-failed",
             {"run_metadata": {"iteration": None, "task_id": "task-1"}},
         )
-        api_client.create_run.assert_awaited_once()
-        assert api_client.create_run.call_args.args[0]["run_metadata"]["iteration"] == 1
+        api_client.start_paid_run.assert_awaited_once()
+        assert api_client.start_paid_run.call_args.args[0].run_metadata["iteration"] == 1
 
     @pytest.mark.asyncio
     async def test_reparking_preserves_original_resource_wait_start(self, api_client, redis_client):

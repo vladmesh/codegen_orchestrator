@@ -6,6 +6,21 @@
 # the database alone and are never touched.
 
 # --- scheduler ---
+- key: work_admission.max_projects_per_user
+  value: 3
+  category: work_admission
+  description: "Maximum non-archived projects for one non-admin user"
+
+- key: work_admission.max_concurrent_paid_runs
+  value: 5
+  category: work_admission
+  description: "Maximum queued or running engineering and QA coding-agent runs"
+
+- key: work_admission.emergency_stop
+  value: false
+  category: work_admission
+  description: "Operator switch that blocks new projects, engineering and QA work"
+
 - key: scheduler.dispatch_interval_seconds
   value: 30
   category: scheduler

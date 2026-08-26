@@ -15,6 +15,8 @@ from shared.redis.client import RedisStreamClient
 from .config import get_settings
 from .database import get_async_session
 
+_optional_bearer_scheme = HTTPBearer(auto_error=False)
+
 # ---------------------------------------------------------------------------
 # Redis client singleton
 # ---------------------------------------------------------------------------
@@ -58,6 +60,7 @@ async def resolve_actor(
     *,
     is_internal: bool,
     telegram_id: int | None,
+    credentials: HTTPAuthorizationCredentials | None = None,
     db: AsyncSession,
 ) -> User | None:
     """Who is acting on this request? This is the only place that decides.
@@ -72,6 +75,12 @@ async def resolve_actor(
     Raises 401 when nobody is identified at all, and 404 when the named user is
     unknown to us.
     """
+    if credentials is not None and not is_internal:
+        bearer_user = await get_lk_user(credentials=credentials, db=db)
+        if telegram_id is not None and telegram_id != bearer_user.telegram_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Actor mismatch")
+        return bearer_user
+
     if telegram_id is None:
         if is_internal:
             return None
@@ -93,10 +102,16 @@ async def resolve_actor(
 async def require_internal_or_admin(
     _is_internal: bool = Depends(is_internal_service),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
     db: AsyncSession = Depends(get_async_session),
 ) -> None:
     """Allow internal services acting for themselves, and admin users."""
-    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+    )
     if actor is None:
         return
     if not actor.is_admin:
@@ -104,13 +119,24 @@ async def require_internal_or_admin(
 
 
 async def get_current_user(
-    x_telegram_id: int = Header(..., alias="X-Telegram-ID"),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
     db: AsyncSession = Depends(get_async_session),
 ) -> User:
     """Get current user from X-Telegram-ID header.
 
     Raises 422 if header missing, 404 if user not found.
     """
+    if credentials is not None:
+        bearer_user = await get_lk_user(credentials=credentials, db=db)
+        if x_telegram_id is not None and x_telegram_id != bearer_user.telegram_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Actor mismatch")
+        return bearer_user
+    if x_telegram_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="X-Telegram-ID required"
+        )
+
     query = select(User).where(User.telegram_id == x_telegram_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
@@ -144,7 +170,6 @@ _bearer_scheme = HTTPBearer()
 
 # The gate below has to tell "no token" from "bad token", so it reads the header
 # without turning a missing one into an error of its own.
-_optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 LK_JWT_ALGORITHM = "HS256"
 LK_JWT_TTL = dt.timedelta(hours=24)

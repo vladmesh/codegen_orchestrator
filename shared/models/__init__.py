@@ -16,6 +16,7 @@ from .engineering_budget_reservation import EngineeringBudgetReservation
 from .incident import Incident, IncidentStatus, IncidentType
 from .port_allocation import PortAllocation
 from .project import Project
+from .promo_code import PromoCode
 from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGScope
 from .repository import Repository
 from .resource import Resource
@@ -27,6 +28,7 @@ from .system_config import SystemConfig
 from .task import Task, TaskEvent
 from .temporary_access_grant import TemporaryAccessGrant
 from .user import User
+from .work_admission_audit import WorkAdmissionAudit
 
 __all__ = [
     "AgentConfig",
@@ -50,11 +52,13 @@ __all__ = [
     "ServerMetricsHistory",
     "ServerStatus",
     "PortAllocation",
+    "PromoCode",
     "Task",
     "TaskEvent",
     "TemporaryAccessGrant",
     "APIKey",
     "User",
+    "WorkAdmissionAudit",
     "Incident",
     "IncidentStatus",
     "IncidentType",

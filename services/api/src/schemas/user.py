@@ -20,12 +20,14 @@ class UserCreate(UserBase):
     """Schema for creating a user."""
 
     is_admin: bool = False
+    promo_code: str | None = Field(None, min_length=1, max_length=255)
 
 
 class UserUpsert(UserBase):
     """Schema for upserting a user."""
 
     is_admin: bool | None = None
+    promo_code: str | None = Field(None, min_length=1, max_length=255)
 
 
 class UserUpdate(BaseModel):
