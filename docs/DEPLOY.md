@@ -59,6 +59,12 @@ therefore means the configured local session and Docker/Redis inventory
 reconciled, not that a provider account has capacity. `unavailable` means a
 local configuration/authentication failure; `unknown` means the service cannot
 prove the state. The Settings card never displays paths or credential detail.
+The currently deployed paid engineering and QA producers use `host_session`;
+their diagnostics validate the manager-visible read-only mounts
+`/host-claude` and `/host-codex`, while `HOST_CLAUDE_DIR` and
+`HOST_CODEX_HOME` remain the Docker-host source paths used for worker mounts.
+An unreconciled Docker/Redis inventory displays active leases as unknown, never
+as zero.
 
 For local recovery, use `claude auth login` to repair the dedicated
 `HOST_CLAUDE_DIR` profile, or `codex login --device-auth` to repair the dedicated

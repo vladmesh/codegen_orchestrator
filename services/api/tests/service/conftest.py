@@ -138,13 +138,14 @@ async def _known_executor_diagnostic_snapshot(redis_client: Redis):
             expires_at=expiry,
             active_lease_count=0,
             reason_code="ready",
-            reason="Ready.",
+            reason="Local authentication and worker inventory are ready.",
         )
         for executor in (AgentType.CLAUDE, AgentType.CODEX)
     ]
     await redis_client.set(
         EXECUTOR_DIAGNOSTICS_REDIS_KEY,
         ExecutorDiagnosticSnapshot(
+            schema_version="v1",
             version="service-test-diagnostics",
             observed_at=now,
             expires_at=expiry,

@@ -350,7 +350,7 @@ export interface ExecutorDiagnostic {
   availability: ExecutorAvailability
   observed_at: string
   expires_at: string
-  active_lease_count: number
+  active_lease_count: number | null
   reason_code: string
   reason: string
 }

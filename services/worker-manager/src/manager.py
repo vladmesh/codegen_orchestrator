@@ -19,6 +19,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorAvailability,
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
+    safe_executor_diagnostic_reason,
 )
 from shared.constants import Timeouts
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
@@ -86,6 +87,7 @@ class WorkerManager:
             self._executor_diagnostic(AgentType.CODEX, now, expires_at, leases),
         ]
         snapshot = ExecutorDiagnosticSnapshot(
+            schema_version="v1",
             version=secrets.token_urlsafe(24),
             observed_at=now,
             expires_at=expires_at,
@@ -107,6 +109,11 @@ class WorkerManager:
                 worker_id = str(key).rsplit(":", 1)[-1]
                 metas[worker_id] = decode_redis_fields(await self.redis.hgetall(key))
             containers = await self.docker.list_containers(all=True)
+
+            statuses = {
+                worker_id: str(decode_redis_value(await self.redis.hget(f"worker:status:{worker_id}", "status")) or "")
+                for worker_id in metas
+            }
         except Exception as exc:
             logger.warning("executor_diagnostics_inventory_unreadable", error=str(exc))
             return None
@@ -123,9 +130,20 @@ class WorkerManager:
                 containers_by_worker[str(worker_id)] = labels
         counts = {AgentType.CLAUDE: 0, AgentType.CODEX: 0}
         for worker_id, meta in metas.items():
+            if statuses[worker_id] in {
+                item.value
+                for item in (
+                    WorkerStatus.DEAD,
+                    WorkerStatus.FAILED,
+                    WorkerStatus.STOPPED,
+                    WorkerStatus.GONE,
+                )
+            }:
+                continue
             labels = containers_by_worker.get(worker_id)
             if labels is None:
-                continue
+                logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
+                return None
             if labels.get("com.codegen.agent_type") != meta.get("agent_type") or labels.get(
                 "com.codegen.auth_mode"
             ) != meta.get("auth_mode"):
@@ -133,11 +151,6 @@ class WorkerManager:
                 return None
             agent_value = meta.get("agent_type")
             if agent_value not in {AgentType.CLAUDE.value, AgentType.CODEX.value}:
-                continue
-            status = str(decode_redis_value(await self.redis.hget(f"worker:status:{worker_id}", "status")) or "")
-            if status in {
-                item.value for item in (WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED, WorkerStatus.GONE)
-            }:
                 continue
             counts[AgentType(agent_value)] += 1
         return counts
@@ -160,7 +173,7 @@ class WorkerManager:
                 expires_at=expires_at,
                 active_lease_count=0,
                 reason_code="disabled",
-                reason="Host-session executor is not configured.",
+                reason=safe_executor_diagnostic_reason("disabled"),
             )
         if leases is None:
             return ExecutorDiagnostic(
@@ -170,15 +183,15 @@ class WorkerManager:
                 availability=ExecutorAvailability.UNKNOWN,
                 observed_at=now,
                 expires_at=expires_at,
-                active_lease_count=0,
+                active_lease_count=None,
                 reason_code="inventory_unreconciled",
-                reason="Worker inventory could not be reconciled.",
+                reason=safe_executor_diagnostic_reason("inventory_unreconciled"),
             )
         try:
             if executor is AgentType.CLAUDE:
                 from .claude_auth import validate_claude_host_session
 
-                validate_claude_host_session(profile)
+                validate_claude_host_session(settings.HOST_CLAUDE_VALIDATION_PATH or profile)
             else:
                 from .codex_auth import validate_codex_host_session
 
@@ -193,7 +206,7 @@ class WorkerManager:
                 expires_at=expires_at,
                 active_lease_count=leases[executor],
                 reason_code="local_auth_invalid",
-                reason="Required local host-session material is unusable.",
+                reason=safe_executor_diagnostic_reason("local_auth_invalid"),
             )
         return ExecutorDiagnostic(
             executor=executor,
@@ -204,7 +217,7 @@ class WorkerManager:
             expires_at=expires_at,
             active_lease_count=leases[executor],
             reason_code="ready",
-            reason="Local authentication and worker inventory are ready.",
+            reason=safe_executor_diagnostic_reason("ready"),
         )
 
     async def _register_broker_worker(self, worker_id: str, token: str, worker_type: str) -> None:
@@ -1099,7 +1112,7 @@ class WorkerManager:
             if agent_type == AgentType.CLAUDE and auth_mode == "host_session" and host_claude_dir:
                 from .claude_auth import validate_claude_host_session
 
-                validate_claude_host_session(host_claude_dir)
+                validate_claude_host_session(settings.HOST_CLAUDE_VALIDATION_PATH or host_claude_dir)
 
             # The workspace lock is a developer-worker concern: it guards the one
             # persistent checkout a project has. A QA executor owns the same project

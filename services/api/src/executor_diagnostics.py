@@ -9,6 +9,7 @@ from shared.contracts.dto.executor_diagnostics import (
     ExecutorAvailability,
     ExecutorDiagnostic,
     ExecutorDiagnosticSnapshot,
+    safe_executor_diagnostic_reason,
 )
 from shared.contracts.vocab import AgentType
 
@@ -22,9 +23,9 @@ def unknown_diagnostic(executor: AgentType, reason_code: str) -> ExecutorDiagnos
         availability=ExecutorAvailability.UNKNOWN,
         observed_at=now,
         expires_at=now + timedelta(seconds=1),
-        active_lease_count=0,
+        active_lease_count=None,
         reason_code=reason_code,
-        reason="Current executor diagnostics are unavailable.",
+        reason=safe_executor_diagnostic_reason(reason_code),
     )
 
 
@@ -38,7 +39,10 @@ async def current_executor_snapshot() -> ExecutorDiagnosticSnapshot | None:
             return None
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
-        return ExecutorDiagnosticSnapshot.model_validate(json.loads(raw))
+        snapshot = ExecutorDiagnosticSnapshot.model_validate(json.loads(raw))
+        if snapshot.expires_at <= datetime.now(UTC):
+            return None
+        return snapshot
     except Exception:
         return None
 

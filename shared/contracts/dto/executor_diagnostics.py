@@ -11,6 +11,23 @@ from shared.contracts.vocab import AgentType
 EXECUTOR_DIAGNOSTICS_REDIS_KEY = "executor:diagnostics:v1"
 EXECUTOR_DIAGNOSTICS_SCHEMA_VERSION = "v1"
 
+# This is deliberately a closed mapping.  Redis is a shared transport, so a
+# syntactically valid value is not enough to make text safe for an admin API.
+SAFE_EXECUTOR_DIAGNOSTIC_REASONS = {
+    "ready": "Local authentication and worker inventory are ready.",
+    "disabled": "Host-session executor is not configured.",
+    "local_auth_invalid": "Required local host-session material is unusable.",
+    "local_warning": "Local authentication is usable with a non-fatal warning.",
+    "inventory_unreconciled": "Worker inventory could not be reconciled.",
+    "snapshot_unavailable": "Current executor diagnostics are unavailable.",
+    "snapshot_expired": "Current executor diagnostics have expired.",
+}
+
+
+def safe_executor_diagnostic_reason(reason_code: str) -> str:
+    """Return the sole response text allowed for a diagnostic reason code."""
+    return SAFE_EXECUTOR_DIAGNOSTIC_REASONS[reason_code]
+
 
 class ExecutorAvailability(StrEnum):
     AVAILABLE = "available"
@@ -36,7 +53,7 @@ class ExecutorDiagnostic(BaseModel):
     availability: ExecutorAvailability
     observed_at: datetime
     expires_at: datetime
-    active_lease_count: StrictInt = Field(ge=0)
+    active_lease_count: StrictInt | None = Field(default=None, ge=0)
     reason_code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     reason: str = Field(min_length=1, max_length=280)
 
@@ -44,6 +61,10 @@ class ExecutorDiagnostic(BaseModel):
     def _valid_window(self) -> "ExecutorDiagnostic":
         if self.expires_at <= self.observed_at:
             raise ValueError("diagnostic expiry must be after observation")
+        if self.reason_code not in SAFE_EXECUTOR_DIAGNOSTIC_REASONS:
+            raise ValueError("diagnostic reason code is not safe")
+        if self.reason != safe_executor_diagnostic_reason(self.reason_code):
+            raise ValueError("diagnostic reason must match its safe reason code")
         return self
 
 
@@ -52,7 +73,7 @@ class ExecutorDiagnosticSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["v1"] = EXECUTOR_DIAGNOSTICS_SCHEMA_VERSION
+    schema_version: Literal["v1"]
     version: str = Field(min_length=1, max_length=128)
     observed_at: datetime
     expires_at: datetime

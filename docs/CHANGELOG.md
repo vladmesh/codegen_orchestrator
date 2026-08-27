@@ -38,6 +38,13 @@
 
 ### Fixed
 
+- Executor diagnostics now require the complete protocol version at the Redis
+  boundary, map expired snapshots to typed unknown, derive response text from a
+  fixed safe reason mapping, and keep unknown inventory lease counts null. The
+  Claude validator uses worker-manager's `/host-claude` mount without changing
+  the Docker-host source used for launched workers. A confirmed unknown is
+  re-read immediately before paid admission so a newer unavailable snapshot
+  cannot reuse the earlier confirmation.
 - Executor-availability integration fixtures now publish complete fresh
   diagnostics, the worker-manager rollout suite keeps its runner alive across
   intentional control-plane replacement, and Settings updates stale state

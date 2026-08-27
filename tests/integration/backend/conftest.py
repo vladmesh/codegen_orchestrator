@@ -466,6 +466,7 @@ async def api_client():
         await redis_client.set(
             EXECUTOR_DIAGNOSTICS_REDIS_KEY,
             ExecutorDiagnosticSnapshot(
+                schema_version="v1",
                 version="backend-integration-test-diagnostics",
                 observed_at=now,
                 expires_at=expiry,
@@ -479,7 +480,7 @@ async def api_client():
                         expires_at=expiry,
                         active_lease_count=0,
                         reason_code="ready",
-                        reason="Ready.",
+                        reason="Local authentication and worker inventory are ready.",
                     )
                     for executor in (AgentType.CLAUDE, AgentType.CODEX)
                 ],

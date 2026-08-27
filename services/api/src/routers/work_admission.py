@@ -167,6 +167,7 @@ async def get_executor_diagnostics(
 
     now = datetime.now(UTC)
     return ExecutorDiagnosticSnapshot(
+        schema_version="v1",
         version="unknown",
         observed_at=now,
         expires_at=now + timedelta(seconds=1),

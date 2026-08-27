@@ -210,7 +210,7 @@ function ExecutorDiagnosticsCard() {
           <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <dt>Enabled</dt><dd>{item.enabled ? 'Yes' : 'No'}</dd>
             <dt>Auth mode</dt><dd>{item.auth_mode}</dd>
-            <dt>Active leases</dt><dd>{item.active_lease_count}</dd>
+            <dt>Active leases</dt><dd>{item.active_lease_count ?? 'Unknown'}</dd>
             <dt>Observed</dt><dd>{relativeTime(item.observed_at)}</dd>
             <dt>Expires</dt><dd>{relativeTime(item.expires_at)}</dd>
             <dt>Reason</dt><dd>{item.reason}</dd>
