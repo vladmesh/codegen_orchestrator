@@ -139,6 +139,8 @@ async def test_ownership_is_in_redis_before_the_container_is_asked_for():
     assert seen["meta"]["project_id"] == "proj-alpha"
     assert seen["meta"]["run_id"] == "live-alpha"
     assert seen["meta"]["attempt_id"] == "eng-alpha-1"
+    assert seen["meta"]["agent_type"] == "claude"
+    assert seen["meta"]["auth_mode"] == "host_session"
 
 
 async def test_a_worker_that_never_reached_a_container_is_still_owned():

@@ -203,7 +203,16 @@ worker inventory reconciliation both succeeded. `degraded` is reserved for a
 locally usable state with an explicit non-fatal warning. Worker leases are only
 attributable nonterminal `worker:meta:*` owners that reconcile with a Docker
 container; a Redis/Docker disagreement or unreadable inventory is `unknown` and
-does not claim a known count.
+does not claim a known count. The reason code is the closed semantic classifier:
+it fixes the legal enabled/auth-mode/status/lease-nullability combination and
+the only safe response text. Redis consumers therefore reject contradictory
+states before an `available` or `degraded` result reaches admission. Inventory
+reconciliation is bidirectional: a missing Redis or Docker counterpart,
+duplicate worker id, missing/unknown status, ownership/executor/auth label
+disagreement, or terminal/nonterminal state disagreement makes both executor
+lease counts unknown. A disabled executor remains `unavailable`; when that
+same inventory is reconciled, it retains its exact active lease count rather
+than claiming zero.
 
 After the one executor resolver selects Claude or Codex, `start_paid_run` reads
 one validated snapshot before any engineering reservation, paid Run insert or

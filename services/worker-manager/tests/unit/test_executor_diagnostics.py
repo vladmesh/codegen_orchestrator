@@ -72,6 +72,88 @@ async def test_redis_docker_disagreement_makes_lease_inventory_unknown():
     assert await manager._executor_leases() is None
 
 
+@pytest.mark.asyncio
+async def test_docker_only_worker_makes_lease_inventory_unknown():
+    redis = _inventory_redis([])
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session")])
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [None, "UNKNOWN"])
+async def test_absent_or_unknown_status_makes_lease_inventory_unknown(status):
+    redis = _inventory_redis(["worker-1"], statuses={"worker-1": status})
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session")])
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+async def test_unreadable_status_makes_lease_inventory_unknown():
+    redis = _inventory_redis(["worker-1"])
+    redis.hget.side_effect = RuntimeError("redis unavailable")
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session")])
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+async def test_exited_container_with_running_redis_status_makes_inventory_unknown():
+    redis = _inventory_redis(["worker-1"], statuses={"worker-1": "RUNNING"})
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session", status="exited")])
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+async def test_label_disagreement_makes_lease_inventory_unknown():
+    redis = _inventory_redis(["worker-1"])
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "claude", "host_session")])
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+async def test_reconciler_returns_exact_mixed_executor_counts():
+    redis = _inventory_redis(["claude-1", "codex-1"], agent_types={"claude-1": "claude", "codex-1": "codex"})
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(
+        return_value=[
+            _container("claude-1", "claude", "host_session"),
+            _container("codex-1", "codex", "host_session"),
+        ]
+    )
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() == {
+        AgentType.CLAUDE: 1,
+        AgentType.CODEX: 1,
+    }
+
+
+def test_disabled_executor_preserves_reconciled_live_lease_count(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    import src.manager as manager_module
+
+    now = datetime.now(UTC)
+    monkeypatch.setattr(manager_module.settings, "HOST_CODEX_HOME", "", raising=False)
+    diagnostic = WorkerManager(redis=AsyncMock(), docker_client=MagicMock())._executor_diagnostic(
+        AgentType.CODEX,
+        now,
+        now + timedelta(seconds=60),
+        {AgentType.CLAUDE: 0, AgentType.CODEX: 2},
+    )
+
+    assert diagnostic.availability is ExecutorAvailability.UNAVAILABLE
+    assert diagnostic.active_lease_count == 2
+
+
 async def _empty_scan():
     if False:
         yield ""
@@ -79,3 +161,46 @@ async def _empty_scan():
 
 async def _one_worker_scan():
     yield "worker:meta:worker-1"
+
+
+def _container(worker_id: str, agent_type: str, auth_mode: str, *, status: str = "running"):
+    container = MagicMock()
+    container.labels = {
+        "com.codegen.worker.id": worker_id,
+        "com.codegen.project.id": "project",
+        "com.codegen.run.id": "run",
+        "com.codegen.attempt.id": "attempt",
+        "com.codegen.agent_type": agent_type,
+        "com.codegen.auth_mode": auth_mode,
+    }
+    container.status = status
+    return container
+
+
+def _inventory_redis(worker_ids, *, statuses=None, agent_types=None):
+    statuses = statuses or {}
+    agent_types = agent_types or {}
+    redis = AsyncMock()
+
+    async def scan(**_kwargs):
+        for worker_id in worker_ids:
+            yield f"worker:meta:{worker_id}"
+
+    async def hgetall(key):
+        worker_id = str(key).rsplit(":", 1)[-1]
+        return {
+            "project_id": "project",
+            "run_id": "run",
+            "attempt_id": "attempt",
+            "agent_type": agent_types.get(worker_id, "codex"),
+            "auth_mode": "host_session",
+        }
+
+    async def hget(key, _field):
+        worker_id = str(key).rsplit(":", 1)[-1]
+        return statuses.get(worker_id, "RUNNING")
+
+    redis.scan_iter = scan
+    redis.hgetall.side_effect = hgetall
+    redis.hget.side_effect = hget
+    return redis

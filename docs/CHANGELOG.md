@@ -38,6 +38,11 @@
 
 ### Fixed
 
+- Executor diagnostic records now reject contradictory enabled, auth-mode,
+  availability, lease and reason states at the shared boundary. Worker-manager
+  now reconciles Redis and Docker inventories in both directions before it
+  reports lease counts, preserving reconciled live leases for disabled
+  executors.
 - Executor diagnostics now require the complete protocol version at the Redis
   boundary, map expired snapshots to typed unknown, derive response text from a
   fixed safe reason mapping, and keep unknown inventory lease counts null. The

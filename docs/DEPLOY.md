@@ -64,7 +64,11 @@ their diagnostics validate the manager-visible read-only mounts
 `/host-claude` and `/host-codex`, while `HOST_CLAUDE_DIR` and
 `HOST_CODEX_HOME` remain the Docker-host source paths used for worker mounts.
 An unreconciled Docker/Redis inventory displays active leases as unknown, never
-as zero.
+as zero. Reconciliation compares both directions by worker id, ownership,
+executor and auth-mode labels, plus Redis/Docker terminal state. A missing
+counterpart, unreadable or unknown status, label mismatch, or lifecycle mismatch
+is unknown. A disabled executor remains unavailable but keeps a reconciled live
+lease count.
 
 For local recovery, use `claude auth login` to repair the dedicated
 `HOST_CLAUDE_DIR` profile, or `codex login --device-auth` to repair the dedicated

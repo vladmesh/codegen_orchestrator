@@ -17,6 +17,7 @@ SAFE_EXECUTOR_DIAGNOSTIC_REASONS = {
     "ready": "Local authentication and worker inventory are ready.",
     "disabled": "Host-session executor is not configured.",
     "local_auth_invalid": "Required local host-session material is unusable.",
+    "api_key_missing": "Required local API-key configuration is unavailable.",
     "local_warning": "Local authentication is usable with a non-fatal warning.",
     "inventory_unreconciled": "Worker inventory could not be reconciled.",
     "snapshot_unavailable": "Current executor diagnostics are unavailable.",
@@ -65,6 +66,54 @@ class ExecutorDiagnostic(BaseModel):
             raise ValueError("diagnostic reason code is not safe")
         if self.reason != safe_executor_diagnostic_reason(self.reason_code):
             raise ValueError("diagnostic reason must match its safe reason code")
+        # A Redis snapshot is an untrusted boundary.  Each reason code carries
+        # the complete state it is allowed to describe so a syntactically valid
+        # record cannot turn contradictory configuration or inventory into an
+        # availability claim at admission time.
+        local_auth_mode = self.auth_mode in {
+            ExecutorAuthMode.HOST_SESSION,
+            ExecutorAuthMode.API_KEY,
+        }
+        has_known_leases = self.active_lease_count is not None
+        valid_state = {
+            "ready": self.enabled
+            and local_auth_mode
+            and self.availability is ExecutorAvailability.AVAILABLE
+            and has_known_leases,
+            "local_warning": self.enabled
+            and local_auth_mode
+            and self.availability is ExecutorAvailability.DEGRADED
+            and has_known_leases,
+            "local_auth_invalid": self.enabled
+            and self.auth_mode is ExecutorAuthMode.HOST_SESSION
+            and self.availability is ExecutorAvailability.UNAVAILABLE
+            and has_known_leases,
+            "api_key_missing": self.enabled
+            and self.auth_mode is ExecutorAuthMode.API_KEY
+            and self.availability is ExecutorAvailability.UNAVAILABLE
+            and has_known_leases,
+            # Disabled is locally proven unavailable even if an inventory read
+            # failed.  A reconciled live lease count remains exact rather than
+            # being overwritten with zero.
+            "disabled": not self.enabled
+            and local_auth_mode
+            and self.availability is ExecutorAvailability.UNAVAILABLE,
+            "inventory_unreconciled": self.enabled
+            and local_auth_mode
+            and self.availability is ExecutorAvailability.UNKNOWN
+            and not has_known_leases,
+            # These are API boundary fallbacks, never producer observations.
+            "snapshot_unavailable": not self.enabled
+            and self.auth_mode is ExecutorAuthMode.UNKNOWN
+            and self.availability is ExecutorAvailability.UNKNOWN
+            and not has_known_leases,
+            "snapshot_expired": not self.enabled
+            and self.auth_mode is ExecutorAuthMode.UNKNOWN
+            and self.availability is ExecutorAvailability.UNKNOWN
+            and not has_known_leases,
+        }[self.reason_code]
+        if not valid_state:
+            raise ValueError("diagnostic fields contradict the reason-code state")
         return self
 
 
