@@ -108,6 +108,11 @@ services:
     volumes:
       - workspaces:/tmp/codegen/workspaces
       - worker-transcripts:/tmp/codegen/worker-transcripts
+      # The manager validates the same daemon-visible host-session source that it
+      # later mounts into workers. These test-only volumes carry fake refresh
+      # material; no real provider credential enters DinD.
+      - claude-test-session:/host-claude
+      - claude-test-session-unwritable:/host-claude-unwritable
     depends_on:
       redis:
         condition: service_healthy
@@ -215,7 +220,7 @@ services:
       [
         "sh",
         "-ec",
-        "chown -R 1000:1000 /host-claude && exec dockerd-entrypoint.sh dockerd --host=tcp://0.0.0.0:2375 --dns=8.8.8.8 --dns=8.8.4.4",
+        "printf '%s' '{\"claudeAiOauth\":{\"refreshToken\":\"test-refresh-token\"}}' > /host-claude/.credentials.json && printf '%s' '{\"claudeAiOauth\":{\"refreshToken\":\"test-refresh-token\"}}' > /host-claude-unwritable/.credentials.json && chown -R 1000:1000 /host-claude && chmod 700 /host-claude-unwritable && exec dockerd-entrypoint.sh dockerd --host=tcp://0.0.0.0:2375 --dns=8.8.8.8 --dns=8.8.4.4",
       ]
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:2375/_ping || exit 1"]
