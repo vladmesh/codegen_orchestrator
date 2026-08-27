@@ -299,15 +299,15 @@ test-service:
 	@EXIT_CODE=0; \
 	if [ "$(SERVICE)" = "worker-manager" ]; then \
 		: "The rollout suite deliberately restarts the control-plane containers."; \
-		: "Keep the test runner independent from those expected container exits."; \
+		: "Run the pytest container separately from the restarted control plane."; \
 		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml build; \
 		EXIT_CODE=$$?; \
 		if [ "$$EXIT_CODE" -eq 0 ]; then \
-			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml up -d --wait $(SERVICE)-test-runner; \
+			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml up -d --wait worker-manager worker-broker; \
 			EXIT_CODE=$$?; \
 		fi; \
 		if [ "$$EXIT_CODE" -eq 0 ]; then \
-			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml exec -T $(SERVICE)-test-runner pytest tests/service/ -v -s; \
+			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml run --rm --no-deps $(SERVICE)-test-runner; \
 			EXIT_CODE=$$?; \
 		fi; \
 	else \
