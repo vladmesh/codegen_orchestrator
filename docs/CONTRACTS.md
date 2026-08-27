@@ -184,6 +184,61 @@ snapshot without resolving configuration again, and generic Run metadata
 updates may merge operational keys but cannot replace or partially alter this
 record.
 
+### Executor diagnostics and availability admission
+
+`executor:diagnostics:v1` is one short-lived, strict `v1` Redis snapshot produced
+by worker-manager. It contains exactly Claude and Codex, each with its enabled
+state, auth mode, `available`/`degraded`/`unavailable`/`unknown` status,
+observation and expiry times, active lease count (or `null` when inventory is
+unknown), a fixed safe reason code/text pair and an opaque version. The required
+`schema_version="v1"` prevents a partial or old writer from being accepted. It
+has one atomic observation and expiry window: both executor entries must exactly
+match the enclosing snapshot window, so one stale entry invalidates the complete
+snapshot. It never carries credentials, credential-file contents, or host paths. Redis
+absence, expiry, malformed values, partial snapshots and inventory failures are
+typed `unknown`, not a last-known-good availability claim.
+
+`unavailable` means local configuration or authentication has been proven
+unusable, such as a disabled executor or missing/invalid required host-session
+material. `available` means the configured local validator and Docker/Redis
+worker inventory reconciliation both succeeded. `degraded` is reserved for a
+locally usable state with an explicit non-fatal warning. Worker leases are only
+attributable nonterminal `worker:meta:*` owners that reconcile with a Docker
+container. A terminal Redis record with no container is a settled zero-lease
+record, preserving the pre-container refusal state for its caller without
+poisoning executor availability. A terminal record with a container still
+requires matching credential-safe labels and a terminal Docker state. A
+Redis/Docker disagreement or unreadable inventory is `unknown` and does not
+claim a known count. The reason code is the closed semantic classifier:
+it fixes the legal enabled/auth-mode/status/lease-nullability combination and
+the only safe response text. Redis consumers therefore reject contradictory
+states before an `available` or `degraded` result reaches admission. Inventory
+reconciliation is bidirectional: a Docker-only worker, nonterminal Redis record
+without a Docker counterpart, duplicate worker id, missing/unknown status,
+ownership/executor/auth label disagreement, unknown Docker state, or
+terminal/nonterminal state disagreement makes both executor lease counts
+unknown. A disabled executor remains `unavailable`; when that
+same inventory is reconciled, it retains its exact active lease count rather
+than claiming zero.
+
+After the one executor resolver selects Claude or Codex, `start_paid_run` reads
+one validated snapshot before any engineering reservation, paid Run insert or
+queue handoff. `unavailable` is a typed refusal and `unknown` is a typed
+confirmation-required result. Factory remains the legacy engineering choice and
+has no Claude/Codex diagnostic. A queued/running replay uses its persisted
+executor decision and never rechecks diagnostics.
+
+Only an LK-bearer-authenticated admin may confirm an `unknown` snapshot at
+`POST /api/work-admission/executor-diagnostics/confirmations`. The append-only
+`WorkAdmissionAudit` fact records the admin actor, executor, exact version and
+snapshot expiry. A confirmation admits any number of starts for that executor
+until that exact snapshot expires; a new version, another executor, expiry or
+an invalid snapshot cannot reuse it. For a confirmed `unknown`, admission reads
+the snapshot again immediately before budget reservation or Run creation; that
+second read is the confirmation-version linearization point. An internal key,
+including one accompanied by `X-Telegram-ID`, cannot create a confirmation; a
+Telegram header supplied with a bearer must match that bearer identity.
+
 `EngineeringMessage.task_id` and `QAMessage.run_id` are stable references to
 the paid Run. Their consumers load the snapshot by that reference before an
 engineering or exploratory-QA worker launches. They never select an executor

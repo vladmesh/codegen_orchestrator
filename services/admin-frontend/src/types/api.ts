@@ -340,6 +340,29 @@ export interface PaidWorkControls {
   qa_executor_override: ExecutorOverride
 }
 
+export type ExecutorAvailability = 'available' | 'degraded' | 'unavailable' | 'unknown'
+export type ExecutorAuthMode = 'host_session' | 'api_key' | 'unknown'
+
+export interface ExecutorDiagnostic {
+  executor: 'claude' | 'codex'
+  enabled: boolean
+  auth_mode: ExecutorAuthMode
+  availability: ExecutorAvailability
+  observed_at: string
+  expires_at: string
+  active_lease_count: number | null
+  reason_code: string
+  reason: string
+}
+
+export interface ExecutorDiagnosticSnapshot {
+  schema_version: 'v1'
+  version: string
+  observed_at: string
+  expires_at: string
+  diagnostics: ExecutorDiagnostic[]
+}
+
 // Agent configuration (prompts, model settings)
 export interface AgentConfig {
   id: string

@@ -1,10 +1,17 @@
 """Atomic count-based admission used by every paid-work entry point."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorOverride
+from shared.contracts.dto.executor_diagnostics import (
+    ExecutorAvailability,
+    ExecutorDiagnostic,
+    ExecutorDiagnosticSnapshot,
+)
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.work_admission import (
@@ -24,6 +31,7 @@ from shared.models import (
 )
 
 from .config import get_settings
+from .executor_diagnostics import current_executor_diagnostic
 from .executor_resolver import resolve_executor_decision
 
 EMERGENCY_STOP_KEY = "work_admission.emergency_stop"
@@ -50,6 +58,10 @@ _REFUSAL_MESSAGES = {
     ),
     WorkAdmissionReason.ENGINEERING_BUDGET_DENIED: (
         "Недостаточно доступного бюджета для запуска инженерной задачи."
+    ),
+    WorkAdmissionReason.EXECUTOR_UNAVAILABLE: "Выбранный исполнитель сейчас недоступен.",
+    WorkAdmissionReason.EXECUTOR_CONFIRMATION_REQUIRED: (
+        "Текущее состояние исполнителя неизвестно и требует подтверждения администратора."
     ),
 }
 
@@ -228,6 +240,71 @@ async def _replay_paid_start(
     )
 
 
+async def _has_current_unknown_confirmation(
+    executor: ExecutorDecision, snapshot: ExecutorDiagnosticSnapshot | None, db: AsyncSession
+) -> bool:
+    """A confirmation is reusable for any start until this exact snapshot expires."""
+    if snapshot is None or executor.agent_type.value not in {"claude", "codex"}:
+        return False
+    rows = (
+        await db.scalars(
+            select(WorkAdmissionAudit).where(
+                WorkAdmissionAudit.subject == "executor_diagnostic_confirmation",
+                WorkAdmissionAudit.reference_id == snapshot.version,
+            )
+        )
+    ).all()
+    now = datetime.now(UTC)
+    for row in rows:
+        payload = row.command_payload or {}
+        expiry = (
+            (row.after_value or {}).get("expires_at") if isinstance(row.after_value, dict) else None
+        )
+        if payload.get("executor") != executor.agent_type.value or not isinstance(expiry, str):
+            continue
+        try:
+            if datetime.fromisoformat(expiry) > now:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+async def _executor_diagnostic_allows_admission(
+    decision: ExecutorDecision, db: AsyncSession
+) -> tuple[ExecutorDiagnostic | None, bool]:
+    """Check the selected executor before billable admission.
+
+    A confirmed unknown state linearizes at the second Redis read below.  The
+    audit lookup is bound to the first version, and the final read immediately
+    precedes budget reservation or Run creation.  A changed version therefore
+    cannot borrow the earlier confirmation.
+    """
+    if decision.agent_type.value not in {"claude", "codex"}:
+        return None, True
+    diagnostic, snapshot = await current_executor_diagnostic(decision.agent_type)
+    if diagnostic.availability is not ExecutorAvailability.UNKNOWN:
+        return diagnostic, diagnostic.availability is not ExecutorAvailability.UNAVAILABLE
+    if not await _has_current_unknown_confirmation(decision, snapshot, db):
+        return diagnostic, False
+
+    final_diagnostic, final_snapshot = await current_executor_diagnostic(decision.agent_type)
+    if final_diagnostic.availability in {
+        ExecutorAvailability.AVAILABLE,
+        ExecutorAvailability.DEGRADED,
+    }:
+        return final_diagnostic, True
+    if final_diagnostic.availability is ExecutorAvailability.UNAVAILABLE:
+        return final_diagnostic, False
+    if (
+        snapshot is not None
+        and final_snapshot is not None
+        and final_snapshot.version == snapshot.version
+    ):
+        return final_diagnostic, True
+    return final_diagnostic, False
+
+
 async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> PaidRunStartRead:
     """Atomically decide and create one queued engineering or QA run.
 
@@ -262,6 +339,7 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         get_settings(),
         global_override=_override(controls[override_key], override_key),
     )
+    diagnostic: ExecutorDiagnostic | None = None
     enabled = controls[EMERGENCY_STOP_KEY]
     if not isinstance(enabled, bool):
         raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
@@ -306,6 +384,35 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
                 reference_id=command.id,
                 command_payload=payload,
             )
+        )
+
+    # This is deliberately after every non-billable control check and directly
+    # before the engineering reservation/Run mutation.  See the helper for the
+    # exact confirmation-version linearization point.
+    diagnostic, admitted_by_diagnostic = await _executor_diagnostic_allows_admission(decision, db)
+    if not admitted_by_diagnostic:
+        reason = (
+            WorkAdmissionReason.EXECUTOR_UNAVAILABLE
+            if diagnostic is not None
+            and diagnostic.availability is ExecutorAvailability.UNAVAILABLE
+            else WorkAdmissionReason.EXECUTOR_CONFIRMATION_REQUIRED
+        )
+        outcome = (
+            WorkAdmissionOutcome.DENIED
+            if reason is WorkAdmissionReason.EXECUTOR_UNAVAILABLE
+            else WorkAdmissionOutcome.DEFERRED
+        )
+        return PaidRunStartRead(
+            admission=await _audit(
+                db,
+                "paid_work",
+                WorkAdmissionRead(outcome=outcome, reason=reason),
+                user_id=user_id,
+                reference_id=command.id,
+                command_payload=payload,
+            ),
+            executor_decision=decision,
+            executor_diagnostic=diagnostic,
         )
 
     if command.type is RunType.ENGINEERING:
@@ -372,7 +479,12 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         reference_id=command.id,
         command_payload=payload,
     )
-    return PaidRunStartRead(admission=admitted, run_id=run.id, executor_decision=decision)
+    return PaidRunStartRead(
+        admission=admitted,
+        run_id=run.id,
+        executor_decision=decision,
+        executor_diagnostic=diagnostic,
+    )
 
 
 async def abort_paid_run_pre_handoff(run_id: str, reason: str, db: AsyncSession) -> None:

@@ -21,6 +21,7 @@ from fakeredis import aioredis
 
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 
 from src.garbage_collector import garbage_collect_workspaces
@@ -95,9 +96,15 @@ async def test_a_rejected_worker_cleanup_leaves_the_live_workers_lock_alone(dock
     with pytest.raises(RuntimeError, match="already has active worker"):
         await _create(manager, "worker-b", "run-b")
 
-    # B took nothing, so it owns nothing: the record says only what it is.
+    # B took no project lock or ownership. Its pre-container metadata still
+    # records the selected executor and auth mode so diagnostics never infer
+    # those facts after a container appears.
     meta_b = decode_redis_fields(await redis.hgetall("worker:meta:worker-b"))
-    assert meta_b == {"worker_type": "developer"}
+    assert meta_b == {
+        "worker_type": "developer",
+        "agent_type": "claude",
+        "auth_mode": "host_session",
+    }
 
     patcher, runner = _compose_runner_patch()
     with patcher as mock_runner_cls:
@@ -136,6 +143,23 @@ async def test_a_refused_worker_fails_fast_instead_of_timing_out(docker):
 
     assert await redis.hget("worker:status:worker-b", "status") == WorkerStatus.FAILED
     assert PROJECT in await redis.get("worker:error:worker-b")
+
+
+@pytest.mark.asyncio
+async def test_workspace_lock_refusal_does_not_poison_executor_inventory(docker, monkeypatch):
+    """The retained terminal diagnostic record is not a lease needing a container."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    manager = WorkerManager(redis=redis, docker_client=docker)
+    docker.list_containers = AsyncMock(return_value=[])
+    monkeypatch.setattr(manager, "_check_project_lock", AsyncMock(return_value="worker-a"))
+
+    with pytest.raises(RuntimeError, match="already has active worker"):
+        await _create(manager, "worker-b", "run-b")
+
+    assert await manager._executor_leases() == {
+        AgentType.CLAUDE: 0,
+        AgentType.CODEX: 0,
+    }
 
 
 @pytest.mark.asyncio

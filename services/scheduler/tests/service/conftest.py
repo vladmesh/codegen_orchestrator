@@ -1,8 +1,19 @@
+from datetime import UTC, datetime, timedelta
+import os
 from unittest.mock import patch
 
 import pytest
+from redis.asyncio import Redis
 import respx
 
+from shared.contracts.dto.executor_diagnostics import (
+    EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+    ExecutorAuthMode,
+    ExecutorAvailability,
+    ExecutorDiagnostic,
+    ExecutorDiagnosticSnapshot,
+)
+from shared.contracts.vocab import AgentType
 from shared.tests.mocks.github import MockGitHubClient
 
 
@@ -28,6 +39,37 @@ def time4vps_mock():
 async def api_client():
     """Real SchedulerAPIClient configured from env."""
     from src.clients.api import api_client as client
+
+    now = datetime.now(UTC)
+    expiry = now + timedelta(hours=1)
+    redis = Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    try:
+        await redis.set(
+            EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+            ExecutorDiagnosticSnapshot(
+                schema_version="v1",
+                version="scheduler-service-test-diagnostics",
+                observed_at=now,
+                expires_at=expiry,
+                diagnostics=[
+                    ExecutorDiagnostic(
+                        executor=executor,
+                        enabled=True,
+                        auth_mode=ExecutorAuthMode.HOST_SESSION,
+                        availability=ExecutorAvailability.AVAILABLE,
+                        observed_at=now,
+                        expires_at=expiry,
+                        active_lease_count=0,
+                        reason_code="ready",
+                        reason="Local authentication and worker inventory are ready.",
+                    )
+                    for executor in (AgentType.CLAUDE, AgentType.CODEX)
+                ],
+            ).model_dump_json(),
+            ex=3600,
+        )
+    finally:
+        await redis.aclose()
 
     # Reset internal client to avoid Event Loop Closed errors across tests
     client._client = None

@@ -25,12 +25,21 @@ class WorkerManagerSettings(BaseSettings):
 
     # Host path to .claude directory (for mounting into workers)
     HOST_CLAUDE_DIR: str | None = None
+    # The same profile as mounted read-only into worker-manager.  Keep this
+    # distinct from HOST_CLAUDE_DIR, which remains the Docker-host source path
+    # passed to created worker containers.
+    HOST_CLAUDE_VALIDATION_PATH: str | None = None
 
     # Dedicated host Codex profile. It must not point at the operator's live
     # ~/.codex directory. The validation path is the same profile mounted
     # read-only into worker-manager by Compose.
     HOST_CODEX_HOME: str | None = None
     HOST_CODEX_VALIDATION_PATH: str | None = None
+
+    # Redis handoff is deliberately short-lived: the API treats a missing or
+    # expired value as unknown instead of using a last-known-good diagnosis.
+    EXECUTOR_DIAGNOSTICS_TTL_SECONDS: int = Field(default=90, gt=0, le=600)
+    EXECUTOR_DIAGNOSTICS_INTERVAL_SECONDS: int = Field(default=30, gt=0, le=300)
 
     # Path to pre-scaffolded workspaces (created by scaffolder service)
     # All workspaces live here, keyed by repo_id: /data/workspaces/{repo_id}/

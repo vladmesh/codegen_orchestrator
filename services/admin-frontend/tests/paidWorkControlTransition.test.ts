@@ -19,3 +19,14 @@ test('Settings delegates paid-work confirmation to the transition seam', () => {
 
   assert.match(settings, /requiresPaidWorkControlConfirmation\(field\)/)
 })
+
+test('Settings exposes unknown lease counts and prevents duplicate confirmations', () => {
+  const settings = readFileSync(
+    new URL('../src/pages/SettingsPage.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(settings, /active_lease_count \?\? 'Unknown'/)
+  assert.match(settings, /disabled=\{confirmation\.isPending\}/)
+  assert.match(settings, /Unable to confirm the current unknown state\./)
+})

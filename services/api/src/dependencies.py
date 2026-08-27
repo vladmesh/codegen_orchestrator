@@ -182,6 +182,31 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+async def require_bearer_admin(
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+    db: AsyncSession = Depends(get_async_session),
+) -> User:
+    """Require a human LK bearer administrator, never an internal service actor.
+
+    The application-wide gate intentionally accepts internal service credentials.
+    An action that records a reusable human confirmation has a narrower trust
+    boundary: the bearer names the actor, and a supplied Telegram header can
+    only agree with that already authenticated identity.
+    """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="LK bearer authentication required",
+        )
+    bearer_user = await get_lk_user(credentials=credentials, db=db)
+    if x_telegram_id is not None and x_telegram_id != bearer_user.telegram_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Actor mismatch")
+    if not bearer_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return bearer_user
+
+
 # ---------------------------------------------------------------------------
 # Raw Redis (key-value access for LK tokens)
 # ---------------------------------------------------------------------------

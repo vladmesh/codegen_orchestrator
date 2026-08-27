@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
@@ -14,11 +15,19 @@ import redis.asyncio as redis
 
 import docker
 from scripts.shared_freshness import source_hash
+from shared.contracts.dto.executor_diagnostics import (
+    EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+    ExecutorAuthMode,
+    ExecutorAvailability,
+    ExecutorDiagnostic,
+    ExecutorDiagnosticSnapshot,
+)
 from shared.contracts.queues.worker import (
     CreateWorkerResponse,
     DeleteWorkerCommand,
     DeleteWorkerResponse,
 )
+from shared.contracts.vocab import AgentType
 from shared.queues import WORKER_MANAGER_GROUP
 
 # Configure pytest-asyncio
@@ -449,6 +458,37 @@ def docker_client():
 async def api_client():
     """Async HTTP client for the API service."""
     import httpx
+
+    now = datetime.now(UTC)
+    expiry = now + timedelta(hours=1)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    try:
+        await redis_client.set(
+            EXECUTOR_DIAGNOSTICS_REDIS_KEY,
+            ExecutorDiagnosticSnapshot(
+                schema_version="v1",
+                version="backend-integration-test-diagnostics",
+                observed_at=now,
+                expires_at=expiry,
+                diagnostics=[
+                    ExecutorDiagnostic(
+                        executor=executor,
+                        enabled=True,
+                        auth_mode=ExecutorAuthMode.HOST_SESSION,
+                        availability=ExecutorAvailability.AVAILABLE,
+                        observed_at=now,
+                        expires_at=expiry,
+                        active_lease_count=0,
+                        reason_code="ready",
+                        reason="Local authentication and worker inventory are ready.",
+                    )
+                    for executor in (AgentType.CLAUDE, AgentType.CODEX)
+                ],
+            ).model_dump_json(),
+            ex=3600,
+        )
+    finally:
+        await redis_client.aclose()
 
     internal_api_key = os.environ["INTERNAL_API_KEY"]
     async with httpx.AsyncClient(

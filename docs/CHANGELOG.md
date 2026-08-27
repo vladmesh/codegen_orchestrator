@@ -4,6 +4,13 @@
 
 ### Added
 
+- Worker-manager now publishes bounded, credential-safe Claude and Codex
+  availability snapshots to Redis at startup and periodically. Admin Settings
+  shows status, local auth mode, freshness, active leases and safe reasons.
+  Paid admission reads the selected executor's current snapshot before any
+  reservation or Run creation, refuses proven-unavailable executors, and
+  requires a version-bound administrator confirmation for `unknown`.
+
 - Internal/admin Settings now exposes one typed, audited paid-work control
   state: emergency stop, concurrent paid-run ceiling, and independent
   engineering/QA executor overrides. Overrides are `none`, `claude`, or
@@ -31,6 +38,27 @@
 
 ### Fixed
 
+- Unknown executor-diagnostic confirmation now requires an LK bearer for the
+  actual administrator, so an internal service credential cannot impersonate an
+  admin through `X-Telegram-ID`. Terminal pre-container worker refusals now
+  settle as zero leases while nonterminal and Docker/Redis lifecycle
+  disagreements continue to fail closed as unknown.
+- Executor diagnostic records now reject contradictory enabled, auth-mode,
+  availability, lease and reason states at the shared boundary. Worker-manager
+  now reconciles Redis and Docker inventories in both directions before it
+  reports lease counts, preserving reconciled live leases for disabled
+  executors.
+- Executor diagnostics now require the complete protocol version at the Redis
+  boundary, map expired snapshots to typed unknown, derive response text from a
+  fixed safe reason mapping, and keep unknown inventory lease counts null. The
+  Claude validator uses worker-manager's `/host-claude` mount without changing
+  the Docker-host source used for launched workers. A confirmed unknown is
+  re-read immediately before paid admission so a newer unavailable snapshot
+  cannot reuse the earlier confirmation.
+- Executor-availability integration fixtures now publish complete fresh
+  diagnostics, the worker-manager rollout suite keeps its runner alive across
+  intentional control-plane replacement, and Settings updates stale state
+  outside render.
 - Deploy seeding now initializes absent paid-work controls through a distinct
   typed operation and never replaces live emergency-stop, paid-run ceiling, or
   executor-override values. Settings confirms every executor override

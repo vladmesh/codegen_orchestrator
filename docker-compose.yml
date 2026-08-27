@@ -318,6 +318,7 @@ services:
       SERVICE_NAME: worker-manager
       # Host path for mounting .claude dir into workers
       HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR:-/home/user/.claude}
+      HOST_CLAUDE_VALIDATION_PATH: /host-claude
       # Dedicated file-backed Codex profile. Never point this at the live ~/.codex.
       HOST_CODEX_HOME: ${HOST_CODEX_HOME:-}
       HOST_CODEX_VALIDATION_PATH: /host-codex
