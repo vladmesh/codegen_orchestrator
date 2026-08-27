@@ -5,7 +5,7 @@ import uuid
 
 from httpx import AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import SystemConfig, WorkAdmissionAudit
@@ -90,6 +90,84 @@ async def test_typed_paid_work_controls_are_complete_strict_and_audited(
     assert all(
         audit.actor == "internal_service" and audit.created_at is not None for audit in audits
     )
+
+
+@pytest.mark.asyncio
+async def test_initialize_paid_work_controls_only_inserts_absent_values_without_audit(
+    async_client: AsyncClient, db_session: AsyncSession
+):
+    await _ensure_controls(db_session)
+    live = {
+        "emergency_stop": True,
+        "max_concurrent_paid_runs": 3,
+        "engineering_executor_override": "codex",
+        "qa_executor_override": "claude",
+    }
+    assert (
+        await async_client.put("/api/work-admission/controls", json=live)
+    ).status_code == HTTPStatus.OK
+    audits_before = len(
+        (
+            await db_session.scalars(
+                select(WorkAdmissionAudit).where(WorkAdmissionAudit.subject == "paid_work_control")
+            )
+        ).all()
+    )
+
+    initialized = await async_client.post(
+        "/api/work-admission/controls/initialize",
+        json={
+            "emergency_stop": False,
+            "max_concurrent_paid_runs": 5,
+            "engineering_executor_override": "none",
+            "qa_executor_override": "none",
+        },
+    )
+
+    assert initialized.status_code == HTTPStatus.OK, initialized.text
+    assert initialized.json() == live
+    audits_after = len(
+        (
+            await db_session.scalars(
+                select(WorkAdmissionAudit).where(WorkAdmissionAudit.subject == "paid_work_control")
+            )
+        ).all()
+    )
+    assert audits_after == audits_before
+
+    await db_session.execute(
+        delete(SystemConfig).where(
+            SystemConfig.key.in_(
+                (
+                    "work_admission.emergency_stop",
+                    "work_admission.max_concurrent_paid_runs",
+                    "work_admission.engineering_executor_override",
+                    "work_admission.qa_executor_override",
+                )
+            )
+        )
+    )
+    await db_session.commit()
+    defaults = {
+        "emergency_stop": False,
+        "max_concurrent_paid_runs": 10000,
+        "engineering_executor_override": "none",
+        "qa_executor_override": "none",
+    }
+    initialized_empty = await async_client.post(
+        "/api/work-admission/controls/initialize", json=defaults
+    )
+
+    assert initialized_empty.status_code == HTTPStatus.OK, initialized_empty.text
+    assert initialized_empty.json() == defaults
+    audits_after_empty_init = len(
+        (
+            await db_session.scalars(
+                select(WorkAdmissionAudit).where(WorkAdmissionAudit.subject == "paid_work_control")
+            )
+        ).all()
+    )
+    assert audits_after_empty_init == audits_before
 
 
 @pytest.mark.asyncio

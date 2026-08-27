@@ -143,6 +143,15 @@ server `created_at`, and either `internal_service` or `admin:<user id>` actor.
 No-op writes are accepted without an audit fact. The legacy typed emergency-stop
 endpoint uses the same transaction and audit semantics.
 
+`POST /api/work-admission/controls/initialize` is the deploy/bootstrap-only
+operation. It takes the same complete typed body, locks the same fixed controls
+in the same deterministic order, and inserts defaults only for absent rows.
+It never updates a present row and writes no operator-change audit fact. A
+partial valid deployed state is completed from the request defaults; a malformed
+present value fails closed and rolls back the whole initialization transaction.
+Deploy seeding uses only this operation, so live operator controls always take
+precedence over deploy defaults.
+
 Engineering's count check precedes its existing monetary
 `admit_engineering_attempt` inside that same command, so a count-based refusal
 cannot create a financial reservation. QA never enters the monetary gate.

@@ -130,7 +130,9 @@ def test_api_service_test_overlay_explicitly_overrides_every_work_admission_key(
     }
 
 
-def test_paid_work_controls_seed_through_the_complete_typed_command(tmp_path, db, monkeypatch):
+def test_paid_work_controls_seed_through_the_initialize_only_typed_command(
+    tmp_path, db, monkeypatch
+):
     """A blank database must not need generic CRUD for protected controls."""
     configs = [
         _config("work_admission.emergency_stop", False),
@@ -143,10 +145,8 @@ def test_paid_work_controls_seed_through_the_complete_typed_command(tmp_path, db
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/work-admission/controls":
-            if request.method == "GET":
-                return httpx.Response(500, json={"detail": "controls are not initialized"})
-            assert request.method == "PUT"
+        if request.url.path == "/api/work-admission/controls/initialize":
+            assert request.method == "POST"
             typed_requests.append(json.loads(request.content.decode()))
             return httpx.Response(200, json=typed_requests[-1])
         raise AssertionError(
@@ -167,3 +167,22 @@ def test_paid_work_controls_seed_through_the_complete_typed_command(tmp_path, db
             "qa_executor_override": "codex",
         }
     ]
+
+
+def test_paid_work_seed_contract_has_no_operator_mutation_path():
+    """Deploy seeding may initialize absent controls but never replace live policy."""
+    source = (REPO_ROOT / "scripts/seed_system_configs.py").read_text(encoding="utf-8")
+
+    assert '"POST", "work-admission/controls/initialize"' in source
+    assert '"PUT", "work-admission/controls", json=paid_work_controls' not in source
+    assert '"system-configs/", json=payload' in source
+
+
+def test_api_service_test_overlay_initializes_before_production_defaults():
+    """The service-test startup path must not mutate protected controls after seeding."""
+    source = (REPO_ROOT / "services/api/entrypoint.sh").read_text(encoding="utf-8")
+
+    assert source.index('"$SYSTEM_CONFIGS_TEST_OVERLAY"') < source.index(
+        "/app/scripts/system_configs.yaml"
+    )
+    assert "--skip-key work_admission.max_projects_per_user" in source

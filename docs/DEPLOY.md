@@ -616,3 +616,10 @@ paid-run ceiling, and set `emergency_stop` to `false` only when admissions may
 resume. Confirm the committed state by reading the endpoint again. Every changed
 field is recorded with its actor, server timestamp, and typed before/after value;
 no restart or deploy is needed.
+
+Deploy seeding calls `POST /api/work-admission/controls/initialize` with the
+documented defaults. It locks the complete paid-work control set, inserts only
+absent rows, and preserves every existing row without an audit fact. A partial
+valid state is completed from these defaults; a malformed present value fails
+closed and the initialization transaction is rolled back. The deploy seeder
+never calls the operator mutation endpoint for these controls.

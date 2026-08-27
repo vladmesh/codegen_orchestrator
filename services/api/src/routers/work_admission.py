@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.work_admission import (
@@ -69,39 +70,15 @@ async def _replace_paid_work_controls(
 ) -> PaidWorkControlsRead:
     """Lock all paid controls in key order, mutate, and append one fact per change."""
     requested = command.model_dump(mode="json")
-    rows = (
-        await db.scalars(
-            select(SystemConfig)
-            .where(SystemConfig.key.in_(PAID_WORK_CONTROL_KEYS))
-            .order_by(SystemConfig.key)
-            .with_for_update()
-        )
-    ).all()
-    values = {row.key: row.value for row in rows}
-    for key, field in _CONTROL_FIELDS.items():
-        if key not in values:
-            value = requested[field]
-            db.add(
-                SystemConfig(
-                    key=key,
-                    value=value,
-                    category="work_admission",
-                    description=_CONTROL_DESCRIPTIONS[key],
-                    updated_by="work_admission_control",
-                )
-            )
-            values[key] = value
+    rows = await _locked_paid_work_control_rows(db)
+    values = {key: row.value for key, row in rows.items()}
     _paid_work_controls(values)
     for key, field in _CONTROL_FIELDS.items():
         before = values[key]
         after = requested[field]
         if before == after:
             continue
-        row = next((row for row in rows if row.key == key), None)
-        if row is None:
-            # Newly initialized values above already equal the requested state.
-            continue
-        row.value = after
+        rows[key].value = after
         db.add(
             WorkAdmissionAudit(
                 subject="paid_work_control",
@@ -113,6 +90,49 @@ async def _replace_paid_work_controls(
             )
         )
     return PaidWorkControlsRead.model_validate(requested)
+
+
+async def _locked_paid_work_control_rows(db: AsyncSession) -> dict[str, SystemConfig]:
+    """Return the fixed paid-control set under the lock order used by all writers."""
+    rows = (
+        await db.scalars(
+            select(SystemConfig)
+            .where(SystemConfig.key.in_(PAID_WORK_CONTROL_KEYS))
+            .order_by(SystemConfig.key)
+            .with_for_update()
+        )
+    ).all()
+    by_key = {row.key: row for row in rows}
+    missing = set(PAID_WORK_CONTROL_KEYS) - by_key.keys()
+    if missing:
+        raise RuntimeError(f"Missing paid-work control(s): {', '.join(sorted(missing))}")
+    return by_key
+
+
+async def _initialize_paid_work_controls(
+    defaults: PaidWorkControlsCommand, db: AsyncSession
+) -> PaidWorkControlsRead:
+    """Insert only absent defaults, then validate the complete locked control set.
+
+    PostgreSQL's conflict-safe insert makes concurrent first deploys converge on
+    one row per key. Existing rows are never updated by initialization.
+    """
+    requested = defaults.model_dump(mode="json")
+    for key in PAID_WORK_CONTROL_KEYS:
+        field = _CONTROL_FIELDS[key]
+        await db.execute(
+            postgresql_insert(SystemConfig)
+            .values(
+                key=key,
+                value=requested[field],
+                category="work_admission",
+                description=_CONTROL_DESCRIPTIONS[key],
+                updated_by="work_admission_initializer",
+            )
+            .on_conflict_do_nothing(index_elements=[SystemConfig.key])
+        )
+    rows = await _locked_paid_work_control_rows(db)
+    return _paid_work_controls({key: row.value for key, row in rows.items()})
 
 
 @router.get("/controls", response_model=PaidWorkControlsRead)
@@ -130,6 +150,18 @@ async def put_paid_work_controls(
     actor: str = Depends(get_internal_or_admin_actor),
 ) -> PaidWorkControlsRead:
     controls = await _replace_paid_work_controls(command, actor, db)
+    await db.commit()
+    return controls
+
+
+@router.post("/controls/initialize", response_model=PaidWorkControlsRead)
+async def initialize_paid_work_controls(
+    defaults: PaidWorkControlsCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> PaidWorkControlsRead:
+    """Deploy/bootstrap only: complete absent state without changing live policy."""
+    controls = await _initialize_paid_work_controls(defaults, db)
     await db.commit()
     return controls
 

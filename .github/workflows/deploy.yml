@@ -408,7 +408,7 @@ jobs:
             echo "API is healthy"
 
       # Runs after the health check because the seeder talks to the API, not the DB.
-      # Every key in scripts/system_configs.yaml is written with its file value.
+      # Paid-work controls are initialize-only: live operator values always win.
       - name: Apply system configs
         uses: appleboy/ssh-action@v1
         with:

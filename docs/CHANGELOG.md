@@ -31,6 +31,10 @@
 
 ### Fixed
 
+- Deploy seeding now initializes absent paid-work controls through a distinct
+  typed operation and never replaces live emergency-stop, paid-run ceiling, or
+  executor-override values. Settings confirms every executor override
+  transition, including reset to the legacy policy.
 - Production admin access now binds only to `127.0.0.1:3001` for SSH forwarding;
   Caddy does not expose it. Analytics, agent-configuration, service-deployment,
   and queue-debug routes now require an administrator or internal service, while

@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn, relativeTime } from '@/lib/utils'
 import type { SystemConfig, AgentConfig, ExecutorOverride, PaidWorkControls } from '@/types/api'
+import { requiresPaidWorkControlConfirmation, type PaidWorkControlField } from './paidWorkControlTransition'
 
 // ---------------------------------------------------------------------------
 // Tabs
@@ -110,12 +111,12 @@ function PaidWorkControlsCard() {
 
   if (controlsQuery.isLoading || !controls) return <p className="text-muted-foreground">Loading paid-work controls...</p>
 
-  const update = (next: PaidWorkControls, disruptive: boolean) => {
-    if (disruptive && !window.confirm('This changes admission for new paid work. Continue?')) return
+  const update = (next: PaidWorkControls, field: PaidWorkControlField) => {
+    if (requiresPaidWorkControlConfirmation(field) && !window.confirm('This changes admission for new paid work. Continue?')) return
     mutation.mutate(next)
   }
   const updateOverride = (field: 'engineering_executor_override' | 'qa_executor_override', value: ExecutorOverride) => {
-    update({ ...controls, [field]: value }, value !== 'none')
+    update({ ...controls, [field]: value }, field)
   }
 
   return (
@@ -131,7 +132,7 @@ function PaidWorkControlsCard() {
           type="checkbox"
           checked={controls.emergency_stop}
           disabled={mutation.isPending}
-          onChange={(event) => update({ ...controls, emergency_stop: event.target.checked }, true)}
+          onChange={(event) => update({ ...controls, emergency_stop: event.target.checked }, 'emergency_stop')}
         />
       </label>
       <label className="flex items-center justify-between gap-4 text-sm">
@@ -146,7 +147,7 @@ function PaidWorkControlsCard() {
             const value = Number(event.target.value)
             if (Number.isInteger(value) && value >= 0) setDraft({ ...controls, max_concurrent_paid_runs: value })
           }}
-          onBlur={() => draft && update(draft, false)}
+          onBlur={() => draft && update(draft, 'max_concurrent_paid_runs')}
           className="w-24 rounded border border-border bg-background px-2 py-1 text-right"
         />
       </label>
