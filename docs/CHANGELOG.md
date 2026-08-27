@@ -44,6 +44,11 @@
 
 ### Fixed
 
+- The main-only backend DinD suite now gives worker-manager the same test-owned
+  Claude host-session volumes used by launched workers and seeds fake
+  refresh-capable credentials. The production validator remains fail-fast,
+  while integration workers no longer fail before their mount/lifecycle tests.
+
 - Queue inspection now marks incomplete Redis consumer-group observations as
   degraded instead of inventing zero consumers, pending work, or a delivery
   id. The Dashboard has a reachable zero-work empty state and its admin
