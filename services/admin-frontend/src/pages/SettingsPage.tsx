@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn, relativeTime } from '@/lib/utils'
-import type { SystemConfig, AgentConfig, ExecutorOverride, PaidWorkControls, ExecutorDiagnostic, ExecutorDiagnosticSnapshot } from '@/types/api'
+import type { AgentConfig, AgentConfigUpdate, ExecutorDiagnosticConfirmation, ExecutorDiagnosticConfirmationCommand, ExecutorDiagnosticSnapshot, ExecutorOverride, PaidWorkControls, SystemConfig, SystemConfigUpdate } from '@/types/api'
 import { requiresPaidWorkControlConfirmation, type PaidWorkControlField } from './paidWorkControlTransition'
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ function PaidWorkControlsCard() {
   })
   const controls = draft ?? controlsQuery.data
   const mutation = useMutation({
-    mutationFn: (next: PaidWorkControls) => api.put<PaidWorkControls>('/work-admission/controls', next),
+    mutationFn: (next: PaidWorkControls) => api.put<PaidWorkControls, PaidWorkControls>('/work-admission/controls', next),
     onSuccess: (committed) => {
       setDraft(committed)
       queryClient.setQueryData(['paid-work-controls'], committed)
@@ -177,9 +177,9 @@ function ExecutorDiagnosticsCard() {
     refetchInterval: 30_000,
   })
   const confirmation = useMutation({
-    mutationFn: (diagnostic: ExecutorDiagnostic) => api.post(
+    mutationFn: (command: ExecutorDiagnosticConfirmationCommand) => api.post<ExecutorDiagnosticConfirmation, ExecutorDiagnosticConfirmationCommand>(
       '/work-admission/executor-diagnostics/confirmations',
-      { executor: diagnostic.executor, snapshot_version: diagnostics.data?.version },
+      command,
     ),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['executor-diagnostics'] }),
   })
@@ -219,7 +219,7 @@ function ExecutorDiagnosticsCard() {
             <button
               type="button"
               disabled={confirmation.isPending}
-              onClick={() => confirmation.mutate(item)}
+            onClick={() => confirmation.mutate({ executor: item.executor, snapshot_version: diagnostics.data.version })}
               className="mt-3 rounded bg-amber-600 px-3 py-1 text-xs text-white disabled:opacity-50"
             >
               {confirmation.isPending ? 'Confirming…' : 'Confirm current unknown state'}
@@ -301,11 +301,13 @@ function ConfigRow({ config }: { config: SystemConfig }) {
   const [draft, setDraft] = useState('')
 
   const mutation = useMutation({
-    mutationFn: (value: unknown) =>
-      api.patch<SystemConfig>(`/system-configs/${config.key}`, {
+    mutationFn: (value: unknown) => {
+      const update: SystemConfigUpdate = {
         value,
         updated_by: 'admin',
-      }),
+      }
+      return api.patch<SystemConfig, SystemConfigUpdate>(`/system-configs/${config.key}`, update)
+    },
     onSuccess: () => {
       setEditing(false)
       queryClient.invalidateQueries({ queryKey: ['system-configs'] })
@@ -433,8 +435,8 @@ function AgentConfigCard({ agent }: { agent: AgentConfig }) {
   })
 
   const mutation = useMutation({
-    mutationFn: (update: Record<string, unknown>) =>
-      api.patch<AgentConfig>(`/agent-configs/${agent.id}`, update),
+    mutationFn: (update: AgentConfigUpdate) =>
+      api.patch<AgentConfig, AgentConfigUpdate>(`/agent-configs/${agent.id}`, update),
     onSuccess: () => {
       setEditing(false)
       queryClient.invalidateQueries({ queryKey: ['agent-configs'] })
@@ -444,16 +446,16 @@ function AgentConfigCard({ agent }: { agent: AgentConfig }) {
   const startEdit = () => {
     setDraft({
       system_prompt: agent.system_prompt,
-      model_identifier: agent.model_identifier,
-      temperature: agent.temperature,
-      is_active: agent.is_active,
+      model_identifier: agent.model_identifier ?? '',
+      temperature: agent.temperature ?? 0,
+      is_active: agent.is_active ?? true,
     })
     setEditing(true)
     mutation.reset()
   }
 
   const save = () => {
-    const update: Record<string, unknown> = {}
+    const update: AgentConfigUpdate = {}
     if (draft.system_prompt !== agent.system_prompt) update.system_prompt = draft.system_prompt
     if (draft.model_identifier !== agent.model_identifier)
       update.model_identifier = draft.model_identifier

@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.dto.run import RunType
 from shared.contracts.vocab import QA_EXECUTOR_AGENT_TYPES, AgentType
@@ -31,6 +31,8 @@ class ExecutorOverride(StrEnum):
 
 class ExecutorDecision(BaseModel):
     """A complete, typed, immutable executor choice for one paid attempt."""
+
+    model_config = ConfigDict(extra="forbid")
 
     attempt_kind: Literal[RunType.ENGINEERING, RunType.QA]
     agent_type: AgentType

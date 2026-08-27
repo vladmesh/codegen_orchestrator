@@ -80,7 +80,7 @@ export function StoryDetailPage() {
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Updated</p>
-          <p className="mt-1 text-foreground">{formatDate(story.updated_at)}</p>
+          <p className="mt-1 text-foreground">{story.updated_at ? formatDate(story.updated_at) : '-'}</p>
         </Card>
       </div>
 

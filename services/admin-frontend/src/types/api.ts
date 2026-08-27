@@ -1,22 +1,26 @@
 export interface User {
   id: number
   telegram_id: number
-  username: string | null
-  first_name: string | null
-  last_name: string | null
+  username?: string | null
+  first_name?: string | null
+  last_name?: string | null
   is_admin: boolean
   created_at: string
+  updated_at?: string | null
   last_seen: string
 }
 
 export interface Project {
   id: string
-  name: string
-  status: string
-  config: Record<string, unknown>
+  title: string
+  slug: string
+  status?: string
+  config?: Record<string, unknown>
   owner_id: number
+  project_spec?: Record<string, unknown> | null
+  initiating_run_id?: string | null
   created_at: string
-  updated_at: string
+  updated_at?: string | null
 }
 
 export interface Story {
@@ -32,33 +36,49 @@ export interface Story {
   blocked_by_story_id: string | null
   created_by: string
   user_report: string | null
+  quarantine_reason?: Record<string, unknown> | null
+  pr_number?: number | null
   created_at: string
-  updated_at: string
+  updated_at?: string | null
 }
 
 export interface Task {
   id: string
   project_id: string
-  story_id: string | null
+  story_id?: string | null
   type: string
   title: string
   description: string | null
-  plan: string | null
+  plan?: string | null
   status: string
   priority: number
   acceptance_criteria: string | null
   current_iteration: number
   max_iterations: number
-  need_e2e: boolean
+  need_e2e?: boolean
   created_by: string
-  source_brainstorm_id: string | null
-  blocked_by_task_id: string | null
-  failure_metadata: Record<string, unknown> | null
+  source_brainstorm_id?: string | null
+  repository_id?: string | null
+  blocked_by_task_id?: string | null
+  failure_metadata?: Record<string, unknown> | null
   created_at: string
-  updated_at: string
-  last_event: string | null
-  elapsed_minutes: number
+  updated_at?: string | null
+  last_event?: string | null
+  elapsed_minutes?: number | null
 }
+
+export type TaskStatus =
+  | 'backlog'
+  | 'todo'
+  | 'in_dev'
+  | 'in_ci'
+  | 'testing'
+  | 'done'
+  | 'blocked'
+  | 'waiting_human_review'
+  | 'waiting_resources'
+  | 'failed'
+  | 'cancelled'
 
 export interface TaskEvent {
   id: number
@@ -70,34 +90,110 @@ export interface TaskEvent {
   details: Record<string, unknown>
   actor: string
   created_at: string
+  updated_at?: string | null
 }
 
-export interface QueueHealth {
-  [queueName: string]: {
-    length: number
-    pending: number
-    consumers: number
-    last_delivery_id: string | null
-  }
+export interface TaskTransition {
+  reason?: string | null
+  actor?: string
+  details?: Record<string, unknown>
 }
 
-// /api/debug/queues actual response
+export interface TaskResume {
+  guidance: string
+  actor?: string
+}
+
+export interface SpawnWorkerRequest {
+  actor?: string
+  description?: string | null
+}
+
+export type SpawnWorkerResponse = Record<string, unknown>
+
+export interface QueueStreamInfo {
+  length: number
+}
+
+export interface QueueGroupInfo {
+  consumers: number
+  pending: number
+  last_delivered_id: string
+}
+
 export interface QueueBinding {
   stream: string
   group: string
   description: string
-  stream_info: { length: number }
-  group_info: {
-    consumers: number
-    pending: number
-    last_delivered_id: string | null
-  }
+  stream_info: QueueStreamInfo | null
+  group_info: QueueGroupInfo | null
 }
 
 export interface DebugQueuesResponse {
   status: 'ok' | 'degraded'
   bindings: QueueBinding[]
   issues: string[]
+}
+
+export type ExecutorDecisionSource =
+  | 'global_override'
+  | 'project_pin'
+  | 'api_default'
+  | 'qa_api_setting'
+
+export interface ExecutorDecision {
+  attempt_kind: 'engineering' | 'qa'
+  agent_type: 'claude' | 'factory' | 'codex' | 'noop'
+  source: ExecutorDecisionSource
+  policy_version: 'v1' | 'v2'
+  reason: string
+}
+
+export interface PaidRunStateCounts {
+  queued: number
+  running: number
+}
+
+export interface TaskStatusCounts {
+  backlog: number
+  todo: number
+  in_dev: number
+  in_ci: number
+  testing: number
+  done: number
+  blocked: number
+  waiting_human_review: number
+  waiting_resources: number
+  failed: number
+  cancelled: number
+}
+
+export interface PaidRunCounts {
+  queued: number
+  running: number
+  by_executor: Partial<Record<ExecutorDecision['agent_type'], PaidRunStateCounts>>
+  unavailable_executor_decisions: number
+}
+
+export interface AdminOverview {
+  queues: DebugQueuesResponse
+  task_counts: TaskStatusCounts
+  paid_runs: PaidRunCounts
+  recent_failed_runs: RecentFailedRun[]
+}
+
+export interface RecentFailedRun {
+  id: string
+  type: 'engineering' | 'qa' | 'deploy'
+  project_id: string | null
+  task_id: string | null
+  story_id: string | null
+  error_message: string
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  executor_decision: ExecutorDecision | null
+  executor_decision_availability: 'available' | 'legacy' | 'invalid'
 }
 
 export interface Repository {
@@ -109,10 +205,29 @@ export interface Repository {
   role: string
   visibility: string
   is_managed: boolean
-  acceptance_criteria: string | null
-  bot_username: string | null
+  acceptance_criteria?: string | null
+  bot_username?: string | null
   created_at: string
-  updated_at: string
+  updated_at?: string | null
+}
+
+export interface MergeSecretsRequest {
+  secrets: Record<string, string>
+  env_hints?: Record<string, string> | null
+}
+
+export type SecretKeys = Record<string, string[]>
+
+export interface StoryCreate {
+  project_id: string
+  title: string
+  description?: string | null
+  acceptance_criteria?: string | null
+  parent_story_id?: string | null
+  type?: 'product' | 'technical'
+  priority?: number
+  blocked_by_story_id?: string | null
+  created_by?: string
 }
 
 // Worker-manager introspection API (/wm-api/*)
@@ -186,34 +301,34 @@ export interface QueuePendingResponse {
 }
 
 export interface Server {
+  created_at: string
+  updated_at?: string | null
   handle: string
   host: string
   public_ip: string
-  ssh_user: string
-  status: string
-  is_managed: boolean
-  capacity_cpu: number
-  capacity_ram_mb: number
-  capacity_disk_mb: number
-  used_ram_mb: number
-  used_disk_mb: number
-  os_template: string | null
-  labels: Record<string, string>
-  notes: string | null
-  provisioning_started_at: string | null
-  created_at: string
-  updated_at: string
-  // Health metrics (from node_exporter + cadvisor)
-  cpu_usage_pct: number | null
-  load_avg_1m: number | null
-  load_avg_5m: number | null
-  load_avg_15m: number | null
-  network_rx_errors: number | null
-  network_tx_errors: number | null
-  container_count_running: number | null
-  container_count_total: number | null
-  uptime_seconds: number | null
-  last_health_check: string | null
+  ssh_user?: string
+  status?: string
+  is_managed?: boolean
+  capacity_cpu?: number
+  capacity_ram_mb?: number
+  capacity_disk_mb?: number
+  used_ram_mb?: number
+  used_disk_mb?: number
+  os_template?: string | null
+  labels?: Record<string, unknown>
+  provider_id?: string | null
+  notes?: string | null
+  provisioning_started_at?: string | null
+  cpu_usage_pct?: number | null
+  load_avg_1m?: number | null
+  load_avg_5m?: number | null
+  load_avg_15m?: number | null
+  network_rx_errors?: number | null
+  network_tx_errors?: number | null
+  container_count_running?: number | null
+  container_count_total?: number | null
+  uptime_seconds?: number | null
+  last_health_check?: string | null
 }
 
 export interface ContainerMetrics {
@@ -258,26 +373,29 @@ export interface Incident {
 }
 
 export interface PortAllocation {
+  created_at: string
+  updated_at?: string | null
   id: number
   server_handle: string
   port: number
   service_name: string
-  application_id: number | null
+  application_id?: number | null
 }
 
 export interface Application {
+  created_at: string
+  updated_at?: string | null
   id: number
   repo_id: string
   server_handle: string
   service_name: string
-  ports: PortAllocation[]
+  reserved_ram_mb: number
+  ports?: PortAllocation[]
   status: string
-  last_health_check: string | null
-  response_time_ms: number | null
-  ssl_expires_at: string | null
-  uptime_pct_24h: number | null
-  created_at: string
-  updated_at: string
+  last_health_check?: string | null
+  response_time_ms?: number | null
+  ssl_expires_at?: string | null
+  uptime_pct_24h?: number | null
 }
 
 export interface ApplicationHealthMetrics {
@@ -307,6 +425,9 @@ export interface Run {
   type: string
   status: string
   project_id: string | null
+  user_id: number | null
+  story_id: string | null
+  task_id: string | null
   run_metadata: Record<string, unknown>
   result: {
     qa_outcome?: string
@@ -318,18 +439,45 @@ export interface Run {
   error_message: string | null
   created_at: string
   completed_at: string | null
+  started_at: string | null
+  callback_stream: string | null
+  iteration: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  cost_usd: number | null
+  agent_profile: Record<string, unknown> | null
+  transcript_path: string | null
+  transcript_truncated: boolean | null
 }
 
 // System configuration (key-value, grouped by category)
 export interface SystemConfig {
   key: string
   value: unknown
-  description: string | null
+  description?: string | null
   category: string
-  updated_by: string | null
+  updated_by?: string | null
   created_at: string
-  updated_at: string
+  updated_at?: string | null
 }
+
+export interface SystemConfigUpdate {
+  value?: unknown | null
+  description?: string | null
+  category?: string | null
+  updated_by?: string | null
+}
+
+export interface FromRepoRequest {
+  repo_url: string
+  project_id: string
+  server_handle: string
+  service_name: string
+  actor?: string
+}
+
+export type FromRepoResponse = Record<string, unknown>
 
 export type ExecutorOverride = 'none' | 'claude' | 'codex'
 
@@ -350,7 +498,7 @@ export interface ExecutorDiagnostic {
   availability: ExecutorAvailability
   observed_at: string
   expires_at: string
-  active_lease_count: number | null
+  active_lease_count?: number | null
   reason_code: string
   reason: string
 }
@@ -363,19 +511,42 @@ export interface ExecutorDiagnosticSnapshot {
   diagnostics: ExecutorDiagnostic[]
 }
 
+export interface ExecutorDiagnosticConfirmationCommand {
+  executor: 'claude' | 'codex'
+  snapshot_version: string
+}
+
+export interface ExecutorDiagnosticConfirmation {
+  executor: 'claude' | 'codex'
+  snapshot_version: string
+  expires_at: string
+}
+
 // Agent configuration (prompts, model settings)
 export interface AgentConfig {
   id: string
   name: string
   system_prompt: string
-  model_name: string
-  temperature: number
-  is_active: boolean
-  llm_provider: string
-  model_identifier: string
-  openrouter_site_url: string | null
-  openrouter_app_name: string | null
+  model_name?: string
+  temperature?: number
+  is_active?: boolean
+  llm_provider?: string
+  model_identifier?: string
+  openrouter_site_url?: string | null
+  openrouter_app_name?: string | null
   version: number
   created_at: string
-  updated_at: string
+  updated_at?: string | null
+}
+
+export interface AgentConfigUpdate {
+  name?: string | null
+  system_prompt?: string | null
+  model_name?: string | null
+  temperature?: number | null
+  is_active?: boolean | null
+  llm_provider?: string | null
+  model_identifier?: string | null
+  openrouter_site_url?: string | null
+  openrouter_app_name?: string | null
 }

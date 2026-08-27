@@ -36,6 +36,13 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/
 curl -fsSI -u "$ADMIN_USER:$ADMIN_PASSWORD" http://127.0.0.1:3001/
 ```
 
+After connecting through the SSH forward, open the Dashboard and verify that
+queue health is either healthy or explicitly degraded with listed issues,
+paid queued/running counts are present, and recent failed Runs show their
+persisted executor-decision details or an explicit legacy/unavailable label.
+Do not treat a failed Dashboard request or a degraded queue snapshot as a zero
+backlog.
+
 Confirm Caddy has no admin route before deployment:
 
 ```bash

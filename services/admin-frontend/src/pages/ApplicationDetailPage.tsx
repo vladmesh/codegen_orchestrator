@@ -227,7 +227,7 @@ export function ApplicationDetailPage() {
         <Card>
           <p className="text-sm text-muted-foreground">Ports</p>
           <p className="mt-1 text-foreground">
-            {app.ports.length > 0 ? app.ports.map((p) => p.port).join(', ') : '-'}
+            {(app.ports ?? []).length > 0 ? app.ports?.map((p) => p.port).join(', ') : '-'}
           </p>
         </Card>
         <Card>
@@ -280,7 +280,7 @@ export function ApplicationDetailPage() {
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Updated</p>
-          <p className="mt-1 text-foreground">{formatDate(app.updated_at)}</p>
+          <p className="mt-1 text-foreground">{app.updated_at ? formatDate(app.updated_at) : '-'}</p>
         </Card>
       </div>
 

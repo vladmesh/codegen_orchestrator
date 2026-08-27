@@ -36,3 +36,19 @@ def test_qa_decision_rejects_factory_even_when_the_agent_type_is_valid():
             policy_version="v1",
             reason="QA executor selected by API QA_EXECUTOR_AGENT_TYPE.",
         )
+
+
+def test_executor_decision_rejects_unexpected_persisted_members():
+    with pytest.raises(ValidationError, match="unexpected"):
+        ExecutorDecision.from_run_metadata(
+            {
+                EXECUTOR_DECISION_METADATA_KEY: {
+                    "attempt_kind": "engineering",
+                    "agent_type": "codex",
+                    "source": "api_default",
+                    "policy_version": "v2",
+                    "reason": "configured default",
+                    "unexpected": "must not be discarded",
+                }
+            }
+        )

@@ -4,6 +4,12 @@
 
 ### Added
 
+- The production admin Dashboard now reads one strict internal/admin overview
+  contract. It reports every declared queue binding with explicit degradation,
+  all task-status counts, paid queued/running work, persisted executor-decision
+  counts, and a newest-first bounded list of safe failed-Run errors. Legacy or
+  malformed executor snapshots are marked unavailable rather than inferred.
+
 - Worker-manager now publishes bounded, credential-safe Claude and Codex
   availability snapshots to Redis at startup and periodically. Admin Settings
   shows status, local auth mode, freshness, active leases and safe reasons.
@@ -37,6 +43,12 @@
   money only after the count gate.
 
 ### Fixed
+
+- Queue inspection now marks incomplete Redis consumer-group observations as
+  degraded instead of inventing zero consumers, pending work, or a delivery
+  id. The Dashboard has a reachable zero-work empty state and its admin
+  contract gate now recursively checks server schema fields, requiredness,
+  nullability, enums, maps, arrays, and nested paid-work diagnostics.
 
 - Unknown executor-diagnostic confirmation now requires an LK bearer for the
   actual administrator, so an internal service credential cannot impersonate an

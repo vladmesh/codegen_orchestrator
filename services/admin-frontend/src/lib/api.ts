@@ -28,11 +28,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   get: <T>(path: string) => request<T>(`${BASE_URL}${path}`),
-  post: <T>(path: string, body: unknown) =>
+  post: <T, Body = unknown>(path: string, body: Body) =>
     request<T>(`${BASE_URL}${path}`, { method: 'POST', body: JSON.stringify(body) }),
-  put: <T>(path: string, body: unknown) =>
+  put: <T, Body = unknown>(path: string, body: Body) =>
     request<T>(`${BASE_URL}${path}`, { method: 'PUT', body: JSON.stringify(body) }),
-  patch: <T>(path: string, body: unknown) =>
+  patch: <T, Body = unknown>(path: string, body: Body) =>
     request<T>(`${BASE_URL}${path}`, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(`${BASE_URL}${path}`, { method: 'DELETE' }),
   /** Fetch an origin path outside the API proxy (the worker-manager one, /wm-api) */

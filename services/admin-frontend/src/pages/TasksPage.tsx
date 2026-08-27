@@ -16,6 +16,7 @@ const STATUSES = [
   'done',
   'blocked',
   'waiting_human_review',
+  'waiting_resources',
   'failed',
   'cancelled',
 ]
@@ -73,7 +74,7 @@ export function TasksPage() {
         } else if (sortField === 'priority') {
           cmp = a.priority - b.priority
         } else if (sortField === 'updated_at') {
-          cmp = new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime()
+          cmp = new Date(a.updated_at ?? 0).getTime() - new Date(b.updated_at ?? 0).getTime()
         }
         return sortDir === 'asc' ? cmp : -cmp
       })
