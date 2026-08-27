@@ -10,13 +10,23 @@ if [ "$ENVIRONMENT" = "test" ] && [ "$SEED_SYSTEM_CONFIGS_ON_START" = "true" ]; 
     until curl --fail --silent http://localhost:8000/health >/dev/null; do
         sleep 1
     done
-    python /app/scripts/seed_system_configs.py \
-        --api-base-url http://localhost:8000 \
-        --configs-path /app/scripts/system_configs.yaml
+    # The test overlay supplies the initial high paid-work ceilings. Seed it
+    # before production defaults so both calls remain initialize-only for
+    # protected controls while production-only ordinary configs are still set.
     if [ -n "$SYSTEM_CONFIGS_TEST_OVERLAY" ]; then
         python /app/scripts/seed_system_configs.py \
             --api-base-url http://localhost:8000 \
             --configs-path "$SYSTEM_CONFIGS_TEST_OVERLAY"
+    fi
+    if [ -n "$SYSTEM_CONFIGS_TEST_OVERLAY" ]; then
+        python /app/scripts/seed_system_configs.py \
+            --api-base-url http://localhost:8000 \
+            --configs-path /app/scripts/system_configs.yaml \
+            --skip-key work_admission.max_projects_per_user
+    else
+        python /app/scripts/seed_system_configs.py \
+            --api-base-url http://localhost:8000 \
+            --configs-path /app/scripts/system_configs.yaml
     fi
     wait "$api_pid"
     exit $?

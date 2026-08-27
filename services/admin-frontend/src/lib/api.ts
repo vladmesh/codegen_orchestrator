@@ -30,6 +30,8 @@ export const api = {
   get: <T>(path: string) => request<T>(`${BASE_URL}${path}`),
   post: <T>(path: string, body: unknown) =>
     request<T>(`${BASE_URL}${path}`, { method: 'POST', body: JSON.stringify(body) }),
+  put: <T>(path: string, body: unknown) =>
+    request<T>(`${BASE_URL}${path}`, { method: 'PUT', body: JSON.stringify(body) }),
   patch: <T>(path: string, body: unknown) =>
     request<T>(`${BASE_URL}${path}`, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(`${BASE_URL}${path}`, { method: 'DELETE' }),

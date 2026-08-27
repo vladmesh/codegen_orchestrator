@@ -331,6 +331,15 @@ export interface SystemConfig {
   updated_at: string
 }
 
+export type ExecutorOverride = 'none' | 'claude' | 'codex'
+
+export interface PaidWorkControls {
+  emergency_stop: boolean
+  max_concurrent_paid_runs: number
+  engineering_executor_override: ExecutorOverride
+  qa_executor_override: ExecutorOverride
+}
+
 // Agent configuration (prompts, model settings)
 export interface AgentConfig {
   id: string

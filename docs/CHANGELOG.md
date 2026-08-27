@@ -4,6 +4,11 @@
 
 ### Added
 
+- Internal/admin Settings now exposes one typed, audited paid-work control
+  state: emergency stop, concurrent paid-run ceiling, and independent
+  engineering/QA executor overrides. Overrides are `none`, `claude`, or
+  `codex`, take precedence only for new Runs, and reset to the legacy policy
+  without restart or deploy.
 - Paid engineering and QA runs now receive an immutable typed executor decision
   at admission. Engineering preserves valid project pins or the API default;
   QA uses the API-side Codex-default setting. Worker launchers read the
@@ -26,6 +31,10 @@
 
 ### Fixed
 
+- Deploy seeding now initializes absent paid-work controls through a distinct
+  typed operation and never replaces live emergency-stop, paid-run ceiling, or
+  executor-override values. Settings confirms every executor override
+  transition, including reset to the legacy policy.
 - Production admin access now binds only to `127.0.0.1:3001` for SSH forwarding;
   Caddy does not expose it. Analytics, agent-configuration, service-deployment,
   and queue-debug routes now require an administrator or internal service, while

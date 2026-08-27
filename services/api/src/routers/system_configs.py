@@ -16,6 +16,8 @@ PROTECTED_WORK_ADMISSION_KEYS = frozenset(
         "work_admission.emergency_stop",
         "work_admission.max_projects_per_user",
         "work_admission.max_concurrent_paid_runs",
+        "work_admission.engineering_executor_override",
+        "work_admission.qa_executor_override",
     }
 )
 

@@ -2,10 +2,10 @@
 """Seed script for system configurations.
 
 Writes the operational constants declared in system_configs.yaml to the database.
-The file wins: every key it declares is written with its file value, overwriting
-whatever is in the DB. A key that the file does not declare is left untouched.
-Runs on every deploy, right after migrations, so a value edited in the file
-reaches the system without a manual step.
+Ordinary keys are reconciled to their file values. Paid-work controls are
+different: the typed initialize-only API inserts their defaults only when absent
+and preserves every existing operator value. Runs on every deploy, right after
+migrations.
 
 Usage:
     python scripts/seed_system_configs.py [--api-base-url http://localhost:8000]
@@ -25,6 +25,14 @@ _WORK_ADMISSION_KEYS = {
     "work_admission.emergency_stop",
     "work_admission.max_projects_per_user",
     "work_admission.max_concurrent_paid_runs",
+    "work_admission.engineering_executor_override",
+    "work_admission.qa_executor_override",
+}
+_PAID_WORK_CONTROL_FIELDS = {
+    "work_admission.emergency_stop": "emergency_stop",
+    "work_admission.max_concurrent_paid_runs": "max_concurrent_paid_runs",
+    "work_admission.engineering_executor_override": "engineering_executor_override",
+    "work_admission.qa_executor_override": "qa_executor_override",
 }
 
 
@@ -58,7 +66,9 @@ def _current_value(client: InternalAPISyncClient, key: str) -> tuple[bool, objec
     return True, resp.json()["value"]
 
 
-def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
+def seed_system_configs(
+    api_base_url: str, configs_path: Path, *, skip_keys: frozenset[str] = frozenset()
+) -> bool:
     """Write every config declared in the YAML file to the database.
 
     Existing values are overwritten. Keys that diverged from the file are
@@ -75,6 +85,7 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
     created = 0
     updated = 0
     unchanged = 0
+    paid_work_controls: dict[str, object] = {}
 
     # Seeding is an internal call like any other, so it goes through the transport
     # that carries X-Internal-Key: every route under /api requires a caller.
@@ -82,7 +93,14 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
     try:
         for config in configs:
             key = config["key"]
+            if key in skip_keys:
+                continue
             value = config["value"]
+
+            field = _PAID_WORK_CONTROL_FIELDS.get(key)
+            if field is not None:
+                paid_work_controls[field] = value
+                continue
 
             try:
                 exists, db_value = _current_value(client, key)
@@ -119,6 +137,29 @@ def seed_system_configs(api_base_url: str, configs_path: Path) -> bool:
             except (httpx.RequestError, RuntimeError) as e:
                 print(f"  Request error for '{key}': {e}")
                 success = False
+
+        if paid_work_controls:
+            missing_fields = set(_PAID_WORK_CONTROL_FIELDS.values()) - paid_work_controls.keys()
+            if missing_fields:
+                print(
+                    "  Paid-work controls are incomplete in the seed file: "
+                    + ", ".join(sorted(missing_fields))
+                )
+                success = False
+            else:
+                try:
+                    resp = client.request_raw(
+                        "POST", "work-admission/controls/initialize", json=paid_work_controls
+                    )
+                    if resp.status_code != httpx.codes.OK:
+                        print(
+                            "  Failed to initialize paid-work controls: "
+                            f"{resp.status_code} - {resp.text}"
+                        )
+                        success = False
+                except httpx.RequestError as e:
+                    print(f"  Request error for paid-work controls: {e}")
+                    success = False
     finally:
         client.close()
 
@@ -141,11 +182,19 @@ def main():
         default=str(CONFIG_PATH),
         help=f"Path to system configs YAML (default: {CONFIG_PATH})",
     )
+    parser.add_argument(
+        "--skip-key",
+        action="append",
+        default=[],
+        help="Key to leave untouched; repeat for each test-only overlay key",
+    )
     args = parser.parse_args()
 
     print(f"  Seeding system configurations to {args.api_base_url}...")
 
-    success = seed_system_configs(args.api_base_url, Path(args.configs_path))
+    success = seed_system_configs(
+        args.api_base_url, Path(args.configs_path), skip_keys=frozenset(args.skip_key)
+    )
 
     if success:
         print("  All system configurations seeded successfully!")

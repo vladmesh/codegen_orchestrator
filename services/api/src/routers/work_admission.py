@@ -1,7 +1,8 @@
-"""Internal/admin surface for count-based work admission and emergency stop."""
+"""Internal/admin commands for paid-work admission and its operator controls."""
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.work_admission import (
@@ -9,38 +10,160 @@ from shared.contracts.dto.work_admission import (
     EmergencyStopRead,
     PaidRunStartCommand,
     PaidRunStartRead,
+    PaidWorkControlsCommand,
+    PaidWorkControlsRead,
     WorkAdmissionControlCommand,
 )
-from shared.models import SystemConfig
+from shared.models import SystemConfig, WorkAdmissionAudit
 
 from ..database import get_async_session
-from ..dependencies import require_internal_or_admin
+from ..dependencies import get_internal_or_admin_actor, require_internal_or_admin
 from ..work_admission import (
     EMERGENCY_STOP_KEY,
+    ENGINEERING_EXECUTOR_OVERRIDE_KEY,
     MAX_PAID_RUNS_KEY,
     MAX_PROJECTS_KEY,
+    PAID_WORK_CONTROL_KEYS,
+    QA_EXECUTOR_OVERRIDE_KEY,
     PaidRunCommandConflict,
     PaidRunIdentityExpired,
+    _controls,
+    _limit,
+    _override,
     abort_paid_run_pre_handoff,
     start_paid_run,
 )
 
 router = APIRouter(prefix="/work-admission", tags=["work-admission"])
 
+_CONTROL_FIELDS = {
+    EMERGENCY_STOP_KEY: "emergency_stop",
+    MAX_PAID_RUNS_KEY: "max_concurrent_paid_runs",
+    ENGINEERING_EXECUTOR_OVERRIDE_KEY: "engineering_executor_override",
+    QA_EXECUTOR_OVERRIDE_KEY: "qa_executor_override",
+}
 _CONTROL_DESCRIPTIONS = {
     EMERGENCY_STOP_KEY: "Emergency stop for new projects, engineering and QA work",
     MAX_PROJECTS_KEY: "Maximum number of projects per user",
     MAX_PAID_RUNS_KEY: "Maximum number of concurrent engineering and QA runs",
+    ENGINEERING_EXECUTOR_OVERRIDE_KEY: "Global executor override for engineering attempts",
+    QA_EXECUTOR_OVERRIDE_KEY: "Global executor override for QA attempts",
 }
 
 
-async def _stop_config(db: AsyncSession) -> SystemConfig:
-    config = await db.scalar(
-        select(SystemConfig).where(SystemConfig.key == EMERGENCY_STOP_KEY).with_for_update()
+def _paid_work_controls(values: dict[str, object]) -> PaidWorkControlsRead:
+    enabled = values[EMERGENCY_STOP_KEY]
+    if not isinstance(enabled, bool):
+        raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
+    return PaidWorkControlsRead(
+        emergency_stop=enabled,
+        max_concurrent_paid_runs=_limit(values[MAX_PAID_RUNS_KEY], MAX_PAID_RUNS_KEY),
+        engineering_executor_override=_override(
+            values[ENGINEERING_EXECUTOR_OVERRIDE_KEY], ENGINEERING_EXECUTOR_OVERRIDE_KEY
+        ),
+        qa_executor_override=_override(values[QA_EXECUTOR_OVERRIDE_KEY], QA_EXECUTOR_OVERRIDE_KEY),
     )
-    if config is None:
-        raise RuntimeError("Missing work admission emergency-stop config")
-    return config
+
+
+async def _replace_paid_work_controls(
+    command: PaidWorkControlsCommand, actor: str, db: AsyncSession
+) -> PaidWorkControlsRead:
+    """Lock all paid controls in key order, mutate, and append one fact per change."""
+    requested = command.model_dump(mode="json")
+    rows = await _locked_paid_work_control_rows(db)
+    values = {key: row.value for key, row in rows.items()}
+    _paid_work_controls(values)
+    for key, field in _CONTROL_FIELDS.items():
+        before = values[key]
+        after = requested[field]
+        if before == after:
+            continue
+        rows[key].value = after
+        db.add(
+            WorkAdmissionAudit(
+                subject="paid_work_control",
+                outcome="changed",
+                control_name=field,
+                before_value=before,
+                after_value=after,
+                actor=actor,
+            )
+        )
+    return PaidWorkControlsRead.model_validate(requested)
+
+
+async def _locked_paid_work_control_rows(db: AsyncSession) -> dict[str, SystemConfig]:
+    """Return the fixed paid-control set under the lock order used by all writers."""
+    rows = (
+        await db.scalars(
+            select(SystemConfig)
+            .where(SystemConfig.key.in_(PAID_WORK_CONTROL_KEYS))
+            .order_by(SystemConfig.key)
+            .with_for_update()
+        )
+    ).all()
+    by_key = {row.key: row for row in rows}
+    missing = set(PAID_WORK_CONTROL_KEYS) - by_key.keys()
+    if missing:
+        raise RuntimeError(f"Missing paid-work control(s): {', '.join(sorted(missing))}")
+    return by_key
+
+
+async def _initialize_paid_work_controls(
+    defaults: PaidWorkControlsCommand, db: AsyncSession
+) -> PaidWorkControlsRead:
+    """Insert only absent defaults, then validate the complete locked control set.
+
+    PostgreSQL's conflict-safe insert makes concurrent first deploys converge on
+    one row per key. Existing rows are never updated by initialization.
+    """
+    requested = defaults.model_dump(mode="json")
+    for key in PAID_WORK_CONTROL_KEYS:
+        field = _CONTROL_FIELDS[key]
+        await db.execute(
+            postgresql_insert(SystemConfig)
+            .values(
+                key=key,
+                value=requested[field],
+                category="work_admission",
+                description=_CONTROL_DESCRIPTIONS[key],
+                updated_by="work_admission_initializer",
+            )
+            .on_conflict_do_nothing(index_elements=[SystemConfig.key])
+        )
+    rows = await _locked_paid_work_control_rows(db)
+    return _paid_work_controls({key: row.value for key, row in rows.items()})
+
+
+@router.get("/controls", response_model=PaidWorkControlsRead)
+async def get_paid_work_controls(
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> PaidWorkControlsRead:
+    return _paid_work_controls(await _controls(db, *PAID_WORK_CONTROL_KEYS))
+
+
+@router.put("/controls", response_model=PaidWorkControlsRead)
+async def put_paid_work_controls(
+    command: PaidWorkControlsCommand,
+    db: AsyncSession = Depends(get_async_session),
+    actor: str = Depends(get_internal_or_admin_actor),
+) -> PaidWorkControlsRead:
+    controls = await _replace_paid_work_controls(command, actor, db)
+    await db.commit()
+    return controls
+
+
+@router.post("/controls/initialize", response_model=PaidWorkControlsRead)
+async def initialize_paid_work_controls(
+    defaults: PaidWorkControlsCommand,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> PaidWorkControlsRead:
+    """Deploy/bootstrap only: complete absent state without changing live policy."""
+    controls = await _initialize_paid_work_controls(defaults, db)
+    await db.commit()
+    return controls
 
 
 @router.get("/emergency-stop", response_model=EmergencyStopRead)
@@ -48,22 +171,23 @@ async def get_emergency_stop(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> EmergencyStopRead:
-    config = await _stop_config(db)
-    if not isinstance(config.value, bool):
-        raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
-    return EmergencyStopRead(enabled=config.value)
+    return EmergencyStopRead(enabled=(await get_paid_work_controls(db=db)).emergency_stop)
 
 
 @router.put("/emergency-stop", response_model=EmergencyStopRead)
 async def put_emergency_stop(
     command: EmergencyStopCommand,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(require_internal_or_admin),
+    actor: str = Depends(get_internal_or_admin_actor),
 ) -> EmergencyStopRead:
-    config = await _stop_config(db)
-    config.value = command.enabled
+    current = _paid_work_controls(await _controls(db, *PAID_WORK_CONTROL_KEYS))
+    updated = await _replace_paid_work_controls(
+        PaidWorkControlsCommand(**{**current.model_dump(), "emergency_stop": command.enabled}),
+        actor,
+        db,
+    )
     await db.commit()
-    return EmergencyStopRead(enabled=command.enabled)
+    return EmergencyStopRead(enabled=updated.emergency_stop)
 
 
 @router.put("/controls/{key:path}")
@@ -73,36 +197,27 @@ async def put_work_admission_control(
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
 ) -> dict[str, object]:
-    """The only mutation path for protected admission controls."""
-    if key == EMERGENCY_STOP_KEY:
-        if not isinstance(command.value, bool):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
-    elif key in {MAX_PROJECTS_KEY, MAX_PAID_RUNS_KEY}:
-        if (
-            not isinstance(command.value, int)
-            or isinstance(command.value, bool)
-            or command.value < 0
-        ):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
-    else:
+    """Legacy typed mutation retained only for the non-paid project ceiling."""
+    if key != MAX_PROJECTS_KEY:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    config = await db.get(SystemConfig, key)
-    if config is None:
-        # Protected controls may only be initialized through this typed route.
-        # This lets the deploy seed establish them without reopening the generic
-        # system-config mutation API as a bypass.
-        config = SystemConfig(
+    if not isinstance(command.value, int) or isinstance(command.value, bool) or command.value < 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
+    row = await db.scalar(select(SystemConfig).where(SystemConfig.key == key).with_for_update())
+    if row is None:
+        row = SystemConfig(
             key=key,
             value=command.value,
             category="work_admission",
             description=_CONTROL_DESCRIPTIONS[key],
             updated_by="work_admission_control",
         )
-        db.add(config)
-    else:
-        config.value = command.value
+        db.add(row)
+        await db.commit()
+        return {"key": key, "value": command.value, "previous": None}
+    previous = row.value
+    row.value = command.value
     await db.commit()
-    return {"key": key, "value": command.value}
+    return {"key": key, "value": command.value, "previous": previous}
 
 
 @router.post("/paid-runs", response_model=PaidRunStartRead)

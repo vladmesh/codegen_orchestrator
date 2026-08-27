@@ -600,3 +600,26 @@ refuses registrations that carry no type, and worker creation fails until the
 manager catches up. Worker containers themselves are not Compose services and
 deliberately survive the rollout; each service migrates the pre-cutover records
 it authorizes on when it starts (`shared/worker_type_cutover.py`).
+
+## Paid-work emergency controls
+
+Use the authenticated admin Settings page for normal operation. It reads and
+writes `GET`/`PUT /api/work-admission/controls` as one complete typed state:
+emergency stop, maximum concurrent paid runs, and separate engineering and QA
+executor overrides. Set an override to `claude` or `codex` only as a
+break-glass action for new attempts; reset it to `none` to return to the
+project/API legacy policy. Existing queued and running Runs retain their
+persisted decision.
+
+For an immediate rollback, set both overrides to `none`, restore the prior
+paid-run ceiling, and set `emergency_stop` to `false` only when admissions may
+resume. Confirm the committed state by reading the endpoint again. Every changed
+field is recorded with its actor, server timestamp, and typed before/after value;
+no restart or deploy is needed.
+
+Deploy seeding calls `POST /api/work-admission/controls/initialize` with the
+documented defaults. It locks the complete paid-work control set, inserts only
+absent rows, and preserves every existing row without an audit fact. A partial
+valid state is completed from these defaults; a malformed present value fails
+closed and the initialization transaction is rolled back. The deploy seeder
+never calls the operator mutation endpoint for these controls.

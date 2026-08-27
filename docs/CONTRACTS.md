@@ -128,6 +128,29 @@ The deployed defaults in `scripts/system_configs.yaml` are:
   no new project, engineering run, or QA run is admitted. The stored value must
   be a boolean; malformed configuration fails closed.
   It never changes existing rows, workspaces, containers, or runs.
+- `work_admission.engineering_executor_override="none"` and
+  `work_admission.qa_executor_override="none"`. They are global break-glass
+  controls for new paid attempts and accept only `none`, `claude`, or `codex`.
+  They are never edited through generic SystemConfig CRUD.
+
+`GET /api/work-admission/controls` returns the complete typed paid-work state.
+`PUT /api/work-admission/controls` replaces that complete state atomically and
+rejects partial bodies, booleans where an integer is required, negative limits,
+unknown override strings, and extra fields. Internal services and administrators
+only may use it. A successful changed field appends a `work_admission_audits`
+fact in the same transaction with `control_name`, typed before/after values,
+server `created_at`, and either `internal_service` or `admin:<user id>` actor.
+No-op writes are accepted without an audit fact. The legacy typed emergency-stop
+endpoint uses the same transaction and audit semantics.
+
+`POST /api/work-admission/controls/initialize` is the deploy/bootstrap-only
+operation. It takes the same complete typed body, locks the same fixed controls
+in the same deterministic order, and inserts defaults only for absent rows.
+It never updates a present row and writes no operator-change audit fact. A
+partial valid deployed state is completed from the request defaults; a malformed
+present value fails closed and rolls back the whole initialization transaction.
+Deploy seeding uses only this operation, so live operator controls always take
+precedence over deploy defaults.
 
 Engineering's count check precedes its existing monetary
 `admit_engineering_attempt` inside that same command, so a count-based refusal
@@ -143,17 +166,20 @@ Every admitted engineering or QA Run receives one immutable
 class ExecutorDecision(BaseModel):
     attempt_kind: Literal[RunType.ENGINEERING, RunType.QA]
     agent_type: AgentType
-    source: ExecutorDecisionSource  # project_pin | api_default | qa_api_setting
-    policy_version: Literal["v1"]
+    source: ExecutorDecisionSource  # global_override | project_pin | api_default | qa_api_setting
+    policy_version: Literal["v2"]
     reason: str
 ```
 
-The `start_paid_run` transaction resolves this record after loading the Project
-and before engineering budget admission, paid-slot occupation, Run insertion,
-or queue handoff. Engineering uses a valid `Project.config.agent_type` pin or
-the API's `DEFAULT_AGENT_TYPE`; QA uses the API's
-`QA_EXECUTOR_AGENT_TYPE` (Codex by default). The type rejects unsupported
-pairs, including Factory for QA. A live same-id replay returns the stored
+The `start_paid_run` transaction locks all paid-work controls in deterministic
+key order and resolves this record after loading the Project and before
+engineering budget admission, paid-slot occupation, Run insertion, or queue
+handoff. A non-`none` global override wins first. Otherwise engineering uses a
+valid `Project.config.agent_type` pin or the API's `DEFAULT_AGENT_TYPE`; QA uses
+the API's `QA_EXECUTOR_AGENT_TYPE` (Codex by default). Factory remains valid
+only on this legacy engineering path. The type rejects unsupported pairs,
+including Factory for QA. A malformed stored control fails closed before any
+billable side effect. A live same-id replay returns the stored
 snapshot without resolving configuration again, and generic Run metadata
 updates may merge operational keys but cannot replace or partially alter this
 record.

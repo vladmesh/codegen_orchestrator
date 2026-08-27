@@ -1,9 +1,8 @@
 # System configuration values.
-# Applied on every deploy (and by `make seed`): each key below is written to the
-# database with the value from this file, overwriting whatever is there. Editing
-# a value here is how it changes in production. A key edited through the API
-# survives only until the next deploy. Keys absent from this file are owned by
-# the database alone and are never touched.
+# Applied on every deploy (and by `make seed`). Ordinary keys are reconciled to
+# this file. Paid-work controls are initialized only when absent, so an operator
+# change made through the typed API survives later deploys. Keys absent from
+# this file are owned by the database alone and are never touched.
 
 # --- scheduler ---
 - key: work_admission.max_projects_per_user
@@ -20,6 +19,16 @@
   value: false
   category: work_admission
   description: "Operator switch that blocks new projects, engineering and QA work"
+
+- key: work_admission.engineering_executor_override
+  value: "none"
+  category: work_admission
+  description: "Global break-glass executor override for new engineering attempts"
+
+- key: work_admission.qa_executor_override
+  value: "none"
+  category: work_admission
+  description: "Global break-glass executor override for new QA attempts"
 
 - key: scheduler.dispatch_interval_seconds
   value: 30

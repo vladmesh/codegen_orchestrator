@@ -125,4 +125,64 @@ def test_api_service_test_overlay_explicitly_overrides_every_work_admission_key(
         "work_admission.max_projects_per_user": 10000,
         "work_admission.max_concurrent_paid_runs": 10000,
         "work_admission.emergency_stop": False,
+        "work_admission.engineering_executor_override": "none",
+        "work_admission.qa_executor_override": "none",
     }
+
+
+def test_paid_work_controls_seed_through_the_initialize_only_typed_command(
+    tmp_path, db, monkeypatch
+):
+    """A blank database must not need generic CRUD for protected controls."""
+    configs = [
+        _config("work_admission.emergency_stop", False),
+        _config("work_admission.max_concurrent_paid_runs", 7),
+        _config("work_admission.engineering_executor_override", "claude"),
+        _config("work_admission.qa_executor_override", "codex"),
+    ]
+    path = _write_configs(tmp_path, configs)
+    typed_requests: list[dict] = []
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/work-admission/controls/initialize":
+            assert request.method == "POST"
+            typed_requests.append(json.loads(request.content.decode()))
+            return httpx.Response(200, json=typed_requests[-1])
+        raise AssertionError(
+            f"protected controls used generic CRUD: {request.method} {request.url}"
+        )
+
+    transport = httpx.MockTransport(handler)
+    with patch.object(
+        seeder.httpx, "Client", lambda *a, **kw: _REAL_CLIENT(transport=transport, **kw)
+    ):
+        assert seeder.seed_system_configs(API_BASE_URL, path) is True
+
+    assert typed_requests == [
+        {
+            "emergency_stop": False,
+            "max_concurrent_paid_runs": 7,
+            "engineering_executor_override": "claude",
+            "qa_executor_override": "codex",
+        }
+    ]
+
+
+def test_paid_work_seed_contract_has_no_operator_mutation_path():
+    """Deploy seeding may initialize absent controls but never replace live policy."""
+    source = (REPO_ROOT / "scripts/seed_system_configs.py").read_text(encoding="utf-8")
+
+    assert '"POST", "work-admission/controls/initialize"' in source
+    assert '"PUT", "work-admission/controls", json=paid_work_controls' not in source
+    assert '"system-configs/", json=payload' in source
+
+
+def test_api_service_test_overlay_initializes_before_production_defaults():
+    """The service-test startup path must not mutate protected controls after seeding."""
+    source = (REPO_ROOT / "services/api/entrypoint.sh").read_text(encoding="utf-8")
+
+    assert source.index('"$SYSTEM_CONFIGS_TEST_OVERLAY"') < source.index(
+        "/app/scripts/system_configs.yaml"
+    )
+    assert "--skip-key work_admission.max_projects_per_user" in source
