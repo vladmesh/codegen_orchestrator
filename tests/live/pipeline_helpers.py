@@ -230,8 +230,34 @@ def docker_exec_python_module(
     )
 
 
-async def ensure_test_user(api: httpx.AsyncClient) -> None:
-    """Create test user if not exists."""
+async def ensure_test_user(
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient | None = None
+) -> None:
+    """Ensure the harness's fixture user exists, then touch it as that user.
+
+    Registration is promo-gated: `_requires_promo` exempts only a service acting
+    for itself, so a request naming `X-Telegram-ID` must redeem a code. The
+    harness user is a fixture, not a customer walking through the product door,
+    so when `api_internal` is given it is created by the internal service naming
+    nobody. Updating an existing user needs no code, which is why the user-client
+    call below still stands: it is what proves the product client's header
+    composition is accepted by the auth gate.
+
+    `api_internal` is optional so the header-composition contract test can drive
+    this function with one fake transport and no server behind it.
+    """
+    if api_internal is not None:
+        created = await api_internal.post(
+            "/api/users/upsert",
+            json={
+                "telegram_id": TEST_TELEGRAM_ID,
+                "username": "live_test_bot",
+                "first_name": "Live",
+                "last_name": "Test",
+            },
+        )
+        created.raise_for_status()
+
     resp = await api.post(
         "/api/users/upsert",
         json={

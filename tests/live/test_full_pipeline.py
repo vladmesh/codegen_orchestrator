@@ -64,7 +64,6 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefix: str):
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions."""
     async with api_client_as_test_user() as api:
-        await ensure_test_user(api)
         # Deploy runs belong to no user, and list_runs hides unowned runs from the
         # non-admin harness user, so they are observed through a client that
         # authenticates only as an internal service and names no user.
@@ -72,6 +71,9 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
             api_client_as_unscoped_observer() as api_observer,
             api_client_as_internal_service() as api_internal,
         ):
+            # The fixture user is registered by the service, then touched as
+            # itself: registration is promo-gated for a named actor.
+            await ensure_test_user(api, api_internal)
             ctx = await create_project(api, api_internal)
             async with cleanup_guard(
                 lambda: cleanup_all(api_internal, api_observer, ctx), manifest=ctx["manifest"]
