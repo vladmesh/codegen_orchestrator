@@ -44,6 +44,41 @@ def test_snapshot_rejects_extra_fields_and_expired_observations():
     )
 
 
+def test_snapshot_rejects_a_fresh_outer_window_with_an_expired_executor_entry():
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError):
+        ExecutorDiagnosticSnapshot(
+            schema_version="v1",
+            version="mixed-freshness",
+            observed_at=now,
+            expires_at=now + timedelta(seconds=60),
+            diagnostics=[
+                ExecutorDiagnostic(
+                    executor=AgentType.CODEX,
+                    enabled=True,
+                    auth_mode="host_session",
+                    availability=ExecutorAvailability.AVAILABLE,
+                    observed_at=now,
+                    expires_at=now + timedelta(seconds=60),
+                    active_lease_count=0,
+                    reason_code="ready",
+                    reason="Local authentication and worker inventory are ready.",
+                ),
+                ExecutorDiagnostic(
+                    executor=AgentType.CLAUDE,
+                    enabled=True,
+                    auth_mode="host_session",
+                    availability=ExecutorAvailability.AVAILABLE,
+                    observed_at=now - timedelta(seconds=120),
+                    expires_at=now - timedelta(seconds=60),
+                    active_lease_count=0,
+                    reason_code="ready",
+                    reason="Local authentication and worker inventory are ready.",
+                ),
+            ],
+        )
+
+
 def test_snapshot_requires_protocol_version_and_fixed_safe_reason_text():
     now = datetime.now(UTC)
     item = {

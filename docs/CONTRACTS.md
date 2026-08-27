@@ -192,7 +192,9 @@ state, auth mode, `available`/`degraded`/`unavailable`/`unknown` status,
 observation and expiry times, active lease count (or `null` when inventory is
 unknown), a fixed safe reason code/text pair and an opaque version. The required
 `schema_version="v1"` prevents a partial or old writer from being accepted. It
-never carries credentials, credential-file contents, or host paths. Redis
+has one atomic observation and expiry window: both executor entries must exactly
+match the enclosing snapshot window, so one stale entry invalidates the complete
+snapshot. It never carries credentials, credential-file contents, or host paths. Redis
 absence, expiry, malformed values, partial snapshots and inventory failures are
 typed `unknown`, not a last-known-good availability claim.
 

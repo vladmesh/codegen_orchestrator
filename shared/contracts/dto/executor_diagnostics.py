@@ -135,6 +135,11 @@ class ExecutorDiagnosticSnapshot(BaseModel):
             raise ValueError("snapshot must contain exactly Claude and Codex")
         if self.expires_at <= self.observed_at:
             raise ValueError("snapshot expiry must be after observation")
+        if any(
+            item.observed_at != self.observed_at or item.expires_at != self.expires_at
+            for item in self.diagnostics
+        ):
+            raise ValueError("executor diagnostic windows must match the snapshot window")
         return self
 
     def for_executor(self, executor: AgentType, now: datetime) -> ExecutorDiagnostic:
