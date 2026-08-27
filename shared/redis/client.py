@@ -63,6 +63,11 @@ class StreamMessage:
 
     message_id: str
     data: dict[str, Any]
+    # True when this entry came back from an XAUTOCLAIM sweep of the PEL rather
+    # than from a fresh XREADGROUP delivery. A consumer that runs several jobs
+    # at once needs the difference: a reclaimed entry may still belong to a
+    # worker that is alive, and taking it over would run the same job twice.
+    reclaimed: bool = False
 
     # Helper to parse known DTOs if needed, but 'data' is raw dict
 
@@ -444,8 +449,8 @@ class RedisStreamClient:
         claim_pending: bool,
         pending_timeout_ms: int,
         reclaim_interval_ms: int,
-    ) -> AsyncIterator[tuple[str, dict[str, str]] | None]:
-        """Yield raw ``(message_id, fields)`` entries from a stream.
+    ) -> AsyncIterator[tuple[str, dict[str, str], bool] | None]:
+        """Yield raw ``(message_id, fields, reclaimed)`` entries from a stream.
 
         Shared read plumbing for ``consume`` and ``consume_typed``: ensures the
         group exists, then alternates an XAUTOCLAIM sweep of the PEL with a
@@ -472,7 +477,8 @@ class RedisStreamClient:
                     async for entry in self._reclaim_pending(
                         stream, group, consumer, count, pending_timeout_ms
                     ):
-                        yield entry
+                        message_id, fields = entry
+                        yield message_id, fields, True
 
                 messages = await self.redis.xreadgroup(
                     groupname=group,
@@ -494,7 +500,7 @@ class RedisStreamClient:
 
                 for _stream_name, stream_messages in messages:
                     for message_id, fields in stream_messages:
-                        yield decode_redis_value(message_id), fields
+                        yield decode_redis_value(message_id), fields, False
 
             except asyncio.CancelledError:
                 logger.info("consumer_cancelled", consumer=consumer)
@@ -553,9 +559,9 @@ class RedisStreamClient:
             if entry is None:
                 yield None  # type: ignore[misc]
                 continue
-            message_id, fields = entry
+            message_id, fields, reclaimed = entry
             data = self._parse_fields(fields)
-            yield StreamMessage(message_id=message_id, data=data)
+            yield StreamMessage(message_id=message_id, data=data, reclaimed=reclaimed)
             if auto_ack:
                 await self.redis.xack(stream, group, message_id)
                 logger.debug("message_acked", message_id=message_id)
@@ -708,7 +714,7 @@ class RedisStreamClient:
             if entry is None:
                 yield None
                 continue
-            message_id, fields = entry
+            message_id, fields, _reclaimed = entry
 
             try:
                 data = self._decode_entry(fields)

@@ -12,6 +12,7 @@ import pytest
 
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.story import StoryStatus
+from shared.redis_client import StreamMessage
 
 
 @pytest.fixture()
@@ -220,7 +221,9 @@ class TestTerminalConsumerMessages:
         from src.consumers._base import run_queue_worker
 
         mock_api_client.get.return_value = {"status": "running"}
-        message = MagicMock(message_id="1-0", data={"task_id": "run-1", "project_id": "project-1"})
+        message = StreamMessage(
+            message_id="1-0", data={"task_id": "run-1", "project_id": "project-1"}
+        )
 
         async def consume(*_args, **_kwargs):
             yield message
@@ -245,7 +248,9 @@ class TestTerminalConsumerMessages:
         from src.consumers._base import run_queue_worker
 
         mock_api_client.get.return_value = {"status": "running"}
-        message = MagicMock(message_id="1-0", data={"task_id": "run-1", "project_id": "project-1"})
+        message = StreamMessage(
+            message_id="1-0", data={"task_id": "run-1", "project_id": "project-1"}
+        )
 
         async def consume(*_args, **_kwargs):
             yield message
@@ -412,7 +417,7 @@ class TestTerminalConsumerMessages:
             validate_queued_message(Job, {"task_id": "not-an-int"})
             return {}
 
-        message = MagicMock(message_id="1-0", data={"task_id": "run-1"})
+        message = StreamMessage(message_id="1-0", data={"task_id": "run-1"})
 
         async def consume(*_args, **_kwargs):
             yield message
@@ -439,7 +444,7 @@ class TestTerminalConsumerMessages:
             DownstreamResponse.model_validate({"service_name": 42})
             return {}
 
-        message = MagicMock(message_id="1-0", data={"task_id": "run-1"})
+        message = StreamMessage(message_id="1-0", data={"task_id": "run-1"})
 
         async def consume(*_args, **_kwargs):
             yield message

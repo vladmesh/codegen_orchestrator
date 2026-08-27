@@ -28,6 +28,11 @@ _WORK_ADMISSION_KEYS = {
     "work_admission.engineering_executor_override",
     "work_admission.qa_executor_override",
 }
+# Keys the file seeds once and then leaves to the operator. An operator raises
+# engineering slots on a running installation after watching it; a deploy that
+# reset the value back to the file's would take capacity away silently, which is
+# exactly the kind of quiet divergence this contour is trying to stop.
+_OPERATOR_OWNED_KEYS = frozenset({"engineering.worker_slots"})
 _PAID_WORK_CONTROL_FIELDS = {
     "work_admission.emergency_stop": "emergency_stop",
     "work_admission.max_concurrent_paid_runs": "max_concurrent_paid_runs",
@@ -105,6 +110,11 @@ def seed_system_configs(
             try:
                 exists, db_value = _current_value(client, key)
                 if exists and db_value == value:
+                    unchanged += 1
+                    continue
+
+                if exists and key in _OPERATOR_OWNED_KEYS:
+                    print(f"  Kept operator-owned '{key}': db={db_value!r} (file={value!r})")
                     unchanged += 1
                     continue
 

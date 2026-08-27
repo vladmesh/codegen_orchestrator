@@ -117,6 +117,32 @@ async def _refresh_live_work_lease(redis: RedisStreamClient, project_id: str, to
     return refreshed == 1
 
 
+async def live_work_active(redis: RedisStreamClient, project_id: str) -> bool:
+    """Report whether some worker still holds an unexpired lease on this project.
+
+    The lease ZSET is the existing liveness contract: every running job adds a
+    token scored with its expiry and refreshes it every
+    ``LIVE_WORK_LEASE_REFRESH_SECONDS``. Expiry is compared against Redis server
+    time, not the caller's clock, so two consumers on different hosts agree.
+
+    Used to decide whether a reclaimed PEL entry may be taken over. A crashed
+    worker stops refreshing and its lease falls out of the live window within
+    ``LIVE_WORK_LEASE_SECONDS``; a working one keeps it, and its entry stays
+    where it is.
+    """
+    live = await redis.redis.eval(
+        """
+        local now = redis.call('TIME')
+        local now_ms = now[1] * 1000 + math.floor(now[2] / 1000)
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
+        return redis.call('ZCARD', KEYS[1])
+        """,
+        1,
+        live_work_leases_key(project_id),
+    )
+    return int(live) > 0
+
+
 async def _cancel_on_live_teardown(
     redis: RedisStreamClient, project_id: str, token: str, owner: asyncio.Task[object]
 ) -> None:
