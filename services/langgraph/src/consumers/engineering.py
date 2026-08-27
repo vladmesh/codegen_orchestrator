@@ -44,6 +44,11 @@ from .story_context import (
     build_story_md as _build_story_md,
 )
 
+# How many engineering jobs one consumer runs at once. Operator-owned at
+# runtime: raising it lets a second user's project start while the first is
+# still working, lowering it drains back to sequential without a redeploy.
+ENGINEERING_SLOTS_CONFIG_KEY = "engineering.worker_slots"
+
 # Re-export for backward compatibility with tests
 __all__ = [
     "_build_story_context",
@@ -389,6 +394,7 @@ def main():
         service_name="engineering-worker",
         queue=ENGINEERING_QUEUE,
         process_fn=process_engineering_job,
+        slots_config_key=ENGINEERING_SLOTS_CONFIG_KEY,
     )
 
 

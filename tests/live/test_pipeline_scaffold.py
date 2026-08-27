@@ -33,7 +33,7 @@ async def scaffold_ctx():
         api_client_as_test_user() as api,
         api_client_as_internal_service() as api_internal,
     ):
-        await ensure_test_user(api)
+        await ensure_test_user(api, api_internal)
         ctx = await create_noop_project(api, api_internal)
         async with cleanup_guard(
             lambda: cleanup_all(api_internal, None, ctx), manifest=ctx["manifest"]

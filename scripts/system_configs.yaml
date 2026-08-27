@@ -197,6 +197,12 @@
   category: deploy
   description: "TTL for deploy lock in seconds (1 hour)"
 
+# --- engineering ---
+- key: engineering.worker_slots
+  value: 1
+  category: engineering
+  description: "How many engineering jobs one worker consumer runs at once (raise only on measured host and provider capacity)"
+
 # --- health ---
 - key: health.ram_threshold_pct
   value: 90.0
