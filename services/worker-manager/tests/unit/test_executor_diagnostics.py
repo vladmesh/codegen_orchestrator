@@ -89,9 +89,7 @@ async def test_terminal_redis_worker_without_a_container_is_a_settled_zero_lease
 async def test_terminal_redis_worker_with_a_terminal_matching_container_is_zero_lease():
     redis = _inventory_redis(["worker-1"], statuses={"worker-1": "FAILED"})
     docker = MagicMock()
-    docker.list_containers = AsyncMock(
-        return_value=[_container("worker-1", "codex", "host_session", status="exited")]
-    )
+    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session", status="exited")])
 
     assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() == {
         AgentType.CLAUDE: 0,

@@ -158,9 +158,15 @@ async def test_unknown_diagnostic_confirmation_requires_a_bearer_admin_and_audit
         )
 
     assert ordinary_response.status_code == HTTPStatus.FORBIDDEN, ordinary_response.text
-    assert internal_only_response.status_code == HTTPStatus.UNAUTHORIZED, internal_only_response.text
-    assert impersonation_response.status_code == HTTPStatus.UNAUTHORIZED, impersonation_response.text
-    assert conflicting_header_response.status_code == HTTPStatus.FORBIDDEN, conflicting_header_response.text
+    assert internal_only_response.status_code == HTTPStatus.UNAUTHORIZED, (
+        internal_only_response.text
+    )
+    assert impersonation_response.status_code == HTTPStatus.UNAUTHORIZED, (
+        impersonation_response.text
+    )
+    assert conflicting_header_response.status_code == HTTPStatus.FORBIDDEN, (
+        conflicting_header_response.text
+    )
     assert confirmed_response.status_code == HTTPStatus.OK, confirmed_response.text
     audit = session.add.call_args.args[0]
     assert audit.actor == f"admin:{admin.id}"
