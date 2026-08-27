@@ -36,14 +36,34 @@ import urllib.request
 # behind it absorbing what a worker adds during a run.
 HTTP_BAD_REQUEST = 400  # what the API answers when the handle is already taken
 
+
+def _env_int(name: str, fallback: int) -> int:
+    """Read a capacity override, falling back rather than failing on nonsense."""
+    raw = os.environ.get(name)
+    if not raw:
+        return fallback
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"{name}={raw!r} is not a number; using {fallback}", file=sys.stderr)
+        return fallback
+
+
+# The stand is its own deploy target, so its address is the orchestrator's own —
+# read from the environment rather than pinned to a machine. A stand is
+# rebuilt and replaced; a hardcoded address silently registers the previous
+# stand, and 5wwb, the address this held before, is a production target today.
 DEFAULTS = {
     "handle": "stand-self",
-    "host": "5wwb.l.time4vps.cloud",
-    "public_ip": "212.24.101.230",
+    "host": os.environ.get("ORCHESTRATOR_HOSTNAME", ""),
+    "public_ip": os.environ.get("ORCHESTRATOR_PUBLIC_IP", ""),
     "ssh_user": "stand-deploy",
-    "capacity_cpu": 2,
-    "capacity_ram_mb": 3400,
-    "capacity_disk_mb": 20480,
+    "capacity_cpu": _env_int("STAND_TARGET_CPU", 2),
+    # Capacity is arithmetic for the allocator, not a limit the host enforces:
+    # a project is admitted when capacity >= used + min_ram + reserve. Leave the
+    # orchestrator's own footprint out of it, or nothing is ever admitted.
+    "capacity_ram_mb": _env_int("STAND_TARGET_RAM_MB", 3400),
+    "capacity_disk_mb": _env_int("STAND_TARGET_DISK_MB", 20480),
 }
 
 
