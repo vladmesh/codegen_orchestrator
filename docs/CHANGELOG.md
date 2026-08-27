@@ -38,6 +38,10 @@
 
 ### Fixed
 
+- Executor-availability integration fixtures now publish complete fresh
+  diagnostics, the worker-manager rollout suite keeps its runner alive across
+  intentional control-plane replacement, and Settings updates stale state
+  outside render.
 - Deploy seeding now initializes absent paid-work controls through a distinct
   typed operation and never replaces live emergency-stop, paid-run ceiling, or
   executor-override values. Settings confirms every executor override

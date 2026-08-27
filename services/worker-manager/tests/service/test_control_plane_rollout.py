@@ -131,7 +131,12 @@ def _roll_out(daemon, project: str) -> None:
         )
         assert containers, f"no {service} container in project {project}"
         for container in containers:
-            container.restart(timeout=30)
+            # Docker's restart endpoint can hold its Unix-socket response open
+            # after the process has already come back. A deploy only requires a
+            # replacement process; an explicit kill/start provides that same
+            # transition without coupling the test runner to that response.
+            container.kill()
+            container.start()
 
     deadline = time.monotonic() + RESTART_TIMEOUT_SECONDS
     for url in (f"{BROKER_URL}/docs", f"{WORKER_MANAGER_URL}/health"):

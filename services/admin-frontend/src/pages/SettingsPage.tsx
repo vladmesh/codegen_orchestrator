@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router'
 import { ChevronDown, ChevronRight, Save, X, Pencil, Check } from 'lucide-react'
@@ -170,6 +170,7 @@ function PaidWorkControlsCard() {
 
 function ExecutorDiagnosticsCard() {
   const queryClient = useQueryClient()
+  const [stale, setStale] = useState(false)
   const diagnostics = useQuery({
     queryKey: ['executor-diagnostics'],
     queryFn: () => api.get<ExecutorDiagnosticSnapshot>('/work-admission/executor-diagnostics'),
@@ -183,9 +184,18 @@ function ExecutorDiagnosticsCard() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['executor-diagnostics'] }),
   })
 
+  useEffect(() => {
+    if (!diagnostics.data) return
+
+    const expiresAt = new Date(diagnostics.data.expires_at).getTime()
+    const updateStaleness = () => setStale(expiresAt <= Date.now())
+    updateStaleness()
+    const timer = window.setTimeout(updateStaleness, Math.max(0, expiresAt - Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [diagnostics.data])
+
   if (diagnostics.isLoading) return <p className="text-xs text-muted-foreground">Loading executor diagnostics...</p>
   if (diagnostics.isError || !diagnostics.data) return <p role="alert" className="text-xs text-red-400">Executor diagnostics are unavailable.</p>
-  const stale = new Date(diagnostics.data.expires_at).getTime() <= Date.now()
   return (
     <section aria-labelledby="executor-diagnostics-heading" className="space-y-2 border-t border-border pt-4">
       <h3 id="executor-diagnostics-heading" className="text-sm font-semibold">Executor diagnostics</h3>

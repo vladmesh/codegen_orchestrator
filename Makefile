@@ -296,8 +296,24 @@ test-service:
 	fi
 	@echo "🧪 Running $(SERVICE) service tests..."
 	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml down --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
-	EXIT_CODE=$$?; \
+	@EXIT_CODE=0; \
+	if [ "$(SERVICE)" = "worker-manager" ]; then \
+		: "The rollout suite deliberately restarts the control-plane containers."; \
+		: "Keep the test runner independent from those expected container exits."; \
+		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml build; \
+		EXIT_CODE=$$?; \
+		if [ "$$EXIT_CODE" -eq 0 ]; then \
+			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml up -d --wait $(SERVICE)-test-runner; \
+			EXIT_CODE=$$?; \
+		fi; \
+		if [ "$$EXIT_CODE" -eq 0 ]; then \
+			docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml exec -T $(SERVICE)-test-runner pytest tests/service/ -v -s; \
+			EXIT_CODE=$$?; \
+		fi; \
+	else \
+		docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
+		EXIT_CODE=$$?; \
+	fi; \
 	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
 	if [ -n "$$FAILED_CONTAINERS" ]; then \
 		echo "$$FAILED_CONTAINERS"; \
