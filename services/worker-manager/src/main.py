@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI):
     redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     worker_manager = WorkerManager(redis)
     await migrate_pre_cutover_worker_records(redis)
+    await worker_manager.publish_executor_diagnostics()
 
     # Shared state for HTTP handlers
     app.state.compose_runner = ComposeRunner(settings.SCAFFOLDED_WORKSPACE_PATH)
@@ -101,6 +102,14 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    diagnostics_task = asyncio.create_task(
+        run_periodic_task(
+            worker_manager.publish_executor_diagnostics,
+            interval=settings.EXECUTOR_DIAGNOSTICS_INTERVAL_SECONDS,
+            name="executor_diagnostics",
+        )
+    )
+
     yield
 
     # Shutdown
@@ -114,6 +123,7 @@ async def lifespan(app: FastAPI):
     gc_task.cancel()
     orphan_gc_task.cancel()
     workspace_gc_task.cancel()
+    diagnostics_task.cancel()
 
     try:
         await asyncio.gather(
@@ -122,6 +132,7 @@ async def lifespan(app: FastAPI):
             gc_task,
             orphan_gc_task,
             workspace_gc_task,
+            diagnostics_task,
             return_exceptions=True,
         )
     except Exception:

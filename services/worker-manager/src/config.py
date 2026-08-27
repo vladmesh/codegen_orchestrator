@@ -32,6 +32,11 @@ class WorkerManagerSettings(BaseSettings):
     HOST_CODEX_HOME: str | None = None
     HOST_CODEX_VALIDATION_PATH: str | None = None
 
+    # Redis handoff is deliberately short-lived: the API treats a missing or
+    # expired value as unknown instead of using a last-known-good diagnosis.
+    EXECUTOR_DIAGNOSTICS_TTL_SECONDS: int = Field(default=90, gt=0, le=600)
+    EXECUTOR_DIAGNOSTICS_INTERVAL_SECONDS: int = Field(default=30, gt=0, le=300)
+
     # Path to pre-scaffolded workspaces (created by scaffolder service)
     # All workspaces live here, keyed by repo_id: /data/workspaces/{repo_id}/
     SCAFFOLDED_WORKSPACE_PATH: str = "/data/workspaces"

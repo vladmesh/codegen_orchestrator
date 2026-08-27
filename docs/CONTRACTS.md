@@ -184,6 +184,39 @@ snapshot without resolving configuration again, and generic Run metadata
 updates may merge operational keys but cannot replace or partially alter this
 record.
 
+### Executor diagnostics and availability admission
+
+`executor:diagnostics:v1` is one short-lived, strict `v1` Redis snapshot produced
+by worker-manager. It contains exactly Claude and Codex, each with its enabled
+state, auth mode, `available`/`degraded`/`unavailable`/`unknown` status,
+observation and expiry times, active lease count, safe reason code/text and an
+opaque version. It never carries credentials, credential-file contents, or host
+paths. Redis absence, expiry, malformed values, partial snapshots and inventory
+failures are typed `unknown`, not a last-known-good availability claim.
+
+`unavailable` means local configuration or authentication has been proven
+unusable, such as a disabled executor or missing/invalid required host-session
+material. `available` means the configured local validator and Docker/Redis
+worker inventory reconciliation both succeeded. `degraded` is reserved for a
+locally usable state with an explicit non-fatal warning. Worker leases are only
+attributable nonterminal `worker:meta:*` owners that reconcile with a Docker
+container; an unreconciled inventory does not claim a known count.
+
+After the one executor resolver selects Claude or Codex, `start_paid_run` reads
+one validated snapshot before any engineering reservation, paid Run insert or
+queue handoff. `unavailable` is a typed refusal and `unknown` is a typed
+confirmation-required result. Factory remains the legacy engineering choice and
+has no Claude/Codex diagnostic. A queued/running replay uses its persisted
+executor decision and never rechecks diagnostics.
+
+Only an authenticated admin may confirm an `unknown` snapshot at
+`POST /api/work-admission/executor-diagnostics/confirmations`. The append-only
+`WorkAdmissionAudit` fact records the admin actor, executor, exact version and
+snapshot expiry. A confirmation admits any number of starts for that executor
+until that exact snapshot expires; a new version, another executor, expiry or
+an invalid snapshot cannot reuse it. Internal services cannot create a
+confirmation.
+
 `EngineeringMessage.task_id` and `QAMessage.run_id` are stable references to
 the paid Run. Their consumers load the snapshot by that reference before an
 engineering or exploratory-QA worker launches. They never select an executor

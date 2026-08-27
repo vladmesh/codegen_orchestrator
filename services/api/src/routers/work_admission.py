@@ -5,19 +5,31 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.executor_diagnostics import (
+    ExecutorAvailability,
+    ExecutorDiagnosticSnapshot,
+)
 from shared.contracts.dto.work_admission import (
     EmergencyStopCommand,
     EmergencyStopRead,
+    ExecutorDiagnosticConfirmationCommand,
+    ExecutorDiagnosticConfirmationRead,
     PaidRunStartCommand,
     PaidRunStartRead,
     PaidWorkControlsCommand,
     PaidWorkControlsRead,
     WorkAdmissionControlCommand,
 )
-from shared.models import SystemConfig, WorkAdmissionAudit
+from shared.contracts.vocab import AgentType
+from shared.models import SystemConfig, User, WorkAdmissionAudit
 
 from ..database import get_async_session
-from ..dependencies import get_internal_or_admin_actor, require_internal_or_admin
+from ..dependencies import get_internal_or_admin_actor, require_admin, require_internal_or_admin
+from ..executor_diagnostics import (
+    current_executor_diagnostic,
+    current_executor_snapshot,
+    unknown_diagnostic,
+)
 from ..work_admission import (
     EMERGENCY_STOP_KEY,
     ENGINEERING_EXECUTOR_OVERRIDE_KEY,
@@ -141,6 +153,66 @@ async def get_paid_work_controls(
     _: None = Depends(require_internal_or_admin),
 ) -> PaidWorkControlsRead:
     return _paid_work_controls(await _controls(db, *PAID_WORK_CONTROL_KEYS))
+
+
+@router.get("/executor-diagnostics", response_model=ExecutorDiagnosticSnapshot)
+async def get_executor_diagnostics(
+    _: None = Depends(require_internal_or_admin),
+) -> ExecutorDiagnosticSnapshot:
+    snapshot = await current_executor_snapshot()
+    if snapshot is not None:
+        return snapshot
+    # A typed failure response has no trusted version and cannot be confirmed.
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    return ExecutorDiagnosticSnapshot(
+        version="unknown",
+        observed_at=now,
+        expires_at=now + timedelta(seconds=1),
+        diagnostics=[
+            unknown_diagnostic(AgentType.CLAUDE, "snapshot_unavailable"),
+            unknown_diagnostic(AgentType.CODEX, "snapshot_unavailable"),
+        ],
+    )
+
+
+@router.post(
+    "/executor-diagnostics/confirmations",
+    response_model=ExecutorDiagnosticConfirmationRead,
+)
+async def confirm_unknown_executor_diagnostic(
+    command: ExecutorDiagnosticConfirmationCommand,
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(require_admin),
+) -> ExecutorDiagnosticConfirmationRead:
+    executor = AgentType(command.executor)
+    diagnostic, snapshot = await current_executor_diagnostic(executor)
+    if (
+        snapshot is None
+        or snapshot.version != command.snapshot_version
+        or diagnostic.availability is not ExecutorAvailability.UNKNOWN
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "executor_diagnostic_confirmation_stale"},
+        )
+    db.add(
+        WorkAdmissionAudit(
+            subject="executor_diagnostic_confirmation",
+            outcome="confirmed",
+            reference_id=snapshot.version,
+            command_payload={"executor": executor.value, "snapshot_version": snapshot.version},
+            after_value={"expires_at": snapshot.expires_at.isoformat()},
+            actor=f"admin:{admin.id}",
+        )
+    )
+    await db.commit()
+    return ExecutorDiagnosticConfirmationRead(
+        executor=executor.value,
+        snapshot_version=snapshot.version,
+        expires_at=snapshot.expires_at.isoformat(),
+    )
 
 
 @router.put("/controls", response_model=PaidWorkControlsRead)

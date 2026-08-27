@@ -30,7 +30,6 @@ ADMITTING_STATUSES = frozenset({"active", "ready", "in_use"})
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 # The stand deploys onto itself, so the same disk carries the orchestrator, the
 # worker images and every stack a run brings up.
-CLAUDE_PROBE_TIMEOUT_SECONDS = 120
 
 
 def _fail(check: str, detail: str) -> tuple[str, bool, str]:
@@ -53,47 +52,16 @@ def check_contour() -> tuple[str, bool, str]:
 
 
 def check_claude_session(profile: str | None, probe: bool = True) -> tuple[str, bool, str]:
-    """Judge the session by its refresh token, then by actually using it.
-
-    The access token is short-lived by design — around eight hours — and the CLI
-    exchanges the refresh token for a new one whenever it runs. So an expired
-    access token says nothing; a missing refresh token says the profile is dead
-    and needs `claude auth login`. What settles it is the probe: the stand idles
-    between runs, and the failure this check exists to catch is a refresh that no
-    longer works.
-    """
-    if not profile:
-        return _fail("claude session", "HOST_CLAUDE_DIR is unset")
-    credentials = Path(profile) / ".credentials.json"
-    if not credentials.is_file():
-        return _fail("claude session", f"no .credentials.json in {profile}; run claude auth login")
+    """Apply worker-manager's local validator without using the provider."""
     try:
-        data = json.loads(credentials.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        return _fail("claude session", f"unreadable credentials: {exc}")
+        sys.path.insert(0, str(Path(__file__).parents[1] / "services" / "worker-manager"))
+        from src.claude_auth import validate_claude_host_session
 
-    oauth = data.get("claudeAiOauth") or {}
-    if not oauth.get("refreshToken"):
-        return _fail("claude session", "no refresh token; run claude auth login")
+        validate_claude_host_session(profile)
+    except (ImportError, RuntimeError) as exc:
+        return _fail("claude session", str(exc))
 
-    if not probe:
-        return _ok("claude session", "refresh token present (not probed)")
-
-    try:
-        result = subprocess.run(  # noqa: S603
-            ["claude", "-p", "reply with the single word: ready"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=CLAUDE_PROBE_TIMEOUT_SECONDS,
-            env={**os.environ, "CLAUDE_CONFIG_DIR": profile},
-            cwd="/tmp",  # noqa: S108 — the probe must not read a project's config
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return _fail("claude session", f"probe failed: {exc}")
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        return _fail("claude session", f"probe rejected: {detail[-1] if detail else 'no output'}")
-    return _ok("claude session", "probe answered")
+    return _ok("claude session", "local session material is valid")
 
 
 def check_codex_session(profile: str | None) -> tuple[str, bool, str]:
@@ -107,7 +75,7 @@ def check_codex_session(profile: str | None) -> tuple[str, bool, str]:
         validate_codex_host_session(profile)
     except RuntimeError as exc:
         return _fail("codex session", str(exc))
-    return _ok("codex session", profile or "")
+    return _ok("codex session", "local session material is valid")
 
 
 def check_deploy_target(api_url: str, internal_key: str | None) -> tuple[str, bool, str]:
@@ -173,10 +141,6 @@ def check_docker() -> tuple[str, bool, str]:
 
 
 def main() -> int:
-    # The probe spends a little quota and a few seconds. It is on by default
-    # because a structural check alone has never been what goes wrong here.
-    probe = "--no-probe" not in sys.argv
-
     results = [
         check_contour(),
         check_docker(),
@@ -185,7 +149,7 @@ def main() -> int:
             os.environ.get("STAND_API_URL", DEFAULT_API_URL),
             os.environ.get("INTERNAL_API_KEY"),
         ),
-        check_claude_session(os.environ.get("HOST_CLAUDE_DIR"), probe=probe),
+        check_claude_session(os.environ.get("HOST_CLAUDE_DIR")),
         check_codex_session(os.environ.get("HOST_CODEX_HOME")),
     ]
 

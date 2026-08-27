@@ -5,12 +5,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from shared.contracts.dto.executor_diagnostics import (
+    ExecutorAuthMode,
+    ExecutorAvailability,
+    ExecutorDiagnostic,
+)
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.work_admission import (
     PaidRunStartCommand,
     WorkAdmissionOutcome,
     WorkAdmissionReason,
 )
+from shared.contracts.vocab import AgentType
 from src.work_admission import admit_project_creation, start_paid_run
 
 
@@ -36,7 +42,7 @@ async def test_project_stop_is_checked_before_the_project_count():
 
 
 @pytest.mark.asyncio
-async def test_paid_run_start_adds_the_queued_run_before_returning_admitted():
+async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monkeypatch):
     db = AsyncMock()
     db.add = MagicMock()
     db.scalars.side_effect = [
@@ -52,6 +58,27 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted():
         _rows({}),
     ]
     db.scalar.side_effect = [None, None, SimpleNamespace(owner_id=7, config={}), None, 0]
+
+    async def available_codex(_executor):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        return (
+            ExecutorDiagnostic(
+                executor=AgentType.CODEX,
+                enabled=True,
+                auth_mode=ExecutorAuthMode.HOST_SESSION,
+                availability=ExecutorAvailability.AVAILABLE,
+                observed_at=now,
+                expires_at=now + timedelta(seconds=60),
+                active_lease_count=0,
+                reason_code="ready",
+                reason="Ready.",
+            ),
+            None,
+        )
+
+    monkeypatch.setattr("src.work_admission.current_executor_diagnostic", available_codex)
 
     result = await start_paid_run(
         PaidRunStartCommand(

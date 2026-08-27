@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .engineering_budget_policy import EngineeringBudgetAdmissionRead
 from .executor_decision import ExecutorDecision, ExecutorOverride
+from .executor_diagnostics import ExecutorDiagnostic
 from .run import RunType
 
 
@@ -26,6 +27,8 @@ class WorkAdmissionReason(StrEnum):
     PROJECT_LIMIT = "project_limit"
     PAID_WORK_LIMIT = "paid_work_limit"
     ENGINEERING_BUDGET_DENIED = "engineering_budget_denied"
+    EXECUTOR_UNAVAILABLE = "executor_unavailable"
+    EXECUTOR_CONFIRMATION_REQUIRED = "executor_confirmation_required"
 
 
 class WorkAdmissionRead(BaseModel):
@@ -95,3 +98,21 @@ class PaidRunStartRead(BaseModel):
     run_id: str | None = None
     engineering_budget: EngineeringBudgetAdmissionRead | None = None
     executor_decision: ExecutorDecision | None = None
+    executor_diagnostic: ExecutorDiagnostic | None = None
+
+
+class ExecutorDiagnosticConfirmationCommand(BaseModel):
+    """An admin's acknowledgement of one current unknown diagnostic version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    executor: Literal["claude", "codex"]
+    snapshot_version: str = Field(min_length=1, max_length=128)
+
+
+class ExecutorDiagnosticConfirmationRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    executor: Literal["claude", "codex"]
+    snapshot_version: str
+    expires_at: str

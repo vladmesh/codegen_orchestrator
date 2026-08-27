@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn, relativeTime } from '@/lib/utils'
-import type { SystemConfig, AgentConfig, ExecutorOverride, PaidWorkControls } from '@/types/api'
+import type { SystemConfig, AgentConfig, ExecutorOverride, PaidWorkControls, ExecutorDiagnostic, ExecutorDiagnosticSnapshot } from '@/types/api'
 import { requiresPaidWorkControlConfirmation, type PaidWorkControlField } from './paidWorkControlTransition'
 
 // ---------------------------------------------------------------------------
@@ -163,7 +163,61 @@ function PaidWorkControlsCard() {
         disabled={mutation.isPending}
         onChange={(value) => updateOverride('qa_executor_override', value)}
       />
+      <ExecutorDiagnosticsCard />
     </Card>
+  )
+}
+
+function ExecutorDiagnosticsCard() {
+  const queryClient = useQueryClient()
+  const diagnostics = useQuery({
+    queryKey: ['executor-diagnostics'],
+    queryFn: () => api.get<ExecutorDiagnosticSnapshot>('/work-admission/executor-diagnostics'),
+    refetchInterval: 30_000,
+  })
+  const confirmation = useMutation({
+    mutationFn: (diagnostic: ExecutorDiagnostic) => api.post(
+      '/work-admission/executor-diagnostics/confirmations',
+      { executor: diagnostic.executor, snapshot_version: diagnostics.data?.version },
+    ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['executor-diagnostics'] }),
+  })
+
+  if (diagnostics.isLoading) return <p className="text-xs text-muted-foreground">Loading executor diagnostics...</p>
+  if (diagnostics.isError || !diagnostics.data) return <p role="alert" className="text-xs text-red-400">Executor diagnostics are unavailable.</p>
+  const stale = new Date(diagnostics.data.expires_at).getTime() <= Date.now()
+  return (
+    <section aria-labelledby="executor-diagnostics-heading" className="space-y-2 border-t border-border pt-4">
+      <h3 id="executor-diagnostics-heading" className="text-sm font-semibold">Executor diagnostics</h3>
+      {stale && <p role="alert" className="text-xs text-amber-400">Diagnostic snapshot is stale. New paid starts will require confirmation.</p>}
+      {confirmation.isError && <p role="alert" className="text-xs text-red-400">Unable to confirm the current unknown state.</p>}
+      {diagnostics.data.diagnostics.map((item) => (
+        <div key={item.executor} className="rounded border border-border p-3 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium">{item.executor === 'claude' ? 'Claude' : 'Codex'}</span>
+            <StatusBadge status={item.availability} />
+          </div>
+          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <dt>Enabled</dt><dd>{item.enabled ? 'Yes' : 'No'}</dd>
+            <dt>Auth mode</dt><dd>{item.auth_mode}</dd>
+            <dt>Active leases</dt><dd>{item.active_lease_count}</dd>
+            <dt>Observed</dt><dd>{relativeTime(item.observed_at)}</dd>
+            <dt>Expires</dt><dd>{relativeTime(item.expires_at)}</dd>
+            <dt>Reason</dt><dd>{item.reason}</dd>
+          </dl>
+          {item.availability === 'unknown' && !stale && (
+            <button
+              type="button"
+              disabled={confirmation.isPending}
+              onClick={() => confirmation.mutate(item)}
+              className="mt-3 rounded bg-amber-600 px-3 py-1 text-xs text-white disabled:opacity-50"
+            >
+              {confirmation.isPending ? 'Confirming…' : 'Confirm current unknown state'}
+            </button>
+          )}
+        </div>
+      ))}
+    </section>
   )
 }
 

@@ -1,10 +1,17 @@
 """Atomic count-based admission used by every paid-work entry point."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.engineering_budget_policy import EngineeringBudgetReservationState
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorOverride
+from shared.contracts.dto.executor_diagnostics import (
+    ExecutorAvailability,
+    ExecutorDiagnostic,
+    ExecutorDiagnosticSnapshot,
+)
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.work_admission import (
@@ -24,6 +31,7 @@ from shared.models import (
 )
 
 from .config import get_settings
+from .executor_diagnostics import current_executor_diagnostic
 from .executor_resolver import resolve_executor_decision
 
 EMERGENCY_STOP_KEY = "work_admission.emergency_stop"
@@ -50,6 +58,10 @@ _REFUSAL_MESSAGES = {
     ),
     WorkAdmissionReason.ENGINEERING_BUDGET_DENIED: (
         "Недостаточно доступного бюджета для запуска инженерной задачи."
+    ),
+    WorkAdmissionReason.EXECUTOR_UNAVAILABLE: "Выбранный исполнитель сейчас недоступен.",
+    WorkAdmissionReason.EXECUTOR_CONFIRMATION_REQUIRED: (
+        "Текущее состояние исполнителя неизвестно и требует подтверждения администратора."
     ),
 }
 
@@ -228,6 +240,36 @@ async def _replay_paid_start(
     )
 
 
+async def _has_current_unknown_confirmation(
+    executor: ExecutorDecision, snapshot: ExecutorDiagnosticSnapshot | None, db: AsyncSession
+) -> bool:
+    """A confirmation is reusable for any start until this exact snapshot expires."""
+    if snapshot is None or executor.agent_type.value not in {"claude", "codex"}:
+        return False
+    rows = (
+        await db.scalars(
+            select(WorkAdmissionAudit).where(
+                WorkAdmissionAudit.subject == "executor_diagnostic_confirmation",
+                WorkAdmissionAudit.reference_id == snapshot.version,
+            )
+        )
+    ).all()
+    now = datetime.now(UTC)
+    for row in rows:
+        payload = row.command_payload or {}
+        expiry = (
+            (row.after_value or {}).get("expires_at") if isinstance(row.after_value, dict) else None
+        )
+        if payload.get("executor") != executor.agent_type.value or not isinstance(expiry, str):
+            continue
+        try:
+            if datetime.fromisoformat(expiry) > now:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> PaidRunStartRead:
     """Atomically decide and create one queued engineering or QA run.
 
@@ -262,6 +304,44 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         get_settings(),
         global_override=_override(controls[override_key], override_key),
     )
+    diagnostic: ExecutorDiagnostic | None = None
+    if decision.agent_type.value in {"claude", "codex"}:
+        diagnostic, snapshot = await current_executor_diagnostic(decision.agent_type)
+        if diagnostic.availability is ExecutorAvailability.UNAVAILABLE:
+            return PaidRunStartRead(
+                admission=await _audit(
+                    db,
+                    "paid_work",
+                    WorkAdmissionRead(
+                        outcome=WorkAdmissionOutcome.DENIED,
+                        reason=WorkAdmissionReason.EXECUTOR_UNAVAILABLE,
+                    ),
+                    user_id=user_id,
+                    reference_id=command.id,
+                    command_payload=payload,
+                ),
+                executor_decision=decision,
+                executor_diagnostic=diagnostic,
+            )
+        if (
+            diagnostic.availability is ExecutorAvailability.UNKNOWN
+            and not await _has_current_unknown_confirmation(decision, snapshot, db)
+        ):
+            return PaidRunStartRead(
+                admission=await _audit(
+                    db,
+                    "paid_work",
+                    WorkAdmissionRead(
+                        outcome=WorkAdmissionOutcome.DEFERRED,
+                        reason=WorkAdmissionReason.EXECUTOR_CONFIRMATION_REQUIRED,
+                    ),
+                    user_id=user_id,
+                    reference_id=command.id,
+                    command_payload=payload,
+                ),
+                executor_decision=decision,
+                executor_diagnostic=diagnostic,
+            )
     enabled = controls[EMERGENCY_STOP_KEY]
     if not isinstance(enabled, bool):
         raise RuntimeError(f"{EMERGENCY_STOP_KEY} must be a boolean")
@@ -372,7 +452,12 @@ async def start_paid_run(command: PaidRunStartCommand, db: AsyncSession) -> Paid
         reference_id=command.id,
         command_payload=payload,
     )
-    return PaidRunStartRead(admission=admitted, run_id=run.id, executor_decision=decision)
+    return PaidRunStartRead(
+        admission=admitted,
+        run_id=run.id,
+        executor_decision=decision,
+        executor_diagnostic=diagnostic,
+    )
 
 
 async def abort_paid_run_pre_handoff(run_id: str, reason: str, db: AsyncSession) -> None:

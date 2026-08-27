@@ -4,6 +4,13 @@
 
 ### Added
 
+- Worker-manager now publishes bounded, credential-safe Claude and Codex
+  availability snapshots to Redis at startup and periodically. Admin Settings
+  shows status, local auth mode, freshness, active leases and safe reasons.
+  Paid admission reads the selected executor's current snapshot before any
+  reservation or Run creation, refuses proven-unavailable executors, and
+  requires a version-bound administrator confirmation for `unknown`.
+
 - Internal/admin Settings now exposes one typed, audited paid-work control
   state: emergency stop, concurrent paid-run ceiling, and independent
   engineering/QA executor overrides. Overrides are `none`, `claude`, or

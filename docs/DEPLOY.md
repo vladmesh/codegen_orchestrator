@@ -44,6 +44,29 @@ rg -n 'admin-frontend|handle /api|handle /wm-api|handle /grafana' infra/Caddyfil
 
 The command must print no matches. Do not add a Caddy route for these surfaces.
 
+## Claude and Codex executor diagnostics
+
+Worker-manager publishes a complete Claude/Codex diagnostic snapshot to Redis at
+startup and every 30 seconds. Its 90-second TTL is intentional: a missing,
+stale or malformed snapshot is `unknown` in the admin Settings surface and
+blocks a new paid run until an authenticated admin explicitly confirms the
+current snapshot version. The confirmation is valid for multiple starts only
+until that snapshot expires; refreshing diagnostics invalidates it.
+
+The worker-manager only performs local checks. It does not refresh tokens,
+contact a provider, check quota or make a billable model request. `available`
+therefore means the configured local session and Docker/Redis inventory
+reconciled, not that a provider account has capacity. `unavailable` means a
+local configuration/authentication failure; `unknown` means the service cannot
+prove the state. The Settings card never displays paths or credential detail.
+
+For local recovery, use `claude auth login` to repair the dedicated
+`HOST_CLAUDE_DIR` profile, or `codex login --device-auth` to repair the dedicated
+`HOST_CODEX_HOME` profile. Then verify permissions and structure with
+`./scripts/stand_preflight.py --no-probe`; this uses the same local validators
+as worker creation and performs no provider probe. Do not point either setting
+at an operator's ordinary home profile.
+
 ## Managed project deploy target
 
 The provisioner prepares `/opt/services` for the `Server.ssh_user` configured on
