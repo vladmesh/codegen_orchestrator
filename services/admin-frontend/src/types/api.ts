@@ -31,13 +31,15 @@ export interface Story {
   description: string | null
   acceptance_criteria: string | null
   type: string
-  status: TaskStatus
+  status: string
   priority: number
   blocked_by_story_id: string | null
   created_by: string
   user_report: string | null
+  quarantine_reason?: Record<string, unknown> | null
+  pr_number?: number | null
   created_at: string
-  updated_at: string
+  updated_at?: string | null
 }
 
 export interface Task {
@@ -88,7 +90,26 @@ export interface TaskEvent {
   details: Record<string, unknown>
   actor: string
   created_at: string
+  updated_at?: string | null
 }
+
+export interface TaskTransition {
+  reason?: string | null
+  actor?: string
+  details?: Record<string, unknown>
+}
+
+export interface TaskResume {
+  guidance: string
+  actor?: string
+}
+
+export interface SpawnWorkerRequest {
+  actor?: string
+  description?: string | null
+}
+
+export type SpawnWorkerResponse = Record<string, unknown>
 
 export interface QueueStreamInfo {
   length: number
@@ -184,10 +205,29 @@ export interface Repository {
   role: string
   visibility: string
   is_managed: boolean
-  acceptance_criteria: string | null
-  bot_username: string | null
+  acceptance_criteria?: string | null
+  bot_username?: string | null
   created_at: string
-  updated_at: string
+  updated_at?: string | null
+}
+
+export interface MergeSecretsRequest {
+  secrets: Record<string, string>
+  env_hints?: Record<string, string> | null
+}
+
+export type SecretKeys = Record<string, string[]>
+
+export interface StoryCreate {
+  project_id: string
+  title: string
+  description?: string | null
+  acceptance_criteria?: string | null
+  parent_story_id?: string | null
+  type?: 'product' | 'technical'
+  priority?: number
+  blocked_by_story_id?: string | null
+  created_by?: string
 }
 
 // Worker-manager introspection API (/wm-api/*)
@@ -261,34 +301,34 @@ export interface QueuePendingResponse {
 }
 
 export interface Server {
+  created_at: string
+  updated_at?: string | null
   handle: string
   host: string
   public_ip: string
-  ssh_user: string
-  status: string
-  is_managed: boolean
-  capacity_cpu: number
-  capacity_ram_mb: number
-  capacity_disk_mb: number
-  used_ram_mb: number
-  used_disk_mb: number
-  os_template: string | null
-  labels: Record<string, string>
-  notes: string | null
-  provisioning_started_at: string | null
-  created_at: string
-  updated_at: string
-  // Health metrics (from node_exporter + cadvisor)
-  cpu_usage_pct: number | null
-  load_avg_1m: number | null
-  load_avg_5m: number | null
-  load_avg_15m: number | null
-  network_rx_errors: number | null
-  network_tx_errors: number | null
-  container_count_running: number | null
-  container_count_total: number | null
-  uptime_seconds: number | null
-  last_health_check: string | null
+  ssh_user?: string
+  status?: string
+  is_managed?: boolean
+  capacity_cpu?: number
+  capacity_ram_mb?: number
+  capacity_disk_mb?: number
+  used_ram_mb?: number
+  used_disk_mb?: number
+  os_template?: string | null
+  labels?: Record<string, unknown>
+  provider_id?: string | null
+  notes?: string | null
+  provisioning_started_at?: string | null
+  cpu_usage_pct?: number | null
+  load_avg_1m?: number | null
+  load_avg_5m?: number | null
+  load_avg_15m?: number | null
+  network_rx_errors?: number | null
+  network_tx_errors?: number | null
+  container_count_running?: number | null
+  container_count_total?: number | null
+  uptime_seconds?: number | null
+  last_health_check?: string | null
 }
 
 export interface ContainerMetrics {
@@ -333,26 +373,29 @@ export interface Incident {
 }
 
 export interface PortAllocation {
+  created_at: string
+  updated_at?: string | null
   id: number
   server_handle: string
   port: number
   service_name: string
-  application_id: number | null
+  application_id?: number | null
 }
 
 export interface Application {
+  created_at: string
+  updated_at?: string | null
   id: number
   repo_id: string
   server_handle: string
   service_name: string
-  ports: PortAllocation[]
+  reserved_ram_mb: number
+  ports?: PortAllocation[]
   status: string
-  last_health_check: string | null
-  response_time_ms: number | null
-  ssl_expires_at: string | null
-  uptime_pct_24h: number | null
-  created_at: string
-  updated_at: string
+  last_health_check?: string | null
+  response_time_ms?: number | null
+  ssl_expires_at?: string | null
+  uptime_pct_24h?: number | null
 }
 
 export interface ApplicationHealthMetrics {
@@ -426,6 +469,16 @@ export interface SystemConfigUpdate {
   updated_by?: string | null
 }
 
+export interface FromRepoRequest {
+  repo_url: string
+  project_id: string
+  server_handle: string
+  service_name: string
+  actor?: string
+}
+
+export type FromRepoResponse = Record<string, unknown>
+
 export type ExecutorOverride = 'none' | 'claude' | 'codex'
 
 export interface PaidWorkControls {
@@ -461,6 +514,12 @@ export interface ExecutorDiagnosticSnapshot {
 export interface ExecutorDiagnosticConfirmationCommand {
   executor: 'claude' | 'codex'
   snapshot_version: string
+}
+
+export interface ExecutorDiagnosticConfirmation {
+  executor: 'claude' | 'codex'
+  snapshot_version: string
+  expires_at: string
 }
 
 // Agent configuration (prompts, model settings)

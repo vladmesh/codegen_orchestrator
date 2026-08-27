@@ -7,7 +7,7 @@ import { ConfirmButton } from '@/components/ui/ConfirmButton'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { WorkspaceBrowser } from '@/components/workspace'
 import { formatDate } from '@/lib/utils'
-import type { Application, Project, Repository, Server, Story, Task, User } from '@/types/api'
+import type { Application, FromRepoRequest, FromRepoResponse, MergeSecretsRequest, Project, Repository, SecretKeys, Server, Story, StoryCreate, Task, User } from '@/types/api'
 
 type Tab = 'overview' | 'workspace'
 
@@ -197,12 +197,12 @@ function SecretsEditor({ projectId }: { projectId: string }) {
 
   const { data: secretKeys } = useQuery({
     queryKey: ['secrets', projectId],
-    queryFn: () => api.get<{ keys: string[] }>(`/projects/${projectId}/config/secrets/keys`),
+    queryFn: () => api.get<SecretKeys>(`/projects/${projectId}/config/secrets/keys`),
   })
 
   const addMutation = useMutation({
     mutationFn: () =>
-      api.post<{ keys: string[] }>(`/projects/${projectId}/config/secrets`, {
+      api.post<SecretKeys, MergeSecretsRequest>(`/projects/${projectId}/config/secrets`, {
         secrets: { [newKey]: newValue },
       }),
     onSuccess: () => {
@@ -215,7 +215,7 @@ function SecretsEditor({ projectId }: { projectId: string }) {
 
   const deleteMutation = useMutation({
     mutationFn: (key: string) =>
-      api.delete<{ keys: string[] }>(`/projects/${projectId}/config/secrets/${key}`),
+      api.delete<SecretKeys>(`/projects/${projectId}/config/secrets/${key}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['secrets', projectId] })
     },
@@ -308,7 +308,7 @@ function CreateStoryForm({ projectId }: { projectId: string }) {
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api.post<Story>('/stories/', {
+      api.post<Story, StoryCreate>('/stories/', {
         project_id: projectId,
         title,
         description: description || null,
@@ -411,7 +411,7 @@ function DeployFromRepoForm({ projectId }: { projectId: string }) {
 
   const deployMutation = useMutation({
     mutationFn: () =>
-      api.post<unknown>('/applications/from-repo', {
+      api.post<FromRepoResponse, FromRepoRequest>('/applications/from-repo', {
         repo_url: repoUrl,
         project_id: projectId,
         server_handle: serverHandle,
@@ -572,9 +572,9 @@ function RepositoriesSection({
                     <span className="text-xs text-muted-foreground">
                       server: {app.server_handle}
                     </span>
-                    {app.ports.length > 0 && (
+                    {(app.ports ?? []).length > 0 && (
                       <span className="text-xs text-muted-foreground">
-                        ports: {app.ports.map((p) => p.port).join(', ')}
+                        ports: {app.ports?.map((p) => p.port).join(', ')}
                       </span>
                     )}
                     {app.last_health_check && (

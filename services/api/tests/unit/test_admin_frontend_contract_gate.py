@@ -1,11 +1,12 @@
 """Compare the admin's TypeScript declarations to authoritative Pydantic schemas."""
 
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 import re
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 import pytest
 
 from shared.contracts.dto.admin_overview import AdminOverviewResponse
@@ -15,15 +16,109 @@ from shared.contracts.dto.executor_diagnostics import (
 )
 from shared.contracts.dto.work_admission import (
     ExecutorDiagnosticConfirmationCommand,
+    ExecutorDiagnosticConfirmationRead,
     PaidWorkControlsCommand,
 )
+from src.schemas.actions import FromRepoRequest, SpawnWorkerRequest
 from src.schemas.agent_config import AgentConfigRead, AgentConfigUpdate
-from src.schemas.project import ProjectRead
+from src.schemas.application import ApplicationRead
+from src.schemas.project import MergeSecretsRequest, ProjectRead
+from src.schemas.repository import RepositoryRead
+from src.schemas.server import ServerRead
+from src.schemas.story import StoryCreate, StoryRead
 from src.schemas.system_config import SystemConfigRead, SystemConfigUpdate
-from src.schemas.task import TaskRead
+from src.schemas.task import TaskEventRead, TaskRead, TaskResume, TaskTransition
 from src.schemas.user import UserRead
 
 FRONTEND_TYPES = Path(__file__).resolve().parents[4] / "services/admin-frontend/src/types/api.ts"
+FRONTEND_PAGES = FRONTEND_TYPES.parent.parent / "pages"
+
+# Every request and response used by the Dashboard, Users, Projects, Tasks, and
+# Settings surfaces, including their detail routes. The server model is the
+# source of truth; this exhaustive manifest is the one structural owner of the
+# frontend contract invariant, and the named TypeScript declaration is checked
+# last. The tuple key is discovered directly from api.* call-site generics.
+FRONTEND_CONTRACT_MANIFEST: tuple[
+    tuple[
+        tuple[str, str, str, str | None],
+        type[BaseModel] | TypeAdapter[Any],
+        type[BaseModel] | TypeAdapter[Any] | None,
+    ],
+    ...,
+] = (
+    (("DashboardPage.tsx", "get", "AdminOverview", None), AdminOverviewResponse, None),
+    (("UsersPage.tsx", "get", "User[]", None), UserRead, None),
+    (("UserDetailPage.tsx", "get", "User", None), UserRead, None),
+    (("UserDetailPage.tsx", "get", "Project[]", None), ProjectRead, None),
+    (("ProjectsPage.tsx", "get", "Project[]", None), ProjectRead, None),
+    (("ProjectDetailPage.tsx", "get", "Project", None), ProjectRead, None),
+    (("ProjectDetailPage.tsx", "get", "User", None), UserRead, None),
+    (("ProjectDetailPage.tsx", "get", "Story[]", None), StoryRead, None),
+    (("ProjectDetailPage.tsx", "get", "Task[]", None), TaskRead, None),
+    (("ProjectDetailPage.tsx", "get", "Repository[]", None), RepositoryRead, None),
+    (("ProjectDetailPage.tsx", "get", "Application[]", None), ApplicationRead, None),
+    (("ProjectDetailPage.tsx", "get", "SecretKeys", None), TypeAdapter(dict[str, list[str]]), None),
+    (
+        ("ProjectDetailPage.tsx", "post", "SecretKeys", "MergeSecretsRequest"),
+        TypeAdapter(dict[str, list[str]]),
+        MergeSecretsRequest,
+    ),
+    (
+        ("ProjectDetailPage.tsx", "delete", "SecretKeys", None),
+        TypeAdapter(dict[str, list[str]]),
+        None,
+    ),
+    (("ProjectDetailPage.tsx", "post", "Story", "StoryCreate"), StoryRead, StoryCreate),
+    (("ProjectDetailPage.tsx", "get", "Server[]", None), ServerRead, None),
+    (
+        ("ProjectDetailPage.tsx", "post", "FromRepoResponse", "FromRepoRequest"),
+        TypeAdapter(dict[str, Any]),
+        FromRepoRequest,
+    ),
+    (("TasksPage.tsx", "get", "Task[]", None), TaskRead, None),
+    (("TaskDetailPage.tsx", "get", "Task", None), TaskRead, None),
+    (("TaskDetailPage.tsx", "get", "TaskEvent[]", None), TaskEventRead, None),
+    (("TaskDetailPage.tsx", "post", "Task", "TaskTransition"), TaskRead, TaskTransition),
+    (("TaskDetailPage.tsx", "post", "Task", "TaskResume"), TaskRead, TaskResume),
+    (
+        ("TaskDetailPage.tsx", "post", "SpawnWorkerResponse", "SpawnWorkerRequest"),
+        TypeAdapter(dict[str, Any]),
+        SpawnWorkerRequest,
+    ),
+    (("SettingsPage.tsx", "get", "SystemConfig[]", None), SystemConfigRead, None),
+    (("SettingsPage.tsx", "get", "PaidWorkControls", None), PaidWorkControlsCommand, None),
+    (
+        ("SettingsPage.tsx", "put", "PaidWorkControls", "PaidWorkControls"),
+        PaidWorkControlsCommand,
+        PaidWorkControlsCommand,
+    ),
+    (
+        ("SettingsPage.tsx", "get", "ExecutorDiagnosticSnapshot", None),
+        ExecutorDiagnosticSnapshot,
+        None,
+    ),
+    (
+        (
+            "SettingsPage.tsx",
+            "post",
+            "ExecutorDiagnosticConfirmation",
+            "ExecutorDiagnosticConfirmationCommand",
+        ),
+        ExecutorDiagnosticConfirmationRead,
+        ExecutorDiagnosticConfirmationCommand,
+    ),
+    (
+        ("SettingsPage.tsx", "patch", "SystemConfig", "SystemConfigUpdate"),
+        SystemConfigRead,
+        SystemConfigUpdate,
+    ),
+    (("SettingsPage.tsx", "get", "AgentConfig[]", None), AgentConfigRead, None),
+    (
+        ("SettingsPage.tsx", "patch", "AgentConfig", "AgentConfigUpdate"),
+        AgentConfigRead,
+        AgentConfigUpdate,
+    ),
+)
 
 
 def _matching_brace(source: str, opening: int) -> int:
@@ -194,12 +289,51 @@ def _typescript_shape_factory(source: str) -> Callable[[str], dict[str, Any]]:
     return shape
 
 
-def _assert_contract(source: str, frontend_name: str, model: type[BaseModel]) -> None:
-    server_schema = model.model_json_schema()
+def _assert_contract(
+    source: str, frontend_name: str, model: type[BaseModel] | TypeAdapter[Any]
+) -> None:
+    contract = TypeAdapter(list[model]) if frontend_name.endswith("[]") else model
+    server_schema = (
+        contract.model_json_schema(mode="serialization")
+        if isinstance(contract, type)
+        else contract.json_schema(mode="serialization")
+    )
     expected = _pydantic_shape(server_schema, server_schema)
     actual = _typescript_shape_factory(source)(frontend_name)
     assert actual == expected, (
-        f"{frontend_name} drifted from {model.__name__}:\nexpected={expected}\nactual={actual}"
+        f"{frontend_name} drifted from {getattr(model, '__name__', str(model))}:\n"
+        f"expected={expected}\nactual={actual}"
+    )
+
+
+def _discover_frontend_api_calls() -> Counter[tuple[str, str, str, str | None]]:
+    discovered: Counter[tuple[str, str, str, str | None]] = Counter()
+    pattern = re.compile(r"api\.(get|post|put|patch|delete)\s*<\s*([^>]+?)\s*>")
+    for page in sorted({entry[0][0] for entry in FRONTEND_CONTRACT_MANIFEST}):
+        source = (FRONTEND_PAGES / page).read_text()
+        for match in pattern.finditer(source):
+            type_arguments = [part.strip() for part in match.group(2).split(",")]
+            assert 1 <= len(type_arguments) <= 2, f"unexpected api type arguments in {page}"
+            request = type_arguments[1] if len(type_arguments) == 2 else None
+            discovered[(page, match.group(1), type_arguments[0], request)] += 1
+    return discovered
+
+
+def test_admin_frontend_contract_manifest_is_exhaustive_for_all_five_surfaces():
+    source = FRONTEND_TYPES.read_text()
+    expected_calls: Counter[tuple[str, str, str, str | None]] = Counter()
+    for call, response_model, request_model in FRONTEND_CONTRACT_MANIFEST:
+        expected_calls[call] += 1
+        _assert_contract(source, call[2], response_model)
+        if request_model is not None:
+            assert call[3] is not None
+            _assert_contract(source, call[3], request_model)
+
+    discovered = _discover_frontend_api_calls()
+    assert discovered == expected_calls, (
+        "Every typed Dashboard, Users, Projects, Tasks, and Settings api.* call must appear "
+        f"in FRONTEND_CONTRACT_MANIFEST. Missing={expected_calls - discovered}; "
+        f"unmanifested={discovered - expected_calls}"
     )
 
 

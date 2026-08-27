@@ -157,7 +157,7 @@ function ApplicationDetail({ app: application }: { app: Application }) {
         />
         <MetricCard
           label="SSL Certificate"
-          value={sslStatusText(application.ssl_expires_at)}
+          value={sslStatusText(application.ssl_expires_at ?? null)}
         />
         <MetricCard
           label="Last Check"
@@ -292,9 +292,9 @@ function ServerApplications({ handle }: { handle: string }) {
                 <span className="font-medium">{a.service_name}</span>
               </td>
               <td className="px-4 py-1.5">
-                {a.ports.length > 0 ? (
+                {(a.ports ?? []).length > 0 ? (
                   <div className="flex flex-wrap gap-1.5">
-                    {a.ports.map((p) => (
+                    {a.ports?.map((p) => (
                       <span
                         key={p.id}
                         className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
@@ -321,13 +321,13 @@ function ServerApplications({ handle }: { handle: string }) {
                 )}
               </td>
               <td className="px-4 py-1.5">
-                <span className={`text-xs font-medium ${uptimeColor(a.uptime_pct_24h)}`}>
+                <span className={`text-xs font-medium ${uptimeColor(a.uptime_pct_24h ?? null)}`}>
                   {a.uptime_pct_24h != null ? `${a.uptime_pct_24h.toFixed(1)}%` : '—'}
                 </span>
               </td>
               <td className="px-4 py-1.5">
-                <span className={`text-xs ${sslStatusColor(a.ssl_expires_at)}`}>
-                  {sslStatusText(a.ssl_expires_at)}
+                <span className={`text-xs ${sslStatusColor(a.ssl_expires_at ?? null)}`}>
+                  {sslStatusText(a.ssl_expires_at ?? null)}
                 </span>
               </td>
               <td className="px-4 py-1.5 text-xs text-muted-foreground">
@@ -716,8 +716,8 @@ function ServerRow({ server }: { server: Server }) {
   const [expanded, setExpanded] = useState(false)
   const [activeTab, setActiveTab] = useState<ServerTab>('overview')
 
-  const ramPct = usagePercent(server.used_ram_mb, server.capacity_ram_mb)
-  const diskPct = usagePercent(server.used_disk_mb, server.capacity_disk_mb)
+  const ramPct = usagePercent(server.used_ram_mb ?? 0, server.capacity_ram_mb ?? 0)
+  const diskPct = usagePercent(server.used_disk_mb ?? 0, server.capacity_disk_mb ?? 0)
 
   return (
     <>
@@ -739,7 +739,7 @@ function ServerRow({ server }: { server: Server }) {
           {server.public_ip}
         </td>
         <td className="px-4 py-3">
-          <StatusBadge status={server.status} />
+          <StatusBadge status={server.status ?? 'unknown'} />
         </td>
         <td className="px-4 py-3">
           <div className="space-y-1">

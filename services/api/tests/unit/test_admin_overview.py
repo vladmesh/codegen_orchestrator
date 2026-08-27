@@ -86,7 +86,23 @@ def test_overview_uses_only_valid_persisted_executor_decisions(agent: AgentType)
 
 @pytest.mark.parametrize(
     ("metadata", "availability"),
-    [({}, "legacy"), ({"executor_decision": {"agent_type": "codex"}}, "invalid")],
+    [
+        ({}, "legacy"),
+        ({"executor_decision": {"agent_type": "codex"}}, "invalid"),
+        (
+            {
+                "executor_decision": {
+                    "attempt_kind": "engineering",
+                    "agent_type": "codex",
+                    "source": "api_default",
+                    "policy_version": "v2",
+                    "reason": "configured default",
+                    "unexpected": "must not be discarded",
+                }
+            },
+            "invalid",
+        ),
+    ],
 )
 def test_overview_marks_legacy_and_malformed_decisions_unavailable(metadata, availability):
     run = SimpleNamespace(type="engineering", run_metadata=metadata)
@@ -133,6 +149,20 @@ async def test_overview_counts_all_task_statuses_and_only_persisted_paid_decisio
     paid_result.all.return_value = [
         ("queued", "engineering", decision.as_run_metadata()),
         ("running", "qa", {}),
+        (
+            "running",
+            "engineering",
+            {
+                "executor_decision": {
+                    "attempt_kind": "engineering",
+                    "agent_type": "codex",
+                    "source": "api_default",
+                    "policy_version": "v2",
+                    "reason": "configured default",
+                    "unexpected": "must not be discarded",
+                }
+            },
+        ),
     ]
     results.append(paid_result)
     failed_result = MagicMock()
@@ -147,8 +177,8 @@ async def test_overview_counts_all_task_statuses_and_only_persisted_paid_decisio
 
     assert all(count == 1 for count in overview.task_counts.model_dump().values())
     assert overview.paid_runs.queued == 1
-    assert overview.paid_runs.running == 1
+    assert overview.paid_runs.running == 2
     assert overview.paid_runs.by_executor[AgentType.CODEX].queued == 1
-    assert overview.paid_runs.unavailable_executor_decisions == 1
+    assert overview.paid_runs.unavailable_executor_decisions == 2
     assert overview.recent_failed_runs[0].executor_decision == decision
     assert overview.recent_failed_runs[0].error_message == "safe error"

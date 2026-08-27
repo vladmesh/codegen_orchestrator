@@ -6,7 +6,7 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { cn, relativeTime } from '@/lib/utils'
-import type { AgentConfig, AgentConfigUpdate, ExecutorDiagnosticConfirmationCommand, ExecutorDiagnosticSnapshot, ExecutorOverride, PaidWorkControls, SystemConfig, SystemConfigUpdate } from '@/types/api'
+import type { AgentConfig, AgentConfigUpdate, ExecutorDiagnosticConfirmation, ExecutorDiagnosticConfirmationCommand, ExecutorDiagnosticSnapshot, ExecutorOverride, PaidWorkControls, SystemConfig, SystemConfigUpdate } from '@/types/api'
 import { requiresPaidWorkControlConfirmation, type PaidWorkControlField } from './paidWorkControlTransition'
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ function PaidWorkControlsCard() {
   })
   const controls = draft ?? controlsQuery.data
   const mutation = useMutation({
-    mutationFn: (next: PaidWorkControls) => api.put<PaidWorkControls>('/work-admission/controls', next),
+    mutationFn: (next: PaidWorkControls) => api.put<PaidWorkControls, PaidWorkControls>('/work-admission/controls', next),
     onSuccess: (committed) => {
       setDraft(committed)
       queryClient.setQueryData(['paid-work-controls'], committed)
@@ -177,7 +177,7 @@ function ExecutorDiagnosticsCard() {
     refetchInterval: 30_000,
   })
   const confirmation = useMutation({
-    mutationFn: (command: ExecutorDiagnosticConfirmationCommand) => api.post(
+    mutationFn: (command: ExecutorDiagnosticConfirmationCommand) => api.post<ExecutorDiagnosticConfirmation, ExecutorDiagnosticConfirmationCommand>(
       '/work-admission/executor-diagnostics/confirmations',
       command,
     ),
@@ -306,7 +306,7 @@ function ConfigRow({ config }: { config: SystemConfig }) {
         value,
         updated_by: 'admin',
       }
-      return api.patch<SystemConfig>(`/system-configs/${config.key}`, update)
+      return api.patch<SystemConfig, SystemConfigUpdate>(`/system-configs/${config.key}`, update)
     },
     onSuccess: () => {
       setEditing(false)
@@ -436,7 +436,7 @@ function AgentConfigCard({ agent }: { agent: AgentConfig }) {
 
   const mutation = useMutation({
     mutationFn: (update: AgentConfigUpdate) =>
-      api.patch<AgentConfig>(`/agent-configs/${agent.id}`, update),
+      api.patch<AgentConfig, AgentConfigUpdate>(`/agent-configs/${agent.id}`, update),
     onSuccess: () => {
       setEditing(false)
       queryClient.invalidateQueries({ queryKey: ['agent-configs'] })
