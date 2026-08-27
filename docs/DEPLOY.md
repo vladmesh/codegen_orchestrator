@@ -65,10 +65,17 @@ their diagnostics validate the manager-visible read-only mounts
 `HOST_CODEX_HOME` remain the Docker-host source paths used for worker mounts.
 An unreconciled Docker/Redis inventory displays active leases as unknown, never
 as zero. Reconciliation compares both directions by worker id, ownership,
-executor and auth-mode labels, plus Redis/Docker terminal state. A missing
-counterpart, unreadable or unknown status, label mismatch, or lifecycle mismatch
-is unknown. A disabled executor remains unavailable but keeps a reconciled live
-lease count.
+executor and auth-mode labels, plus Redis/Docker terminal state. A terminal
+Redis record without a container is the one settled zero-lease case: it records
+a pre-container refusal for its caller and does not require recovery. A
+Docker-only worker, nonterminal missing counterpart, unreadable or unknown
+status, label mismatch, unknown Docker state, or lifecycle mismatch is unknown.
+A disabled executor remains unavailable but keeps a reconciled live lease count.
+
+Confirmation is a human-admin control, not an internal-service control: use an
+LK bearer for an administrator and do not supply a conflicting
+`X-Telegram-ID`. An internal key, even with an administrator's Telegram id,
+cannot confirm an unknown snapshot.
 
 For local recovery, use `claude auth login` to repair the dedicated
 `HOST_CLAUDE_DIR` profile, or `codex login --device-auth` to repair the dedicated

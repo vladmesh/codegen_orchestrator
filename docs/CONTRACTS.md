@@ -204,15 +204,20 @@ material. `available` means the configured local validator and Docker/Redis
 worker inventory reconciliation both succeeded. `degraded` is reserved for a
 locally usable state with an explicit non-fatal warning. Worker leases are only
 attributable nonterminal `worker:meta:*` owners that reconcile with a Docker
-container; a Redis/Docker disagreement or unreadable inventory is `unknown` and
-does not claim a known count. The reason code is the closed semantic classifier:
+container. A terminal Redis record with no container is a settled zero-lease
+record, preserving the pre-container refusal state for its caller without
+poisoning executor availability. A terminal record with a container still
+requires matching credential-safe labels and a terminal Docker state. A
+Redis/Docker disagreement or unreadable inventory is `unknown` and does not
+claim a known count. The reason code is the closed semantic classifier:
 it fixes the legal enabled/auth-mode/status/lease-nullability combination and
 the only safe response text. Redis consumers therefore reject contradictory
 states before an `available` or `degraded` result reaches admission. Inventory
-reconciliation is bidirectional: a missing Redis or Docker counterpart,
-duplicate worker id, missing/unknown status, ownership/executor/auth label
-disagreement, or terminal/nonterminal state disagreement makes both executor
-lease counts unknown. A disabled executor remains `unavailable`; when that
+reconciliation is bidirectional: a Docker-only worker, nonterminal Redis record
+without a Docker counterpart, duplicate worker id, missing/unknown status,
+ownership/executor/auth label disagreement, unknown Docker state, or
+terminal/nonterminal state disagreement makes both executor lease counts
+unknown. A disabled executor remains `unavailable`; when that
 same inventory is reconciled, it retains its exact active lease count rather
 than claiming zero.
 
@@ -223,15 +228,16 @@ confirmation-required result. Factory remains the legacy engineering choice and
 has no Claude/Codex diagnostic. A queued/running replay uses its persisted
 executor decision and never rechecks diagnostics.
 
-Only an authenticated admin may confirm an `unknown` snapshot at
+Only an LK-bearer-authenticated admin may confirm an `unknown` snapshot at
 `POST /api/work-admission/executor-diagnostics/confirmations`. The append-only
 `WorkAdmissionAudit` fact records the admin actor, executor, exact version and
 snapshot expiry. A confirmation admits any number of starts for that executor
 until that exact snapshot expires; a new version, another executor, expiry or
 an invalid snapshot cannot reuse it. For a confirmed `unknown`, admission reads
 the snapshot again immediately before budget reservation or Run creation; that
-second read is the confirmation-version linearization point. Internal services
-cannot create a confirmation.
+second read is the confirmation-version linearization point. An internal key,
+including one accompanied by `X-Telegram-ID`, cannot create a confirmation; a
+Telegram header supplied with a bearer must match that bearer identity.
 
 `EngineeringMessage.task_id` and `QAMessage.run_id` are stable references to
 the paid Run. Their consumers load the snapshot by that reference before an

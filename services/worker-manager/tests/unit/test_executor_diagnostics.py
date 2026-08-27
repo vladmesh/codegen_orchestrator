@@ -73,6 +73,76 @@ async def test_redis_docker_disagreement_makes_lease_inventory_unknown():
 
 
 @pytest.mark.asyncio
+async def test_terminal_redis_worker_without_a_container_is_a_settled_zero_lease():
+    """A pre-container workspace-lock refusal retains FAILED metadata by design."""
+    redis = _inventory_redis(["workspace-lock-refusal"], statuses={"workspace-lock-refusal": "FAILED"})
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[])
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() == {
+        AgentType.CLAUDE: 0,
+        AgentType.CODEX: 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_terminal_redis_worker_with_a_terminal_matching_container_is_zero_lease():
+    redis = _inventory_redis(["worker-1"], statuses={"worker-1": "FAILED"})
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "codex", "host_session", status="exited")]
+    )
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() == {
+        AgentType.CLAUDE: 0,
+        AgentType.CODEX: 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_nonterminal_redis_worker_without_a_container_remains_unknown():
+    redis = _inventory_redis(["worker-1"], statuses={"worker-1": "RUNNING"})
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[])
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+async def test_terminal_redis_worker_with_a_nonterminal_container_remains_unknown():
+    redis = _inventory_redis(["worker-1"], statuses={"worker-1": "FAILED"})
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(return_value=[_container("worker-1", "codex", "host_session")])
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_docker_state_makes_lease_inventory_unknown():
+    redis = _inventory_redis(["worker-1"])
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(
+        return_value=[_container("worker-1", "codex", "host_session", status="removing")]
+    )
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_docker_identity_makes_lease_inventory_unknown():
+    redis = _inventory_redis(["worker-1"])
+    docker = MagicMock()
+    docker.list_containers = AsyncMock(
+        return_value=[
+            _container("worker-1", "codex", "host_session"),
+            _container("worker-1", "codex", "host_session"),
+        ]
+    )
+
+    assert await WorkerManager(redis=redis, docker_client=docker)._executor_leases() is None
+
+
+@pytest.mark.asyncio
 async def test_docker_only_worker_makes_lease_inventory_unknown():
     redis = _inventory_redis([])
     docker = MagicMock()

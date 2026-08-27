@@ -136,10 +136,12 @@ class WorkerManager:
         for worker_id in set(metas) | set(containers_by_worker):
             meta = metas.get(worker_id)
             container = containers_by_worker.get(worker_id)
-            if meta is None or container is None:
+            # Docker has no durable owner record to attribute a lease to.  A
+            # Redis record is considered first because a refused pre-container
+            # create deliberately leaves a terminal status for its caller.
+            if meta is None:
                 logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
                 return None
-            labels, docker_status = container
             status_value = statuses.get(worker_id)
             try:
                 redis_status = WorkerStatus(status_value)
@@ -149,6 +151,16 @@ class WorkerManager:
             if redis_status is WorkerStatus.UNKNOWN:
                 logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
                 return None
+            redis_is_terminal = redis_status in WORKER_TERMINAL_STATUSES
+            # A terminal refusal can happen before Docker has a container.  It
+            # owns no live lease, so it is settled rather than an inventory
+            # disagreement.  Nonterminal records still require a counterpart.
+            if container is None:
+                if redis_is_terminal:
+                    continue
+                logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
+                return None
+            labels, docker_status = container
             if not self._worker_inventory_labels_match(meta, labels):
                 logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
                 return None
@@ -159,7 +171,7 @@ class WorkerManager:
                 logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
                 return None
             docker_is_terminal = self._docker_worker_is_terminal(docker_status)
-            if docker_is_terminal is None or (redis_status in WORKER_TERMINAL_STATUSES) != docker_is_terminal:
+            if docker_is_terminal is None or redis_is_terminal != docker_is_terminal:
                 logger.warning("executor_diagnostics_inventory_mismatch", worker_id=worker_id)
                 return None
             if agent_type in counts and not docker_is_terminal:

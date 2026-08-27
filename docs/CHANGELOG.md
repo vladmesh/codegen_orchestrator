@@ -38,6 +38,11 @@
 
 ### Fixed
 
+- Unknown executor-diagnostic confirmation now requires an LK bearer for the
+  actual administrator, so an internal service credential cannot impersonate an
+  admin through `X-Telegram-ID`. Terminal pre-container worker refusals now
+  settle as zero leases while nonterminal and Docker/Redis lifecycle
+  disagreements continue to fail closed as unknown.
 - Executor diagnostic records now reject contradictory enabled, auth-mode,
   availability, lease and reason states at the shared boundary. Worker-manager
   now reconciles Redis and Docker inventories in both directions before it

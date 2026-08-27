@@ -24,7 +24,11 @@ from shared.contracts.vocab import AgentType
 from shared.models import SystemConfig, User, WorkAdmissionAudit
 
 from ..database import get_async_session
-from ..dependencies import get_internal_or_admin_actor, require_admin, require_internal_or_admin
+from ..dependencies import (
+    get_internal_or_admin_actor,
+    require_bearer_admin,
+    require_internal_or_admin,
+)
 from ..executor_diagnostics import (
     current_executor_diagnostic,
     current_executor_snapshot,
@@ -185,7 +189,7 @@ async def get_executor_diagnostics(
 async def confirm_unknown_executor_diagnostic(
     command: ExecutorDiagnosticConfirmationCommand,
     db: AsyncSession = Depends(get_async_session),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_bearer_admin),
 ) -> ExecutorDiagnosticConfirmationRead:
     executor = AgentType(command.executor)
     diagnostic, snapshot = await current_executor_diagnostic(executor)
