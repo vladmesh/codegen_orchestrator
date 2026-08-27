@@ -16,6 +16,7 @@ const STATUSES = [
   'done',
   'blocked',
   'waiting_human_review',
+  'waiting_resources',
   'failed',
   'cancelled',
 ]

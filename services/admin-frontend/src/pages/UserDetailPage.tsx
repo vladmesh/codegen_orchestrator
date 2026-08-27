@@ -83,7 +83,7 @@ export function UserDetailPage() {
                       to={`/projects/${project.id}`}
                       className="font-medium text-primary hover:underline"
                     >
-                      {project.name}
+                      {project.title}
                     </Link>
                   </td>
                   <td className="px-4 py-3"><StatusBadge status={project.status} /></td>

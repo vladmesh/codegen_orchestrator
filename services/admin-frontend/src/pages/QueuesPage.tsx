@@ -66,29 +66,29 @@ export function QueuesPage() {
                   <div>
                     <p className="text-muted-foreground">Length</p>
                     <p className="text-lg font-semibold text-foreground">
-                      {b.stream_info.length}
+                      {b.stream_info?.length ?? 'Unavailable'}
                     </p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Pending</p>
                     <p
                       className={`text-lg font-semibold ${
-                        b.group_info.pending > 0 ? 'text-yellow-400' : 'text-foreground'
+                        (b.group_info?.pending ?? 0) > 0 ? 'text-yellow-400' : 'text-foreground'
                       }`}
                     >
-                      {b.group_info.pending}
+                      {b.group_info?.pending ?? 'Unavailable'}
                     </p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Consumers</p>
                     <p className="text-lg font-semibold text-foreground">
-                      {b.group_info.consumers}
+                      {b.group_info?.consumers ?? 'Unavailable'}
                     </p>
                   </div>
                   <div>
                     <p className="text-muted-foreground">Last ID</p>
                     <p className="truncate font-mono text-xs text-muted-foreground">
-                      {b.group_info.last_delivered_id ?? '-'}
+                      {b.group_info?.last_delivered_id ?? 'Unavailable'}
                     </p>
                   </div>
                 </div>

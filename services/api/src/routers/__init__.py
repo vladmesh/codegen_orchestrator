@@ -1,6 +1,7 @@
 """Routers package."""
 
 from . import (
+    admin_overview,
     agent_configs,
     allocations,
     analytics,
@@ -30,6 +31,7 @@ from . import (
 
 __all__ = [
     "agent_configs",
+    "admin_overview",
     "allocations",
     "analytics",
     "api_keys",

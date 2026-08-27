@@ -6,15 +6,19 @@ export interface User {
   last_name: string | null
   is_admin: boolean
   created_at: string
+  updated_at: string | null
   last_seen: string
 }
 
 export interface Project {
   id: string
-  name: string
+  title: string
+  slug: string
   status: string
   config: Record<string, unknown>
   owner_id: number
+  project_spec: Record<string, unknown> | null
+  initiating_run_id: string | null
   created_at: string
   updated_at: string
 }
@@ -27,7 +31,7 @@ export interface Story {
   description: string | null
   acceptance_criteria: string | null
   type: string
-  status: string
+  status: TaskStatus
   priority: number
   blocked_by_story_id: string | null
   created_by: string
@@ -52,13 +56,27 @@ export interface Task {
   need_e2e: boolean
   created_by: string
   source_brainstorm_id: string | null
+  repository_id: string | null
   blocked_by_task_id: string | null
   failure_metadata: Record<string, unknown> | null
   created_at: string
   updated_at: string
   last_event: string | null
-  elapsed_minutes: number
+  elapsed_minutes: number | null
 }
+
+export type TaskStatus =
+  | 'backlog'
+  | 'todo'
+  | 'in_dev'
+  | 'in_ci'
+  | 'testing'
+  | 'done'
+  | 'blocked'
+  | 'waiting_human_review'
+  | 'waiting_resources'
+  | 'failed'
+  | 'cancelled'
 
 export interface TaskEvent {
   id: number
@@ -72,32 +90,67 @@ export interface TaskEvent {
   created_at: string
 }
 
-export interface QueueHealth {
-  [queueName: string]: {
-    length: number
-    pending: number
-    consumers: number
-    last_delivery_id: string | null
-  }
-}
-
-// /api/debug/queues actual response
 export interface QueueBinding {
   stream: string
   group: string
   description: string
-  stream_info: { length: number }
+  stream_info: { length: number } | null
   group_info: {
     consumers: number
     pending: number
-    last_delivered_id: string | null
-  }
+    last_delivered_id: string
+  } | null
 }
 
 export interface DebugQueuesResponse {
   status: 'ok' | 'degraded'
   bindings: QueueBinding[]
   issues: string[]
+}
+
+export type ExecutorDecisionSource =
+  | 'global_override'
+  | 'project_pin'
+  | 'api_default'
+  | 'qa_api_setting'
+
+export interface ExecutorDecision {
+  attempt_kind: 'engineering' | 'qa'
+  agent_type: 'claude' | 'factory' | 'codex' | 'noop'
+  source: ExecutorDecisionSource
+  policy_version: 'v1' | 'v2'
+  reason: string
+}
+
+export interface PaidRunStateCounts {
+  queued: number
+  running: number
+}
+
+export interface AdminOverview {
+  queues: DebugQueuesResponse
+  task_counts: Record<TaskStatus, number>
+  paid_runs: {
+    queued: number
+    running: number
+    by_executor: Partial<Record<ExecutorDecision['agent_type'], PaidRunStateCounts>>
+    unavailable_executor_decisions: number
+  }
+  recent_failed_runs: RecentFailedRun[]
+}
+
+export interface RecentFailedRun {
+  id: string
+  type: 'engineering' | 'qa' | 'deploy'
+  project_id: string | null
+  task_id: string | null
+  story_id: string | null
+  error_message: string
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  executor_decision: ExecutorDecision | null
+  executor_decision_availability: 'available' | 'legacy' | 'invalid'
 }
 
 export interface Repository {
@@ -307,6 +360,9 @@ export interface Run {
   type: string
   status: string
   project_id: string | null
+  user_id: number | null
+  story_id: string | null
+  task_id: string | null
   run_metadata: Record<string, unknown>
   result: {
     qa_outcome?: string
@@ -318,6 +374,16 @@ export interface Run {
   error_message: string | null
   created_at: string
   completed_at: string | null
+  started_at: string | null
+  callback_stream: string | null
+  iteration: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  cost_usd: number | null
+  agent_profile: Record<string, unknown> | null
+  transcript_path: string | null
+  transcript_truncated: boolean | null
 }
 
 // System configuration (key-value, grouped by category)

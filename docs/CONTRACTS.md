@@ -184,6 +184,29 @@ snapshot without resolving configuration again, and generic Run metadata
 updates may merge operational keys but cannot replace or partially alter this
 record.
 
+### Administrator operational overview
+
+`GET /api/admin/overview` is an internal/admin-only, bounded operational read
+contract. `AdminOverviewResponse` in `shared.contracts.dto.admin_overview`
+contains the current `QueueHealthSnapshot`, an explicit count for every
+`TaskStatus`, queued/running counts for paid engineering and QA Runs, and at
+most 20 failed Runs ordered newest-first by `(created_at, id)`.
+
+Queue inspection has one owner (`services/api/src/queue_snapshot.py`) shared by
+the overview and `GET /api/debug/queues`. Every declared `QUEUE_TOPOLOGY`
+binding is returned with its stream/group description. Missing streams or
+groups, a Redis error, and incomplete group data are represented by `null`
+stream/group details and a `degraded` status with a human-readable issue. They
+are never converted into zero length, zero consumers, or zero pending.
+
+Per-executor paid counts use only a valid, persisted `executor_decision` whose
+attempt kind matches the Run type. A legacy missing snapshot or malformed
+snapshot increments `unavailable_executor_decisions` instead of being inferred.
+Recent failed Runs return only bounded `error_message` text, never a traceback,
+and label executor decision availability as `available`, `legacy`, or `invalid`.
+The admin frontend must display unavailable legacy/invalid decisions as such;
+it must not reconstruct a decision from current controls.
+
 ### Executor diagnostics and availability admission
 
 `executor:diagnostics:v1` is one short-lived, strict `v1` Redis snapshot produced

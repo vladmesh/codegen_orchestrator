@@ -8,85 +8,24 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import redis.asyncio as aioredis
 import structlog
 
-from shared.queues import QUEUE_TOPOLOGY
-from shared.redis import decode_redis_fields
+from shared.contracts.dto.admin_overview import QueueHealthSnapshot
 
 from ..config import get_settings
 from ..dependencies import require_internal_or_admin
+from ..queue_snapshot import get_queue_snapshot
 
 router = APIRouter(tags=["debug"], dependencies=[Depends(require_internal_or_admin)])
 logger = structlog.get_logger(__name__)
 
-HIGH_PENDING_THRESHOLD = 100
 
-
-@router.get("/debug/queues")
-async def debug_queues() -> dict:
+@router.get("/debug/queues", response_model=QueueHealthSnapshot)
+async def debug_queues() -> QueueHealthSnapshot:
     """Return health status of every declared queue binding.
 
     For each entry in QUEUE_TOPOLOGY, reports stream length,
     consumer-group info, and flags issues (missing groups, high pending).
     """
-    settings = get_settings()
-    r = aioredis.from_url(settings.redis_url, decode_responses=True)
-
-    bindings: list[dict] = []
-    issues: list[str] = []
-
-    try:
-        for binding in QUEUE_TOPOLOGY:
-            entry: dict = {
-                "stream": binding.stream,
-                "group": binding.group,
-                "description": binding.description,
-                "stream_info": None,
-                "group_info": None,
-            }
-
-            # Stream info
-            try:
-                sinfo = await r.xinfo_stream(binding.stream)
-                entry["stream_info"] = {"length": sinfo.get("length", 0)}
-            except Exception as e:
-                if "no such key" in str(e).lower() or "ERR" in str(e):
-                    entry["stream_info"] = {"length": 0}
-                    issues.append(f"Stream missing: {binding.stream}")
-                else:
-                    issues.append(f"Stream error ({binding.stream}): {e}")
-
-            # Group info
-            try:
-                # redis-py 8 returns bytes values from XINFO GROUPS even with
-                # decode_responses=True — normalize so name/id comparisons work.
-                groups = [decode_redis_fields(g) for g in await r.xinfo_groups(binding.stream)]
-                matched = [g for g in groups if g.get("name") == binding.group]
-                if matched:
-                    g = matched[0]
-                    pending = g.get("pending", 0)
-                    entry["group_info"] = {
-                        "consumers": g.get("consumers", 0),
-                        "pending": pending,
-                        "last_delivered_id": g.get("last-delivered-id", "0-0"),
-                    }
-                    if pending > HIGH_PENDING_THRESHOLD:
-                        issues.append(
-                            f"High pending ({pending}) on {binding.stream}/{binding.group}"
-                        )
-                else:
-                    issues.append(f"Group missing: {binding.group} on {binding.stream}")
-            except aioredis.ResponseError:
-                logger.warning(
-                    "queue_group_check_failed",
-                    stream=binding.stream,
-                    group=binding.group,
-                )
-
-            bindings.append(entry)
-    finally:
-        await r.aclose()
-
-    status = "degraded" if issues else "ok"
-    return {"status": status, "bindings": bindings, "issues": issues}
+    return await get_queue_snapshot()
 
 
 def _parse_message_id(mid: str) -> float:
