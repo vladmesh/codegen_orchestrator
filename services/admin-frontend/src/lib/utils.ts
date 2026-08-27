@@ -9,7 +9,8 @@ export function formatDate(iso: string): string {
   return new Date(iso).toLocaleString()
 }
 
-export function relativeTime(iso: string): string {
+export function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return 'Unavailable'
   const diff = Date.now() - new Date(iso).getTime()
   const minutes = Math.floor(diff / 60_000)
   if (minutes < 1) return 'just now'

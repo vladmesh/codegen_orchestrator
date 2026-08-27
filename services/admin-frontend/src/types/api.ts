@@ -1,12 +1,12 @@
 export interface User {
   id: number
   telegram_id: number
-  username: string | null
-  first_name: string | null
-  last_name: string | null
+  username?: string | null
+  first_name?: string | null
+  last_name?: string | null
   is_admin: boolean
   created_at: string
-  updated_at: string | null
+  updated_at?: string | null
   last_seen: string
 }
 
@@ -14,13 +14,13 @@ export interface Project {
   id: string
   title: string
   slug: string
-  status: string
-  config: Record<string, unknown>
+  status?: string
+  config?: Record<string, unknown>
   owner_id: number
-  project_spec: Record<string, unknown> | null
-  initiating_run_id: string | null
+  project_spec?: Record<string, unknown> | null
+  initiating_run_id?: string | null
   created_at: string
-  updated_at: string
+  updated_at?: string | null
 }
 
 export interface Story {
@@ -43,26 +43,26 @@ export interface Story {
 export interface Task {
   id: string
   project_id: string
-  story_id: string | null
+  story_id?: string | null
   type: string
   title: string
   description: string | null
-  plan: string | null
+  plan?: string | null
   status: string
   priority: number
   acceptance_criteria: string | null
   current_iteration: number
   max_iterations: number
-  need_e2e: boolean
+  need_e2e?: boolean
   created_by: string
-  source_brainstorm_id: string | null
-  repository_id: string | null
-  blocked_by_task_id: string | null
-  failure_metadata: Record<string, unknown> | null
+  source_brainstorm_id?: string | null
+  repository_id?: string | null
+  blocked_by_task_id?: string | null
+  failure_metadata?: Record<string, unknown> | null
   created_at: string
-  updated_at: string
-  last_event: string | null
-  elapsed_minutes: number | null
+  updated_at?: string | null
+  last_event?: string | null
+  elapsed_minutes?: number | null
 }
 
 export type TaskStatus =
@@ -90,16 +90,22 @@ export interface TaskEvent {
   created_at: string
 }
 
+export interface QueueStreamInfo {
+  length: number
+}
+
+export interface QueueGroupInfo {
+  consumers: number
+  pending: number
+  last_delivered_id: string
+}
+
 export interface QueueBinding {
   stream: string
   group: string
   description: string
-  stream_info: { length: number } | null
-  group_info: {
-    consumers: number
-    pending: number
-    last_delivered_id: string
-  } | null
+  stream_info: QueueStreamInfo | null
+  group_info: QueueGroupInfo | null
 }
 
 export interface DebugQueuesResponse {
@@ -127,15 +133,31 @@ export interface PaidRunStateCounts {
   running: number
 }
 
+export interface TaskStatusCounts {
+  backlog: number
+  todo: number
+  in_dev: number
+  in_ci: number
+  testing: number
+  done: number
+  blocked: number
+  waiting_human_review: number
+  waiting_resources: number
+  failed: number
+  cancelled: number
+}
+
+export interface PaidRunCounts {
+  queued: number
+  running: number
+  by_executor: Partial<Record<ExecutorDecision['agent_type'], PaidRunStateCounts>>
+  unavailable_executor_decisions: number
+}
+
 export interface AdminOverview {
   queues: DebugQueuesResponse
-  task_counts: Record<TaskStatus, number>
-  paid_runs: {
-    queued: number
-    running: number
-    by_executor: Partial<Record<ExecutorDecision['agent_type'], PaidRunStateCounts>>
-    unavailable_executor_decisions: number
-  }
+  task_counts: TaskStatusCounts
+  paid_runs: PaidRunCounts
   recent_failed_runs: RecentFailedRun[]
 }
 
@@ -390,11 +412,18 @@ export interface Run {
 export interface SystemConfig {
   key: string
   value: unknown
-  description: string | null
+  description?: string | null
   category: string
-  updated_by: string | null
+  updated_by?: string | null
   created_at: string
-  updated_at: string
+  updated_at?: string | null
+}
+
+export interface SystemConfigUpdate {
+  value?: unknown | null
+  description?: string | null
+  category?: string | null
+  updated_by?: string | null
 }
 
 export type ExecutorOverride = 'none' | 'claude' | 'codex'
@@ -416,7 +445,7 @@ export interface ExecutorDiagnostic {
   availability: ExecutorAvailability
   observed_at: string
   expires_at: string
-  active_lease_count: number | null
+  active_lease_count?: number | null
   reason_code: string
   reason: string
 }
@@ -429,19 +458,36 @@ export interface ExecutorDiagnosticSnapshot {
   diagnostics: ExecutorDiagnostic[]
 }
 
+export interface ExecutorDiagnosticConfirmationCommand {
+  executor: 'claude' | 'codex'
+  snapshot_version: string
+}
+
 // Agent configuration (prompts, model settings)
 export interface AgentConfig {
   id: string
   name: string
   system_prompt: string
-  model_name: string
-  temperature: number
-  is_active: boolean
-  llm_provider: string
-  model_identifier: string
-  openrouter_site_url: string | null
-  openrouter_app_name: string | null
+  model_name?: string
+  temperature?: number
+  is_active?: boolean
+  llm_provider?: string
+  model_identifier?: string
+  openrouter_site_url?: string | null
+  openrouter_app_name?: string | null
   version: number
   created_at: string
-  updated_at: string
+  updated_at?: string | null
+}
+
+export interface AgentConfigUpdate {
+  name?: string | null
+  system_prompt?: string | null
+  model_name?: string | null
+  temperature?: number | null
+  is_active?: boolean | null
+  llm_provider?: string | null
+  model_identifier?: string | null
+  openrouter_site_url?: string | null
+  openrouter_app_name?: string | null
 }

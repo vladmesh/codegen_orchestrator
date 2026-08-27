@@ -41,17 +41,17 @@ class QueueHealthSnapshot(_StrictModel):
 
 
 class TaskStatusCounts(_StrictModel):
-    backlog: int = Field(default=0, ge=0)
-    todo: int = Field(default=0, ge=0)
-    in_dev: int = Field(default=0, ge=0)
-    in_ci: int = Field(default=0, ge=0)
-    testing: int = Field(default=0, ge=0)
-    done: int = Field(default=0, ge=0)
-    blocked: int = Field(default=0, ge=0)
-    waiting_human_review: int = Field(default=0, ge=0)
-    waiting_resources: int = Field(default=0, ge=0)
-    failed: int = Field(default=0, ge=0)
-    cancelled: int = Field(default=0, ge=0)
+    backlog: int = Field(ge=0)
+    todo: int = Field(ge=0)
+    in_dev: int = Field(ge=0)
+    in_ci: int = Field(ge=0)
+    testing: int = Field(ge=0)
+    done: int = Field(ge=0)
+    blocked: int = Field(ge=0)
+    waiting_human_review: int = Field(ge=0)
+    waiting_resources: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    cancelled: int = Field(ge=0)
 
 
 class PaidRunStateCounts(_StrictModel):

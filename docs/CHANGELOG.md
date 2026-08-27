@@ -44,6 +44,12 @@
 
 ### Fixed
 
+- Queue inspection now marks incomplete Redis consumer-group observations as
+  degraded instead of inventing zero consumers, pending work, or a delivery
+  id. The Dashboard has a reachable zero-work empty state and its admin
+  contract gate now recursively checks server schema fields, requiredness,
+  nullability, enums, maps, arrays, and nested paid-work diagnostics.
+
 - Unknown executor-diagnostic confirmation now requires an LK bearer for the
   actual administrator, so an internal service credential cannot impersonate an
   admin through `X-Telegram-ID`. Terminal pre-container worker refusals now

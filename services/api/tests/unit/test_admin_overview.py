@@ -40,7 +40,7 @@ async def test_admin_overview_is_internal_only_and_returns_typed_empty_state():
             ],
             issues=[],
         ),
-        task_counts=TaskStatusCounts(),
+        task_counts=TaskStatusCounts(**{status.value: 0 for status in TaskStatus}),
         paid_runs=PaidRunCounts(
             queued=0,
             running=0,

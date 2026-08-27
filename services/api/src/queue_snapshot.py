@@ -24,6 +24,29 @@ def _is_missing_redis_object(error: Exception) -> bool:
     return "no such key" in message or "nogroup" in message
 
 
+def _complete_group_info(group: dict[str, object]) -> QueueGroupInfo | None:
+    """Return a group only when XINFO supplied every required observation."""
+    consumers = group.get("consumers")
+    pending = group.get("pending")
+    last_delivered_id = group.get("last-delivered-id")
+    if (
+        isinstance(consumers, bool)
+        or not isinstance(consumers, int)
+        or consumers < 0
+        or isinstance(pending, bool)
+        or not isinstance(pending, int)
+        or pending < 0
+        or not isinstance(last_delivered_id, str)
+        or not last_delivered_id
+    ):
+        return None
+    return QueueGroupInfo(
+        consumers=consumers,
+        pending=pending,
+        last_delivered_id=last_delivered_id,
+    )
+
+
 async def get_queue_snapshot() -> QueueHealthSnapshot:
     """Inspect every declared binding without turning absent data into zeroes."""
     settings = get_settings()
@@ -50,12 +73,10 @@ async def get_queue_snapshot() -> QueueHealthSnapshot:
                 if group is None:
                     issues.append(f"Group missing: {binding.group} on {binding.stream}")
                 else:
-                    group_info = QueueGroupInfo(
-                        consumers=group.get("consumers", 0),
-                        pending=group.get("pending", 0),
-                        last_delivered_id=group.get("last-delivered-id", "0-0"),
-                    )
-                    if group_info.pending > HIGH_PENDING_THRESHOLD:
+                    group_info = _complete_group_info(group)
+                    if group_info is None:
+                        issues.append(f"Group incomplete: {binding.group} on {binding.stream}")
+                    elif group_info.pending > HIGH_PENDING_THRESHOLD:
                         issues.append(
                             f"High pending ({group_info.pending}) on "
                             f"{binding.stream}/{binding.group}"

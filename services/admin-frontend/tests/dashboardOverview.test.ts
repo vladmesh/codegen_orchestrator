@@ -9,7 +9,15 @@ import {
 } from '../src/pages/dashboardOverview.ts'
 
 const emptyOverview: AdminOverview = {
-  queues: { status: 'ok', bindings: [], issues: [] },
+  queues: {
+    status: 'ok',
+    bindings: [{
+      stream: 'engineering:queue', group: 'capability-workers', description: 'engineering',
+      stream_info: { length: 0 },
+      group_info: { consumers: 0, pending: 0, last_delivered_id: '0-0' },
+    }],
+    issues: [],
+  },
   task_counts: {
     backlog: 0, todo: 0, in_dev: 0, in_ci: 0, testing: 0, done: 0, blocked: 0,
     waiting_human_review: 0, waiting_resources: 0, failed: 0, cancelled: 0,

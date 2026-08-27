@@ -86,7 +86,7 @@ export function UserDetailPage() {
                       {project.title}
                     </Link>
                   </td>
-                  <td className="px-4 py-3"><StatusBadge status={project.status} /></td>
+                  <td className="px-4 py-3"><StatusBadge status={project.status ?? 'unknown'} /></td>
                   <td className="px-4 py-3 text-muted-foreground">{relativeTime(project.updated_at)}</td>
                 </tr>
               ))}

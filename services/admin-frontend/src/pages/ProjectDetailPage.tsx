@@ -89,7 +89,7 @@ export function ProjectDetailPage() {
         </Link>
         <span className="text-muted-foreground">/</span>
         <h1 className="text-2xl font-bold text-foreground">{project.title}</h1>
-        <StatusBadge status={project.status} />
+        <StatusBadge status={project.status ?? 'unknown'} />
       </div>
 
       {/* Summary cards */}
@@ -687,7 +687,7 @@ function TaskList({ tasks }: { tasks: Task[] }) {
             {task.title}
           </Link>
           <span className="text-xs text-muted-foreground">{task.type}</span>
-          {task.elapsed_minutes !== null && task.elapsed_minutes > 0 && (
+          {task.elapsed_minutes != null && task.elapsed_minutes > 0 && (
             <span className="text-xs text-muted-foreground">{task.elapsed_minutes}m</span>
           )}
         </li>

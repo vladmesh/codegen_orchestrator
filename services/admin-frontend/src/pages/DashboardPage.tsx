@@ -4,7 +4,11 @@ import { api } from '@/lib/api'
 import { Card, CardTitle, CardValue } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import type { AdminOverview, ExecutorDecision } from '@/types/api'
-import { completePendingCount, executorDecisionLabel } from './dashboardOverview'
+import {
+  completePendingCount,
+  dashboardOverviewState,
+  executorDecisionLabel,
+} from './dashboardOverview'
 
 function ExecutorDecisionDetails({ decision }: { decision: ExecutorDecision | null }) {
   if (!decision) return null
@@ -25,8 +29,16 @@ export function DashboardPage() {
     refetchInterval: 15_000,
   })
 
-  if (overview.isLoading) return <p className="text-muted-foreground">Loading operational overview...</p>
-  if (overview.isError || !overview.data) {
+  const state = dashboardOverviewState(overview.data, overview.isLoading, overview.isError)
+  if (state === 'loading') return <p className="text-muted-foreground">Loading operational overview...</p>
+  if (state === 'request_failed') {
+    return <p role="alert" className="text-red-400">Operational overview request failed. Queue and work counts are unavailable.</p>
+  }
+
+  if (state === 'empty') {
+    return <div className="space-y-6"><h1 className="text-2xl font-bold text-foreground">Dashboard</h1><p className="text-muted-foreground">No paid work, failed tasks, failed Runs, or pending queue work.</p></div>
+  }
+  if (!overview.data) {
     return <p role="alert" className="text-red-400">Operational overview request failed. Queue and work counts are unavailable.</p>
   }
 
