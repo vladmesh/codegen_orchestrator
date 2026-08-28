@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from scripts.stand_acceptance import PROTECTED_STAND_SECRET_NAMES
+
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
 
 
@@ -193,6 +195,19 @@ def test_admission_prevents_each_upload_only_when_it_fails_for_any_e2e_outcome()
         assert condition == f"${{{{ always() && steps.{admission}.outcome == 'success' }}}}"
         assert "build-evidence" not in condition
         assert "handoff.outcome" not in condition
+
+
+def test_each_admission_receives_the_complete_protected_value_environment_and_reports_rejections():
+    workflow = _workflow()
+    e2e_admission = _steps()["Admit cleanup handoff"]
+    final_admission = {step["name"]: step for step in workflow["jobs"]["cleanup"]["steps"]}[
+        "Admit final artifact"
+    ]
+
+    for step in (e2e_admission, final_admission):
+        assert set(step["env"]) == PROTECTED_STAND_SECRET_NAMES
+        assert '--summary "${GITHUB_STEP_SUMMARY}"' in step["run"]
+    assert "--secrets-stdin" not in WORKFLOW.read_text()
 
 
 def test_later_steps_use_the_created_orchestrator_address():

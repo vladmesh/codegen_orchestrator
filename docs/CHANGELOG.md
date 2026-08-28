@@ -89,6 +89,9 @@
   manifest values remain uploadable. Both handoff and final artifacts use an
   explicit `always()` admission gate, retaining scanned diagnostics for failed,
   cancelled, and incomplete runs while a failed admission still blocks upload.
+  Value-free preflight diagnostics now remain admissible; both admission jobs
+  require every protected value, and rejected decisions report only their safe
+  relative path and reason in the job summary.
 
 - Stand acceptance evidence now installs the pinned `uv` runner through the
   dynamic host provisioning path, captures remote runner diagnostics into the

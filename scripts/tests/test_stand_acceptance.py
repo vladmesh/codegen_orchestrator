@@ -1,13 +1,55 @@
+import base64
+from datetime import UTC, datetime, timedelta
 import json
 
 from scripts.stand_acceptance import (
     ADMISSION_MARKER,
     PROTECTED_STAND_SECRET_NAMES,
+    _emit_admission_diagnostics,
     admit_artifact,
+    admit_artifact_from_environment,
     build_acceptance_artifact,
     protected_values_from_environment,
     scan_artifact,
 )
+from scripts.stand_preflight import check_stand_token_credentials
+
+
+def _protected_environment() -> dict[str, str]:
+    return {
+        name: f"protected-{index}"
+        for index, name in enumerate(sorted(PROTECTED_STAND_SECRET_NAMES))
+    }
+
+
+def _jwt_with_expiry(expiry: datetime) -> str:
+    payload = json.dumps({"exp": int(expiry.timestamp())}).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    return f"header.{encoded}.signature"
+
+
+def _stand_preflight_refusal() -> str:
+    name, passed, detail = check_stand_token_credentials()
+    assert passed is False
+    return f"{'ok  ' if passed else 'FAIL'} {name}{f': {detail}' if detail else ''}\n"
+
+
+def _handoff_candidate(root, log_text: str) -> None:
+    run = root / "run"
+    run.mkdir(parents=True)
+    (root / "machines.json").write_text('{"machines": []}\n', encoding="utf-8")
+    (run / "junit.xml").write_text("<testsuites/>\n", encoding="utf-8")
+    (run / "report.tsv").write_text("status\nfailed\n", encoding="utf-8")
+    (run / "run.log").write_text(log_text, encoding="utf-8")
+
+
+def _final_candidate(root, log_text: str) -> None:
+    root.mkdir()
+    (root / "machines.json").write_text('{"machines": []}\n', encoding="utf-8")
+    (root / "final-report.json").write_text('{"status": "incomplete"}\n', encoding="utf-8")
+    (root / "junit.xml").write_text("<testsuites/>\n", encoding="utf-8")
+    (root / "report.tsv").write_text("status\nfailed\n", encoding="utf-8")
+    (root / "run.log").write_text(log_text, encoding="utf-8")
 
 
 def _write_inputs(tmp_path, *, cleanup: dict | None = None):
@@ -261,6 +303,12 @@ def test_admission_rejects_bare_protected_value_and_credential_assignment_withou
     assert admitted is False
     status_text = status.read_text(encoding="utf-8")
     assert json.loads(status_text) == {
+        "issues": [
+            {
+                "path": "run.log",
+                "reason": "candidate contains a supplied protected value",
+            }
+        ],
         "marker": ADMISSION_MARKER,
         "status": "rejected",
     }
@@ -269,16 +317,17 @@ def test_admission_rejects_bare_protected_value_and_credential_assignment_withou
 
 
 def test_admission_only_derives_needles_from_explicit_protected_name_allow_list():
-    values = protected_values_from_environment(
+    environment = _protected_environment()
+    environment.update(
         {
-            "BITLAUNCH_API_KEY": "protected-value",
             "STAND_RUN_TAG": "gha-33168872249-1",
             "LIVE_CONTOUR": "stand",
             "PO_LLM_MODEL": "gpt-public",
         }
     )
+    values = protected_values_from_environment(environment)
 
-    assert values == ("protected-value",)
+    assert values == tuple(environment[name] for name in sorted(PROTECTED_STAND_SECRET_NAMES))
     assert "STAND_RUN_TAG" not in PROTECTED_STAND_SECRET_NAMES
     assert "LIVE_CONTOUR" not in PROTECTED_STAND_SECRET_NAMES
     assert "PO_LLM_MODEL" not in PROTECTED_STAND_SECRET_NAMES
@@ -308,3 +357,121 @@ def test_admission_canary_is_rejected_outside_the_candidate(tmp_path):
         )
         is False
     )
+
+
+def test_admission_allows_real_stand_preflight_token_refusals_in_handoff_and_final_candidates(
+    tmp_path, monkeypatch
+):
+    """Token diagnostics name credentials but never render their protected values."""
+    now = datetime.now(UTC)
+    cases = {
+        "missing": {},
+        "expired": {
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN": "opaque-claude-token",
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (now + timedelta(hours=1)).isoformat(),
+            "STAND_CODEX_ACCESS_TOKEN": _jwt_with_expiry(now - timedelta(minutes=1)),
+        },
+        "near_ttl": {
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN": "opaque-claude-token",
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (now + timedelta(hours=1)).isoformat(),
+            "STAND_CODEX_ACCESS_TOKEN": _jwt_with_expiry(now + timedelta(minutes=1)),
+        },
+    }
+    protected_values = protected_values_from_environment(_protected_environment())
+
+    for label, environment in cases.items():
+        for name in (
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+            "STAND_CODEX_ACCESS_TOKEN",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+        refusal = _stand_preflight_refusal()
+        handoff = tmp_path / f"handoff-{label}"
+        final = tmp_path / f"final-{label}"
+        _handoff_candidate(handoff, refusal)
+        _final_candidate(final, refusal)
+
+        for candidate in (handoff, final):
+            assert admit_artifact(
+                candidate,
+                status_path=tmp_path / f"{candidate.name}-status.json",
+                protected_values=protected_values,
+            )
+
+
+def test_admission_rejects_protected_values_and_assignments_in_handoff_and_final_candidates(
+    tmp_path,
+):
+    protected_values = protected_values_from_environment(_protected_environment())
+    protected_value = protected_values[0]
+
+    for candidate_factory, label in ((_handoff_candidate, "handoff"), (_final_candidate, "final")):
+        for content, suffix in (
+            (protected_value, "bare"),
+            (f"BITLAUNCH_API_KEY={protected_value}", "assignment"),
+        ):
+            candidate = tmp_path / f"{label}-{suffix}"
+            status = tmp_path / f"{label}-{suffix}-status.json"
+            candidate_factory(candidate, content)
+
+            assert not admit_artifact(
+                candidate,
+                status_path=status,
+                protected_values=protected_values,
+            )
+            payload = json.loads(status.read_text(encoding="utf-8"))
+            assert payload["status"] == "rejected"
+            assert payload["issues"] == [
+                {
+                    "path": "run/run.log" if label == "handoff" else "run.log",
+                    "reason": "candidate contains a supplied protected value",
+                }
+            ]
+            assert protected_value not in status.read_text(encoding="utf-8")
+
+
+def test_admission_refuses_a_missing_protected_environment_value_with_a_named_safe_deficiency(
+    tmp_path,
+):
+    candidate = tmp_path / "candidate"
+    status = tmp_path / "status.json"
+    _final_candidate(candidate, "value-free diagnostic\n")
+    environment = _protected_environment()
+    missing_name = sorted(PROTECTED_STAND_SECRET_NAMES)[0]
+    environment[missing_name] = ""
+
+    assert not admit_artifact_from_environment(candidate, status_path=status, environ=environment)
+
+    payload = json.loads(status.read_text(encoding="utf-8"))
+    assert payload == {
+        "issues": [
+            {
+                "name": missing_name,
+                "path": None,
+                "reason": "protected environment value is missing or empty",
+            }
+        ],
+        "marker": ADMISSION_MARKER,
+        "status": "rejected",
+    }
+
+
+def test_rejected_admission_emits_only_safe_reason_and_relative_path_to_the_summary(
+    tmp_path, capsys
+):
+    candidate = tmp_path / "candidate"
+    status = tmp_path / "status.json"
+    summary = tmp_path / "summary.md"
+    canary = "protected-value"
+    _final_candidate(candidate, f"BITLAUNCH_API_KEY={canary}\n")
+
+    assert not admit_artifact(candidate, status_path=status, protected_values=(canary,))
+    _emit_admission_diagnostics(status, summary)
+
+    diagnostic = capsys.readouterr().out
+    assert "run.log: candidate contains a supplied protected value" in diagnostic
+    assert summary.read_text(encoding="utf-8") == diagnostic
+    assert canary not in diagnostic

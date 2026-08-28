@@ -10,6 +10,7 @@ environment file, key, Docker inspection or provider credential.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 import json
@@ -22,12 +23,6 @@ from typing import Any
 REQUIRED_RUN_FILES = ("junit.xml", "report.tsv", "run.log")
 REMOTE_INVOCATION_LOG = "remote-invocation.log"
 COMBINATION_LOG = re.compile(r"(?:claude|codex)-(?:claude|codex)\.log\Z")
-SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?:API[_-]?KEY|ACCESS[_-]?TOKEN|OAUTH[_-]?TOKEN|PASSWORD|PRIVATE[_-]?KEY(?![_-]?PATH)|SECRET)"
-    r"\s*(?:=|:)\s*\S+",
-    re.IGNORECASE,
-)
-PRIVATE_KEY_MARKER = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 ADMISSION_MARKER = "stand-acceptance-admission-v1"
 
 # These are the only settings whose values are credentials.  The rendered stand
@@ -57,6 +52,21 @@ PROTECTED_STAND_SECRET_NAMES = frozenset(
         "SSH_PRIVATE_KEY",
     }
 )
+
+
+@dataclass(frozen=True)
+class AdmissionIssue:
+    """A value-free, operator-actionable reason evidence cannot be uploaded."""
+
+    reason: str
+    path: str | None = None
+    name: str | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        issue: dict[str, str | None] = {"path": self.path, "reason": self.reason}
+        if self.name is not None:
+            issue["name"] = self.name
+        return issue
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -332,11 +342,18 @@ def build_acceptance_artifact(
     return not errors
 
 
-def scan_artifact(artifact: Path, *, canaries: tuple[str, ...] = ()) -> list[str]:
-    """Return value-free redaction failures for the fixed artifact allow-list."""
-    errors: list[str] = []
+def _scan_artifact_issues(
+    artifact: Path, *, protected_values: tuple[str, ...] = ()
+) -> list[AdmissionIssue]:
+    """Inspect a fixed candidate without treating diagnostic identifiers as secrets.
+
+    Allowed evidence is free-form diagnostic text.  At this boundary, a secret
+    is only a supplied protected value.  The narrow file allow-list still keeps
+    configuration and key files out of the artifact entirely.
+    """
+    issues: list[AdmissionIssue] = []
     if not artifact.is_dir():
-        return ["candidate directory is unavailable"]
+        return [AdmissionIssue("candidate directory is unavailable")]
     allowed = {
         "machines.json",
         "final-report.json",
@@ -348,36 +365,63 @@ def scan_artifact(artifact: Path, *, canaries: tuple[str, ...] = ()) -> list[str
     for path in sorted(artifact.rglob("*")) if artifact.is_dir() else []:
         if path.is_dir():
             if path.relative_to(artifact).as_posix() != "run":
-                errors.append("candidate contains an unapproved directory")
+                issues.append(
+                    AdmissionIssue(
+                        "candidate contains an unapproved directory",
+                        path.relative_to(artifact).as_posix(),
+                    )
+                )
             continue
         relative = path.relative_to(artifact).as_posix()
         valid_combination = COMBINATION_LOG.fullmatch(path.name) and (
             path.parent == artifact or path.parent == artifact / "run"
         )
         if relative not in allowed and not valid_combination:
-            errors.append("candidate contains an unapproved file")
+            issues.append(AdmissionIssue("candidate contains an unapproved file", relative))
             continue
         if not path.is_file() or path.is_symlink():
-            errors.append("candidate contains a non-file entry")
+            issues.append(AdmissionIssue("candidate contains a non-file entry", relative))
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
-        if any(canary and canary in text for canary in canaries):
-            errors.append("candidate contains a supplied redaction canary")
-        if SENSITIVE_ASSIGNMENT.search(text) or PRIVATE_KEY_MARKER.search(text):
-            errors.append("candidate contains credential-shaped text")
-    return sorted(set(errors))
+        if any(value and value in text for value in protected_values):
+            issues.append(AdmissionIssue("candidate contains a supplied protected value", relative))
+    return sorted(set(issues), key=lambda issue: (issue.path or "", issue.reason, issue.name or ""))
+
+
+def scan_artifact(artifact: Path, *, canaries: tuple[str, ...] = ()) -> list[str]:
+    """Return value-free failures for the standalone disposable-canary self-test."""
+    issues = _scan_artifact_issues(artifact, protected_values=canaries)
+    return sorted(
+        {
+            "candidate contains a supplied redaction canary"
+            if issue.reason == "candidate contains a supplied protected value"
+            else issue.reason
+            for issue in issues
+        }
+    )
 
 
 def protected_values_from_environment(
     environ: dict[str, str] | os._Environ[str],
 ) -> tuple[str, ...]:
-    """Return only non-empty values from the fixed protected-value allow-list."""
-    return tuple(
-        value for name in sorted(PROTECTED_STAND_SECRET_NAMES) if (value := environ.get(name))
-    )
+    """Return the complete protected-value set or name its unsafe deficiency."""
+    missing = tuple(name for name in sorted(PROTECTED_STAND_SECRET_NAMES) if not environ.get(name))
+    if missing:
+        raise ProtectedEnvironmentError(missing)
+    return tuple(environ[name] for name in sorted(PROTECTED_STAND_SECRET_NAMES))
 
 
-def _write_admission_status(status_path: Path, admitted: bool) -> None:
+class ProtectedEnvironmentError(ValueError):
+    """The admission job did not receive every protected value it must scan."""
+
+    def __init__(self, missing: tuple[str, ...]):
+        self.missing = missing
+        super().__init__("protected environment is incomplete")
+
+
+def _write_admission_status(
+    status_path: Path, admitted: bool, issues: tuple[AdmissionIssue, ...] = ()
+) -> None:
     """Write a value-free admission state; only ``admitted`` is upload-ready."""
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(
@@ -385,6 +429,7 @@ def _write_admission_status(status_path: Path, admitted: bool) -> None:
             {
                 "marker": ADMISSION_MARKER,
                 "status": "admitted" if admitted else "rejected",
+                **({"issues": [issue.as_dict() for issue in issues]} if issues else {}),
             },
             sort_keys=True,
         )
@@ -395,9 +440,48 @@ def _write_admission_status(status_path: Path, admitted: bool) -> None:
 
 def admit_artifact(artifact: Path, *, status_path: Path, protected_values: tuple[str, ...]) -> bool:
     """Scan the fixed allow-list and persist the value-free admission status."""
-    admitted = not scan_artifact(artifact, canaries=protected_values)
-    _write_admission_status(status_path, admitted)
+    issues = tuple(_scan_artifact_issues(artifact, protected_values=protected_values))
+    admitted = not issues
+    _write_admission_status(status_path, admitted, issues)
     return admitted
+
+
+def admit_artifact_from_environment(
+    artifact: Path,
+    *,
+    status_path: Path,
+    environ: dict[str, str] | os._Environ[str],
+) -> bool:
+    """Admit only when every source-of-truth protected value is available."""
+    try:
+        protected_values = protected_values_from_environment(environ)
+    except ProtectedEnvironmentError as exc:
+        issues = tuple(
+            AdmissionIssue("protected environment value is missing or empty", name=name)
+            for name in exc.missing
+        )
+        _write_admission_status(status_path, False, issues)
+        return False
+    return admit_artifact(artifact, status_path=status_path, protected_values=protected_values)
+
+
+def _emit_admission_diagnostics(status_path: Path, summary_path: Path | None) -> None:
+    """Emit only pre-sanitised decision metadata, never a scanned value."""
+    payload = _load_json(status_path)
+    lines = [
+        "stand acceptance admission: " + str(payload.get("status", "unavailable")),
+    ]
+    for issue in payload.get("issues", []):
+        if not isinstance(issue, dict):
+            continue
+        location = issue.get("path") or issue.get("name") or "candidate"
+        reason = issue.get("reason", "admission issue")
+        lines.append(f"- {location}: {reason}")
+    diagnostic = "\n".join(lines)
+    print(diagnostic)
+    if summary_path is not None:
+        with summary_path.open("a", encoding="utf-8") as summary:
+            summary.write(diagnostic + "\n")
 
 
 def main() -> int:
@@ -416,14 +500,14 @@ def main() -> int:
         default=[],
         help="environment variable whose supplied test value must not be present",
     )
-    scan.add_argument(
-        "--secrets-stdin",
-        action="store_true",
-        help="read protected NAME=value values from stdin without rendering them",
-    )
     admit = sub.add_parser("admit")
     admit.add_argument("--artifact", required=True, type=Path)
     admit.add_argument("--status", required=True, type=Path)
+    admit.add_argument(
+        "--summary",
+        type=Path,
+        help="append the value-free admission decision to the job summary",
+    )
     admit.add_argument(
         "--protected-env",
         action="store_true",
@@ -455,24 +539,16 @@ def main() -> int:
     if args.command == "admit":
         if not args.protected_env:
             parser.error("admit requires --protected-env")
-        return (
-            0
-            if admit_artifact(
-                args.artifact,
-                status_path=args.status,
-                protected_values=protected_values_from_environment(os.environ),
-            )
-            else 2
+        admitted = admit_artifact_from_environment(
+            args.artifact,
+            status_path=args.status,
+            environ=os.environ,
         )
+        _emit_admission_diagnostics(args.status, args.summary)
+        return 0 if admitted else 2
     canaries = tuple(
         value for name in args.canary_env if (value := os.environ.get(name)) is not None
     )
-    if args.secrets_stdin:
-        canaries += tuple(
-            line.partition("=")[2] if "=" in line else line
-            for line in __import__("sys").stdin.read().splitlines()
-            if (line.partition("=")[2] if "=" in line else line)
-        )
     return 0 if not scan_artifact(args.artifact, canaries=canaries) else 2
 
 
