@@ -254,6 +254,8 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: infra-service
       ORCHESTRATOR_PUBLIC_IP: ${ORCHESTRATOR_PUBLIC_IP:-}
+      BITLAUNCH_API_KEY: ${BITLAUNCH_API_KEY}
+      STAND_RUN_TAG: ${STAND_RUN_TAG}
     volumes:
       - ./services/infra-service/src:/app/src:delegated
       - ./services/infra-service/ansible:/app/ansible:delegated

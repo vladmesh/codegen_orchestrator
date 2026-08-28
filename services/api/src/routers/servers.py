@@ -17,12 +17,15 @@ from shared.contracts.dto.server import (
     ServerStatus,
     SSHUser,
 )
+from shared.contracts.queues.provisioner import ProvisionerMessage
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
 from shared.provisioning_policy import provider_operation_is_authorized
+from shared.queues import PROVISIONER_QUEUE
+from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import require_internal_or_admin
+from ..dependencies import get_redis_client, require_internal_or_admin
 from ..schemas import (
     AllocateNextPortRequest,
     ApplicationRead,
@@ -478,21 +481,18 @@ async def get_server_incidents(
 async def provision_server(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
     _: None = Depends(require_internal_or_admin),
 ) -> dict:
-    """Reject the legacy provisioning trigger until it has a real dispatcher."""
+    """Queue the existing provisioner path without claiming a terminal state."""
 
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail=(
-            "Manual provisioning is not implemented. It does not dispatch work and therefore "
-            "cannot change server status. Use the infrastructure provisioner operation instead."
-        ),
-    )
+    message = ProvisionerMessage(server_handle=handle)
+    await redis.publish_message(PROVISIONER_QUEUE, message)
+    return {"request_id": message.request_id, "server_handle": handle}
 
 
 @router.get("/{handle}/applications", response_model=list[ApplicationRead])

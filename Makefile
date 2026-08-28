@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean danger-prod-reset stand-preflight stand-register stand-run stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -386,10 +386,6 @@ stand-preflight:
 	HOST_CLAUDE_DIR=$${HOST_CLAUDE_DIR:-$$HOME/.claude-worker} \
 	HOST_CODEX_HOME=$${HOST_CODEX_HOME:-$$HOME/.codex-worker} \
 	uv run python scripts/stand_preflight.py
-
-# Register the stand as its own deploy target. Idempotent: a re-run converges.
-stand-register:
-	@LIVE_CONTOUR=stand uv run python scripts/register_stand_target.py $(ARGS)
 
 # One entry point for every e2e on the stand. SUITE is a named suite — mega, llm,
 # matrix — or any pytest target, so a new scenario needs no new plumbing.

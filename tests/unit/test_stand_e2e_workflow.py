@@ -97,3 +97,38 @@ def test_later_steps_use_the_created_orchestrator_address():
 
     assert "steps.create.outputs.orchestrator_ip" in workflow
     assert "steps.create.outputs.target_ip" in workflow
+
+
+def test_created_pair_is_bootstrapped_registered_and_provisioned_without_secret_outputs():
+    """The workflow must turn the dynamic pair into the contour it later tests."""
+    workflow = WORKFLOW.read_text()
+    steps = _steps()
+
+    for output in (
+        "orchestrator_ip",
+        "target_ip",
+        "target_id",
+    ):
+        assert f"steps.create.outputs.{output}" in workflow
+
+    assert "Bootstrap dynamic orchestrator" in steps
+    assert "Register and provision dynamic target" in steps
+    assert steps["Bootstrap dynamic orchestrator"]["env"]["PROD_HOST"] == (
+        "${{ steps.create.outputs.orchestrator_ip }}"
+    )
+    assert (
+        "python3 -m scripts.register_bitlaunch_target"
+        in steps["Register and provision dynamic target"]["run"]
+    )
+    assert (
+        "python3 -m scripts.request_stand_provisioning"
+        in steps["Register and provision dynamic target"]["run"]
+    )
+    assert "machines.json" not in steps["Bootstrap dynamic orchestrator"]["run"]
+    assert "machines.json" not in steps["Register and provision dynamic target"]["run"]
+    assert "GITHUB_OUTPUT" not in steps["Bootstrap dynamic orchestrator"]["run"]
+    assert "GITHUB_OUTPUT" not in steps["Register and provision dynamic target"]["run"]
+
+
+def test_obsolete_self_target_registration_route_is_deleted():
+    assert not (WORKFLOW.parents[2] / "scripts" / "register_stand_target.py").exists()

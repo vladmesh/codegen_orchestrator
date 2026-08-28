@@ -55,8 +55,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: stand
-    # Later cards bootstrap and run this pair. This card owns the bounded,
-    # provider-neutral lifecycle only.
     timeout-minutes: 180
     env:
       STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
@@ -118,6 +116,167 @@ jobs:
           test -n "${ORCHESTRATOR_IP}"
           test -n "${TARGET_IP}"
           printf 'orchestrator=%s\ntarget=%s\n' "${ORCHESTRATOR_IP}" "${TARGET_IP}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare protected SSH material
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}" || { echo 'SSH_PRIVATE_KEY is unset' >&2; exit 2; }
+          umask 077
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${key_path}"
+          ssh-keygen -y -f "${key_path}" > "${RUNNER_TEMP}/stand-bootstrap.pub"
+
+      - name: Bootstrap dynamic orchestrator
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          inventory="${RUNNER_TEMP}/stand-bootstrap.ini"
+          {
+            echo '[prod]'
+            printf '%s ansible_user=root ansible_ssh_private_key_file=%s\n' "${PROD_HOST}" "${key_path}"
+          } > "${inventory}"
+          uvx --from ansible-core ansible-galaxy collection install \
+            -r services/infra-service/ansible/requirements.yml
+          ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg \
+            uvx --from ansible-core ansible-playbook -i "${inventory}" \
+            services/infra-service/ansible/playbooks/bootstrap.yml \
+            -e "ssh_public_key=$(<"${RUNNER_TEMP}/stand-bootstrap.pub")"
+          ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg \
+            uvx --from ansible-core ansible-playbook -i "${inventory}" \
+            services/infra-service/ansible/playbooks/provision_software.yml \
+            -e "target_host=${PROD_HOST} deploy_user=deploy"
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+            'install -d -m 0755 /opt/codegen_orchestrator'
+          rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-target.env \
+            -e "ssh -i ${key_path} -o StrictHostKeyChecking=accept-new" \
+            ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
+
+      - name: Render protected dynamic configuration
+        env:
+          ORCHESTRATOR_PUBLIC_IP: ${{ steps.create.outputs.orchestrator_ip }}
+          ORCHESTRATOR_HOSTNAME: ${{ steps.create.outputs.orchestrator_ip }}
+          STAND_RUN_TAG: ${{ env.STAND_RUN_TAG }}
+          BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+          INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          SECRETS_ENCRYPTION_KEY: ${{ secrets.SECRETS_ENCRYPTION_KEY }}
+          LK_JWT_SECRET: ${{ secrets.LK_JWT_SECRET }}
+          GITHUB_ORG: ${{ secrets.GH_ORG }}
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          REGISTRY_PASSWORD_HASH: ${{ secrets.REGISTRY_PASSWORD_HASH }}
+          LOKI_PUSH_USER: ${{ secrets.LOKI_PUSH_USER }}
+          LOKI_PUSH_PASSWORD: ${{ secrets.LOKI_PUSH_PASSWORD }}
+          LOKI_PUSH_PASSWORD_HASH: ${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
+          LOKI_URL: http://loki:3100
+          ADMIN_USER: ${{ secrets.ADMIN_USER }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          GRAFANA_DB_USER: ${{ secrets.GRAFANA_DB_USER }}
+          GRAFANA_DB_PASSWORD: ${{ secrets.GRAFANA_DB_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
+          HOST_CLAUDE_DIR: ${{ secrets.HOST_CLAUDE_DIR }}
+          HOST_CODEX_HOME: ${{ secrets.HOST_CODEX_HOME }}
+          PO_LLM_MODEL: ${{ secrets.PO_LLM_MODEL }}
+          PO_LLM_BASE_URL: ${{ secrets.PO_LLM_BASE_URL }}
+          PO_LLM_API_KEY: ${{ secrets.PO_LLM_API_KEY }}
+          ARCHITECT_LLM_MODEL: ${{ secrets.ARCHITECT_LLM_MODEL }}
+          ARCHITECT_LLM_BASE_URL: ${{ secrets.ARCHITECT_LLM_BASE_URL }}
+          ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
+          GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          SUMMARIZATION_MODEL: ${{ secrets.SUMMARIZATION_MODEL }}
+          SUMMARIZATION_MAX_TOKENS: ${{ secrets.SUMMARIZATION_MAX_TOKENS }}
+          SUMMARIZATION_TRIGGER_TOKENS: ${{ secrets.SUMMARIZATION_TRIGGER_TOKENS }}
+          SUMMARIZATION_MAX_SUMMARY_TOKENS: ${{ secrets.SUMMARIZATION_MAX_SUMMARY_TOKENS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -c '
+          import os
+          from pathlib import Path
+          names = (
+              "ORCHESTRATOR_PUBLIC_IP", "ORCHESTRATOR_HOSTNAME", "STAND_RUN_TAG",
+              "BITLAUNCH_API_KEY", "INTERNAL_API_KEY", "POSTGRES_DB", "POSTGRES_USER",
+              "POSTGRES_PASSWORD", "SECRETS_ENCRYPTION_KEY", "LK_JWT_SECRET", "GITHUB_ORG",
+              "GITHUB_APP_ID",
+              "REGISTRY_USER", "REGISTRY_PASSWORD", "REGISTRY_PASSWORD_HASH", "LOKI_PUSH_USER",
+              "LOKI_PUSH_PASSWORD", "LOKI_PUSH_PASSWORD_HASH", "LOKI_URL", "ADMIN_USER",
+              "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
+              "WORKER_BROKER_INTERNAL_TOKEN", "HOST_CLAUDE_DIR", "HOST_CODEX_HOME", "PO_LLM_MODEL",
+              "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
+              "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "SUMMARIZATION_MAX_TOKENS",
+              "SUMMARIZATION_TRIGGER_TOKENS", "SUMMARIZATION_MAX_SUMMARY_TOKENS",
+          )
+          missing = [name for name in (*names, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
+          if missing:
+              raise SystemExit("missing required stand configuration: " + ", ".join(missing))
+          Path(".stand.env").write_text("\n".join(f"{name}={os.environ[name]}" for name in names) + "\n")
+          Path(".stand-github-app.pem").write_text(os.environ["GH_APP_PRIVATE_KEY"])
+          '
+
+      - name: Bring up dynamic orchestrator and wait for API
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          scp -i "${key_path}" -o StrictHostKeyChecking=accept-new .stand.env \
+            root@"${PROD_HOST}":/opt/codegen_orchestrator/.env
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+            'install -d -m 0700 /opt/secrets'
+          scp -i "${key_path}" -o StrictHostKeyChecking=accept-new .stand-github-app.pem \
+            root@"${PROD_HOST}":/opt/secrets/github_app.pem
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" '
+            set -euo pipefail
+            cd /opt/codegen_orchestrator
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml up -d --build --remove-orphans
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml exec -T api alembic upgrade head
+            remaining=180
+            until docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml exec -T api curl -fsS http://127.0.0.1:8000/health >/dev/null; do
+              test "${remaining}" -gt 0 || exit 1
+              sleep 5
+              remaining=$((remaining - 5))
+            done
+          '
+
+      - name: Register and provision dynamic target
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          TARGET_ID: ${{ steps.create.outputs.target_id }}
+          TARGET_IP: ${{ steps.create.outputs.target_ip }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          registration_env="${RUNNER_TEMP}/stand-target.env"
+          {
+            printf 'TARGET_ID=%s\n' "${TARGET_ID}"
+            printf 'TARGET_IP=%s\n' "${TARGET_IP}"
+            printf 'STAND_RUN_TAG=%s\n' "${STAND_RUN_TAG}"
+            printf 'SSH_PRIVATE_KEY=%s\n' "${SSH_PRIVATE_KEY}"
+          } > "${registration_env}"
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          scp -i "${key_path}" -o StrictHostKeyChecking=accept-new "${registration_env}" \
+            root@"${PROD_HOST}":/run/stand-target.env
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" '
+            set -euo pipefail
+            cd /opt/codegen_orchestrator
+            INTERNAL_API_KEY=$(sed -n "s/^INTERNAL_API_KEY=//p" ./.env)
+            test -n "${INTERNAL_API_KEY}"
+            export INTERNAL_API_KEY
+            set -a; . /run/stand-target.env; set +a
+            python3 -m scripts.register_bitlaunch_target
+            shred -u /run/stand-target.env
+            python3 -m scripts.request_stand_provisioning --handle "bitlaunch-${TARGET_ID}"
+            python3 -m scripts.wait_stand_provisioning --handle "bitlaunch-${TARGET_ID}"
+          '
 
       # Collected whatever the result was: a failed run is the one whose logs are
       # worth keeping, and the stand's disk is swept on a schedule.

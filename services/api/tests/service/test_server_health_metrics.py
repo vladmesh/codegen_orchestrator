@@ -1,9 +1,13 @@
 """Integration tests for Server health metrics + metrics history endpoints."""
 
 from http import HTTPStatus
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+
+from src.dependencies import get_redis_client
+from src.main import app
 
 
 @pytest.fixture
@@ -107,13 +111,21 @@ async def test_monitoring_status_distinguishes_unprovisioned_server(async_client
 
 
 @pytest.mark.asyncio
-async def test_manual_provision_is_explicitly_unimplemented(async_client, test_server):
-    """The legacy trigger must not leave a server stuck in provisioning."""
+async def test_manual_provision_enqueues_the_existing_provisioner(async_client, test_server):
+    """The API dispatches work but leaves terminal state to the provisioner."""
+    redis = type("Redis", (), {"publish_message": AsyncMock()})()
+    app.dependency_overrides[get_redis_client] = lambda: redis
     before = await async_client.get(f"/api/servers/{test_server}")
 
-    response = await async_client.post(f"/api/servers/{test_server}/provision")
+    try:
+        response = await async_client.post(f"/api/servers/{test_server}/provision")
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
 
-    assert response.status_code == HTTPStatus.NOT_IMPLEMENTED
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["server_handle"] == test_server
+    assert response.json()["request_id"]
+    redis.publish_message.assert_awaited_once()
     after = await async_client.get(f"/api/servers/{test_server}")
     assert after.json()["status"] == before.json()["status"]
 
