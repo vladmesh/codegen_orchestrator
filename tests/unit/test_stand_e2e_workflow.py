@@ -52,7 +52,7 @@ def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
 
 def test_the_machine_manifest_is_collected_even_when_creation_failed():
     """The created resource ids are the recovery input when a later step fails."""
-    for name in ("Record machine manifest", "Upload the lifecycle manifest"):
+    for name in ("Record machine manifest", "Upload cleanup handoff"):
         assert _steps()[name]["if"] == "always()", name
 
 
@@ -104,11 +104,45 @@ def test_machine_ids_are_recorded_then_cleaned_for_every_terminal_outcome():
 
     assert steps["Record machine manifest"]["if"] == "always()"
     assert "always()" in cleanup["if"]
-    assert "python3 -m scripts.stand_lifecycle cleanup" in cleanup["steps"][1]["run"]
+    cleanup_steps = {step["name"]: step for step in cleanup["steps"]}
+    assert (
+        "python3 -m scripts.stand_lifecycle cleanup-report"
+        in cleanup_steps["Cleanup and observe run-tagged machines"]["run"]
+    )
     assert (
         "python3 -m scripts.stand_lifecycle sweep"
         in _workflow()["jobs"]["ttl-sweep"]["steps"][1]["run"]
     )
+
+
+def test_selected_suite_runs_through_the_supported_remote_runner_and_preserves_failure():
+    steps = _steps()
+    run = steps["Run selected stand suite"]
+
+    assert "scripts/stand_run.py" in run["run"]
+    assert "--suite %q" in run["run"]
+    assert '"${SUITE}"' in run["run"]
+    assert '"${WORKER}"' in run["run"]
+    assert '"${QA}"' in run["run"]
+    assert run["continue-on-error"] is True
+    assert _steps()["Preserve suite result"]["if"] == "always()"
+
+
+def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_cancellation():
+    workflow = _workflow()
+    cleanup = workflow["jobs"]["cleanup"]
+    steps = {step["name"]: step for step in cleanup["steps"]}
+
+    assert "always()" in cleanup["if"]
+    assert cleanup["needs"] == "e2e"
+    assert "cleanup-report" in steps["Cleanup and observe run-tagged machines"]["run"]
+    assert steps["Build final acceptance evidence"]["continue-on-error"] is True
+    assert steps["Scan final artifact for secrets"]["continue-on-error"] is True
+    uploads = [
+        step for step in cleanup["steps"] if "uses" in step and "upload-artifact" in step["uses"]
+    ]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "always()"
 
 
 def test_later_steps_use_the_created_orchestrator_address():

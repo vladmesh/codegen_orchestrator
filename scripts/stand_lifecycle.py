@@ -357,6 +357,62 @@ class BitLaunchLifecycle:
                 deleted.append(machine.id)
         return deleted
 
+    def cleanup_observation(self, *, run_tag: str) -> dict[str, object]:
+        """Delete only this run's machines and retain a fail-closed observation.
+
+        The report intentionally separates exact selection, deletion attempts,
+        remaining run-owned inventory and the provider's account-use value.  A
+        successful DELETE response is not proof that the provider removed the
+        machine, so a fresh inventory and account observation are both required.
+        """
+        selected_ids: list[str] = []
+        deleted_ids: list[str] = []
+        remaining_ids: list[str] | None = None
+        servers_used: int | None = None
+        errors: list[str] = []
+        try:
+            selected = self._existing_for_run(run_tag)
+            selected_ids = [machine.id for machine in selected]
+        except LifecycleRefusal:
+            selected = []
+            errors.append("cleanup_selection_unusable")
+        policy = RunTagDestructionPolicy(run_tag)
+        for machine in selected:
+            if not policy.allows(machine):
+                continue
+            try:
+                self._request("DELETE", f"servers/{machine.id}", None)
+                deleted_ids.append(machine.id)
+            except Exception:  # provider errors are not safe report content
+                errors.append(f"cleanup_delete_failed:{machine.id}")
+        try:
+            remaining_ids = [machine.id for machine in self._existing_for_run(run_tag)]
+            if remaining_ids:
+                errors.append("run_owned_machines_remain")
+        except LifecycleRefusal:
+            errors.append("post_cleanup_inventory_unusable")
+        try:
+            account = self._request("GET", "user", None)
+            used = account.get("used") if isinstance(account, dict) else None
+            if isinstance(used, int) and not isinstance(used, bool) and used >= 0:
+                servers_used = used
+                if used != 0:
+                    errors.append("post_cleanup_servers_used_not_zero")
+            else:
+                errors.append("post_cleanup_account_unusable")
+        except Exception:  # provider errors are not safe report content
+            errors.append("post_cleanup_account_unusable")
+        return {
+            "run_tag": run_tag,
+            "observed_at": _now(),
+            "selected_ids": selected_ids,
+            "deleted_ids": deleted_ids,
+            "remaining_ids": remaining_ids,
+            "servers_used": servers_used,
+            "status": "verified" if not errors else "incomplete",
+            "errors": errors,
+        }
+
     def sweep_expired(self, *, now: datetime, ttl: timedelta) -> list[str]:
         servers = self._request("GET", "servers", None)
         if not isinstance(servers, list):
@@ -396,11 +452,12 @@ def main() -> int:
     parser.add_argument("--env-file", type=Path, default=None)
     parser.add_argument("--ssh-key-name", default=DEFAULT_SSH_KEY_NAME)
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("preflight", "create", "cleanup"):
+    for command in ("preflight", "create", "cleanup", "cleanup-report"):
         item = sub.add_parser(command)
         item.add_argument("--run-tag", required=True)
     sub.choices["create"].add_argument("--manifest", type=Path, required=True)
     sub.choices["create"].add_argument("--ttl-hours", type=int, required=True)
+    sub.choices["cleanup-report"].add_argument("--output", type=Path, required=True)
     sweep = sub.add_parser("sweep")
     sweep.add_argument("--ttl-hours", type=int, required=True)
     args = parser.parse_args()
@@ -424,6 +481,13 @@ def main() -> int:
             print(manifest.to_json())
         elif args.command == "cleanup":
             print(json.dumps({"deleted_ids": lifecycle.cleanup_run(run_tag=args.run_tag)}))
+        elif args.command == "cleanup-report":
+            observation = lifecycle.cleanup_observation(run_tag=args.run_tag)
+            args.output.write_text(
+                json.dumps(observation, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            print(json.dumps(observation, sort_keys=True))
+            return 0 if observation["status"] == "verified" else 2
         else:
             now = datetime.now(UTC)
             print(

@@ -231,6 +231,60 @@ def test_cleanup_selects_only_exactly_tagged_resources():
     assert deleted == ["servers/one", "servers/two"]
 
 
+def test_cleanup_observation_records_exact_selection_and_zero_post_cleanup_usage():
+    inventory_reads = 0
+
+    def request(method, path, body=None):
+        nonlocal inventory_reads
+        if path == "servers":
+            inventory_reads += 1
+            if inventory_reads == 1:
+                return [
+                    {"id": "one", "name": "codegen-stand-gha-17-orchestrator"},
+                    {"id": "two", "name": "codegen-stand-gha-17-target"},
+                    {"id": "other", "name": "codegen-stand-gha-170-target"},
+                ]
+            return [{"id": "other", "name": "codegen-stand-gha-170-target"}]
+        if method == "DELETE":
+            return None
+        if path == "user":
+            return _user(used=0, limit=5)
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    observation = BitLaunchLifecycle(request).cleanup_observation(run_tag="gha-17")
+
+    assert observation["status"] == "verified"
+    assert observation["selected_ids"] == ["one", "two"]
+    assert observation["deleted_ids"] == ["one", "two"]
+    assert observation["remaining_ids"] == []
+    assert observation["servers_used"] == 0
+
+
+def test_cleanup_observation_fails_closed_when_post_cleanup_account_is_not_empty():
+    inventory_reads = 0
+
+    def request(method, path, body=None):
+        nonlocal inventory_reads
+        if path == "servers":
+            inventory_reads += 1
+            return (
+                [{"id": "one", "name": "codegen-stand-gha-17-orchestrator"}]
+                if inventory_reads == 1
+                else []
+            )
+        if method == "DELETE":
+            return None
+        if path == "user":
+            return _user(used=1, limit=5)
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    observation = BitLaunchLifecycle(request).cleanup_observation(run_tag="gha-17")
+
+    assert observation["status"] == "incomplete"
+    assert observation["servers_used"] == 1
+    assert "post_cleanup_servers_used_not_zero" in observation["errors"]
+
+
 def test_ttl_selection_refuses_untagged_and_keeps_young_resources():
     now = datetime(2026, 8, 28, tzinfo=UTC)
     old = (now - timedelta(hours=3)).isoformat()

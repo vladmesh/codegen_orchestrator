@@ -312,23 +312,57 @@ jobs:
             python3 -m scripts.wait_stand_provisioning --handle "${target_handle}"
           '
 
-      # Collected whatever the result was: a failed run is the one whose logs are
-      # worth keeping, and the stand's disk is swept on a schedule.
+      # The runner is the single owner of named-suite and custom-target
+      # semantics.  Its non-zero result is held until the safe handoff has been
+      # collected, then restored below so a suite failure remains the e2e result.
+      - name: Run selected stand suite
+        id: suite-run
+        if: always()
+        continue-on-error: true
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          SUITE: ${{ steps.suite.outputs.value }}
+          WORKER: ${{ inputs.worker }}
+          QA: ${{ inputs.qa }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python scripts/stand_run.py --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" "${remote_command}" \
+            >/dev/null 2>&1
+
+      # Copy only the runner's public reports.  This short-lived handoff is how
+      # the fresh cleanup runner can build the one final acceptance artifact.
       - name: Record machine manifest
         if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: stand-machines-${{ github.run_id }}
-          path: machines.json
-          if-no-files-found: warn
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/stand-e2e-handoff"
+          run_dir="${evidence_dir}/run"
+          mkdir -p "${run_dir}"
+          test -f machines.json && cp machines.json "${evidence_dir}/machines.json" || true
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          for name in junit.xml report.tsv run.log claude-claude.log claude-codex.log codex-claude.log codex-codex.log; do
+            scp -i "${key_path}" -o StrictHostKeyChecking=accept-new \
+              root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
+          done
 
-      - name: Upload the lifecycle manifest
+      - name: Upload cleanup handoff
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: stand-e2e-${{ inputs.suite }}-${{ github.run_id }}
-          path: machines.json
-          if-no-files-found: warn
+          name: stand-e2e-handoff-${{ github.run_id }}
+          path: ${{ runner.temp }}/stand-e2e-handoff
+          if-no-files-found: error
+
+      - name: Preserve suite result
+        if: always()
+        env:
+          SUITE_OUTCOME: ${{ steps.suite-run.outcome }}
+        run: |
+          test "${SUITE_OUTCOME}" != "failure"
 
   cleanup:
     needs: e2e
@@ -342,10 +376,70 @@ jobs:
       - name: Check out lifecycle code
         uses: actions/checkout@v5
 
-      - name: Cleanup run-tagged machines
+      - name: Download cleanup handoff
+        id: handoff
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: stand-e2e-handoff-${{ github.run_id }}
+          path: ${{ runner.temp }}/stand-e2e-handoff
+
+      - name: Cleanup and observe run-tagged machines
+        id: cleanup-observation
+        if: always()
+        continue-on-error: true
         run: |
           set -euo pipefail
-          python3 -m scripts.stand_lifecycle cleanup --run-tag "${STAND_RUN_TAG}"
+          handoff_dir="${RUNNER_TEMP}/stand-e2e-handoff"
+          mkdir -p "${handoff_dir}"
+          python3 -m scripts.stand_lifecycle cleanup-report \
+            --run-tag "${STAND_RUN_TAG}" --output "${handoff_dir}/cleanup.json"
+
+      - name: Build final acceptance evidence
+        id: build-evidence
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 -m scripts.stand_acceptance build \
+            --manifest "${RUNNER_TEMP}/stand-e2e-handoff/machines.json" \
+            --run-dir "${RUNNER_TEMP}/stand-e2e-handoff/run" \
+            --cleanup "${RUNNER_TEMP}/stand-e2e-handoff/cleanup.json" \
+            --output "${RUNNER_TEMP}/stand-acceptance"
+
+      - name: Scan final artifact for secrets
+        id: redaction-scan
+        if: always()
+        continue-on-error: true
+        env:
+          STAND_ARTIFACT_REDACTION_CANARY: stand-artifact-redaction-canary
+        run: |
+          set -euo pipefail
+          python3 -m scripts.stand_acceptance scan \
+            --artifact "${RUNNER_TEMP}/stand-acceptance" \
+            --canary-env STAND_ARTIFACT_REDACTION_CANARY
+
+      - name: Upload acceptance artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stand-e2e-acceptance-${{ github.run_id }}
+          path: ${{ runner.temp }}/stand-acceptance
+          if-no-files-found: error
+
+      - name: Fail closed on incomplete acceptance evidence
+        if: always()
+        env:
+          HANDOFF_OUTCOME: ${{ steps.handoff.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup-observation.outcome }}
+          BUILD_OUTCOME: ${{ steps.build-evidence.outcome }}
+          SCAN_OUTCOME: ${{ steps.redaction-scan.outcome }}
+        run: |
+          test "${HANDOFF_OUTCOME}" = "success"
+          test "${CLEANUP_OUTCOME}" = "success"
+          test "${BUILD_OUTCOME}" = "success"
+          test "${SCAN_OUTCOME}" = "success"
 
   ttl-sweep:
     if: github.event_name == 'schedule'

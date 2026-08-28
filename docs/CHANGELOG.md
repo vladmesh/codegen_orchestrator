@@ -4,6 +4,14 @@
 
 ### Added
 
+- Stand e2e now invokes the selected suite through `scripts/stand_run.py` on
+  the dynamic orchestrator, retaining deterministic JUnit alongside its TSV and
+  logs. A fresh exact-tag cleanup runner records deletion selection, final
+  provider inventory and `servers_used`, then builds one redacted acceptance
+  artifact with observed per-machine lifetime and BitLaunch hourly-cost-derived
+  run cost. Evidence fails closed on incomplete cleanup or a credential-shaped
+  artifact, including a supplied redaction canary.
+
 - The ephemeral stand now uses a non-secret `stand_token` worker auth selector:
   worker-manager resolves Claude and Codex credentials locally, Claude refuses
   an `ANTHROPIC_API_KEY` conflict, and Codex logs in from stdin without a host
