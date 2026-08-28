@@ -89,8 +89,9 @@ class AnsibleRunner:
             if bool(ssh_user) != bool(ssh_private_key):
                 return False, "SSH key authentication requires both SSH user and private key"
             if ssh_private_key and ssh_user:
+                normalized_private_key = ssh_private_key.rstrip("\r\n") + "\n"
                 with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".key") as key_file:
-                    key_file.write(ssh_private_key)
+                    key_file.write(normalized_private_key)
                     private_key_path = key_file.name
                 os.chmod(private_key_path, 0o600)
                 inventory_content = f"""[target]

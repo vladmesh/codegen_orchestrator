@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, NamedTuple
 
+import httpx
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
@@ -31,11 +32,13 @@ from ..nodes import FunctionalNode, log_node_execution
 from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
+    get_server_ssh_key,
     mark_provisioning_complete,
     reserve_provisioning_attempt,
     update_server_labels,
     update_server_status,
 )
+from .bitlaunch import BITLAUNCH_PROVIDER, BitLaunchClient, authorize_run_owned_target
 from .handlers import handle_provisioning_success
 from .incidents import create_incident
 from .operations import reinstall_and_provision, reset_server_password
@@ -52,7 +55,7 @@ class AuthorizedServer(NamedTuple):
 
     server: ServerDTO
     provider: str
-    provider_id: int
+    provider_id: str
     ip: str
 
 
@@ -115,12 +118,19 @@ class ProvisionerNode(FunctionalNode):
         """Get a server and return its complete authorized provider identity."""
         server_info = await get_server_info(server_handle)
 
-        authorized_id = authorized_provider_id(
-            provider=server_info.provider,
-            provider_id=server_info.provider_id,
-            is_managed=server_info.is_managed,
-        )
-        if authorized_id is None or server_info.provider != TIME4VPS_PROVIDER:
+        if server_info.provider == TIME4VPS_PROVIDER:
+            authorized_id = authorized_provider_id(
+                provider=server_info.provider,
+                provider_id=server_info.provider_id,
+                is_managed=server_info.is_managed,
+            )
+        elif server_info.provider == BITLAUNCH_PROVIDER:
+            authorized_id = authorize_run_owned_target(
+                server_info, run_tag=os.getenv("STAND_RUN_TAG")
+            )
+        else:
+            authorized_id = None
+        if authorized_id is None:
             logger.error(
                 "provisioning_server_not_authorized",
                 server_handle=server_handle,
@@ -146,7 +156,7 @@ class ProvisionerNode(FunctionalNode):
         return AuthorizedServer(
             server=server_info,
             provider=server_info.provider,
-            provider_id=int(authorized_id),
+            provider_id=authorized_id,
             ip=server_ip,
         )
 
@@ -171,7 +181,7 @@ class ProvisionerNode(FunctionalNode):
             )
 
         time4vps_client = Time4VPSClient(time4vps_username, time4vps_password)
-        details = await time4vps_client.get_server_details(target.provider_id)
+        details = await time4vps_client.get_server_details(int(target.provider_id))
         if not provider_ip_matches(expected_ip=target.ip, provider_ip=details.ip):
             logger.error(
                 "provisioning_provider_identity_mismatch",
@@ -188,6 +198,39 @@ class ProvisionerNode(FunctionalNode):
             )
 
         return time4vps_client
+
+    def _provider_identity_mismatch(self, server_handle: str) -> ProvisioningDenied:
+        return ProvisioningDenied(
+            reason="provider_identity_mismatch",
+            error="Provider identity mismatch",
+            message=f"❌ Provider identity mismatch for {server_handle}.",
+            mark_server_error=True,
+        )
+
+    async def _init_bitlaunch_client(
+        self,
+        server_handle: str,
+        target: AuthorizedServer,
+    ) -> BitLaunchClient:
+        """Prove the exact run-owned ID/IP pair before touching a BitLaunch target."""
+        try:
+            client = BitLaunchClient.from_environment()
+            provider_ip = await client.get_server_ip(target.provider_id)
+        except (ValueError, httpx.HTTPError) as exc:
+            logger.error(
+                "bitlaunch_observation_failed",
+                server_handle=server_handle,
+                error_type=type(exc).__name__,
+            )
+            raise ProvisioningDenied(
+                reason="bitlaunch_observation_failed",
+                error="BitLaunch observation failed",
+                message="❌ BitLaunch could not confirm the target identity.",
+                mark_server_error=True,
+            ) from exc
+        if not provider_ip_matches(expected_ip=target.ip, provider_ip=provider_ip):
+            raise self._provider_identity_mismatch(server_handle)
+        return client
 
     async def _run_reinstall_path(  # noqa: PLR0913
         self,
@@ -259,6 +302,8 @@ class ProvisionerNode(FunctionalNode):
         provisioning_episode_id: str,
         is_recovery: bool,
         state: dict,
+        ssh_user: str | None = None,
+        ssh_private_key: str | None = None,
     ) -> dict:
         """Execute provisioning using existing SSH access."""
         logger.info("provisioning_existing_setup", server_handle=server_handle)
@@ -271,6 +316,8 @@ class ProvisionerNode(FunctionalNode):
             root_password=None,
             ssh_public_key=self.ssh_manager.get_public_key(),
             deploy_user=deploy_user,
+            ssh_user=ssh_user,
+            ssh_private_key=ssh_private_key,
             orchestrator_ip=self.orchestrator_ip,
             orchestrator_hostname=self.orchestrator_hostname,
             timeout=Timeouts.ACCESS_PHASE,
@@ -298,6 +345,8 @@ class ProvisionerNode(FunctionalNode):
             root_password=None,
             ssh_public_key=self.ssh_manager.get_public_key(),
             deploy_user=deploy_user,
+            ssh_user=ssh_user,
+            ssh_private_key=ssh_private_key,
             orchestrator_ip=self.orchestrator_ip,
             orchestrator_hostname=self.orchestrator_hostname,
             timeout=Timeouts.PROVISIONING,
@@ -357,7 +406,42 @@ class ProvisionerNode(FunctionalNode):
         server_ip = target.ip
         os_template = server_info.os_template or Provisioning.DEFAULT_OS_TEMPLATE
 
-        # Step 2: Atomically reserve an attempt after authorization but before provider I/O.
+        if (
+            target.provider == BITLAUNCH_PROVIDER
+            and server_info.status == ServerStatus.FORCE_REBUILD
+        ):
+            return await self._handle_denial(
+                server_handle,
+                state,
+                ProvisioningDenied(
+                    reason="bitlaunch_reinstall_unsupported",
+                    error="BitLaunch reinstall is not supported",
+                    message="❌ BitLaunch targets cannot be force-rebuilt.",
+                ),
+            )
+
+        bitlaunch_key: str | None = None
+        if target.provider == BITLAUNCH_PROVIDER:
+            # This read-only provider proof precedes the attempt reservation and
+            # status write. A stale ID/IP pair must not alter the target at all.
+            try:
+                await self._init_bitlaunch_client(server_handle, target)
+            except ProvisioningDenied as denial:
+                return await self._handle_denial(server_handle, state, denial)
+            bitlaunch_key = await get_server_ssh_key(server_handle)
+            if not bitlaunch_key:
+                return await self._handle_denial(
+                    server_handle,
+                    state,
+                    ProvisioningDenied(
+                        reason="bitlaunch_ssh_key_missing",
+                        error="BitLaunch target SSH key is missing",
+                        message=f"❌ BitLaunch target {server_handle} has no stored SSH key.",
+                        mark_server_error=True,
+                    ),
+                )
+
+        # Step 2: Atomically reserve an attempt after authorization and before mutation.
         try:
             reservation = await reserve_provisioning_attempt(
                 server_handle, PROVISIONING_MAX_RETRIES
@@ -399,11 +483,13 @@ class ProvisionerNode(FunctionalNode):
 
         provisioning_attempts, provisioning_episode_id = reservation
 
-        # Step 3: Verify provider identity. The destructive boundary repeats this check.
-        try:
-            time4vps_client = await self._init_time4vps_client(server_handle, target)
-        except ProvisioningDenied as denial:
-            return await self._handle_denial(server_handle, state, denial)
+        # Step 3: Time4VPS repeats its provider proof at its destructive boundary.
+        time4vps_client = None
+        if target.provider == TIME4VPS_PROVIDER:
+            try:
+                time4vps_client = await self._init_time4vps_client(server_handle, target)
+            except ProvisioningDenied as denial:
+                return await self._handle_denial(server_handle, state, denial)
 
         # Step 4: Update status
         await update_server_status(server_handle, "provisioning")
@@ -422,7 +508,7 @@ class ProvisionerNode(FunctionalNode):
                 time4vps_client=time4vps_client,
                 server_handle=server_handle,
                 provider=target.provider,
-                server_id=server_id,
+                server_id=int(server_id),
                 server_ip=server_ip,
                 deploy_user=server_info.ssh_user,
                 os_template=os_template,
@@ -440,6 +526,8 @@ class ProvisionerNode(FunctionalNode):
                 provisioning_episode_id=provisioning_episode_id,
                 is_recovery=is_recovery,
                 state=state,
+                ssh_user="root" if target.provider == BITLAUNCH_PROVIDER else None,
+                ssh_private_key=bitlaunch_key,
             )
 
 

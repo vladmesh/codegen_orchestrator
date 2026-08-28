@@ -4,6 +4,16 @@
 
 ### Added
 
+- Stand e2e now bootstraps its dynamically created orchestrator from the
+  checked-out revision, derives the public orchestrator identity only from the
+  lifecycle outputs, and waits for the local API before it registers a separate
+  pending BitLaunch target. The target carries its exact provider ID, IP, run
+  tag and role; BitLaunch provisioning proves that current binding before it
+  changes state, uses the stored creation key through the existing access and
+  software playbooks, and cannot force-rebuild. The API provision request now
+  dispatches the existing provisioner queue path, and the obsolete `stand-self`
+  registration script and Make target are removed.
+
 - Destructive server operations now use the provider-owned provisioning policy.
   Time4VPS rows carry `labels.provider="time4vps"` and their stable provider ID;
   scheduler sync upgrades only legacy rows that it matches by that stable ID.
@@ -55,6 +65,11 @@
   money only after the count gate.
 
 ### Fixed
+
+- Provisioner key-authentication now materializes every supplied SSH private
+  key with exactly one terminal LF before invoking Ansible, so BitLaunch
+  creation keys and later stored keys remain usable when secret storage omits
+  the final newline.
 
 - Deployment now maps the existing Time4VPS GitHub secret to the provider-scoped
   runtime policy key and validates that same key in contour guards and operator
