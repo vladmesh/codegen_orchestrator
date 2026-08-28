@@ -409,7 +409,7 @@ services:
       PYTHONPATH: /app
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler
-      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-300}
+      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-60}
       # Loki read address for the analytics aggregator. Not the push path —
       # LOKI_PUSH_* are Promtail's write credentials. Required: without it
       # product analytics are not collected, so compose refuses to start.

@@ -8,6 +8,7 @@ from functools import lru_cache
 
 from pydantic import Field
 
+from shared.allocation_freshness import ALLOCATION_METRICS_FRESHNESS_SECONDS
 from shared.config import (
     BaseSettings,
     api_base_url_field,
@@ -30,7 +31,9 @@ class Settings(BaseSettings):
     # Resource allocation admission controls. Both values are intentionally
     # environment-configurable because provider and workload characteristics vary.
     allocation_ram_reserve_mb: int = Field(default=256, ge=0)
-    allocation_metrics_freshness_seconds: int = Field(default=300, gt=0)
+    allocation_metrics_freshness_seconds: int = Field(
+        default=ALLOCATION_METRICS_FRESHNESS_SECONDS, gt=0
+    )
 
     # Optional: Mount host Claude session for dev agents (avoids API key need)
     mount_claude_session: bool = True

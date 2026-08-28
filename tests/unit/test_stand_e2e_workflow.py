@@ -120,6 +120,26 @@ def test_machine_ids_are_recorded_then_cleaned_for_every_terminal_outcome():
     )
 
 
+def test_worker_image_fallback_is_limited_to_confirmed_missing_releases():
+    job = _workflow()["jobs"]["e2e"]
+    step = _steps()["Provide worker base images on the stand"]
+
+    assert job["permissions"]["packages"] == "read"
+    assert job["steps"][0]["with"]["fetch-depth"] == 0
+    assert "git merge-base HEAD origin/main" in step["run"]
+    assert 'case "${pulled}"' in step["run"]
+    assert "9)" in step["run"]
+    assert "5|9)" not in step["run"]
+    assert "FATAL: pulling the worker image release failed" in step["run"]
+
+
+def test_machine_cleanup_has_no_retention_escape_hatch():
+    workflow = WORKFLOW.read_text()
+
+    assert "keep_machines" not in workflow
+    assert "Cleanup and observe run-tagged machines" in workflow
+
+
 def test_selected_suite_runs_through_the_supported_remote_runner_and_preserves_failure():
     steps = _steps()
     run = steps["Run selected stand suite"]

@@ -96,7 +96,7 @@ async def test_remote_docker_prepares_mounts_in_the_daemon_namespace(monkeypatch
 
 @pytest.mark.asyncio
 async def test_instruction_injection_failure_aborts_worker_creation():
-    """A worker without its instruction file is failed now, not ACKed into a timeout."""
+    """A failed created worker stays owned and fenced until deletion confirms removal."""
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
     wrapper.exec_in_container = AsyncMock(return_value=(1, b"permission denied"))
@@ -139,6 +139,16 @@ async def test_instruction_injection_failure_aborts_worker_creation():
                 instructions="required instructions",
                 repo_id="repo-1",
             )
+
+    assert await redis.hget("worker:status:w-injection-failure", "status") == WorkerStatus.FAILED
+    assert "could not inject" in await redis.get("worker:error:w-injection-failure")
+    meta = decode_redis_fields(await redis.hgetall("worker:meta:w-injection-failure"))
+    assert (meta["project_id"], meta["run_id"], meta["attempt_id"]) == (
+        _OWNERSHIP.project_id,
+        _OWNERSHIP.run_id,
+        _OWNERSHIP.attempt_id,
+    )
+    assert await redis.get(f"workspace:lock:{_OWNERSHIP.project_id}") == "w-injection-failure"
 
 
 @pytest.mark.asyncio

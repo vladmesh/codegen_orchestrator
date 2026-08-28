@@ -56,11 +56,16 @@ jobs:
     runs-on: ubuntu-latest
     environment: stand
     timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: read
     env:
       STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out lifecycle code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -313,6 +318,42 @@ jobs:
             python3 -m scripts.request_stand_provisioning --handle "${target_handle}"
             python3 -m scripts.wait_stand_provisioning --handle "${target_handle}"
           '
+
+      - name: Provide worker base images on the stand
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+          GHCR_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          release_sha="$(git merge-base HEAD origin/main)"
+          echo "worker image release candidate: ${release_sha}"
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+            root@"${PROD_HOST}" \
+            "cd /opt/codegen_orchestrator && \
+             GHCR_TOKEN='${GHCR_TOKEN}' GHCR_OWNER='${GHCR_OWNER}' \
+             WORKER_IMAGE_TAG='${release_sha}' \
+             DIGEST_FILE=/opt/codegen_orchestrator/deployed-worker-images.json \
+             bash infra/scripts/pull-worker-images.sh" && pulled=0 || pulled=$?
+          # Only a confirmed absent whole release (9) admits a local build.
+          # Auth, transport, rate-limit, DNS, tool, source-hash and
+          # invalid-release failures stay visible instead of being
+          # misclassified as missing images.
+          if [ "${pulled}" -ne 0 ]; then
+            case "${pulled}" in
+              9)
+                echo "no release matches this tree (exit ${pulled}); building on the stand"
+                ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+                  root@"${PROD_HOST}" \
+                  'cd /opt/codegen_orchestrator && export PATH=/usr/local/bin:$PATH && make ensure-worker-images'
+                ;;
+              *)
+                echo "FATAL: pulling the worker image release failed with ${pulled}" >&2
+                exit "${pulled}"
+                ;;
+            esac
+          fi
 
       # The runner is the single owner of named-suite and custom-target
       # semantics.  Its non-zero result is held until the safe handoff has been

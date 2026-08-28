@@ -96,6 +96,33 @@ async def test_bitlaunch_checks_provider_binding_before_reserving_or_changing_ta
 
 
 @pytest.mark.asyncio
+async def test_bitlaunch_ip_mismatch_is_denied_before_ssh_or_reservation(monkeypatch):
+    monkeypatch.setenv("STAND_RUN_TAG", "gha-41-1")
+    node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
+    monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_target()))
+    provider = MagicMock()
+    provider.get_server_ip = AsyncMock(return_value="203.0.113.20")
+    # Keep the provider observation real, so the test holds the complete stored
+    # ID/labels/IP admission instead of mocking its final comparison away.
+    monkeypatch.setattr(
+        "src.provisioner.node.BitLaunchClient.from_environment", MagicMock(return_value=provider)
+    )
+    reserve = AsyncMock()
+    ssh_key = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.reserve_provisioning_attempt", reserve)
+    monkeypatch.setattr("src.provisioner.node.get_server_ssh_key", ssh_key)
+    status = AsyncMock()
+    monkeypatch.setattr("src.provisioner.node.update_server_status", status)
+
+    result = await node.run({"server_to_provision": "bitlaunch-71234", "errors": []})
+
+    assert result["provisioning_result"]["reason"] == "provider_identity_mismatch"
+    reserve.assert_not_awaited()
+    ssh_key.assert_not_awaited()
+    status.assert_awaited_once_with("bitlaunch-71234", "error")
+
+
+@pytest.mark.asyncio
 async def test_bitlaunch_uses_stored_creation_key_and_both_existing_ssh_playbooks(monkeypatch):
     monkeypatch.setenv("STAND_RUN_TAG", "gha-41-1")
     ansible = MagicMock()

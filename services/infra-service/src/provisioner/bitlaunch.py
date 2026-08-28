@@ -7,7 +7,8 @@ from typing import Protocol
 
 import httpx
 
-BITLAUNCH_PROVIDER = "bitlaunch"
+from shared.provisioning_policy import BITLAUNCH_PROVIDER, parse_bitlaunch_server_id
+
 _REQUIRED_LABELS = {"contour": "stand", "stand_role": "target"}
 
 
@@ -16,16 +17,6 @@ class ServerIdentity(Protocol):
     provider_id: str | None
     is_managed: bool
     labels: dict
-
-
-def parse_bitlaunch_server_id(value: str | int | None) -> str | None:
-    """Validate BitLaunch's public positive-decimal server identity."""
-    if value is None:
-        return None
-    normalized = str(value)
-    if not normalized.isascii() or not normalized.isdecimal() or int(normalized) <= 0:
-        return None
-    return normalized
 
 
 def authorize_run_owned_target(server: ServerIdentity, *, run_tag: str | None) -> str | None:

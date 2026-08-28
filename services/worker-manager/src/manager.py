@@ -1492,28 +1492,18 @@ class WorkerManager:
 
             return worker_id
         except Exception as exc:
-            await self._unregister_broker_worker(worker_id)
+            # This block starts after ownership has been stamped and, for a
+            # developer, after its workspace fence has been acquired.  A
+            # container may already be running when an instruction, checkout,
+            # or QA setup step fails.  Do not erase the only ownership record
+            # or free its checkout here: `delete_worker` is the teardown owner
+            # and releases both only after Docker confirms removal.
             if is_qa_worker:
-                # The run's door out is removed with the run it was opened for,
-                # including a run that never got going.
-                await qa_egress.tear_down(self.docker, worker_id)
-                # The container may already be up and marked RUNNING by
-                # `create_worker`, while the step that failed is the one that
-                # installs the executor's only route to the deployment. A QA
-                # client polling status would then send a run into a container
-                # that has to improvise. Say it failed.
-                await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
-                await self.redis.set(f"worker:error:{worker_id}", str(exc))
-            # Early lock was registered — clean it up on failure, reading the
-            # holder fact rather than assuming it, and before the metadata that
-            # holds it is deleted. A QA executor took no lock and must not
-            # release a developer worker's.
-            if not is_qa_worker:
-                await self._release_workspace_lock(worker_id, held_project_id)
-                await self.redis.delete(
-                    f"worker:status:{worker_id}",
-                    f"worker:meta:{worker_id}",
-                )
+                logger.warning("qa_worker_creation_failed", worker_id=worker_id, error=str(exc))
+            else:
+                logger.warning("developer_worker_creation_failed", worker_id=worker_id, error=str(exc))
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+            await self.redis.set(f"worker:error:{worker_id}", str(exc))
             raise
 
     @staticmethod
