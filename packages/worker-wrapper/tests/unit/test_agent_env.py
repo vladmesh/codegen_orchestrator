@@ -240,7 +240,9 @@ class TestAgentSubprocessEnv:
                 await wrapper.execute_agent({"prompt": "test"})
 
     @pytest.mark.asyncio
-    async def test_codex_stand_token_login_uses_stdin_and_does_not_reach_agent_argv_or_env(self):
+    async def test_codex_stand_token_login_uses_stdin_and_does_not_reach_subprocess_env_or_argv(
+        self, tmp_path
+    ):
         wrapper = _make_wrapper(agent_type="codex", auth_mode="stand_token")
         calls: list[tuple[tuple, dict, AsyncMock]] = []
 
@@ -259,7 +261,7 @@ class TestAgentSubprocessEnv:
                 {
                     "PATH": "/usr/bin",
                     "HOME": "/home/worker",
-                    "CODEX_HOME": "/home/worker/.codex",
+                    "CODEX_HOME": str(tmp_path / ".codex"),
                     "CODEX_ACCESS_TOKEN": "fake-codex-token",
                 },
                 clear=True,
@@ -271,7 +273,11 @@ class TestAgentSubprocessEnv:
         agent_args, agent_kwargs, _agent_proc = calls[1]
         assert login_args == ("codex", "login", "--with-access-token")
         assert "fake-codex-token" not in login_args
-        assert login_kwargs["env"]["CODEX_ACCESS_TOKEN"] == "fake-codex-token"  # noqa: S105
+        assert "CODEX_ACCESS_TOKEN" not in login_kwargs["env"]
         login_proc.communicate.assert_awaited_once_with(b"fake-codex-token")
         assert "fake-codex-token" not in agent_args
         assert "CODEX_ACCESS_TOKEN" not in agent_kwargs["env"]
+        assert (
+            tmp_path / ".codex" / "config.toml"
+        ).read_text() == 'cli_auth_credentials_store = "file"\n'
+        assert not (tmp_path / ".codex" / "auth.json").exists()

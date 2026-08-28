@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from shared.contracts.dto.executor_diagnostics import ExecutorAvailability
+from shared.contracts.dto.executor_diagnostics import ExecutorAuthMode, ExecutorAvailability
 from shared.contracts.vocab import AgentType
 from src.manager import WorkerManager
 
@@ -57,6 +57,61 @@ def test_unreconciled_inventory_does_not_claim_zero_leases(monkeypatch):
 
     assert diagnostic.availability is ExecutorAvailability.UNKNOWN
     assert diagnostic.active_lease_count is None
+
+
+def test_stand_token_diagnostic_accepts_manager_local_opaque_claude_metadata(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    import src.manager as manager_module
+
+    now = datetime.now(UTC)
+    monkeypatch.setattr(manager_module.settings, "LIVE_CONTOUR", "stand", raising=False)
+    monkeypatch.setattr(manager_module.settings, "STAND_CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-fake", raising=False)
+    monkeypatch.setattr(
+        manager_module.settings,
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        (now + timedelta(hours=1)).isoformat(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        manager_module.settings, "STAND_CODEX_ACCESS_TOKEN", "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature", raising=False
+    )
+    manager = WorkerManager(redis=AsyncMock(), docker_client=MagicMock())
+
+    diagnostic = manager._executor_diagnostic(
+        AgentType.CLAUDE,
+        now,
+        now + timedelta(seconds=60),
+        {AgentType.CLAUDE: 0, AgentType.CODEX: 0},
+    )
+
+    assert diagnostic.auth_mode is ExecutorAuthMode.STAND_TOKEN
+    assert diagnostic.availability is ExecutorAvailability.AVAILABLE
+    assert diagnostic.reason_code == "stand_token_ready"
+
+
+def test_stand_token_diagnostic_refuses_invalid_local_token_without_exposing_it(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    import src.manager as manager_module
+
+    now = datetime.now(UTC)
+    token = "fake-secret-codex-token"
+    monkeypatch.setattr(manager_module.settings, "LIVE_CONTOUR", "stand", raising=False)
+    monkeypatch.setattr(manager_module.settings, "STAND_CODEX_ACCESS_TOKEN", token, raising=False)
+    manager = WorkerManager(redis=AsyncMock(), docker_client=MagicMock())
+
+    diagnostic = manager._executor_diagnostic(
+        AgentType.CODEX,
+        now,
+        now + timedelta(seconds=60),
+        {AgentType.CLAUDE: 0, AgentType.CODEX: 0},
+    )
+
+    assert diagnostic.auth_mode is ExecutorAuthMode.STAND_TOKEN
+    assert diagnostic.availability is ExecutorAvailability.UNAVAILABLE
+    assert diagnostic.reason_code == "stand_token_invalid"
+    assert token not in diagnostic.reason
 
 
 @pytest.mark.asyncio

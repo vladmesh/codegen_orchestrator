@@ -962,9 +962,15 @@ class WorkerWrapper:
         token = wrapper_env.get("CODEX_ACCESS_TOKEN")
         if not token:
             raise RuntimeError("CODEX_ACCESS_TOKEN is not set for Codex stand_token authentication")
+        codex_home = wrapper_env.get("CODEX_HOME")
+        if not codex_home:
+            raise RuntimeError("CODEX_HOME is not set for Codex stand_token authentication")
+        profile = Path(codex_home)
+        profile.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (profile / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
         login_env = {
             name: wrapper_env[name]
-            for name in ("HOME", "LANG", "LC_ALL", "PATH", "CODEX_HOME", "CODEX_ACCESS_TOKEN")
+            for name in ("HOME", "LANG", "LC_ALL", "PATH", "CODEX_HOME")
             if name in wrapper_env
         }
         proc = await asyncio.create_subprocess_exec(

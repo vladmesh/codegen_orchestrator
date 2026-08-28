@@ -89,7 +89,11 @@ def test_credential_preflight_refuses_before_the_provider_preflight_or_create():
         "Preflight ephemeral machines"
     )
     assert "python3 -m scripts.stand_lifecycle preflight" in lifecycle["run"]
-    for secret in ("CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"):
+    for secret in (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        "CODEX_ACCESS_TOKEN",
+    ):
         assert secret in credentials["env"]
         assert secret not in credentials["run"]
 
@@ -171,7 +175,11 @@ def test_dynamic_stand_configuration_receives_tokens_only_as_protected_manager_s
     step = _steps()["Render protected dynamic configuration"]
     render = step["run"]
 
-    for name in ("STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CODEX_ACCESS_TOKEN"):
+    for name in (
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        "STAND_CODEX_ACCESS_TOKEN",
+    ):
         assert name in step["env"]
         assert f'"{name}"' in render
     assert "HOST_CLAUDE_DIR" not in step["env"]

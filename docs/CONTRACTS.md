@@ -428,6 +428,16 @@ host profile mount; the wrapper passes `CODEX_ACCESS_TOKEN` over stdin to
 Neither credential is a Docker label, queue field, argv value, host `auth.json`,
 or retained artifact.
 
+On `LIVE_CONTOUR=stand`, the executor diagnostic uses the same `stand_token`
+selector. It is `available` only when the manager-local Claude token and its
+operator-supplied timezone-aware expiry metadata, or the Codex JWT expiry,
+respect their minimum TTL and worker inventory reconciles. A missing, malformed,
+expired, or near-expiry prerequisite is the credential-safe
+`stand_token_invalid` unavailable reason. The API admission path consumes that
+snapshot before producing a paid worker command, while producers retain their
+ordinary non-secret `host_session` queue shape and the worker-manager resolves
+the local mode at consumption.
+
 `WorkerConfig.host_codex_home` adds no new queue shape beyond an optional field.
 For `agent_type=codex` and `auth_mode=host_session`, worker-manager validates a
 dedicated file-backed ChatGPT profile before image resolution. It then mounts

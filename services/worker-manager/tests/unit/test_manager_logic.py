@@ -10,6 +10,7 @@ from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 from src.manager import WorkerManager
+from src.container_config import WorkerContainerConfig
 
 
 # Every worker is created for somebody. These tests are not about who, so they
@@ -156,6 +157,37 @@ async def test_create_worker_unit():
     assert res == "test-id"
     wrapper.run_container.assert_awaited_once()
     redis.set.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stand_token_is_not_a_docker_label():
+    redis = MagicMock()
+    redis.set = AsyncMock()
+    redis.hset = AsyncMock()
+    wrapper = _make_docker_mock()
+    token = "fake-stand-token"
+    config = WorkerContainerConfig(
+        worker_id="stand-label-boundary",
+        worker_type="developer",
+        agent_type=AgentType.CODEX,
+        capabilities=[],
+        auth_mode="stand_token",
+    )
+
+    await WorkerManager(redis=redis, docker_client=wrapper).create_worker(
+        "stand-label-boundary",
+        "worker:latest",
+        ownership=_OWNERSHIP,
+        env_vars={"CODEX_ACCESS_TOKEN": token},
+        volumes={},
+        network_name="codegen_worker",
+        create_dev_network=False,
+        container_config=config,
+    )
+
+    labels = wrapper.run_container.call_args.kwargs["labels"]
+    assert labels["com.codegen.auth_mode"] == "stand_token"
+    assert token not in labels.values()
 
 
 @pytest.mark.asyncio

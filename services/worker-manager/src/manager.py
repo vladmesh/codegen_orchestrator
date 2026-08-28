@@ -206,6 +206,45 @@ class WorkerManager:
         expires_at: datetime,
         leases: dict[AgentType, int] | None,
     ) -> ExecutorDiagnostic:
+        if settings.LIVE_CONTOUR == "stand":
+            failures = self._stand_token_failures()
+            failure = next((item for item in failures if item.name == f"{executor.value.title()} token"), None)
+            if leases is None:
+                return ExecutorDiagnostic(
+                    executor=executor,
+                    enabled=True,
+                    auth_mode=ExecutorAuthMode.STAND_TOKEN,
+                    availability=ExecutorAvailability.UNKNOWN,
+                    observed_at=now,
+                    expires_at=expires_at,
+                    active_lease_count=None,
+                    reason_code="inventory_unreconciled",
+                    reason=safe_executor_diagnostic_reason("inventory_unreconciled"),
+                )
+            if failure is not None:
+                return ExecutorDiagnostic(
+                    executor=executor,
+                    enabled=True,
+                    auth_mode=ExecutorAuthMode.STAND_TOKEN,
+                    availability=ExecutorAvailability.UNAVAILABLE,
+                    observed_at=now,
+                    expires_at=expires_at,
+                    active_lease_count=leases[executor],
+                    reason_code="stand_token_invalid",
+                    reason=safe_executor_diagnostic_reason("stand_token_invalid"),
+                )
+            return ExecutorDiagnostic(
+                executor=executor,
+                enabled=True,
+                auth_mode=ExecutorAuthMode.STAND_TOKEN,
+                availability=ExecutorAvailability.AVAILABLE,
+                observed_at=now,
+                expires_at=expires_at,
+                active_lease_count=leases[executor],
+                reason_code="stand_token_ready",
+                reason=safe_executor_diagnostic_reason("stand_token_ready"),
+            )
+
         profile = settings.HOST_CLAUDE_DIR if executor is AgentType.CLAUDE else settings.HOST_CODEX_HOME
         if not profile:
             return ExecutorDiagnostic(
@@ -262,6 +301,19 @@ class WorkerManager:
             active_lease_count=leases[executor],
             reason_code="ready",
             reason=safe_executor_diagnostic_reason("ready"),
+        )
+
+    @staticmethod
+    def _stand_token_failures():
+        """Read stand secrets only at the protected manager boundary."""
+        from shared.stand_credentials import validate_stand_token_credentials
+
+        return validate_stand_token_credentials(
+            {
+                "CLAUDE_CODE_OAUTH_TOKEN": settings.STAND_CLAUDE_CODE_OAUTH_TOKEN or "",
+                "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (settings.STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT or ""),
+                "CODEX_ACCESS_TOKEN": settings.STAND_CODEX_ACCESS_TOKEN or "",
+            }
         )
 
     async def _register_broker_worker(self, worker_id: str, token: str, worker_type: str) -> None:
@@ -1154,10 +1206,12 @@ class WorkerManager:
                     "stand token credentials must be local to worker-manager, not env_vars: "
                     + ", ".join(sorted(supplied))
                 )
-            if agent_type is AgentType.CLAUDE and not settings.STAND_CLAUDE_CODE_OAUTH_TOKEN:
-                raise RuntimeError("STAND_CLAUDE_CODE_OAUTH_TOKEN is not set for stand_token authentication")
-            if agent_type is AgentType.CODEX and not settings.STAND_CODEX_ACCESS_TOKEN:
-                raise RuntimeError("STAND_CODEX_ACCESS_TOKEN is not set for stand_token authentication")
+            failure = next(
+                (item for item in self._stand_token_failures() if item.name == f"{agent_type.value.title()} token"),
+                None,
+            )
+            if failure is not None:
+                raise RuntimeError(f"stand_token authentication is unavailable: {failure.detail}")
         # Written before anything is created, for two reasons that both need it
         # early. It is what `delete_worker` reads to know a QA workspace is
         # scratch it must remove — a creation that fails halfway would otherwise

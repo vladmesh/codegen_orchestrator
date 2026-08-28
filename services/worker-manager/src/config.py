@@ -40,6 +40,7 @@ class WorkerManagerSettings(BaseSettings):
     # Short-lived stand-only credentials. They are resolved by worker-manager,
     # never by a queue producer, and only when auth_mode=stand_token.
     STAND_CLAUDE_CODE_OAUTH_TOKEN: str | None = None
+    STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT: str | None = None
     STAND_CODEX_ACCESS_TOKEN: str | None = None
 
     # Redis handoff is deliberately short-lived: the API treats a missing or

@@ -61,11 +61,14 @@ stand-mega-test  -> stand-m-<uuid32>
 - [ ] `concurrency` group общий для прод-деплоя, прод-матрицы и стенда — чтобы два прогона не
       делили одну подписку и одну оргу одновременно.
 
+> Historical plan note. The host-session secrets named below predate the current
+> ephemeral-token policy and are not the stand's authentication configuration.
+
 **Секреты Environment `stand`** (те же имена, другие значения): `POSTGRES_*`, `INTERNAL_API_KEY`,
 `ADMIN_*`, `GRAFANA_*`, `LOKI_*`, `SECRETS_ENCRYPTION_KEY`, `LK_JWT_SECRET`, `REGISTRY_*`,
 `WORKER_BROKER_INTERNAL_TOKEN`, `ORCHESTRATOR_HOSTNAME`, `ORCHESTRATOR_PUBLIC_IP=212.24.101.230`,
-`PROD_HOST=212.24.101.230`, `SSH_PRIVATE_KEY` (ключ `stands_ed25519`), `HOST_CLAUDE_DIR`,
-`HOST_CODEX_HOME`, `TELETHON_API_ID`/`TELETHON_API_HASH` (**те же, что у прода**),
+`PROD_HOST=212.24.101.230`, `SSH_PRIVATE_KEY` (ключ `stands_ed25519`),
+`TELETHON_API_ID`/`TELETHON_API_HASH` (**те же, что у прода**),
 `TELETHON_SESSION` (**своя строка сессии**), `ADMIN_TELEGRAM_IDS`, LLM-ключи,
 `GH_APP_ID`/`GH_APP_PRIVATE_KEY`/`GH_ORG` (пока те же, что у прода), `LIVE_CONTOUR_PREFIX=stand`.
 

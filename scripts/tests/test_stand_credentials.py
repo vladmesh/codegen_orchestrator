@@ -22,7 +22,10 @@ def _token(expiry: datetime) -> str:
 
 def _environment(now: datetime) -> dict[str, str]:
     return {
-        "CLAUDE_CODE_OAUTH_TOKEN": _token(now + CLAUDE_MINIMUM_TTL + timedelta(seconds=1)),
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-fake-opaque-claude-token",  # noqa: S105
+        "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (
+            now + CLAUDE_MINIMUM_TTL + timedelta(seconds=1)
+        ).isoformat(),
         "CODEX_ACCESS_TOKEN": _token(now + CODEX_MINIMUM_TTL + timedelta(seconds=1)),
         "TELETHON_API_ID": "12345",
         "TELETHON_API_HASH": "test-hash",
@@ -45,6 +48,7 @@ def test_precreate_credentials_refuses_each_independent_missing_or_unusable_inpu
     environment.update(
         {
             "CLAUDE_CODE_OAUTH_TOKEN": "",
+            "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": "",
             "CODEX_ACCESS_TOKEN": _token(now + CODEX_MINIMUM_TTL),
             "TELETHON_SESSION": "",
             "SSH_PRIVATE_KEY": "not-a-private-key",
@@ -71,12 +75,55 @@ def test_precreate_credentials_refuses_each_independent_missing_or_unusable_inpu
 def test_precreate_credentials_refuses_malformed_and_expired_tokens_without_echoing_them():
     now = datetime(2026, 8, 28, tzinfo=UTC)
     environment = _environment(now)
-    environment["CLAUDE_CODE_OAUTH_TOKEN"] = "fake-malformed-claude-token"  # noqa: S105
+    environment["CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"] = "not-an-expiry"  # noqa: S105
     environment["CODEX_ACCESS_TOKEN"] = _token(now - timedelta(seconds=1))
 
     failures = validate_precreate_credentials(environment, now=now)
     rendered = "\n".join(failure.detail for failure in failures)
 
     assert [failure.name for failure in failures] == ["Claude token", "Codex token"]
-    assert "fake-malformed-claude-token" not in rendered
+    assert "sk-ant-oat01" not in rendered
     assert "header." not in rendered
+
+
+def test_opaque_claude_token_requires_strict_operator_expiry_metadata():
+    now = datetime(2026, 8, 28, tzinfo=UTC)
+    environment = _environment(now)
+    environment["CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"] = (now + CLAUDE_MINIMUM_TTL).isoformat()
+
+    failures = validate_precreate_credentials(environment, now=now)
+
+    assert [(failure.name, failure.detail) for failure in failures] == [
+        ("Claude token", "has less than the required 30 minutes remaining")
+    ]
+
+
+def test_opaque_claude_token_expiry_metadata_must_be_timezone_aware():
+    now = datetime(2026, 8, 28, tzinfo=UTC)
+    environment = _environment(now)
+    environment["CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"] = "2026-12-01T00:00:00"  # noqa: S105
+
+    failures = validate_precreate_credentials(environment, now=now)
+
+    assert [(failure.name, failure.detail) for failure in failures] == [
+        ("Claude token", "has an unreadable or unverifiable expiry metadata")
+    ]
+
+
+def test_opaque_claude_token_refuses_missing_and_expired_expiry_metadata():
+    now = datetime(2026, 8, 28, tzinfo=UTC)
+    environment = _environment(now)
+    environment["CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"] = ""
+
+    failures = validate_precreate_credentials(environment, now=now)
+
+    assert [(failure.name, failure.detail) for failure in failures] == [
+        ("Claude token", "has an unreadable or unverifiable expiry metadata")
+    ]
+
+    environment["CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"] = (now - timedelta(seconds=1)).isoformat()
+    failures = validate_precreate_credentials(environment, now=now)
+
+    assert [(failure.name, failure.detail) for failure in failures] == [
+        ("Claude token", "is expired")
+    ]

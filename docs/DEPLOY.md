@@ -66,7 +66,7 @@ therefore means the configured local session and Docker/Redis inventory
 reconciled, not that a provider account has capacity. `unavailable` means a
 local configuration/authentication failure; `unknown` means the service cannot
 prove the state. The Settings card never displays paths or credential detail.
-The currently deployed paid engineering and QA producers use `host_session`;
+Outside the stand contour, paid engineering and QA producers use `host_session`;
 their diagnostics validate the manager-visible read-only mounts
 `/host-claude` and `/host-codex`, while `HOST_CLAUDE_DIR` and
 `HOST_CODEX_HOME` remain the Docker-host source paths used for worker mounts.
@@ -93,17 +93,25 @@ at an operator's ordinary home profile.
 
 ### Ephemeral stand authentication
 
-The ephemeral BitLaunch stand does not use those host-session profiles. Its
-pre-create workflow validates the expiry-bearing `CLAUDE_CODE_OAUTH_TOKEN` and
-`CODEX_ACCESS_TOKEN`, Telethon material and the bootstrap private key before it
-calls the BitLaunch lifecycle preflight. Claude receives the annual OAuth token
-only through the worker process environment and never has a keepalive. Codex
-uses a manually refreshed ten-day access token: its wrapper pipes the token to
-`codex login --with-access-token`, never through argv, then uses a
-container-local profile that is deleted with the worker. `auth.json` is never
-mounted back to the host or included in a retained artifact. These values are
-only protected worker-manager configuration, never queue payload fields,
-Docker labels or producer-supplied `env_vars`.
+The ephemeral BitLaunch stand does not use those host-session profiles. Before
+the lifecycle preflight can create a machine, it validates Telethon material,
+the bootstrap private key, the Codex JWT expiry, and the operator-supplied,
+timezone-aware `CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT` metadata for the opaque
+annual Claude OAuth token. Both have a 30-minute minimum TTL. Missing,
+malformed, expired, or near-expiry values refuse without rendering credentials.
+The same token-only validator is worker-manager's `stand_token` diagnostic,
+so a valid stand reaches paid-work admission and a local token failure blocks
+it without host-session settings.
+
+Claude receives its annual OAuth token only through the worker process
+environment and never has a keepalive. Codex uses a manually refreshed ten-day
+access token: before login, the wrapper creates an explicit container-local
+`config.toml` using the file credential store, then passes the token on stdin
+to `codex login --with-access-token`. The login subprocess has neither the
+token in argv nor in its environment. The profile is deleted with the worker;
+`auth.json` is never mounted back to the host or included in a retained
+artifact. These values are only protected worker-manager configuration, never
+queue payload fields, Docker labels or producer-supplied `env_vars`.
 
 ## Managed project deploy target
 
