@@ -227,6 +227,37 @@ class _TelegramCapability:
         return self._record_evidence(tool, evidence)
 
     async def telegram_probe(self, message: str) -> dict:
+        # Telegram cannot carry an empty or whitespace-only message: the API
+        # rejects it before it reaches the product, so the attempt says nothing
+        # about the bot. Refusing here, with no error on the evidence, keeps the
+        # checklist's "empty input" item from turning a working deploy into a
+        # blocked QA run — which is what it did to two users' bots on
+        # 2026-08-27. The agent gets a plain answer and moves to the next check.
+        if not message.strip():
+            attempted = f"send {message!r} to @{self._bot_username}"
+            evidence = QATelegramProbeEvidence(
+                action="message",
+                attempted=attempted,
+                sent=message,
+                delivered=False,
+                replies=[],
+            )
+            logger.info(
+                "qa_tool_refused",
+                tool="telegram_probe",
+                reason="empty_message_unsupported_by_transport",
+                bot=self._bot_username,
+            )
+            self._workspace.record_telegram_probe(evidence, None)
+            self._workspace.record("telegram_probe", attempted, "empty message not sendable")
+            return {
+                **evidence.model_dump(mode="json"),
+                "not_applicable": (
+                    "Telegram rejects an empty message before delivery, so this check "
+                    "cannot be performed over this transport. It is not a product defect."
+                ),
+            }
+
         run: ProbeRun = await self._run_probe(
             build_bot_message_script(self._bot_username, message),
             env=self._telethon_env,

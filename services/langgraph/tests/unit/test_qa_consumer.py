@@ -1009,3 +1009,44 @@ class TestProcessQAJobEdgeCases:
         call_kwargs = mock_api_client.patch.call_args
         run_data = call_kwargs[1]["json"]
         assert run_data["result"]["qa_outcome"] == QAOutcome.BLOCKED.value
+
+
+class TestTelegramProbeEmptyMessage:
+    """An empty probe is a transport limit, not a product defect.
+
+    Regression, 2026-08-27: the QA checklist's "empty input" item made the agent
+    send '' to two live users' bots. Telegram refused it, the refusal became a
+    `telegram_probe_undelivered` blocker, and both working deploys were reported
+    as unverifiable.
+    """
+
+    @pytest.mark.asyncio()
+    async def test_empty_message_is_refused_without_a_blocker(self):
+        from src.agents.qa.tools import _TelegramCapability
+
+        recorded: list[tuple] = []
+
+        class _Workspace:
+            def record_telegram_probe(self, evidence, blocker):
+                recorded.append(("probe", evidence, blocker))
+
+            def record(self, tool, attempted, detail):
+                recorded.append(("record", tool, attempted, detail))
+
+        async def _never_runs(*_args, **_kwargs):
+            raise AssertionError("an empty message must not reach the transport")
+
+        capability = _TelegramCapability(
+            bot_username="somebot",
+            workspace=_Workspace(),
+            telethon_env={},
+            probe_runner=_never_runs,
+        )
+
+        for message in ("", " ", "\n\t "):
+            result = await capability.telegram_probe(message)
+            assert result["error"] is None, message
+            assert "not_applicable" in result, message
+
+        blockers = [entry[2] for entry in recorded if entry[0] == "probe"]
+        assert blockers == [None, None, None]
