@@ -11,6 +11,8 @@ from pathlib import Path
 
 import yaml
 
+from shared.provisioning_policy import TIME4VPS_MANAGED_IDS_ENV
+
 DEPLOY_WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "deploy.yml"
 PRODUCTION_ONLY = "${{ inputs.environment == 'production' }}"
 
@@ -136,6 +138,21 @@ def test_the_written_env_is_verified_not_the_inputs():
     assert "${{ env.DEPLOY_PATH }}/.env" in guard["with"]["script"]
     assert "MANAGED_SERVER_IDS_DECLARED" in guard["with"]["script"]
     assert "exit 1" in guard["with"]["script"]
+
+
+def test_deploy_and_provider_policy_use_the_same_runtime_allowlist_key():
+    """A deploy cannot demote every managed row by writing an obsolete key."""
+    steps = {step["name"]: step for step in _deploy_job()["steps"]}
+    env_script = steps["Write .env to server"]["with"]["script"]
+    deployed_guard = steps["Verify the deployed contour carries only its own credentials"]["with"][
+        "script"
+    ]
+
+    expected_env_entry = (
+        f"{TIME4VPS_MANAGED_IDS_ENV}=${{{{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}}}"
+    )
+    assert expected_env_entry in env_script
+    assert f"^{TIME4VPS_MANAGED_IDS_ENV}=" in deployed_guard
 
 
 def test_the_contour_reaches_the_server_env():

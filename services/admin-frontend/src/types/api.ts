@@ -316,6 +316,7 @@ export interface Server {
   used_disk_mb?: number
   os_template?: string | null
   labels?: Record<string, unknown>
+  provider?: string | null
   provider_id?: string | null
   notes?: string | null
   provisioning_started_at?: string | null

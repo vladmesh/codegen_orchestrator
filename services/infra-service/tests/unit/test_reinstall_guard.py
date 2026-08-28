@@ -14,13 +14,15 @@ _REINSTALL_RESULTS = f"Password: \t<a onclick='this.innerHTML = \"{_NEW_PASSWORD
 
 @pytest.mark.asyncio
 async def test_reinstall_refuses_server_outside_allowlist(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "2002")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "2002")
     client = MagicMock()
     client.reinstall_server = AsyncMock()
 
     success, message = await reinstall_and_provision(
         time4vps_client=client,
         server_handle="vps-1001",
+        provider="time4vps",
+        is_managed=True,
         server_id=1001,
         server_ip="203.0.113.10",
         os_template="ubuntu",
@@ -29,13 +31,13 @@ async def test_reinstall_refuses_server_outside_allowlist(monkeypatch):
     )
 
     assert success is False
-    assert "not present in TIME4VPS_MANAGED_SERVER_IDS" in message
+    assert "not authorized" in message
     client.reinstall_server.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_reinstall_refuses_provider_id_with_changed_ip(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     client = MagicMock()
     client.get_server_details = AsyncMock(return_value=MagicMock(ip="203.0.113.99"))
     client.reinstall_server = AsyncMock()
@@ -43,6 +45,8 @@ async def test_reinstall_refuses_provider_id_with_changed_ip(monkeypatch):
     success, message = await reinstall_and_provision(
         time4vps_client=client,
         server_handle="vps-1001",
+        provider="time4vps",
+        is_managed=True,
         server_id=1001,
         server_ip="203.0.113.10",
         os_template="ubuntu",
@@ -58,7 +62,7 @@ async def test_reinstall_refuses_provider_id_with_changed_ip(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider_ip", [None, ""])
 async def test_reinstall_refuses_missing_provider_ip(monkeypatch, provider_ip):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     client = MagicMock()
     client.get_server_details = AsyncMock(return_value=MagicMock(ip=provider_ip))
     client.reinstall_server = AsyncMock()
@@ -66,6 +70,8 @@ async def test_reinstall_refuses_missing_provider_ip(monkeypatch, provider_ip):
     success, message = await reinstall_and_provision(
         time4vps_client=client,
         server_handle="vps-1001",
+        provider="time4vps",
+        is_managed=True,
         server_id=1001,
         server_ip="203.0.113.10",
         os_template="ubuntu",
@@ -129,7 +135,7 @@ async def test_rate_limited_poll_still_yields_the_new_root_password(monkeypatch)
     `reinstall_and_provision` returned "Reinstall failed", and `extract_password`
     was never reached even though the task completed on the provider side.
     """
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "275301")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "275301")
 
     from shared.clients import time4vps as client_module
     from src.provisioner import operations as operations_module
@@ -167,6 +173,8 @@ async def test_rate_limited_poll_still_yields_the_new_root_password(monkeypatch)
         success, message = await reinstall_and_provision(
             time4vps_client=Time4VPSClient("user", "secret"),
             server_handle="vps-275301",
+            provider="time4vps",
+            is_managed=True,
             server_id=275301,
             server_ip="203.0.113.10",
             os_template="kvm-ubuntu-24.04-gpt-x86_64",

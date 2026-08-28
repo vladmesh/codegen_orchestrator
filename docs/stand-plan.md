@@ -91,7 +91,7 @@ stand-mega-test  -> stand-m-<uuid32>
 - [ ] отдельный PO-бот для стенда — **опционально, потом**, если захочется тыкать стенд руками из
       телеги. Для e2e не требуется.
 
-`TIME4VPS_MANAGED_SERVER_IDS` на стенде — **пустой**: это штатный default-deny, стенд физически не
+`PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS` на стенде — **пустой**: это штатный default-deny, стенд физически не
 сможет тронуть прод-таргеты. `TIME4VPS_LOGIN/PASSWORD` не заводим вовсе (API всё равно закрыт
 IP-allowlist'ом на прод-адрес).
 

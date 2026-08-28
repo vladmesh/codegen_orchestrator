@@ -130,7 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${MANAGED_SERVER_IDS}" != "${DECLARED_SERVER_IDS}" ]; then
-            echo "FATAL: TIME4VPS_MANAGED_SERVER_IDS is not this environment's own list." >&2
+            echo "FATAL: PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS is not this environment's own list." >&2
             echo "       Either the environment declares no allowlist and inherited the" >&2
             echo "       repository one, or the two have drifted. Refusing to deploy." >&2
             exit 1
@@ -202,7 +202,9 @@ jobs:
             # and per-ID, so a contour can act only on the servers it names — which
             # is why it must be its own list and not an inherited one. The step
             # below refuses the deploy when it is not.
-            TIME4VPS_MANAGED_SERVER_IDS=${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
+            # The repository secret remains the input source. Services consume
+            # the provider-scoped policy key below.
+            PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS=${{ secrets.TIME4VPS_MANAGED_SERVER_IDS }}
             TIME4VPS_LOGIN=${{ secrets.TIME4VPS_LOGIN }}
             TIME4VPS_PASSWORD=${{ secrets.TIME4VPS_PASSWORD }}
 
@@ -262,7 +264,7 @@ jobs:
               echo "FATAL: TELEGRAM_BOT_TOKEN must be empty outside production" >&2
               exit 1
             fi
-            allowlist=$(grep -m1 "^TIME4VPS_MANAGED_SERVER_IDS=" ${{ env.DEPLOY_PATH }}/.env \
+            allowlist=$(grep -m1 "^PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS=" ${{ env.DEPLOY_PATH }}/.env \
               | cut -d= -f2- || true)
             if [ "${allowlist}" != "${{ vars.MANAGED_SERVER_IDS_DECLARED }}" ]; then
               echo "FATAL: the deployed allowlist is not the one this contour declared" >&2

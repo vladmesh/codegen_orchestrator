@@ -1,64 +1,91 @@
-from datetime import UTC, datetime
+from pathlib import Path
+import re
 
 import pytest
 
-from shared.contracts.dto.server import ServerDTO, ServerStatus
 from shared.provisioning_policy import (
-    authorized_time4vps_server_id,
-    managed_time4vps_server_ids,
-    parse_time4vps_server_id,
+    TIME4VPS_PROVIDER,
+    authorized_provider_id,
+    managed_provider_ids,
     provider_ip_matches,
-    server_is_provisioning_allowed,
+    provider_operation_is_authorized,
+    validate_provider_policies,
 )
 
-
-def test_missing_allowlist_denies_every_server(monkeypatch):
-    monkeypatch.delenv("TIME4VPS_MANAGED_SERVER_IDS", raising=False)
-
-    assert managed_time4vps_server_ids() == frozenset()
+_TIME4VPS_POLICY_ENV = "PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS"
 
 
-def test_allowlist_parses_provider_ids(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", " 1001,2002,1001 ")
+def test_old_python_policy_helpers_are_not_reintroduced():
+    """Provider extensions must enter through the shared policy registry."""
+    production_sources = [
+        *(source for source in Path("shared").rglob("*.py") if "tests" not in source.parts),
+        *Path("services").glob("*/src/**/*.py"),
+    ]
+    removed_helpers = (
+        "server_is_provisioning_allowed",
+        "authorized_time4vps_server_id",
+        "time4vps_server_is_allowed",
+        "managed_time4vps_server_ids",
+        "parse_time4vps_server_id",
+    )
 
-    assert managed_time4vps_server_ids() == frozenset({1001, 2002})
+    offenders = {
+        helper: str(source)
+        for helper in removed_helpers
+        for source in production_sources
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(helper)}(?![A-Za-z0-9_])", source.read_text())
+    }
+
+    assert not offenders, f"old provider policy helpers reintroduced: {offenders}"
+
+
+def test_missing_provider_policy_denies_every_server(monkeypatch):
+    monkeypatch.delenv(_TIME4VPS_POLICY_ENV, raising=False)
+
+    assert managed_provider_ids(TIME4VPS_PROVIDER) == frozenset()
+    assert (
+        provider_operation_is_authorized(
+            provider=TIME4VPS_PROVIDER, provider_id="1001", is_managed=True
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize("value", ["abc", "1001,,2002", "-1", "0", "+1001", "1_001", "١٠٠١"])
-def test_invalid_allowlist_fails_closed(monkeypatch, value):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", value)
+def test_malformed_provider_policy_fails_closed(monkeypatch, value):
+    monkeypatch.setenv(_TIME4VPS_POLICY_ENV, value)
 
-    with pytest.raises(ValueError, match="TIME4VPS_MANAGED_SERVER_IDS"):
-        managed_time4vps_server_ids()
+    with pytest.raises(ValueError, match=_TIME4VPS_POLICY_ENV):
+        validate_provider_policies()
 
 
-def test_server_requires_both_managed_flag_and_allowlisted_provider_id(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
-    server = ServerDTO(
-        handle="vps-1001",
-        host="example",
-        public_ip="203.0.113.10",
-        ssh_user="root",
-        status=ServerStatus.RESERVED,
-        provider_id="1001",
-        is_managed=True,
-        created_at=datetime.now(UTC),
-    )
+def test_time4vps_policy_requires_explicit_identity_managed_row_and_allowed_stable_id(monkeypatch):
+    monkeypatch.setenv(_TIME4VPS_POLICY_ENV, "1001")
 
-    assert server_is_provisioning_allowed(server) is True
-    assert authorized_time4vps_server_id(server) == 1001
-    assert server_is_provisioning_allowed(server.model_copy(update={"is_managed": False})) is False
     assert (
-        server_is_provisioning_allowed(server.model_copy(update={"provider_id": "2002"})) is False
+        authorized_provider_id(provider=TIME4VPS_PROVIDER, provider_id="1001", is_managed=True)
+        == "1001"
+    )
+    assert authorized_provider_id(provider=None, provider_id="1001", is_managed=True) is None
+    assert authorized_provider_id(provider="unknown", provider_id="1001", is_managed=True) is None
+    assert (
+        authorized_provider_id(provider=TIME4VPS_PROVIDER, provider_id="1001", is_managed=False)
+        is None
+    )
+    assert (
+        authorized_provider_id(provider=TIME4VPS_PROVIDER, provider_id="2002", is_managed=True)
+        is None
     )
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(1001, 1001), ("1001", 1001), (None, None), ("0", None), ("١٠٠١", None)],
-)
-def test_provider_id_parser_has_one_strict_definition(value, expected):
-    assert parse_time4vps_server_id(value) == expected
+@pytest.mark.parametrize("value", ["0", "١٠٠١", " 1001", "1001 "])
+def test_time4vps_rejects_malformed_stable_ids(monkeypatch, value):
+    monkeypatch.setenv(_TIME4VPS_POLICY_ENV, "1001")
+
+    assert (
+        authorized_provider_id(provider=TIME4VPS_PROVIDER, provider_id=value, is_managed=True)
+        is None
+    )
 
 
 @pytest.mark.parametrize("provider_ip", [None, "", "203.0.113.11"])

@@ -95,7 +95,7 @@ The system supports a hybrid infrastructure synchronized with the provider (Time
     `server_sync_incomplete` at the error level and does not report zero counters as a successful synchronization.
 
 3.  **Explicit management allowlist**:
-    *   `TIME4VPS_MANAGED_SERVER_IDS` contains the immutable provider IDs this installation may
+    *   `PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS` contains the immutable provider IDs this installation may
         provision. Missing or malformed configuration fails closed.
     *   Every other newly discovered provider server is inventory-only
         (`is_managed=False`, `status=reserved`). Demotion preserves operational status but stops

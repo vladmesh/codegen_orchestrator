@@ -69,6 +69,7 @@ class ServerUpdate(BaseModel):
     status: ServerStatus | None = None
     labels: dict | None = None
     is_managed: bool | None = None
+    provider: str | None = None
     provider_id: str | None = None
     capacity_cpu: int | None = None
     capacity_ram_mb: int | None = None
@@ -127,6 +128,7 @@ class ServerDTO(TimestampedDTO):
     public_ip: str
     ssh_user: SSHUser
     status: ServerStatus
+    provider: str | None = None  # Computed from labels
     provider_id: str | None = None  # Computed from labels
     is_managed: bool
     labels: dict = {}

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from shared.contracts.dto.base import BaseDTO, TimestampedDTO
 
@@ -33,8 +33,15 @@ class ServerBase(BaseModel):
     labels: dict[str, Any] = {}
     is_managed: bool = True
     status: str = ServerStatus.ACTIVE.value
+    provider: str | None = None
     provider_id: str | None = None
     notes: str | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def provider_must_be_a_string_or_null(cls, value: object) -> str | None:
+        """Do not expose a malformed persisted provider identity as an API value."""
+        return value if isinstance(value, str) else None
 
 
 class ServerRead(ServerBase, TimestampedDTO):

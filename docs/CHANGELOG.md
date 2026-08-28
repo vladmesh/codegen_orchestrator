@@ -4,6 +4,11 @@
 
 ### Added
 
+- Destructive server operations now use the provider-owned provisioning policy.
+  Time4VPS rows carry `labels.provider="time4vps"` and their stable provider ID;
+  scheduler sync upgrades only legacy rows that it matches by that stable ID.
+  Rows without an explicit provider identity fail closed and are never adopted by IP.
+
 - The production admin Dashboard now reads one strict internal/admin overview
   contract. It reports every declared queue binding with explicit degradation,
   all task-status counts, paid queued/running work, persisted executor-decision
@@ -43,6 +48,14 @@
   money only after the count gate.
 
 ### Fixed
+
+- Deployment now maps the existing Time4VPS GitHub secret to the provider-scoped
+  runtime policy key and validates that same key in contour guards and operator
+  tooling. Scheduler discovery now refuses an IP collision without an exact
+  provider/stable-ID match, reserves and unmanages the legacy row, and raises a
+  critical administrator alert instead of creating a shadow server. A settled
+  refusal is quiet on later sync cycles, while a later state change is refused
+  and signalled again.
 
 - The main-only backend DinD suite now gives worker-manager the same test-owned
   Claude host-session volumes used by launched workers and seeds fake

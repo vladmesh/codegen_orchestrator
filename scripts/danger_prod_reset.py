@@ -93,7 +93,7 @@ class ResetFailure(RuntimeError):
 
 
 def parse_server_ids(raw: str | None) -> set[int]:
-    """Provider ids from TIME4VPS_MANAGED_SERVER_IDS, ignoring blanks."""
+    """Provider IDs from the scoped Time4VPS destructive-operation policy."""
     if not raw:
         return set()
     ids = set()
@@ -112,7 +112,7 @@ def managed_handles(server_ids: set[int]) -> set[str]:
 def wipeable_servers(servers: list[dict], allowed_handles: set[str]) -> list[dict]:
     """Managed servers that are also present in the allowlist.
 
-    A server missing from TIME4VPS_MANAGED_SERVER_IDS is somebody else's machine
+    A server missing from the scoped Time4VPS policy is somebody else's machine
     as far as this script is concerned, even when the database calls it managed.
     """
     return [
@@ -594,7 +594,8 @@ def main(argv: list[str] | None = None) -> int:
             enforce_guards(inventory, args)
 
         raw_ids = remote.run(
-            f"grep -E '^TIME4VPS_MANAGED_SERVER_IDS=' {DEPLOY_PATH}/.env | cut -d= -f2-",
+            "grep -E '^PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS=' "
+            f"{DEPLOY_PATH}/.env | cut -d= -f2-",
             check=False,
             mutating=False,
         ).strip()

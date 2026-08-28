@@ -47,7 +47,7 @@ async def test_get_time4vps_client_returns_client(mock_api_client):
 async def test_sync_server_list_discovers_new_managed(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     # Setup
     api_server = MagicMock(ip="1.2.3.4", id=1001, domain="test.com")
     mock_time4vps_client.get_servers.return_value = [api_server]
@@ -82,7 +82,7 @@ async def test_sync_server_list_discovers_new_managed(
 async def test_sync_server_list_discovers_unlisted_server_as_reserved(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.delenv("TIME4VPS_MANAGED_SERVER_IDS", raising=False)
+    monkeypatch.delenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", raising=False)
     api_server = MagicMock(ip="1.2.3.4", id=1001, domain="personal.example")
     mock_time4vps_client.get_servers.return_value = [api_server]
     mock_api_client.get_servers = AsyncMock(return_value=[])
@@ -112,7 +112,7 @@ async def test_sync_server_list_discovers_unlisted_server_as_reserved(
 async def test_sync_server_list_demotes_existing_unlisted_pending_server(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.delenv("TIME4VPS_MANAGED_SERVER_IDS", raising=False)
+    monkeypatch.delenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", raising=False)
     api_server = MagicMock(ip="1.2.3.4", id=1001, domain="personal.example")
     existing = ServerDTO(
         handle="vps-1001",
@@ -145,7 +145,7 @@ async def test_sync_server_list_demotes_existing_unlisted_pending_server(
 async def test_sync_server_list_demotion_preserves_operational_status(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.delenv("TIME4VPS_MANAGED_SERVER_IDS", raising=False)
+    monkeypatch.delenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", raising=False)
     api_server = MagicMock(ip="1.2.3.4", id=1001, domain="production.example")
     existing = _ready_server("vps-1001").model_copy(
         update={
@@ -172,7 +172,7 @@ async def test_sync_server_list_demotion_preserves_operational_status(
 async def test_sync_server_list_mass_demotion_emits_critical_alert(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.delenv("TIME4VPS_MANAGED_SERVER_IDS", raising=False)
+    monkeypatch.delenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", raising=False)
     provider_servers = [
         MagicMock(ip="1.2.3.4", id=1001, domain="one.example"),
         MagicMock(ip="1.2.3.5", id=1002, domain="two.example"),
@@ -210,7 +210,7 @@ async def test_sync_server_list_mass_demotion_emits_critical_alert(
 async def test_sync_server_list_promotes_existing_server_without_scheduling_it(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     api_server = MagicMock(ip="1.2.3.4", id=1001, domain="personal.example")
     existing = ServerDTO(
         handle="vps-1001",
@@ -240,7 +240,7 @@ async def test_sync_server_list_promotes_existing_server_without_scheduling_it(
 async def test_sync_server_list_promotion_neutralizes_stale_scheduled_status(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     api_server = MagicMock(ip="1.2.3.4", id=1001, domain="personal.example")
     existing = ServerDTO(
         handle="vps-1001",
@@ -269,7 +269,7 @@ async def test_sync_server_list_promotion_neutralizes_stale_scheduled_status(
 async def test_sync_server_list_tracks_existing_server_by_provider_id_when_ip_changes(
     mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     api_server = MagicMock(ip="1.2.3.99", id=1001, domain="renamed.example")
     existing = ServerDTO(
         handle="vps-1001",
@@ -298,6 +298,124 @@ async def test_sync_server_list_tracks_existing_server_by_provider_id_when_ip_ch
 
 
 @pytest.mark.asyncio
+async def test_sync_upgrades_legacy_row_only_after_matching_its_stable_provider_id(
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
+):
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    existing = ServerDTO(
+        handle="vps-1001",
+        host="old.example",
+        public_ip="203.0.113.10",
+        ssh_user="root",
+        status=ServerStatus.RESERVED,
+        provider_id="1001",
+        is_managed=False,
+        labels={"provider_id": "1001"},
+        created_at=datetime.now(UTC),
+    )
+    mock_time4vps_client.get_servers.return_value = [
+        MagicMock(ip="203.0.113.10", id=1001, domain="current.example")
+    ]
+    mock_api_client.get_servers = AsyncMock(return_value=[existing])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.update_server = AsyncMock()
+
+    await server_sync._sync_server_list(mock_time4vps_client)
+
+    update = mock_api_client.update_server.await_args.args[1]
+    assert update.provider == "time4vps"
+    assert update.is_managed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "provider_id"),
+    [(None, None), ("time4vps", "999")],
+    ids=["missing_provider_identity", "mismatched_provider_identity"],
+)
+async def test_sync_refuses_ip_collision_without_exact_provider_identity(
+    mock_api_client,
+    mock_time4vps_client,
+    mock_notify_admins,
+    monkeypatch,
+    provider,
+    provider_id,
+):
+    """Legacy rows sharing an inventory IP require an explicit identity upgrade."""
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    existing = ServerDTO(
+        handle="legacy-server",
+        host="legacy.example",
+        public_ip="203.0.113.10",
+        ssh_user="root",
+        status=ServerStatus.ACTIVE,
+        provider=provider,
+        provider_id=provider_id,
+        is_managed=True,
+        labels={},
+        created_at=datetime.now(UTC),
+    )
+    mock_time4vps_client.get_servers.return_value = [
+        MagicMock(ip="203.0.113.10", id=1001, domain="current.example")
+    ]
+    mock_api_client.get_servers = AsyncMock(return_value=[existing])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.update_server = AsyncMock()
+    mock_api_client.create_server = AsyncMock()
+
+    discovered, updated, missing = await server_sync._sync_server_list(mock_time4vps_client)
+
+    assert (discovered, updated, missing) == (0, 1, 0)
+    mock_api_client.create_server.assert_not_awaited()
+    update = mock_api_client.update_server.await_args.args[1]
+    assert update.is_managed is False
+    assert update.status is ServerStatus.RESERVED
+    mock_notify_admins.assert_awaited_once()
+    assert "identity" in mock_notify_admins.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_sync_refuses_legacy_identity_collision_once_then_stays_quiet(
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
+):
+    """A settled collision remains excluded without repeating its refusal signal."""
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    colliding_server = ServerDTO(
+        handle="legacy-server",
+        host="legacy.example",
+        public_ip="203.0.113.10",
+        ssh_user="root",
+        status=ServerStatus.ACTIVE,
+        is_managed=True,
+        labels={},
+        created_at=datetime.now(UTC),
+    )
+    settled_refusal = colliding_server.model_copy(
+        update={"status": ServerStatus.RESERVED, "is_managed": False}
+    )
+    mock_time4vps_client.get_servers.return_value = [
+        MagicMock(ip="203.0.113.10", id=1001, domain="current.example")
+    ]
+    mock_api_client.get_servers = AsyncMock(
+        side_effect=[[colliding_server], [settled_refusal], [settled_refusal]]
+    )
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.update_server = AsyncMock()
+    mock_api_client.create_server = AsyncMock()
+
+    first_cycle = await server_sync._sync_server_list(mock_time4vps_client)
+    settled_cycle = await server_sync._sync_server_list(mock_time4vps_client)
+    later_settled_cycle = await server_sync._sync_server_list(mock_time4vps_client)
+
+    assert first_cycle == (0, 1, 0)
+    assert settled_cycle == (0, 0, 0)
+    assert later_settled_cycle == (0, 0, 0)
+    mock_api_client.update_server.assert_awaited_once()
+    mock_api_client.create_server.assert_not_awaited()
+    mock_notify_admins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_client):
     # Setup
     server = ServerDTO(
@@ -306,9 +424,10 @@ async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_
         public_ip="1.1.1.1",
         ssh_user="root",
         status=ServerStatus.ACTIVE,
+        provider="time4vps",
         provider_id="100",
         is_managed=True,
-        labels={"provider_id": "100"},
+        labels={"provider": "time4vps", "provider_id": "100"},
         created_at=datetime.now(UTC),
     )
     mock_api_client.get_servers = AsyncMock(return_value=[server])
@@ -349,9 +468,10 @@ async def test_sync_server_details_keeps_health_checker_usage(
         public_ip="1.1.1.1",
         ssh_user="root",
         status=ServerStatus.ACTIVE,
+        provider="time4vps",
         provider_id="100",
         is_managed=True,
-        labels={"provider_id": "100"},
+        labels={"provider": "time4vps", "provider_id": "100"},
         created_at=datetime.now(UTC),
         last_health_check=datetime.now(UTC),
         used_ram_mb=439,
@@ -382,7 +502,7 @@ async def test_sync_server_details_keeps_health_checker_usage(
 async def test_check_provisioning_triggers_detects_force_rebuild(
     mock_api_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "100")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "100")
     # Setup
     server = ServerDTO(
         handle="vps-1",
@@ -390,6 +510,7 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
         public_ip="1.1.1.1",
         ssh_user="root",
         status=ServerStatus.FORCE_REBUILD,
+        provider="time4vps",
         provider_id="100",
         is_managed=True,
         created_at=datetime.now(UTC),
@@ -415,7 +536,7 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
 async def test_force_rebuild_in_flight_waits_for_stuck_timeout(
     mock_api_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "100")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "100")
     five_minutes_ago = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=5)
     server = _ready_server("rebuild-in-flight").model_copy(
         update={
@@ -444,7 +565,7 @@ async def test_force_rebuild_in_flight_waits_for_stuck_timeout(
 async def test_check_provisioning_triggers_neutralizes_unmanaged_server(
     mock_api_client, mock_notify_admins, status, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "100")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "100")
     server = _ready_server("personal").model_copy(
         update={"status": status, "is_managed": False, "provisioning_started_at": None}
     )
@@ -468,7 +589,7 @@ async def test_check_provisioning_triggers_neutralizes_unmanaged_server(
 async def test_check_provisioning_triggers_neutralizes_stale_managed_row_outside_allowlist(
     mock_api_client, mock_notify_admins, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "200")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "200")
     server = _ready_server("stale").model_copy(
         update={"status": ServerStatus.FORCE_REBUILD, "provisioning_started_at": None}
     )
@@ -520,7 +641,7 @@ async def test_transition_neutralizes_server_when_final_publish_guard_denies(
 async def test_force_rebuild_sweep_continues_after_first_notification_failure(
     mock_api_client, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "100")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "100")
     first = _ready_server("first").model_copy(update={"status": ServerStatus.FORCE_REBUILD})
     second = _ready_server("second").model_copy(update={"status": ServerStatus.FORCE_REBUILD})
     mock_api_client.get_servers = AsyncMock(return_value=[first, second])
@@ -560,9 +681,10 @@ def _ready_server(handle: str) -> ServerDTO:
         public_ip="1.1.1.1",
         ssh_user="root",
         status=ServerStatus.READY,
+        provider="time4vps",
         provider_id="100",
         is_managed=True,
-        labels={"provider_id": "100"},
+        labels={"provider": "time4vps", "provider_id": "100"},
         created_at=datetime.now(UTC),
     )
 

@@ -93,7 +93,7 @@ artifacts to `docs/e2e_results/` (local, gitignored).
 
 Both standalone cleanup and write-ahead manifest recovery select remote targets with the same
 fail-closed provisioning policy used by the product: the API row must have `is_managed=true` and a
-positive provider ID present in `TIME4VPS_MANAGED_SERVER_IDS`. Unrelated inventory rows are logged
+positive provider ID present in `PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS`. Unrelated inventory rows are logged
 and skipped before SSH-key retrieval or SSH. Once a target is admitted, a missing key, malformed
 connection data, failed residue scan or failed teardown is an error; key absence is never treated as
 proof of cleanliness. An owned manifest with no admissible target is also an error.

@@ -87,7 +87,7 @@ async def test_server_sync_integration_flow(time4vps_mock, api_client, monkeypat
     assert target.is_managed is False
 
     # Adding an existing inventory row to the allowlist promotes it without scheduling it.
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "999")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "999")
     discovered, updated, _ = await server_sync._sync_server_list(time4vps_client)
     assert discovered == 0
     assert updated == 1
@@ -106,7 +106,7 @@ async def test_server_sync_integration_flow(time4vps_mock, api_client, monkeypat
         }
     )
     server_list_route.respond(status_code=200, json=provider_servers)
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "999,1000")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "999,1000")
     discovered, _, _ = await server_sync._sync_server_list(time4vps_client)
     assert discovered == 1
     blank = await api_client.get_server("vps-1000")
@@ -116,7 +116,7 @@ async def test_server_sync_integration_flow(time4vps_mock, api_client, monkeypat
     # A stale scheduled row outside policy is neutralized at the real API/DB boundary.
     await api_client.update_server("vps-1000", ServerUpdate(status=ServerStatus.RESERVED))
     await api_client.update_server("vps-999", ServerUpdate(status=ServerStatus.PENDING_SETUP))
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1000")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1000")
     monkeypatch.setattr(server_sync, "notify_admins_best_effort", AsyncMock())
     assert await server_sync._check_provisioning_triggers() == 0
     neutralized = await api_client.get_server("vps-999")
