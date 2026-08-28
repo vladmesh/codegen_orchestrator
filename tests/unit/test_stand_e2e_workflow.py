@@ -50,10 +50,11 @@ def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
     assert steps.index("Resolve the suite") < steps.index("Preflight ephemeral machines")
 
 
-def test_the_machine_manifest_is_collected_even_when_creation_failed():
+def test_the_machine_manifest_is_collected_and_scanned_before_handoff_upload():
     """The created resource ids are the recovery input when a later step fails."""
-    for name in ("Record machine manifest", "Upload cleanup handoff"):
-        assert _steps()[name]["if"] == "always()", name
+    assert _steps()["Record machine manifest"]["if"] == "always()"
+    assert _steps()["Scan cleanup handoff for secrets"]["if"] == "always()"
+    assert "handoff-redaction-scan.outcome == 'success'" in _steps()["Upload cleanup handoff"]["if"]
 
 
 def test_the_matrix_fits_in_the_job_timeout():
@@ -128,6 +129,24 @@ def test_selected_suite_runs_through_the_supported_remote_runner_and_preserves_f
     assert _steps()["Preserve suite result"]["if"] == "always()"
 
 
+def test_remote_runner_is_provisioned_and_only_runs_after_target_provisioning():
+    steps = _steps()
+    run = steps["Run selected stand suite"]
+    provision = (
+        WORKFLOW.parents[2] / "services/infra-service/ansible/playbooks/provision_software.yml"
+    ).read_text()
+    provision_vars = (
+        WORKFLOW.parents[2] / "services/infra-service/ansible/group_vars/provision_vars.yml"
+    ).read_text()
+
+    assert "Install pinned uv for stand runner" in provision
+    assert "uv_version" in provision_vars
+    assert "uv --version" in steps["Bootstrap dynamic orchestrator"]["run"]
+    assert run["if"] == "success()"
+    assert "remote-invocation.log" in run["run"]
+    assert ">/dev/null 2>&1" not in run["run"]
+
+
 def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_cancellation():
     workflow = _workflow()
     cleanup = workflow["jobs"]["cleanup"]
@@ -137,12 +156,26 @@ def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_ca
     assert cleanup["needs"] == "e2e"
     assert "cleanup-report" in steps["Cleanup and observe run-tagged machines"]["run"]
     assert steps["Build final acceptance evidence"]["continue-on-error"] is True
-    assert steps["Scan final artifact for secrets"]["continue-on-error"] is True
+    assert "continue-on-error" not in steps["Scan final artifact for secrets"]
     uploads = [
         step for step in cleanup["steps"] if "uses" in step and "upload-artifact" in step["uses"]
     ]
     assert len(uploads) == 1
-    assert uploads[0]["if"] == "always()"
+    assert "redaction-scan.outcome == 'success'" in uploads[0]["if"]
+
+
+def test_artifact_uploads_have_an_attempt_name_and_a_scanner_admission_boundary():
+    workflow = _workflow()
+    e2e_steps = _steps()
+    cleanup_steps = {step["name"]: step for step in workflow["jobs"]["cleanup"]["steps"]}
+
+    for step in (e2e_steps["Upload cleanup handoff"], cleanup_steps["Upload acceptance artifact"]):
+        assert "github.run_attempt" in step["with"]["name"]
+        assert step.get("if") != "always()"
+    assert "--secrets-stdin" in e2e_steps["Scan cleanup handoff for secrets"]["run"]
+    assert "--secrets-stdin" in cleanup_steps["Scan final artifact for secrets"]["run"]
+    assert "never-upload" in e2e_steps["Scan cleanup handoff for secrets"]["run"]
+    assert "never-upload" in cleanup_steps["Scan final artifact for secrets"]["run"]
 
 
 def test_later_steps_use_the_created_orchestrator_address():

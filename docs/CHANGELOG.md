@@ -84,6 +84,17 @@
 
 ### Fixed
 
+- Stand acceptance evidence now installs the pinned `uv` runner through the
+  dynamic host provisioning path, captures remote runner diagnostics into the
+  scanned handoff, and invokes the suite only after successful target
+  provisioning. Both handoff and final artifacts have attempt-scoped names and
+  are blocked until their exact allow-listed candidates pass a value-free scan.
+
+- Stand cost evidence now retains BitLaunch's per-server `rate` in USD*1000 per
+  hour and labels rate/time figures as rounded-hour estimates. A charged cost is
+  reported as actual only for an exactly correlated documented usage row; bad
+  rate, timestamp, cleanup, or run-shaped usage evidence remains incomplete.
+
 - Stand token validation now centrally binds either GitHub runner or rendered
   stand-host credential names before checking expiry. `make stand-preflight`
   and `make stand-run` load the rendered stand configuration, so a valid

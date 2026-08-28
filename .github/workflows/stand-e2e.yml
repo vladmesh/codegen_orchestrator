@@ -170,6 +170,8 @@ jobs:
           rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-target.env \
             -e "ssh -i ${key_path} -o StrictHostKeyChecking=accept-new" \
             ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+            'uv --version >/dev/null'
 
       - name: Render protected dynamic configuration
         env:
@@ -317,7 +319,7 @@ jobs:
       # collected, then restored below so a suite failure remains the e2e result.
       - name: Run selected stand suite
         id: suite-run
-        if: always()
+        if: success()
         continue-on-error: true
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
@@ -329,7 +331,7 @@ jobs:
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python scripts/stand_run.py --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
           ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" "${remote_command}" \
-            >/dev/null 2>&1
+            >"${RUNNER_TEMP}/remote-invocation.log" 2>&1
 
       # Copy only the runner's public reports.  This short-lived handoff is how
       # the fresh cleanup runner can build the one final acceptance artifact.
@@ -343,17 +345,46 @@ jobs:
           run_dir="${evidence_dir}/run"
           mkdir -p "${run_dir}"
           test -f machines.json && cp machines.json "${evidence_dir}/machines.json" || true
+          test -f "${RUNNER_TEMP}/remote-invocation.log" && \
+            cp "${RUNNER_TEMP}/remote-invocation.log" "${run_dir}/remote-invocation.log" || true
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          for name in junit.xml report.tsv run.log claude-claude.log claude-codex.log codex-claude.log codex-codex.log; do
-            scp -i "${key_path}" -o StrictHostKeyChecking=accept-new \
-              root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
-          done
+          if [ -n "${PROD_HOST}" ]; then
+            for name in junit.xml report.tsv run.log claude-claude.log claude-codex.log codex-claude.log codex-codex.log; do
+              scp -i "${key_path}" -o StrictHostKeyChecking=accept-new \
+                root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
+            done
+          fi
+
+      # This is the admission boundary for the inter-job handoff.  The protected
+      # configuration travels to the scanner only on stdin; it is never copied
+      # into the candidate, argv, step output, or job log.
+      - name: Scan cleanup handoff for secrets
+        id: handoff-redaction-scan
+        if: always()
+        run: |
+          set -euo pipefail
+          never_upload="${RUNNER_TEMP}/stand-e2e-never-upload"
+          mkdir -p "${never_upload}"
+          canary="$(uuidgen)"
+          printf '%s\n' "${canary}" > "${never_upload}/run.log"
+          if printf '%s\n' "${canary}" | python3 -m scripts.stand_acceptance scan \
+            --artifact "${never_upload}" --secrets-stdin; then
+            echo 'redaction canary was not detected' >&2
+            exit 2
+          fi
+          if [ -f .stand.env ]; then
+            python3 -m scripts.stand_acceptance scan \
+              --artifact "${RUNNER_TEMP}/stand-e2e-handoff" --secrets-stdin < .stand.env
+          else
+            python3 -m scripts.stand_acceptance scan \
+              --artifact "${RUNNER_TEMP}/stand-e2e-handoff" --secrets-stdin < /dev/null
+          fi
 
       - name: Upload cleanup handoff
-        if: always()
+        if: ${{ steps.handoff-redaction-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: stand-e2e-handoff-${{ github.run_id }}
+          name: stand-e2e-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stand-e2e-handoff
           if-no-files-found: error
 
@@ -382,7 +413,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          name: stand-e2e-handoff-${{ github.run_id }}
+          name: stand-e2e-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stand-e2e-handoff
 
       - name: Cleanup and observe run-tagged machines
@@ -411,20 +442,26 @@ jobs:
       - name: Scan final artifact for secrets
         id: redaction-scan
         if: always()
-        continue-on-error: true
-        env:
-          STAND_ARTIFACT_REDACTION_CANARY: stand-artifact-redaction-canary
         run: |
           set -euo pipefail
-          python3 -m scripts.stand_acceptance scan \
-            --artifact "${RUNNER_TEMP}/stand-acceptance" \
-            --canary-env STAND_ARTIFACT_REDACTION_CANARY
+          never_upload="${RUNNER_TEMP}/stand-acceptance-never-upload"
+          mkdir -p "${never_upload}"
+          canary="$(uuidgen)"
+          printf '%s\n' "${canary}" > "${never_upload}/run.log"
+          if printf '%s\n' "${canary}" | python3 -m scripts.stand_acceptance scan \
+            --artifact "${never_upload}" --secrets-stdin; then
+            echo 'redaction canary was not detected' >&2
+            exit 2
+          fi
+          printf '%s\n' "BITLAUNCH_API_KEY=${BITLAUNCH_API_KEY}" | \
+            python3 -m scripts.stand_acceptance scan \
+              --artifact "${RUNNER_TEMP}/stand-acceptance" --secrets-stdin
 
       - name: Upload acceptance artifact
-        if: always()
+        if: ${{ steps.handoff.outcome == 'success' && steps.build-evidence.outcome == 'success' && steps.redaction-scan.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: stand-e2e-acceptance-${{ github.run_id }}
+          name: stand-e2e-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stand-acceptance
           if-no-files-found: error
 

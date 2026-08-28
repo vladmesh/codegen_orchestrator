@@ -20,6 +20,7 @@ import shutil
 from typing import Any
 
 REQUIRED_RUN_FILES = ("junit.xml", "report.tsv", "run.log")
+REMOTE_INVOCATION_LOG = "remote-invocation.log"
 COMBINATION_LOG = re.compile(r"(?:claude|codex)-(?:claude|codex)\.log\Z")
 SENSITIVE_ASSIGNMENT = re.compile(
     r"(?:API[_-]?KEY|ACCESS[_-]?TOKEN|OAUTH[_-]?TOKEN|PASSWORD|PRIVATE[_-]?KEY|SECRET)"
@@ -48,15 +49,34 @@ def _load_json(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def _cost_usd(hourly_cost_cents: object, lifetime_seconds: int) -> str | None:
+def _milliusd_to_usd(raw: int) -> str:
+    cost = Decimal(raw) / Decimal(1000)
+    return format(cost.normalize(), "f") if cost else "0"
+
+
+def _estimated_cost(
+    rate_milliusd_per_hour: object, lifetime_seconds: int
+) -> dict[str, object] | None:
+    """Return the documented per-server rate estimate, never an account rate."""
     if (
-        not isinstance(hourly_cost_cents, int)
-        or isinstance(hourly_cost_cents, bool)
-        or hourly_cost_cents < 0
+        not isinstance(rate_milliusd_per_hour, int)
+        or isinstance(rate_milliusd_per_hour, bool)
+        or rate_milliusd_per_hour < 0
     ):
         return None
-    cost = Decimal(hourly_cost_cents) * Decimal(lifetime_seconds) / Decimal(360000)
-    return format(cost.normalize(), "f") if cost else "0"
+    billed_hours = max(1, (lifetime_seconds + 3599) // 3600)
+    return {
+        "status": "estimated",
+        "source": "per_server_rate",
+        "unit": "USD*1000 per hour",
+        "billing_rounding": "hours rounded up",
+        "billed_hours": billed_hours,
+        "usd": _milliusd_to_usd(rate_milliusd_per_hour * billed_hours),
+    }
+
+
+def _incomplete_cost() -> dict[str, object]:
+    return {"status": "incomplete", "source": None, "unit": None, "usd": None}
 
 
 def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
@@ -70,6 +90,140 @@ def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
         for source in sorted(run_dir.iterdir()):
             if source.is_file() and COMBINATION_LOG.fullmatch(source.name):
                 shutil.copyfile(source, output / source.name)
+        source = run_dir / REMOTE_INVOCATION_LOG
+        if source.is_file():
+            shutil.copyfile(source, output / source.name)
+
+
+def _cleanup_proof(
+    cleanup: dict[str, Any], run_tag: str | None, errors: list[str]
+) -> datetime | None:
+    if cleanup.get("run_tag") != run_tag:
+        errors.append("cleanup_run_tag_mismatch")
+    observed_at = _parse_time(cleanup.get("observed_at"))
+    if observed_at is None:
+        errors.append("cleanup_observation_timestamp_unusable")
+    if cleanup.get("status") != "verified":
+        errors.append("cleanup_not_verified")
+    if cleanup.get("remaining_ids") != []:
+        errors.append("run_owned_machines_not_proven_absent")
+    if cleanup.get("servers_used") != 0:
+        errors.append("post_cleanup_servers_used_not_zero")
+    return observed_at
+
+
+def _usage_by_machine(
+    cleanup: dict[str, Any], errors: list[str]
+) -> tuple[bool, dict[object, dict[str, object]]]:
+    usage = cleanup.get("usage")
+    status = usage.get("status") if isinstance(usage, dict) else "absent"
+    rows = usage.get("observations") if isinstance(usage, dict) else []
+    if status == "uncorrelated":
+        errors.append("run_owned_usage_uncorrelated")
+        return False, {}
+    if status != "observed":
+        return True, {}
+    if not isinstance(rows, list):
+        errors.append("run_owned_usage_uncorrelated")
+        return False, {}
+    observations: dict[object, dict[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            errors.append("run_owned_usage_uncorrelated")
+            continue
+        machine_id, cost, hours = row.get("machine_id"), row.get("cost_milliusd"), row.get("hours")
+        if (
+            machine_id in observations
+            or not isinstance(cost, int)
+            or isinstance(cost, bool)
+            or cost < 0
+            or not isinstance(hours, int)
+            or isinstance(hours, bool)
+            or hours < 1
+        ):
+            errors.append("run_owned_usage_uncorrelated")
+            continue
+        observations[machine_id] = row
+    return not errors or "run_owned_usage_uncorrelated" not in errors, observations
+
+
+def _machine_report(
+    machine: dict[str, object],
+    cleanup: dict[str, Any],
+    cleanup_observed_at: datetime | None,
+    cleanup_proven: bool,
+    usage_reliable: bool,
+    usage: dict[object, dict[str, object]],
+    errors: list[str],
+) -> tuple[dict[str, object], Decimal | None, Decimal | None]:
+    machine_id = machine.get("id", "unknown")
+    created_at = _parse_time(machine.get("created_at"))
+    lifetime_seconds: int | None = None
+    cost = _incomplete_cost()
+    estimate_part: Decimal | None = None
+    actual_part: Decimal | None = None
+    if cleanup_proven and created_at is not None and cleanup_observed_at is not None:
+        elapsed = (cleanup_observed_at - created_at).total_seconds()
+        if elapsed < 0:
+            errors.append(f"machine_lifetime_negative:{machine_id}")
+        else:
+            lifetime_seconds = int(elapsed)
+            estimate = _estimated_cost(machine.get("rate_milliusd_per_hour"), lifetime_seconds)
+            if estimate is None or machine.get("rate_unit") != "USD*1000 per hour":
+                errors.append(f"machine_rate_unusable:{machine_id}")
+            elif usage_reliable:
+                estimate_part = Decimal(str(estimate["usd"]))
+                observation = usage.get(machine.get("id"))
+                if observation is None:
+                    cost = estimate
+                else:
+                    raw_cost = observation["cost_milliusd"]
+                    assert isinstance(raw_cost, int)
+                    cost = {
+                        "status": "actual",
+                        "source": "provider_usage",
+                        "unit": "USD*1000",
+                        "billed_hours": observation["hours"],
+                        "usd": _milliusd_to_usd(raw_cost),
+                    }
+                    actual_part = Decimal(str(cost["usd"]))
+    elif created_at is None:
+        errors.append(f"machine_creation_timestamp_unusable:{machine_id}")
+    return (
+        {
+            "id": machine.get("id"),
+            "role": machine.get("role"),
+            "created_at": machine.get("created_at"),
+            "cleanup_observed_at": cleanup.get("observed_at"),
+            "lifetime_seconds": lifetime_seconds,
+            "rate_milliusd_per_hour": machine.get("rate_milliusd_per_hour"),
+            "rate_unit": machine.get("rate_unit"),
+            "cost": cost,
+        },
+        estimate_part,
+        actual_part,
+    )
+
+
+def _run_cost(
+    machine_reports: list[dict[str, object]], estimates: list[Decimal], actuals: list[Decimal]
+) -> dict[str, object]:
+    if machine_reports and len(actuals) == len(machine_reports):
+        return {
+            "status": "actual",
+            "source": "provider_usage",
+            "unit": "USD*1000",
+            "usd": format(sum(actuals, Decimal("0")).normalize(), "f"),
+        }
+    if machine_reports and len(estimates) == len(machine_reports):
+        return {
+            "status": "estimated",
+            "source": "per_server_rate",
+            "unit": "USD*1000 per hour",
+            "billing_rounding": "hours rounded up",
+            "usd": format(sum(estimates, Decimal("0")).normalize(), "f"),
+        }
+    return _incomplete_cost()
 
 
 def build_acceptance_artifact(
@@ -95,77 +249,52 @@ def build_acceptance_artifact(
     if not isinstance(run_tag, str) or not run_tag:
         errors.append("manifest_run_tag_unusable")
         run_tag = None
-    if cleanup.get("run_tag") != run_tag:
-        errors.append("cleanup_run_tag_mismatch")
-    cleanup_observed_at = _parse_time(cleanup.get("observed_at"))
-    if cleanup_observed_at is None:
-        errors.append("cleanup_observation_timestamp_unusable")
-    if cleanup.get("status") != "verified":
-        errors.append("cleanup_not_verified")
-    if cleanup.get("remaining_ids") != []:
-        errors.append("run_owned_machines_not_proven_absent")
-    if cleanup.get("servers_used") != 0:
-        errors.append("post_cleanup_servers_used_not_zero")
+    cleanup_observed_at = _cleanup_proof(cleanup, run_tag, errors)
 
     raw_machines = manifest.get("machines")
     if not isinstance(raw_machines, list):
         raw_machines = []
         errors.append("manifest_machines_unusable")
     machine_reports: list[dict[str, object]] = []
-    cost_parts: list[Decimal] = []
+    estimates: list[Decimal] = []
+    actuals: list[Decimal] = []
     cleanup_proven = not {
         "cleanup_observation_timestamp_unusable",
         "cleanup_not_verified",
         "run_owned_machines_not_proven_absent",
         "post_cleanup_servers_used_not_zero",
     }.intersection(errors)
+    usage_reliable, usage_by_machine = _usage_by_machine(cleanup, errors)
     for machine in raw_machines:
         if not isinstance(machine, dict):
             errors.append("manifest_machine_unusable")
             continue
-        created_at = _parse_time(machine.get("created_at"))
-        lifetime_seconds: int | None = None
-        cost_usd: str | None = None
-        if cleanup_proven and created_at is not None and cleanup_observed_at is not None:
-            elapsed = (cleanup_observed_at - created_at).total_seconds()
-            if elapsed < 0:
-                errors.append(f"machine_lifetime_negative:{machine.get('id', 'unknown')}")
-            else:
-                lifetime_seconds = int(elapsed)
-                cost_usd = _cost_usd(machine.get("hourly_cost_cents"), lifetime_seconds)
-                if cost_usd is None:
-                    errors.append(f"machine_hourly_cost_unusable:{machine.get('id', 'unknown')}")
-                else:
-                    cost_parts.append(Decimal(cost_usd))
-        elif created_at is None:
-            errors.append(f"machine_creation_timestamp_unusable:{machine.get('id', 'unknown')}")
-        machine_reports.append(
-            {
-                "id": machine.get("id"),
-                "role": machine.get("role"),
-                "created_at": machine.get("created_at"),
-                "cleanup_observed_at": cleanup.get("observed_at"),
-                "lifetime_seconds": lifetime_seconds,
-                "hourly_cost_cents": machine.get("hourly_cost_cents"),
-                "cost_usd": cost_usd,
-            }
+        machine_report, estimate, actual = _machine_report(
+            machine,
+            cleanup,
+            cleanup_observed_at,
+            cleanup_proven,
+            usage_reliable,
+            usage_by_machine,
+            errors,
         )
+        machine_reports.append(machine_report)
+        if estimate is not None:
+            estimates.append(estimate)
+        if actual is not None:
+            actuals.append(actual)
     if len(machine_reports) != len(raw_machines) or not machine_reports:
         errors.append("machine_evidence_incomplete")
-    if any(machine["cost_usd"] is None for machine in machine_reports):
+    if any(machine["cost"]["usd"] is None for machine in machine_reports):
         errors.append("run_cost_incomplete")
-    total_cost = (
-        sum(cost_parts, Decimal("0"))
-        if machine_reports and len(cost_parts) == len(machine_reports)
-        else None
-    )
+    run_cost = _run_cost(machine_reports, estimates, actuals)
     report = {
-        "schema_version": "v1",
+        "schema_version": "v2",
         "status": "complete" if not errors else "incomplete",
         "run_tag": run_tag,
         "cleanup": cleanup,
         "machines": machine_reports,
-        "run_cost_usd": format(total_cost.normalize(), "f") if total_cost is not None else None,
+        "run_cost": run_cost,
         "incompleteness": sorted(set(errors)),
     }
     (output / "final-report.json").write_text(
@@ -177,12 +306,29 @@ def build_acceptance_artifact(
 def scan_artifact(artifact: Path, *, canaries: tuple[str, ...] = ()) -> list[str]:
     """Return value-free redaction failures for the fixed artifact allow-list."""
     errors: list[str] = []
-    allowed = {"machines.json", "final-report.json", *REQUIRED_RUN_FILES}
-    for path in sorted(artifact.iterdir()) if artifact.is_dir() else []:
-        if path.name not in allowed and not COMBINATION_LOG.fullmatch(path.name):
+    if not artifact.is_dir():
+        return ["candidate directory is unavailable"]
+    allowed = {
+        "machines.json",
+        "final-report.json",
+        *REQUIRED_RUN_FILES,
+        REMOTE_INVOCATION_LOG,
+        *(f"run/{name}" for name in REQUIRED_RUN_FILES),
+        f"run/{REMOTE_INVOCATION_LOG}",
+    }
+    for path in sorted(artifact.rglob("*")) if artifact.is_dir() else []:
+        if path.is_dir():
+            if path.relative_to(artifact).as_posix() != "run":
+                errors.append("candidate contains an unapproved directory")
+            continue
+        relative = path.relative_to(artifact).as_posix()
+        valid_combination = COMBINATION_LOG.fullmatch(path.name) and (
+            path.parent == artifact or path.parent == artifact / "run"
+        )
+        if relative not in allowed and not valid_combination:
             errors.append("candidate contains an unapproved file")
             continue
-        if not path.is_file():
+        if not path.is_file() or path.is_symlink():
             errors.append("candidate contains a non-file entry")
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -208,6 +354,11 @@ def main() -> int:
         action="append",
         default=[],
         help="environment variable whose supplied test value must not be present",
+    )
+    scan.add_argument(
+        "--secrets-stdin",
+        action="store_true",
+        help="read protected NAME=value values from stdin without rendering them",
     )
     args = parser.parse_args()
     if args.command == "build":
@@ -235,6 +386,12 @@ def main() -> int:
     canaries = tuple(
         value for name in args.canary_env if (value := os.environ.get(name)) is not None
     )
+    if args.secrets_stdin:
+        canaries += tuple(
+            line.partition("=")[2] if "=" in line else line
+            for line in __import__("sys").stdin.read().splitlines()
+            if (line.partition("=")[2] if "=" in line else line)
+        )
     return 0 if not scan_artifact(args.artifact, canaries=canaries) else 2
 
 

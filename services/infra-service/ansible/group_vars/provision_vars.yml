@@ -23,6 +23,9 @@ firewall_allowed_ports:
 # ========================================
 docker_version: "latest"
 docker_compose_version: "v2.24.0"
+# The stand suite entry point invokes uv itself.  Keep the host-side runner
+# deterministic rather than assuming a tool from a provider base image.
+uv_version: "0.6.14"
 
 # ========================================
 # System Configuration
