@@ -54,9 +54,11 @@ check, is revoked by the same code, and fails the same way visibly if it stays.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 from typing import TYPE_CHECKING, NamedTuple
 import uuid
 
+import httpx
 import structlog
 
 from shared.contracts.dto.application import ApplicationStatus
@@ -184,7 +186,7 @@ async def grant_temporary_access(
     subject: str,
     head_sha: str,
     qa_message: QAMessage,
-) -> TemporaryAccessGrantDTO:
+) -> TemporaryAccessGrantDTO | None:
     """Hand the access out, record first, and hold the QA handoff.
 
     The record is written before the deploy that applies the value, so no order
@@ -214,18 +216,37 @@ async def grant_temporary_access(
     is what redispatches, expires and revokes it from there.
     """
     grant_id = f"tempaccess-{qa_message.run_id}"[:255]
-    grant = await api_client.create_temporary_access_grant(
-        TemporaryAccessGrantCreate(
-            id=grant_id,
+    try:
+        grant = await api_client.create_temporary_access_grant(
+            TemporaryAccessGrantCreate(
+                id=grant_id,
+                project_id=project_id,
+                env_key=env_key,
+                subject=subject,
+                head_sha=head_sha,
+                qa_run_id=qa_message.run_id,
+                grant_run_id=_new_deploy_run_id("grant"),
+                qa_message=qa_message,
+            )
+        )
+    except httpx.HTTPStatusError as exc:
+        # The contract slot holds one value, so a *different* grant still holding
+        # it is refused. That is not this caller's failure and must not end the
+        # tick: the sweep owns the holder, revokes it, and a later tick hands off
+        # again. Letting the 409 propagate deadlocked production on 2026-08-27 —
+        # the dispatcher cycle died here every 30 seconds, so the sweep that
+        # would have revoked the holder never ran.
+        if exc.response.status_code != HTTPStatus.CONFLICT:
+            raise
+        logger.info(
+            "temporary_access_slot_held_by_another_grant",
+            grant_id=grant_id,
             project_id=project_id,
             env_key=env_key,
-            subject=subject,
-            head_sha=head_sha,
             qa_run_id=qa_message.run_id,
-            grant_run_id=_new_deploy_run_id("grant"),
-            qa_message=qa_message,
+            detail=exc.response.text[:300],
         )
-    )
+        return None
 
     log = logger.bind(
         grant_id=grant.id,

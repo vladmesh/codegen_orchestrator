@@ -1062,6 +1062,16 @@ async def _execute_qa_handoff(
             head_sha=plan.access.head_sha,
             qa_message=plan.qa_message,
         )
+        if grant is None:
+            # The contract slot is held by an earlier grant the sweep still owns.
+            # Nothing to hand off on this tick; the sweep revokes the holder and
+            # a later tick tries again.
+            log.info(
+                "deploy_supervisor_qa_handoff_deferred_slot_held",
+                qa_run_id=qa_run_id,
+                env_key=plan.access.env_key,
+            )
+            return
         log.info(
             "deploy_supervisor_qa_handoff_awaiting_access",
             deployed_url=plan.qa_message.deployed_url,

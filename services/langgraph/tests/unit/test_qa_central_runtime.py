@@ -912,8 +912,13 @@ class TestASecondProjectOnTheSameHost:
             telethon_env={"TELETHON_SESSION": "s"},
         )
 
+        # The vehicle is a real message, not an empty one: an empty probe is
+        # refused before the transport now, because Telegram cannot carry it and
+        # that says nothing about the product. What this test protects is
+        # unchanged — a transport error *before delivery* must block the agent's
+        # verdict rather than let it stand on no evidence.
         async def behaviour(harness):
-            answer = await harness.tools["telegram_probe"].ainvoke({"message": ""})
+            answer = await harness.tools["telegram_probe"].ainvoke({"message": "/start"})
             assert "error" in answer
             return (
                 '{"pass": false, "checks": [{"name": "Telegram /start", '
@@ -924,9 +929,9 @@ class TestASecondProjectOnTheSameHost:
             return SimpleNamespace(
                 exit_status=0,
                 stdout=(
-                    'telegram_probe_result:{"action":"message","attempted":"send \'\' '
-                    'to @weather_bot","sent":"","delivered":false,"replies":[], '
-                    '"callback":null,"error":"ValueError: The message cannot be empty"}\n'
+                    'telegram_probe_result:{"action":"message","attempted":"send \'/start\' '
+                    'to @weather_bot","sent":"/start","delivered":false,"replies":[], '
+                    '"callback":null,"error":"ConnectionError: failed before delivery"}\n'
                 ),
                 stderr="",
             )
