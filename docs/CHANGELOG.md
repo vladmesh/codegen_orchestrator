@@ -53,7 +53,9 @@
   runtime policy key and validates that same key in contour guards and operator
   tooling. Scheduler discovery now refuses an IP collision without an exact
   provider/stable-ID match, reserves and unmanages the legacy row, and raises a
-  critical administrator alert instead of creating a shadow server.
+  critical administrator alert instead of creating a shadow server. A settled
+  refusal is quiet on later sync cycles, while a later state change is refused
+  and signalled again.
 
 - The main-only backend DinD suite now gives worker-manager the same test-owned
   Claude host-session volumes used by launched workers and seeds fake

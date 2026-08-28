@@ -375,6 +375,47 @@ async def test_sync_refuses_ip_collision_without_exact_provider_identity(
 
 
 @pytest.mark.asyncio
+async def test_sync_refuses_legacy_identity_collision_once_then_stays_quiet(
+    mock_api_client, mock_time4vps_client, mock_notify_admins, monkeypatch
+):
+    """A settled collision remains excluded without repeating its refusal signal."""
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    colliding_server = ServerDTO(
+        handle="legacy-server",
+        host="legacy.example",
+        public_ip="203.0.113.10",
+        ssh_user="root",
+        status=ServerStatus.ACTIVE,
+        is_managed=True,
+        labels={},
+        created_at=datetime.now(UTC),
+    )
+    settled_refusal = colliding_server.model_copy(
+        update={"status": ServerStatus.RESERVED, "is_managed": False}
+    )
+    mock_time4vps_client.get_servers.return_value = [
+        MagicMock(ip="203.0.113.10", id=1001, domain="current.example")
+    ]
+    mock_api_client.get_servers = AsyncMock(
+        side_effect=[[colliding_server], [settled_refusal], [settled_refusal]]
+    )
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.update_server = AsyncMock()
+    mock_api_client.create_server = AsyncMock()
+
+    first_cycle = await server_sync._sync_server_list(mock_time4vps_client)
+    settled_cycle = await server_sync._sync_server_list(mock_time4vps_client)
+    later_settled_cycle = await server_sync._sync_server_list(mock_time4vps_client)
+
+    assert first_cycle == (0, 1, 0)
+    assert settled_cycle == (0, 0, 0)
+    assert later_settled_cycle == (0, 0, 0)
+    mock_api_client.update_server.assert_awaited_once()
+    mock_api_client.create_server.assert_not_awaited()
+    mock_notify_admins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_client):
     # Setup
     server = ServerDTO(

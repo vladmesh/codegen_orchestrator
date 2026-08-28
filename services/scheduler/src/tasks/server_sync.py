@@ -265,12 +265,17 @@ async def _report_management_changes(
         )
 
 
-async def _refuse_legacy_identity_collision(existing: ServerDTO, *, server_id: int) -> None:
+async def _refuse_legacy_identity_collision(existing: ServerDTO, *, server_id: int) -> bool:
     """Fail closed when an inventory IP cannot safely upgrade a legacy row.
 
     IP matching identifies the collision only. It never proves provider ownership
     or authorizes attaching a Time4VPS stable ID to the existing database row.
+    A row already in the refused state stays excluded without consuming the
+    shared admin-notification budget again.
     """
+    if existing.status == ServerStatus.RESERVED and not existing.is_managed:
+        return False
+
     await api_client.update_server(
         existing.handle,
         ServerUpdate(status=ServerStatus.RESERVED, is_managed=False),
@@ -292,6 +297,7 @@ async def _refuse_legacy_identity_collision(existing: ServerDTO, *, server_id: i
         component="server_sync",
         server_handle=existing.handle,
     )
+    return True
 
 
 async def _sync_server_list(  # noqa: C901, PLR0912, PLR0915
@@ -370,9 +376,12 @@ async def _sync_server_list(  # noqa: C901, PLR0912, PLR0915
             # Existing rows without an exact provider/stable-ID match are an
             # upgrade precondition, not a discovery opportunity. Creating a new
             # row here would schedule destructive work against an ambiguous host.
-            await _refuse_legacy_identity_collision(legacy_collision, server_id=server_id)
+            refusal_changed = await _refuse_legacy_identity_collision(
+                legacy_collision, server_id=server_id
+            )
             refused_collision_handles.add(legacy_collision.handle)
-            updated_count += 1
+            if refusal_changed:
+                updated_count += 1
         else:
             # New Server Discovered
             is_managed = should_manage
