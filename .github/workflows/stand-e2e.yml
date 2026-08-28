@@ -62,6 +62,9 @@ jobs:
       - name: Check out lifecycle code
         uses: actions/checkout@v5
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
       # The suite is a named one or a pytest target; `custom` is how the second
       # kind is spelled in a dropdown, and it has to name a target.
       - name: Resolve the suite
@@ -195,6 +198,9 @@ jobs:
           SUMMARIZATION_MAX_TOKENS: ${{ secrets.SUMMARIZATION_MAX_TOKENS }}
           SUMMARIZATION_TRIGGER_TOKENS: ${{ secrets.SUMMARIZATION_TRIGGER_TOKENS }}
           SUMMARIZATION_MAX_SUMMARY_TOKENS: ${{ secrets.SUMMARIZATION_MAX_SUMMARY_TOKENS }}
+          GITHUB_APP_PEM_PATH: /opt/secrets/github_app.pem
+          GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
+          LIVE_CONTOUR: stand
         run: |
           set -euo pipefail
           umask 077
@@ -205,14 +211,14 @@ jobs:
               "ORCHESTRATOR_PUBLIC_IP", "ORCHESTRATOR_HOSTNAME", "STAND_RUN_TAG",
               "BITLAUNCH_API_KEY", "INTERNAL_API_KEY", "POSTGRES_DB", "POSTGRES_USER",
               "POSTGRES_PASSWORD", "SECRETS_ENCRYPTION_KEY", "LK_JWT_SECRET", "GITHUB_ORG",
-              "GITHUB_APP_ID",
+              "GITHUB_APP_ID", "GITHUB_APP_PEM_PATH", "GITHUB_APP_PRIVATE_KEY_PATH",
               "REGISTRY_USER", "REGISTRY_PASSWORD", "REGISTRY_PASSWORD_HASH", "LOKI_PUSH_USER",
               "LOKI_PUSH_PASSWORD", "LOKI_PUSH_PASSWORD_HASH", "LOKI_URL", "ADMIN_USER",
               "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
               "WORKER_BROKER_INTERNAL_TOKEN", "HOST_CLAUDE_DIR", "HOST_CODEX_HOME", "PO_LLM_MODEL",
               "PO_LLM_BASE_URL", "PO_LLM_API_KEY", "ARCHITECT_LLM_MODEL", "ARCHITECT_LLM_BASE_URL",
               "ARCHITECT_LLM_API_KEY", "SUMMARIZATION_MODEL", "SUMMARIZATION_MAX_TOKENS",
-              "SUMMARIZATION_TRIGGER_TOKENS", "SUMMARIZATION_MAX_SUMMARY_TOKENS",
+              "SUMMARIZATION_TRIGGER_TOKENS", "SUMMARIZATION_MAX_SUMMARY_TOKENS", "LIVE_CONTOUR",
           )
           missing = [name for name in (*names, "GH_APP_PRIVATE_KEY") if not os.environ.get(name)]
           if missing:
@@ -255,27 +261,41 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          registration_env="${RUNNER_TEMP}/stand-target.env"
-          {
-            printf 'TARGET_ID=%s\n' "${TARGET_ID}"
-            printf 'TARGET_IP=%s\n' "${TARGET_IP}"
-            printf 'STAND_RUN_TAG=%s\n' "${STAND_RUN_TAG}"
-            printf 'SSH_PRIVATE_KEY=%s\n' "${SSH_PRIVATE_KEY}"
-          } > "${registration_env}"
+          registration_input="${RUNNER_TEMP}/stand-target.json"
+          target_key="${RUNNER_TEMP}/stand-target.key"
+          trap 'shred -u "${registration_input}" "${target_key}" || true' EXIT INT TERM
+          export REGISTRATION_INPUT_PATH="${registration_input}"
+          export TARGET_KEY_PATH="${target_key}"
+          python3 -c '
+          import json
+          import os
+          from pathlib import Path
+          Path(os.environ["REGISTRATION_INPUT_PATH"]).write_text(json.dumps({
+              "target_id": os.environ["TARGET_ID"],
+              "target_ip": os.environ["TARGET_IP"],
+              "run_tag": os.environ["STAND_RUN_TAG"],
+          }) + "\n")
+          Path(os.environ["TARGET_KEY_PATH"]).write_text(os.environ["SSH_PRIVATE_KEY"])
+          '
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          scp -i "${key_path}" -o StrictHostKeyChecking=accept-new "${registration_env}" \
-            root@"${PROD_HOST}":/run/stand-target.env
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" '
+          tar -C "${RUNNER_TEMP}" -cf - stand-target.json stand-target.key | \
+            ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" '
             set -euo pipefail
+            umask 077
+            cleanup() {
+              shred -u /run/stand-target.key /run/stand-target.json || true
+            }
+            trap cleanup EXIT INT TERM
+            tar -C /run -xf -
             cd /opt/codegen_orchestrator
             INTERNAL_API_KEY=$(sed -n "s/^INTERNAL_API_KEY=//p" ./.env)
             test -n "${INTERNAL_API_KEY}"
             export INTERNAL_API_KEY
-            set -a; . /run/stand-target.env; set +a
-            python3 -m scripts.register_bitlaunch_target
-            shred -u /run/stand-target.env
-            python3 -m scripts.request_stand_provisioning --handle "bitlaunch-${TARGET_ID}"
-            python3 -m scripts.wait_stand_provisioning --handle "bitlaunch-${TARGET_ID}"
+            python3 -m scripts.register_bitlaunch_target \
+              --input /run/stand-target.json --ssh-private-key-file /run/stand-target.key
+            target_handle=$(python3 -c "import json; from pathlib import Path; print(\"bitlaunch-\" + str(json.loads(Path(\"/run/stand-target.json\").read_text())[\"target_id\"]))")
+            python3 -m scripts.request_stand_provisioning --handle "${target_handle}"
+            python3 -m scripts.wait_stand_provisioning --handle "${target_handle}"
           '
 
       # Collected whatever the result was: a failed run is the one whose logs are

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Register one run-owned BitLaunch target as pending provisioning.
 
-The workflow is the sole producer of this registration. It passes the public
-machine identity through its environment and keeps the creation SSH key in the
-process environment until the API encrypts it at rest.
+The workflow is the sole producer of this registration. It passes public
+machine identity and the multiline creation key in separate protected files;
+the caller removes both with its unconditional cleanup trap after the API has
+encrypted the key at rest.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import sys
 import urllib.request
 
@@ -31,11 +33,11 @@ def build_target_payload(
         "handle": f"bitlaunch-{target_id}",
         "host": target_ip,
         "public_ip": target_ip,
-        "ssh_user": "root",
+        "ssh_user": "deploy",
         "ssh_key": ssh_private_key,
-        "capacity_cpu": 2,
-        "capacity_ram_mb": 4096,
-        "capacity_disk_mb": 40960,
+        "capacity_cpu": 4,
+        "capacity_ram_mb": 8192,
+        "capacity_disk_mb": 153600,
         "is_managed": True,
         "status": "pending_setup",
         "notes": "Run-owned BitLaunch e2e target; provisioner-only completion.",
@@ -66,17 +68,22 @@ def _request(url: str, key: str, payload: dict[str, object]) -> dict[str, object
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--ssh-private-key-file", type=Path, required=True)
     args = parser.parse_args()
 
     try:
+        registration_input = json.loads(args.input.read_text())
+        if not isinstance(registration_input, dict):
+            raise ValueError("registration input must be an object")
         payload = build_target_payload(
-            target_id=os.environ["TARGET_ID"],
-            target_ip=os.environ["TARGET_IP"],
-            run_tag=os.environ["STAND_RUN_TAG"],
-            ssh_private_key=os.environ["SSH_PRIVATE_KEY"],
+            target_id=str(registration_input["target_id"]),
+            target_ip=str(registration_input["target_ip"]),
+            run_tag=str(registration_input["run_tag"]),
+            ssh_private_key=args.ssh_private_key_file.read_text(),
         )
         internal_key = os.environ["INTERNAL_API_KEY"]
-    except (KeyError, ValueError) as exc:
+    except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"target registration refused: {exc}", file=sys.stderr)
         return 2
 

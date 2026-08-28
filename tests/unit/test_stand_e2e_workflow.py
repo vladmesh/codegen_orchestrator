@@ -130,5 +130,38 @@ def test_created_pair_is_bootstrapped_registered_and_provisioned_without_secret_
     assert "GITHUB_OUTPUT" not in steps["Register and provision dynamic target"]["run"]
 
 
+def test_bootstrap_installs_the_pinned_uv_toolchain_before_any_uvx_invocation():
+    steps = list(_steps())
+    bootstrap = _steps()["Bootstrap dynamic orchestrator"]
+
+    assert "Install uv" in steps
+    assert steps.index("Install uv") < steps.index("Bootstrap dynamic orchestrator")
+    assert _steps()["Install uv"]["uses"] == "astral-sh/setup-uv@v7"
+    assert "uvx --from ansible-core" in bootstrap["run"]
+
+
+def test_dynamic_stand_environment_mounts_the_github_app_key_and_names_the_contour():
+    step = _steps()["Render protected dynamic configuration"]
+    render = step["run"]
+
+    assert '"GITHUB_APP_PEM_PATH"' in render
+    assert '"GITHUB_APP_PRIVATE_KEY_PATH"' in render
+    assert '"LIVE_CONTOUR"' in render
+    assert step["env"]["GITHUB_APP_PEM_PATH"] == "/opt/secrets/github_app.pem"
+    assert step["env"]["GITHUB_APP_PRIVATE_KEY_PATH"] == "/app/keys/github_app.pem"
+    assert step["env"]["LIVE_CONTOUR"] == "stand"
+
+
+def test_target_key_transport_uses_protected_files_not_a_sourced_secret_environment():
+    register = _steps()["Register and provision dynamic target"]["run"]
+
+    assert "/run/stand-target.key" in register
+    assert "--ssh-private-key-file /run/stand-target.key" in register
+    assert "set -a; . /run/stand-target.env; set +a" not in register
+    assert "trap cleanup EXIT INT TERM" in register
+    assert "shred -u /run/stand-target.key /run/stand-target.json" in register
+    assert "SSH_PRIVATE_KEY" not in register.split("ssh -i", maxsplit=1)[1]
+
+
 def test_obsolete_self_target_registration_route_is_deleted():
     assert not (WORKFLOW.parents[2] / "scripts" / "register_stand_target.py").exists()

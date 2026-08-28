@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.provisioner.bitlaunch import authorize_run_owned_target
+from src.provisioner.bitlaunch import BitLaunchClient, authorize_run_owned_target
 from src.provisioner.node import ProvisionerNode
 
 
@@ -21,7 +21,7 @@ def _target(**overrides):
         public_ip="203.0.113.19",
         host="203.0.113.19",
         status="pending_setup",
-        ssh_user="root",
+        ssh_user="deploy",
         os_template=None,
         is_managed=True,
         provider=overrides.pop("provider", "bitlaunch"),
@@ -46,6 +46,30 @@ def test_only_the_exact_run_owned_bitlaunch_target_is_authorized(overrides, run_
 
 def test_exact_run_owned_bitlaunch_target_is_authorized():
     assert authorize_run_owned_target(_target(), run_tag="gha-41-1") == "71234"
+
+
+@pytest.mark.asyncio
+async def test_bitlaunch_server_observation_uses_the_server_endpoint_and_envelope(monkeypatch):
+    response = MagicMock()
+    response.json.return_value = {"server": {"ipv4": "203.0.113.19"}}
+    response.raise_for_status = MagicMock()
+    client = MagicMock()
+    client.get = AsyncMock(return_value=response)
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=client)
+    context.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "src.provisioner.bitlaunch.httpx.AsyncClient", MagicMock(return_value=context)
+    )
+
+    ip = await BitLaunchClient("provider-token").get_server_ip("71234")
+
+    assert ip == "203.0.113.19"
+    client.get.assert_awaited_once_with(
+        "https://app.bitlaunch.io/api/servers/71234",
+        headers={"Authorization": "Bearer provider-token"},
+    )
+    response.raise_for_status.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -108,6 +132,7 @@ async def test_bitlaunch_uses_stored_creation_key_and_both_existing_ssh_playbook
     ]
     assert ansible.run_playbook.call_args_list[0].kwargs["ssh_user"] == "root"
     assert ansible.run_playbook.call_args_list[0].kwargs["ssh_private_key"] == "creation-key"
+    assert ansible.run_playbook.call_args_list[0].kwargs["deploy_user"] == "deploy"
     labels.assert_awaited_once_with(
         "bitlaunch-71234", {"provisioning_phase": "software_installation"}
     )
