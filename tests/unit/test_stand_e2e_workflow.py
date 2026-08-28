@@ -72,8 +72,11 @@ def test_lifecycle_preflight_and_create_replace_the_static_host():
     assert "secrets.ORCHESTRATOR_HOSTNAME" not in workflow
     assert "stand-register" not in workflow
     assert "stand-self" not in workflow
-    assert "scripts/stand_lifecycle.py preflight" in steps["Preflight ephemeral machines"]["run"]
-    assert "scripts/stand_lifecycle.py create" in steps["Create ephemeral machines"]["run"]
+    assert (
+        "python3 -m scripts.stand_lifecycle preflight"
+        in steps["Preflight ephemeral machines"]["run"]
+    )
+    assert "python3 -m scripts.stand_lifecycle create" in steps["Create ephemeral machines"]["run"]
 
 
 def test_machine_ids_are_recorded_then_cleaned_for_every_terminal_outcome():
@@ -82,8 +85,11 @@ def test_machine_ids_are_recorded_then_cleaned_for_every_terminal_outcome():
 
     assert steps["Record machine manifest"]["if"] == "always()"
     assert "always()" in cleanup["if"]
-    assert "scripts/stand_lifecycle.py cleanup" in cleanup["steps"][1]["run"]
-    assert "scripts/stand_lifecycle.py sweep" in _workflow()["jobs"]["ttl-sweep"]["steps"][1]["run"]
+    assert "python3 -m scripts.stand_lifecycle cleanup" in cleanup["steps"][1]["run"]
+    assert (
+        "python3 -m scripts.stand_lifecycle sweep"
+        in _workflow()["jobs"]["ttl-sweep"]["steps"][1]["run"]
+    )
 
 
 def test_later_steps_use_the_created_orchestrator_address():

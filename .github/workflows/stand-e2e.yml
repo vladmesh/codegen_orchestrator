@@ -88,7 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${SSH_PRIVATE_KEY}" || { echo 'SSH_PRIVATE_KEY is unset' >&2; exit 2; }
-          python scripts/stand_lifecycle.py preflight --run-tag "${STAND_RUN_TAG}"
+          python3 -m scripts.stand_lifecycle preflight --run-tag "${STAND_RUN_TAG}"
 
       - name: Create ephemeral machines
         id: create
@@ -96,9 +96,9 @@ jobs:
           BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
         run: |
           set -euo pipefail
-          trap 'python scripts/stand_lifecycle.py cleanup --run-tag "${STAND_RUN_TAG}" || true' EXIT INT TERM
-          python scripts/stand_lifecycle.py create --run-tag "${STAND_RUN_TAG}" --manifest machines.json
-          python -c '
+          trap 'python3 -m scripts.stand_lifecycle cleanup --run-tag "${STAND_RUN_TAG}" || true' EXIT INT TERM
+          python3 -m scripts.stand_lifecycle create --run-tag "${STAND_RUN_TAG}" --manifest machines.json --ttl-hours 6
+          python3 -c '
           import json
           from pathlib import Path
           machines = json.loads(Path("machines.json").read_text())["machines"]
@@ -152,7 +152,7 @@ jobs:
       - name: Cleanup run-tagged machines
         run: |
           set -euo pipefail
-          python scripts/stand_lifecycle.py cleanup --run-tag "${STAND_RUN_TAG}"
+          python3 -m scripts.stand_lifecycle cleanup --run-tag "${STAND_RUN_TAG}"
 
   ttl-sweep:
     if: github.event_name == 'schedule'
@@ -167,4 +167,4 @@ jobs:
       - name: Sweep expired run-tagged machines
         run: |
           set -euo pipefail
-          python scripts/stand_lifecycle.py sweep --ttl-hours 6
+          python3 -m scripts.stand_lifecycle sweep --ttl-hours 6

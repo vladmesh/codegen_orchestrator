@@ -114,7 +114,7 @@ def cmd_account(key: str, _args: argparse.Namespace) -> int:
             {
                 "email": user.get("email"),
                 "emailConfirmed": user.get("emailConfirmed"),
-                "balance_usd": round(user.get("balance", 0) / 100, 2),
+                "balance_usd": round(user.get("balance", 0) / 1000, 2),
                 "servers_used": user.get("used"),
                 "server_limit": user.get("limit"),
                 "costPerHr": user.get("costPerHr"),

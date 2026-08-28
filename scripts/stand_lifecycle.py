@@ -35,6 +35,7 @@ RESOURCE_CEILING = len(ROLES)
 NAME_PREFIX = "codegen-stand"
 DEFAULT_SSH_KEY_NAME = "stands_ed25519"
 DEFAULT_MINIMUM_BALANCE_MILLIUSD = 200
+DEFAULT_LIFETIME_SECONDS = 6 * 60 * 60
 
 
 class LifecycleRefusal(RuntimeError):
@@ -107,21 +108,6 @@ class RunTagDestructionPolicy:
         return machine.run_tag == self.run_tag and machine.role in ROLES
 
 
-@dataclass(frozen=True)
-class Time4VPSDestructionPolicy:
-    """Adapt the existing provider-id authorization to the shared policy seam.
-
-    Existing Time4VPS callers supply their already-authorized IDs. The policy
-    intentionally does not read a provider-named process-wide allowlist, and
-    therefore has the same explicit ownership boundary as a run tag.
-    """
-
-    allowed_ids: frozenset[str]
-
-    def allows(self, machine: Machine) -> bool:
-        return machine.id in self.allowed_ids
-
-
 Request = Callable[[str, str, dict[str, Any] | None], object]
 
 
@@ -153,25 +139,24 @@ def _machine_from_server(server: object) -> Machine | None:
     server_id = server.get("id")
     if server_id is None:
         return None
-    observed_at = server.get("updated") or server.get("created") or _now()
     return Machine(
         id=str(server_id),
         role=role,
         ip=server.get("ipv4") if isinstance(server.get("ipv4"), str) else None,
-        observed_at=str(observed_at),
+        observed_at=_now(),
         run_tag=run_tag,
         created_at=str(server["created"]) if server.get("created") is not None else None,
-        hourly_cost_cents=server.get("costPerHr")
-        if isinstance(server.get("costPerHr"), int)
-        else None,
     )
 
 
 def _parse_observed_at(value: str) -> datetime | None:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def select_expired_run_machines(
@@ -182,8 +167,17 @@ def select_expired_run_machines(
     for machine in machines:
         if machine.run_tag is None:
             continue
-        observed_at = _parse_observed_at(machine.observed_at)
-        if observed_at is not None and now - observed_at >= ttl:
+        if machine.created_at is None:
+            raise LifecycleRefusal(
+                f"creation_timestamp_unusable: tagged machine {machine.id} has no created timestamp"
+            )
+        created_at = _parse_observed_at(machine.created_at)
+        if created_at is None:
+            raise LifecycleRefusal(
+                "creation_timestamp_unusable: tagged machine "
+                f"{machine.id} has malformed created timestamp"
+            )
+        if now - created_at >= ttl:
             selected.append(machine)
     return selected
 
@@ -196,29 +190,39 @@ class BitLaunchLifecycle:
         request: Request,
         *,
         ssh_key_name: str = DEFAULT_SSH_KEY_NAME,
-        minimum_balance_cents: int = DEFAULT_MINIMUM_BALANCE_MILLIUSD,
+        minimum_balance_milliusd: int = DEFAULT_MINIMUM_BALANCE_MILLIUSD,
+        lifetime_seconds: int = DEFAULT_LIFETIME_SECONDS,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._request = request
         self._ssh_key_name = ssh_key_name
-        self._minimum_balance_cents = minimum_balance_cents
+        self._minimum_balance_milliusd = minimum_balance_milliusd
+        self._lifetime_seconds = lifetime_seconds
         self._sleep = sleeper
 
     def _account_and_key(self) -> tuple[dict[str, Any], str]:
         user = self._request("GET", "user", None)
-        keys = self._request("GET", "ssh-keys", None)
         if not isinstance(user, dict):
             raise LifecycleRefusal("account_unusable: BitLaunch user response is malformed")
         if not user.get("emailConfirmed"):
             raise LifecycleRefusal("account_unusable: BitLaunch email is not confirmed")
         balance = user.get("balance")
-        if not isinstance(balance, int) or balance < self._minimum_balance_cents:
+        cost_per_hour = user.get("costPerHr")
+        if (
+            not isinstance(balance, int)
+            or isinstance(balance, bool)
+            or not isinstance(cost_per_hour, int)
+            or isinstance(cost_per_hour, bool)
+            or cost_per_hour < 0
+        ):
+            raise LifecycleRefusal("account_unusable: BitLaunch account values are malformed")
+        if balance < self._minimum_balance_milliusd:
             shown = (
                 cents_to_usd(balance) if isinstance(balance, int) and balance >= 0 else "unknown"
             )
             raise LifecycleRefusal(
                 "insufficient_balance: need at least "
-                f"{cents_to_usd(self._minimum_balance_cents)} USD; "
+                f"{cents_to_usd(self._minimum_balance_milliusd)} USD; "
                 f"available {shown} USD"
             )
         used, limit = user.get("used"), user.get("limit")
@@ -230,6 +234,7 @@ class BitLaunchLifecycle:
             raise LifecycleRefusal(
                 f"quota_exhausted: need {RESOURCE_CEILING} free server slots for one run"
             )
+        keys = self._request("GET", "ssh-keys", None)
         if not isinstance(keys, dict):
             raise LifecycleRefusal("ssh_material_missing: SSH key inventory is malformed")
         matching = [
@@ -243,12 +248,21 @@ class BitLaunchLifecycle:
             )
         return user, str(matching[0])
 
-    def preflight(self, *, run_tag: str) -> None:
+    def _preflight(self, run_tag: str) -> tuple[dict[str, Any], str]:
         if not run_tag or any(character.isspace() for character in run_tag):
             raise LifecycleRefusal(
                 "run_tag_invalid: run tag must be non-empty and contain no whitespace"
             )
-        self._account_and_key()
+        account, ssh_key_id = self._account_and_key()
+        if self._existing_for_run(run_tag):
+            raise LifecycleRefusal(
+                "resource_ceiling_exhausted: run tag already owns resources; "
+                "clean it before retrying"
+            )
+        return account, ssh_key_id
+
+    def preflight(self, *, run_tag: str) -> None:
+        self._preflight(run_tag)
 
     def _existing_for_run(self, run_tag: str) -> list[Machine]:
         servers = self._request("GET", "servers", None)
@@ -260,24 +274,29 @@ class BitLaunchLifecycle:
             if (machine := _machine_from_server(server)) is not None and machine.run_tag == run_tag
         ]
 
-    def _wait_for_machine(self, machine_id: str, role: Role, run_tag: str) -> Machine:
+    def _wait_for_machine(
+        self, machine_id: str, role: Role, run_tag: str, hourly_cost_cents: int
+    ) -> Machine:
         deadline = time.monotonic() + CREATE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             response = self._request("GET", f"servers/{machine_id}", None)
             server = response.get("server", response) if isinstance(response, dict) else None
-            if isinstance(server, dict) and isinstance(server.get("ipv4"), str) and server["ipv4"]:
+            created_at = server.get("created") if isinstance(server, dict) else None
+            if (
+                isinstance(server, dict)
+                and isinstance(server.get("ipv4"), str)
+                and server["ipv4"]
+                and isinstance(created_at, str)
+                and _parse_observed_at(created_at) is not None
+            ):
                 return Machine(
                     id=str(server.get("id", machine_id)),
                     role=role,
                     ip=server["ipv4"],
                     observed_at=_now(),
                     run_tag=run_tag,
-                    created_at=str(server["created"])
-                    if server.get("created") is not None
-                    else None,
-                    hourly_cost_cents=server.get("costPerHr")
-                    if isinstance(server.get("costPerHr"), int)
-                    else None,
+                    created_at=created_at,
+                    hourly_cost_cents=hourly_cost_cents,
                 )
             self._sleep(CREATE_POLL_SECONDS)
         raise LifecycleRefusal(
@@ -285,17 +304,9 @@ class BitLaunchLifecycle:
         )
 
     def create_run(self, *, run_tag: str) -> RunManifest:
-        self.preflight(run_tag=run_tag)
-        existing = self._existing_for_run(run_tag)
-        if existing:
-            raise LifecycleRefusal(
-                "resource_ceiling_exhausted: run tag already owns resources; "
-                "clean it before retrying"
-            )
-        # This is deliberately before the first create: no partial run can exceed the ceiling.
-        if len(existing) + RESOURCE_CEILING > RESOURCE_CEILING:
-            raise LifecycleRefusal("resource_ceiling_exhausted")
-        _, ssh_key_id = self._account_and_key()
+        account, ssh_key_id = self._preflight(run_tag)
+        hourly_cost_cents = account["costPerHr"]
+        assert isinstance(hourly_cost_cents, int)
         created: list[Machine] = []
         try:
             for role in ROLES:
@@ -318,16 +329,23 @@ class BitLaunchLifecycle:
                     raise LifecycleRefusal(
                         "create_response_invalid: BitLaunch did not return a server id"
                     )
-                created.append(self._wait_for_machine(str(response["id"]), role, run_tag))
-        except Exception:
-            for machine in created:
-                self._request("DELETE", f"servers/{machine.id}", None)
-            raise
+                created.append(
+                    self._wait_for_machine(str(response["id"]), role, run_tag, hourly_cost_cents)
+                )
+        except Exception as create_error:
+            try:
+                self.cleanup_run(run_tag=run_tag)
+            except Exception as cleanup_error:
+                raise LifecycleRefusal(
+                    "partial_create_cleanup_failed: exact-tag cleanup could not complete"
+                ) from cleanup_error
+            raise create_error
         return RunManifest(
             run_tag=run_tag,
             observed_at=_now(),
             machines=tuple(created),
             resource_ceiling=RESOURCE_CEILING,
+            lifetime_seconds=self._lifetime_seconds,
         )
 
     def cleanup_run(self, *, run_tag: str) -> list[str]:
@@ -356,13 +374,15 @@ class BitLaunchLifecycle:
         return deleted
 
 
-def _live_lifecycle(env_file: Path | None, ssh_key_name: str) -> BitLaunchLifecycle:
+def _live_lifecycle(
+    env_file: Path | None, ssh_key_name: str, *, lifetime_seconds: int = DEFAULT_LIFETIME_SECONDS
+) -> BitLaunchLifecycle:
     key = _api_key(env_file)
 
     def request(method: str, path: str, body: dict[str, Any] | None = None) -> object:
         return _request(key, method, path, body)
 
-    return BitLaunchLifecycle(request, ssh_key_name=ssh_key_name)
+    return BitLaunchLifecycle(request, ssh_key_name=ssh_key_name, lifetime_seconds=lifetime_seconds)
 
 
 def _write_manifest(path: Path, manifest: RunManifest) -> None:
@@ -380,10 +400,20 @@ def main() -> int:
         item = sub.add_parser(command)
         item.add_argument("--run-tag", required=True)
     sub.choices["create"].add_argument("--manifest", type=Path, required=True)
+    sub.choices["create"].add_argument("--ttl-hours", type=int, required=True)
     sweep = sub.add_parser("sweep")
     sweep.add_argument("--ttl-hours", type=int, required=True)
     args = parser.parse_args()
-    lifecycle = _live_lifecycle(args.env_file, args.ssh_key_name)
+    if args.command in {"create", "sweep"} and args.ttl_hours <= 0:
+        parser.error("--ttl-hours must be positive")
+    lifetime_seconds = (
+        args.ttl_hours * 60 * 60 if args.command == "create" else DEFAULT_LIFETIME_SECONDS
+    )
+    lifecycle = _live_lifecycle(
+        args.env_file,
+        args.ssh_key_name,
+        lifetime_seconds=lifetime_seconds,
+    )
     try:
         if args.command == "preflight":
             lifecycle.preflight(run_tag=args.run_tag)
