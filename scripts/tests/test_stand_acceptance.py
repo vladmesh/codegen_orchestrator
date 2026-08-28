@@ -433,6 +433,41 @@ def test_admission_rejects_protected_values_and_assignments_in_handoff_and_final
             assert protected_value not in status.read_text(encoding="utf-8")
 
 
+def test_admission_rejects_literal_and_escaped_private_key_pem_in_combination_logs(
+    tmp_path,
+):
+    protected_values = protected_values_from_environment(_protected_environment())
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEfixture\n-----END RSA PRIVATE KEY-----"
+
+    for candidate_factory, label in ((_handoff_candidate, "handoff"), (_final_candidate, "final")):
+        for content, suffix in (
+            (pem, "literal"),
+            (repr(pem), "escaped"),
+            (pem.replace("-", r"\u002d").replace("\n", r"\n"), "serialized"),
+        ):
+            candidate = tmp_path / f"{label}-{suffix}"
+            candidate_factory(candidate, "safe diagnostic\n")
+            log = candidate / ("run" if label == "handoff" else "") / "claude-codex.log"
+            log.write_text(content, encoding="utf-8")
+            status = tmp_path / f"{label}-{suffix}-status.json"
+
+            assert not admit_artifact(
+                candidate,
+                status_path=status,
+                protected_values=protected_values,
+            )
+
+            payload = json.loads(status.read_text(encoding="utf-8"))
+            assert payload["status"] == "rejected"
+            assert payload["issues"] == [
+                {
+                    "path": "run/claude-codex.log" if label == "handoff" else "claude-codex.log",
+                    "reason": "candidate contains private key material",
+                }
+            ]
+            assert pem not in status.read_text(encoding="utf-8")
+
+
 def test_admission_refuses_a_missing_protected_environment_value_with_a_named_safe_deficiency(
     tmp_path,
 ):

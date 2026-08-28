@@ -84,6 +84,11 @@
 
 ### Fixed
 
+- Stand acceptance admission now rejects structural private-key PEM markers in
+  its existing allow-listed evidence, including literal, escaped, and serialized
+  headers in raw suite combination logs. The shared scanner still permits
+  value-free token-preflight diagnostics and reports only safe paths and reasons.
+
 - Stand acceptance admission now derives redaction needles only from a fixed
   protected-value allow-list, so public dynamic configuration and lifecycle
   manifest values remain uploadable. Both handoff and final artifacts use an

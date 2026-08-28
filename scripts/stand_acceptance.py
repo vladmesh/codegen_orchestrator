@@ -23,6 +23,15 @@ from typing import Any
 REQUIRED_RUN_FILES = ("junit.xml", "report.tsv", "run.log")
 REMOTE_INVOCATION_LOG = "remote-invocation.log"
 COMBINATION_LOG = re.compile(r"(?:claude|codex)-(?:claude|codex)\.log\Z")
+# A private-key PEM header is sensitive even when its body was reformatted by a
+# traceback or serialized by a logger.  This intentionally does not inspect
+# credential names or assignments, so value-free preflight diagnostics remain
+# admissible.
+_PEM_DASH = r"(?:-|\\x2[dD]|\\u002[dD])"
+PRIVATE_KEY_MARKER = re.compile(
+    rf"(?:{_PEM_DASH}){{5}}BEGIN [A-Z0-9 ]*PRIVATE KEY(?:{_PEM_DASH}){{5}}",
+    re.IGNORECASE,
+)
 ADMISSION_MARKER = "stand-acceptance-admission-v1"
 
 # These are the only settings whose values are credentials.  The rendered stand
@@ -348,8 +357,9 @@ def _scan_artifact_issues(
     """Inspect a fixed candidate without treating diagnostic identifiers as secrets.
 
     Allowed evidence is free-form diagnostic text.  At this boundary, a secret
-    is only a supplied protected value.  The narrow file allow-list still keeps
-    configuration and key files out of the artifact entirely.
+    is a supplied protected value or structural private-key PEM material.  The
+    narrow file allow-list still keeps configuration and key files out of the
+    artifact entirely.
     """
     issues: list[AdmissionIssue] = []
     if not artifact.is_dir():
@@ -385,6 +395,8 @@ def _scan_artifact_issues(
         text = path.read_text(encoding="utf-8", errors="replace")
         if any(value and value in text for value in protected_values):
             issues.append(AdmissionIssue("candidate contains a supplied protected value", relative))
+        if PRIVATE_KEY_MARKER.search(text):
+            issues.append(AdmissionIssue("candidate contains private key material", relative))
     return sorted(set(issues), key=lambda issue: (issue.path or "", issue.reason, issue.name or ""))
 
 
