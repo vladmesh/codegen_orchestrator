@@ -11,7 +11,9 @@ import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 import json
+from typing import Any
 
 CLAUDE_MINIMUM_TTL = timedelta(minutes=30)
 CODEX_MINIMUM_TTL = timedelta(minutes=30)
@@ -24,6 +26,60 @@ class CredentialFailure:
 
     name: str
     detail: str
+
+
+class CredentialShape(StrEnum):
+    """Supported protected configurations which carry stand credentials."""
+
+    PRECREATE_RUNNER = "precreate_runner"
+    STAND_HOST = "stand_host"
+
+
+@dataclass(frozen=True)
+class StandTokenCredentials:
+    """Canonical, transient credentials consumed only by local validation."""
+
+    claude_token: str | None
+    claude_expires_at: str | None
+    codex_token: str | None
+
+
+_CREDENTIAL_NAMES: dict[CredentialShape, tuple[str, str, str]] = {
+    CredentialShape.PRECREATE_RUNNER: (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        "CODEX_ACCESS_TOKEN",
+    ),
+    CredentialShape.STAND_HOST: (
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        "STAND_CODEX_ACCESS_TOKEN",
+    ),
+}
+
+
+def _credential_value(configuration: Mapping[str, str] | Any, name: str) -> str | None:
+    if isinstance(configuration, Mapping):
+        return configuration.get(name)
+    return getattr(configuration, name, None)
+
+
+def bind_stand_token_credentials(
+    configuration: Mapping[str, str] | Any,
+    *,
+    shape: CredentialShape,
+) -> StandTokenCredentials:
+    """Normalize one caller configuration shape before value-free validation.
+
+    The supported names are deliberately centralized here. Callers select a
+    shape but must not translate individual credential names themselves.
+    """
+    claude_token, claude_expires_at, codex_token = _CREDENTIAL_NAMES[shape]
+    return StandTokenCredentials(
+        claude_token=_credential_value(configuration, claude_token),
+        claude_expires_at=_credential_value(configuration, claude_expires_at),
+        codex_token=_credential_value(configuration, codex_token),
+    )
 
 
 def _jwt_expiry(token: str) -> datetime | None:
@@ -76,13 +132,13 @@ def _token_failure(
 
 
 def _claude_token_failure(
-    *, environment: Mapping[str, str], now: datetime
+    *, credentials: StandTokenCredentials, now: datetime
 ) -> CredentialFailure | None:
     """Validate an opaque annual Claude token through its operator expiry metadata."""
-    token = environment.get("CLAUDE_CODE_OAUTH_TOKEN")
+    token = credentials.claude_token
     if not token or not token.strip():
         return CredentialFailure("Claude token", "is missing")
-    expires_at = _operator_expiry(environment.get("CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT"))
+    expires_at = _operator_expiry(credentials.claude_expires_at)
     if expires_at is None:
         return CredentialFailure(
             "Claude token", "has an unreadable or unverifiable expiry metadata"
@@ -100,17 +156,21 @@ def _claude_token_failure(
 
 
 def validate_stand_token_credentials(
-    environment: Mapping[str, str], *, now: datetime | None = None
+    configuration: Mapping[str, str] | Any,
+    *,
+    shape: CredentialShape = CredentialShape.PRECREATE_RUNNER,
+    now: datetime | None = None,
 ) -> list[CredentialFailure]:
-    """Return value-free Claude and Codex token failures for stand mode."""
+    """Bind one caller shape and return value-free stand token failures."""
     now = now or datetime.now(UTC)
+    credentials = bind_stand_token_credentials(configuration, shape=shape)
     return [
         failure
         for failure in (
-            _claude_token_failure(environment=environment, now=now),
+            _claude_token_failure(credentials=credentials, now=now),
             _token_failure(
                 name="Codex token",
-                token=environment.get("CODEX_ACCESS_TOKEN"),
+                token=credentials.codex_token,
                 minimum_ttl=CODEX_MINIMUM_TTL,
                 now=now,
             ),

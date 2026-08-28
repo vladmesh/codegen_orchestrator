@@ -84,12 +84,10 @@ LK bearer for an administrator and do not supply a conflicting
 `X-Telegram-ID`. An internal key, even with an administrator's Telegram id,
 cannot confirm an unknown snapshot.
 
-For local recovery, use `claude auth login` to repair the dedicated
+For non-stand local recovery, use `claude auth login` to repair the dedicated
 `HOST_CLAUDE_DIR` profile, or `codex login --device-auth` to repair the dedicated
-`HOST_CODEX_HOME` profile. Then verify permissions and structure with
-`./scripts/stand_preflight.py --no-probe`; this uses the same local validators
-as worker creation and performs no provider probe. Do not point either setting
-at an operator's ordinary home profile.
+`HOST_CODEX_HOME` profile. Do not point either setting at an operator's ordinary
+home profile. Those profiles are not part of ephemeral stand authentication.
 
 ### Ephemeral stand authentication
 
@@ -101,7 +99,11 @@ annual Claude OAuth token. Both have a 30-minute minimum TTL. Missing,
 malformed, expired, or near-expiry values refuse without rendering credentials.
 The same token-only validator is worker-manager's `stand_token` diagnostic,
 so a valid stand reaches paid-work admission and a local token failure blocks
-it without host-session settings.
+it without host-session settings. The GitHub pre-create runner binds its
+unprefixed secret names, while the stand host binds the rendered `.env`'s
+`STAND_*` names through that same validator. Run `make stand-preflight` or
+`make stand-run`: both load the rendered `.env`; invoking the script directly
+requires supplying the same stand-shaped configuration.
 
 Claude receives its annual OAuth token only through the worker process
 environment and never has a keepalive. Codex uses a manually refreshed ten-day

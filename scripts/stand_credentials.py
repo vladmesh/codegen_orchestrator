@@ -18,6 +18,7 @@ from shared.stand_credentials import (
     CLAUDE_MINIMUM_TTL,  # noqa: F401 - retained script-level validator API
     CODEX_MINIMUM_TTL,  # noqa: F401 - retained script-level validator API
     CredentialFailure,
+    CredentialShape,
     validate_stand_token_credentials,
 )
 
@@ -50,7 +51,11 @@ def validate_precreate_credentials(
 ) -> list[CredentialFailure]:
     """Return every independent local refusal in workflow display order."""
     now = now or datetime.now(UTC)
-    failures = validate_stand_token_credentials(environment, now=now)
+    failures = validate_stand_token_credentials(
+        environment,
+        shape=CredentialShape.PRECREATE_RUNNER,
+        now=now,
+    )
     missing_telethon = [name for name in TELETHON_ENV_VARS if not environment.get(name, "").strip()]
     if missing_telethon:
         failures.append(

@@ -382,9 +382,7 @@ test-live-pipeline:
 # the one that goes stale — this is where that is found, not eight minutes into a
 # mega run.
 stand-preflight:
-	@LIVE_CONTOUR=stand \
-	HOST_CLAUDE_DIR=$${HOST_CLAUDE_DIR:-$$HOME/.claude-worker} \
-	HOST_CODEX_HOME=$${HOST_CODEX_HOME:-$$HOME/.codex-worker} \
+	@set -a; . ./.env; set +a; \
 	uv run python scripts/stand_preflight.py
 
 # One entry point for every e2e on the stand. SUITE is a named suite — mega, llm,

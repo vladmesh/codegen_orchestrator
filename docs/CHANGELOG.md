@@ -76,6 +76,11 @@
 
 ### Fixed
 
+- Stand token validation now centrally binds either GitHub runner or rendered
+  stand-host credential names before checking expiry. `make stand-preflight`
+  and `make stand-run` load the rendered stand configuration, so a valid
+  `STAND_*` token configuration no longer fails as missing host-session state.
+
 - Provisioner key-authentication now materializes every supplied SSH private
   key with exactly one terminal LF before invoking Ansible, so BitLaunch
   creation keys and later stored keys remain usable when secret storage omits

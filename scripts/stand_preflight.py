@@ -80,9 +80,9 @@ def check_codex_session(profile: str | None) -> tuple[str, bool, str]:
 
 def check_stand_token_credentials() -> tuple[str, bool, str]:
     """Apply the pre-create token validator on the stand, never host profiles."""
-    from shared.stand_credentials import validate_stand_token_credentials
+    from shared.stand_credentials import CredentialShape, validate_stand_token_credentials
 
-    failures = validate_stand_token_credentials(os.environ)
+    failures = validate_stand_token_credentials(os.environ, shape=CredentialShape.STAND_HOST)
     if failures:
         return _fail(
             "stand token authentication",

@@ -1,6 +1,97 @@
 from __future__ import annotations
 
+import base64
+from datetime import UTC, datetime, timedelta
+import json
+
+import pytest
+
 from scripts import stand_preflight
+
+
+def _codex_token(expiry: datetime) -> str:
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": int(expiry.timestamp())}).encode())
+        .decode()
+        .rstrip("=")
+    )
+    return f"header.{payload}.signature"
+
+
+def _stand_environment(now: datetime) -> dict[str, str]:
+    return {
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN": "fake-stand-claude-token",  # noqa: S105
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (now + timedelta(hours=1)).isoformat(),
+        "STAND_CODEX_ACCESS_TOKEN": _codex_token(now + timedelta(hours=1)),
+    }
+
+
+@pytest.mark.parametrize(
+    ("changed", "value", "expected"),
+    [
+        ("STAND_CLAUDE_CODE_OAUTH_TOKEN", "", "Claude token: is missing"),
+        (
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+            "",
+            "Claude token: has an unreadable or unverifiable expiry metadata",
+        ),
+        ("STAND_CODEX_ACCESS_TOKEN", "", "Codex token: is missing"),
+        (
+            "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+            "not-an-expiry",
+            "Claude token: has an unreadable or unverifiable expiry metadata",
+        ),
+        (
+            "STAND_CODEX_ACCESS_TOKEN",
+            "fake-malformed-codex-token",
+            "Codex token: has an unreadable or unverifiable expiry",
+        ),
+    ],
+)
+def test_stand_token_check_binds_real_stand_shaped_credentials_value_free(
+    monkeypatch, changed, value, expected
+):
+    """The stand host uses STAND_* names, unlike the pre-create GitHub runner."""
+    for name in (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        "CODEX_ACCESS_TOKEN",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        "STAND_CODEX_ACCESS_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    environment = _stand_environment(datetime.now(UTC))
+    environment[changed] = value
+    for name, credential in environment.items():
+        monkeypatch.setenv(name, credential)
+
+    _, passed, detail = stand_preflight.check_stand_token_credentials()
+
+    assert not passed
+    assert detail == expected
+    assert "fake-stand-claude-token" not in detail
+    assert "fake-malformed-codex-token" not in detail
+
+
+def test_stand_token_check_accepts_real_stand_shaped_credentials(monkeypatch):
+    for name in (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        "CODEX_ACCESS_TOKEN",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT",
+        "STAND_CODEX_ACCESS_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, credential in _stand_environment(datetime.now(UTC)).items():
+        monkeypatch.setenv(name, credential)
+
+    assert stand_preflight.check_stand_token_credentials() == (
+        "stand token authentication",
+        True,
+        "local token prerequisites are valid",
+    )
 
 
 def test_stand_contour_uses_token_validation_not_host_session_paths(monkeypatch):

@@ -306,14 +306,11 @@ class WorkerManager:
     @staticmethod
     def _stand_token_failures():
         """Read stand secrets only at the protected manager boundary."""
-        from shared.stand_credentials import validate_stand_token_credentials
+        from shared.stand_credentials import CredentialShape, validate_stand_token_credentials
 
         return validate_stand_token_credentials(
-            {
-                "CLAUDE_CODE_OAUTH_TOKEN": settings.STAND_CLAUDE_CODE_OAUTH_TOKEN or "",
-                "CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT": (settings.STAND_CLAUDE_CODE_OAUTH_TOKEN_EXPIRES_AT or ""),
-                "CODEX_ACCESS_TOKEN": settings.STAND_CODEX_ACCESS_TOKEN or "",
-            }
+            settings,
+            shape=CredentialShape.STAND_HOST,
         )
 
     async def _register_broker_worker(self, worker_id: str, token: str, worker_type: str) -> None:
