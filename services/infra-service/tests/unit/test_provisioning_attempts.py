@@ -23,14 +23,15 @@ def _server(attempts: int = 0, status: str = "pending_setup"):
         os_template=None,
         provisioning_attempts=attempts,
         is_managed=True,
+        provider="time4vps",
         provider_id="1001",
-        labels={"provider_id": "1001"},
+        labels={"provider": "time4vps", "provider_id": "1001"},
     )
 
 
 @pytest.mark.asyncio
 async def test_exhausted_reservation_prevents_ansible_and_returns_terminal_result(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server(3)))
     reserve_attempt = AsyncMock(return_value=None)
@@ -52,7 +53,7 @@ async def test_exhausted_reservation_prevents_ansible_and_returns_terminal_resul
 
 @pytest.mark.asyncio
 async def test_first_attempt_uses_existing_access_without_force_rebuild_status(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server()))
     reserve_attempt = AsyncMock(return_value=(1, "episode-1"))
@@ -77,7 +78,7 @@ async def test_first_attempt_uses_existing_access_without_force_rebuild_status(m
 
 @pytest.mark.asyncio
 async def test_force_rebuild_status_selects_reinstall_path(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     server = _server(status="force_rebuild")
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=server))
@@ -104,7 +105,7 @@ async def test_force_rebuild_status_selects_reinstall_path(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reservation_api_error_prevents_ansible_without_fallback(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server()))
     reserve_attempt = AsyncMock(side_effect=RuntimeError("api down"))
@@ -128,7 +129,7 @@ async def test_reservation_api_error_prevents_ansible_without_fallback(monkeypat
 
 @pytest.mark.asyncio
 async def test_missing_provider_credentials_consume_reserved_attempt(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     monkeypatch.delenv("TIME4VPS_LOGIN", raising=False)
     monkeypatch.delenv("TIME4VPS_USERNAME", raising=False)
     monkeypatch.delenv("TIME4VPS_PASSWORD", raising=False)
@@ -173,7 +174,7 @@ async def test_unmanaged_server_is_rejected_before_attempt_reservation(monkeypat
 
 @pytest.mark.asyncio
 async def test_missing_server_ip_is_rejected_and_marked_error_before_reservation(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     missing_ip = _server()
     missing_ip.public_ip = None
@@ -196,7 +197,7 @@ async def test_missing_server_ip_is_rejected_and_marked_error_before_reservation
 
 @pytest.mark.asyncio
 async def test_unlisted_server_is_rejected_before_any_state_write(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "2002")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "2002")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server()))
     reserve_attempt = AsyncMock(return_value=(1, "episode-1"))
@@ -364,7 +365,7 @@ async def test_existing_access_success_stores_key_resets_attempts_and_marks_read
     Fails without the fix on the ordering: the handler used to reset attempts
     first and could return before the key was ever stored.
     """
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     ansible = MagicMock()
     ansible.run_playbook.return_value = (True, "ok")
     node = ProvisionerNode(ssh_manager=_ssh_manager(), ansible_runner=ansible)
@@ -419,7 +420,7 @@ async def test_key_persistence_failure_never_leaves_an_active_server_without_an_
     undone by server_sync into ACTIVE — an active server with no key in the DB and
     nothing in the journal to make it retryable.
     """
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     ansible = MagicMock()
     ansible.run_playbook.return_value = (True, "ok")
     node = ProvisionerNode(ssh_manager=_ssh_manager(), ansible_runner=ansible)

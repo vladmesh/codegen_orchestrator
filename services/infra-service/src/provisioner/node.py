@@ -17,7 +17,11 @@ import structlog
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerDTO, ServerStatus
 from shared.notifications import notify_admins_best_effort
-from shared.provisioning_policy import authorized_time4vps_server_id, provider_ip_matches
+from shared.provisioning_policy import (
+    TIME4VPS_PROVIDER,
+    authorized_provider_id,
+    provider_ip_matches,
+)
 
 if TYPE_CHECKING:
     from shared.clients.time4vps import Time4VPSClient
@@ -47,6 +51,7 @@ class AuthorizedServer(NamedTuple):
     """Server identity proven against the database provisioning policy."""
 
     server: ServerDTO
+    provider: str
     provider_id: int
     ip: str
 
@@ -110,11 +115,16 @@ class ProvisionerNode(FunctionalNode):
         """Get a server and return its complete authorized provider identity."""
         server_info = await get_server_info(server_handle)
 
-        server_id = authorized_time4vps_server_id(server_info)
-        if server_id is None:
+        authorized_id = authorized_provider_id(
+            provider=server_info.provider,
+            provider_id=server_info.provider_id,
+            is_managed=server_info.is_managed,
+        )
+        if authorized_id is None or server_info.provider != TIME4VPS_PROVIDER:
             logger.error(
                 "provisioning_server_not_authorized",
                 server_handle=server_handle,
+                provider=server_info.provider,
                 server_id=server_info.provider_id,
                 is_managed=server_info.is_managed,
             )
@@ -133,7 +143,12 @@ class ProvisionerNode(FunctionalNode):
                 mark_server_error=True,
             )
 
-        return AuthorizedServer(server=server_info, provider_id=server_id, ip=server_ip)
+        return AuthorizedServer(
+            server=server_info,
+            provider=server_info.provider,
+            provider_id=int(authorized_id),
+            ip=server_ip,
+        )
 
     async def _init_time4vps_client(
         self,
@@ -174,10 +189,11 @@ class ProvisionerNode(FunctionalNode):
 
         return time4vps_client
 
-    async def _run_reinstall_path(
+    async def _run_reinstall_path(  # noqa: PLR0913
         self,
         time4vps_client,
         server_handle: str,
+        provider: str,
         server_id: int,
         server_ip: str,
         deploy_user: str,
@@ -193,6 +209,8 @@ class ProvisionerNode(FunctionalNode):
         success, message = await reinstall_and_provision(
             time4vps_client=time4vps_client,
             server_handle=server_handle,
+            provider=provider,
+            is_managed=True,
             server_id=server_id,
             server_ip=server_ip,
             os_template=os_template,
@@ -403,6 +421,7 @@ class ProvisionerNode(FunctionalNode):
             return await self._run_reinstall_path(
                 time4vps_client=time4vps_client,
                 server_handle=server_handle,
+                provider=target.provider,
                 server_id=server_id,
                 server_ip=server_ip,
                 deploy_user=server_info.ssh_user,

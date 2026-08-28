@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 import structlog
 
 from shared.log_config import setup_logging
-from shared.provisioning_policy import managed_time4vps_server_ids
+from shared.provisioning_policy import validate_provider_policies
 
 from . import routers
 from .database import engine
@@ -24,7 +24,7 @@ from .dependencies import close_redis, init_redis, require_authenticated_caller
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
     setup_logging(service_name="api")
-    managed_time4vps_server_ids()
+    validate_provider_policies()
     await init_redis()
     yield
     await close_redis()

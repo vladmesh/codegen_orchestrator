@@ -143,7 +143,7 @@ async def test_patch_server_identity_fields_roundtrip(async_client, test_server)
 async def test_force_rebuild_requires_managed_allowlisted_provider_id(
     async_client, test_server, monkeypatch
 ):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     await async_client.patch(
         f"/api/servers/{test_server}",
         json={"labels": {"provider_id": "1001"}, "is_managed": False},

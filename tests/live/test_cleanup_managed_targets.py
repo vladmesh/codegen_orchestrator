@@ -27,6 +27,7 @@ def _managed_server() -> dict[str, object]:
         "ssh_user": "deploy",
         "public_ip": "203.0.113.7",
         "is_managed": True,
+        "provider": "time4vps",
         "provider_id": "1001",
     }
 
@@ -44,7 +45,7 @@ def _unrelated_server() -> dict[str, object]:
 def test_final_cleanup_skips_unrelated_inventory_before_key_or_ssh(monkeypatch):
     module = _load_clean_live_tests()
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     requested: list[str] = []
     ssh_destinations: list[str] = []
 
@@ -81,7 +82,7 @@ async def test_write_ahead_cleanup_skips_unrelated_inventory_before_key_or_ssh(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     requested: list[str] = []
     ssh_destinations: list[str] = []
 
@@ -122,7 +123,7 @@ async def test_write_ahead_cleanup_skips_unrelated_inventory_before_key_or_ssh(
 @pytest.mark.asyncio
 async def test_managed_target_without_key_fails_closed(monkeypatch, tmp_path):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     ssh_called = False
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -160,7 +161,7 @@ async def test_managed_target_without_key_fails_closed(monkeypatch, tmp_path):
 def test_final_cleanup_fails_when_inventory_has_no_managed_target(monkeypatch):
     module = _load_clean_live_tests()
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[_unrelated_server()]))
     original_client = httpx.Client
@@ -177,7 +178,7 @@ def test_final_cleanup_fails_when_inventory_has_no_managed_target(monkeypatch):
 def test_final_cleanup_fails_closed_when_managed_target_has_no_key(monkeypatch):
     module = _load_clean_live_tests()
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     requested: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -209,7 +210,7 @@ def test_final_cleanup_fails_closed_when_managed_target_has_no_key(monkeypatch):
 
 def test_explicit_untrusted_handle_is_not_a_cleanup_target(monkeypatch, tmp_path):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json=_unrelated_server()))
     original_client = httpx.AsyncClient

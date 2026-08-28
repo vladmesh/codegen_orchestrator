@@ -32,6 +32,7 @@ def _server(**overrides) -> ServerDTO:
         "public_ip": "203.0.113.10",
         "ssh_user": "root",
         "status": "active",
+        "provider": "time4vps",
         "provider_id": "1001",
         "is_managed": True,
         "labels": {PROVISIONING_PHASE_LABEL: PROVISIONING_PHASE_COMPLETE},
@@ -43,7 +44,7 @@ def _server(**overrides) -> ServerDTO:
 
 @pytest.fixture(autouse=True)
 def _managed(monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
 
 @pytest.fixture

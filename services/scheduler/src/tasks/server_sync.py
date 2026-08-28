@@ -13,9 +13,10 @@ from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerStatus, ServerUpdate
 from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
-    managed_time4vps_server_ids,
-    parse_time4vps_server_id,
-    server_is_provisioning_allowed,
+    TIME4VPS_PROVIDER,
+    managed_provider_ids,
+    normalize_provider_id,
+    provider_operation_is_authorized,
 )
 from src.clients.api import api_client
 
@@ -166,7 +167,12 @@ async def _reconcile_existing_server(
 ) -> tuple[bool, ManagementChange | None]:
     """Persist identity/policy drift without scheduling an existing server."""
     update = ServerUpdate()
-    if parse_time4vps_server_id(existing.provider_id) != server_id:
+    # This is the explicit legacy upgrade path. It only attaches Time4VPS
+    # identity after this producer has matched the existing stable provider ID;
+    # it never infers a provider from an IP address.
+    if existing.provider != TIME4VPS_PROVIDER:
+        update.provider = TIME4VPS_PROVIDER
+    if normalize_provider_id(TIME4VPS_PROVIDER, existing.provider_id) != str(server_id):
         update.provider_id = str(server_id)
     if existing.public_ip != ip:
         update.public_ip = ip
@@ -253,13 +259,13 @@ async def _report_management_changes(
     if len(demoted) > 1:
         await notify_admins_best_effort(
             f"Critical provisioning policy change: {len(demoted)} servers were demoted in one "
-            "sync cycle. Check TIME4VPS_MANAGED_SERVER_IDS before continuing operations.",
+            "sync cycle. Check the Time4VPS provider policy before continuing operations.",
             level="critical",
             component="server_sync",
         )
 
 
-async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
+async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:  # noqa: PLR0915
     """Sync basic server list - discover new, mark missing.
 
     Raises whatever the provider call raised: a cycle that could not read the
@@ -279,22 +285,20 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
 
     await _resolve_provider_outage()
 
-    # An absent or empty allowlist intentionally means that no provider server is managed.
-    managed_server_ids = managed_time4vps_server_ids()
+    # An absent or empty provider policy intentionally means no provider server is managed.
+    managed_server_ids = managed_provider_ids(TIME4VPS_PROVIDER)
 
-    # Provider ID is the stable identity. IP is only a fallback for legacy rows.
+    # Provider ID is the stable identity. A legacy row can be upgraded only by
+    # this Time4VPS producer and only after an exact stable-ID match.
     db_servers_list = await api_client.get_servers()
     db_servers_by_handle = {server.handle: server for server in db_servers_list}
     db_servers_by_provider_id = {}
     for server in db_servers_list:
-        provider_id = parse_time4vps_server_id(server.provider_id)
+        if server.provider not in (None, TIME4VPS_PROVIDER):
+            continue
+        provider_id = normalize_provider_id(TIME4VPS_PROVIDER, server.provider_id)
         if provider_id is not None:
-            db_servers_by_provider_id[provider_id] = server
-    legacy_servers_by_ip = {
-        server.public_ip: server
-        for server in db_servers_list
-        if parse_time4vps_server_id(server.provider_id) is None
-    }
+            db_servers_by_provider_id[int(provider_id)] = server
 
     new_managed_servers = []
     management_changes: list[ManagementChange] = []
@@ -313,9 +317,9 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
             continue
 
         hostname = srv.domain or ip
-        should_manage = server_id in managed_server_ids
+        should_manage = str(server_id) in managed_server_ids
 
-        existing = db_servers_by_provider_id.get(server_id) or legacy_servers_by_ip.get(ip)
+        existing = db_servers_by_provider_id.get(server_id)
 
         if existing:
             was_updated, management_change = await _reconcile_existing_server(
@@ -356,7 +360,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
                 public_ip=ip,
                 is_managed=is_managed,
                 status=status,
-                labels={"provider_id": str(server_id)},
+                labels={"provider": TIME4VPS_PROVIDER, "provider_id": str(server_id)},
             )
             new_server = await api_client.create_server(server_create)
 
@@ -372,15 +376,19 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
             if is_managed:
                 new_managed_servers.append(new_server)
 
-    api_server_ids = {server.id for server in api_servers}
-    api_ips = {server.ip for server in api_servers if server.ip}
+    api_server_ids = {str(server.id) for server in api_servers}
     for server in db_servers_list:
-        provider_id = parse_time4vps_server_id(server.provider_id)
-        is_missing = (
-            provider_id not in api_server_ids
-            if provider_id is not None
-            else server.public_ip not in api_ips
-        )
+        if server.provider != TIME4VPS_PROVIDER:
+            continue
+        provider_id = normalize_provider_id(TIME4VPS_PROVIDER, server.provider_id)
+        if provider_id is None:
+            logger.warning(
+                "time4vps_server_identity_invalid",
+                server_handle=server.handle,
+                provider_id=server.provider_id,
+            )
+            continue
+        is_missing = provider_id not in api_server_ids
         if is_missing and server.status != ServerStatus.UNREACHABLE:
             await api_client.update_server(
                 server.handle, ServerUpdate(status=ServerStatus.UNREACHABLE)
@@ -467,12 +475,14 @@ async def _sync_server_details(client: Time4VPSClient) -> int:
     updated_count = 0
 
     for server in servers:
-        provider_id = parse_time4vps_server_id(server.provider_id)
+        if server.provider != TIME4VPS_PROVIDER:
+            continue
+        provider_id = normalize_provider_id(TIME4VPS_PROVIDER, server.provider_id)
         if provider_id is None:
             continue
 
         try:
-            details_model = await client.get_server_details(provider_id)
+            details_model = await client.get_server_details(int(provider_id))
             details = details_model.model_dump()
 
             # Prepare update
@@ -561,7 +571,11 @@ async def _check_provisioning_triggers() -> int:
     for server in all_servers:
         if server.status not in _SCHEDULED_STATUSES:
             continue
-        if server_is_provisioning_allowed(server):
+        if provider_operation_is_authorized(
+            provider=server.provider,
+            provider_id=server.provider_id,
+            is_managed=server.is_managed,
+        ):
             actionable.append(server)
         else:
             await _neutralize_unauthorized_trigger(server)

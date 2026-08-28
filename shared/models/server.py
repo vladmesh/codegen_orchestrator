@@ -73,3 +73,8 @@ class Server(Base):
     def provider_id(self) -> str | None:
         """Provider ID from labels."""
         return self.labels.get("provider_id")
+
+    @property
+    def provider(self) -> str | None:
+        """Provider identity from labels."""
+        return self.labels.get("provider")

@@ -49,7 +49,7 @@ def test_pipeline_cleanup_command_has_no_hardcoded_root():
 async def test_pipeline_cleanup_ssh_target_uses_server_ssh_user(monkeypatch, tmp_path):
     """Execute the cleanup module: it must SSH as the DTO's ssh_user."""
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
     captured: dict[str, list[str]] = {}
 
@@ -71,6 +71,7 @@ async def test_pipeline_cleanup_ssh_target_uses_server_ssh_user(monkeypatch, tmp
                     "ssh_user": "dev",
                     "public_ip": "203.0.113.7",
                     "is_managed": True,
+                    "provider": "time4vps",
                     "provider_id": "1001",
                 },
             )
@@ -113,7 +114,7 @@ async def test_written_ahead_deploy_is_cleaned_on_every_listed_server(monkeypatc
     required a resolved ``server_handle`` — is what left run 7's stack live.
     """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001,1002")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001,1002")
     destinations: list[str] = []
 
     def fake_run(argv, **kwargs):
@@ -132,6 +133,7 @@ async def test_written_ahead_deploy_is_cleaned_on_every_listed_server(monkeypatc
                         "ssh_user": "dev",
                         "public_ip": "203.0.113.7",
                         "is_managed": True,
+                        "provider": "time4vps",
                         "provider_id": "1001",
                     },
                     {
@@ -139,6 +141,7 @@ async def test_written_ahead_deploy_is_cleaned_on_every_listed_server(monkeypatc
                         "ssh_user": "runner",
                         "public_ip": "203.0.113.8",
                         "is_managed": True,
+                        "provider": "time4vps",
                         "provider_id": "1002",
                     },
                 ],

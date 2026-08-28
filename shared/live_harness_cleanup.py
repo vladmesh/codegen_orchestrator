@@ -17,7 +17,7 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.env_contract import merge_env_contract_fragments
-from shared.provisioning_policy import parse_time4vps_server_id, server_is_provisioning_allowed
+from shared.provisioning_policy import provider_operation_is_authorized
 
 GITHUB_ORG = "project-factory-organization"
 ENV_CONTRACT_FILENAME = "env.contract.yaml"
@@ -42,6 +42,11 @@ class _CleanupServerPolicyAdapter:
         value = self._server.get("provider_id")
         return value if isinstance(value, str) else None
 
+    @property
+    def provider(self) -> str | None:
+        value = self._server.get("provider")
+        return value if isinstance(value, str) else None
+
 
 def cleanup_target_skip_reason(server: object) -> str | None:
     """Return why an API row is not a managed cleanup target, if any.
@@ -56,10 +61,12 @@ def cleanup_target_skip_reason(server: object) -> str | None:
     adapter = _CleanupServerPolicyAdapter(server)
     if not adapter.is_managed:
         return "is_not_managed"
-    if parse_time4vps_server_id(adapter.provider_id) is None:
-        return "invalid_provider_id"
-    if not server_is_provisioning_allowed(adapter):
-        return "provider_id_not_allowlisted"
+    if not provider_operation_is_authorized(
+        provider=adapter.provider,
+        provider_id=adapter.provider_id,
+        is_managed=adapter.is_managed,
+    ):
+        return "provider_not_authorized"
     return None
 
 

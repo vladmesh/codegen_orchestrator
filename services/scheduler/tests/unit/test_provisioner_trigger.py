@@ -31,8 +31,9 @@ def _server_row(handle: str = "vps-pending", *, is_managed: bool = True) -> dict
         "ssh_user": "root",
         "status": ServerStatus.PENDING_SETUP.value,
         "is_managed": is_managed,
+        "provider": "time4vps",
         "provider_id": "1001",
-        "labels": {"provider_id": "1001"},
+        "labels": {"provider": "time4vps", "provider_id": "1001"},
         "provisioning_attempts": 0,
         "created_at": "2026-07-28T00:00:00Z",
         "updated_at": "2026-07-28T00:00:00Z",
@@ -81,7 +82,7 @@ async def test_pending_server_gets_a_trigger(internal_api):
 
 
 async def test_startup_replay_rechecks_row_and_never_opens_redis(api_client_reset, monkeypatch):
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
     def list_handler(request: httpx.Request) -> httpx.Response:
         assert _authorized(request)
@@ -137,8 +138,9 @@ def _server(*, is_managed: bool = True, provider_id: str = "1001") -> ServerDTO:
         ssh_user="root",
         status=ServerStatus.PENDING_SETUP,
         is_managed=is_managed,
+        provider="time4vps",
         provider_id=provider_id,
-        labels={"provider_id": provider_id},
+        labels={"provider": "time4vps", "provider_id": provider_id},
         created_at=datetime.now(UTC),
     )
 
@@ -146,7 +148,7 @@ def _server(*, is_managed: bool = True, provider_id: str = "1001") -> ServerDTO:
 async def test_publish_rejects_unmanaged_before_opening_redis(monkeypatch):
     from src.tasks import provisioner_trigger
 
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     with (
         patch.object(
             provisioner_trigger.api_client,
@@ -164,7 +166,7 @@ async def test_publish_rejects_unmanaged_before_opening_redis(monkeypatch):
 async def test_publish_rejects_stale_managed_row_outside_allowlist(monkeypatch):
     from src.tasks import provisioner_trigger
 
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "2002")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "2002")
     with (
         patch.object(
             provisioner_trigger.api_client,
@@ -185,7 +187,7 @@ async def test_publish_failure_propagates(monkeypatch):
 
     broken_redis = AsyncMock()
     broken_redis.publish.side_effect = ConnectionError("redis is down")
-    monkeypatch.setenv("TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
 
     with (
         patch.object(

@@ -1032,6 +1032,7 @@ class ServerUpdate(BaseModel):
     status: ServerStatus | None = None
     labels: dict | None = None
     is_managed: bool | None = None
+    provider: str | None = None
     provider_id: str | None = None
     capacity_cpu: int | None = None
     capacity_ram_mb: int | None = None
@@ -1050,6 +1051,7 @@ class ServerDTO(BaseModel):
     host: str
     public_ip: str
     status: str
+    provider: str | None = None
     provider_id: str | None = None
     is_managed: bool
     labels: dict = {}

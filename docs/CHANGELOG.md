@@ -4,6 +4,11 @@
 
 ### Added
 
+- Destructive server operations now use the provider-owned provisioning policy.
+  Time4VPS rows carry `labels.provider="time4vps"` and their stable provider ID;
+  scheduler sync upgrades only legacy rows that it matches by that stable ID.
+  Rows without an explicit provider identity fail closed and are never adopted by IP.
+
 - The production admin Dashboard now reads one strict internal/admin overview
   contract. It reports every declared queue binding with explicit degradation,
   all task-status counts, paid queued/running work, persisted executor-decision

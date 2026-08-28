@@ -10,7 +10,7 @@ import redis.asyncio as redis
 import structlog
 
 from shared.contracts.dto.server import ServerStatus
-from shared.provisioning_policy import server_is_provisioning_allowed
+from shared.provisioning_policy import provider_operation_is_authorized
 from src.clients.api import api_client
 from src.config import get_settings
 
@@ -37,10 +37,15 @@ async def publish_provisioner_trigger(
         is_incident_recovery: True if this is incident recovery
     """
     server = await api_client.get_server(server_handle)
-    if not server_is_provisioning_allowed(server):
+    if not provider_operation_is_authorized(
+        provider=server.provider,
+        provider_id=server.provider_id,
+        is_managed=server.is_managed,
+    ):
         logger.warning(
             "provisioner_trigger_not_authorized",
             server_handle=server_handle,
+            provider=server.provider,
             provider_id=server.provider_id,
             is_managed=server.is_managed,
         )

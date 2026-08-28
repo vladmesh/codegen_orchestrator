@@ -19,7 +19,7 @@ from shared.contracts.dto.server import (
 )
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
-from shared.provisioning_policy import server_is_provisioning_allowed
+from shared.provisioning_policy import provider_operation_is_authorized
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
@@ -348,10 +348,16 @@ async def update_server(
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
 
-    # provider_id is a computed property backed by labels, not a database column.
-    if "provider_id" in updates:
-        provider_id = updates.pop("provider_id")
+    # Provider identity and ID are computed properties backed by labels, not database columns.
+    if "provider" in updates or "provider_id" in updates:
+        current_provider = server.provider if isinstance(server.provider, str) else None
+        provider = updates.pop("provider", current_provider)
+        provider_id = updates.pop("provider_id", server.provider_id)
         labels = dict(updates.get("labels", server.labels))
+        if provider is None:
+            labels.pop("provider", None)
+        else:
+            labels["provider"] = str(provider)
         if provider_id is None:
             labels.pop("provider_id", None)
         else:
@@ -415,7 +421,11 @@ async def force_rebuild_server(
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    if not server_is_provisioning_allowed(server):
+    if not provider_operation_is_authorized(
+        provider=server.provider,
+        provider_id=server.provider_id,
+        is_managed=server.is_managed,
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Server is not authorized for provisioning",

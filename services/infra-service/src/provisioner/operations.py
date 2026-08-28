@@ -10,8 +10,7 @@ from shared.contracts.dto.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     provider_ip_matches,
-    server_is_provisioning_allowed,
-    time4vps_server_is_allowed,
+    provider_operation_is_authorized,
 )
 
 from ..config.constants import Provisioning, Timeouts
@@ -42,7 +41,11 @@ async def provision_monitoring_baseline(
 ) -> tuple[bool, str]:
     """Apply and verify the monitoring role on an already managed server."""
     server = await get_server_info(server_handle)
-    if not server_is_provisioning_allowed(server):
+    if not provider_operation_is_authorized(
+        provider=server.provider,
+        provider_id=server.provider_id,
+        is_managed=server.is_managed,
+    ):
         return False, "Server is not authorized for provisioning"
 
     server_ip = server.public_ip or server.host
@@ -96,7 +99,11 @@ async def retrofit_qa_identity(
     write is idempotent.
     """
     server = await get_server_info(server_handle)
-    if not server_is_provisioning_allowed(server):
+    if not provider_operation_is_authorized(
+        provider=server.provider,
+        provider_id=server.provider_id,
+        is_managed=server.is_managed,
+    ):
         return False, "Server is not authorized for provisioning"
 
     server_ip = server.public_ip or server.host
@@ -186,6 +193,8 @@ async def reset_server_password(
 async def reinstall_and_provision(  # noqa: PLR0913
     time4vps_client: Time4VPSClient,
     server_handle: str,
+    provider: str | None,
+    is_managed: bool,
     server_id: int,
     server_ip: str,
     os_template: str,
@@ -216,11 +225,10 @@ async def reinstall_and_provision(  # noqa: PLR0913
     Returns:
         Tuple of (success: bool, message: str)
     """
-    if not time4vps_server_is_allowed(server_id):
-        message = (
-            f"Server {server_id} is not present in TIME4VPS_MANAGED_SERVER_IDS; "
-            "refusing OS reinstall"
-        )
+    if not provider_operation_is_authorized(
+        provider=provider, provider_id=server_id, is_managed=is_managed
+    ):
+        message = f"Server {server_id} is not authorized for OS reinstall"
         logger.error(
             "os_reinstall_not_allowed",
             server_handle=server_handle,
