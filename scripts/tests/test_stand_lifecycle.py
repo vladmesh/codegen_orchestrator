@@ -63,7 +63,7 @@ def test_preflight_refusals_happen_before_any_create(user, keys, reason):
     assert not [request for request in requests if request[0] == "POST" and request[1] == "servers"]
 
 
-def test_create_returns_two_distinct_run_labelled_machines_with_account_cost_and_lifetime():
+def test_create_returns_two_distinct_run_labelled_machines_with_server_rate_and_lifetime():
     created_at = "2026-08-28T01:48:12Z"
     calls: list[tuple[str, str, object]] = []
     create_count = 0
@@ -87,6 +87,7 @@ def test_create_returns_two_distinct_run_labelled_machines_with_account_cost_and
                     "id": f"server-{index}",
                     "ipv4": f"203.0.113.{index}",
                     "created": created_at,
+                    "rate": 42,
                 }
             }
         raise AssertionError(f"unexpected request {method} {path}")
@@ -103,7 +104,8 @@ def test_create_returns_two_distinct_run_labelled_machines_with_account_cost_and
     assert [body["server"]["labels"]["role"] for body in bodies] == ["orchestrator", "target"]
     assert all(body["server"]["labels"]["run"] == "gha-17" for body in bodies)
     assert manifest.lifetime_seconds == 21_600
-    assert [machine.hourly_cost_cents for machine in manifest.machines] == [42, 42]
+    assert [machine.rate_milliusd_per_hour for machine in manifest.machines] == [42, 42]
+    assert all(machine.rate_unit == "USD*1000 per hour" for machine in manifest.machines)
     assert all(
         machine.created_at == created_at and machine.observed_at for machine in manifest.machines
     )
@@ -111,6 +113,34 @@ def test_create_returns_two_distinct_run_labelled_machines_with_account_cost_and
     assert "key-1" not in manifest_json
     assert "labels" not in manifest_json
     assert [path for _method, path, _body in calls if path == "user"] == ["user"]
+
+
+def test_create_retains_missing_or_malformed_server_rate_as_public_incomplete_evidence():
+    def request(method, path, body=None):
+        if path == "user":
+            return _user()
+        if path == "ssh-keys":
+            return _keys()
+        if method == "GET" and path == "servers":
+            return []
+        if method == "POST" and path == "servers":
+            return {"id": "one" if body["server"]["labels"]["role"] == "orchestrator" else "two"}
+        if method == "GET" and path.startswith("servers/"):
+            return {
+                "server": {
+                    "id": path.rsplit("/", maxsplit=1)[1],
+                    "ipv4": "203.0.113.1",
+                    "created": "2026-08-28T00:00:00Z",
+                    "rate": "42",
+                }
+            }
+        if method == "DELETE":
+            return None
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    manifest = BitLaunchLifecycle(request).create_run(run_tag="gha-17")
+
+    assert [machine.rate_milliusd_per_hour for machine in manifest.machines] == [None, None]
 
 
 def test_create_failure_recovers_every_machine_by_exact_run_tag():
@@ -229,6 +259,125 @@ def test_cleanup_selects_only_exactly_tagged_resources():
 
     assert BitLaunchLifecycle(request).cleanup_run(run_tag="gha-17") == ["one", "two"]
     assert deleted == ["servers/one", "servers/two"]
+
+
+def test_cleanup_observation_records_exact_selection_and_zero_post_cleanup_usage():
+    inventory_reads = 0
+
+    def request(method, path, body=None):
+        nonlocal inventory_reads
+        if path == "servers":
+            inventory_reads += 1
+            if inventory_reads == 1:
+                return [
+                    {"id": "one", "name": "codegen-stand-gha-17-orchestrator"},
+                    {"id": "two", "name": "codegen-stand-gha-17-target"},
+                    {"id": "other", "name": "codegen-stand-gha-170-target"},
+                ]
+            return [{"id": "other", "name": "codegen-stand-gha-170-target"}]
+        if method == "DELETE":
+            return None
+        if path == "user":
+            return _user(used=0, limit=5)
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    observation = BitLaunchLifecycle(request).cleanup_observation(run_tag="gha-17")
+
+    assert observation["status"] == "verified"
+    assert observation["selected_ids"] == ["one", "two"]
+    assert observation["deleted_ids"] == ["one", "two"]
+    assert observation["remaining_ids"] == []
+    assert observation["servers_used"] == 0
+
+
+def test_cleanup_observation_fails_closed_when_post_cleanup_account_is_not_empty():
+    inventory_reads = 0
+
+    def request(method, path, body=None):
+        nonlocal inventory_reads
+        if path == "servers":
+            inventory_reads += 1
+            return (
+                [{"id": "one", "name": "codegen-stand-gha-17-orchestrator"}]
+                if inventory_reads == 1
+                else []
+            )
+        if method == "DELETE":
+            return None
+        if path == "user":
+            return _user(used=1, limit=5)
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    observation = BitLaunchLifecycle(request).cleanup_observation(run_tag="gha-17")
+
+    assert observation["status"] == "incomplete"
+    assert observation["servers_used"] == 1
+    assert "post_cleanup_servers_used_not_zero" in observation["errors"]
+
+
+def test_usage_parser_accepts_only_documented_run_owned_server_usage_shape():
+    selected = [
+        Machine("one", "orchestrator", None, "2026-08-28T00:00:00Z", "gha-17"),
+        Machine("two", "target", None, "2026-08-28T00:00:00Z", "gha-17"),
+    ]
+    payload = {
+        "serverUsage": [
+            {
+                "description": "codegen-stand-gha-17-orchestrator",
+                "start": "2026-08-28T00:00:00Z",
+                "end": "2026-08-28T01:00:00Z",
+                "cost": 42,
+                "hours": 1,
+                "amount": 0,
+                "type": "server",
+            },
+            {
+                "description": "unrelated server",
+                "start": "2026-08-28T00:00:00Z",
+                "end": "2026-08-28T01:00:00Z",
+                "cost": 99,
+                "hours": 1,
+                "amount": 0,
+                "type": "server",
+            },
+        ]
+    }
+
+    observation = BitLaunchLifecycle._run_usage_observation(payload, selected, "gha-17")
+
+    assert observation == {
+        "status": "observed",
+        "observations": [
+            {
+                "machine_id": "one",
+                "description": "codegen-stand-gha-17-orchestrator",
+                "cost_milliusd": 42,
+                "hours": 1,
+                "start": "2026-08-28T00:00:00Z",
+                "end": "2026-08-28T01:00:00Z",
+            }
+        ],
+    }
+
+
+def test_usage_parser_marks_run_shaped_rows_without_valid_cost_as_uncorrelated():
+    selected = [Machine("one", "orchestrator", None, "2026-08-28T00:00:00Z", "gha-17")]
+
+    observation = BitLaunchLifecycle._run_usage_observation(
+        {
+            "serverUsage": [
+                {
+                    "description": "codegen-stand-gha-17-orchestrator",
+                    "cost": "42",
+                    "hours": 1,
+                }
+            ]
+        },
+        selected,
+        "gha-17",
+    )
+
+    assert observation == {"status": "uncorrelated", "observations": []}
 
 
 def test_ttl_selection_refuses_untagged_and_keeps_young_resources():

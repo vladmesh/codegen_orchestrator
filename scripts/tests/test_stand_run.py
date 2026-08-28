@@ -2,6 +2,7 @@
 
 import pytest
 
+from scripts import stand_run
 from scripts.stand_run import (
     AGENTS,
     QA_EXECUTOR_ENV,
@@ -10,6 +11,7 @@ from scripts.stand_run import (
     compose_environment,
     matrix_row,
     read_env_file,
+    write_junit_report,
     write_qa_executor,
 )
 
@@ -77,3 +79,49 @@ def test_an_unknown_suite_is_taken_as_a_pytest_target():
 @pytest.mark.parametrize("status", ["passed", "failed", "qa_executor_switch_failed"])
 def test_every_outcome_is_one_report_row(status):
     assert matrix_row("codex", "claude", status, 42) == f"codex\tclaude\t{status}\t42\n"
+
+
+def test_junit_report_records_a_passing_suite(tmp_path):
+    report = tmp_path / "junit.xml"
+
+    write_junit_report(report, [("codex", "claude", "passed", 42)])
+
+    contents = report.read_text(encoding="utf-8")
+    assert 'tests="1"' in contents
+    assert 'failures="0"' in contents
+    assert 'name="qa=codex worker=claude"' in contents
+
+
+def test_junit_report_records_a_failed_suite(tmp_path):
+    report = tmp_path / "junit.xml"
+
+    write_junit_report(report, [("claude", "codex", "failed", 7)])
+
+    contents = report.read_text(encoding="utf-8")
+    assert 'failures="1"' in contents
+    assert '<failure message="failed"' in contents
+
+
+@pytest.mark.parametrize(("passed", "expected_exit", "failures"), [(True, 0, "0"), (False, 1, "1")])
+def test_runner_writes_report_and_junit_for_success_and_failure(
+    tmp_path, monkeypatch, passed, expected_exit, failures
+):
+    monkeypatch.setattr(stand_run, "RUN_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(stand_run, "read_env_file", lambda _path: {})
+    monkeypatch.setattr(stand_run, "preflight", lambda _env, _log: True)
+    monkeypatch.setattr(stand_run, "sweep", lambda _env, _log: True)
+    monkeypatch.setattr(stand_run, "run_pytest", lambda *_args: passed)
+    monkeypatch.setattr(
+        stand_run.sys,
+        "argv",
+        ["stand_run.py", "--suite", "mega", "--skip-sweep"],
+    )
+
+    assert stand_run.main() == expected_exit
+
+    run_dir = next(
+        path for path in (tmp_path / "runs").iterdir() if path.is_dir() and not path.is_symlink()
+    )
+    expected_status = "passed" if passed else "failed"
+    assert f"\t{expected_status}\t" in (run_dir / "report.tsv").read_text(encoding="utf-8")
+    assert f'failures="{failures}"' in (run_dir / "junit.xml").read_text(encoding="utf-8")

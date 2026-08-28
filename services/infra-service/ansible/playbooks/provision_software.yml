@@ -46,6 +46,28 @@
         state: present
       tags: [packages]
 
+    - name: Download pinned uv for stand runner
+      ansible.builtin.get_url:
+        url: "https://github.com/astral-sh/uv/releases/download/{{ uv_version }}/uv-x86_64-unknown-linux-gnu.tar.gz"
+        dest: "/tmp/uv-{{ uv_version }}.tar.gz"
+        mode: '0644'
+      tags: [packages]
+
+    - name: Extract pinned uv for stand runner
+      ansible.builtin.unarchive:
+        src: "/tmp/uv-{{ uv_version }}.tar.gz"
+        dest: /tmp
+        remote_src: true
+      tags: [packages]
+
+    - name: Install pinned uv for stand runner
+      ansible.builtin.copy:
+        src: "/tmp/uv-x86_64-unknown-linux-gnu/uv"
+        dest: /usr/local/bin/uv
+        remote_src: true
+        mode: '0755'
+      tags: [packages]
+
     # ========================================
     # 3. Docker Installation
     # ========================================

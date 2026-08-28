@@ -170,6 +170,8 @@ jobs:
           rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-target.env \
             -e "ssh -i ${key_path} -o StrictHostKeyChecking=accept-new" \
             ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+            'uv --version >/dev/null'
 
       - name: Render protected dynamic configuration
         env:
@@ -312,23 +314,105 @@ jobs:
             python3 -m scripts.wait_stand_provisioning --handle "${target_handle}"
           '
 
-      # Collected whatever the result was: a failed run is the one whose logs are
-      # worth keeping, and the stand's disk is swept on a schedule.
+      # The runner is the single owner of named-suite and custom-target
+      # semantics.  Its non-zero result is held until the safe handoff has been
+      # collected, then restored below so a suite failure remains the e2e result.
+      - name: Run selected stand suite
+        id: suite-run
+        if: success()
+        continue-on-error: true
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          SUITE: ${{ steps.suite.outputs.value }}
+          WORKER: ${{ inputs.worker }}
+          QA: ${{ inputs.qa }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python scripts/stand_run.py --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
+          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" "${remote_command}" \
+            >"${RUNNER_TEMP}/remote-invocation.log" 2>&1
+
+      # Copy only the runner's public reports.  This short-lived handoff is how
+      # the fresh cleanup runner can build the one final acceptance artifact.
       - name: Record machine manifest
         if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: stand-machines-${{ github.run_id }}
-          path: machines.json
-          if-no-files-found: warn
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/stand-e2e-handoff"
+          run_dir="${evidence_dir}/run"
+          mkdir -p "${run_dir}"
+          test -f machines.json && cp machines.json "${evidence_dir}/machines.json" || true
+          test -f "${RUNNER_TEMP}/remote-invocation.log" && \
+            cp "${RUNNER_TEMP}/remote-invocation.log" "${run_dir}/remote-invocation.log" || true
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          if [ -n "${PROD_HOST}" ]; then
+            for name in junit.xml report.tsv run.log claude-claude.log claude-codex.log codex-claude.log codex-codex.log; do
+              scp -i "${key_path}" -o StrictHostKeyChecking=accept-new \
+                root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
+            done
+          fi
 
-      - name: Upload the lifecycle manifest
+      # This is the admission boundary for the inter-job handoff. It derives
+      # needles only from the helper's protected-value allow-list; public stand
+      # routing and application configuration never becomes a redaction needle.
+      - name: Admit cleanup handoff
+        id: handoff-admission
         if: always()
+        env:
+          BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+          INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          SECRETS_ENCRYPTION_KEY: ${{ secrets.SECRETS_ENCRYPTION_KEY }}
+          LK_JWT_SECRET: ${{ secrets.LK_JWT_SECRET }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          REGISTRY_PASSWORD_HASH: ${{ secrets.REGISTRY_PASSWORD_HASH }}
+          LOKI_PUSH_PASSWORD: ${{ secrets.LOKI_PUSH_PASSWORD }}
+          LOKI_PUSH_PASSWORD_HASH: ${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          GRAFANA_DB_PASSWORD: ${{ secrets.GRAFANA_DB_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
+          STAND_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          STAND_CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          PO_LLM_API_KEY: ${{ secrets.PO_LLM_API_KEY }}
+          ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          never_upload="${RUNNER_TEMP}/stand-e2e-never-upload"
+          mkdir -p "${never_upload}"
+          canary="$(uuidgen)"
+          printf '%s\n' "${canary}" > "${never_upload}/run.log"
+          export STAND_ACCEPTANCE_CANARY="${canary}"
+          if python3 -m scripts.stand_acceptance scan \
+            --artifact "${never_upload}" --canary-env STAND_ACCEPTANCE_CANARY; then
+            echo 'redaction canary was not detected' >&2
+            exit 2
+          fi
+          python3 -m scripts.stand_acceptance admit \
+            --artifact "${RUNNER_TEMP}/stand-e2e-handoff" \
+            --status "${RUNNER_TEMP}/stand-e2e-handoff-admission.json" \
+            --summary "${GITHUB_STEP_SUMMARY}" \
+            --protected-env
+
+      - name: Upload cleanup handoff
+        if: ${{ always() && steps.handoff-admission.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
-          name: stand-e2e-${{ inputs.suite }}-${{ github.run_id }}
-          path: machines.json
-          if-no-files-found: warn
+          name: stand-e2e-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stand-e2e-handoff
+          if-no-files-found: error
+
+      - name: Preserve suite result
+        if: always()
+        env:
+          SUITE_OUTCOME: ${{ steps.suite-run.outcome }}
+        run: |
+          test "${SUITE_OUTCOME}" != "failure"
 
   cleanup:
     needs: e2e
@@ -342,10 +426,99 @@ jobs:
       - name: Check out lifecycle code
         uses: actions/checkout@v5
 
-      - name: Cleanup run-tagged machines
+      - name: Download cleanup handoff
+        id: handoff
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: stand-e2e-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stand-e2e-handoff
+
+      - name: Cleanup and observe run-tagged machines
+        id: cleanup-observation
+        if: always()
+        continue-on-error: true
         run: |
           set -euo pipefail
-          python3 -m scripts.stand_lifecycle cleanup --run-tag "${STAND_RUN_TAG}"
+          handoff_dir="${RUNNER_TEMP}/stand-e2e-handoff"
+          mkdir -p "${handoff_dir}"
+          python3 -m scripts.stand_lifecycle cleanup-report \
+            --run-tag "${STAND_RUN_TAG}" --output "${handoff_dir}/cleanup.json"
+
+      - name: Build final acceptance evidence
+        id: build-evidence
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 -m scripts.stand_acceptance build \
+            --manifest "${RUNNER_TEMP}/stand-e2e-handoff/machines.json" \
+            --run-dir "${RUNNER_TEMP}/stand-e2e-handoff/run" \
+            --cleanup "${RUNNER_TEMP}/stand-e2e-handoff/cleanup.json" \
+            --output "${RUNNER_TEMP}/stand-acceptance"
+
+      - name: Admit final artifact
+        id: final-admission
+        if: always()
+        env:
+          BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+          INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          SECRETS_ENCRYPTION_KEY: ${{ secrets.SECRETS_ENCRYPTION_KEY }}
+          LK_JWT_SECRET: ${{ secrets.LK_JWT_SECRET }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          REGISTRY_PASSWORD_HASH: ${{ secrets.REGISTRY_PASSWORD_HASH }}
+          LOKI_PUSH_PASSWORD: ${{ secrets.LOKI_PUSH_PASSWORD }}
+          LOKI_PUSH_PASSWORD_HASH: ${{ secrets.LOKI_PUSH_PASSWORD_HASH }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          GRAFANA_DB_PASSWORD: ${{ secrets.GRAFANA_DB_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          WORKER_BROKER_INTERNAL_TOKEN: ${{ secrets.WORKER_BROKER_INTERNAL_TOKEN }}
+          STAND_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          STAND_CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          PO_LLM_API_KEY: ${{ secrets.PO_LLM_API_KEY }}
+          ARCHITECT_LLM_API_KEY: ${{ secrets.ARCHITECT_LLM_API_KEY }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          never_upload="${RUNNER_TEMP}/stand-acceptance-never-upload"
+          mkdir -p "${never_upload}"
+          canary="$(uuidgen)"
+          printf '%s\n' "${canary}" > "${never_upload}/run.log"
+          export STAND_ACCEPTANCE_CANARY="${canary}"
+          if python3 -m scripts.stand_acceptance scan \
+            --artifact "${never_upload}" --canary-env STAND_ACCEPTANCE_CANARY; then
+            echo 'redaction canary was not detected' >&2
+            exit 2
+          fi
+          python3 -m scripts.stand_acceptance admit \
+            --artifact "${RUNNER_TEMP}/stand-acceptance" \
+            --status "${RUNNER_TEMP}/stand-acceptance-admission.json" \
+            --summary "${GITHUB_STEP_SUMMARY}" \
+            --protected-env
+
+      - name: Upload acceptance artifact
+        if: ${{ always() && steps.final-admission.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: stand-e2e-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stand-acceptance
+          if-no-files-found: error
+
+      - name: Fail closed on incomplete acceptance evidence
+        if: always()
+        env:
+          HANDOFF_OUTCOME: ${{ steps.handoff.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup-observation.outcome }}
+          BUILD_OUTCOME: ${{ steps.build-evidence.outcome }}
+          ADMISSION_OUTCOME: ${{ steps.final-admission.outcome }}
+        run: |
+          test "${HANDOFF_OUTCOME}" = "success"
+          test "${CLEANUP_OUTCOME}" = "success"
+          test "${BUILD_OUTCOME}" = "success"
+          test "${ADMISSION_OUTCOME}" = "success"
 
   ttl-sweep:
     if: github.event_name == 'schedule'

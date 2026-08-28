@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from scripts.stand_acceptance import PROTECTED_STAND_SECRET_NAMES
+
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
 
 
@@ -50,10 +52,13 @@ def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
     assert steps.index("Resolve the suite") < steps.index("Preflight ephemeral machines")
 
 
-def test_the_machine_manifest_is_collected_even_when_creation_failed():
+def test_the_machine_manifest_is_collected_and_scanned_before_handoff_upload():
     """The created resource ids are the recovery input when a later step fails."""
-    for name in ("Record machine manifest", "Upload the lifecycle manifest"):
-        assert _steps()[name]["if"] == "always()", name
+    assert _steps()["Record machine manifest"]["if"] == "always()"
+    assert _steps()["Admit cleanup handoff"]["if"] == "always()"
+    assert _steps()["Upload cleanup handoff"]["if"] == (
+        "${{ always() && steps.handoff-admission.outcome == 'success' }}"
+    )
 
 
 def test_the_matrix_fits_in_the_job_timeout():
@@ -104,11 +109,105 @@ def test_machine_ids_are_recorded_then_cleaned_for_every_terminal_outcome():
 
     assert steps["Record machine manifest"]["if"] == "always()"
     assert "always()" in cleanup["if"]
-    assert "python3 -m scripts.stand_lifecycle cleanup" in cleanup["steps"][1]["run"]
+    cleanup_steps = {step["name"]: step for step in cleanup["steps"]}
+    assert (
+        "python3 -m scripts.stand_lifecycle cleanup-report"
+        in cleanup_steps["Cleanup and observe run-tagged machines"]["run"]
+    )
     assert (
         "python3 -m scripts.stand_lifecycle sweep"
         in _workflow()["jobs"]["ttl-sweep"]["steps"][1]["run"]
     )
+
+
+def test_selected_suite_runs_through_the_supported_remote_runner_and_preserves_failure():
+    steps = _steps()
+    run = steps["Run selected stand suite"]
+
+    assert "scripts/stand_run.py" in run["run"]
+    assert "--suite %q" in run["run"]
+    assert '"${SUITE}"' in run["run"]
+    assert '"${WORKER}"' in run["run"]
+    assert '"${QA}"' in run["run"]
+    assert run["continue-on-error"] is True
+    assert _steps()["Preserve suite result"]["if"] == "always()"
+
+
+def test_remote_runner_is_provisioned_and_only_runs_after_target_provisioning():
+    steps = _steps()
+    run = steps["Run selected stand suite"]
+    provision = (
+        WORKFLOW.parents[2] / "services/infra-service/ansible/playbooks/provision_software.yml"
+    ).read_text()
+    provision_vars = (
+        WORKFLOW.parents[2] / "services/infra-service/ansible/group_vars/provision_vars.yml"
+    ).read_text()
+
+    assert "Install pinned uv for stand runner" in provision
+    assert "uv_version" in provision_vars
+    assert "uv --version" in steps["Bootstrap dynamic orchestrator"]["run"]
+    assert run["if"] == "success()"
+    assert "remote-invocation.log" in run["run"]
+    assert ">/dev/null 2>&1" not in run["run"]
+
+
+def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_cancellation():
+    workflow = _workflow()
+    cleanup = workflow["jobs"]["cleanup"]
+    steps = {step["name"]: step for step in cleanup["steps"]}
+
+    assert "always()" in cleanup["if"]
+    assert cleanup["needs"] == "e2e"
+    assert "cleanup-report" in steps["Cleanup and observe run-tagged machines"]["run"]
+    assert steps["Build final acceptance evidence"]["continue-on-error"] is True
+    assert "continue-on-error" not in steps["Admit final artifact"]
+    uploads = [
+        step for step in cleanup["steps"] if "uses" in step and "upload-artifact" in step["uses"]
+    ]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "${{ always() && steps.final-admission.outcome == 'success' }}"
+
+
+def test_artifact_uploads_have_an_attempt_name_and_an_explicit_always_admission_boundary():
+    workflow = _workflow()
+    e2e_steps = _steps()
+    cleanup_steps = {step["name"]: step for step in workflow["jobs"]["cleanup"]["steps"]}
+
+    for step in (e2e_steps["Upload cleanup handoff"], cleanup_steps["Upload acceptance artifact"]):
+        assert "github.run_attempt" in step["with"]["name"]
+        assert step["if"].startswith("${{ always() &&")
+        assert "success()" not in step["if"]
+    assert "--protected-env" in e2e_steps["Admit cleanup handoff"]["run"]
+    assert "--protected-env" in cleanup_steps["Admit final artifact"]["run"]
+    assert "never-upload" in e2e_steps["Admit cleanup handoff"]["run"]
+    assert "never-upload" in cleanup_steps["Admit final artifact"]["run"]
+
+
+def test_admission_prevents_each_upload_only_when_it_fails_for_any_e2e_outcome():
+    e2e_steps = _steps()
+    cleanup_steps = {step["name"]: step for step in _workflow()["jobs"]["cleanup"]["steps"]}
+
+    for step, admission in (
+        (e2e_steps["Upload cleanup handoff"], "handoff-admission"),
+        (cleanup_steps["Upload acceptance artifact"], "final-admission"),
+    ):
+        condition = step["if"]
+        assert condition == f"${{{{ always() && steps.{admission}.outcome == 'success' }}}}"
+        assert "build-evidence" not in condition
+        assert "handoff.outcome" not in condition
+
+
+def test_each_admission_receives_the_complete_protected_value_environment_and_reports_rejections():
+    workflow = _workflow()
+    e2e_admission = _steps()["Admit cleanup handoff"]
+    final_admission = {step["name"]: step for step in workflow["jobs"]["cleanup"]["steps"]}[
+        "Admit final artifact"
+    ]
+
+    for step in (e2e_admission, final_admission):
+        assert set(step["env"]) == PROTECTED_STAND_SECRET_NAMES
+        assert '--summary "${GITHUB_STEP_SUMMARY}"' in step["run"]
+    assert "--secrets-stdin" not in WORKFLOW.read_text()
 
 
 def test_later_steps_use_the_created_orchestrator_address():

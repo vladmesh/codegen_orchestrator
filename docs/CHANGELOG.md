@@ -4,6 +4,14 @@
 
 ### Added
 
+- Stand e2e now invokes the selected suite through `scripts/stand_run.py` on
+  the dynamic orchestrator, retaining deterministic JUnit alongside its TSV and
+  logs. A fresh exact-tag cleanup runner records deletion selection, final
+  provider inventory and `servers_used`, then builds one redacted acceptance
+  artifact with observed per-machine lifetime and BitLaunch hourly-cost-derived
+  run cost. Evidence fails closed on incomplete cleanup or a credential-shaped
+  artifact, including a supplied redaction canary.
+
 - The ephemeral stand now uses a non-secret `stand_token` worker auth selector:
   worker-manager resolves Claude and Codex credentials locally, Claude refuses
   an `ANTHROPIC_API_KEY` conflict, and Codex logs in from stdin without a host
@@ -75,6 +83,31 @@
   money only after the count gate.
 
 ### Fixed
+
+- Stand acceptance admission now rejects structural private-key PEM markers in
+  its existing allow-listed evidence, including literal, escaped, and serialized
+  headers in raw suite combination logs. The shared scanner still permits
+  value-free token-preflight diagnostics and reports only safe paths and reasons.
+
+- Stand acceptance admission now derives redaction needles only from a fixed
+  protected-value allow-list, so public dynamic configuration and lifecycle
+  manifest values remain uploadable. Both handoff and final artifacts use an
+  explicit `always()` admission gate, retaining scanned diagnostics for failed,
+  cancelled, and incomplete runs while a failed admission still blocks upload.
+  Value-free preflight diagnostics now remain admissible; both admission jobs
+  require every protected value, and rejected decisions report only their safe
+  relative path and reason in the job summary.
+
+- Stand acceptance evidence now installs the pinned `uv` runner through the
+  dynamic host provisioning path, captures remote runner diagnostics into the
+  scanned handoff, and invokes the suite only after successful target
+  provisioning. Both handoff and final artifacts have attempt-scoped names and
+  are blocked until their exact allow-listed candidates pass a value-free scan.
+
+- Stand cost evidence now retains BitLaunch's per-server `rate` in USD*1000 per
+  hour and labels rate/time figures as rounded-hour estimates. A charged cost is
+  reported as actual only for an exactly correlated documented usage row; bad
+  rate, timestamp, cleanup, or run-shaped usage evidence remains incomplete.
 
 - Stand token validation now centrally binds either GitHub runner or rendered
   stand-host credential names before checking expiry. `make stand-preflight`

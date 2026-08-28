@@ -36,6 +36,8 @@ NAME_PREFIX = "codegen-stand"
 DEFAULT_SSH_KEY_NAME = "stands_ed25519"
 DEFAULT_MINIMUM_BALANCE_MILLIUSD = 200
 DEFAULT_LIFETIME_SECONDS = 6 * 60 * 60
+RATE_UNIT = "USD*1000 per hour"
+USAGE_COST_UNIT = "USD*1000"
 
 
 class LifecycleRefusal(RuntimeError):
@@ -52,7 +54,10 @@ class Machine:
     observed_at: str
     run_tag: str | None
     created_at: str | None = None
-    hourly_cost_cents: int | None = None
+    # BitLaunch documents the server object's ``rate`` as the hourly amount.
+    # This is per-server evidence, unlike the account-wide ``costPerHr``.
+    rate_milliusd_per_hour: int | None = None
+    rate_unit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +151,18 @@ def _machine_from_server(server: object) -> Machine | None:
         observed_at=_now(),
         run_tag=run_tag,
         created_at=str(server["created"]) if server.get("created") is not None else None,
+        rate_milliusd_per_hour=(
+            server["rate"]
+            if isinstance(server.get("rate"), int)
+            and not isinstance(server.get("rate"), bool)
+            and server["rate"] >= 0
+            else None
+        ),
+        rate_unit=RATE_UNIT
+        if isinstance(server.get("rate"), int)
+        and not isinstance(server.get("rate"), bool)
+        and server["rate"] >= 0
+        else None,
     )
 
 
@@ -274,9 +291,7 @@ class BitLaunchLifecycle:
             if (machine := _machine_from_server(server)) is not None and machine.run_tag == run_tag
         ]
 
-    def _wait_for_machine(
-        self, machine_id: str, role: Role, run_tag: str, hourly_cost_cents: int
-    ) -> Machine:
+    def _wait_for_machine(self, machine_id: str, role: Role, run_tag: str) -> Machine:
         deadline = time.monotonic() + CREATE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             response = self._request("GET", f"servers/{machine_id}", None)
@@ -296,7 +311,18 @@ class BitLaunchLifecycle:
                     observed_at=_now(),
                     run_tag=run_tag,
                     created_at=created_at,
-                    hourly_cost_cents=hourly_cost_cents,
+                    rate_milliusd_per_hour=(
+                        server["rate"]
+                        if isinstance(server.get("rate"), int)
+                        and not isinstance(server.get("rate"), bool)
+                        and server["rate"] >= 0
+                        else None
+                    ),
+                    rate_unit=RATE_UNIT
+                    if isinstance(server.get("rate"), int)
+                    and not isinstance(server.get("rate"), bool)
+                    and server["rate"] >= 0
+                    else None,
                 )
             self._sleep(CREATE_POLL_SECONDS)
         raise LifecycleRefusal(
@@ -304,9 +330,7 @@ class BitLaunchLifecycle:
         )
 
     def create_run(self, *, run_tag: str) -> RunManifest:
-        account, ssh_key_id = self._preflight(run_tag)
-        hourly_cost_cents = account["costPerHr"]
-        assert isinstance(hourly_cost_cents, int)
+        _account, ssh_key_id = self._preflight(run_tag)
         created: list[Machine] = []
         try:
             for role in ROLES:
@@ -329,9 +353,7 @@ class BitLaunchLifecycle:
                     raise LifecycleRefusal(
                         "create_response_invalid: BitLaunch did not return a server id"
                     )
-                created.append(
-                    self._wait_for_machine(str(response["id"]), role, run_tag, hourly_cost_cents)
-                )
+                created.append(self._wait_for_machine(str(response["id"]), role, run_tag))
         except Exception as create_error:
             try:
                 self.cleanup_run(run_tag=run_tag)
@@ -356,6 +378,121 @@ class BitLaunchLifecycle:
                 self._request("DELETE", f"servers/{machine.id}", None)
                 deleted.append(machine.id)
         return deleted
+
+    @staticmethod
+    def _run_usage_observation(
+        payload: object, selected: list[Machine], run_tag: str
+    ) -> dict[str, object]:
+        """Keep only usage rows whose description proves run ownership.
+
+        BitLaunch usage rows have no server id.  A row is therefore usable only
+        when its documented description is exactly the generated run-owned
+        server name.  Account-wide or merely similar rows cannot be attributed.
+        """
+        if not isinstance(payload, dict) or not isinstance(payload.get("serverUsage"), list):
+            return {"status": "unavailable", "observations": []}
+        expected = {_machine_name(run_tag, machine.role): machine.id for machine in selected}
+        observations: list[dict[str, object]] = []
+        uncorrelated = False
+        for row in payload["serverUsage"]:
+            if not isinstance(row, dict):
+                continue
+            description = row.get("description")
+            if not isinstance(description, str) or not description.startswith(
+                f"{NAME_PREFIX}-{run_tag}-"
+            ):
+                continue
+            machine_id = expected.get(description)
+            cost, hours = row.get("cost"), row.get("hours")
+            if (
+                machine_id is None
+                or row.get("type") != "server"
+                or not isinstance(cost, int)
+                or isinstance(cost, bool)
+                or cost < 0
+                or not isinstance(hours, int)
+                or isinstance(hours, bool)
+                or hours < 1
+            ):
+                uncorrelated = True
+                continue
+            observations.append(
+                {
+                    "machine_id": machine_id,
+                    "description": description,
+                    "cost_milliusd": cost,
+                    "hours": hours,
+                    "start": row.get("start") if isinstance(row.get("start"), str) else None,
+                    "end": row.get("end") if isinstance(row.get("end"), str) else None,
+                }
+            )
+        if uncorrelated:
+            return {"status": "uncorrelated", "observations": observations}
+        return {"status": "observed" if observations else "absent", "observations": observations}
+
+    def cleanup_observation(self, *, run_tag: str) -> dict[str, object]:
+        """Delete only this run's machines and retain a fail-closed observation.
+
+        The report intentionally separates exact selection, deletion attempts,
+        remaining run-owned inventory and the provider's account-use value.  A
+        successful DELETE response is not proof that the provider removed the
+        machine, so a fresh inventory and account observation are both required.
+        """
+        selected_ids: list[str] = []
+        deleted_ids: list[str] = []
+        remaining_ids: list[str] | None = None
+        servers_used: int | None = None
+        usage: dict[str, object] = {"status": "absent", "observations": []}
+        errors: list[str] = []
+        try:
+            selected = self._existing_for_run(run_tag)
+            selected_ids = [machine.id for machine in selected]
+        except LifecycleRefusal:
+            selected = []
+            errors.append("cleanup_selection_unusable")
+        policy = RunTagDestructionPolicy(run_tag)
+        for machine in selected:
+            if not policy.allows(machine):
+                continue
+            try:
+                self._request("DELETE", f"servers/{machine.id}", None)
+                deleted_ids.append(machine.id)
+            except Exception:  # provider errors are not safe report content
+                errors.append(f"cleanup_delete_failed:{machine.id}")
+        try:
+            remaining_ids = [machine.id for machine in self._existing_for_run(run_tag)]
+            if remaining_ids:
+                errors.append("run_owned_machines_remain")
+        except LifecycleRefusal:
+            errors.append("post_cleanup_inventory_unusable")
+        try:
+            account = self._request("GET", "user", None)
+            used = account.get("used") if isinstance(account, dict) else None
+            if isinstance(used, int) and not isinstance(used, bool) and used >= 0:
+                servers_used = used
+                if used != 0:
+                    errors.append("post_cleanup_servers_used_not_zero")
+            else:
+                errors.append("post_cleanup_account_unusable")
+        except Exception:  # provider errors are not safe report content
+            errors.append("post_cleanup_account_unusable")
+        try:
+            usage = self._run_usage_observation(
+                self._request("GET", "usage?period=latest", None), selected, run_tag
+            )
+        except Exception:  # usage enables an actual cost but is not cleanup proof
+            usage = {"status": "unavailable", "observations": []}
+        return {
+            "run_tag": run_tag,
+            "observed_at": _now(),
+            "selected_ids": selected_ids,
+            "deleted_ids": deleted_ids,
+            "remaining_ids": remaining_ids,
+            "servers_used": servers_used,
+            "usage": usage,
+            "status": "verified" if not errors else "incomplete",
+            "errors": errors,
+        }
 
     def sweep_expired(self, *, now: datetime, ttl: timedelta) -> list[str]:
         servers = self._request("GET", "servers", None)
@@ -396,11 +533,12 @@ def main() -> int:
     parser.add_argument("--env-file", type=Path, default=None)
     parser.add_argument("--ssh-key-name", default=DEFAULT_SSH_KEY_NAME)
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("preflight", "create", "cleanup"):
+    for command in ("preflight", "create", "cleanup", "cleanup-report"):
         item = sub.add_parser(command)
         item.add_argument("--run-tag", required=True)
     sub.choices["create"].add_argument("--manifest", type=Path, required=True)
     sub.choices["create"].add_argument("--ttl-hours", type=int, required=True)
+    sub.choices["cleanup-report"].add_argument("--output", type=Path, required=True)
     sweep = sub.add_parser("sweep")
     sweep.add_argument("--ttl-hours", type=int, required=True)
     args = parser.parse_args()
@@ -424,6 +562,13 @@ def main() -> int:
             print(manifest.to_json())
         elif args.command == "cleanup":
             print(json.dumps({"deleted_ids": lifecycle.cleanup_run(run_tag=args.run_tag)}))
+        elif args.command == "cleanup-report":
+            observation = lifecycle.cleanup_observation(run_tag=args.run_tag)
+            args.output.write_text(
+                json.dumps(observation, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            print(json.dumps(observation, sort_keys=True))
+            return 0 if observation["status"] == "verified" else 2
         else:
             now = datetime.now(UTC)
             print(

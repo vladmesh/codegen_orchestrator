@@ -37,6 +37,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from xml.etree import ElementTree
 
 REPO = Path(__file__).resolve().parents[1]
 COMPOSE_FILES = ("docker-compose.yml", "docker-compose.prod.yml", "docker-compose.stand.yml")
@@ -120,6 +121,41 @@ def write_qa_executor(env_path: Path, executor: str) -> None:
 
 def matrix_row(qa: str, worker: str, status: str, seconds: int) -> str:
     return f"{qa}\t{worker}\t{status}\t{seconds}\n"
+
+
+def write_junit_report(path: Path, results: list[tuple[str, str, str, int]]) -> None:
+    """Write the stable JUnit companion for the human-readable TSV report.
+
+    Pytest's own JUnit output is awkward for the matrix because each invocation
+    would replace the previous file.  This report describes the runner's
+    combinations instead: one deterministic testcase per requested pair.
+    """
+    failures = sum(status != "passed" for _qa, _worker, status, _seconds in results)
+    suite = ElementTree.Element(
+        "testsuite",
+        {
+            "name": "stand-e2e",
+            "tests": str(len(results)),
+            "failures": str(failures),
+            "errors": "0",
+        },
+    )
+    for qa, worker, status, seconds in results:
+        case = ElementTree.SubElement(
+            suite,
+            "testcase",
+            {
+                "classname": "stand-e2e",
+                "name": f"qa={qa} worker={worker}",
+                "time": str(seconds),
+            },
+        )
+        if status != "passed":
+            ElementTree.SubElement(case, "failure", {"message": status})
+    path.write_text(
+        ElementTree.tostring(suite, encoding="unicode", short_empty_elements=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _compose(env: dict[str, str], *args: str, capture: bool = False) -> subprocess.CompletedProcess:
@@ -244,13 +280,19 @@ def main() -> int:
 
     log(f"suite={args.suite} target={suite.target} dir={run_dir}")
 
+    report = run_dir / "report.tsv"
+    report.write_text("qa_agent\tworker_agent\tstatus\tduration_seconds\n", encoding="utf-8")
+    results: list[tuple[str, str, str, int]] = []
+
     if not args.skip_preflight and not preflight(env, log):
         log("preflight refused the run")
+        results.append((args.qa, args.worker, "preflight_failed", 0))
+        with report.open("a", encoding="utf-8") as handle:
+            handle.write(matrix_row(*results[-1]))
+        write_junit_report(run_dir / "junit.xml", results)
         return 2
 
     combinations = suite.combinations or ((args.qa, args.worker),)
-    report = run_dir / "report.tsv"
-    report.write_text("qa_agent\tworker_agent\tstatus\tduration_seconds\n", encoding="utf-8")
 
     failed = 0
     for qa, worker in combinations:
@@ -259,6 +301,7 @@ def main() -> int:
             if not ensure_qa_executor(env, qa, log):
                 with report.open("a", encoding="utf-8") as handle:
                     handle.write(matrix_row(qa, worker, "qa_executor_switch_failed", 0))
+                results.append((qa, worker, "qa_executor_switch_failed", 0))
                 failed += 1
                 continue
             extra = {
@@ -269,10 +312,15 @@ def main() -> int:
 
         started = time.monotonic()
         log(f"running qa={qa} worker={worker}")
-        passed = run_pytest(suite.target, env, extra, run_dir / f"{qa}-{worker}.log")
+        try:
+            passed = run_pytest(suite.target, env, extra, run_dir / f"{qa}-{worker}.log")
+        except subprocess.TimeoutExpired:
+            log(f"qa={qa} worker={worker}: timed out")
+            passed = False
         seconds = round(time.monotonic() - started)
         with report.open("a", encoding="utf-8") as handle:
             handle.write(matrix_row(qa, worker, "passed" if passed else "failed", seconds))
+        results.append((qa, worker, "passed" if passed else "failed", seconds))
         log(f"qa={qa} worker={worker}: {'passed' if passed else 'failed'} in {seconds}s")
         if not passed:
             failed += 1
@@ -280,6 +328,7 @@ def main() -> int:
     if not args.skip_sweep:
         sweep(env, log)
 
+    write_junit_report(run_dir / "junit.xml", results)
     log(report.read_text(encoding="utf-8").rstrip())
     return 1 if failed else 0
 
