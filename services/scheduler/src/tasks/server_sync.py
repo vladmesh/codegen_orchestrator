@@ -265,7 +265,38 @@ async def _report_management_changes(
         )
 
 
-async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:  # noqa: PLR0915
+async def _refuse_legacy_identity_collision(existing: ServerDTO, *, server_id: int) -> None:
+    """Fail closed when an inventory IP cannot safely upgrade a legacy row.
+
+    IP matching identifies the collision only. It never proves provider ownership
+    or authorizes attaching a Time4VPS stable ID to the existing database row.
+    """
+    await api_client.update_server(
+        existing.handle,
+        ServerUpdate(status=ServerStatus.RESERVED, is_managed=False),
+    )
+    logger.error(
+        "time4vps_legacy_identity_collision_refused",
+        server_handle=existing.handle,
+        server_ip=existing.public_ip,
+        existing_provider=existing.provider,
+        existing_provider_id=existing.provider_id,
+        provider_id=server_id,
+    )
+    await notify_admins_best_effort(
+        f"Time4VPS identity upgrade refused for *{existing.handle}*: its IP matches provider "
+        f"ID {server_id}, but its stored provider identity is not an exact match. The server "
+        "was moved to reserved and unmanaged; migrate its stable provider identity before "
+        "continuing.",
+        level="critical",
+        component="server_sync",
+        server_handle=existing.handle,
+    )
+
+
+async def _sync_server_list(  # noqa: C901, PLR0912, PLR0915
+    client: Time4VPSClient,
+) -> tuple[int, int, int]:
     """Sync basic server list - discover new, mark missing.
 
     Raises whatever the provider call raised: a cycle that could not read the
@@ -292,6 +323,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:  # 
     # this Time4VPS producer and only after an exact stable-ID match.
     db_servers_list = await api_client.get_servers()
     db_servers_by_handle = {server.handle: server for server in db_servers_list}
+    db_servers_by_ip = {server.public_ip: server for server in db_servers_list}
     db_servers_by_provider_id = {}
     for server in db_servers_list:
         if server.provider not in (None, TIME4VPS_PROVIDER):
@@ -305,6 +337,7 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:  # 
     discovered_count = 0
     updated_count = 0
     missing_count = 0
+    refused_collision_handles: set[str] = set()
 
     for srv in api_servers:
         ip = srv.ip
@@ -333,6 +366,13 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:  # 
                 updated_count += 1
             if management_change:
                 management_changes.append(management_change)
+        elif legacy_collision := db_servers_by_ip.get(ip):
+            # Existing rows without an exact provider/stable-ID match are an
+            # upgrade precondition, not a discovery opportunity. Creating a new
+            # row here would schedule destructive work against an ambiguous host.
+            await _refuse_legacy_identity_collision(legacy_collision, server_id=server_id)
+            refused_collision_handles.add(legacy_collision.handle)
+            updated_count += 1
         else:
             # New Server Discovered
             is_managed = should_manage
@@ -378,6 +418,8 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:  # 
 
     api_server_ids = {str(server.id) for server in api_servers}
     for server in db_servers_list:
+        if server.handle in refused_collision_handles:
+            continue
         if server.provider != TIME4VPS_PROVIDER:
             continue
         provider_id = normalize_provider_id(TIME4VPS_PROVIDER, server.provider_id)

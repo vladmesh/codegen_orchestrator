@@ -5,7 +5,7 @@ from typing import Protocol
 
 TIME4VPS_PROVIDER = "time4vps"
 PROVIDER_LABEL = "provider"
-_TIME4VPS_MANAGED_IDS_ENV = "PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS"
+TIME4VPS_MANAGED_IDS_ENV = "PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS"
 
 
 class DestructiveOperationPolicy(Protocol):
@@ -45,14 +45,14 @@ class Time4VPSDestructiveOperationPolicy:
         return _parse_time4vps_server_id(provider_id)
 
     def managed_ids(self) -> frozenset[str]:
-        raw = os.getenv(_TIME4VPS_MANAGED_IDS_ENV)
+        raw = os.getenv(TIME4VPS_MANAGED_IDS_ENV)
         if raw is None or not raw.strip():
             return frozenset()
 
         parsed = [_parse_time4vps_server_id(part.strip()) for part in raw.split(",")]
         if any(provider_id is None for provider_id in parsed):
             raise ValueError(
-                f"{_TIME4VPS_MANAGED_IDS_ENV} must contain comma-separated positive integers"
+                f"{TIME4VPS_MANAGED_IDS_ENV} must contain comma-separated positive integers"
             )
         return frozenset(provider_id for provider_id in parsed if provider_id is not None)
 

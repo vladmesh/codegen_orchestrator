@@ -49,6 +49,12 @@
 
 ### Fixed
 
+- Deployment now maps the existing Time4VPS GitHub secret to the provider-scoped
+  runtime policy key and validates that same key in contour guards and operator
+  tooling. Scheduler discovery now refuses an IP collision without an exact
+  provider/stable-ID match, reserves and unmanages the legacy row, and raises a
+  critical administrator alert instead of creating a shadow server.
+
 - The main-only backend DinD suite now gives worker-manager the same test-owned
   Claude host-session volumes used by launched workers and seeds fake
   refresh-capable credentials. The production validator remains fail-fast,

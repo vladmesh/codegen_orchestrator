@@ -1,3 +1,6 @@
+from pathlib import Path
+import re
+
 import pytest
 
 from shared.provisioning_policy import (
@@ -10,6 +13,30 @@ from shared.provisioning_policy import (
 )
 
 _TIME4VPS_POLICY_ENV = "PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS"
+
+
+def test_old_python_policy_helpers_are_not_reintroduced():
+    """Provider extensions must enter through the shared policy registry."""
+    production_sources = [
+        *(source for source in Path("shared").rglob("*.py") if "tests" not in source.parts),
+        *Path("services").glob("*/src/**/*.py"),
+    ]
+    removed_helpers = (
+        "server_is_provisioning_allowed",
+        "authorized_time4vps_server_id",
+        "time4vps_server_is_allowed",
+        "managed_time4vps_server_ids",
+        "parse_time4vps_server_id",
+    )
+
+    offenders = {
+        helper: str(source)
+        for helper in removed_helpers
+        for source in production_sources
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(helper)}(?![A-Za-z0-9_])", source.read_text())
+    }
+
+    assert not offenders, f"old provider policy helpers reintroduced: {offenders}"
 
 
 def test_missing_provider_policy_denies_every_server(monkeypatch):

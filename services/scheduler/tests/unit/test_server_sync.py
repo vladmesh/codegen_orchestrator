@@ -328,6 +328,53 @@ async def test_sync_upgrades_legacy_row_only_after_matching_its_stable_provider_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "provider_id"),
+    [(None, None), ("time4vps", "999")],
+    ids=["missing_provider_identity", "mismatched_provider_identity"],
+)
+async def test_sync_refuses_ip_collision_without_exact_provider_identity(
+    mock_api_client,
+    mock_time4vps_client,
+    mock_notify_admins,
+    monkeypatch,
+    provider,
+    provider_id,
+):
+    """Legacy rows sharing an inventory IP require an explicit identity upgrade."""
+    monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
+    existing = ServerDTO(
+        handle="legacy-server",
+        host="legacy.example",
+        public_ip="203.0.113.10",
+        ssh_user="root",
+        status=ServerStatus.ACTIVE,
+        provider=provider,
+        provider_id=provider_id,
+        is_managed=True,
+        labels={},
+        created_at=datetime.now(UTC),
+    )
+    mock_time4vps_client.get_servers.return_value = [
+        MagicMock(ip="203.0.113.10", id=1001, domain="current.example")
+    ]
+    mock_api_client.get_servers = AsyncMock(return_value=[existing])
+    mock_api_client.list_active_incidents = AsyncMock(return_value=[])
+    mock_api_client.update_server = AsyncMock()
+    mock_api_client.create_server = AsyncMock()
+
+    discovered, updated, missing = await server_sync._sync_server_list(mock_time4vps_client)
+
+    assert (discovered, updated, missing) == (0, 1, 0)
+    mock_api_client.create_server.assert_not_awaited()
+    update = mock_api_client.update_server.await_args.args[1]
+    assert update.is_managed is False
+    assert update.status is ServerStatus.RESERVED
+    mock_notify_admins.assert_awaited_once()
+    assert "identity" in mock_notify_admins.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_client):
     # Setup
     server = ServerDTO(
