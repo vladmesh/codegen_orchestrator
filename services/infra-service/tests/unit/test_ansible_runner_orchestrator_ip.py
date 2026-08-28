@@ -145,14 +145,37 @@ class TestAnsibleRunnerOrchestratorIp:
             server_handle="vps-test",
             playbook_name="provision_software.yml",
             ssh_user="dev",
-            ssh_private_key="private-key-material",
+            ssh_private_key="private-key-material\n",
         )
 
         assert "ansible_user=dev" in captured["inventory"]
         assert "ansible_user=root" not in captured["inventory"]
-        assert captured["key"] == "private-key-material"
+        assert captured["key"] == "private-key-material\n"
         assert captured["key_mode"] == 0o600
         assert not os.path.exists(captured["key_path"])
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_key_authentication_materializes_missing_terminal_newline(self, mock_run):
+        captured = {}
+
+        def capture_key(cmd, **kwargs):
+            inventory_path = cmd[cmd.index("-i") + 1]
+            inventory = Path(inventory_path).read_text()
+            key_path = inventory.split("ansible_ssh_private_key_file=")[1].split()[0]
+            captured["key"] = Path(key_path).read_text()
+            return MagicMock(returncode=0, stdout="ok", stderr="")
+
+        mock_run.side_effect = capture_key
+
+        self.runner.run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+            ssh_user="dev",
+            ssh_private_key="private-key-material",
+        )
+
+        assert captured["key"] == "private-key-material\n"
 
     @patch("src.provisioner.ansible_runner.subprocess.run")
     def test_password_authentication_remains_root_without_private_key(self, mock_run):

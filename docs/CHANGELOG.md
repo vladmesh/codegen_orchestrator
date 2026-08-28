@@ -66,6 +66,11 @@
 
 ### Fixed
 
+- Provisioner key-authentication now materializes every supplied SSH private
+  key with exactly one terminal LF before invoking Ansible, so BitLaunch
+  creation keys and later stored keys remain usable when secret storage omits
+  the final newline.
+
 - Deployment now maps the existing Time4VPS GitHub secret to the provider-scoped
   runtime policy key and validates that same key in contour guards and operator
   tooling. Scheduler discovery now refuses an IP collision without an exact
