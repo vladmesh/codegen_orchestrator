@@ -37,10 +37,12 @@ on:
           - claude
           - codex
       skip_sweep:
-        description: 'Leave the run’s resources in place for inspection'
+        description: 'Reserved for the later e2e runner; lifecycle cleanup is never skipped'
         required: false
         default: false
         type: boolean
+  schedule:
+    - cron: '17 * * * *'
 
 # One e2e at a time. They share a stand, a target server and one subscription
 # per agent; two at once would fight over all three.
@@ -50,14 +52,18 @@ concurrency:
 
 jobs:
   e2e:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: stand
-    # The matrix is four full pipeline runs.
+    # Later cards bootstrap and run this pair. This card owns the bounded,
+    # provider-neutral lifecycle only.
     timeout-minutes: 180
     env:
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/codegen_orchestrator' }}
-      DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER || 'dev' }}
+      STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Check out lifecycle code
+        uses: actions/checkout@v5
+
       # The suite is a named one or a pytest target; `custom` is how the second
       # kind is spelled in a dropdown, and it has to name a target.
       - name: Resolve the suite
@@ -75,53 +81,90 @@ jobs:
             echo "value=${{ inputs.suite }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run it on the stand
-        uses: appleboy/ssh-action@v1
-        timeout-minutes: 176
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ env.DEPLOY_SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          command_timeout: 175m
-          script: |
-            set -euo pipefail
-            cd ${{ env.DEPLOY_PATH }}
-            export PATH="$HOME/.local/bin:$PATH"
-            make stand-run \
-              SUITE='${{ steps.suite.outputs.value }}' \
-              WORKER='${{ inputs.worker }}' \
-              QA='${{ inputs.qa }}' \
-              ARGS='${{ inputs.skip_sweep && '--skip-sweep' || '' }}'
+      - name: Preflight ephemeral machines
+        env:
+          BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}" || { echo 'SSH_PRIVATE_KEY is unset' >&2; exit 2; }
+          python3 -m scripts.stand_lifecycle preflight --run-tag "${STAND_RUN_TAG}"
+
+      - name: Create ephemeral machines
+        id: create
+        env:
+          BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+        run: |
+          set -euo pipefail
+          trap 'python3 -m scripts.stand_lifecycle cleanup --run-tag "${STAND_RUN_TAG}" || true' EXIT INT TERM
+          python3 -m scripts.stand_lifecycle create --run-tag "${STAND_RUN_TAG}" --manifest machines.json --ttl-hours 6
+          python3 -c '
+          import json
+          from pathlib import Path
+          machines = json.loads(Path("machines.json").read_text())["machines"]
+          values = {machine["role"] + "_ip": machine["ip"] for machine in machines}
+          values.update({machine["role"] + "_id": machine["id"] for machine in machines})
+          with Path(__import__("os").environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.writelines(f"{key}={value}\n" for key, value in values.items())
+          '
+          trap - EXIT INT TERM
+
+      - name: Use created endpoints
+        env:
+          ORCHESTRATOR_IP: ${{ steps.create.outputs.orchestrator_ip }}
+          TARGET_IP: ${{ steps.create.outputs.target_ip }}
+        run: |
+          set -euo pipefail
+          test -n "${ORCHESTRATOR_IP}"
+          test -n "${TARGET_IP}"
+          printf 'orchestrator=%s\ntarget=%s\n' "${ORCHESTRATOR_IP}" "${TARGET_IP}" >> "$GITHUB_STEP_SUMMARY"
 
       # Collected whatever the result was: a failed run is the one whose logs are
       # worth keeping, and the stand's disk is swept on a schedule.
-      - name: Collect the run directory
+      - name: Record machine manifest
         if: always()
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          STAND_HOST: ${{ secrets.PROD_HOST }}
-        run: |
-          set -euo pipefail
-          key="$(mktemp)"
-          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${key}"
-          chmod 600 "${key}"
-          mkdir -p run
-          scp -i "${key}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -r \
-            "${DEPLOY_SSH_USER}@${STAND_HOST}:~/e2e-runs/latest/*" run/ || true
-          if [ -f run/report.tsv ]; then
-            {
-              echo "### ${{ inputs.suite }}"
-              echo
-              echo '```'
-              cat run/report.tsv
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+        uses: actions/upload-artifact@v7
+        with:
+          name: stand-machines-${{ github.run_id }}
+          path: machines.json
+          if-no-files-found: warn
 
-      - name: Upload the run directory
+      - name: Upload the lifecycle manifest
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: stand-e2e-${{ inputs.suite }}-${{ github.run_id }}
-          path: run/
+          path: machines.json
           if-no-files-found: warn
+
+  cleanup:
+    needs: e2e
+    if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment: stand
+    env:
+      STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+    steps:
+      - name: Check out lifecycle code
+        uses: actions/checkout@v5
+
+      - name: Cleanup run-tagged machines
+        run: |
+          set -euo pipefail
+          python3 -m scripts.stand_lifecycle cleanup --run-tag "${STAND_RUN_TAG}"
+
+  ttl-sweep:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    environment: stand
+    env:
+      BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+    steps:
+      - name: Check out lifecycle code
+        uses: actions/checkout@v5
+
+      - name: Sweep expired run-tagged machines
+        run: |
+          set -euo pipefail
+          python3 -m scripts.stand_lifecycle sweep --ttl-hours 6

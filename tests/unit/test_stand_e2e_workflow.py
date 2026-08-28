@@ -47,12 +47,12 @@ def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
     resolve = _steps()["Resolve the suite"]
 
     assert "exit 1" in resolve["run"]
-    assert steps.index("Resolve the suite") < steps.index("Run it on the stand")
+    assert steps.index("Resolve the suite") < steps.index("Preflight ephemeral machines")
 
 
-def test_the_run_directory_is_collected_even_when_the_suite_failed():
-    """A failed run is precisely the one whose logs are worth keeping."""
-    for name in ("Collect the run directory", "Upload the run directory"):
+def test_the_machine_manifest_is_collected_even_when_creation_failed():
+    """The created resource ids are the recovery input when a later step fails."""
+    for name in ("Record machine manifest", "Upload the lifecycle manifest"):
         assert _steps()[name]["if"] == "always()", name
 
 
@@ -61,3 +61,39 @@ def test_the_matrix_fits_in_the_job_timeout():
     job = _workflow()["jobs"]["e2e"]
 
     assert job["timeout-minutes"] >= 180
+
+
+def test_lifecycle_preflight_and_create_replace_the_static_host():
+    workflow = WORKFLOW.read_text()
+    steps = _steps()
+
+    assert "secrets.PROD_HOST" not in workflow
+    assert "secrets.ORCHESTRATOR_PUBLIC_IP" not in workflow
+    assert "secrets.ORCHESTRATOR_HOSTNAME" not in workflow
+    assert "stand-register" not in workflow
+    assert "stand-self" not in workflow
+    assert (
+        "python3 -m scripts.stand_lifecycle preflight"
+        in steps["Preflight ephemeral machines"]["run"]
+    )
+    assert "python3 -m scripts.stand_lifecycle create" in steps["Create ephemeral machines"]["run"]
+
+
+def test_machine_ids_are_recorded_then_cleaned_for_every_terminal_outcome():
+    steps = _steps()
+    cleanup = _workflow()["jobs"]["cleanup"]
+
+    assert steps["Record machine manifest"]["if"] == "always()"
+    assert "always()" in cleanup["if"]
+    assert "python3 -m scripts.stand_lifecycle cleanup" in cleanup["steps"][1]["run"]
+    assert (
+        "python3 -m scripts.stand_lifecycle sweep"
+        in _workflow()["jobs"]["ttl-sweep"]["steps"][1]["run"]
+    )
+
+
+def test_later_steps_use_the_created_orchestrator_address():
+    workflow = WORKFLOW.read_text()
+
+    assert "steps.create.outputs.orchestrator_ip" in workflow
+    assert "steps.create.outputs.target_ip" in workflow

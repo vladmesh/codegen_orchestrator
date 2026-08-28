@@ -9,6 +9,13 @@
   scheduler sync upgrades only legacy rows that it matches by that stable ID.
   Rows without an explicit provider identity fail closed and are never adopted by IP.
 
+- Stand e2e now creates a bounded, run-owned BitLaunch orchestrator/target pair
+  through a provider-neutral lifecycle. Preflight refuses insufficient balance,
+  quota, and SSH-material failures before creation; redacted manifests record
+  machine observations; exact run-tag cleanup and a tagged TTL sweep cover
+  successful, failed, and cancelled workflow paths. The obsolete static-host
+  self-target route is removed.
+
 - The production admin Dashboard now reads one strict internal/admin overview
   contract. It reports every declared queue binding with explicit degradation,
   all task-status counts, paid queued/running work, persisted executor-decision
