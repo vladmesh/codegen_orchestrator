@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 from _run_routing_factories import _make_run
+import httpx
 import pytest
 
 from shared.contracts.dto.application import ApplicationDTO, ApplicationStatus
@@ -2168,3 +2169,66 @@ class TestTheSlowCheckOfTheContractSlot:
         assert blocker.category is QABlockerCategory.QA_CLEANUP_FAILED
         assert ENV_KEY in blocker.received
         assert "still carries" in blocker.received
+
+
+class TestSlotHeldByAnotherGrant:
+    """A slot held by an earlier grant defers the handoff; it does not end the tick.
+
+    Regression, production 2026-08-27: the supervisor asked for a grant whose id
+    named a new QA run while an earlier grant for the same (project, env_key) was
+    still unrevoked. The API refused with 409, the error propagated out of the
+    dispatcher cycle, and the cycle died every 30 seconds — including the sweep
+    that would have revoked the holder. The deadlock could not clear itself.
+    """
+
+    @pytest.mark.asyncio()
+    async def test_conflict_defers_instead_of_raising(self):
+        from src.tasks.temporary_access import grant_temporary_access
+
+        response = httpx.Response(
+            status_code=409,
+            request=httpx.Request("POST", "http://api/api/temporary-access-grants/"),
+            text="already granted by tempaccess-older",
+        )
+
+        class _Client:
+            async def create_temporary_access_grant(self, _payload):
+                raise httpx.HTTPStatusError("conflict", request=response.request, response=response)
+
+        assert (
+            await grant_temporary_access(
+                _Client(),
+                None,
+                project_id=PROJECT_ID,
+                env_key=ENV_KEY,
+                subject="123",
+                head_sha=HEAD_SHA,
+                qa_message=_qa_message("qa-slot-conflict"),
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio()
+    async def test_other_http_errors_still_raise(self):
+        from src.tasks.temporary_access import grant_temporary_access
+
+        response = httpx.Response(
+            status_code=500,
+            request=httpx.Request("POST", "http://api/api/temporary-access-grants/"),
+            text="boom",
+        )
+
+        class _Client:
+            async def create_temporary_access_grant(self, _payload):
+                raise httpx.HTTPStatusError("boom", request=response.request, response=response)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await grant_temporary_access(
+                _Client(),
+                None,
+                project_id=PROJECT_ID,
+                env_key=ENV_KEY,
+                subject="123",
+                head_sha=HEAD_SHA,
+                qa_message=_qa_message("qa-slot-500"),
+            )
