@@ -17,6 +17,26 @@ from src.manager import WorkerManager
 _OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
 
 
+@pytest.mark.asyncio
+async def test_claude_stand_token_refuses_api_key_before_any_worker_state_is_written():
+    redis = MagicMock()
+    redis.hset = AsyncMock()
+    manager = WorkerManager(redis=redis, docker_client=_make_docker_mock())
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        await manager.create_worker_with_capabilities(
+            worker_id="stand-conflict",
+            capabilities=[],
+            base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
+            agent_type=AgentType.CLAUDE,
+            auth_mode="stand_token",
+            env_vars={"ANTHROPIC_API_KEY": "test-api-key"},
+        )
+
+    redis.hset.assert_not_awaited()
+
+
 def _make_docker_mock():
     wrapper = MagicMock()
     wrapper.image_exists = AsyncMock(return_value=True)

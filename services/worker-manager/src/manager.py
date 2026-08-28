@@ -1142,6 +1142,22 @@ class WorkerManager:
         agent_type = AgentType(agent_type)
         is_qa_worker = worker_type == QA_WORKER_TYPE
         project_id = ownership.project_id
+        env_vars = env_vars or {}
+        if auth_mode == "stand_token":
+            if agent_type not in {AgentType.CLAUDE, AgentType.CODEX}:
+                raise RuntimeError("stand_token authentication is supported only for Claude and Codex workers")
+            if agent_type is AgentType.CLAUDE and (api_key or "ANTHROPIC_API_KEY" in env_vars):
+                raise RuntimeError("ANTHROPIC_API_KEY conflicts with Claude stand_token authentication")
+            supplied = {"CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"}.intersection(env_vars)
+            if supplied:
+                raise RuntimeError(
+                    "stand token credentials must be local to worker-manager, not env_vars: "
+                    + ", ".join(sorted(supplied))
+                )
+            if agent_type is AgentType.CLAUDE and not settings.STAND_CLAUDE_CODE_OAUTH_TOKEN:
+                raise RuntimeError("STAND_CLAUDE_CODE_OAUTH_TOKEN is not set for stand_token authentication")
+            if agent_type is AgentType.CODEX and not settings.STAND_CODEX_ACCESS_TOKEN:
+                raise RuntimeError("STAND_CODEX_ACCESS_TOKEN is not set for stand_token authentication")
         # Written before anything is created, for two reasons that both need it
         # early. It is what `delete_worker` reads to know a QA workspace is
         # scratch it must remove — a creation that fails halfway would otherwise
@@ -1211,8 +1227,6 @@ class WorkerManager:
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.BUILDING})
 
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
-        env_vars = env_vars or {}
-
         try:
             if is_qa_worker and (not instructions or not task_content):
                 raise RuntimeError("a QA executor requires instructions and task_content before it can become ready")
@@ -1234,6 +1248,10 @@ class WorkerManager:
                 host_claude_dir=host_claude_dir,
                 host_codex_home=host_codex_home,
                 api_key=api_key,
+                stand_claude_code_oauth_token=(
+                    settings.STAND_CLAUDE_CODE_OAUTH_TOKEN if auth_mode == "stand_token" else None
+                ),
+                stand_codex_access_token=(settings.STAND_CODEX_ACCESS_TOKEN if auth_mode == "stand_token" else None),
                 transcript_host_path=settings.WORKER_TRANSCRIPT_STORAGE_PATH,
                 transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
             )

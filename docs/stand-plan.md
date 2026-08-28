@@ -119,7 +119,12 @@ IP-allowlist'ом на прод-адрес).
 
 ---
 
-## Фаза 3. Подписки на стенде
+## Фаза 3. Подписки на стенде (historical)
+
+> Historical plan. The current policy does not use host-session mounts or a
+> keepalive. Claude receives the annual `CLAUDE_CODE_OAUTH_TOKEN`; Codex receives
+> a manually refreshed ten-day access token and logs in through stdin in an
+> ephemeral container profile. Both expiry checks run before BitLaunch create.
 
 - [ ] `~/.codex-worker`: `config.toml` c `cli_auth_credentials_store = "file"`, режимы `0700`/`0600`,
       `codex login --device-auth` (нужен человек);

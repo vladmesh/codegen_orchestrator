@@ -4,6 +4,12 @@
 
 ### Added
 
+- The ephemeral stand now uses a non-secret `stand_token` worker auth selector:
+  worker-manager resolves Claude and Codex credentials locally, Claude refuses
+  an `ANTHROPIC_API_KEY` conflict, and Codex logs in from stdin without a host
+  profile. The stand workflow validates token expiry, Telethon and SSH material
+  before the BitLaunch lifecycle preflight can create either machine.
+
 - Stand e2e now bootstraps its dynamically created orchestrator from the
   checked-out revision, derives the public orchestrator identity only from the
   lifecycle outputs, and waits for the local API before it registers a separate

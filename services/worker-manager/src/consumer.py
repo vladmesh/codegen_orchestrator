@@ -21,6 +21,13 @@ from .manager import WorkerManager
 logger = structlog.get_logger()
 
 
+def resolve_local_auth_mode(*, requested_mode: str, agent_type, live_contour: str | None) -> str:
+    """Select the stand's local token mode without widening the queue producer API."""
+    if live_contour == "stand" and requested_mode == "host_session" and agent_type.value in {"claude", "codex"}:
+        return "stand_token"
+    return requested_mode
+
+
 class WorkerCommandConsumer:
     def __init__(self, client: RedisStreamClient, manager: WorkerManager):
         self.client = client
@@ -110,6 +117,11 @@ class WorkerCommandConsumer:
 
         try:
             caps = [c.value for c in cmd.config.capabilities]
+            auth_mode = resolve_local_auth_mode(
+                requested_mode=cmd.config.auth_mode,
+                agent_type=cmd.config.agent_type,
+                live_contour=settings.LIVE_CONTOUR,
+            )
 
             env_vars = dict(cmd.config.env_vars)
             if user_id := cmd.context.get("user_telegram_id"):
@@ -123,7 +135,7 @@ class WorkerCommandConsumer:
                 instructions=cmd.config.instructions,
                 task_content=cmd.config.task_content,
                 env_vars=env_vars,
-                auth_mode=cmd.config.auth_mode,
+                auth_mode=auth_mode,
                 host_claude_dir=cmd.config.host_claude_dir or settings.HOST_CLAUDE_DIR,
                 host_codex_home=cmd.config.host_codex_home or settings.HOST_CODEX_HOME,
                 api_key=cmd.config.api_key,

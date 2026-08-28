@@ -79,6 +79,21 @@ def test_lifecycle_preflight_and_create_replace_the_static_host():
     assert "python3 -m scripts.stand_lifecycle create" in steps["Create ephemeral machines"]["run"]
 
 
+def test_credential_preflight_refuses_before_the_provider_preflight_or_create():
+    steps = list(_steps())
+    credentials = _steps()["Validate pre-create credentials"]
+    lifecycle = _steps()["Preflight ephemeral machines"]
+
+    assert "python3 -m scripts.stand_credentials" in credentials["run"]
+    assert steps.index("Validate pre-create credentials") < steps.index(
+        "Preflight ephemeral machines"
+    )
+    assert "python3 -m scripts.stand_lifecycle preflight" in lifecycle["run"]
+    for secret in ("CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"):
+        assert secret in credentials["env"]
+        assert secret not in credentials["run"]
+
+
 def test_machine_ids_are_recorded_then_cleaned_for_every_terminal_outcome():
     steps = _steps()
     cleanup = _workflow()["jobs"]["cleanup"]
@@ -150,6 +165,26 @@ def test_dynamic_stand_environment_mounts_the_github_app_key_and_names_the_conto
     assert step["env"]["GITHUB_APP_PEM_PATH"] == "/opt/secrets/github_app.pem"
     assert step["env"]["GITHUB_APP_PRIVATE_KEY_PATH"] == "/app/keys/github_app.pem"
     assert step["env"]["LIVE_CONTOUR"] == "stand"
+
+
+def test_dynamic_stand_configuration_receives_tokens_only_as_protected_manager_settings():
+    step = _steps()["Render protected dynamic configuration"]
+    render = step["run"]
+
+    for name in ("STAND_CLAUDE_CODE_OAUTH_TOKEN", "STAND_CODEX_ACCESS_TOKEN"):
+        assert name in step["env"]
+        assert f'"{name}"' in render
+    assert "HOST_CLAUDE_DIR" not in step["env"]
+    assert "HOST_CODEX_HOME" not in step["env"]
+
+
+def test_stand_overlay_removes_worker_manager_host_session_mounts():
+    overlay = (WORKFLOW.parents[2] / "docker-compose.stand.yml").read_text()
+
+    assert 'HOST_CLAUDE_DIR: ""' in overlay
+    assert 'HOST_CODEX_HOME: ""' in overlay
+    assert "/host-claude" not in overlay
+    assert "/host-codex" not in overlay
 
 
 def test_target_key_transport_uses_protected_files_not_a_sourced_secret_environment():

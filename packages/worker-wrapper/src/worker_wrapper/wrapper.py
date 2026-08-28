@@ -74,6 +74,7 @@ AGENT_SUBPROCESS_ENV_ALLOWLIST = frozenset(
         # Claude authentication, host session and test endpoint configuration.
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
         "CLAUDE_CONFIG_DIR",
         "DISABLE_AUTOUPDATER",
@@ -184,6 +185,7 @@ class WorkerWrapper:
         self._transcript_truncated: bool | None = None
         self._stop_reason: WorkerStopReason | None = None
         self._agent_limit_seconds: int | None = None
+        self._codex_token_login_complete = False
 
     @property
     def is_qa_executor(self) -> bool:
@@ -885,6 +887,10 @@ class WorkerWrapper:
         else:
             raise ValueError(f"Unknown agent type: {self.config.agent_type}")
 
+        wrapper_env = dict(os.environ)
+        if self.config.agent_type == AgentType.CODEX and self.config.auth_mode == "stand_token":
+            await self._login_codex_with_access_token(wrapper_env)
+
         prompt = self._resolve_prompt(data)
         cmd = runner.build_command(prompt=prompt)
         logger.info(
@@ -893,7 +899,6 @@ class WorkerWrapper:
             agent_type=self.config.agent_type,
         )
 
-        wrapper_env = dict(os.environ)
         agent_env = build_agent_subprocess_env(wrapper_env, qa_executor=self.is_qa_executor)
 
         # Execute Subprocess
@@ -949,6 +954,33 @@ class WorkerWrapper:
             if captured_session_id:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
                 await self.broker.set_session(captured_session_id)
+
+    async def _login_codex_with_access_token(self, wrapper_env: dict[str, str]) -> None:
+        """Authenticate the container-local Codex profile without exposing the token in argv."""
+        if self._codex_token_login_complete:
+            return
+        token = wrapper_env.get("CODEX_ACCESS_TOKEN")
+        if not token:
+            raise RuntimeError("CODEX_ACCESS_TOKEN is not set for Codex stand_token authentication")
+        login_env = {
+            name: wrapper_env[name]
+            for name in ("HOME", "LANG", "LC_ALL", "PATH", "CODEX_HOME", "CODEX_ACCESS_TOKEN")
+            if name in wrapper_env
+        }
+        proc = await asyncio.create_subprocess_exec(
+            "codex",
+            "login",
+            "--with-access-token",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=login_env,
+        )
+        _stdout, _stderr = await proc.communicate(token.encode())
+        if proc.returncode != 0:
+            raise RuntimeError("Codex access-token login failed")
+        self._codex_token_login_complete = True
+        wrapper_env.pop("CODEX_ACCESS_TOKEN", None)
 
     async def _attempt_auto_resume(self, data: dict) -> bool:
         """Attempt one resume of the Claude agent to get it to call /result.

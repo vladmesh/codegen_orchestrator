@@ -414,6 +414,20 @@ enums do not, so merging them would broaden a field past what the wire supports:
   identity on `worker:events`. It remains a separate concept from `AgentType`;
   only the `codex` spelling currently overlaps.
 
+`WorkerConfig.auth_mode` has three values: `host_session`, `api_key`, and
+`stand_token`. The latter is a non-secret selector for the ephemeral stand only:
+its queue payload carries no Claude or Codex credential, and worker-manager
+resolves its local protected `STAND_CLAUDE_CODE_OAUTH_TOKEN` or
+`STAND_CODEX_ACCESS_TOKEN` only while building the container. Producers remain
+pinned to `host_session` and must not add token-bearing `env_vars` entries.
+`stand_token` accepts only Claude and Codex. Claude receives
+`CLAUDE_CODE_OAUTH_TOKEN` in its container environment with no Claude host mount
+and refuses `ANTHROPIC_API_KEY` as a conflicting configuration. Codex has no
+host profile mount; the wrapper passes `CODEX_ACCESS_TOKEN` over stdin to
+`codex login --with-access-token` for its container-local ephemeral profile.
+Neither credential is a Docker label, queue field, argv value, host `auth.json`,
+or retained artifact.
+
 `WorkerConfig.host_codex_home` adds no new queue shape beyond an optional field.
 For `agent_type=codex` and `auth_mode=host_session`, worker-manager validates a
 dedicated file-backed ChatGPT profile before image resolution. It then mounts

@@ -134,6 +134,44 @@ class TestWorkerContainerConfig:
         # api_key mode keeps no session, and the worker must not demand a mount.
         assert env["WORKER_AUTH_MODE"] == "api_key"
 
+    def test_stand_token_mode_injects_claude_token_without_a_host_mount(self):
+        token = "claude-test-token"
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=["GIT"],
+            auth_mode="stand_token",
+            stand_claude_code_oauth_token=token,
+            host_claude_dir="/host/.claude",
+        )
+
+        env = config.to_env_vars(**BROKER_ARGS)
+        volumes = config.to_volume_mounts()
+
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == token
+        assert "CLAUDE_CONFIG_DIR" not in env
+        assert "/host/.claude" not in volumes
+
+    def test_stand_token_mode_injects_codex_token_without_a_profile_mount(self):
+        token = "codex-test-token"
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="codex",
+            capabilities=["GIT"],
+            auth_mode="stand_token",
+            stand_codex_access_token=token,
+            host_codex_home="/host/.codex",
+        )
+
+        env = config.to_env_vars(**BROKER_ARGS)
+        volumes = config.to_volume_mounts()
+
+        assert env["CODEX_ACCESS_TOKEN"] == token
+        assert "/host/.codex" not in volumes
+        assert all(mount["bind"] != "/home/worker/.codex" for mount in volumes.values())
+
     def test_to_docker_run_kwargs_requires_a_dedicated_network(self):
         """Coding workers fail closed instead of falling back to host networking."""
         config = WorkerContainerConfig(

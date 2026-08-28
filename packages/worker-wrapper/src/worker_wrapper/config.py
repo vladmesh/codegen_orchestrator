@@ -28,7 +28,7 @@ class WorkerWrapperConfig(BaseSettings):
     )
     auth_mode: str = Field(
         default="host_session",
-        description="How the agent authenticates: host_session (mounted session) or api_key",
+        description="How the agent authenticates: host_session, api_key, or stand_token",
     )
 
     # Optional execution settings
@@ -95,7 +95,15 @@ def validate_agent_config(config: WorkerWrapperConfig) -> None:
     if supplied:
         raise RuntimeError(f"direct worker transport is forbidden: {', '.join(supplied)}")
 
-    if config.agent_type != AgentType.CLAUDE or config.auth_mode != "host_session":
+    if config.agent_type != AgentType.CLAUDE:
+        return
+
+    if config.auth_mode == "stand_token":
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            raise RuntimeError("ANTHROPIC_API_KEY conflicts with Claude stand_token authentication")
+        return
+
+    if config.auth_mode != "host_session":
         return
 
     if not config.claude_config_dir:

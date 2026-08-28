@@ -91,6 +91,20 @@ For local recovery, use `claude auth login` to repair the dedicated
 as worker creation and performs no provider probe. Do not point either setting
 at an operator's ordinary home profile.
 
+### Ephemeral stand authentication
+
+The ephemeral BitLaunch stand does not use those host-session profiles. Its
+pre-create workflow validates the expiry-bearing `CLAUDE_CODE_OAUTH_TOKEN` and
+`CODEX_ACCESS_TOKEN`, Telethon material and the bootstrap private key before it
+calls the BitLaunch lifecycle preflight. Claude receives the annual OAuth token
+only through the worker process environment and never has a keepalive. Codex
+uses a manually refreshed ten-day access token: its wrapper pipes the token to
+`codex login --with-access-token`, never through argv, then uses a
+container-local profile that is deleted with the worker. `auth.json` is never
+mounted back to the host or included in a retained artifact. These values are
+only protected worker-manager configuration, never queue payload fields,
+Docker labels or producer-supplied `env_vars`.
+
 ## Managed project deploy target
 
 The provisioner prepares `/opt/services` for the `Server.ssh_user` configured on

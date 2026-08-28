@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class WorkerManagerSettings(BaseSettings):
     ENVIRONMENT: str = "production"
+    LIVE_CONTOUR: str | None = None
     LOG_LEVEL: str = "INFO"
     REDIS_URL: str = "redis://redis:6379/0"
     API_BASE_URL: str = "http://api:8000"
@@ -35,6 +36,11 @@ class WorkerManagerSettings(BaseSettings):
     # read-only into worker-manager by Compose.
     HOST_CODEX_HOME: str | None = None
     HOST_CODEX_VALIDATION_PATH: str | None = None
+
+    # Short-lived stand-only credentials. They are resolved by worker-manager,
+    # never by a queue producer, and only when auth_mode=stand_token.
+    STAND_CLAUDE_CODE_OAUTH_TOKEN: str | None = None
+    STAND_CODEX_ACCESS_TOKEN: str | None = None
 
     # Redis handoff is deliberately short-lived: the API treats a missing or
     # expired value as unknown instead of using a last-known-good diagnosis.

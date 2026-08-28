@@ -165,7 +165,10 @@ class WorkerConfig(BaseModel):
     allowed_commands: list[str]  # ["project.*", "engineering.start"]
     capabilities: list[WorkerCapability]  # ["git", "copier"]
     env_vars: dict[str, str] = {}
-    auth_mode: Literal["host_session", "api_key"] = "host_session"
+    # ``stand_token`` is deliberately only a mode selector. The short-lived
+    # credential stays in worker-manager's protected local configuration and
+    # never crosses this Redis wire.
+    auth_mode: Literal["host_session", "api_key", "stand_token"] = "host_session"
     host_claude_dir: str | None = None
     host_codex_home: str | None = None
     api_key: str | None = None

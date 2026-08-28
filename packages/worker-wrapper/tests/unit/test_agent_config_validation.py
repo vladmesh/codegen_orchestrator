@@ -94,6 +94,17 @@ def test_claude_api_key_worker_needs_no_session(tmp_path):
     validate_agent_config(make_config("claude", str(tmp_path), auth_mode="api_key"))
 
 
+def test_claude_stand_token_worker_needs_no_host_session(tmp_path):
+    validate_agent_config(make_config("claude", str(tmp_path), auth_mode="stand_token"))
+
+
+def test_claude_stand_token_worker_refuses_an_api_key_conflict(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        validate_agent_config(make_config("claude", None, auth_mode="stand_token"))
+
+
 @pytest.mark.parametrize("agent_type", ["codex", "factory", "noop"])
 def test_other_agents_are_untouched(agent_type):
     validate_agent_config(make_config(agent_type, None))

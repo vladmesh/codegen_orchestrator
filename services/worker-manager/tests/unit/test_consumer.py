@@ -21,7 +21,7 @@ from shared.contracts.queues.worker import (
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis_client import RedisStreamClient
 
-from src.consumer import WorkerCommandConsumer
+from src.consumer import WorkerCommandConsumer, resolve_local_auth_mode
 from src.manager import WorkerManager
 
 
@@ -84,6 +84,28 @@ def _create_command() -> CreateWorkerCommand:
             capabilities=[WorkerCapability.GIT],
             ownership=WorkerOwnership(project_id="proj-1", run_id="live-1", attempt_id="eng-1"),
         ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested_mode", "agent_type", "live_contour", "expected"),
+    [
+        ("host_session", AgentType.CLAUDE, "stand", "stand_token"),
+        ("host_session", AgentType.CODEX, "stand", "stand_token"),
+        ("host_session", AgentType.CLAUDE, None, "host_session"),
+        ("api_key", AgentType.CLAUDE, "stand", "api_key"),
+    ],
+)
+def test_stand_locally_resolves_default_subscription_workers_to_the_token_mode(
+    requested_mode, agent_type, live_contour, expected
+):
+    assert (
+        resolve_local_auth_mode(
+            requested_mode=requested_mode,
+            agent_type=agent_type,
+            live_contour=live_contour,
+        )
+        == expected
     )
 
 
