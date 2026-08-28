@@ -146,7 +146,10 @@ async def test_force_rebuild_requires_managed_allowlisted_provider_id(
     monkeypatch.setenv("PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS", "1001")
     await async_client.patch(
         f"/api/servers/{test_server}",
-        json={"labels": {"provider_id": "1001"}, "is_managed": False},
+        json={
+            "labels": {"provider": "time4vps", "provider_id": "1001"},
+            "is_managed": False,
+        },
     )
 
     denied = await async_client.post(f"/api/servers/{test_server}/force-rebuild")
