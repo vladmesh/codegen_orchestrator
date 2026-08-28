@@ -53,8 +53,10 @@ def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
 def test_the_machine_manifest_is_collected_and_scanned_before_handoff_upload():
     """The created resource ids are the recovery input when a later step fails."""
     assert _steps()["Record machine manifest"]["if"] == "always()"
-    assert _steps()["Scan cleanup handoff for secrets"]["if"] == "always()"
-    assert "handoff-redaction-scan.outcome == 'success'" in _steps()["Upload cleanup handoff"]["if"]
+    assert _steps()["Admit cleanup handoff"]["if"] == "always()"
+    assert _steps()["Upload cleanup handoff"]["if"] == (
+        "${{ always() && steps.handoff-admission.outcome == 'success' }}"
+    )
 
 
 def test_the_matrix_fits_in_the_job_timeout():
@@ -156,26 +158,41 @@ def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_ca
     assert cleanup["needs"] == "e2e"
     assert "cleanup-report" in steps["Cleanup and observe run-tagged machines"]["run"]
     assert steps["Build final acceptance evidence"]["continue-on-error"] is True
-    assert "continue-on-error" not in steps["Scan final artifact for secrets"]
+    assert "continue-on-error" not in steps["Admit final artifact"]
     uploads = [
         step for step in cleanup["steps"] if "uses" in step and "upload-artifact" in step["uses"]
     ]
     assert len(uploads) == 1
-    assert "redaction-scan.outcome == 'success'" in uploads[0]["if"]
+    assert uploads[0]["if"] == "${{ always() && steps.final-admission.outcome == 'success' }}"
 
 
-def test_artifact_uploads_have_an_attempt_name_and_a_scanner_admission_boundary():
+def test_artifact_uploads_have_an_attempt_name_and_an_explicit_always_admission_boundary():
     workflow = _workflow()
     e2e_steps = _steps()
     cleanup_steps = {step["name"]: step for step in workflow["jobs"]["cleanup"]["steps"]}
 
     for step in (e2e_steps["Upload cleanup handoff"], cleanup_steps["Upload acceptance artifact"]):
         assert "github.run_attempt" in step["with"]["name"]
-        assert step.get("if") != "always()"
-    assert "--secrets-stdin" in e2e_steps["Scan cleanup handoff for secrets"]["run"]
-    assert "--secrets-stdin" in cleanup_steps["Scan final artifact for secrets"]["run"]
-    assert "never-upload" in e2e_steps["Scan cleanup handoff for secrets"]["run"]
-    assert "never-upload" in cleanup_steps["Scan final artifact for secrets"]["run"]
+        assert step["if"].startswith("${{ always() &&")
+        assert "success()" not in step["if"]
+    assert "--protected-env" in e2e_steps["Admit cleanup handoff"]["run"]
+    assert "--protected-env" in cleanup_steps["Admit final artifact"]["run"]
+    assert "never-upload" in e2e_steps["Admit cleanup handoff"]["run"]
+    assert "never-upload" in cleanup_steps["Admit final artifact"]["run"]
+
+
+def test_admission_prevents_each_upload_only_when_it_fails_for_any_e2e_outcome():
+    e2e_steps = _steps()
+    cleanup_steps = {step["name"]: step for step in _workflow()["jobs"]["cleanup"]["steps"]}
+
+    for step, admission in (
+        (e2e_steps["Upload cleanup handoff"], "handoff-admission"),
+        (cleanup_steps["Upload acceptance artifact"], "final-admission"),
+    ):
+        condition = step["if"]
+        assert condition == f"${{{{ always() && steps.{admission}.outcome == 'success' }}}}"
+        assert "build-evidence" not in condition
+        assert "handoff.outcome" not in condition
 
 
 def test_later_steps_use_the_created_orchestrator_address():

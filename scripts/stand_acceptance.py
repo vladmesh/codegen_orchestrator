@@ -23,11 +23,40 @@ REQUIRED_RUN_FILES = ("junit.xml", "report.tsv", "run.log")
 REMOTE_INVOCATION_LOG = "remote-invocation.log"
 COMBINATION_LOG = re.compile(r"(?:claude|codex)-(?:claude|codex)\.log\Z")
 SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?:API[_-]?KEY|ACCESS[_-]?TOKEN|OAUTH[_-]?TOKEN|PASSWORD|PRIVATE[_-]?KEY|SECRET)"
+    r"(?:API[_-]?KEY|ACCESS[_-]?TOKEN|OAUTH[_-]?TOKEN|PASSWORD|PRIVATE[_-]?KEY(?![_-]?PATH)|SECRET)"
     r"\s*(?:=|:)\s*\S+",
     re.IGNORECASE,
 )
 PRIVATE_KEY_MARKER = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+ADMISSION_MARKER = "stand-acceptance-admission-v1"
+
+# These are the only settings whose values are credentials.  The rendered stand
+# configuration deliberately also includes public routing and application
+# settings, which must never become redaction needles merely because they share
+# an environment file with protected values.
+PROTECTED_STAND_SECRET_NAMES = frozenset(
+    {
+        "BITLAUNCH_API_KEY",
+        "INTERNAL_API_KEY",
+        "POSTGRES_PASSWORD",
+        "SECRETS_ENCRYPTION_KEY",
+        "LK_JWT_SECRET",
+        "REGISTRY_PASSWORD",
+        "REGISTRY_PASSWORD_HASH",
+        "LOKI_PUSH_PASSWORD",
+        "LOKI_PUSH_PASSWORD_HASH",
+        "ADMIN_PASSWORD",
+        "GRAFANA_DB_PASSWORD",
+        "GRAFANA_ADMIN_PASSWORD",
+        "WORKER_BROKER_INTERNAL_TOKEN",
+        "STAND_CLAUDE_CODE_OAUTH_TOKEN",
+        "STAND_CODEX_ACCESS_TOKEN",
+        "PO_LLM_API_KEY",
+        "ARCHITECT_LLM_API_KEY",
+        "GH_APP_PRIVATE_KEY",
+        "SSH_PRIVATE_KEY",
+    }
+)
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -339,6 +368,38 @@ def scan_artifact(artifact: Path, *, canaries: tuple[str, ...] = ()) -> list[str
     return sorted(set(errors))
 
 
+def protected_values_from_environment(
+    environ: dict[str, str] | os._Environ[str],
+) -> tuple[str, ...]:
+    """Return only non-empty values from the fixed protected-value allow-list."""
+    return tuple(
+        value for name in sorted(PROTECTED_STAND_SECRET_NAMES) if (value := environ.get(name))
+    )
+
+
+def _write_admission_status(status_path: Path, admitted: bool) -> None:
+    """Write a value-free admission state; only ``admitted`` is upload-ready."""
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        json.dumps(
+            {
+                "marker": ADMISSION_MARKER,
+                "status": "admitted" if admitted else "rejected",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def admit_artifact(artifact: Path, *, status_path: Path, protected_values: tuple[str, ...]) -> bool:
+    """Scan the fixed allow-list and persist the value-free admission status."""
+    admitted = not scan_artifact(artifact, canaries=protected_values)
+    _write_admission_status(status_path, admitted)
+    return admitted
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -359,6 +420,14 @@ def main() -> int:
         "--secrets-stdin",
         action="store_true",
         help="read protected NAME=value values from stdin without rendering them",
+    )
+    admit = sub.add_parser("admit")
+    admit.add_argument("--artifact", required=True, type=Path)
+    admit.add_argument("--status", required=True, type=Path)
+    admit.add_argument(
+        "--protected-env",
+        action="store_true",
+        help="derive needles only from the fixed protected environment allow-list",
     )
     args = parser.parse_args()
     if args.command == "build":
@@ -383,6 +452,18 @@ def main() -> int:
             )
             return 2
         return 0 if complete else 2
+    if args.command == "admit":
+        if not args.protected_env:
+            parser.error("admit requires --protected-env")
+        return (
+            0
+            if admit_artifact(
+                args.artifact,
+                status_path=args.status,
+                protected_values=protected_values_from_environment(os.environ),
+            )
+            else 2
+        )
     canaries = tuple(
         value for name in args.canary_env if (value := os.environ.get(name)) is not None
     )

@@ -84,6 +84,12 @@
 
 ### Fixed
 
+- Stand acceptance admission now derives redaction needles only from a fixed
+  protected-value allow-list, so public dynamic configuration and lifecycle
+  manifest values remain uploadable. Both handoff and final artifacts use an
+  explicit `always()` admission gate, retaining scanned diagnostics for failed,
+  cancelled, and incomplete runs while a failed admission still blocks upload.
+
 - Stand acceptance evidence now installs the pinned `uv` runner through the
   dynamic host provisioning path, captures remote runner diagnostics into the
   scanned handoff, and invokes the suite only after successful target

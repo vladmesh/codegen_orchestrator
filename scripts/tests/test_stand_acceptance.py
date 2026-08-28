@@ -1,6 +1,13 @@
 import json
 
-from scripts.stand_acceptance import build_acceptance_artifact, scan_artifact
+from scripts.stand_acceptance import (
+    ADMISSION_MARKER,
+    PROTECTED_STAND_SECRET_NAMES,
+    admit_artifact,
+    build_acceptance_artifact,
+    protected_values_from_environment,
+    scan_artifact,
+)
 
 
 def _write_inputs(tmp_path, *, cleanup: dict | None = None):
@@ -192,3 +199,112 @@ def test_redaction_scan_covers_handoff_logs_and_bare_known_secret_values(tmp_pat
     errors = scan_artifact(handoff, canaries=("bare-value",))
 
     assert errors == ["candidate contains a supplied redaction canary"]
+
+
+def test_admission_accepts_public_stand_configuration_and_real_shaped_manifest(tmp_path):
+    handoff = tmp_path / "handoff"
+    run = handoff / "run"
+    run.mkdir(parents=True)
+    (handoff / "machines.json").write_text(
+        json.dumps(
+            {
+                "run_tag": "gha-33168872249-1",
+                "machines": [
+                    {
+                        "id": "one",
+                        "role": "orchestrator",
+                        "ip": "203.0.113.10",
+                        "created_at": "2026-08-28T00:00:00Z",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run / "run.log").write_text(
+        "STAND_RUN_TAG=gha-33168872249-1\nLIVE_CONTOUR=stand\n"
+        "PO_LLM_MODEL=gpt-public\nPOSTGRES_DB=codegen\n"
+        "GITHUB_APP_PRIVATE_KEY_PATH=/app/keys/github_app.pem\n",
+        encoding="utf-8",
+    )
+    status = tmp_path / "admission-status.json"
+
+    admitted = admit_artifact(
+        handoff,
+        status_path=status,
+        protected_values=("protected-value",),
+    )
+
+    assert admitted is True
+    assert json.loads(status.read_text(encoding="utf-8")) == {
+        "marker": ADMISSION_MARKER,
+        "status": "admitted",
+    }
+
+
+def test_admission_rejects_bare_protected_value_and_credential_assignment_without_echoing_them(
+    tmp_path,
+):
+    artifact = tmp_path / "acceptance"
+    artifact.mkdir()
+    (artifact / "run.log").write_text(
+        "protected-value\nBITLAUNCH_API_KEY=another-value\n", encoding="utf-8"
+    )
+    status = tmp_path / "admission-status.json"
+
+    admitted = admit_artifact(
+        artifact,
+        status_path=status,
+        protected_values=("protected-value",),
+    )
+
+    assert admitted is False
+    status_text = status.read_text(encoding="utf-8")
+    assert json.loads(status_text) == {
+        "marker": ADMISSION_MARKER,
+        "status": "rejected",
+    }
+    assert "protected-value" not in status_text
+    assert "another-value" not in status_text
+
+
+def test_admission_only_derives_needles_from_explicit_protected_name_allow_list():
+    values = protected_values_from_environment(
+        {
+            "BITLAUNCH_API_KEY": "protected-value",
+            "STAND_RUN_TAG": "gha-33168872249-1",
+            "LIVE_CONTOUR": "stand",
+            "PO_LLM_MODEL": "gpt-public",
+        }
+    )
+
+    assert values == ("protected-value",)
+    assert "STAND_RUN_TAG" not in PROTECTED_STAND_SECRET_NAMES
+    assert "LIVE_CONTOUR" not in PROTECTED_STAND_SECRET_NAMES
+    assert "PO_LLM_MODEL" not in PROTECTED_STAND_SECRET_NAMES
+
+
+def test_admission_canary_is_rejected_outside_the_candidate(tmp_path):
+    candidate = tmp_path / "acceptance"
+    candidate.mkdir()
+    (candidate / "run.log").write_text("safe diagnostic\n", encoding="utf-8")
+    never_upload = tmp_path / "never-upload"
+    never_upload.mkdir()
+    (never_upload / "run.log").write_text("disposable-canary\n", encoding="utf-8")
+
+    assert (
+        admit_artifact(
+            candidate,
+            status_path=tmp_path / "candidate-status.json",
+            protected_values=("disposable-canary",),
+        )
+        is True
+    )
+    assert (
+        admit_artifact(
+            never_upload,
+            status_path=tmp_path / "canary-status.json",
+            protected_values=("disposable-canary",),
+        )
+        is False
+    )
