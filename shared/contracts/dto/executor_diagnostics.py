@@ -18,6 +18,8 @@ SAFE_EXECUTOR_DIAGNOSTIC_REASONS = {
     "disabled": "Host-session executor is not configured.",
     "local_auth_invalid": "Required local host-session material is unusable.",
     "api_key_missing": "Required local API-key configuration is unavailable.",
+    "stand_token_ready": "Local stand-token authentication and worker inventory are ready.",
+    "stand_token_invalid": "Required local stand-token authentication is unavailable.",
     "local_warning": "Local authentication is usable with a non-fatal warning.",
     "inventory_unreconciled": "Worker inventory could not be reconciled.",
     "snapshot_unavailable": "Current executor diagnostics are unavailable.",
@@ -40,6 +42,7 @@ class ExecutorAvailability(StrEnum):
 class ExecutorAuthMode(StrEnum):
     HOST_SESSION = "host_session"
     API_KEY = "api_key"
+    STAND_TOKEN = "stand_token"  # noqa: S105 - non-secret wire enum value
     UNKNOWN = "unknown"
 
 
@@ -92,6 +95,14 @@ class ExecutorDiagnostic(BaseModel):
             and self.auth_mode is ExecutorAuthMode.API_KEY
             and self.availability is ExecutorAvailability.UNAVAILABLE
             and has_known_leases,
+            "stand_token_ready": self.enabled
+            and self.auth_mode is ExecutorAuthMode.STAND_TOKEN
+            and self.availability is ExecutorAvailability.AVAILABLE
+            and has_known_leases,
+            "stand_token_invalid": self.enabled
+            and self.auth_mode is ExecutorAuthMode.STAND_TOKEN
+            and self.availability is ExecutorAvailability.UNAVAILABLE
+            and has_known_leases,
             # Disabled is locally proven unavailable even if an inventory read
             # failed.  A reconciled live lease count remains exact rather than
             # being overwritten with zero.
@@ -99,7 +110,7 @@ class ExecutorDiagnostic(BaseModel):
             and local_auth_mode
             and self.availability is ExecutorAvailability.UNAVAILABLE,
             "inventory_unreconciled": self.enabled
-            and local_auth_mode
+            and (local_auth_mode or self.auth_mode is ExecutorAuthMode.STAND_TOKEN)
             and self.availability is ExecutorAvailability.UNKNOWN
             and not has_known_leases,
             # These are API boundary fallbacks, never producer observations.

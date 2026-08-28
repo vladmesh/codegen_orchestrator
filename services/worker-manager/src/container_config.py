@@ -25,10 +25,12 @@ class WorkerContainerConfig:
     worker_type: str
     agent_type: AgentType
     capabilities: List[str]
-    auth_mode: str = "host_session"  # "host_session" or "api_key"
+    auth_mode: str = "host_session"  # "host_session", "api_key", or "stand_token"
     host_claude_dir: Optional[str] = None
     host_codex_home: Optional[str] = None
     api_key: Optional[str] = None
+    stand_claude_code_oauth_token: Optional[str] = None
+    stand_codex_access_token: Optional[str] = None
     workspace_host_path: Optional[str] = None
     transcript_host_path: Optional[str] = None
     transcript_max_bytes: int = 5 * 1024 * 1024
@@ -61,7 +63,7 @@ class WorkerContainerConfig:
         }
         env.update({"WORKER_BROKER_URL": broker_url, "WORKER_BROKER_TOKEN": broker_token})
 
-        if self.agent_type == AgentType.CLAUDE:
+        if self.agent_type == AgentType.CLAUDE and self.auth_mode == "host_session":
             env["CLAUDE_CONFIG_DIR"] = CLAUDE_CONFIG_DIR
 
         if self.agent_type == AgentType.CODEX:
@@ -74,6 +76,12 @@ class WorkerContainerConfig:
                 env["CODEX_API_KEY"] = self.api_key
             else:
                 env["ANTHROPIC_API_KEY"] = self.api_key
+
+        if self.auth_mode == "stand_token":
+            if self.agent_type == AgentType.CLAUDE and self.stand_claude_code_oauth_token:
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = self.stand_claude_code_oauth_token
+            if self.agent_type == AgentType.CODEX and self.stand_codex_access_token:
+                env["CODEX_ACCESS_TOKEN"] = self.stand_codex_access_token
 
         return env
 

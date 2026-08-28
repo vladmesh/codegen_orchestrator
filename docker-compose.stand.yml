@@ -4,6 +4,20 @@
 # only the differences. Everything not named here is production's definition.
 
 services:
+  worker-manager:
+    # The stand gets short-lived tokens through its protected .env, not either
+    # durable host session directory. Retain only the socket, workspace and
+    # transcript mounts required to construct and observe worker containers.
+    environment:
+      HOST_CLAUDE_DIR: ""
+      HOST_CLAUDE_VALIDATION_PATH: ""
+      HOST_CODEX_HOME: ""
+      HOST_CODEX_VALIDATION_PATH: ""
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
+      - ${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}:${WORKER_TRANSCRIPT_HOST_PATH:-/data/worker-transcripts}
+
   # The stand has no PO bot and must not borrow production's. Two long-polling
   # clients on one token steal each other's updates, which would make the
   # production bot lose messages — and the live pipeline never talks to this

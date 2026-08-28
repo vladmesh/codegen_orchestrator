@@ -78,6 +78,19 @@ def check_codex_session(profile: str | None) -> tuple[str, bool, str]:
     return _ok("codex session", "local session material is valid")
 
 
+def check_stand_token_credentials() -> tuple[str, bool, str]:
+    """Apply the pre-create token validator on the stand, never host profiles."""
+    from shared.stand_credentials import CredentialShape, validate_stand_token_credentials
+
+    failures = validate_stand_token_credentials(os.environ, shape=CredentialShape.STAND_HOST)
+    if failures:
+        return _fail(
+            "stand token authentication",
+            "; ".join(f"{item.name}: {item.detail}" for item in failures),
+        )
+    return _ok("stand token authentication", "local token prerequisites are valid")
+
+
 def check_deploy_target(api_url: str, internal_key: str | None) -> tuple[str, bool, str]:
     """A live run needs a server the allocator will actually admit.
 
@@ -149,9 +162,16 @@ def main() -> int:
             os.environ.get("STAND_API_URL", DEFAULT_API_URL),
             os.environ.get("INTERNAL_API_KEY"),
         ),
-        check_claude_session(os.environ.get("HOST_CLAUDE_DIR")),
-        check_codex_session(os.environ.get("HOST_CODEX_HOME")),
     ]
+    if os.environ.get("LIVE_CONTOUR") == "stand":
+        results.append(check_stand_token_credentials())
+    else:
+        results.extend(
+            [
+                check_claude_session(os.environ.get("HOST_CLAUDE_DIR")),
+                check_codex_session(os.environ.get("HOST_CODEX_HOME")),
+            ]
+        )
 
     for name, passed, detail in results:
         mark = "ok  " if passed else "FAIL"

@@ -238,3 +238,46 @@ class TestAgentSubprocessEnv:
         ):
             with pytest.raises(RuntimeError, match="auth failed"):
                 await wrapper.execute_agent({"prompt": "test"})
+
+    @pytest.mark.asyncio
+    async def test_codex_stand_token_login_uses_stdin_and_does_not_reach_subprocess_env_or_argv(
+        self, tmp_path
+    ):
+        wrapper = _make_wrapper(agent_type="codex", auth_mode="stand_token")
+        calls: list[tuple[tuple, dict, AsyncMock]] = []
+
+        async def fake_exec(*args, **kwargs):
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            proc.returncode = 0
+            calls.append((args, kwargs, proc))
+            return proc
+
+        with (
+            patch("worker_wrapper.wrapper.asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch.object(wrapper, "_resolve_prompt", return_value="do stuff"),
+            patch.dict(
+                "os.environ",
+                {
+                    "PATH": "/usr/bin",
+                    "HOME": "/home/worker",
+                    "CODEX_HOME": str(tmp_path / ".codex"),
+                    "CODEX_ACCESS_TOKEN": "fake-codex-token",
+                },
+                clear=True,
+            ),
+        ):
+            await wrapper.execute_agent({"prompt": "test"})
+
+        login_args, login_kwargs, login_proc = calls[0]
+        agent_args, agent_kwargs, _agent_proc = calls[1]
+        assert login_args == ("codex", "login", "--with-access-token")
+        assert "fake-codex-token" not in login_args
+        assert "CODEX_ACCESS_TOKEN" not in login_kwargs["env"]
+        login_proc.communicate.assert_awaited_once_with(b"fake-codex-token")
+        assert "fake-codex-token" not in agent_args
+        assert "CODEX_ACCESS_TOKEN" not in agent_kwargs["env"]
+        assert (
+            tmp_path / ".codex" / "config.toml"
+        ).read_text() == 'cli_auth_credentials_store = "file"\n'
+        assert not (tmp_path / ".codex" / "auth.json").exists()

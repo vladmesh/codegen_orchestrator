@@ -490,7 +490,7 @@ export interface PaidWorkControls {
 }
 
 export type ExecutorAvailability = 'available' | 'degraded' | 'unavailable' | 'unknown'
-export type ExecutorAuthMode = 'host_session' | 'api_key' | 'unknown'
+export type ExecutorAuthMode = 'host_session' | 'api_key' | 'stand_token' | 'unknown'
 
 export interface ExecutorDiagnostic {
   executor: 'claude' | 'codex'

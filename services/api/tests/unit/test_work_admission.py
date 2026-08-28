@@ -101,6 +101,41 @@ async def test_paid_run_start_adds_the_queued_run_before_returning_admitted(monk
 
 
 @pytest.mark.asyncio
+async def test_stand_token_diagnostic_admits_paid_work_before_the_worker_queue(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    diagnostic = ExecutorDiagnostic(
+        executor=AgentType.CODEX,
+        enabled=True,
+        auth_mode=ExecutorAuthMode.STAND_TOKEN,
+        availability=ExecutorAvailability.AVAILABLE,
+        observed_at=now,
+        expires_at=now + timedelta(seconds=60),
+        active_lease_count=0,
+        reason_code="stand_token_ready",
+        reason="Local stand-token authentication and worker inventory are ready.",
+    )
+
+    async def current(_executor):
+        return diagnostic, None
+
+    monkeypatch.setattr("src.work_admission.current_executor_diagnostic", current)
+    decision = ExecutorDecision(
+        attempt_kind=RunType.QA,
+        agent_type=AgentType.CODEX,
+        source="qa_api_setting",
+        policy_version="v2",
+        reason="Configured QA executor.",
+    )
+
+    observed, allowed = await _executor_diagnostic_allows_admission(decision, AsyncMock())
+
+    assert observed is diagnostic
+    assert allowed is True
+
+
+@pytest.mark.asyncio
 async def test_unknown_confirmation_cannot_admit_after_new_unavailable_snapshot(monkeypatch):
     from datetime import UTC, datetime, timedelta
 

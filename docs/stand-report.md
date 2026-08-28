@@ -1,5 +1,10 @@
 # Стенд кодгена: отчёт о запуске
 
+> Historical report. Its host-session and keepalive statements predate the
+> current ephemeral-token policy: Claude uses an annual OAuth token without
+> keepalive, and Codex uses a manually refreshed ten-day access token with a
+> pre-create TTL check and no durable host `auth.json`.
+
 25.08.2026. Обновлено после первого зелёного прогона. Файл не закоммичен.
 
 ## Итог одной строкой

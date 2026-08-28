@@ -10,11 +10,32 @@ from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 from src.manager import WorkerManager
+from src.container_config import WorkerContainerConfig
 
 
 # Every worker is created for somebody. These tests are not about who, so they
 # use one owner; the tests that are about ownership name their own.
 _OWNERSHIP = WorkerOwnership(project_id="proj-test", run_id="eng-test", attempt_id="attempt-eng-test")
+
+
+@pytest.mark.asyncio
+async def test_claude_stand_token_refuses_api_key_before_any_worker_state_is_written():
+    redis = MagicMock()
+    redis.hset = AsyncMock()
+    manager = WorkerManager(redis=redis, docker_client=_make_docker_mock())
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        await manager.create_worker_with_capabilities(
+            worker_id="stand-conflict",
+            capabilities=[],
+            base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
+            agent_type=AgentType.CLAUDE,
+            auth_mode="stand_token",
+            env_vars={"ANTHROPIC_API_KEY": "test-api-key"},
+        )
+
+    redis.hset.assert_not_awaited()
 
 
 def _make_docker_mock():
@@ -136,6 +157,37 @@ async def test_create_worker_unit():
     assert res == "test-id"
     wrapper.run_container.assert_awaited_once()
     redis.set.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stand_token_is_not_a_docker_label():
+    redis = MagicMock()
+    redis.set = AsyncMock()
+    redis.hset = AsyncMock()
+    wrapper = _make_docker_mock()
+    token = "fake-stand-token"
+    config = WorkerContainerConfig(
+        worker_id="stand-label-boundary",
+        worker_type="developer",
+        agent_type=AgentType.CODEX,
+        capabilities=[],
+        auth_mode="stand_token",
+    )
+
+    await WorkerManager(redis=redis, docker_client=wrapper).create_worker(
+        "stand-label-boundary",
+        "worker:latest",
+        ownership=_OWNERSHIP,
+        env_vars={"CODEX_ACCESS_TOKEN": token},
+        volumes={},
+        network_name="codegen_worker",
+        create_dev_network=False,
+        container_config=config,
+    )
+
+    labels = wrapper.run_container.call_args.kwargs["labels"]
+    assert labels["com.codegen.auth_mode"] == "stand_token"
+    assert token not in labels.values()
 
 
 @pytest.mark.asyncio

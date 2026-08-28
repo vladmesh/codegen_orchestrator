@@ -114,6 +114,8 @@ def test_snapshot_requires_protocol_version_and_fixed_safe_reason_text():
         (True, "api_key", ExecutorAvailability.DEGRADED, 1, "local_warning"),
         (True, "host_session", ExecutorAvailability.UNAVAILABLE, 2, "local_auth_invalid"),
         (True, "api_key", ExecutorAvailability.UNAVAILABLE, 2, "api_key_missing"),
+        (True, "stand_token", ExecutorAvailability.AVAILABLE, 0, "stand_token_ready"),
+        (True, "stand_token", ExecutorAvailability.UNAVAILABLE, 2, "stand_token_invalid"),
         (False, "host_session", ExecutorAvailability.UNAVAILABLE, 3, "disabled"),
         (False, "api_key", ExecutorAvailability.UNAVAILABLE, None, "disabled"),
         (True, "host_session", ExecutorAvailability.UNKNOWN, None, "inventory_unreconciled"),

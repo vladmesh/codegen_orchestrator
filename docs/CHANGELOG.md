@@ -4,6 +4,16 @@
 
 ### Added
 
+- The ephemeral stand now uses a non-secret `stand_token` worker auth selector:
+  worker-manager resolves Claude and Codex credentials locally, Claude refuses
+  an `ANTHROPIC_API_KEY` conflict, and Codex logs in from stdin without a host
+  profile. Claude's opaque annual token is checked through strictly parsed,
+  operator-supplied expiry metadata; Codex uses JWT expiry. The shared validator
+  also drives the stand executor diagnostic, so valid token mode reaches paid
+  worker admission while unavailable credentials fail closed. The stand workflow
+  validates these prerequisites, Telethon and SSH material before the BitLaunch
+  lifecycle preflight can create either machine.
+
 - Stand e2e now bootstraps its dynamically created orchestrator from the
   checked-out revision, derives the public orchestrator identity only from the
   lifecycle outputs, and waits for the local API before it registers a separate
@@ -65,6 +75,11 @@
   money only after the count gate.
 
 ### Fixed
+
+- Stand token validation now centrally binds either GitHub runner or rendered
+  stand-host credential names before checking expiry. `make stand-preflight`
+  and `make stand-run` load the rendered stand configuration, so a valid
+  `STAND_*` token configuration no longer fails as missing host-session state.
 
 - Provisioner key-authentication now materializes every supplied SSH private
   key with exactly one terminal LF before invoking Ansible, so BitLaunch

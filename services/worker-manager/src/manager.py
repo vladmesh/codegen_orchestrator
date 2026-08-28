@@ -206,6 +206,45 @@ class WorkerManager:
         expires_at: datetime,
         leases: dict[AgentType, int] | None,
     ) -> ExecutorDiagnostic:
+        if settings.LIVE_CONTOUR == "stand":
+            failures = self._stand_token_failures()
+            failure = next((item for item in failures if item.name == f"{executor.value.title()} token"), None)
+            if leases is None:
+                return ExecutorDiagnostic(
+                    executor=executor,
+                    enabled=True,
+                    auth_mode=ExecutorAuthMode.STAND_TOKEN,
+                    availability=ExecutorAvailability.UNKNOWN,
+                    observed_at=now,
+                    expires_at=expires_at,
+                    active_lease_count=None,
+                    reason_code="inventory_unreconciled",
+                    reason=safe_executor_diagnostic_reason("inventory_unreconciled"),
+                )
+            if failure is not None:
+                return ExecutorDiagnostic(
+                    executor=executor,
+                    enabled=True,
+                    auth_mode=ExecutorAuthMode.STAND_TOKEN,
+                    availability=ExecutorAvailability.UNAVAILABLE,
+                    observed_at=now,
+                    expires_at=expires_at,
+                    active_lease_count=leases[executor],
+                    reason_code="stand_token_invalid",
+                    reason=safe_executor_diagnostic_reason("stand_token_invalid"),
+                )
+            return ExecutorDiagnostic(
+                executor=executor,
+                enabled=True,
+                auth_mode=ExecutorAuthMode.STAND_TOKEN,
+                availability=ExecutorAvailability.AVAILABLE,
+                observed_at=now,
+                expires_at=expires_at,
+                active_lease_count=leases[executor],
+                reason_code="stand_token_ready",
+                reason=safe_executor_diagnostic_reason("stand_token_ready"),
+            )
+
         profile = settings.HOST_CLAUDE_DIR if executor is AgentType.CLAUDE else settings.HOST_CODEX_HOME
         if not profile:
             return ExecutorDiagnostic(
@@ -262,6 +301,16 @@ class WorkerManager:
             active_lease_count=leases[executor],
             reason_code="ready",
             reason=safe_executor_diagnostic_reason("ready"),
+        )
+
+    @staticmethod
+    def _stand_token_failures():
+        """Read stand secrets only at the protected manager boundary."""
+        from shared.stand_credentials import CredentialShape, validate_stand_token_credentials
+
+        return validate_stand_token_credentials(
+            settings,
+            shape=CredentialShape.STAND_HOST,
         )
 
     async def _register_broker_worker(self, worker_id: str, token: str, worker_type: str) -> None:
@@ -1142,6 +1191,24 @@ class WorkerManager:
         agent_type = AgentType(agent_type)
         is_qa_worker = worker_type == QA_WORKER_TYPE
         project_id = ownership.project_id
+        env_vars = env_vars or {}
+        if auth_mode == "stand_token":
+            if agent_type not in {AgentType.CLAUDE, AgentType.CODEX}:
+                raise RuntimeError("stand_token authentication is supported only for Claude and Codex workers")
+            if agent_type is AgentType.CLAUDE and (api_key or "ANTHROPIC_API_KEY" in env_vars):
+                raise RuntimeError("ANTHROPIC_API_KEY conflicts with Claude stand_token authentication")
+            supplied = {"CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"}.intersection(env_vars)
+            if supplied:
+                raise RuntimeError(
+                    "stand token credentials must be local to worker-manager, not env_vars: "
+                    + ", ".join(sorted(supplied))
+                )
+            failure = next(
+                (item for item in self._stand_token_failures() if item.name == f"{agent_type.value.title()} token"),
+                None,
+            )
+            if failure is not None:
+                raise RuntimeError(f"stand_token authentication is unavailable: {failure.detail}")
         # Written before anything is created, for two reasons that both need it
         # early. It is what `delete_worker` reads to know a QA workspace is
         # scratch it must remove — a creation that fails halfway would otherwise
@@ -1211,8 +1278,6 @@ class WorkerManager:
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.BUILDING})
 
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
-        env_vars = env_vars or {}
-
         try:
             if is_qa_worker and (not instructions or not task_content):
                 raise RuntimeError("a QA executor requires instructions and task_content before it can become ready")
@@ -1234,6 +1299,10 @@ class WorkerManager:
                 host_claude_dir=host_claude_dir,
                 host_codex_home=host_codex_home,
                 api_key=api_key,
+                stand_claude_code_oauth_token=(
+                    settings.STAND_CLAUDE_CODE_OAUTH_TOKEN if auth_mode == "stand_token" else None
+                ),
+                stand_codex_access_token=(settings.STAND_CODEX_ACCESS_TOKEN if auth_mode == "stand_token" else None),
                 transcript_host_path=settings.WORKER_TRANSCRIPT_STORAGE_PATH,
                 transcript_max_bytes=settings.WORKER_TRANSCRIPT_MAX_BYTES,
             )
