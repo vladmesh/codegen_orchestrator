@@ -24,6 +24,7 @@ import argparse
 from datetime import UTC, datetime, timedelta
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -74,8 +75,19 @@ def _request(method: str, path: str, body: dict | None = None) -> dict:
     return payload
 
 
+RUN_TAG = re.compile(r"^gha-\d+-\d+$")
+
+
 def record_name(run_tag: str, *, zone: str, subdomain: str) -> str:
-    """The one name this run answers to."""
+    """The one name this run answers to.
+
+    The tag shape is enforced because these operations delete: a caller that
+    passes something else could otherwise name, and remove, any record nested
+    under the stand subdomain. The machines beside it are protected by a
+    fail-closed ownership policy, and their name should not be weaker.
+    """
+    if not RUN_TAG.match(run_tag):
+        raise StandDNSError(f"{run_tag!r} is not a stand run tag (gha-<run-id>-<attempt>)")
     return f"{run_tag}.{subdomain}.{zone}"
 
 
@@ -160,7 +172,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     for record in payload.get("result") or []:
         name = record.get("name") or ""
         created = record.get("created_on")
-        if not name.endswith(suffix) or not created:
+        label = name[: -len(suffix)] if name.endswith(suffix) else ""
+        # Age alone is not ownership: only a record this lifecycle could have
+        # created is a record it may remove.
+        if not label or not RUN_TAG.match(label) or not created:
             continue
         if datetime.fromisoformat(created.replace("Z", "+00:00")) >= cutoff:
             continue

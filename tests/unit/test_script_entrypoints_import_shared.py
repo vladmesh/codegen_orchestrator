@@ -54,7 +54,13 @@ def _callers() -> list[tuple[str, str]]:
 def test_every_shared_importing_script_is_invoked_as_a_module() -> None:
     offenders = []
     for name in sorted(_scripts_importing_shared()):
-        by_path = re.compile(rf"scripts/{re.escape(name)}\.py")
+        # Both spellings of a path invocation: the literal one and the one
+        # assembled from path components, which is how the sweep hid from an
+        # earlier version of this guard.
+        by_path = re.compile(
+            rf"scripts/{re.escape(name)}\.py"
+            rf"|\"scripts\"\s*/\s*\"{re.escape(name)}\.py\""
+        )
         for where, text in _callers():
             for line in text.splitlines():
                 if not by_path.search(line):

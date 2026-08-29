@@ -240,10 +240,21 @@ def preflight(env: dict[str, str], log) -> bool:
 
 
 def sweep(env: dict[str, str], log) -> bool:
+    # The sweep runs here, on the host, while `GITHUB_APP_PRIVATE_KEY_PATH` names
+    # the path the key has *inside a container*. Reading it from the host gets a
+    # permission error on a path that does not exist there, the contour cleanup
+    # dies before it starts, and the run still reports green. The host path is
+    # the bind-mount source the stack was given.
+    host_pem = env.get("GITHUB_APP_PEM_PATH") or os.environ.get("GITHUB_APP_PEM_PATH")
+    sweep_env = {**os.environ, **env, "LIVE_CONTOUR": "stand"}
+    if host_pem:
+        sweep_env["GITHUB_APP_PRIVATE_KEY_PATH"] = host_pem
     result = subprocess.run(  # noqa: S603
-        ["uv", "run", "python", str(REPO / "scripts" / "clean_live_tests.py")],  # noqa: S607
+        # As a module: a path invocation puts `scripts/` on sys.path instead of
+        # the repository root, and `shared` then cannot be imported.
+        ["uv", "run", "python", "-m", "scripts.clean_live_tests"],  # noqa: S607
         cwd=REPO,
-        env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
+        env=sweep_env,
         capture_output=True,
         text=True,
         check=False,
@@ -328,12 +339,17 @@ def main() -> int:
         if not passed:
             failed += 1
 
-    if not args.skip_sweep:
-        sweep(env, log)
+    # Cleanup is part of the result, not an epilogue. A sweep that failed leaves
+    # database rows, GitHub repositories, workers and workspaces behind for the
+    # next serialized run to inherit, and reporting green over that hides the
+    # residue until it breaks something else.
+    swept = args.skip_sweep or sweep(env, log)
 
     write_junit_report(run_dir / "junit.xml", results)
     log(report.read_text(encoding="utf-8").rstrip())
-    return 1 if failed else 0
+    if not swept:
+        log("cleanup failed; the run is not green regardless of the suite result")
+    return 1 if failed or not swept else 0
 
 
 if __name__ == "__main__":
