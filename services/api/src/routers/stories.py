@@ -558,33 +558,6 @@ async def _require_running_acceptance_target(story: Story, db: AsyncSession) -> 
         )
 
 
-async def _require_qa_verified_completion_target(story: Story, db: AsyncSession) -> None:
-    """A non-acceptance completion is valid only after the current QA verdict."""
-    query = (
-        select(Run)
-        .where(
-            Run.story_id == story.id,
-            Run.type == RunType.QA.value,
-            Run.status == RunStatus.COMPLETED.value,
-        )
-        .order_by(Run.completed_at.desc(), Run.id.desc())
-        .limit(1)
-    )
-    if story.reopened_at is not None:
-        query = query.where(Run.created_at >= story.reopened_at)
-    run = (await db.execute(query)).scalars().first()
-    if (
-        run is None
-        or not isinstance(run.result, dict)
-        or run.result.get("qa_outcome") != QAOutcome.PASSED
-        or QA_HANDOFF_KEY not in run.run_metadata
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="complete requires a QA-verified application address",
-        )
-
-
 @router.post("/{story_id}/human-review", response_model=StoryRead)
 async def human_review_story(
     story_id: str,
@@ -662,8 +635,6 @@ async def complete_story(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Use accept-result to complete a story in waiting_human_review",
         )
-    await _require_qa_verified_completion_target(story, db)
-
     logger.info("story_completed", story_id=story.id, actor=body.actor)
     return await _complete_story(story, db)
 

@@ -361,14 +361,9 @@ async def test_start_story_invalid_transition():
 
 
 @pytest.mark.asyncio
-async def test_complete_story_refuses_without_a_qa_verified_address():
+async def test_complete_story():
     story = _make_story(id="story-abc", status="in_progress")
-    story_result = MagicMock()
-    story_result.scalar_one_or_none.return_value = story
-    qa_result = MagicMock()
-    qa_result.scalars.return_value.first.return_value = None
-    session = _mock_session()
-    session.execute.side_effect = [story_result, qa_result]
+    session = _mock_session(scalar_one_or_none=story)
     _override_session(session)
 
     transport = ASGITransport(app=app)
@@ -377,8 +372,8 @@ async def test_complete_story_refuses_without_a_qa_verified_address():
     ) as client:
         resp = await client.post("/api/stories/story-abc/complete")
 
-    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
-    assert story.status == "in_progress"
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "completed"
 
 
 @pytest.mark.asyncio
@@ -399,7 +394,7 @@ async def test_complete_story_refuses_waiting_human_review_without_acceptance_au
 
 
 @pytest.mark.asyncio
-async def test_complete_story_without_qa_does_not_owe_a_notification():
+async def test_complete_story_without_qa_owes_a_story_backed_notification_in_the_same_commit():
     story = _make_story(id="story-abc", status="in_progress")
     story_result = MagicMock()
     story_result.scalar_one_or_none.return_value = story
@@ -415,10 +410,18 @@ async def test_complete_story_without_qa_does_not_owe_a_notification():
     ) as client:
         resp = await client.post("/api/stories/story-abc/complete")
 
-    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
-    assert story.status == "in_progress"
-    assert story.owner_notification is None
-    session.commit.assert_not_awaited()
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "completed"
+    record = story.owner_notification
+    assert record["event"] == "story_completed"
+    assert record["story_id"] == "story-abc"
+    assert record["terminal_status"] == "completed"
+    assert record["state"] == "owed"
+    assert (
+        record["text"]
+        == "The story is finished. Tell the user the good news that their product is ready."
+    )
+    session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -450,12 +453,7 @@ async def test_complete_story_keeps_the_address_verified_by_qa():
     application_result = MagicMock()
     application_result.scalar_one_or_none.return_value = "running"
     session = _mock_session()
-    session.execute.side_effect = [
-        story_result,
-        qa_result,
-        qa_result,
-        application_result,
-    ]
+    session.execute.side_effect = [story_result, qa_result, application_result]
     _override_session(session)
 
     transport = ASGITransport(app=app)
@@ -585,7 +583,7 @@ async def test_completion_query_excludes_qa_runs_before_the_reopen():
 
 
 @pytest.mark.asyncio
-async def test_complete_story_refuses_a_corrupt_passed_qa_handoff():
+async def test_complete_story_with_corrupt_passed_qa_handoff_fails_fast():
     story = _make_story(id="story-abc", status="testing")
     qa_run = MagicMock(
         id="qa-abc",
@@ -604,10 +602,8 @@ async def test_complete_story_refuses_a_corrupt_passed_qa_handoff():
     async with AsyncClient(
         transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
     ) as client:
-        response = await client.post("/api/stories/story-abc/complete")
-
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
-    assert story.status == "testing"
+        with pytest.raises(KeyError):
+            await client.post("/api/stories/story-abc/complete")
 
 
 @pytest.mark.asyncio

@@ -1702,8 +1702,8 @@ quarantine remains while work is pending and is cleared only by the later passed
 QA verdict carries its verified address even if a later health probe has temporarily marked the
 application non-running; QA passing is live verification. Human acceptance has no green QA verdict,
 so it refuses unless the handoff application is currently `running` and tells the operator to use
-Recheck QA otherwise. This ensures every completed story either has the QA-verified address or was
-accepted only while its address is reachable. Recheck refuses a project with more than one application,
+Recheck QA otherwise. This ensures every operator-finished story either has the QA-verified address or
+was accepted only while its address is reachable. Recheck refuses a project with more than one application,
 because a create/feature deploy cannot otherwise prove that allocation will honour the capability receipt.
 It also refuses a target still `stopping` with an actionable wait-and-retry reason.
 
