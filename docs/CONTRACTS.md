@@ -1662,11 +1662,23 @@ delivery work. Existing completed stories retain `NULL`; the migration neither c
 notifications nor changes their lifecycle. Other terminal notices remain on the run that produced
 them in `run_metadata.owner_notification`.
 
+`POST /api/stories/{id}/accept-result` is the human completion route for a story in
+`waiting_human_review`. It accepts only an LK bearer administrator, requires a non-blank `basis`,
+and reaches the same completion transaction as `POST /complete`. In that transaction it writes
+`stories.operator_acceptance` (`actor=admin:<credential subject>`, basis and server
+`accepted_at`), clears the no-longer-live `quarantine_reason`, creates the ordinary `OWED`
+completion notification and transitions the story directly to `completed`. The record is returned
+by story reads. `X-Telegram-ID` can only agree with the bearer subject, never select another
+administrator. The old `waiting_human_review → in_progress` edge remains for actual resumed work;
+the admin UI presents acceptance for a finished result instead of making an operator use that edge.
+
 The completion endpoint uses the newest completed QA run for this story only when its typed result
-is `passed`; its stored QA handoff provides the deployed URL and optional bot username. This keeps
-the address QA actually verified while leaving a direct completion with no passed QA run a valid
-obligation, with a general PO instruction. In both cases the stored text remains an instruction for
-the PO agent, not user-facing wording.
+is `passed`; a human acceptance may also use the current QA handoff's deploy address after a failed
+QA result. Its stored handoff provides the deployed URL and optional bot username. A reopen stamps
+`stories.reopened_at`; address selection accepts only QA runs created in that work cycle, so a
+recompletion never reuses pre-reopen verification. With no current-cycle deploy provenance, the
+notification deliberately falls back to the address-less instruction. In both cases the stored text
+remains an instruction for the PO agent, not user-facing wording.
 
 `OwnerNotification` carries the `POSystemEvent` name PO routes on, the text to publish, the story,
 the project, the `terminal_status` the intended transition produces, an optional `task_id`, `state`,

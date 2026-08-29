@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -12,6 +13,7 @@ const ARCHITECT_STATUSES = new Set(['created', 'reopened'])
 export function StoryDetailPage() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
+  const [acceptanceBasis, setAcceptanceBasis] = useState('')
 
   const { data: story, isLoading } = useQuery({
     queryKey: ['story', id],
@@ -28,6 +30,14 @@ export function StoryDetailPage() {
   const sendToArchitectMutation = useMutation({
     mutationFn: () => api.post<Story>(`/stories/${id}/send-to-architect`, { actor: 'admin' }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['story', id] })
+    },
+  })
+
+  const acceptResultMutation = useMutation({
+    mutationFn: (basis: string) => api.post<Story>(`/stories/${id}/accept-result`, { basis }),
+    onSuccess: () => {
+      setAcceptanceBasis('')
       queryClient.invalidateQueries({ queryKey: ['story', id] })
     },
   })
@@ -56,6 +66,25 @@ export function StoryDetailPage() {
               onConfirm={() => sendToArchitectMutation.mutate()}
               isPending={sendToArchitectMutation.isPending}
             />
+          )}
+          {story.status === 'waiting_human_review' && (
+            <div className="flex items-center gap-2">
+              <textarea
+                value={acceptanceBasis}
+                onChange={(event) => setAcceptanceBasis(event.target.value)}
+                placeholder="Basis for accepting this result"
+                className="min-h-10 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+              />
+              <ConfirmButton
+                label="Accept Result"
+                confirmText="Complete this story and notify its owner?"
+                pendingLabel="Accepting..."
+                variant="green"
+                disabled={!acceptanceBasis.trim()}
+                onConfirm={() => acceptResultMutation.mutate(acceptanceBasis.trim())}
+                isPending={acceptResultMutation.isPending}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -111,6 +140,16 @@ export function StoryDetailPage() {
           <pre className="whitespace-pre-wrap font-sans text-sm text-foreground">
             {story.user_report}
           </pre>
+        </Card>
+      )}
+
+      {story.operator_acceptance && (
+        <Card className="border-green-800">
+          <h2 className="mb-2 text-sm font-medium text-green-400">Operator acceptance</h2>
+          <p className="text-sm text-foreground">{story.operator_acceptance.basis}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {story.operator_acceptance.actor} at {formatDate(story.operator_acceptance.accepted_at)}
+          </p>
         </Card>
       )}
 

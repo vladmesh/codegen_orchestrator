@@ -4,6 +4,12 @@
 
 ### Added
 
+- Operators can accept a `waiting_human_review` story directly from the admin UI with a required
+  basis. The credential-derived administrator, basis and acceptance time are stored with the story,
+  the obsolete quarantine evidence is cleared, and ordinary completion notification recovery still
+  delivers through `po:input`. Reopened stories now scope completion addresses to current-cycle QA
+  evidence, preventing a stale pre-reopen URL from reaching the owner.
+
 - Completing a story now writes its durable `story_completed` PO notification on
   the story in the same transaction. Recovery delivers it through `po:input`
   for both QA and direct operator completion; a passed QA handoff preserves the

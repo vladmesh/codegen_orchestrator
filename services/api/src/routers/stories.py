@@ -24,13 +24,16 @@ from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.models.run import Run
 from shared.models.story import Story
+from shared.models.user import User
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_redis_client, require_internal_or_admin
+from ..dependencies import get_redis_client, require_bearer_admin, require_internal_or_admin
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
+    StoryAccept,
+    StoryAcceptance,
     StoryCreate,
     StoryOwnerNotificationRead,
     StoryRead,
@@ -280,7 +283,7 @@ def _do_transition(story: Story, to_status: StoryStatus) -> None:
 
 
 async def _completion_notification_text(story: Story, db: AsyncSession) -> str:
-    """Keep the QA address that was actually verified, when there is one."""
+    """Keep current-cycle deployment evidence, never a pre-reopen QA address."""
     query = (
         select(Run)
         .where(
@@ -291,12 +294,18 @@ async def _completion_notification_text(story: Story, db: AsyncSession) -> str:
         .order_by(Run.completed_at.desc(), Run.id.desc())
         .limit(1)
     )
+    if story.reopened_at is not None:
+        query = query.where(Run.created_at >= story.reopened_at)
     run = (await db.execute(query)).scalars().first()
-    if (
-        run is None
-        or not isinstance(run.result, dict)
-        or run.result.get("qa_outcome") != QAOutcome.PASSED
-    ):
+    if run is None or not isinstance(run.result, dict):
+        return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+
+    outcome = run.result.get("qa_outcome")
+    if outcome != QAOutcome.PASSED and story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+    if QA_HANDOFF_KEY not in run.run_metadata:
+        if outcome == QAOutcome.PASSED:
+            raise KeyError(QA_HANDOFF_KEY)
         return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
 
     qa_message = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY]).qa_message
@@ -304,6 +313,11 @@ async def _completion_notification_text(story: Story, db: AsyncSession) -> str:
     address = qa_message.deployed_url
     if qa_message.bot_username:
         address = f"{address} (Telegram bot @{qa_message.bot_username})"
+    if outcome != QAOutcome.PASSED:
+        return (
+            "The story is finished: an operator accepted the deployed result. "
+            f"Tell the user the good news and give them the address: {address}"
+        )
     return (
         "The story is finished: it is deployed and QA passed. Tell the user the good "
         f"news and give them the address: {address}"
@@ -321,6 +335,24 @@ async def _owe_completed_story_notification(story: Story, db: AsyncSession) -> N
         state=OwnerNotificationState.OWED,
         owed_at=datetime.now(UTC),
     ).model_dump(mode="json")
+
+
+async def _complete_story(
+    story: Story,
+    db: AsyncSession,
+    *,
+    acceptance: StoryAcceptance | None = None,
+) -> StoryRead:
+    """The one completion transaction used by ordinary and accepted-result routes."""
+    await _owe_completed_story_notification(story, db)
+    _do_transition(story, StoryStatus.COMPLETED)
+    if acceptance is not None:
+        story.operator_acceptance = acceptance.model_dump(mode="json")
+        # The completed story no longer represents a live QA quarantine.
+        story.quarantine_reason = None
+    await db.commit()
+    await db.refresh(story)
+    return StoryRead.model_validate(story, from_attributes=True)
 
 
 @router.post("/{story_id}/human-review", response_model=StoryRead)
@@ -396,13 +428,32 @@ async def complete_story(
     body = body or StoryTransition()
     story = await _get_story(story_id, db)
 
-    await _owe_completed_story_notification(story, db)
-    _do_transition(story, StoryStatus.COMPLETED)
-    await db.commit()
-    await db.refresh(story)
-
     logger.info("story_completed", story_id=story.id, actor=body.actor)
-    return StoryRead.model_validate(story, from_attributes=True)
+    return await _complete_story(story, db)
+
+
+@router.post("/{story_id}/accept-result", response_model=StoryRead)
+async def accept_story_result(
+    story_id: str,
+    body: StoryAccept,
+    db: AsyncSession = Depends(get_async_session),
+    admin: User = Depends(require_bearer_admin),
+) -> StoryRead:
+    """Let the authenticated administrator finish a reviewed result with evidence."""
+    story = await _get_story(story_id, db)
+    acceptance = StoryAcceptance(
+        actor=f"admin:{admin.id}",
+        basis=body.basis,
+        accepted_at=datetime.now(UTC),
+    )
+    completed = await _complete_story(story, db, acceptance=acceptance)
+    logger.info(
+        "story_result_accepted",
+        story_id=story.id,
+        actor=acceptance.actor,
+        basis=acceptance.basis,
+    )
+    return completed
 
 
 @router.post("/{story_id}/fail", response_model=StoryRead)
@@ -483,6 +534,7 @@ async def reopen_story(
     story = await _get_story(story_id, db)
 
     _do_transition(story, StoryStatus.REOPENED)
+    story.reopened_at = datetime.now(UTC)
     if body.user_report is not None:
         story.user_report = body.user_report
 

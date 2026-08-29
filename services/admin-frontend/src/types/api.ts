@@ -37,9 +37,17 @@ export interface Story {
   created_by: string
   user_report: string | null
   quarantine_reason?: Record<string, unknown> | null
+  operator_acceptance?: StoryAcceptance | null
+  reopened_at?: string | null
   pr_number?: number | null
   created_at: string
   updated_at?: string | null
+}
+
+export interface StoryAcceptance {
+  actor: string
+  basis: string
+  accepted_at: string
 }
 
 export interface Task {

@@ -6,7 +6,7 @@ import uuid
 from pydantic import ValidationError
 import pytest
 
-from src.schemas.story import StoryCreate, StoryRead, StoryReopen, StoryUpdate
+from src.schemas.story import StoryAccept, StoryCreate, StoryRead, StoryReopen, StoryUpdate
 
 PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
@@ -73,6 +73,8 @@ class TestStoryRead:
         mock.type = "technical"
         mock.user_report = None
         mock.quarantine_reason = None
+        mock.operator_acceptance = None
+        mock.reopened_at = None
         mock.owner_notification = None
         mock.created_at = now
         mock.updated_at = now
@@ -104,6 +106,8 @@ class TestStoryRead:
         mock.type = "product"
         mock.user_report = "Images still broken on mobile"
         mock.quarantine_reason = None
+        mock.operator_acceptance = None
+        mock.reopened_at = None
         mock.owner_notification = None
         mock.created_at = now
         mock.updated_at = now
@@ -122,6 +126,15 @@ class TestStoryReopen:
         r = StoryReopen(user_report="Images broken", actor="po")
         assert r.user_report == "Images broken"
         assert r.actor == "po"
+
+
+class TestStoryAccept:
+    def test_strips_a_nonblank_basis(self):
+        assert StoryAccept(basis="  verified manually  ").basis == "verified manually"
+
+    def test_refuses_blank_basis(self):
+        with pytest.raises(ValidationError):
+            StoryAccept(basis="   ")
 
 
 class TestStoryUpdate:

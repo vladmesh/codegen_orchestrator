@@ -91,9 +91,9 @@ class TestStoryTransitions:
 
     def test_whr_transitions(self):
         allowed = VALID_TRANSITIONS[StoryStatus.WAITING_HUMAN_REVIEW]
-        assert StoryStatus.IN_PROGRESS in allowed  # admin resolves
+        assert StoryStatus.IN_PROGRESS in allowed  # work can still be resumed
         assert StoryStatus.FAILED in allowed  # admin gives up
-        assert StoryStatus.COMPLETED not in allowed  # can't skip to completed
+        assert StoryStatus.COMPLETED in allowed  # accepted result ships directly
 
     def test_invalid_transition_created_to_completed(self):
         assert StoryStatus.COMPLETED not in VALID_TRANSITIONS[StoryStatus.CREATED]
