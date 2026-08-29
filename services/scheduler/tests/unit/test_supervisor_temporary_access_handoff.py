@@ -17,6 +17,7 @@ from _run_routing_factories import _make_repo, _make_run, _make_story
 import pytest
 
 from shared.contracts.bot_access import QA_TEST_TELEGRAM_ID, TEST_IDENTITY_ENV_KEY
+from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.qa_handoff import (
     QA_DISPATCHED_AT_KEY,
@@ -109,6 +110,18 @@ def api_client():
     client.get_run_if_missing_returns_none.return_value = None
     client.create_temporary_access_grant.side_effect = _stored_grant
     client.transition_story.return_value = {}
+    client.get_story_owner_notification.return_value = OwnerNotification(
+        event="story_completed",
+        text=(
+            "The story is finished: it is deployed and QA passed. Tell the user the good "
+            "news and give them the address: https://example.com (Telegram bot @palindrome_bot)"
+        ),
+        story_id="story-1",
+        project_id=PROJECT_ID,
+        terminal_status="completed",
+        state=OwnerNotificationState.OWED,
+        owed_at=datetime.now(UTC),
+    )
     client.get_user.side_effect = _resolved_user
     # The completed story as the API holds it after the transition: the seam
     # that hands the product over reads it back before it publishes anything.

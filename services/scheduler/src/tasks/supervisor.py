@@ -78,7 +78,10 @@ if TYPE_CHECKING:
 
 from .. import startup
 from ._recipients import resolve_project_recipient
-from .owner_notifications import deliver_owed_notification, owe_owner_notification
+from .owner_notifications import (
+    deliver_owed_notification,
+    owe_owner_notification,
+)
 from .temporary_access import grant_temporary_access
 from .worker_liveness import (
     WorkerAttemptState,
@@ -1960,22 +1963,15 @@ async def supervise_testing_stories(
         outcome = run.result.qa_outcome
 
         if outcome == QAOutcome.PASSED:
-            # Owed before the transition, delivered after it: the story leaves
-            # TESTING here and this loop never sees it again, so a message that
-            # only existed as a publish attempt would be lost with the attempt.
-            owed = await owe_owner_notification(
-                api_client,
-                run,
-                event=OwnerNotificationEvent.STORY_COMPLETED,
-                text=_story_completed_text(run),
-                story_id=story_id,
-                project_id=project_id,
-                terminal_status=StoryStatus.COMPLETED,
-                log=log,
-            )
+            # The completion endpoint writes this record in the same transaction
+            # as COMPLETED, so direct operator completion and QA completion owe
+            # exactly the same durable PO instruction.
             await api_client.transition_story(story_id, "complete")
+            owed = await api_client.get_story_owner_notification(story_id)
             log.info("qa_supervisor_completed", run_id=run.id)
-            await deliver_owed_notification(api_client, redis_client, run.id, owed, log)
+            await deliver_owed_notification(
+                api_client, redis_client, story_id, owed, log, story_record=True
+            )
             completed += 1
 
         elif outcome == QAOutcome.FAILED:
@@ -2015,27 +2011,6 @@ async def supervise_testing_stories(
         "failed": failed,
         "recovered": recovered,
     }
-
-
-def _story_completed_text(run) -> str:
-    """What the owner is told about a product QA passed.
-
-    The address comes from the handoff the QA run carries, which is the one
-    deployment QA was pointed at: what the user is given is what was verified,
-    not whatever the project happens to be running now. PO writes the words.
-
-    Nothing here waits for the borrowed test identity to be handed back. That is
-    the sweep's business, and it is finished — or escalated to an administrator —
-    on its own schedule.
-    """
-    qa_message = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY]).qa_message
-    address = qa_message.deployed_url
-    if qa_message.bot_username:
-        address = f"{address} (Telegram bot @{qa_message.bot_username})"
-    return (
-        "The story is finished: it is deployed and QA passed. Tell the user the good "
-        f"news and give them the address: {address}"
-    )
 
 
 async def _recover_qa_handoff(

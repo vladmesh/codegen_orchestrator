@@ -4,6 +4,11 @@
 
 ### Added
 
+- Completing a story now writes its durable `story_completed` PO notification on
+  the story in the same transaction. Recovery delivers it through `po:input`
+  for both QA and direct operator completion; a passed QA handoff preserves the
+  verified deployment URL and bot username.
+
 - `python -m shared` is the canonical broad unit suite entry point: it runs the
   tree's own `scripts/test-unit-local.sh` (same `ALL_SUITES`, same fixture env)
   with the running interpreter's venv first on PATH. Secretary workers use

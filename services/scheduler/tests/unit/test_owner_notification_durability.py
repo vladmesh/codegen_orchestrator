@@ -22,6 +22,7 @@ because every property here is about what the *next* process reads.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -135,6 +136,7 @@ class World:
         self.project = _project()
         self.owner: UserDTO | None = _owner()
         self.story = _make_story(id="story-1", status=StoryStatus.TESTING)
+        self.story_notification: dict | None = None
         self.published: list[dict] = []
         self.publish_failures = 0
         self.resolve_failures = 0
@@ -151,6 +153,8 @@ class World:
 
     @property
     def record(self) -> OwnerNotification | None:
+        if self.story_notification is not None:
+            return OwnerNotification.model_validate(self.story_notification)
         stored = self.run.run_metadata.get(OWNER_NOTIFICATION_KEY)
         return None if stored is None else OwnerNotification.model_validate(stored)
 
@@ -160,6 +164,12 @@ class World:
         record = self.record
         self.journal.append(f"record:{record.state.value}:{record.attempts}")
 
+    def _update_story_owner_notification(self, story_id: str, record: dict) -> None:
+        assert story_id == self.story.id
+        self.story_notification = record
+        stored = self.record
+        self.journal.append(f"story_record:{stored.state.value}:{stored.attempts}")
+
     def _transition_story(self, story_id: str, action: str):
         assert story_id == self.story.id
         if self.transition_failures:
@@ -167,13 +177,35 @@ class World:
             self.journal.append(f"transition_uncommitted:{action}")
             raise ConnectionError("the API never committed the transition")
         self.transitions.append((story_id, action))
-        self.journal.append(f"transition:{action}")
+        if action == "complete":
+            qa_message = QAHandoffPlan.model_validate(
+                self.run.run_metadata[QA_HANDOFF_KEY]
+            ).qa_message
+            address = qa_message.deployed_url
+            if qa_message.bot_username:
+                address = f"{address} (Telegram bot @{qa_message.bot_username})"
+            notification = OwnerNotification(
+                event="story_completed",
+                text=(
+                    "The story is finished: it is deployed and QA passed. Tell the user the good "
+                    f"news and give them the address: {address}"
+                ),
+                story_id=story_id,
+                project_id=PROJECT_ID,
+                terminal_status=StoryStatus.COMPLETED,
+                state=OwnerNotificationState.OWED,
+                owed_at=datetime.now(UTC),
+            )
+            self.story_notification = notification.model_dump(mode="json")
+            self.journal.append("completion:record+transition")
+        else:
+            self.journal.append(f"transition:{action}")
         self.story = self.story.model_copy(update={"status": _ACTION_RESULT[action]})
         if self.lost_transition_responses:
             self.lost_transition_responses -= 1
             self.journal.append(f"transition_response_lost:{action}")
             raise TimeoutError("the transition committed but its answer never arrived")
-        return {}
+        return self.story
 
     async def _get_story(self, story_id: str) -> StoryDTO:
         assert story_id == self.story.id
@@ -196,9 +228,18 @@ class World:
         return self.project
 
     def _owed_runs(self, *, limit: int):
-        record = self.record
+        stored = self.run.run_metadata.get(OWNER_NOTIFICATION_KEY)
+        record = None if stored is None else OwnerNotification.model_validate(stored)
         if record is not None and record.owed:
             return [self.run][:limit]
+        return []
+
+    def _owed_stories(self, *, limit: int):
+        record = self.record
+        if record is not None and self.story_notification is not None and record.owed:
+            return [SimpleNamespace(id=self.story.id, owner_notification=self.story_notification)][
+                :limit
+            ]
         return []
 
 
@@ -227,9 +268,12 @@ def api_client(world, monkeypatch):
     client.get_user.side_effect = lambda user_id: world.owner
     client.get_story.side_effect = world._get_story
     client.update_run.side_effect = world._update_run
+    client.update_story_owner_notification.side_effect = world._update_story_owner_notification
     client.transition_story.side_effect = world._transition_story
+    client.get_story_owner_notification.side_effect = lambda _story_id: world.record
     client.get_tasks_by_story.return_value = []
     client.list_runs_owing_owner_notification.side_effect = world._owed_runs
+    client.list_stories_owing_owner_notification.side_effect = world._owed_stories
 
     async def _alert(message, level="info", **context):
         world.admin_alerts.append(message)
@@ -280,19 +324,16 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
         with pytest.raises(ConnectionError):
             await supervise_testing_stories(api_client, redis_client)
 
-        # The obligation is on the run, and the story never left TESTING.
-        assert world.record.state is OwnerNotificationState.OWED
+        # The API transaction did not commit, so it wrote neither COMPLETED nor
+        # the story-backed obligation.
+        assert world.record is None
         assert world.story.status is StoryStatus.TESTING
 
         counts = await supervise_owed_owner_notifications(api_client, redis_client)
 
         assert world.published == []
-        assert counts["voided"] == 1
+        assert counts["voided"] == 0
         assert counts["delivered"] == 0
-        # Settled, and settled without charging the bound: nothing failed here,
-        # there was simply nothing to say yet.
-        assert world.record.state is OwnerNotificationState.VOIDED
-        assert world.record.attempts == 0
 
     @pytest.mark.asyncio
     async def test_the_voided_obligation_comes_back_when_the_story_really_ends(
@@ -305,8 +346,8 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
         with pytest.raises(ConnectionError):
             await supervise_testing_stories(api_client, redis_client)
 
-        # The next tick sweeps first, voids it, and then routes the story that
-        # is still sitting in TESTING — this time the transition commits.
+        # The next tick routes the story still sitting in TESTING; this time the
+        # completion transaction writes the record and transition together.
         await _tick(api_client, redis_client)
 
         assert world.transitions == [("story-1", "complete")]
@@ -316,7 +357,7 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
         assert world.record.state is OwnerNotificationState.DELIVERED
         # And the good news went out *after* the story was really finished, not
         # from the sweep that ran before routing on a story still in TESTING.
-        assert world.journal.index("publish") > world.journal.index("transition:complete")
+        assert world.journal.index("publish") > world.journal.index("completion:record+transition")
 
     @pytest.mark.asyncio
     async def test_a_committed_transition_whose_answer_was_lost_delivers_once(
@@ -369,18 +410,17 @@ class TestNothingIsPublishedUntilTheTransitionIsProven:
 
 
 class TestTheRecordComesBeforeTheTransition:
-    """AC1: every terminal path owes the message before it commits the transition."""
+    """AC1: completion records and COMPLETED commit in the same transaction."""
 
     @pytest.mark.asyncio
-    async def test_a_passed_story_owes_its_message_before_it_completes(
+    async def test_a_passed_story_owes_its_message_with_its_completion(
         self, world, api_client, redis_client
     ):
         from src.tasks.supervisor import supervise_testing_stories
 
         await supervise_testing_stories(api_client, redis_client)
 
-        assert world.journal[0] == "record:owed:0"
-        assert world.journal[1] == "transition:complete"
+        assert world.journal[0] == "completion:record+transition"
         assert world.record.state is OwnerNotificationState.DELIVERED
 
     @pytest.mark.asyncio
@@ -705,7 +745,8 @@ class TestTheRetryIsBoundedAndItsEndIsLoud:
         assert "story-1" in alert
         assert PROJECT_ID in alert
         assert "story_completed" in alert
-        assert "qa-1" in alert
+        assert "source=story:story-1" in alert
+        assert "run=" not in alert
 
     @pytest.mark.asyncio
     async def test_an_abandoned_message_is_not_picked_up_again(
@@ -758,10 +799,11 @@ class TestDeliveredIsDeliveredOnce:
         self, world, api_client, redis_client
     ):
         """A run whose story somehow comes back through routing is already settled."""
+        from src.tasks.owner_notifications import supervise_owed_owner_notifications
         from src.tasks.supervisor import supervise_testing_stories
 
         await supervise_testing_stories(api_client, redis_client)
-        await supervise_testing_stories(api_client, redis_client)
+        await supervise_owed_owner_notifications(api_client, redis_client)
 
         assert len(world.published) == 1
         assert world.record.state is OwnerNotificationState.DELIVERED
@@ -804,7 +846,8 @@ class TestAnUnaddressableOwnerIsRefusedNotChased:
         await supervise_testing_stories(api_client, redis_client)
         transient = world.record
 
-        world.run.run_metadata.pop(OWNER_NOTIFICATION_KEY)
+        world.story_notification = None
+        world.story = world.story.model_copy(update={"status": StoryStatus.TESTING})
         world.owner = None
         await supervise_testing_stories(api_client, redis_client)
 

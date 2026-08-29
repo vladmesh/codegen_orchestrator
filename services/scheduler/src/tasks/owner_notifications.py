@@ -2,12 +2,11 @@
 
 The invariant it holds: a terminal story transition cannot be observed without
 the owner's message being either already published to ``po:input`` or durably
-owed. Nothing here is best-effort. ``owe_owner_notification`` writes the message
-down on the run that produced the outcome — the QA run for a story's ending, the
-engineering run for a refused placement — *before* the transition is committed,
-and from that moment the record is the work item. ``deliver_owed_notification``
-is the only thing that settles it, whether it is called by the tick that owed
-the message or by the recovery sweep two ticks later.
+owed. Nothing here is best-effort. `complete_story` writes the `story_completed`
+record on the Story in its completion transaction; ``owe_owner_notification``
+writes other terminal notices on the Run that produced them before their
+transition. ``deliver_owed_notification`` is the only thing that settles either
+record, whether called by the completing tick or a recovery sweep.
 
 Why the record and not just a careful publish: the publish is an ``xadd`` with
 nothing behind it, and the transition in front of it is a commit. Publish after
@@ -33,7 +32,7 @@ Four endings, and they are deliberately not interchangeable:
 * unaddressable — the owner resolved to no Telegram chat. Retrying that changes
   nothing, so it is a logged, alerted refusal and the record is settled.
 * abandoned — transient failures used up the bounded attempts. An administrator
-  is told, with the story, project, event and run id.
+  is told, with the story, project, event and the record's source.
 * voided — the intended transition is not in the story. Nothing is published,
   no attempt is spent, and the obligation is written again from scratch if
   routing later does reach that ending.
@@ -103,6 +102,18 @@ def _empty_counts() -> dict[str, int]:
     return {outcome.value: 0 for outcome in OwnerNotificationOutcome}
 
 
+def _source_log_fields(source_id: str, *, story_record: bool) -> dict[str, str]:
+    """Name the durable record's actual home in diagnostics.
+
+    A completion record lives on its story, not on the QA run that happened to
+    lead there. Keeping that distinction in alerts prevents an operator from
+    looking up a story id as though it were a run id.
+    """
+    if story_record:
+        return {"notification_source": "story", "source_id": source_id}
+    return {"notification_source": "run", "run_id": source_id}
+
+
 async def _write_record(
     api_client: SchedulerAPIClient, run_id: str, record: OwnerNotification
 ) -> None:
@@ -110,6 +121,13 @@ async def _write_record(
     await api_client.update_run(
         run_id, {"run_metadata": {OWNER_NOTIFICATION_KEY: record.model_dump(mode="json")}}
     )
+
+
+async def _write_story_record(
+    api_client: SchedulerAPIClient, story_id: str, record: OwnerNotification
+) -> None:
+    """Put the completion record on its story, where every completion route can create it."""
+    await api_client.update_story_owner_notification(story_id, record.model_dump(mode="json"))
 
 
 def read_owner_notification(run) -> OwnerNotification | None:
@@ -121,6 +139,14 @@ def read_owner_notification(run) -> OwnerNotification | None:
     is exactly the guess this card exists to remove.
     """
     stored = run.run_metadata.get(OWNER_NOTIFICATION_KEY)
+    if stored is None:
+        return None
+    return OwnerNotification.model_validate(stored)
+
+
+def read_story_owner_notification(story) -> OwnerNotification | None:
+    """The completion record this story carries, or None when it owes nothing."""
+    stored = story.owner_notification
     if stored is None:
         return None
     return OwnerNotification.model_validate(stored)
@@ -187,96 +213,111 @@ async def owe_owner_notification(
 
 async def _settle(
     api_client: SchedulerAPIClient,
-    run_id: str,
+    source_id: str,
     record: OwnerNotification,
     *,
     state: OwnerNotificationState,
     detail: str | None = None,
     attempts: int | None = None,
+    story_record: bool = False,
 ) -> None:
-    await _write_record(
-        api_client,
-        run_id,
-        record.model_copy(
-            update={
-                "state": state,
-                "detail": detail,
-                "attempts": record.attempts if attempts is None else attempts,
-            }
-        ),
+    settled = record.model_copy(
+        update={
+            "state": state,
+            "detail": detail,
+            "attempts": record.attempts if attempts is None else attempts,
+        }
     )
+    if story_record:
+        await _write_story_record(api_client, source_id, settled)
+    else:
+        await _write_record(api_client, source_id, settled)
 
 
 async def _abandon(
     api_client: SchedulerAPIClient,
-    run_id: str,
+    source_id: str,
     record: OwnerNotification,
     *,
     attempts: int,
     error: str,
     log: structlog.stdlib.BoundLogger,
+    story_record: bool = False,
 ) -> None:
     """Give up on a message the owner will never receive, loudly."""
     await _settle(
         api_client,
-        run_id,
+        source_id,
         record,
         state=OwnerNotificationState.ABANDONED,
         detail=error,
         attempts=attempts,
+        story_record=story_record,
     )
+    source_fields = _source_log_fields(source_id, story_record=story_record)
     log.error(
         "owner_notification_abandoned",
-        run_id=run_id,
         po_event=record.event,
         story_id=record.story_id,
         project_id=record.project_id,
         attempts=attempts,
         max_attempts=OWNER_NOTIFICATION_MAX_ATTEMPTS,
         error=error,
+        **source_fields,
     )
+    source_description = f"source=story:{source_id}" if story_record else f"run={source_id}"
     await notify_admins_best_effort(
         f"Owner notification undelivered after {attempts} attempts: "
         f"event={record.event} story={record.story_id} "
-        f"project={record.project_id} run={run_id}: {error}",
+        f"project={record.project_id} {source_description}: {error}",
         level="error",
         po_event=record.event,
         story_id=record.story_id,
         project_id=record.project_id,
-        run_id=run_id,
+        **source_fields,
     )
 
 
 async def _spend_failed_attempt(
     api_client: SchedulerAPIClient,
-    run_id: str,
+    source_id: str,
     record: OwnerNotification,
     *,
     attempts: int,
     error: str,
     log: structlog.stdlib.BoundLogger,
+    story_record: bool = False,
 ) -> OwnerNotificationOutcome:
     """Charge one transient failure to the bound, or give up if it was the last."""
     if attempts >= OWNER_NOTIFICATION_MAX_ATTEMPTS:
-        await _abandon(api_client, run_id, record, attempts=attempts, error=error, log=log)
+        await _abandon(
+            api_client,
+            source_id,
+            record,
+            attempts=attempts,
+            error=error,
+            log=log,
+            story_record=story_record,
+        )
         return OwnerNotificationOutcome.EXHAUSTED
     await _settle(
         api_client,
-        run_id,
+        source_id,
         record,
         state=OwnerNotificationState.OWED,
         detail=error,
         attempts=attempts,
+        story_record=story_record,
     )
     log.warning(
         "owner_notification_publish_failed",
-        run_id=run_id,
         po_event=record.event,
         story_id=record.story_id,
         project_id=record.project_id,
         attempts=attempts,
         max_attempts=OWNER_NOTIFICATION_MAX_ATTEMPTS,
         error=error,
+        **_source_log_fields(source_id, story_record=story_record),
     )
     return OwnerNotificationOutcome.RETRYING
 
@@ -284,9 +325,11 @@ async def _spend_failed_attempt(
 async def deliver_owed_notification(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
-    run_id: str,
+    source_id: str,
     record: OwnerNotification,
     log: structlog.stdlib.BoundLogger,
+    *,
+    story_record: bool = False,
 ) -> OwnerNotificationOutcome:
     """Spend one attempt on an owed message and record what happened.
 
@@ -315,29 +358,31 @@ async def deliver_owed_notification(
     except Exception as exc:
         return await _spend_failed_attempt(
             api_client,
-            run_id,
+            source_id,
             record,
             attempts=attempts,
             error=f"{type(exc).__name__}: {exc}",
             log=log,
+            story_record=story_record,
         )
 
     if story.status is not record.terminal_status:
         await _settle(
             api_client,
-            run_id,
+            source_id,
             record,
             state=OwnerNotificationState.VOIDED,
             detail=f"story is {story.status.value}, not {record.terminal_status.value}",
+            story_record=story_record,
         )
         log.warning(
             "owner_notification_voided",
-            run_id=run_id,
             po_event=record.event,
             story_id=record.story_id,
             project_id=record.project_id,
             story_status=story.status.value,
             terminal_status=record.terminal_status.value,
+            **_source_log_fields(source_id, story_record=story_record),
         )
         return OwnerNotificationOutcome.VOIDED
 
@@ -348,19 +393,20 @@ async def deliver_owed_notification(
         if not recipient.is_addressable:
             await _settle(
                 api_client,
-                run_id,
+                source_id,
                 record,
                 state=OwnerNotificationState.UNADDRESSABLE,
                 detail=recipient.unaddressed_reason,
                 attempts=attempts,
+                story_record=story_record,
             )
             log.warning(
                 "owner_notification_unaddressable",
-                run_id=run_id,
                 po_event=record.event,
                 story_id=record.story_id,
                 project_id=record.project_id,
                 reason=recipient.unaddressed_reason,
+                **_source_log_fields(source_id, story_record=story_record),
             )
             return OwnerNotificationOutcome.UNADDRESSABLE
 
@@ -379,23 +425,29 @@ async def deliver_owed_notification(
     except Exception as exc:
         return await _spend_failed_attempt(
             api_client,
-            run_id,
+            source_id,
             record,
             attempts=attempts,
             error=f"{type(exc).__name__}: {exc}",
             log=log,
+            story_record=story_record,
         )
 
     await _settle(
-        api_client, run_id, record, state=OwnerNotificationState.DELIVERED, attempts=attempts
+        api_client,
+        source_id,
+        record,
+        state=OwnerNotificationState.DELIVERED,
+        attempts=attempts,
+        story_record=story_record,
     )
     log.info(
         "owner_notification_delivered",
-        run_id=run_id,
         po_event=record.event,
         story_id=record.story_id,
         project_id=record.project_id,
         attempts=attempts,
+        **_source_log_fields(source_id, story_record=story_record),
     )
     return OwnerNotificationOutcome.DELIVERED
 
@@ -429,5 +481,17 @@ async def supervise_owed_owner_notifications(
             )
         log = logger.bind(story_id=record.story_id, project_id=record.project_id)
         outcome = await deliver_owed_notification(api_client, redis_client, run.id, record, log)
+        counts[outcome.value] += 1
+    stories = await api_client.list_stories_owing_owner_notification(limit=OWNER_NOTIFICATION_PAGE)
+    for story in stories:
+        record = read_story_owner_notification(story)
+        if record is None:
+            raise RuntimeError(
+                f"Story {story.id} was selected as owing a notification but carries none"
+            )
+        log = logger.bind(story_id=record.story_id, project_id=record.project_id)
+        outcome = await deliver_owed_notification(
+            api_client, redis_client, story.id, record, log, story_record=True
+        )
         counts[outcome.value] += 1
     return counts

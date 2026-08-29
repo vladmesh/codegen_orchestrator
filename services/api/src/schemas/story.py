@@ -6,6 +6,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.owner_notification import OwnerNotification
 
 # The request schemas are the contract every client already imports; the API
 # validates against those same objects rather than look-alikes of its own.
@@ -14,6 +15,7 @@ from shared.contracts.dto.story import StoryCreate, StoryUpdate
 __all__ = [
     "StoryCreate",
     "StoryRead",
+    "StoryOwnerNotificationRead",
     "StoryReopen",
     "StoryTransition",
     "StoryUpdate",
@@ -52,3 +54,10 @@ class StoryTransition(BaseModel):
     """Schema for story status transition actions."""
 
     actor: str = "system"
+
+
+class StoryOwnerNotificationRead(BaseModel):
+    """Internal recovery view of a story-backed owner notification."""
+
+    id: str
+    owner_notification: OwnerNotification

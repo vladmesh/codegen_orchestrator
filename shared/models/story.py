@@ -35,4 +35,6 @@ class Story(Base):
     user_report: Mapped[str | None] = mapped_column(Text, nullable=True)
     # QA evidence kept with the story while a human decides whether to retry or fix it.
     quarantine_reason: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The durable completion notice owed when this story reaches COMPLETED.
+    owner_notification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
