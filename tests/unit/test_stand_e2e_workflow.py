@@ -25,6 +25,18 @@ def _steps() -> dict[str, dict]:
     return {step["name"]: step for step in _workflow()["jobs"]["e2e"]["steps"]}
 
 
+def _sweep_steps() -> dict:
+    return {
+        step["name"]: step for step in _workflow()["jobs"]["ttl-sweep"]["steps"] if "name" in step
+    }
+
+
+def _cleanup_steps() -> dict:
+    return {
+        step["name"]: step for step in _workflow()["jobs"]["cleanup"]["steps"] if "name" in step
+    }
+
+
 def test_it_runs_on_the_stand_and_nowhere_else():
     assert _workflow()["jobs"]["e2e"]["environment"] == "stand"
 
@@ -136,11 +148,34 @@ def test_worker_image_fallback_is_limited_to_confirmed_missing_releases():
     assert "FATAL: pulling the worker image release failed" in step["run"]
 
 
-def test_machine_cleanup_has_no_retention_escape_hatch():
+def test_retention_is_bounded_and_covers_every_run_owned_resource():
+    """Debug retention may exist; outliving the run that owns it may not.
+
+    Removing the input outright was one answer to "retained runs leak DNS", but
+    it also removed the only way to inspect a failure on the machines that
+    produced it — which is how the contour was debugged at all. The property that
+    actually matters is narrower: whatever retention holds, the sweep takes, and
+    the machines and their name are held and released together. A name left
+    pointing at an address the provider reassigns is the leak; a pair kept for an
+    hour under a tag the sweep knows is not.
+    """
     workflow = WORKFLOW.read_text()
 
-    assert "keep_machines" not in workflow
-    assert "Cleanup and observe run-tagged machines" in workflow
+    cleanup = _cleanup_steps()
+    machine_cleanup = cleanup["Cleanup and observe run-tagged machines"]
+    dns_cleanup = cleanup["Remove the run's DNS record"]
+    assert machine_cleanup["if"] == dns_cleanup["if"], (
+        "machines and their DNS record must be released together, or retention "
+        "keeps one and drops the other"
+    )
+    assert "keep_machines" in machine_cleanup["if"]
+
+    sweep = _sweep_steps()["Sweep expired run-tagged machines"]["run"]
+    assert "stand_lifecycle sweep --ttl-hours" in sweep
+    assert "stand_dns sweep --ttl-hours" in sweep, (
+        "the sweep that bounds retention must take the record as well as the machines"
+    )
+    assert "keep_machines" in workflow
 
 
 def test_selected_suite_runs_through_the_supported_remote_runner_and_preserves_failure():

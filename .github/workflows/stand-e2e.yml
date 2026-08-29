@@ -36,6 +36,11 @@ on:
         options:
           - claude
           - codex
+      keep_machines:
+        description: 'Debug only: leave the pair and its DNS record in place so a failure can be inspected. Both still expire on the 6h sweep, and every retained hour is billed.'
+        required: false
+        default: false
+        type: boolean
       skip_sweep:
         description: 'Reserved for the later e2e runner; lifecycle cleanup is never skipped'
         required: false
@@ -138,6 +143,27 @@ jobs:
           test -n "${TARGET_IP}"
           printf 'orchestrator=%s\ntarget=%s\n' "${ORCHESTRATOR_IP}" "${TARGET_IP}" >> "$GITHUB_STEP_SUMMARY"
 
+      # A GitHub runner pushes the generated project's images (`build-and-push` in
+      # the template's ci.yml runs there, not on the target), and that runner's
+      # trust store is not ours to add to. So the registry has to answer for a
+      # publicly trusted certificate, which needs a name. The run creates one and
+      # removes it with the machines.
+      - name: Give the stand a resolvable name
+        id: dns
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ORCHESTRATOR_IP: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          name="$(python3 -m scripts.stand_dns create --run-tag "${STAND_RUN_TAG}" \
+            --ip "${ORCHESTRATOR_IP}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+          # Caddy asks for a certificate as soon as the stack starts, and an
+          # issuer that cannot resolve the name yet spends one of the week's
+          # attempts on a failure.
+          python3 -m scripts.stand_dns await --run-tag "${STAND_RUN_TAG}" --ip "${ORCHESTRATOR_IP}"
+          echo "hostname=${name}" >> "$GITHUB_OUTPUT"
+          echo "stand hostname: ${name}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Prepare protected SSH material
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -189,7 +215,7 @@ jobs:
       - name: Render protected dynamic configuration
         env:
           ORCHESTRATOR_PUBLIC_IP: ${{ steps.create.outputs.orchestrator_ip }}
-          ORCHESTRATOR_HOSTNAME: ${{ steps.create.outputs.orchestrator_ip }}
+          ORCHESTRATOR_HOSTNAME: ${{ steps.dns.outputs.hostname }}
           STAND_RUN_TAG: ${{ env.STAND_RUN_TAG }}
           BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
@@ -484,9 +510,38 @@ jobs:
           name: stand-e2e-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stand-e2e-handoff
 
+      # Retention is bounded by the sweep below, which now takes the record as
+      # well as the machines: leaving a name pointing at an address the provider
+      # will reassign is the one way retention could outlive the run that owns it.
+      - name: Retain the pair for inspection
+        if: ${{ always() && inputs.keep_machines }}
+        run: |
+          set -euo pipefail
+          {
+            echo '### Pair retained for inspection'
+            echo
+            echo "Run tag \`${STAND_RUN_TAG}\`. Billed until removed; the 6h sweep takes both."
+            echo
+            echo 'Remove early with:'
+            echo '```'
+            echo "python3 -m scripts.stand_lifecycle cleanup --run-tag ${STAND_RUN_TAG}"
+            echo "python3 -m scripts.stand_dns cleanup --run-tag ${STAND_RUN_TAG}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the run's DNS record
+        if: ${{ always() && !inputs.keep_machines }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Derived from the run tag alone, so this needs nothing the run may
+          # have failed to publish.
+          python3 -m scripts.stand_dns cleanup --run-tag "${STAND_RUN_TAG}"
+
       - name: Cleanup and observe run-tagged machines
         id: cleanup-observation
-        if: always()
+        if: ${{ always() && !inputs.keep_machines }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -575,6 +630,7 @@ jobs:
     environment: stand
     env:
       BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - name: Check out lifecycle code
         uses: actions/checkout@v5
@@ -583,3 +639,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m scripts.stand_lifecycle sweep --ttl-hours 6
+          # The machines are what expire; their names have to go with them, or a
+          # retained run leaves a hostname that later resolves to somebody else's
+          # address.
+          python3 -m scripts.stand_dns sweep --ttl-hours 6

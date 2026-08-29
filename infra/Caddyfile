@@ -2,6 +2,14 @@
     log {
         format json
     }
+
+    # A client that connects to a bare IP sends no SNI, because SNI cannot carry
+    # an IP literal, and Caddy then has no server name to select a certificate by
+    # and aborts with an internal-error alert. The stand reaches its registry by
+    # name, so this is insurance rather than the main path — but it turns an
+    # opaque handshake failure into an ordinary verification error, which is the
+    # difference between a diagnosable run and a lost afternoon.
+    default_sni {$ORCHESTRATOR_HOSTNAME}
 }
 
 {$ORCHESTRATOR_HOSTNAME} {

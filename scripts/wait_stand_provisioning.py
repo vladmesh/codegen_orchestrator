@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 import os
 import sys
 import time
 import urllib.request
+
+# The allocator's freshness window is 300s; never sit closer than this to its
+# edge when handing the target to a suite.
+MIN_METRICS_MARGIN_SECONDS = 60
 
 
 def main() -> int:
@@ -16,6 +21,12 @@ def main() -> int:
     parser.add_argument("--handle", required=True)
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout-seconds", type=int, default=1200)
+    parser.add_argument(
+        "--metrics-freshness-seconds",
+        type=int,
+        default=300,
+        help="must match the allocator's allocation_metrics_freshness_seconds",
+    )
     args = parser.parse_args()
     internal_key = os.environ.get("INTERNAL_API_KEY")
     if not internal_key:
@@ -36,12 +47,41 @@ def main() -> int:
             and server.get("status") == "ready"
             and isinstance(labels, dict)
             and labels.get("provisioning_phase") == "complete"
+            and _metrics_are_fresh(server.get("last_health_check"), args.metrics_freshness_seconds)
         ):
             print(f"provisioning complete for {args.handle}")
             return 0
         time.sleep(5)
     print(f"provisioning did not complete for {args.handle}", file=sys.stderr)
     return 1
+
+
+def _metrics_are_fresh(stamp: str | None, freshness_seconds: int) -> bool:
+    """Whether the allocator would accept this host's telemetry right now.
+
+    A freshly provisioned host is `ready` with a complete provisioning phase
+    several minutes before the health checker first stamps it, and the allocator
+    refuses a host whose telemetry is older than its freshness window with
+    `no_fresh_metrics`. Waiting only for the provisioner therefore hands the
+    suite a target that cannot be allocated to, which reads as a product failure
+    (`Engineering failed, task status: waiting_human_review`) rather than as the
+    race it is. "Ready" has to mean "allocatable", so this waits for the first
+    stamp too.
+
+    The margin keeps the suite from starting on telemetry that is about to go
+    stale during allocation.
+    """
+    if not stamp:
+        return False
+    try:
+        checked_at = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=UTC)
+    margin = min(MIN_METRICS_MARGIN_SECONDS, freshness_seconds // 2)
+    age = (datetime.now(UTC) - checked_at).total_seconds()
+    return 0 <= age < freshness_seconds - margin
 
 
 if __name__ == "__main__":
