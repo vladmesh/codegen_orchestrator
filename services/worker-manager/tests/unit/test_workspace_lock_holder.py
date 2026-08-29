@@ -23,6 +23,7 @@ from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
+from shared.queues import WORKER_COMMANDS
 
 from src.garbage_collector import garbage_collect_workspaces
 from src.manager import WorkerManager
@@ -143,6 +144,7 @@ async def test_a_refused_worker_fails_fast_instead_of_timing_out(docker):
 
     assert await redis.hget("worker:status:worker-b", "status") == WorkerStatus.FAILED
     assert PROJECT in await redis.get("worker:error:worker-b")
+    assert await redis.xlen(WORKER_COMMANDS) == 0
 
 
 @pytest.mark.asyncio

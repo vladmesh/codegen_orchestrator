@@ -99,7 +99,7 @@ services:
       - GITHUB_ORG_NAME=test-org
       - TIME4VPS_USERNAME=test
       - TIME4VPS_PASSWORD=test
-      - HEALTH_CHECK_INTERVAL=300
+      - HEALTH_CHECK_INTERVAL=60
       - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
       # The analytics aggregator refuses to start without a Loki read address.
       # No Loki runs in this stack, so cycles just mark every project as failed;

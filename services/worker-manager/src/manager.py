@@ -22,7 +22,7 @@ from shared.contracts.dto.executor_diagnostics import (
     safe_executor_diagnostic_reason,
 )
 from shared.constants import Timeouts
-from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
+from shared.contracts.queues.worker import DeleteWorkerCommand, WorkerLabel, WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.contracts.worker_evidence import (
     REMOVAL_LOG_TAIL_LINES,
@@ -35,6 +35,7 @@ from shared.contracts.worker_evidence import (
 from shared.diagnostics import redact_diagnostic
 from shared.qa_probe_cli import QA_PROBE_PATH, QA_PROBE_SCRIPT
 from shared.redis import decode_redis_fields, decode_redis_value
+from shared.queues import WORKER_COMMANDS
 
 from .config import settings
 from .docker_ops import DockerClientWrapper
@@ -524,8 +525,21 @@ class WorkerManager:
         would otherwise reach for someone else's lock.
         """
         logger.warning("worker_rejected", worker_id=worker_id, error=str(exc))
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
         await self.redis.set(f"worker:error:{worker_id}", str(exc))
+        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+
+    async def _fail_acquired_worker(self, worker_id: str, exc: Exception) -> None:
+        """Publish terminal state and durable teardown intent for an acquired worker."""
+        await self.redis.set(f"worker:error:{worker_id}", str(exc))
+        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
+        await self.redis.xadd(
+            WORKER_COMMANDS,
+            {
+                "data": DeleteWorkerCommand(
+                    request_id=f"cleanup-{worker_id}", worker_id=worker_id, reason="failed"
+                ).model_dump_json()
+            },
+        )
 
     async def create_worker(
         self,
@@ -1502,8 +1516,7 @@ class WorkerManager:
                 logger.warning("qa_worker_creation_failed", worker_id=worker_id, error=str(exc))
             else:
                 logger.warning("developer_worker_creation_failed", worker_id=worker_id, error=str(exc))
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
-            await self.redis.set(f"worker:error:{worker_id}", str(exc))
+            await self._fail_acquired_worker(worker_id, exc)
             raise
 
     @staticmethod

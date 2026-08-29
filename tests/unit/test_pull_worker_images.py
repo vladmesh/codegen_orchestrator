@@ -36,6 +36,10 @@ EXIT_MISSING_LABEL = 4
 EXIT_STALE_LABEL = 5
 EXIT_BROKEN_RELEASE = 6
 EXIT_NO_RELEASE = 9
+EXIT_REGISTRY_AUTH = 10
+EXIT_REGISTRY_TRANSPORT = 11
+EXIT_REGISTRY_RATE_LIMIT = 12
+EXIT_REGISTRY_TOOL = 13
 
 # A fake docker. `buildx imagetools inspect` answers a digest per image and fails for
 # FAKE_MISSING_IMAGE the way a registry answers for a tag that was never pushed;
@@ -61,8 +65,12 @@ case "${command}" in
         cat > /dev/null
         ;;
     buildx)
+        if [ "$(image_of "$3")" = "worker-base-release" ] && [ -n "${FAKE_MARKER_ERROR:-}" ]; then
+            echo "${FAKE_MARKER_ERROR}" >&2
+            exit 1
+        fi
         if [ "$(image_of "$3")" = "${FAKE_MISSING_IMAGE:-}" ]; then
-            echo "ERROR: $3: not found" >&2
+            echo "ERROR: $3: manifest unknown" >&2
             exit 1
         fi
         echo "sha256:$(image_of "$3")"
@@ -223,6 +231,26 @@ def test_a_revision_with_no_release_marker_is_refused_before_anything_moves(run_
     assert not [call for call in calls if call.startswith("pull ")], (
         "no image is pulled for a revision that was never released"
     )
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("registry_error", "expected_exit"),
+    [
+        ("ERROR: unauthorized: authentication required", EXIT_REGISTRY_AUTH),
+        ("ERROR: dial tcp: lookup ghcr.io: no such host", EXIT_REGISTRY_TRANSPORT),
+        ("ERROR: too many requests: rate limit exceeded", EXIT_REGISTRY_RATE_LIMIT),
+        ("ERROR: docker buildx plugin is unavailable", EXIT_REGISTRY_TOOL),
+    ],
+)
+def test_registry_resolution_failures_are_not_misclassified_as_missing_releases(
+    run_pull, registry_error, expected_exit
+):
+    result, calls, record = run_pull(FAKE_MARKER_ERROR=registry_error)
+
+    assert result.returncode == expected_exit, result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
     assert not record.exists()
 
 

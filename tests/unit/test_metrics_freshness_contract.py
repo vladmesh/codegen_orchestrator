@@ -1,6 +1,9 @@
 """The scheduler cadence and allocator freshness window are one runtime policy."""
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from shared.allocation_freshness import (
     ALLOCATION_METRICS_FRESHNESS_SECONDS,
@@ -27,3 +30,14 @@ def test_effective_runtime_freshness_override_also_constrains_scheduler_cadence(
     assert validate_health_check_interval(60, freshness_seconds=freshness) == 60
     with pytest.raises(ValueError, match="allocation freshness"):
         validate_health_check_interval(61, freshness_seconds=freshness)
+
+
+def test_infra_integration_scheduler_uses_the_deployable_freshness_cadence() -> None:
+    """The integration stack must boot with the same valid cadence as deployment."""
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / "docker/test/integration/infra.yml").read_text()
+    )
+    environment = compose["services"]["scheduler"]["environment"]
+    interval = next(value for value in environment if value.startswith("HEALTH_CHECK_INTERVAL="))
+
+    assert validate_health_check_interval(int(interval.split("=", 1)[1])) == 60

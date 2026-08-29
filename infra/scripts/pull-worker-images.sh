@@ -37,6 +37,10 @@
 #   5  a pulled image was built from a different source hash than this revision
 #   6  the release marker exists but does not carry a usable record
 #   9  this revision has no release marker: it was never published as a whole
+#  10  registry authentication or authorization failed
+#  11  registry transport or DNS failed
+#  12  registry rate limiting failed
+#  13  image-resolution tooling failed or returned an unclassified error
 
 set -euo pipefail
 
@@ -46,6 +50,10 @@ EXIT_MISSING_LABEL=4
 EXIT_STALE_LABEL=5
 EXIT_BROKEN_RELEASE=6
 EXIT_NO_RELEASE=9
+EXIT_REGISTRY_AUTH=10
+EXIT_REGISTRY_TRANSPORT=11
+EXIT_REGISTRY_RATE_LIMIT=12
+EXIT_REGISTRY_TOOL=13
 
 : "${GHCR_TOKEN:?GHCR_TOKEN is required}"
 : "${GHCR_OWNER:?GHCR_OWNER is required}"
@@ -75,12 +83,35 @@ echo "Deployed revision carries ${WORKER_SOURCE_HASH_LABEL}=${EXPECTED_HASH}"
 
 # Is there a release for this revision at all? Nothing else is consulted, and nothing
 # local moves until this answers yes.
-if ! marker_digest="$(worker_image_digest "${MARKER}")" || [ -z "${marker_digest}" ]; then
-    echo "FATAL: ${MARKER} does not exist, so ${WORKER_IMAGE_TAG} has no worker image" >&2
-    echo "       release. Image tags for it may exist — a publish run that failed or was" >&2
-    echo "       cancelled leaves them behind — but they were never released and are not" >&2
-    echo "       deployed. Publish that revision before deploying it." >&2
-    exit "${EXIT_NO_RELEASE}"
+if marker_resolution="$(worker_image_digest "${MARKER}" 2>&1)"; then
+    marker_digest="${marker_resolution}"
+else
+    # A nonzero inspect is not itself evidence that a release is absent. Only
+    # the registry's manifest-unknown response means local building is safe;
+    # credentials, transport, rate limiting and broken tooling must stay red.
+    case "${marker_resolution,,}" in
+        *"manifest unknown"*|*"manifest not found"*|*"404 not found"*)
+            exit_code="${EXIT_NO_RELEASE}"
+            ;;
+        *"unauthorized"*|*"authentication required"*|*"denied: requested access"*)
+            exit_code="${EXIT_REGISTRY_AUTH}"
+            ;;
+        *"too many requests"*|*"rate limit"*|*"429"*)
+            exit_code="${EXIT_REGISTRY_RATE_LIMIT}"
+            ;;
+        *"no such host"*|*"temporary failure"*|*"connection refused"*|*"network is unreachable"*|*"i/o timeout"*|*"tls handshake timeout"*)
+            exit_code="${EXIT_REGISTRY_TRANSPORT}"
+            ;;
+        *)
+            exit_code="${EXIT_REGISTRY_TOOL}"
+            ;;
+    esac
+    echo "FATAL: could not resolve ${MARKER}: ${marker_resolution}" >&2
+    exit "${exit_code}"
+fi
+if [ -z "${marker_digest}" ]; then
+    echo "FATAL: resolving ${MARKER} returned no digest; the registry response is unusable." >&2
+    exit "${EXIT_REGISTRY_TOOL}"
 fi
 
 marker_reference="${REGISTRY}/${WORKER_RELEASE_MARKER_IMAGE}@${marker_digest}"

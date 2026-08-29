@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -7,6 +9,7 @@ from fakeredis import aioredis
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.worker_turn import active_turn_key
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.queues import WORKER_COMMANDS
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 from src.manager import WorkerManager
@@ -149,6 +152,12 @@ async def test_instruction_injection_failure_aborts_worker_creation():
         _OWNERSHIP.attempt_id,
     )
     assert await redis.get(f"workspace:lock:{_OWNERSHIP.project_id}") == "w-injection-failure"
+    commands = await redis.xrange(WORKER_COMMANDS)
+    assert len(commands) == 1
+    cleanup = json.loads(commands[0][1]["data"])
+    assert cleanup["command"] == "delete"
+    assert cleanup["worker_id"] == "w-injection-failure"
+    assert cleanup["reason"] == "failed"
 
 
 @pytest.mark.asyncio
