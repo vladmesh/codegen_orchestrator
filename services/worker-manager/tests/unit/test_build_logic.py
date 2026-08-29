@@ -86,6 +86,7 @@ class TestWorkerManagerBuildLogic:
         redis.sadd = AsyncMock()
         redis.srem = AsyncMock()
         redis.delete = AsyncMock()
+        redis.xadd = AsyncMock()
         return redis
 
     @pytest.fixture
@@ -254,6 +255,7 @@ class TestWorkerManagerCreateWithCapabilities:
         redis.sadd = AsyncMock()
         redis.srem = AsyncMock()
         redis.delete = AsyncMock()
+        redis.xadd = AsyncMock()
         return redis
 
     @pytest.fixture
@@ -345,3 +347,5 @@ class TestWorkerManagerCreateWithCapabilities:
             )
 
         mock_docker.run_container.assert_not_awaited()
+        mock_redis.xadd.assert_not_awaited()
+        assert all(call.args[0] != "worker:meta:factory-worker-1" for call in mock_redis.hset.await_args_list)

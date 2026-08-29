@@ -97,15 +97,9 @@ async def test_a_rejected_worker_cleanup_leaves_the_live_workers_lock_alone(dock
     with pytest.raises(RuntimeError, match="already has active worker"):
         await _create(manager, "worker-b", "run-b")
 
-    # B took no project lock or ownership. Its pre-container metadata still
-    # records the selected executor and auth mode so diagnostics never infer
-    # those facts after a container appears.
+    # B took no project lock, ownership, or teardown state.
     meta_b = decode_redis_fields(await redis.hgetall("worker:meta:worker-b"))
-    assert meta_b == {
-        "worker_type": "developer",
-        "agent_type": "claude",
-        "auth_mode": "host_session",
-    }
+    assert meta_b == {}
 
     patcher, runner = _compose_runner_patch()
     with patcher as mock_runner_cls:

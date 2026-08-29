@@ -187,6 +187,7 @@ class TestWorkspaceByRepoId:
         redis.srem = AsyncMock()
         redis.delete = AsyncMock()
         redis.sismember = AsyncMock(return_value=False)
+        redis.xadd = AsyncMock()
         return redis
 
     @pytest.mark.asyncio
@@ -222,6 +223,9 @@ class TestWorkspaceByRepoId:
                 repo_id=None,
             )
 
+        mock_redis.xadd.assert_not_awaited()
+        assert all(call.args[0] != "worker:meta:w-2" for call in mock_redis.hset.await_args_list)
+
     @pytest.mark.asyncio
     async def test_create_worker_raises_when_scaffolded_workspace_missing(self, mock_redis, mock_docker):
         """When scaffolded workspace doesn't exist, should raise RuntimeError."""
@@ -241,6 +245,9 @@ class TestWorkspaceByRepoId:
                 ownership=WorkerOwnership(project_id="proj-1", run_id="eng-1", attempt_id="attempt-eng-1"),
                 repo_id="repo-missing",
             )
+
+        mock_redis.xadd.assert_not_awaited()
+        assert all(call.args[0] != "worker:meta:w-2b" for call in mock_redis.hset.await_args_list)
 
     @pytest.mark.asyncio
     async def test_scaffolded_workspace_refreshes_git_token(self, mock_redis, mock_docker):

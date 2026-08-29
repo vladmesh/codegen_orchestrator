@@ -443,6 +443,7 @@ class WorkerManager:
         *,
         agent_type: AgentType | None = None,
         auth_mode: str | None = None,
+        worker_type: str | None = None,
     ) -> None:
         """Write who this worker belongs to, before the container exists.
 
@@ -453,9 +454,19 @@ class WorkerManager:
         metadata = ownership.as_redis_meta()
         if agent_type is not None and auth_mode is not None:
             metadata.update({"agent_type": agent_type.value, "auth_mode": auth_mode})
+        if worker_type is not None:
+            metadata["worker_type"] = worker_type
         await self.redis.hset(f"worker:meta:{worker_id}", mapping=metadata)
 
-    async def _acquire_workspace_lock(self, worker_id: str, ownership: WorkerOwnership) -> str:
+    async def _acquire_workspace_lock(
+        self,
+        worker_id: str,
+        ownership: WorkerOwnership,
+        *,
+        agent_type: AgentType = AgentType.CLAUDE,
+        auth_mode: str = "host_session",
+        worker_type: str = "developer",
+    ) -> str:
         """Take the project's workspace lock for this worker, or refuse it.
 
         Acquisition decides whether a developer worker exists at all; ownership
@@ -472,11 +483,17 @@ class WorkerManager:
         The lock stores its owner, not merely a set membership.  That fence is
         what prevents an old delete from releasing a newer worker's checkout.
         """
-        await self._stamp_ownership(worker_id, ownership)
+        await self._stamp_ownership(
+            worker_id,
+            ownership,
+            agent_type=agent_type,
+            auth_mode=auth_mode,
+            worker_type=worker_type,
+        )
         lock_key = f"workspace:lock:{ownership.project_id}"
         acquired = await self.redis.set(lock_key, worker_id, nx=True)
         if not acquired:
-            await self.redis.hdel(f"worker:meta:{worker_id}", *ownership.as_redis_meta())
+            await self.redis.delete(f"worker:meta:{worker_id}")
             raise RuntimeError(f"Project {ownership.project_id} workspace lock was taken by a concurrent worker")
         await self.redis.sadd("workspace:active_projects", ownership.project_id)
         return ownership.project_id
@@ -1206,6 +1223,8 @@ class WorkerManager:
         is_qa_worker = worker_type == QA_WORKER_TYPE
         project_id = ownership.project_id
         env_vars = env_vars or {}
+        workspace_path = None
+        factory_api_key = None
         if auth_mode == "stand_token":
             if agent_type not in {AgentType.CLAUDE, AgentType.CODEX}:
                 raise RuntimeError("stand_token authentication is supported only for Claude and Codex workers")
@@ -1223,23 +1242,10 @@ class WorkerManager:
             )
             if failure is not None:
                 raise RuntimeError(f"stand_token authentication is unavailable: {failure.detail}")
-        # Written before anything is created, for two reasons that both need it
-        # early. It is what `delete_worker` reads to know a QA workspace is
-        # scratch it must remove — a creation that fails halfway would otherwise
-        # leave a directory nothing owns. And it is the server's record of what
-        # this worker is, which the Compose route authorizes on: the record has
-        # to exist before the credential does, because a request whose worker
-        # type is unrecorded is refused.
-        await self.redis.hset(
-            f"worker:meta:{worker_id}",
-            mapping={"worker_type": worker_type, "agent_type": agent_type.value, "auth_mode": auth_mode},
-        )
 
-        # Everything up to the lock is a refusal, not a failure of a worker that
-        # started: it took nothing, so nothing is released here. What it must
-        # leave behind is a terminal status, so the caller that was ACKed early
-        # stops polling now instead of timing out and deleting a worker that
-        # never held anything.
+        # These checks can refuse a request before it owns metadata, a workspace
+        # fence, or a cleanup command. A terminal status still tells the early-
+        # ACKed caller to stop polling without manufacturing teardown state.
         held_project_id: str | None = None
         try:
             network_name, allow_host_network = self._resolve_worker_network(for_qa=is_qa_worker)
@@ -1253,6 +1259,23 @@ class WorkerManager:
                 from .claude_auth import validate_claude_host_session
 
                 validate_claude_host_session(settings.HOST_CLAUDE_VALIDATION_PATH or host_claude_dir)
+
+            if is_qa_worker:
+                if not instructions or not task_content:
+                    raise RuntimeError(
+                        "a QA executor requires instructions and task_content before it can become ready"
+                    )
+            else:
+                if not repo_id:
+                    raise RuntimeError(
+                        "repo_id is required — all developer workers must use pre-scaffolded "
+                        "workspaces. Ensure scaffolder has run before spawning workers."
+                    )
+
+            if agent_type == AgentType.FACTORY and "FACTORY_API_KEY" not in env_vars and not api_key:
+                factory_api_key = os.getenv("FACTORY_API_KEY")
+                if not factory_api_key:
+                    raise RuntimeError("FACTORY_API_KEY is not set")
 
             # The workspace lock is a developer-worker concern: it guards the one
             # persistent checkout a project has. A QA executor owns the same project
@@ -1271,15 +1294,36 @@ class WorkerManager:
                         f"Max retries (3) exceeded for project {project_id}. Reset with: DEL {failure_key}"
                     )
 
+                workspace_path, scaffolded_exists = workspace_mod.get_scaffolded_workspace(
+                    settings.SCAFFOLDED_WORKSPACE_PATH, repo_id
+                )
+                if not scaffolded_exists:
+                    raise RuntimeError(
+                        f"Scaffolded workspace not found for repo_id={repo_id} at {workspace_path}. "
+                        "Scaffolder must run first."
+                    )
+
                 # Take the project and, with it, stamp ownership — early, so the
                 # spawner gets worker_id before the image build, and long before
                 # anything can produce a container.
-                held_project_id = await self._acquire_workspace_lock(worker_id, ownership)
+                held_project_id = await self._acquire_workspace_lock(
+                    worker_id,
+                    ownership,
+                    agent_type=agent_type,
+                    auth_mode=auth_mode,
+                    worker_type=worker_type,
+                )
             else:
                 # A QA executor takes no lock, so nothing gates its ownership:
                 # it is stamped as soon as this is known to be a worker that
                 # will exist, and still before any container of it does.
-                await self._stamp_ownership(worker_id, ownership)
+                await self._stamp_ownership(
+                    worker_id,
+                    ownership,
+                    agent_type=agent_type,
+                    auth_mode=auth_mode,
+                    worker_type=worker_type,
+                )
         except Exception as exc:
             # Acquisition is the only thing in the block that takes anything,
             # and it either succeeded or withdrew what it wrote — so the release
@@ -1293,8 +1337,6 @@ class WorkerManager:
 
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
         try:
-            if is_qa_worker and (not instructions or not task_content):
-                raise RuntimeError("a QA executor requires instructions and task_content before it can become ready")
             image_tag = await self.ensure_or_build_image(
                 capabilities=capabilities,
                 base_image=base_image,
@@ -1331,18 +1373,7 @@ class WorkerManager:
                 ws_path = workspace_mod.create_ephemeral_workspace(settings.SCAFFOLDED_WORKSPACE_PATH, worker_id)
                 logger.info("using_ephemeral_qa_workspace", worker_id=worker_id, path=str(ws_path))
             else:
-                if not repo_id:
-                    raise RuntimeError(
-                        "repo_id is required — all developer workers must use pre-scaffolded "
-                        "workspaces. Ensure scaffolder has run before spawning workers."
-                    )
-                ws_path, scaffolded_exists = workspace_mod.get_scaffolded_workspace(
-                    settings.SCAFFOLDED_WORKSPACE_PATH, repo_id
-                )
-                if not scaffolded_exists:
-                    raise RuntimeError(
-                        f"Scaffolded workspace not found for repo_id={repo_id} at {ws_path}. Scaffolder must run first."
-                    )
+                ws_path = workspace_path
                 logger.info(
                     "using_scaffolded_workspace",
                     worker_id=worker_id,
@@ -1364,10 +1395,7 @@ class WorkerManager:
             container_env.update(env_vars)
             for forbidden in ("WORKER_REDIS_URL", "WORKER_API_URL", "WORKER_MANAGER_URL", "SECRETS_ENCRYPTION_KEY"):
                 container_env.pop(forbidden, None)
-            if agent_type == AgentType.FACTORY and "FACTORY_API_KEY" not in container_env:
-                factory_api_key = os.getenv("FACTORY_API_KEY")
-                if not factory_api_key:
-                    raise RuntimeError("FACTORY_API_KEY is not set")
+            if factory_api_key is not None:
                 container_env["FACTORY_API_KEY"] = factory_api_key
 
             github_token = env_vars.get("GITHUB_TOKEN")

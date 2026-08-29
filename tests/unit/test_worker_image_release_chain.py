@@ -213,7 +213,7 @@ case "${command}" in
     buildx)
         published="${FAKE_REGISTRY}/$(image_of "$3")"
         if [ ! -f "${published}" ]; then
-            echo "ERROR: $3: not found" >&2
+            echo "ERROR: $3: manifest unknown" >&2
             exit 1
         fi
         cat "${published}"
