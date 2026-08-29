@@ -41,9 +41,11 @@ Red → Green → Refactor. No exceptions.
 
 **Broad check under Secretary (one canonical form):**
 `python3 -m secretary check broad --reuse --module shared` — the same suite as `make test-unit`
-(`python -m shared` runs the tree's `scripts/test-unit-local.sh`, fixture env included). Run it once,
-after the last edit, and quote `check show --module shared`; do not wrap `make test-unit` in
-`--command`, that receipt is never reusable, and do not substitute a narrower `--module pytest ...`.
+(`python -m shared` runs the tree's `scripts/test-unit-local.sh`, fixture env included).
+Order: focused tests while editing → this broad check once, after the last edit, on the dirty tree →
+commit. The receipt is keyed by the content tree, so committing the same content keeps it: after the
+commit quote `check show --module shared`, do not run the suite again. Do not wrap `make test-unit`
+in `--command`, that receipt is never reusable, and do not substitute a narrower `--module pytest ...`.
 
 **Review Trigger**: a change to `shared/contracts/` or the DB schema that is not described in the plan → **STOP**, ask the user.
 
