@@ -245,7 +245,8 @@ def sweep(env: dict[str, str], log) -> bool:
     # permission error on a path that does not exist there, the contour cleanup
     # dies before it starts, and the run still reports green. The host path is
     # the bind-mount source the stack was given.
-    host_pem = env.get("GITHUB_APP_PEM_PATH") or os.environ.get("GITHUB_APP_PEM_PATH")
+    deployed = read_env_file(REPO / ".env")
+    host_pem = deployed.get("GITHUB_APP_PEM_PATH") or os.environ.get("GITHUB_APP_PEM_PATH")
     sweep_env = {**os.environ, **env, "LIVE_CONTOUR": "stand"}
     if host_pem:
         sweep_env["GITHUB_APP_PRIVATE_KEY_PATH"] = host_pem
