@@ -317,6 +317,19 @@ jobs:
               sleep 5
               remaining=$((remaining - 5))
             done
+            # Migrations create the tables; the system configuration is separate
+            # data, and the API refuses work without it. A stand that skipped this
+            # answers `500` to the first project the suite creates, with
+            # `Missing work admission config: work_admission.emergency_stop`
+            # buried in its own log — which reads as a broken build rather than
+            # an unseeded database.
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+            ${COMPOSE} exec -T api python /app/scripts/seed_system_configs.py \
+              --api-base-url http://localhost:8000 \
+              --configs-path /app/scripts/system_configs.yaml
+            ${COMPOSE} exec -T api python /app/scripts/seed_agent_configs.py \
+              --api-base-url http://localhost:8000 \
+              --configs-path /app/scripts/agent_configs.yaml
           '
 
       - name: Register and provision dynamic target
