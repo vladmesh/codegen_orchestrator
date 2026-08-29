@@ -66,6 +66,18 @@ jobs:
       packages: read
     env:
       STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      # One definition for every ssh and scp in this job. Several of these calls
+      # wait minutes with the connection idle — provisioning runs ansible on the
+      # far side and says nothing meanwhile — and an idle connection is what a
+      # NAT or a load balancer drops. Run 33249511508 died that way at
+      # `client_loop: send disconnect: Broken pipe` after five silent minutes.
+      # Repeating the flags per call is how one call ends up without them, which
+      # is why they are named once here.
+      SSH_OPTS: >-
+        -o StrictHostKeyChecking=accept-new
+        -o BatchMode=yes
+        -o ServerAliveInterval=30
+        -o ServerAliveCountMax=10
     steps:
       - name: Check out lifecycle code
         uses: actions/checkout@v5
@@ -204,12 +216,12 @@ jobs:
             uvx --from ansible-core ansible-playbook -i "${inventory}" \
             services/infra-service/ansible/playbooks/provision_software.yml \
             -e "target_host=${PROD_HOST} deploy_user=deploy"
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'install -d -m 0755 /opt/codegen_orchestrator'
           rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-target.env \
-            -e "ssh -i ${key_path} -o StrictHostKeyChecking=accept-new" \
+            -e "ssh -i ${key_path} ${SSH_OPTS}" \
             ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'uv --version >/dev/null'
 
       - name: Render protected dynamic configuration
@@ -288,13 +300,13 @@ jobs:
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          scp -i "${key_path}" -o StrictHostKeyChecking=accept-new .stand.env \
+          scp -i "${key_path}" ${SSH_OPTS} .stand.env \
             root@"${PROD_HOST}":/opt/codegen_orchestrator/.env
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'install -d -m 0700 /opt/secrets'
-          scp -i "${key_path}" -o StrictHostKeyChecking=accept-new .stand-github-app.pem \
+          scp -i "${key_path}" ${SSH_OPTS} .stand-github-app.pem \
             root@"${PROD_HOST}":/opt/secrets/github_app.pem
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" '
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
             set -euo pipefail
             cd /opt/codegen_orchestrator
             docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml up -d --build --remove-orphans
@@ -334,7 +346,7 @@ jobs:
           '
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           tar -C "${RUNNER_TEMP}" -cf - stand-target.json stand-target.key | \
-            ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" '
+            ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
             set -euo pipefail
             umask 077
             cleanup() {
@@ -363,7 +375,7 @@ jobs:
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           release_sha="${GITHUB_SHA}"
           echo "worker image release candidate: ${release_sha}"
-          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" ${SSH_OPTS} \
             root@"${PROD_HOST}" \
             "IFS= read -r GHCR_TOKEN && export GHCR_TOKEN && \
              cd /opt/codegen_orchestrator && \
@@ -378,7 +390,7 @@ jobs:
             case "${pulled}" in
               9)
                 echo "no release matches this tree (exit ${pulled}); building on the stand"
-                ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+                ssh -i "${key_path}" ${SSH_OPTS} \
                   root@"${PROD_HOST}" \
                   'cd /opt/codegen_orchestrator && export PATH=/usr/local/bin:$PATH && make ensure-worker-images'
                 ;;
@@ -405,7 +417,7 @@ jobs:
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python scripts/stand_run.py --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" "${remote_command}" \
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
             >"${RUNNER_TEMP}/remote-invocation.log" 2>&1
 
       # Copy only the runner's public reports.  This short-lived handoff is how
@@ -425,7 +437,7 @@ jobs:
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           if [ -n "${PROD_HOST}" ]; then
             for name in junit.xml report.tsv run.log claude-claude.log claude-codex.log codex-claude.log codex-codex.log; do
-              scp -i "${key_path}" -o StrictHostKeyChecking=accept-new \
+              scp -i "${key_path}" ${SSH_OPTS} \
                 root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
             done
           fi
