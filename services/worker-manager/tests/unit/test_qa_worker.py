@@ -361,7 +361,7 @@ class TestTheOneCommandItIsGiven:
         cleanup = json.loads(commands[0][1]["data"])
         assert cleanup["command"] == "delete"
         assert cleanup["worker_id"] == "qa-1"
-        assert cleanup["reason"] == "failed"
+        assert cleanup["reason"] == "creation_failed"
 
     async def test_missing_first_turn_material_fails_without_publishing_ready(self, qa_worker):
         manager_holder: dict = {}

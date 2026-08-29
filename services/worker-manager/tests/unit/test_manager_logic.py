@@ -157,7 +157,33 @@ async def test_instruction_injection_failure_aborts_worker_creation():
     cleanup = json.loads(commands[0][1]["data"])
     assert cleanup["command"] == "delete"
     assert cleanup["worker_id"] == "w-injection-failure"
-    assert cleanup["reason"] == "failed"
+    assert cleanup["reason"] == "creation_failed"
+
+    await manager.delete_worker("w-injection-failure", reason=cleanup["reason"])
+    assert await redis.get(f"workspace:{_OWNERSHIP.project_id}:failure_count") is None
+
+
+@pytest.mark.asyncio
+async def test_three_creation_failures_preserve_the_execution_failure_budget():
+    """Creation teardown is durable but is not an executed worker failure."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    manager = WorkerManager(redis=redis, docker_client=_make_docker_mock())
+
+    for index in range(3):
+        worker_id = f"w-creation-failure-{index}"
+        await manager._acquire_workspace_lock(worker_id, _OWNERSHIP)
+        await manager._fail_acquired_worker(worker_id, RuntimeError("transient build failure"))
+
+        cleanup = json.loads((await redis.xrevrange(WORKER_COMMANDS, count=1))[0][1]["data"])
+        assert cleanup["reason"] == "creation_failed"
+        assert await redis.get(f"workspace:lock:{_OWNERSHIP.project_id}") == worker_id
+        assert await redis.hget(f"worker:meta:{worker_id}", "project_id") == _OWNERSHIP.project_id
+
+        await manager.delete_worker(worker_id, reason=cleanup["reason"])
+        assert await redis.get(f"workspace:lock:{_OWNERSHIP.project_id}") is None
+        assert await redis.exists(f"worker:meta:{worker_id}") == 0
+
+    assert await redis.get(f"workspace:{_OWNERSHIP.project_id}:failure_count") is None
 
 
 @pytest.mark.asyncio

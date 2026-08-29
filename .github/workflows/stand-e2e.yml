@@ -327,13 +327,13 @@ jobs:
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          release_sha="$(git merge-base HEAD origin/main)"
+          release_sha="${GITHUB_SHA}"
           echo "worker image release candidate: ${release_sha}"
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
             root@"${PROD_HOST}" \
-            "cd /opt/codegen_orchestrator && \
-             GHCR_TOKEN='${GHCR_TOKEN}' GHCR_OWNER='${GHCR_OWNER}' \
-             WORKER_IMAGE_TAG='${release_sha}' \
+            "IFS= read -r GHCR_TOKEN && export GHCR_TOKEN && \
+             cd /opt/codegen_orchestrator && \
+             GHCR_OWNER='${GHCR_OWNER}' WORKER_IMAGE_TAG='${release_sha}' \
              DIGEST_FILE=/opt/codegen_orchestrator/deployed-worker-images.json \
              bash infra/scripts/pull-worker-images.sh" && pulled=0 || pulled=$?
           # Only a confirmed absent whole release (9) admits a local build.

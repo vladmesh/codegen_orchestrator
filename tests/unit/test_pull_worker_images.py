@@ -99,6 +99,37 @@ case "${command}" in
 esac
 """
 
+FAKE_CURL = """#!/usr/bin/env bash
+set -uo pipefail
+echo "$*" >> "${FAKE_CURL_LOG}"
+
+output=""
+url=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --output)
+            output="$2"
+            shift 2
+            ;;
+        http*)
+            url="$1"
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [[ "${url}" == *"/token"* ]]; then
+    printf '{"token":"fake-registry-token"}' > "${output}"
+    printf '200'
+else
+    : > "${output}"
+    printf '%s' "${FAKE_MARKER_HTTP_STATUS:-200}"
+fi
+"""
+
 
 @pytest.fixture(scope="module")
 def tree_source_hash() -> str:
@@ -138,8 +169,13 @@ def run_pull(tmp_path, tree_source_hash):
     fake_docker = binaries / "docker"
     fake_docker.write_text(FAKE_DOCKER)
     fake_docker.chmod(0o755)
+    fake_curl = binaries / "curl"
+    fake_curl.write_text(FAKE_CURL)
+    fake_curl.chmod(0o755)
     log = tmp_path / "docker.log"
     log.touch()
+    curl_log = tmp_path / "curl.log"
+    curl_log.touch()
     record = tmp_path / "deployed-worker-images.json"
 
     def run(**overrides):
@@ -147,6 +183,7 @@ def run_pull(tmp_path, tree_source_hash):
             "PATH": f"{binaries}:/usr/bin:/bin",
             "HOME": str(tmp_path),
             "FAKE_DOCKER_LOG": str(log),
+            "FAKE_CURL_LOG": str(curl_log),
             "FAKE_LABEL_DEFAULT": tree_source_hash,
             "FAKE_MARKER": marker_payload(release_record(tree_source_hash)),
             "GHCR_TOKEN": "test-token",
@@ -220,7 +257,7 @@ def test_a_revision_with_no_release_marker_is_refused_before_anything_moves(run_
     that pushed some images and died. Only the marker is missing, and that alone has
     to stop the deploy.
     """
-    result, calls, record = run_pull(FAKE_MISSING_IMAGE="worker-base-release")
+    result, calls, record = run_pull(FAKE_MARKER_HTTP_STATUS="404")
 
     assert result.returncode == EXIT_NO_RELEASE, result.stderr
     assert "worker-base-release" in result.stderr
@@ -235,20 +272,27 @@ def test_a_revision_with_no_release_marker_is_refused_before_anything_moves(run_
 
 
 @pytest.mark.parametrize(
-    ("registry_error", "expected_exit"),
+    ("status", "expected_exit"),
     [
-        ("ERROR: unauthorized: authentication required", EXIT_REGISTRY_AUTH),
-        ("ERROR: dial tcp: lookup ghcr.io: no such host", EXIT_REGISTRY_TRANSPORT),
-        ("ERROR: too many requests: rate limit exceeded", EXIT_REGISTRY_RATE_LIMIT),
-        ("ERROR: docker buildx plugin is unavailable", EXIT_REGISTRY_TOOL),
+        ("401", EXIT_REGISTRY_AUTH),
+        ("403", EXIT_REGISTRY_AUTH),
+        ("429", EXIT_REGISTRY_RATE_LIMIT),
+        ("500", EXIT_REGISTRY_TOOL),
     ],
 )
-def test_registry_resolution_failures_are_not_misclassified_as_missing_releases(
-    run_pull, registry_error, expected_exit
-):
-    result, calls, record = run_pull(FAKE_MARKER_ERROR=registry_error)
+def test_only_a_typed_registry_404_admits_the_missing_release_path(run_pull, status, expected_exit):
+    result, calls, record = run_pull(FAKE_MARKER_HTTP_STATUS=status)
 
     assert result.returncode == expected_exit, result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+def test_ambiguous_image_tool_failure_is_not_misclassified_as_a_missing_release(run_pull):
+    result, calls, record = run_pull(FAKE_MARKER_ERROR="ERROR: marker not found")
+
+    assert result.returncode == EXIT_REGISTRY_TOOL, result.stderr
     assert not [call for call in calls if call.startswith("pull ")]
     assert not [call for call in calls if call.startswith("tag ")]
     assert not record.exists()
@@ -348,3 +392,5 @@ def test_the_script_declares_no_fallback_tag():
 
     assert "WORKER_IMAGE_TAG:-" not in script
     assert "WORKER_IMAGE_TAG:?" in script
+    assert "Authorization: Bearer ${registry_token}" not in script
+    assert '"@${AUTH_HEADER_FILE}"' in script

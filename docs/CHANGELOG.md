@@ -84,6 +84,13 @@
 
 ### Fixed
 
+- Stand image resolution now checks the deployed revision's release marker through
+  a typed, read-only GHCR manifest response: only HTTP 404 falls back to a local
+  build. Creation teardown carries a distinct reason that preserves execution
+  retries, Factory requires and forwards its API key in every supported auth mode,
+  and scheduler's shipped and isolated-test cadence both use the allocation
+  freshness policy.
+
 - Worker creation failures now retain their terminal status, ownership metadata,
   and developer workspace fence until `delete_worker` confirms container removal.
   BitLaunch access provisioning uses the shared stable-ID parser while generic

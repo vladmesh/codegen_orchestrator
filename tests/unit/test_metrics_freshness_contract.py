@@ -41,3 +41,18 @@ def test_infra_integration_scheduler_uses_the_deployable_freshness_cadence() -> 
     interval = next(value for value in environment if value.startswith("HEALTH_CHECK_INTERVAL="))
 
     assert validate_health_check_interval(int(interval.split("=", 1)[1])) == 60
+
+
+def test_shipped_compose_scheduler_default_uses_the_same_freshness_policy() -> None:
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
+    )
+    interval = compose["services"]["scheduler"]["environment"]["HEALTH_CHECK_INTERVAL"]
+
+    assert interval == "${HEALTH_CHECK_INTERVAL:-60}"
+    assert (
+        validate_health_check_interval(
+            int(interval.removeprefix("${HEALTH_CHECK_INTERVAL:-").removesuffix("}"))
+        )
+        == 60
+    )

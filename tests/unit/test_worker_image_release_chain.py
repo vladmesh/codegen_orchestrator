@@ -260,6 +260,39 @@ FAKE_MAKE = """#!/usr/bin/env bash
 echo "make $*" >> "${FAKE_DOCKER_LOG}"
 """
 
+FAKE_CURL = """#!/usr/bin/env bash
+set -uo pipefail
+
+output=""
+url=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --output)
+            output="$2"
+            shift 2
+            ;;
+        http*)
+            url="$1"
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [[ "${url}" == *"/token"* ]]; then
+    printf '{"token":"fake-registry-token"}' > "${output}"
+    printf '200'
+elif [ -f "${FAKE_REGISTRY}/worker-base-release" ]; then
+    : > "${output}"
+    printf '200'
+else
+    : > "${output}"
+    printf '404'
+fi
+"""
+
 PUBLISHED_SHA = "0123456789abcdef0123456789abcdef01234567"
 REGISTRY = "ghcr.io/test-owner/codegen-orchestrator"
 
@@ -288,7 +321,7 @@ class ReleaseChain:
         self.source_hash = source_hash
         binaries = tmp_path / "bin"
         binaries.mkdir()
-        for name, body in (("docker", FAKE_DOCKER), ("make", FAKE_MAKE)):
+        for name, body in (("curl", FAKE_CURL), ("docker", FAKE_DOCKER), ("make", FAKE_MAKE)):
             executable = binaries / name
             executable.write_text(body)
             executable.chmod(0o755)

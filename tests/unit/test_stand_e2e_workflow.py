@@ -126,7 +126,10 @@ def test_worker_image_fallback_is_limited_to_confirmed_missing_releases():
 
     assert job["permissions"]["packages"] == "read"
     assert job["steps"][0]["with"]["fetch-depth"] == 0
-    assert "git merge-base HEAD origin/main" in step["run"]
+    assert "${GITHUB_SHA}" in step["run"]
+    assert "git merge-base HEAD origin/main" not in step["run"]
+    assert "GHCR_TOKEN='${GHCR_TOKEN}'" not in step["run"]
+    assert "read -r GHCR_TOKEN" in step["run"]
     assert 'case "${pulled}"' in step["run"]
     assert "9)" in step["run"]
     assert "5|9)" not in step["run"]

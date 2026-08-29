@@ -553,7 +553,7 @@ class WorkerManager:
             WORKER_COMMANDS,
             {
                 "data": DeleteWorkerCommand(
-                    request_id=f"cleanup-{worker_id}", worker_id=worker_id, reason="failed"
+                    request_id=f"cleanup-{worker_id}", worker_id=worker_id, reason="creation_failed"
                 ).model_dump_json()
             },
         )
@@ -1272,8 +1272,8 @@ class WorkerManager:
                         "workspaces. Ensure scaffolder has run before spawning workers."
                     )
 
-            if agent_type == AgentType.FACTORY and "FACTORY_API_KEY" not in env_vars and not api_key:
-                factory_api_key = os.getenv("FACTORY_API_KEY")
+            if agent_type == AgentType.FACTORY:
+                factory_api_key = env_vars.get("FACTORY_API_KEY") or api_key or os.getenv("FACTORY_API_KEY")
                 if not factory_api_key:
                     raise RuntimeError("FACTORY_API_KEY is not set")
 
