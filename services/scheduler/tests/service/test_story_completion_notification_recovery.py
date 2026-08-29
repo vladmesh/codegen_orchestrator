@@ -313,7 +313,9 @@ async def test_admin_console_acceptance_is_recovered_to_po_input(api_client):
 
 
 @pytest.mark.asyncio
-async def test_recheck_qa_restores_a_quarantined_story_through_completion(api_client):
+async def test_recheck_qa_restores_a_quarantined_story_through_completion(  # noqa: PLR0915
+    api_client,
+):
     """A repaired QA infrastructure blocker needs no hand transition to finish."""
     from src.tasks.supervisor import supervise_deploying_stories, supervise_testing_stories
 
@@ -406,7 +408,7 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(api_cl
             },
         }
         quarantined_qa = await client.post(
-            "/api/runs/",
+            "/api/work-admission/paid-runs",
             json={
                 "id": f"qa-quarantine-{uuid.uuid4().hex[:12]}",
                 "type": "qa",
@@ -415,9 +417,10 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(api_cl
                 "run_metadata": {"application_id": application_id},
             },
         )
-        assert quarantined_qa.status_code == httpx.codes.CREATED, quarantined_qa.text
+        assert quarantined_qa.status_code == httpx.codes.OK, quarantined_qa.text
+        assert (quarantined_qa_id := quarantined_qa.json()["run_id"])
         terminal = await client.patch(
-            f"/api/runs/{quarantined_qa.json()['id']}",
+            f"/api/runs/{quarantined_qa_id}",
             json={"status": "failed", "result": blocker},
         )
         assert terminal.status_code == httpx.codes.OK, terminal.text
@@ -460,9 +463,7 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(api_cl
                 "/api/runs/", params={"story_id": story_id, "run_type": "qa"}
             )
             assert qa_runs.status_code == httpx.codes.OK, qa_runs.text
-            recheck_qa = next(
-                run for run in qa_runs.json() if run["id"] != quarantined_qa.json()["id"]
-            )
+            recheck_qa = next(run for run in qa_runs.json() if run["id"] != quarantined_qa_id)
             assert recheck_qa["story_id"] == story_id
             assert recheck_qa["run_metadata"]["application_id"] == application_id
             assert recheck_qa["run_metadata"]["deploy_run_id"] == recheck_run_id

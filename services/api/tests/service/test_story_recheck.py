@@ -8,6 +8,8 @@ from httpx import AsyncClient
 import pytest
 from redis.asyncio import Redis
 
+from shared.redis.client import decode_redis_fields
+
 
 @pytest.mark.asyncio
 async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
@@ -91,7 +93,7 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
     )
     assert deploy_receipt.status_code == HTTPStatus.CREATED, deploy_receipt.text
     qa_run = await async_client.post(
-        "/api/runs/",
+        "/api/work-admission/paid-runs",
         json={
             "id": f"qa-quarantine-{uuid.uuid4().hex[:12]}",
             "type": "qa",
@@ -100,7 +102,8 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
             "run_metadata": {"application_id": application_id},
         },
     )
-    assert qa_run.status_code == HTTPStatus.CREATED, qa_run.text
+    assert qa_run.status_code == HTTPStatus.OK, qa_run.text
+    qa_run_id = qa_run.json()["run_id"]
     qa_result = {
         "qa_outcome": "blocked",
         "blocker": {
@@ -111,7 +114,7 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
         },
     }
     completed_qa = await async_client.patch(
-        f"/api/runs/{qa_run.json()['id']}",
+        f"/api/runs/{qa_run_id}",
         json={"status": "failed", "result": qa_result},
     )
     assert completed_qa.status_code == HTTPStatus.OK, completed_qa.text
@@ -139,7 +142,7 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
 
     message_rows = await redis_client.xrevrange("deploy:queue", count=1)
     assert await redis_client.xlen("deploy:queue") == before + 1
-    message = json.loads(message_rows[0][1]["data"])
+    message = json.loads(decode_redis_fields(message_rows[0][1])["data"])
     assert message["story_id"] == story_id
     assert message["application_id"] == application_id
     assert message["head_sha"] == head_sha
