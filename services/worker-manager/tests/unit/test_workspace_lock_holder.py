@@ -23,6 +23,7 @@ from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
+from shared.queues import WORKER_COMMANDS
 
 from src.garbage_collector import garbage_collect_workspaces
 from src.manager import WorkerManager
@@ -96,15 +97,9 @@ async def test_a_rejected_worker_cleanup_leaves_the_live_workers_lock_alone(dock
     with pytest.raises(RuntimeError, match="already has active worker"):
         await _create(manager, "worker-b", "run-b")
 
-    # B took no project lock or ownership. Its pre-container metadata still
-    # records the selected executor and auth mode so diagnostics never infer
-    # those facts after a container appears.
+    # B took no project lock, ownership, or teardown state.
     meta_b = decode_redis_fields(await redis.hgetall("worker:meta:worker-b"))
-    assert meta_b == {
-        "worker_type": "developer",
-        "agent_type": "claude",
-        "auth_mode": "host_session",
-    }
+    assert meta_b == {}
 
     patcher, runner = _compose_runner_patch()
     with patcher as mock_runner_cls:
@@ -143,6 +138,7 @@ async def test_a_refused_worker_fails_fast_instead_of_timing_out(docker):
 
     assert await redis.hget("worker:status:worker-b", "status") == WorkerStatus.FAILED
     assert PROJECT in await redis.get("worker:error:worker-b")
+    assert await redis.xlen(WORKER_COMMANDS) == 0
 
 
 @pytest.mark.asyncio

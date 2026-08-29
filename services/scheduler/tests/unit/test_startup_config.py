@@ -6,7 +6,7 @@ import httpx
 import pytest
 import yaml
 
-os.environ.setdefault("HEALTH_CHECK_INTERVAL", "300")
+os.environ.setdefault("HEALTH_CHECK_INTERVAL", "60")
 os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
 from shared.config_store import ConfigStore, ConfigStoreUnavailableError

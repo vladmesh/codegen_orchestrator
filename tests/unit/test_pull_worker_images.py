@@ -36,6 +36,10 @@ EXIT_MISSING_LABEL = 4
 EXIT_STALE_LABEL = 5
 EXIT_BROKEN_RELEASE = 6
 EXIT_NO_RELEASE = 9
+EXIT_REGISTRY_AUTH = 10
+EXIT_REGISTRY_TRANSPORT = 11
+EXIT_REGISTRY_RATE_LIMIT = 12
+EXIT_REGISTRY_TOOL = 13
 
 # A fake docker. `buildx imagetools inspect` answers a digest per image and fails for
 # FAKE_MISSING_IMAGE the way a registry answers for a tag that was never pushed;
@@ -61,8 +65,12 @@ case "${command}" in
         cat > /dev/null
         ;;
     buildx)
+        if [ "$(image_of "$3")" = "worker-base-release" ] && [ -n "${FAKE_MARKER_ERROR:-}" ]; then
+            echo "${FAKE_MARKER_ERROR}" >&2
+            exit 1
+        fi
         if [ "$(image_of "$3")" = "${FAKE_MISSING_IMAGE:-}" ]; then
-            echo "ERROR: $3: not found" >&2
+            echo "ERROR: $3: manifest unknown" >&2
             exit 1
         fi
         echo "sha256:$(image_of "$3")"
@@ -89,6 +97,46 @@ case "${command}" in
         exit 99
         ;;
 esac
+"""
+
+FAKE_CURL = """#!/usr/bin/env bash
+set -uo pipefail
+echo "$*" >> "${FAKE_CURL_LOG}"
+
+output=""
+url=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --output)
+            output="$2"
+            shift 2
+            ;;
+        http*)
+            url="$1"
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [[ "${url}" == *"/token"* ]]; then
+    status="${FAKE_TOKEN_HTTP_STATUS:-200}"
+    exit_code="${FAKE_TOKEN_CURL_EXIT:-0}"
+    if [ "${status}" = "200" ]; then
+        printf '{"token":"fake-registry-token"}' > "${output}"
+    else
+        : > "${output}"
+    fi
+else
+    status="${FAKE_MARKER_HTTP_STATUS:-200}"
+    exit_code="${FAKE_MARKER_CURL_EXIT:-0}"
+    : > "${output}"
+fi
+
+printf '%s' "${status}"
+exit "${exit_code}"
 """
 
 
@@ -130,8 +178,13 @@ def run_pull(tmp_path, tree_source_hash):
     fake_docker = binaries / "docker"
     fake_docker.write_text(FAKE_DOCKER)
     fake_docker.chmod(0o755)
+    fake_curl = binaries / "curl"
+    fake_curl.write_text(FAKE_CURL)
+    fake_curl.chmod(0o755)
     log = tmp_path / "docker.log"
     log.touch()
+    curl_log = tmp_path / "curl.log"
+    curl_log.touch()
     record = tmp_path / "deployed-worker-images.json"
 
     def run(**overrides):
@@ -139,6 +192,7 @@ def run_pull(tmp_path, tree_source_hash):
             "PATH": f"{binaries}:/usr/bin:/bin",
             "HOME": str(tmp_path),
             "FAKE_DOCKER_LOG": str(log),
+            "FAKE_CURL_LOG": str(curl_log),
             "FAKE_LABEL_DEFAULT": tree_source_hash,
             "FAKE_MARKER": marker_payload(release_record(tree_source_hash)),
             "GHCR_TOKEN": "test-token",
@@ -212,7 +266,7 @@ def test_a_revision_with_no_release_marker_is_refused_before_anything_moves(run_
     that pushed some images and died. Only the marker is missing, and that alone has
     to stop the deploy.
     """
-    result, calls, record = run_pull(FAKE_MISSING_IMAGE="worker-base-release")
+    result, calls, record = run_pull(FAKE_MARKER_HTTP_STATUS="404")
 
     assert result.returncode == EXIT_NO_RELEASE, result.stderr
     assert "worker-base-release" in result.stderr
@@ -223,6 +277,97 @@ def test_a_revision_with_no_release_marker_is_refused_before_anything_moves(run_
     assert not [call for call in calls if call.startswith("pull ")], (
         "no image is pulled for a revision that was never released"
     )
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_exit"),
+    [
+        ("401", EXIT_REGISTRY_AUTH),
+        ("403", EXIT_REGISTRY_AUTH),
+        ("429", EXIT_REGISTRY_RATE_LIMIT),
+        ("500", EXIT_REGISTRY_TOOL),
+    ],
+)
+def test_only_a_typed_registry_404_admits_the_missing_release_path(run_pull, status, expected_exit):
+    result, calls, record = run_pull(FAKE_MARKER_HTTP_STATUS=status)
+
+    assert result.returncode == expected_exit, result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "status", "expected_exit", "expected_message"),
+    [
+        ("token", "401", EXIT_REGISTRY_AUTH, "rejected credentials"),
+        ("token", "403", EXIT_REGISTRY_AUTH, "rejected credentials"),
+        ("token", "404", EXIT_REGISTRY_TOOL, "unexpected HTTP 404"),
+        ("token", "429", EXIT_REGISTRY_RATE_LIMIT, "rate-limited"),
+        ("token", "500", EXIT_REGISTRY_TOOL, "unexpected HTTP 500"),
+        ("marker", "401", EXIT_REGISTRY_AUTH, "rejected credentials"),
+        ("marker", "403", EXIT_REGISTRY_AUTH, "rejected credentials"),
+        ("marker", "404", EXIT_NO_RELEASE, "has no release marker"),
+        ("marker", "429", EXIT_REGISTRY_RATE_LIMIT, "rate-limited"),
+        ("marker", "500", EXIT_REGISTRY_TOOL, "unexpected HTTP 500"),
+    ],
+)
+def test_registry_http_outcome_matrix_is_shared_by_token_and_marker_requests(
+    run_pull, endpoint, status, expected_exit, expected_message
+):
+    result, calls, record = run_pull(**{f"FAKE_{endpoint.upper()}_HTTP_STATUS": status})
+
+    assert result.returncode == expected_exit, result.stderr
+    assert expected_message in result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+@pytest.mark.parametrize("endpoint", ["token", "marker"])
+def test_registry_transport_failure_cannot_admit_a_local_build(run_pull, endpoint):
+    result, calls, record = run_pull(**{f"FAKE_{endpoint.upper()}_CURL_EXIT": "6"})
+
+    assert result.returncode == EXIT_REGISTRY_TRANSPORT, result.stderr
+    assert "transport" in result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+@pytest.mark.parametrize("endpoint", ["token", "marker"])
+@pytest.mark.parametrize("curl_exit", ["2", "127"])
+def test_registry_tool_failure_is_reported_separately_from_transport(run_pull, endpoint, curl_exit):
+    result, calls, record = run_pull(**{f"FAKE_{endpoint.upper()}_CURL_EXIT": curl_exit})
+
+    assert result.returncode == EXIT_REGISTRY_TOOL, result.stderr
+    assert "tooling" in result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+def test_marker_request_accepts_all_oci_and_docker_manifest_representations(run_pull, tmp_path):
+    result, _calls, _record = run_pull()
+
+    assert result.returncode == 0, result.stderr
+    curl_log = (tmp_path / "curl.log").read_text()
+    for media_type in (
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    ):
+        assert media_type in curl_log
+
+
+def test_ambiguous_image_tool_failure_is_not_misclassified_as_a_missing_release(run_pull):
+    result, calls, record = run_pull(FAKE_MARKER_ERROR="ERROR: marker not found")
+
+    assert result.returncode == EXIT_REGISTRY_TOOL, result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
     assert not record.exists()
 
 
@@ -320,3 +465,5 @@ def test_the_script_declares_no_fallback_tag():
 
     assert "WORKER_IMAGE_TAG:-" not in script
     assert "WORKER_IMAGE_TAG:?" in script
+    assert "Authorization: Bearer ${registry_token}" not in script
+    assert '"@${AUTH_HEADER_FILE}"' in script

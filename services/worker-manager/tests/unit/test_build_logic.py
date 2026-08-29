@@ -86,6 +86,7 @@ class TestWorkerManagerBuildLogic:
         redis.sadd = AsyncMock()
         redis.srem = AsyncMock()
         redis.delete = AsyncMock()
+        redis.xadd = AsyncMock()
         return redis
 
     @pytest.fixture
@@ -254,6 +255,7 @@ class TestWorkerManagerCreateWithCapabilities:
         redis.sadd = AsyncMock()
         redis.srem = AsyncMock()
         redis.delete = AsyncMock()
+        redis.xadd = AsyncMock()
         return redis
 
     @pytest.fixture
@@ -300,8 +302,11 @@ class TestWorkerManagerCreateWithCapabilities:
 
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
-    async def test_factory_worker_forwards_manager_api_key(self, mock_workspace, mock_redis, mock_docker, monkeypatch):
-        """Factory child containers need FACTORY_API_KEY even in host-session mode."""
+    @pytest.mark.parametrize("auth_mode", ["host_session", "api_key"])
+    async def test_factory_worker_forwards_manager_api_key(
+        self, mock_workspace, mock_redis, mock_docker, monkeypatch, auth_mode
+    ):
+        """Factory child containers need FACTORY_API_KEY in every supported auth mode."""
         from pathlib import Path
 
         monkeypatch.setenv("FACTORY_API_KEY", "fk-test")
@@ -314,6 +319,7 @@ class TestWorkerManagerCreateWithCapabilities:
             base_image="worker-base:latest",
             ownership=_OWNERSHIP,
             agent_type="factory",
+            auth_mode=auth_mode,
             repo_id="repo-1",
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
         )
@@ -322,11 +328,39 @@ class TestWorkerManagerCreateWithCapabilities:
         assert call_kwargs["environment"]["FACTORY_API_KEY"] == "fk-test"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("auth_mode", ["host_session", "api_key"])
     @patch("src.manager.workspace_mod")
-    async def test_factory_worker_fails_fast_without_api_key(
-        self, mock_workspace, mock_redis, mock_docker, monkeypatch
+    async def test_factory_worker_forwards_explicit_api_key_in_every_auth_mode(
+        self, mock_workspace, mock_redis, mock_docker, monkeypatch, auth_mode
     ):
-        """Missing Factory credentials should fail before launching a dead worker."""
+        from pathlib import Path
+
+        monkeypatch.delenv("FACTORY_API_KEY", raising=False)
+        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-1"), True)
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        await manager.create_worker_with_capabilities(
+            worker_id="factory-worker-explicit-key",
+            capabilities=["GIT"],
+            base_image="worker-base:latest",
+            ownership=_OWNERSHIP,
+            agent_type="factory",
+            auth_mode=auth_mode,
+            api_key="factory-explicit-key",
+            repo_id="repo-1",
+            env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
+        )
+
+        call_kwargs = mock_docker.run_container.call_args[1]
+        assert call_kwargs["environment"]["FACTORY_API_KEY"] == "factory-explicit-key"
+
+    @pytest.mark.asyncio
+    @patch("src.manager.workspace_mod")
+    @pytest.mark.parametrize("auth_mode", ["host_session", "api_key"])
+    async def test_factory_worker_fails_fast_without_api_key(
+        self, mock_workspace, mock_redis, mock_docker, monkeypatch, auth_mode
+    ):
+        """Missing Factory credentials fail before launch in every supported auth mode."""
         from pathlib import Path
 
         monkeypatch.delenv("FACTORY_API_KEY", raising=False)
@@ -340,8 +374,11 @@ class TestWorkerManagerCreateWithCapabilities:
                 base_image="worker-base:latest",
                 ownership=_OWNERSHIP,
                 agent_type="factory",
+                auth_mode=auth_mode,
                 repo_id="repo-1",
                 env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
             )
 
         mock_docker.run_container.assert_not_awaited()
+        mock_redis.xadd.assert_not_awaited()
+        assert all(call.args[0] != "worker:meta:factory-worker-1" for call in mock_redis.hset.await_args_list)

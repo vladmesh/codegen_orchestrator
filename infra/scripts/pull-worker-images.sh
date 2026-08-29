@@ -37,6 +37,10 @@
 #   5  a pulled image was built from a different source hash than this revision
 #   6  the release marker exists but does not carry a usable record
 #   9  this revision has no release marker: it was never published as a whole
+#  10  registry authentication or authorization failed
+#  11  registry transport or DNS failed
+#  12  registry rate limiting failed
+#  13  registry tooling failed or an endpoint returned an unexpected HTTP response
 
 set -euo pipefail
 
@@ -46,6 +50,10 @@ EXIT_MISSING_LABEL=4
 EXIT_STALE_LABEL=5
 EXIT_BROKEN_RELEASE=6
 EXIT_NO_RELEASE=9
+EXIT_REGISTRY_AUTH=10
+EXIT_REGISTRY_TRANSPORT=11
+EXIT_REGISTRY_RATE_LIMIT=12
+EXIT_REGISTRY_TOOL=13
 
 : "${GHCR_TOKEN:?GHCR_TOKEN is required}"
 : "${GHCR_OWNER:?GHCR_OWNER is required}"
@@ -73,14 +81,108 @@ echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_OWNER}" --password-stdin
 
 echo "Deployed revision carries ${WORKER_SOURCE_HASH_LABEL}=${EXPECTED_HASH}"
 
-# Is there a release for this revision at all? Nothing else is consulted, and nothing
-# local moves until this answers yes.
+# The registry API gives one typed answer about this exact marker before Docker
+# resolves it. A 404 on this manifest endpoint is the sole missing-release
+# admission. Buildx stderr is deliberately not parsed: its wording is not a
+# registry contract and cannot authorize a local build.
+NETRC_FILE="$(mktemp)"
+TOKEN_FILE="$(mktemp)"
+MANIFEST_FILE="$(mktemp)"
+AUTH_HEADER_FILE="$(mktemp)"
+cleanup_registry_files() {
+    rm -f "${NETRC_FILE}" "${TOKEN_FILE}" "${MANIFEST_FILE}" "${AUTH_HEADER_FILE}"
+}
+trap cleanup_registry_files EXIT
+chmod 600 "${NETRC_FILE}" "${AUTH_HEADER_FILE}"
+printf 'machine ghcr.io\nlogin %s\npassword %s\n' "${GHCR_OWNER}" "${GHCR_TOKEN}" > "${NETRC_FILE}"
+
+classify_registry_response() {
+    # Both registry reads use this complete response matrix. A marker 404 is
+    # meaningful because it names the exact release marker; a token 404 is not.
+    local endpoint="$1"
+    local permits_missing_marker="$2"
+    local curl_exit="$3"
+    local http_status="$4"
+
+    if [ "${curl_exit}" -ne 0 ]; then
+        case "${curl_exit}" in
+            2|126|127)
+                echo "FATAL: registry ${endpoint} request failed because curl tooling exited ${curl_exit}" >&2
+                exit "${EXIT_REGISTRY_TOOL}"
+                ;;
+            *)
+                echo "FATAL: registry ${endpoint} request failed in transport (curl exited ${curl_exit})" >&2
+                exit "${EXIT_REGISTRY_TRANSPORT}"
+                ;;
+        esac
+    fi
+
+    case "${http_status}" in
+        200) ;;
+        404)
+            if [ "${permits_missing_marker}" = "true" ]; then
+                echo "FATAL: ${MARKER} has no release marker (registry manifest returned HTTP 404)" >&2
+                exit "${EXIT_NO_RELEASE}"
+            fi
+            echo "FATAL: registry ${endpoint} endpoint returned unexpected HTTP 404 for ${MARKER}" >&2
+            exit "${EXIT_REGISTRY_TOOL}"
+            ;;
+        401|403)
+            echo "FATAL: registry rejected credentials while reading ${MARKER}" >&2
+            exit "${EXIT_REGISTRY_AUTH}"
+            ;;
+        429)
+            echo "FATAL: registry rate-limited the release lookup for ${MARKER}" >&2
+            exit "${EXIT_REGISTRY_RATE_LIMIT}"
+            ;;
+        *)
+            echo "FATAL: registry ${endpoint} endpoint returned unexpected HTTP ${http_status} for ${MARKER}" >&2
+            exit "${EXIT_REGISTRY_TOOL}"
+            ;;
+    esac
+}
+
+marker_repository="${MARKER%:*}"
+marker_path="${marker_repository#ghcr.io/}"
+if token_status="$(curl --silent --show-error --output "${TOKEN_FILE}" --write-out '%{http_code}' \
+    --netrc-file "${NETRC_FILE}" --get --data-urlencode 'service=ghcr.io' \
+    --data-urlencode "scope=repository:${marker_path}:pull" https://ghcr.io/token)"; then
+    token_curl_exit=0
+else
+    token_curl_exit=$?
+fi
+classify_registry_response "token" false "${token_curl_exit}" "${token_status}"
+registry_token="$(python3 - "${TOKEN_FILE}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    response = json.load(handle)
+token = response.get("token") or response.get("access_token")
+if not isinstance(token, str) or not token:
+    raise SystemExit("registry token response has no token")
+print(token)
+PY
+)" || {
+    echo "FATAL: registry token response for ${MARKER} was unusable" >&2
+    exit "${EXIT_REGISTRY_TOOL}"
+}
+printf 'Authorization: Bearer %s\n' "${registry_token}" > "${AUTH_HEADER_FILE}"
+if manifest_status="$(curl --silent --show-error --output "${MANIFEST_FILE}" --write-out '%{http_code}' \
+    --header "@${AUTH_HEADER_FILE}" \
+    --header 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+    "https://ghcr.io/v2/${marker_path}/manifests/${WORKER_IMAGE_TAG}")"; then
+    manifest_curl_exit=0
+else
+    manifest_curl_exit=$?
+fi
+classify_registry_response "manifest" true "${manifest_curl_exit}" "${manifest_status}"
+
+# The typed API has proved the marker exists. Resolve its digest once for the
+# immutable reference used by every subsequent Docker operation.
 if ! marker_digest="$(worker_image_digest "${MARKER}")" || [ -z "${marker_digest}" ]; then
-    echo "FATAL: ${MARKER} does not exist, so ${WORKER_IMAGE_TAG} has no worker image" >&2
-    echo "       release. Image tags for it may exist — a publish run that failed or was" >&2
-    echo "       cancelled leaves them behind — but they were never released and are not" >&2
-    echo "       deployed. Publish that revision before deploying it." >&2
-    exit "${EXIT_NO_RELEASE}"
+    echo "FATAL: could not resolve digest for confirmed marker ${MARKER}" >&2
+    exit "${EXIT_REGISTRY_TOOL}"
 fi
 
 marker_reference="${REGISTRY}/${WORKER_RELEASE_MARKER_IMAGE}@${marker_digest}"

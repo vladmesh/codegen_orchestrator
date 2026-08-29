@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +21,7 @@ import pytest
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import AgentType, WorkerConfig, WorkerOwnership
 from shared.qa_probe_cli import QA_PROBE_PATH
+from shared.queues import WORKER_COMMANDS
 from src import qa_egress
 from src import workspace as workspace_mod
 from src.manager import QA_WORKER_TYPE, WorkerManager
@@ -342,6 +344,7 @@ class TestTheOneCommandItIsGiven:
     async def test_a_failure_to_install_it_fails_the_worker(self, qa_worker):
         """An executor without it would go looking for another way to reach the app."""
         wrapper = _docker_mock()
+        manager_holder: dict = {}
 
         async def exec_in_container(container_id, cmd, **kwargs):
             if QA_PROBE_PATH in cmd:
@@ -351,7 +354,14 @@ class TestTheOneCommandItIsGiven:
         wrapper.exec_in_container = AsyncMock(side_effect=exec_in_container)
 
         with pytest.raises(RuntimeError, match="QA capability command"):
-            await qa_worker(docker=wrapper)
+            await qa_worker(docker=wrapper, manager_holder=manager_holder)
+
+        commands = await manager_holder["manager"].redis.xrange(WORKER_COMMANDS)
+        assert len(commands) == 1
+        cleanup = json.loads(commands[0][1]["data"])
+        assert cleanup["command"] == "delete"
+        assert cleanup["worker_id"] == "qa-1"
+        assert cleanup["reason"] == "creation_failed"
 
     async def test_missing_first_turn_material_fails_without_publishing_ready(self, qa_worker):
         manager_holder: dict = {}

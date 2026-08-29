@@ -84,6 +84,26 @@
 
 ### Fixed
 
+- Stand image resolution now checks the deployed revision's release marker through
+  a typed, read-only GHCR manifest response: only HTTP 404 falls back to a local
+  build. Creation teardown carries a distinct reason that preserves execution
+  retries, Factory requires and forwards its API key in every supported auth mode,
+  and scheduler's shipped and isolated-test cadence both use the allocation
+  freshness policy.
+
+- Registry token and release-marker lookups now share one response matrix. It
+  reports curl tooling separately from transport/DNS, rejects auth, rate-limit,
+  and unexpected HTTP responses without authorizing a build, and accepts Docker
+  and OCI manifests or indexes when confirming an existing release marker.
+  `creation_failed` is documented as a `DeleteWorkerCommand` teardown reason.
+
+- Worker creation failures now retain their terminal status, ownership metadata,
+  and developer workspace fence until `delete_worker` confirms container removal.
+  BitLaunch access provisioning uses the shared stable-ID parser while generic
+  destructive operations remain denied; stand worker-image fallback now runs
+  only for a confirmed missing release, and health-check cadence is validated
+  against the allocator freshness policy at runtime.
+
 - Stand acceptance admission now rejects structural private-key PEM markers in
   its existing allow-listed evidence, including literal, escaped, and serialized
   headers in raw suite combination logs. The shared scanner still permits

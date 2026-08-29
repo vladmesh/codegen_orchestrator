@@ -4,9 +4,11 @@ import re
 import pytest
 
 from shared.provisioning_policy import (
+    BITLAUNCH_PROVIDER,
     TIME4VPS_PROVIDER,
     authorized_provider_id,
     managed_provider_ids,
+    parse_bitlaunch_server_id,
     provider_ip_matches,
     provider_operation_is_authorized,
     validate_provider_policies,
@@ -95,3 +97,21 @@ def test_provider_identity_requires_present_exact_ip(provider_ip):
 
 def test_provider_identity_accepts_exact_ip():
     assert provider_ip_matches(expected_ip="203.0.113.10", provider_ip="203.0.113.10") is True
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "-1", " 71234", "71234 ", "seven", "٧١٢٣٤"])
+def test_bitlaunch_server_identity_uses_one_strict_shared_parser(value):
+    assert parse_bitlaunch_server_id(value) is None
+
+
+def test_bitlaunch_server_identity_accepts_a_positive_decimal_id():
+    assert parse_bitlaunch_server_id(71234) == "71234"
+    assert parse_bitlaunch_server_id("71234") == "71234"
+    # Generic destructive-operation policy never authorizes BitLaunch. Its only
+    # supported destructive path is the exact run-owned access provisioner.
+    assert (
+        provider_operation_is_authorized(
+            provider=BITLAUNCH_PROVIDER, provider_id="71234", is_managed=True
+        )
+        is False
+    )

@@ -12,6 +12,10 @@ import time
 import httpx
 import structlog
 
+from shared.allocation_freshness import (
+    effective_allocation_metrics_freshness_seconds,
+    validate_health_check_interval,
+)
 from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.models.incident import IncidentType
 from shared.notifications import notify_admins_best_effort
@@ -27,7 +31,12 @@ logger = structlog.get_logger()
 _interval = os.getenv("HEALTH_CHECK_INTERVAL")
 if not _interval:
     raise RuntimeError("HEALTH_CHECK_INTERVAL is not set")
-HEALTH_CHECK_INTERVAL = int(_interval)
+HEALTH_CHECK_INTERVAL = validate_health_check_interval(
+    int(_interval),
+    freshness_seconds=effective_allocation_metrics_freshness_seconds(
+        os.getenv("ALLOCATION_METRICS_FRESHNESS_SECONDS")
+    ),
+)
 
 NODE_EXPORTER_PORT = 9100
 CADVISOR_PORT = 8080

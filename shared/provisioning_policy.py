@@ -4,6 +4,7 @@ import os
 from typing import Protocol
 
 TIME4VPS_PROVIDER = "time4vps"
+BITLAUNCH_PROVIDER = "bitlaunch"
 PROVIDER_LABEL = "provider"
 TIME4VPS_MANAGED_IDS_ENV = "PROVISIONING_POLICY_TIME4VPS_MANAGED_SERVER_IDS"
 
@@ -30,6 +31,20 @@ def parse_provider_id(value: int | str | None) -> str | None:
 
 def _parse_time4vps_server_id(value: int | str | None) -> str | None:
     """Normalize Time4VPS's positive ASCII-decimal stable IDs."""
+    normalized = parse_provider_id(value)
+    if normalized is None or not normalized.isascii() or not normalized.isdecimal():
+        return None
+    return normalized if int(normalized) > 0 else None
+
+
+def parse_bitlaunch_server_id(value: int | str | None) -> str | None:
+    """Normalize BitLaunch's positive decimal server IDs in one place.
+
+    BitLaunch access provisioning proves a run-owned database row, its labels,
+    and the provider's current IP separately.  This parser deliberately only
+    validates the stable-ID representation; generic destructive operations do
+    not gain BitLaunch authority from a parseable ID.
+    """
     normalized = parse_provider_id(value)
     if normalized is None or not normalized.isascii() or not normalized.isdecimal():
         return None
