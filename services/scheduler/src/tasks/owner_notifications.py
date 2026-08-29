@@ -32,7 +32,7 @@ Four endings, and they are deliberately not interchangeable:
 * unaddressable — the owner resolved to no Telegram chat. Retrying that changes
   nothing, so it is a logged, alerted refusal and the record is settled.
 * abandoned — transient failures used up the bounded attempts. An administrator
-  is told, with the story, project, event and run id.
+  is told, with the story, project, event and the record's source.
 * voided — the intended transition is not in the story. Nothing is published,
   no attempt is spent, and the obligation is written again from scratch if
   routing later does reach that ending.
@@ -100,6 +100,18 @@ class OwnerNotificationOutcome(StrEnum):
 
 def _empty_counts() -> dict[str, int]:
     return {outcome.value: 0 for outcome in OwnerNotificationOutcome}
+
+
+def _source_log_fields(source_id: str, *, story_record: bool) -> dict[str, str]:
+    """Name the durable record's actual home in diagnostics.
+
+    A completion record lives on its story, not on the QA run that happened to
+    lead there. Keeping that distinction in alerts prevents an operator from
+    looking up a story id as though it were a run id.
+    """
+    if story_record:
+        return {"notification_source": "story", "source_id": source_id}
+    return {"notification_source": "run", "run_id": source_id}
 
 
 async def _write_record(
@@ -224,7 +236,7 @@ async def _settle(
 
 async def _abandon(
     api_client: SchedulerAPIClient,
-    run_id: str,
+    source_id: str,
     record: OwnerNotification,
     *,
     attempts: int,
@@ -235,38 +247,40 @@ async def _abandon(
     """Give up on a message the owner will never receive, loudly."""
     await _settle(
         api_client,
-        run_id,
+        source_id,
         record,
         state=OwnerNotificationState.ABANDONED,
         detail=error,
         attempts=attempts,
         story_record=story_record,
     )
+    source_fields = _source_log_fields(source_id, story_record=story_record)
     log.error(
         "owner_notification_abandoned",
-        run_id=run_id,
         po_event=record.event,
         story_id=record.story_id,
         project_id=record.project_id,
         attempts=attempts,
         max_attempts=OWNER_NOTIFICATION_MAX_ATTEMPTS,
         error=error,
+        **source_fields,
     )
+    source_description = f"source=story:{source_id}" if story_record else f"run={source_id}"
     await notify_admins_best_effort(
         f"Owner notification undelivered after {attempts} attempts: "
         f"event={record.event} story={record.story_id} "
-        f"project={record.project_id} run={run_id}: {error}",
+        f"project={record.project_id} {source_description}: {error}",
         level="error",
         po_event=record.event,
         story_id=record.story_id,
         project_id=record.project_id,
-        run_id=run_id,
+        **source_fields,
     )
 
 
 async def _spend_failed_attempt(
     api_client: SchedulerAPIClient,
-    run_id: str,
+    source_id: str,
     record: OwnerNotification,
     *,
     attempts: int,
@@ -278,7 +292,7 @@ async def _spend_failed_attempt(
     if attempts >= OWNER_NOTIFICATION_MAX_ATTEMPTS:
         await _abandon(
             api_client,
-            run_id,
+            source_id,
             record,
             attempts=attempts,
             error=error,
@@ -288,7 +302,7 @@ async def _spend_failed_attempt(
         return OwnerNotificationOutcome.EXHAUSTED
     await _settle(
         api_client,
-        run_id,
+        source_id,
         record,
         state=OwnerNotificationState.OWED,
         detail=error,
@@ -297,13 +311,13 @@ async def _spend_failed_attempt(
     )
     log.warning(
         "owner_notification_publish_failed",
-        run_id=run_id,
         po_event=record.event,
         story_id=record.story_id,
         project_id=record.project_id,
         attempts=attempts,
         max_attempts=OWNER_NOTIFICATION_MAX_ATTEMPTS,
         error=error,
+        **_source_log_fields(source_id, story_record=story_record),
     )
     return OwnerNotificationOutcome.RETRYING
 
@@ -311,7 +325,7 @@ async def _spend_failed_attempt(
 async def deliver_owed_notification(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
-    run_id: str,
+    source_id: str,
     record: OwnerNotification,
     log: structlog.stdlib.BoundLogger,
     *,
@@ -344,7 +358,7 @@ async def deliver_owed_notification(
     except Exception as exc:
         return await _spend_failed_attempt(
             api_client,
-            run_id,
+            source_id,
             record,
             attempts=attempts,
             error=f"{type(exc).__name__}: {exc}",
@@ -355,7 +369,7 @@ async def deliver_owed_notification(
     if story.status is not record.terminal_status:
         await _settle(
             api_client,
-            run_id,
+            source_id,
             record,
             state=OwnerNotificationState.VOIDED,
             detail=f"story is {story.status.value}, not {record.terminal_status.value}",
@@ -363,12 +377,12 @@ async def deliver_owed_notification(
         )
         log.warning(
             "owner_notification_voided",
-            run_id=run_id,
             po_event=record.event,
             story_id=record.story_id,
             project_id=record.project_id,
             story_status=story.status.value,
             terminal_status=record.terminal_status.value,
+            **_source_log_fields(source_id, story_record=story_record),
         )
         return OwnerNotificationOutcome.VOIDED
 
@@ -379,7 +393,7 @@ async def deliver_owed_notification(
         if not recipient.is_addressable:
             await _settle(
                 api_client,
-                run_id,
+                source_id,
                 record,
                 state=OwnerNotificationState.UNADDRESSABLE,
                 detail=recipient.unaddressed_reason,
@@ -388,11 +402,11 @@ async def deliver_owed_notification(
             )
             log.warning(
                 "owner_notification_unaddressable",
-                run_id=run_id,
                 po_event=record.event,
                 story_id=record.story_id,
                 project_id=record.project_id,
                 reason=recipient.unaddressed_reason,
+                **_source_log_fields(source_id, story_record=story_record),
             )
             return OwnerNotificationOutcome.UNADDRESSABLE
 
@@ -411,7 +425,7 @@ async def deliver_owed_notification(
     except Exception as exc:
         return await _spend_failed_attempt(
             api_client,
-            run_id,
+            source_id,
             record,
             attempts=attempts,
             error=f"{type(exc).__name__}: {exc}",
@@ -421,7 +435,7 @@ async def deliver_owed_notification(
 
     await _settle(
         api_client,
-        run_id,
+        source_id,
         record,
         state=OwnerNotificationState.DELIVERED,
         attempts=attempts,
@@ -429,11 +443,11 @@ async def deliver_owed_notification(
     )
     log.info(
         "owner_notification_delivered",
-        run_id=run_id,
         po_event=record.event,
         story_id=record.story_id,
         project_id=record.project_id,
         attempts=attempts,
+        **_source_log_fields(source_id, story_record=story_record),
     )
     return OwnerNotificationOutcome.DELIVERED
 

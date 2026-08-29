@@ -373,9 +373,14 @@ async def test_complete_story():
 
 
 @pytest.mark.asyncio
-async def test_complete_story_owes_a_story_backed_notification_in_the_same_commit():
+async def test_complete_story_without_qa_owes_a_story_backed_notification_in_the_same_commit():
     story = _make_story(id="story-abc", status="in_progress")
-    session = _mock_session(scalar_one_or_none=story)
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = None
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result]
     _override_session(session)
 
     transport = ASGITransport(app=app)
@@ -391,6 +396,10 @@ async def test_complete_story_owes_a_story_backed_notification_in_the_same_commi
     assert record["story_id"] == "story-abc"
     assert record["terminal_status"] == "completed"
     assert record["state"] == OwnerNotificationState.OWED.value
+    assert (
+        record["text"]
+        == "The story is finished. Tell the user the good news that their product is ready."
+    )
     session.commit.assert_awaited_once()
 
 
@@ -433,6 +442,30 @@ async def test_complete_story_keeps_the_address_verified_by_qa():
     assert resp.status_code == 200  # noqa: PLR2004
     assert "https://verified.example.com" in story.owner_notification["text"]
     assert "@verified_bot" in story.owner_notification["text"]
+
+
+@pytest.mark.asyncio
+async def test_complete_story_with_corrupt_passed_qa_handoff_fails_fast():
+    story = _make_story(id="story-abc", status="testing")
+    qa_run = MagicMock(
+        id="qa-abc",
+        result={"qa_outcome": "passed"},
+        run_metadata={},
+    )
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = qa_run
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result]
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        with pytest.raises(KeyError):
+            await client.post("/api/stories/story-abc/complete")
 
 
 @pytest.mark.asyncio

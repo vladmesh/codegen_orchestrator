@@ -299,11 +299,7 @@ async def _completion_notification_text(story: Story, db: AsyncSession) -> str:
     ):
         return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
 
-    try:
-        qa_message = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY]).qa_message
-    except (KeyError, TypeError, ValueError):
-        logger.warning("story_completion_has_no_qa_address", story_id=story.id, run_id=run.id)
-        return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+    qa_message = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY]).qa_message
 
     address = qa_message.deployed_url
     if qa_message.bot_username:

@@ -1728,7 +1728,8 @@ Five states, and four of them are terminal. `OWED` is work. `DELIVERED` is the s
 accepted the event, and nothing publishes it again. `UNADDRESSABLE` is a recipient that resolved to
 no Telegram chat — an answer, not a failure, so it is logged and alerted once and never retried.
 `ABANDONED` is `OWNER_NOTIFICATION_MAX_ATTEMPTS` (3) transient failures, after which an admin alert
-names the event, story, project and run. `VOIDED` is the intended transition not being in the story:
+names the event, story, project and the record's source: `run=<id>` for run-backed notices or
+`source=story:<id>` for completion notices. `VOIDED` is the intended transition not being in the story:
 fail-closed, so nothing is published and no attempt is spent — an ending that did not happen is not
 a delivery that failed — and the obligation is written again from scratch, with a fresh attempt
 budget, when routing does reach that ending. Only `owe_owner_notification` may replace a record, and

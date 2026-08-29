@@ -745,7 +745,8 @@ class TestTheRetryIsBoundedAndItsEndIsLoud:
         assert "story-1" in alert
         assert PROJECT_ID in alert
         assert "story_completed" in alert
-        assert "story-1" in alert
+        assert "source=story:story-1" in alert
+        assert "run=" not in alert
 
     @pytest.mark.asyncio
     async def test_an_abandoned_message_is_not_picked_up_again(
