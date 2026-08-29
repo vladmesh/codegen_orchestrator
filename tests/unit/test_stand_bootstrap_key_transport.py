@@ -32,7 +32,7 @@ def _bootstrap_script() -> str:
 
 def test_public_key_is_not_passed_through_splittable_extra_vars() -> None:
     script = _bootstrap_script()
-    assert "-e \"ssh_public_key=" not in script, (
+    assert '-e "ssh_public_key=' not in script, (
         "the public key is passed through ansible's whitespace-split `-e key=value` form, "
         "so only `ssh-ed25519` reaches the playbook and authorized_key fails with "
         "`list index out of range`"
