@@ -224,7 +224,10 @@ def run_pytest(target: str, env: dict[str, str], extra: dict[str, str], log_path
 
 def preflight(env: dict[str, str], log) -> bool:
     result = subprocess.run(  # noqa: S603
-        [sys.executable, str(REPO / "scripts" / "stand_preflight.py")],  # noqa: S607
+        # As a module, not a path: running `python scripts/x.py` puts `scripts/`
+        # on sys.path instead of the repository root, and the script cannot then
+        # import `shared`. That has refused a run twice.
+        [sys.executable, "-m", "scripts.stand_preflight"],  # noqa: S607
         cwd=REPO,
         env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
         capture_output=True,
