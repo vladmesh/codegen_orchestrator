@@ -92,6 +92,7 @@ class TestStoryTransitions:
     def test_whr_transitions(self):
         allowed = VALID_TRANSITIONS[StoryStatus.WAITING_HUMAN_REVIEW]
         assert StoryStatus.IN_PROGRESS in allowed  # work can still be resumed
+        assert StoryStatus.DEPLOYING in allowed  # QA recheck returns through deploy
         assert StoryStatus.FAILED in allowed  # admin gives up
         assert StoryStatus.COMPLETED in allowed  # accepted result ships directly
 

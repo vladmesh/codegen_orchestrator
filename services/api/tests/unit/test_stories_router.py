@@ -9,7 +9,6 @@ from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
 
-from shared.contracts.dto.owner_notification import OwnerNotificationState
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.queues.qa import QAMessage
 from src.database import get_async_session
@@ -35,6 +34,7 @@ def _make_story(**overrides):
         "user_report": None,
         "quarantine_reason": None,
         "operator_acceptance": None,
+        "operator_recheck": None,
         "reopened_at": None,
         "owner_notification": None,
         "created_at": now,
@@ -416,7 +416,7 @@ async def test_complete_story_without_qa_owes_a_story_backed_notification_in_the
     assert record["event"] == "story_completed"
     assert record["story_id"] == "story-abc"
     assert record["terminal_status"] == "completed"
-    assert record["state"] == OwnerNotificationState.OWED.value
+    assert record["state"] == "owed"
     assert (
         record["text"]
         == "The story is finished. Tell the user the good news that their product is ready."
@@ -499,7 +499,13 @@ async def test_human_accepted_completion_keeps_current_qa_deploy_address():
     application_result = MagicMock()
     application_result.scalar_one_or_none.return_value = "running"
     session = _mock_session()
-    session.execute.side_effect = [story_result, qa_result, application_result]
+    session.execute.side_effect = [
+        story_result,
+        qa_result,
+        application_result,
+        qa_result,
+        application_result,
+    ]
     _override_session(session)
 
     transport = ASGITransport(app=app)

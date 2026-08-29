@@ -395,6 +395,55 @@ class TestRedeployApplication:
         assert msg["head_sha"] == admin_deploy_head_sha
 
     @pytest.mark.asyncio
+    async def test_redeploy_restores_a_quarantined_target_without_creating_qa(
+        self, client, redis, server_handle, _ensure_project, admin_deploy_head_sha
+    ):
+        """A standalone deploy is the recovery route when QA cannot be rechecked."""
+        app_id = await _create_running_app(client, server_handle, app_status="stopped")
+        story = await client.post(
+            "/api/stories/",
+            json={"project_id": TASK_TEST_PROJECT_ID, "title": "Restore blocked target"},
+        )
+        assert story.status_code == HTTPStatus.CREATED, story.text
+        story_id = story.json()["id"]
+        assert (await client.post(f"/api/stories/{story_id}/start")).status_code == HTTPStatus.OK
+        assert (
+            await client.post(f"/api/stories/{story_id}/human-review")
+        ).status_code == HTTPStatus.OK
+        receipt = await client.post(
+            "/api/work-admission/paid-runs",
+            json={
+                "id": f"qa-quarantine-{uuid.uuid4().hex[:12]}",
+                "type": "qa",
+                "project_id": TASK_TEST_PROJECT_ID,
+                "story_id": story_id,
+                "run_metadata": {"application_id": app_id},
+            },
+        )
+        assert receipt.status_code == HTTPStatus.OK, receipt.text
+        quarantined = await client.patch(
+            f"/api/stories/{story_id}",
+            json={
+                "quarantine_reason": {
+                    "qa_outcome": "blocked",
+                    "blocker": {"category": "bot_not_live"},
+                }
+            },
+        )
+        assert quarantined.status_code == HTTPStatus.OK, quarantined.text
+
+        before = await redis.xlen("deploy:queue")
+        restored = await client.post(f"/api/applications/{app_id}/redeploy", json={"actor": "test"})
+
+        assert restored.status_code == HTTPStatus.OK, restored.text
+        assert restored.json()["status"] == "deploying"
+        assert await redis.xlen("deploy:queue") == before + 1
+        message = await _read_last_message(redis, "deploy:queue")
+        assert message["application_id"] is None
+        assert message["story_id"] == ""
+        assert message["head_sha"] == admin_deploy_head_sha
+
+    @pytest.mark.asyncio
     async def test_redeploy_head_sha_failure_does_not_publish(
         self, client, redis, server_handle, monkeypatch
     ):

@@ -1677,16 +1677,58 @@ transitions directly to `completed`. The record is returned by story reads. `POS
 `waiting_human_review → in_progress` edge remains only for actual resumed work, while the admin UI
 presents acceptance for a finished result.
 
-The completion endpoint uses the newest completed QA run for this story only when its typed result
+`POST /api/stories/{id}/recheck-qa` is the alternative operator action for a typed QA infrastructure
+blocker that an operator has repaired. It accepts the same required, non-blank `basis` and derives
+its actor from the same credential boundary as `accept-result`. The story stores one readable
+`operator_recheck` record: its stable action id, actor, basis, server time, prior quarantine evidence,
+application id, created Run id and that the action entered `deploy`. Idempotency is scoped to that
+quarantine episode, not to the lifetime of the story. A repeat while its deploy Run is queued or
+running is refused with a specific 422 and creates neither another Run nor another paid QA charge.
+A terminal recheck Run or a changed `quarantine_reason` spends the record, so a fresh typed QA
+quarantine can be rechecked. The status guard runs first, so a completed or failed story is refused
+as such rather than silently returning a stale record.
+The action accepts only `qa_executor_unavailable`, `deployed_url_unreachable`, `qa_probe_unavailable`,
+`telegram_probe_undelivered`, `server_unavailable`, `qa_access_grant_failed` and
+`qa_access_expired`. It refuses a product verdict, an unknown/malformed blocker, or a target that
+cannot be proved from the newest story-linked QA Run's `application_id` and preceding story-linked
+deploy Run's exact `head_sha` capability receipt.
+
+Recheck always creates a story-linked deploy Run, records the exact application and recheck
+provenance on it, and moves the story to `deploying`; this is deliberate even for a running target,
+because redeploying the previously verified exact SHA is the capability receipt that the subsequent QA run needs.
+The normal deploy supervisor then creates the story-linked QA Run. Both queue messages carry the
+same story and application provenance, so ordinary supervision alone completes or re-quarantines the story. The
+quarantine remains while work is pending and is cleared only by the later passed QA verdict. A passed
+QA verdict carries its verified address even if a later health probe has temporarily marked the
+application non-running; QA passing is live verification. Human acceptance has no green QA verdict,
+so, when the current work cycle records a QA handoff, it refuses unless that handoff application is
+currently `running` and tells the operator to use Recheck QA otherwise. A story escalated before QA
+has no address to claim and remains eligible for audited, address-less acceptance. This ensures every
+operator-finished story either has the QA-verified address, was accepted only while its recorded address
+is reachable, or never had an address to disclose. Recheck refuses a project with more than one application,
+because a create/feature deploy cannot otherwise prove that allocation will honour the capability receipt.
+It also refuses a target still `stopping` with an actionable wait-and-retry reason.
+
+The recheck deploy message is persisted with the Run before publication. Once publication succeeds the
+Run is stamped; if the publisher fails after the transaction commits, the deploy supervisor reads that
+stored message from the queued Run, publishes it and records the stamp. The recovery path is therefore
+the normal deploy queue, never a manual status transition. Standalone administrator `run-e2e` refuses
+an application named by a quarantined story's QA receipt, so it cannot create a green QA result alongside
+a still-parked story. Standalone administrator `redeploy` remains available as the restore route for a
+quarantine Recheck QA cannot repair: it cannot create a QA verdict, retains its existing unlinked admin
+Run, and an operator can then use the audited acceptance action once the application is running. Deploy-side
+allocation quarantines have no typed QA blocker and Recheck QA refuses them explicitly; this redeploy route
+is the corresponding operator recovery.
+
+The completion endpoint uses the newest terminal QA run for this story only when its typed result
 is `passed`; a human acceptance may also use the current QA handoff's deploy address after a failed
-QA result. Its stored handoff provides the deployed URL and optional bot username, but an address is
-included only while that handoff's application is currently `running`. A quarantined application is
-stopped, so acceptance deliberately uses the address-less instruction rather than giving the owner a
-dead URL. A reopen stamps `stories.reopened_at`; address selection accepts only QA runs created in
+QA result, but only when that handoff's application is currently `running`. A reopen stamps
+`stories.reopened_at`; address selection accepts only QA runs created in
 that work cycle, so a recompletion never reuses pre-reopen verification. This is stamped going
 forward only: a story reopened before the migration has `NULL` and no derivable historical backfill,
-so that legacy case remains exposed to pre-reopen evidence. In both cases the stored text remains an
-instruction for the PO agent, not user-facing wording.
+so that legacy case remains exposed to pre-reopen evidence. The missing service-level test for that
+pre-existing reopen scoping is documented debt; the changed address rule is covered at service level.
+In both cases the stored text remains an instruction for the PO agent, not user-facing wording.
 
 `OwnerNotification` carries the `POSystemEvent` name PO routes on, the text to publish, the story,
 the project, the `terminal_status` the intended transition produces, an optional `task_id`, `state`,

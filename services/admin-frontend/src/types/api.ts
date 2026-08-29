@@ -38,6 +38,7 @@ export interface Story {
   user_report: string | null
   quarantine_reason?: Record<string, unknown> | null
   operator_acceptance?: StoryAcceptance | null
+  operator_recheck?: StoryRecheck | null
   reopened_at?: string | null
   pr_number?: number | null
   created_at: string
@@ -49,6 +50,17 @@ export interface StoryAcceptance {
   basis: string
   accepted_at: string
   overridden_quarantine_reason?: Record<string, unknown> | null
+}
+
+export interface StoryRecheck {
+  id: string
+  actor: string
+  basis: string
+  rechecked_at: string
+  mode: 'deploy'
+  application_id: number
+  run_id: string
+  rechecked_quarantine_reason: Record<string, unknown>
 }
 
 export interface Task {

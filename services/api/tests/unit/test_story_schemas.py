@@ -74,6 +74,7 @@ class TestStoryRead:
         mock.user_report = None
         mock.quarantine_reason = None
         mock.operator_acceptance = None
+        mock.operator_recheck = None
         mock.reopened_at = None
         mock.owner_notification = None
         mock.created_at = now
@@ -107,6 +108,7 @@ class TestStoryRead:
         mock.user_report = "Images still broken on mobile"
         mock.quarantine_reason = None
         mock.operator_acceptance = None
+        mock.operator_recheck = None
         mock.reopened_at = None
         mock.owner_notification = None
         mock.created_at = now
