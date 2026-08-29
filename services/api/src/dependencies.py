@@ -62,24 +62,41 @@ async def resolve_actor(
     telegram_id: int | None,
     credentials: HTTPAuthorizationCredentials | None,
     db: AsyncSession,
-) -> User | None:
+    accept_result: bool = False,
+    admin_console_operator: str | None = None,
+) -> User | str | None:
     """Who is acting on this request? This is the only place that decides.
 
     `None` means a service acting for itself: a valid `X-Internal-Key` and no user
     named. Anything else is the named user, and that user's own rights decide what
     the request may reach — the key authenticates the caller, it does not make it
-    anyone's deputy. Every guard that takes the internal flag asks this function
-    rather than reading the flag itself, so the rule cannot be half-applied the way
-    it was when `projects.py` enforced it and `runs.py` did not.
+    anyone's deputy. The accept-result mode additionally returns the nginx-authenticated
+    console actor string under the internal credential. Every guard that takes the
+    internal flag asks this function rather than reading the flag itself, so the rule
+    cannot be half-applied the way it was when `projects.py` enforced it and `runs.py`
+    did not.
 
     Raises 401 when nobody is identified at all, and 404 when the named user is
     unknown to us.
     """
-    if credentials is not None and not is_internal:
+    if credentials is not None and (not is_internal or accept_result):
         bearer_user = await get_lk_user(credentials=credentials, db=db)
         if telegram_id is not None and telegram_id != bearer_user.telegram_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Actor mismatch")
         return bearer_user
+
+    if accept_result:
+        if not is_internal:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="LK bearer authentication required",
+            )
+        if admin_console_operator is None or not admin_console_operator.strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Authenticated admin console operator required",
+            )
+        return f"admin_console:{admin_console_operator.strip()}"
 
     if telegram_id is None:
         if is_internal:
@@ -205,6 +222,34 @@ async def require_bearer_admin(
     if not bearer_user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return bearer_user
+
+
+async def get_accept_result_actor(
+    _is_internal: bool = Depends(is_internal_service),
+    x_admin_console_operator: str | None = Header(None, alias="X-Admin-Console-Operator"),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
+    db: AsyncSession = Depends(get_async_session),
+) -> str:
+    """Return the credential-derived actor allowed to accept a reviewed result.
+
+    The admin proxy authenticates its one shared basic-auth account, then sends
+    that account name only with its internal credential. LK bearers remain a
+    separate door and resolve to their immutable token subject.
+    """
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+        accept_result=True,
+        admin_console_operator=x_admin_console_operator,
+    )
+    if isinstance(actor, str):
+        return actor
+    if actor is None or not actor.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return f"admin:{actor.id}"
 
 
 # ---------------------------------------------------------------------------

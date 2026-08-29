@@ -14,6 +14,8 @@ from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.queues.qa import QAMessage
 from src.database import get_async_session
 from src.main import app
+from src.routers.stories import _completion_notification_text
+from src.schemas.story import StoryAcceptance
 
 
 def _make_story(**overrides):
@@ -32,6 +34,8 @@ def _make_story(**overrides):
         "created_by": "system",
         "user_report": None,
         "quarantine_reason": None,
+        "operator_acceptance": None,
+        "reopened_at": None,
         "owner_notification": None,
         "created_at": now,
         "updated_at": now,
@@ -373,6 +377,23 @@ async def test_complete_story():
 
 
 @pytest.mark.asyncio
+async def test_complete_story_refuses_waiting_human_review_without_acceptance_audit():
+    story = _make_story(id="story-abc", status="waiting_human_review")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/complete")
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert story.status == "waiting_human_review"
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_complete_story_without_qa_owes_a_story_backed_notification_in_the_same_commit():
     story = _make_story(id="story-abc", status="in_progress")
     story_result = MagicMock()
@@ -429,8 +450,10 @@ async def test_complete_story_keeps_the_address_verified_by_qa():
     story_result.scalar_one_or_none.return_value = story
     qa_result = MagicMock()
     qa_result.scalars.return_value.first.return_value = qa_run
+    application_result = MagicMock()
+    application_result.scalar_one_or_none.return_value = "running"
     session = _mock_session()
-    session.execute.side_effect = [story_result, qa_result]
+    session.execute.side_effect = [story_result, qa_result, application_result]
     _override_session(session)
 
     transport = ASGITransport(app=app)
@@ -442,6 +465,115 @@ async def test_complete_story_keeps_the_address_verified_by_qa():
     assert resp.status_code == 200  # noqa: PLR2004
     assert "https://verified.example.com" in story.owner_notification["text"]
     assert "@verified_bot" in story.owner_notification["text"]
+
+
+@pytest.mark.asyncio
+async def test_human_accepted_completion_keeps_current_qa_deploy_address():
+    story = _make_story(
+        id="story-abc",
+        status="waiting_human_review",
+        quarantine_reason={"qa_failure": {"fingerprint": "qa-failure-123"}},
+    )
+    qa_run = MagicMock(
+        id="qa-abc",
+        result={"qa_outcome": "failed"},
+        run_metadata={
+            QA_HANDOFF_KEY: QAHandoffPlan(
+                qa_message=QAMessage(
+                    story_id="story-abc",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    initiating_run_id="deploy-abc",
+                    telegram_chat_id="1",
+                    deployed_url="https://accepted.example.com",
+                    application_id=42,
+                    acceptance_criteria="works",
+                    run_id="qa-abc",
+                )
+            ).model_dump(mode="json")
+        },
+    )
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = qa_run
+    application_result = MagicMock()
+    application_result.scalar_one_or_none.return_value = "running"
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result, application_result]
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post(
+            "/api/stories/story-abc/accept-result",
+            json={"basis": "Verified the running deployment manually."},
+            headers={"X-Admin-Console-Operator": "orchestrator-admin"},
+        )
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert "https://accepted.example.com" in story.owner_notification["text"]
+    assert "operator accepted" in story.owner_notification["text"]
+    assert story.operator_acceptance["actor"] == "admin_console:orchestrator-admin"
+    assert story.operator_acceptance["overridden_quarantine_reason"] == {
+        "qa_failure": {"fingerprint": "qa-failure-123"}
+    }
+    assert story.quarantine_reason is None
+
+
+@pytest.mark.asyncio
+async def test_human_acceptance_does_not_send_a_stopped_application_address():
+    story = _make_story(id="story-abc", status="waiting_human_review")
+    qa_run = MagicMock(
+        id="qa-abc",
+        result={"qa_outcome": "failed"},
+        run_metadata={
+            QA_HANDOFF_KEY: QAHandoffPlan(
+                qa_message=QAMessage(
+                    story_id="story-abc",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    initiating_run_id="deploy-abc",
+                    telegram_chat_id="1",
+                    deployed_url="https://stopped.example.com",
+                    application_id=42,
+                    acceptance_criteria="works",
+                    run_id="qa-abc",
+                )
+            ).model_dump(mode="json")
+        },
+    )
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = qa_run
+    application_result = MagicMock()
+    application_result.scalar_one_or_none.return_value = "stopped"
+    session = _mock_session()
+    session.execute.side_effect = [qa_result, application_result]
+
+    text = await _completion_notification_text(
+        story,
+        session,
+        acceptance=StoryAcceptance(
+            actor="admin_console:orchestrator-admin",
+            basis="Verified the result manually.",
+            accepted_at=datetime.now(UTC),
+        ),
+    )
+
+    assert "operator accepted the result" in text
+    assert "https://stopped.example.com" not in text
+
+
+@pytest.mark.asyncio
+async def test_completion_query_excludes_qa_runs_before_the_reopen():
+    reopened_at = datetime.now(UTC)
+    story = _make_story(id="story-abc", status="in_progress", reopened_at=reopened_at)
+    session = _mock_session()
+
+    await _completion_notification_text(story, session)
+
+    query = str(session.execute.await_args.args[0])
+    assert "runs.created_at >=" in query
 
 
 @pytest.mark.asyncio

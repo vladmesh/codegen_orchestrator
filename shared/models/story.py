@@ -1,8 +1,9 @@
 """Story model — product-level entity representing what the user wants."""
 
+from datetime import datetime
 import uuid
 
-from sqlalchemy import JSON, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.story import StoryStatus, StoryType
@@ -35,6 +36,10 @@ class Story(Base):
     user_report: Mapped[str | None] = mapped_column(Text, nullable=True)
     # QA evidence kept with the story while a human decides whether to retry or fix it.
     quarantine_reason: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # A credential-derived administrator decision that resolves human review.
+    operator_acceptance: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Starts the current work cycle, so completion cannot reuse pre-reopen QA evidence.
+    reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # The durable completion notice owed when this story reaches COMPLETED.
     owner_notification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)

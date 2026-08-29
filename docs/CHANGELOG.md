@@ -4,6 +4,13 @@
 
 ### Added
 
+- Operators can accept a `waiting_human_review` story directly from the admin UI with a required
+  basis. The authenticated shared admin-console account or LK bearer administrator, basis,
+  acceptance time, and overridden quarantine evidence are stored with the story; `/complete` cannot
+  bypass that audit. The obsolete quarantine evidence is cleared, ordinary completion notification
+  recovery still delivers through `po:input`, and an address is included only for a currently running
+  application from the current post-reopen work cycle.
+
 - Completing a story now writes its durable `story_completed` PO notification on
   the story in the same transaction. Recovery delivers it through `po:input`
   for both QA and direct operator completion; a passed QA handoff preserves the

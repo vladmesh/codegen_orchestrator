@@ -1662,11 +1662,31 @@ delivery work. Existing completed stories retain `NULL`; the migration neither c
 notifications nor changes their lifecycle. Other terminal notices remain on the run that produced
 them in `run_metadata.owner_notification`.
 
+`POST /api/stories/{id}/accept-result` is the human completion route for a story in
+`waiting_human_review`. It requires a non-blank `basis` and reaches the same completion transaction
+as `POST /complete`. An LK bearer administrator records `actor=admin:<credential subject>`;
+the admin-console proxy records `actor=admin_console:<basic-auth user>` only when it sends both its
+internal key and the basic-auth user nginx authenticated as `X-Admin-Console-Operator`. The browser
+cannot select that header: nginx replaces it with `$remote_user`. In both cases the identity comes
+from a credential, never from the body. For bearer requests, `X-Telegram-ID` can only agree with the
+bearer subject, never select another administrator. The transaction stores the actor, stripped basis,
+server `accepted_at`, and `overridden_quarantine_reason` copied from the story before it clears the
+no-longer-live `quarantine_reason`, then creates the ordinary `OWED` completion notification and
+transitions directly to `completed`. The record is returned by story reads. `POST /complete` refuses
+`waiting_human_review`, so it cannot bypass this audit; the old
+`waiting_human_review → in_progress` edge remains only for actual resumed work, while the admin UI
+presents acceptance for a finished result.
+
 The completion endpoint uses the newest completed QA run for this story only when its typed result
-is `passed`; its stored QA handoff provides the deployed URL and optional bot username. This keeps
-the address QA actually verified while leaving a direct completion with no passed QA run a valid
-obligation, with a general PO instruction. In both cases the stored text remains an instruction for
-the PO agent, not user-facing wording.
+is `passed`; a human acceptance may also use the current QA handoff's deploy address after a failed
+QA result. Its stored handoff provides the deployed URL and optional bot username, but an address is
+included only while that handoff's application is currently `running`. A quarantined application is
+stopped, so acceptance deliberately uses the address-less instruction rather than giving the owner a
+dead URL. A reopen stamps `stories.reopened_at`; address selection accepts only QA runs created in
+that work cycle, so a recompletion never reuses pre-reopen verification. This is stamped going
+forward only: a story reopened before the migration has `NULL` and no derivable historical backfill,
+so that legacy case remains exposed to pre-reopen evidence. In both cases the stored text remains an
+instruction for the PO agent, not user-facing wording.
 
 `OwnerNotification` carries the `POSystemEvent` name PO routes on, the text to publish, the story,
 the project, the `terminal_status` the intended transition produces, an optional `task_id`, `state`,

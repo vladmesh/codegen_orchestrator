@@ -1,10 +1,11 @@
 """Story DTOs and enums — single source of truth for story statuses and transitions."""
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -68,6 +69,7 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
     },
     StoryStatus.WAITING_HUMAN_REVIEW: {
         StoryStatus.IN_PROGRESS,
+        StoryStatus.COMPLETED,
         StoryStatus.FAILED,
     },
     StoryStatus.WAITING_USER_SECRET: {
@@ -99,6 +101,8 @@ class StoryDTO(TimestampedDTO):
     created_by: str
     user_report: str | None = None
     quarantine_reason: dict[str, Any] | None = None
+    operator_acceptance: "StoryAcceptance | None" = None
+    reopened_at: datetime | None = None
     pr_number: int | None = None
 
 
@@ -131,3 +135,30 @@ class StoryUpdate(BaseModel):
     blocked_by_story_id: str | None = None
     quarantine_reason: dict[str, Any] | None = None
     pr_number: int | None = None
+
+
+class StoryAcceptance(BaseModel):
+    """The durable human decision that completed a reviewed story."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    actor: str
+    basis: str
+    accepted_at: datetime
+    overridden_quarantine_reason: dict[str, Any] | None = None
+
+
+class StoryAccept(BaseModel):
+    """The operator-supplied grounds for accepting a reviewed result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    basis: str = Field(min_length=1)
+
+    @field_validator("basis")
+    @classmethod
+    def _basis_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("basis must not be blank")
+        return value
