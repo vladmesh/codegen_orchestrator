@@ -7,6 +7,7 @@ import { ConfirmButton } from '@/components/ui/ConfirmButton'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
 import type { Story, Task } from '@/types/api'
+import { requestStoryQaRecheck } from './storyRecheck'
 
 const ARCHITECT_STATUSES = new Set(['created', 'reopened'])
 
@@ -14,6 +15,7 @@ export function StoryDetailPage() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
   const [acceptanceBasis, setAcceptanceBasis] = useState('')
+  const [recheckBasis, setRecheckBasis] = useState('')
 
   const { data: story, isLoading } = useQuery({
     queryKey: ['story', id],
@@ -38,6 +40,14 @@ export function StoryDetailPage() {
     mutationFn: (basis: string) => api.post<Story>(`/stories/${id}/accept-result`, { basis }),
     onSuccess: () => {
       setAcceptanceBasis('')
+      queryClient.invalidateQueries({ queryKey: ['story', id] })
+    },
+  })
+
+  const recheckQaMutation = useMutation({
+    mutationFn: (basis: string) => requestStoryQaRecheck(api, id!, basis),
+    onSuccess: () => {
+      setRecheckBasis('')
       queryClient.invalidateQueries({ queryKey: ['story', id] })
     },
   })
@@ -69,21 +79,39 @@ export function StoryDetailPage() {
           )}
           {story.status === 'waiting_human_review' && (
             <div className="flex items-center gap-2">
-              <textarea
-                value={acceptanceBasis}
-                onChange={(event) => setAcceptanceBasis(event.target.value)}
-                placeholder="Basis for accepting this result"
-                className="min-h-10 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
-              />
-              <ConfirmButton
-                label="Accept Result"
-                confirmText="Complete this story and notify its owner?"
-                pendingLabel="Accepting..."
-                variant="green"
-                disabled={!acceptanceBasis.trim()}
-                onConfirm={() => acceptResultMutation.mutate(acceptanceBasis.trim())}
-                isPending={acceptResultMutation.isPending}
-              />
+              <div className="flex items-center gap-2">
+                <textarea
+                  value={recheckBasis}
+                  onChange={(event) => setRecheckBasis(event.target.value)}
+                  placeholder="Basis for rechecking QA"
+                  className="min-h-10 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                />
+                <ConfirmButton
+                  label="Recheck QA"
+                  confirmText="Re-deploy or re-run QA for this quarantined story?"
+                  pendingLabel="Rechecking..."
+                  disabled={!recheckBasis.trim()}
+                  onConfirm={() => recheckQaMutation.mutate(recheckBasis.trim())}
+                  isPending={recheckQaMutation.isPending}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <textarea
+                  value={acceptanceBasis}
+                  onChange={(event) => setAcceptanceBasis(event.target.value)}
+                  placeholder="Basis for accepting this result"
+                  className="min-h-10 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+                />
+                <ConfirmButton
+                  label="Accept Result"
+                  confirmText="Complete this story and notify its owner?"
+                  pendingLabel="Accepting..."
+                  variant="green"
+                  disabled={!acceptanceBasis.trim()}
+                  onConfirm={() => acceptResultMutation.mutate(acceptanceBasis.trim())}
+                  isPending={acceptResultMutation.isPending}
+                />
+              </div>
             </div>
           )}
         </div>
@@ -149,6 +177,16 @@ export function StoryDetailPage() {
           <p className="text-sm text-foreground">{story.operator_acceptance.basis}</p>
           <p className="mt-2 text-xs text-muted-foreground">
             {story.operator_acceptance.actor} at {formatDate(story.operator_acceptance.accepted_at)}
+          </p>
+        </Card>
+      )}
+
+      {story.operator_recheck && (
+        <Card className="border-blue-800">
+          <h2 className="mb-2 text-sm font-medium text-blue-400">Operator QA recheck</h2>
+          <p className="text-sm text-foreground">{story.operator_recheck.basis}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {story.operator_recheck.actor} at {formatDate(story.operator_recheck.rechecked_at)}
           </p>
         </Card>
       )}

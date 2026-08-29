@@ -213,6 +213,7 @@ class TestSuperviseDeployingStories:
         assert qa_msg.acceptance_criteria == BASELINE_ACCEPTANCE_CRITERIA
         metadata = api_client.start_paid_run.call_args.args[0].run_metadata
         assert metadata["application_id"] == 42
+        assert metadata["deploy_run_id"] == "deploy-1"
         # The plan is stored with the run, so a restart can finish this handoff.
         assert QAHandoffPlan.model_validate(metadata[QA_HANDOFF_KEY]).access is None
 

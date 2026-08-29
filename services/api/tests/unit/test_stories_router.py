@@ -35,6 +35,7 @@ def _make_story(**overrides):
         "user_report": None,
         "quarantine_reason": None,
         "operator_acceptance": None,
+        "operator_recheck": None,
         "reopened_at": None,
         "owner_notification": None,
         "created_at": now,

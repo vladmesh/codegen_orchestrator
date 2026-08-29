@@ -11,12 +11,19 @@ from shared.contracts.dto.owner_notification import OwnerNotification
 
 # The request schemas are the contract every client already imports; the API
 # validates against those same objects rather than look-alikes of its own.
-from shared.contracts.dto.story import StoryAccept, StoryAcceptance, StoryCreate, StoryUpdate
+from shared.contracts.dto.story import (
+    StoryAccept,
+    StoryAcceptance,
+    StoryCreate,
+    StoryRecheck,
+    StoryUpdate,
+)
 
 __all__ = [
     "StoryCreate",
     "StoryAccept",
     "StoryAcceptance",
+    "StoryRecheck",
     "StoryRead",
     "StoryOwnerNotificationRead",
     "StoryReopen",
@@ -42,6 +49,7 @@ class StoryRead(TimestampedDTO):
     user_report: str | None
     quarantine_reason: dict[str, Any] | None = None
     operator_acceptance: StoryAcceptance | None = None
+    operator_recheck: StoryRecheck | None = None
     reopened_at: datetime | None = None
     pr_number: int | None = None
 

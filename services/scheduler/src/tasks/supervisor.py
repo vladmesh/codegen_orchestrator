@@ -1003,6 +1003,7 @@ async def _handle_deploy_success_story(
             story_id=story_id,
             run_metadata={
                 "application_id": application_id,
+                "deploy_run_id": run.id,
                 QA_HANDOFF_KEY: plan.model_dump(mode="json"),
             },
         )

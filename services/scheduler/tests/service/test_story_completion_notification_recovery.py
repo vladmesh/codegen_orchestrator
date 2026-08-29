@@ -310,3 +310,184 @@ async def test_admin_console_acceptance_is_recovered_to_po_input(api_client):
         assert settled.state is OwnerNotificationState.DELIVERED
     finally:
         await redis_client.close()
+
+
+@pytest.mark.asyncio
+async def test_recheck_qa_restores_a_quarantined_story_through_completion(api_client):
+    """A repaired QA infrastructure blocker needs no hand transition to finish."""
+    from src.tasks.supervisor import supervise_deploying_stories, supervise_testing_stories
+
+    project_id = str(uuid.uuid4())
+    telegram_id = uuid.uuid4().int % 1_000_000_000
+    headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
+    head_sha = "0123456789abcdef0123456789abcdef01234567"
+    async with httpx.AsyncClient(
+        base_url=api_client.base_url, headers=headers, timeout=30.0
+    ) as client:
+        user = await client.post(
+            "/api/users/",
+            json={"telegram_id": telegram_id, "username": f"recheck_owner_{telegram_id}"},
+        )
+        assert user.status_code == httpx.codes.CREATED, user.text
+        project = await client.post(
+            "/api/projects/",
+            json={
+                "id": project_id,
+                "initiating_run_id": "recheck-e2e-init",
+                "title": "Recheck QA completion",
+                "config": {},
+            },
+            headers={**headers, "X-Telegram-ID": str(telegram_id)},
+        )
+        assert project.status_code == httpx.codes.CREATED, project.text
+        server = await client.post(
+            "/api/servers/",
+            json={
+                "handle": f"recheck-e2e-{uuid.uuid4().hex[:8]}",
+                "host": "recheck-e2e.test",
+                "public_ip": "10.2.0.9",
+                "ssh_user": "root",
+            },
+        )
+        assert server.status_code == httpx.codes.CREATED, server.text
+        repository = await client.post(
+            "/api/repositories/",
+            json={
+                "project_id": project_id,
+                "name": "recheck-e2e-repository",
+                "git_url": "https://github.com/test/recheck-e2e-repository.git",
+            },
+        )
+        assert repository.status_code == httpx.codes.CREATED, repository.text
+        application = await client.post(
+            "/api/applications/",
+            json={
+                "repo_id": repository.json()["id"],
+                "server_handle": server.json()["handle"],
+                "service_name": "recheck-e2e-service",
+                "status": "stopped",
+            },
+        )
+        assert application.status_code == httpx.codes.CREATED, application.text
+        application_id = application.json()["id"]
+        allocated = await client.post(
+            f"/api/servers/{server.json()['handle']}/ports/allocate-next",
+            json={"service_name": "recheck-e2e-service", "application_id": application_id},
+        )
+        assert allocated.status_code == httpx.codes.OK, allocated.text
+
+        story = await client.post(
+            "/api/stories/", json={"project_id": project_id, "title": "Recheck E2E"}
+        )
+        assert story.status_code == httpx.codes.CREATED, story.text
+        story_id = story.json()["id"]
+        assert (await client.post(f"/api/stories/{story_id}/start")).status_code == httpx.codes.OK
+        assert (
+            await client.post(f"/api/stories/{story_id}/human-review")
+        ).status_code == httpx.codes.OK
+        receipt = await client.post(
+            "/api/runs/",
+            json={
+                "id": f"deploy-receipt-{uuid.uuid4().hex[:12]}",
+                "type": "deploy",
+                "project_id": project_id,
+                "story_id": story_id,
+                "run_metadata": {"application_id": application_id, "head_sha": head_sha},
+            },
+        )
+        assert receipt.status_code == httpx.codes.CREATED, receipt.text
+        blocker = {
+            "qa_outcome": "blocked",
+            "blocker": {
+                "category": "server_unavailable",
+                "attempted": "connect QA probe",
+                "sent": "GET /health",
+                "received": "connection refused",
+            },
+        }
+        quarantined_qa = await client.post(
+            "/api/runs/",
+            json={
+                "id": f"qa-quarantine-{uuid.uuid4().hex[:12]}",
+                "type": "qa",
+                "project_id": project_id,
+                "story_id": story_id,
+                "run_metadata": {"application_id": application_id},
+            },
+        )
+        assert quarantined_qa.status_code == httpx.codes.CREATED, quarantined_qa.text
+        terminal = await client.patch(
+            f"/api/runs/{quarantined_qa.json()['id']}",
+            json={"status": "failed", "result": blocker},
+        )
+        assert terminal.status_code == httpx.codes.OK, terminal.text
+        assert (
+            await client.patch(f"/api/stories/{story_id}", json={"quarantine_reason": blocker})
+        ).status_code == httpx.codes.OK
+
+        rechecked = await client.post(
+            f"/api/stories/{story_id}/recheck-qa",
+            json={"basis": "The server was repaired."},
+            headers={**headers, "X-Admin-Console-Operator": "shared-console"},
+        )
+        assert rechecked.status_code == httpx.codes.OK, rechecked.text
+        recheck_run_id = rechecked.json()["operator_recheck"]["run_id"]
+        assert rechecked.json()["status"] == "deploying"
+
+        deployed = await client.patch(
+            f"/api/runs/{recheck_run_id}",
+            json={
+                "status": "completed",
+                "result": {
+                    "deploy_outcome": "success",
+                    "deployed_url": "http://10.2.0.9:8000",
+                    "application_id": application_id,
+                },
+            },
+        )
+        assert deployed.status_code == httpx.codes.OK, deployed.text
+        running = await client.patch(
+            f"/api/applications/{application_id}", json={"status": "running"}
+        )
+        assert running.status_code == httpx.codes.OK, running.text
+
+        redis_client = RedisStreamClient(os.environ["REDIS_URL"])
+        await redis_client.connect()
+        try:
+            deployed_counts = await supervise_deploying_stories(api_client, redis_client)
+            assert deployed_counts["tested"] >= 1
+            qa_runs = await client.get(
+                "/api/runs/", params={"story_id": story_id, "run_type": "qa"}
+            )
+            assert qa_runs.status_code == httpx.codes.OK, qa_runs.text
+            recheck_qa = next(
+                run for run in qa_runs.json() if run["id"] != quarantined_qa.json()["id"]
+            )
+            assert recheck_qa["story_id"] == story_id
+            assert recheck_qa["run_metadata"]["application_id"] == application_id
+            assert recheck_qa["run_metadata"]["deploy_run_id"] == recheck_run_id
+
+            passed = await client.patch(
+                f"/api/runs/{recheck_qa['id']}",
+                json={
+                    "status": "completed",
+                    "result": {
+                        "qa_outcome": "passed",
+                        "deployed_url": "http://10.2.0.9:8000",
+                    },
+                },
+            )
+            assert passed.status_code == httpx.codes.OK, passed.text
+            completed_counts = await supervise_testing_stories(api_client, redis_client)
+            assert completed_counts["completed"] >= 1
+        finally:
+            await redis_client.close()
+
+        completed = await client.get(f"/api/stories/{story_id}")
+        assert completed.status_code == httpx.codes.OK, completed.text
+        assert completed.json()["status"] == "completed"
+        assert completed.json()["quarantine_reason"] is None
+        notification = OwnerNotification.model_validate(
+            (await client.get(f"/api/stories/{story_id}/owner-notification")).json()
+        )
+        assert "http://10.2.0.9:8000" in notification.text

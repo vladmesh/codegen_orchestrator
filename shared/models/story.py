@@ -38,6 +38,8 @@ class Story(Base):
     quarantine_reason: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # A credential-derived administrator decision that resolves human review.
     operator_acceptance: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # A credential-derived administrator decision that re-enters QA through the pipeline.
+    operator_recheck: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Starts the current work cycle, so completion cannot reuse pre-reopen QA evidence.
     reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # The durable completion notice owed when this story reaches COMPLETED.

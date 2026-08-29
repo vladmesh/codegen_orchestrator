@@ -1677,6 +1677,29 @@ transitions directly to `completed`. The record is returned by story reads. `POS
 `waiting_human_review → in_progress` edge remains only for actual resumed work, while the admin UI
 presents acceptance for a finished result.
 
+`POST /api/stories/{id}/recheck-qa` is the alternative operator action for a typed QA infrastructure
+blocker that an operator has repaired. It accepts the same required, non-blank `basis` and derives
+its actor from the same credential boundary as `accept-result`. The story stores one readable
+`operator_recheck` record: its stable action id, actor, basis, server time, prior quarantine evidence,
+application id, created Run id and that the action entered `deploy`. The record is also
+the idempotency key: a repeat returns it and creates neither another Run nor another paid QA charge.
+The action accepts only `qa_executor_unavailable`, `deployed_url_unreachable`, `qa_probe_unavailable`,
+`telegram_probe_undelivered`, `server_unavailable`, `qa_access_grant_failed` and
+`qa_access_expired`. It refuses a product verdict, an unknown/malformed blocker, or a target that
+cannot be proved from the newest story-linked QA Run's `application_id` and preceding story-linked
+deploy Run's exact `head_sha` capability receipt.
+
+Recheck always creates a story-linked deploy Run, records the exact application and recheck
+provenance on it, and moves the story to `deploying`; this is deliberate even for a running target,
+because redeploying the previously verified exact SHA is the capability receipt that the subsequent QA run needs.
+The normal deploy supervisor then creates the story-linked QA Run. Both queue messages carry the
+same story and application provenance, so ordinary supervision alone completes or re-quarantines the story. The
+quarantine remains while work is pending and is cleared only by the later passed QA verdict. A passed
+QA verdict carries its verified address even if a later health probe has temporarily marked the
+application non-running; the running-status address gate remains for human acceptance, which has no
+green QA verdict. The older standalone admin `redeploy` and `run-e2e` endpoints intentionally remain
+standalone operator tools: they neither target a quarantined story nor create a sideways green result.
+
 The completion endpoint uses the newest completed QA run for this story only when its typed result
 is `passed`; a human acceptance may also use the current QA handoff's deploy address after a failed
 QA result. Its stored handoff provides the deployed URL and optional bot username, but an address is

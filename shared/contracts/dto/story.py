@@ -69,6 +69,7 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
     },
     StoryStatus.WAITING_HUMAN_REVIEW: {
         StoryStatus.IN_PROGRESS,
+        StoryStatus.DEPLOYING,
         StoryStatus.COMPLETED,
         StoryStatus.FAILED,
     },
@@ -102,6 +103,7 @@ class StoryDTO(TimestampedDTO):
     user_report: str | None = None
     quarantine_reason: dict[str, Any] | None = None
     operator_acceptance: "StoryAcceptance | None" = None
+    operator_recheck: "StoryRecheck | None" = None
     reopened_at: datetime | None = None
     pr_number: int | None = None
 
@@ -162,3 +164,24 @@ class StoryAccept(BaseModel):
         if not value:
             raise ValueError("basis must not be blank")
         return value
+
+
+class StoryRecheckMode(StrEnum):
+    """The ordinary pipeline stage an operator recheck entered."""
+
+    DEPLOY = "deploy"
+
+
+class StoryRecheck(BaseModel):
+    """Durable operator decision to re-verify a quarantined QA target."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    actor: str
+    basis: str
+    rechecked_at: datetime
+    mode: StoryRecheckMode
+    application_id: int
+    run_id: str
+    rechecked_quarantine_reason: dict[str, Any]

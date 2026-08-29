@@ -4,6 +4,14 @@
 
 ### Added
 
+- Operators can recheck a typed, repaired QA infrastructure blocker from a `waiting_human_review`
+  story. The audited action derives its actor from the credential, retains its basis and prior
+  quarantine evidence, and is idempotent: it reuses one story-linked deploy Run rather than
+  dispatching again. Both stopped and running targets return through deploy and ordinary QA, so the
+  post-repair route has one verified deploy provenance. A passed recheck clears the quarantine, completes the story
+  through the existing notification seam, and preserves QA's verified address even if a later health
+  probe briefly marks the application down.
+
 - Operators can accept a `waiting_human_review` story directly from the admin UI with a required
   basis. The authenticated shared admin-console account or LK bearer administrator, basis,
   acceptance time, and overridden quarantine evidence are stored with the story; `/complete` cannot

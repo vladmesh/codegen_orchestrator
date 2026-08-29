@@ -16,17 +16,22 @@ from shared.contracts.dto.owner_notification import (
 )
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import QABlocker, QABlockerCategory
 from shared.contracts.dto.story import (
     VALID_TRANSITIONS,
+    StoryRecheck,
+    StoryRecheckMode,
     StoryStatus,
 )
 from shared.contracts.queues.architect import ArchitectMessage
+from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
 from shared.models.application import Application
+from shared.models.repository import Repository
 from shared.models.run import Run
 from shared.models.story import Story
-from shared.queues import ARCHITECT_QUEUE
+from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
@@ -42,7 +47,8 @@ from ..schemas.story import (
     StoryTransition,
     StoryUpdate,
 )
-from ._recipients import resolve_project_chat_id
+from ._recipients import resolve_project_chat_id, resolve_project_recipient
+from .applications import _make_deploy_run_id
 
 logger = structlog.get_logger()
 
@@ -58,6 +64,19 @@ _DEFAULT_ACCEPTED_COMPLETION_NOTIFICATION_TEXT = (
 )
 
 OWNER_NOTIFICATION_PAGE_MAX = 500
+
+_RECHECKABLE_BLOCKERS = frozenset(
+    {
+        QABlockerCategory.QA_EXECUTOR_UNAVAILABLE,
+        QABlockerCategory.DEPLOYED_URL_UNREACHABLE,
+        QABlockerCategory.QA_PROBE_UNAVAILABLE,
+        QABlockerCategory.TELEGRAM_PROBE_UNDELIVERED,
+        QABlockerCategory.SERVER_UNAVAILABLE,
+        QABlockerCategory.QA_ACCESS_GRANT_FAILED,
+        QABlockerCategory.QA_ACCESS_EXPIRED,
+    }
+)
+_COMMIT_SHA_LENGTHS = frozenset({40, 64})
 
 
 def _generate_id() -> str:
@@ -330,7 +349,10 @@ async def _completion_notification_text(
             select(Application.status).where(Application.id == qa_message.application_id)
         )
     ).scalar_one_or_none()
-    if application_status != ApplicationStatus.RUNNING.value:
+    # QA's passed verdict is itself live address evidence. An acceptance has no
+    # such verdict, so it retains the running gate and never tells an owner a
+    # stopped quarantine target is reachable.
+    if acceptance is not None and application_status != ApplicationStatus.RUNNING.value:
         return fallback
 
     address = qa_message.deployed_url
@@ -378,9 +400,115 @@ async def _complete_story(
         story.operator_acceptance = acceptance.model_dump(mode="json")
         # The completed story no longer represents a live QA quarantine.
         story.quarantine_reason = None
+    elif story.quarantine_reason is not None:
+        latest_qa = (
+            (
+                await db.execute(
+                    select(Run)
+                    .where(
+                        Run.story_id == story.id,
+                        Run.type == RunType.QA.value,
+                        Run.status == RunStatus.COMPLETED.value,
+                    )
+                    .order_by(Run.completed_at.desc(), Run.id.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if (
+            latest_qa is not None
+            and isinstance(latest_qa.result, dict)
+            and latest_qa.result.get("qa_outcome") == QAOutcome.PASSED
+        ):
+            # Only the ordinary green QA verdict retires a recheck quarantine.
+            story.quarantine_reason = None
     await db.commit()
     await db.refresh(story)
     return StoryRead.model_validate(story, from_attributes=True)
+
+
+async def _recheck_target(
+    story: Story, db: AsyncSession
+) -> tuple[Application, Repository, str, str]:
+    """Return the exact QA target which produced the typed quarantine.
+
+    The newest story-linked QA Run is the capability receipt. It binds the
+    blocker to one application instead of allowing an implied target selection.
+    """
+    reason = story.quarantine_reason
+    if not isinstance(reason, dict):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="recheck-qa requires a typed QA quarantine reason",
+        )
+    try:
+        blocker = QABlocker.model_validate(reason["blocker"])
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="recheck-qa requires a typed QA blocker",
+        ) from exc
+    if blocker.category not in _RECHECKABLE_BLOCKERS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"QA blocker '{blocker.category.value}' cannot be cleared by recheck",
+        )
+
+    receipt = (
+        (
+            await db.execute(
+                select(Run)
+                .where(Run.story_id == story.id, Run.type == RunType.QA.value)
+                .order_by(Run.completed_at.desc(), Run.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    application_id = (receipt.run_metadata or {}).get("application_id") if receipt else None
+    if not isinstance(application_id, int):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="recheck-qa cannot find an application in the story QA capability receipt",
+        )
+    application = await db.get(Application, application_id)
+    if application is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="recheck-qa target application no longer exists",
+        )
+    repository = await db.get(Repository, application.repo_id)
+    if repository is None or repository.project_id != story.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="recheck-qa target no longer matches the story capability receipt",
+        )
+    deploy_receipt = (
+        (
+            await db.execute(
+                select(Run)
+                .where(
+                    Run.story_id == story.id,
+                    Run.type == RunType.DEPLOY.value,
+                    Run.created_at <= receipt.created_at,
+                )
+                .order_by(Run.created_at.desc(), Run.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    head_sha = (deploy_receipt.run_metadata or {}).get("head_sha") if deploy_receipt else None
+    if not isinstance(head_sha, str) or len(head_sha) not in _COMMIT_SHA_LENGTHS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="recheck-qa target has no deployed SHA in its capability receipt",
+        )
+    return application, repository, deploy_receipt.id, head_sha
 
 
 @router.post("/{story_id}/human-review", response_model=StoryRead)
@@ -493,6 +621,112 @@ async def accept_story_result(
         basis=acceptance.basis,
     )
     return completed
+
+
+@router.post("/{story_id}/recheck-qa", response_model=StoryRead)
+async def recheck_story_qa(
+    story_id: str,
+    body: StoryAccept,
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+    actor: str = Depends(get_accept_result_actor),
+) -> StoryRead:
+    """Re-enter a typed QA quarantine through the ordinary deploy or QA route."""
+    story = (
+        await db.execute(select(Story).where(Story.id == story_id).with_for_update())
+    ).scalar_one_or_none()
+    if story is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Story {story_id} not found"
+        )
+    if story.operator_recheck is not None:
+        return StoryRead.model_validate(story, from_attributes=True)
+    if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="recheck-qa requires a story in waiting_human_review",
+        )
+
+    application, _repository, source_deploy_run_id, head_sha = await _recheck_target(story, db)
+    recheck_id = f"recheck-{uuid.uuid4().hex}"
+    snapshot = dict(story.quarantine_reason or {})
+
+    if application.status not in {ApplicationStatus.STOPPED.value, ApplicationStatus.RUNNING.value}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"recheck-qa target application is '{application.status}', not stopped or running"
+            ),
+        )
+
+    run_id = _make_deploy_run_id()
+    recipient = await resolve_project_recipient(
+        db, story.project_id, event="qa_recheck_deploy", story_id=story.id
+    )
+    message = DeployMessage(
+        task_id=run_id,
+        project_id=str(story.project_id),
+        telegram_chat_id=recipient.telegram_chat_id,
+        unaddressed_reason=recipient.unaddressed_reason,
+        story_id=story.id,
+        triggered_by=DeployTrigger.ADMIN,
+        action=DeployAction.CREATE,
+        head_sha=head_sha,
+        application_id=application.id,
+    )
+    db.add(
+        Run(
+            id=run_id,
+            type=RunType.DEPLOY.value,
+            project_id=story.project_id,
+            story_id=story.id,
+            run_metadata={
+                "application_id": application.id,
+                "recheck_id": recheck_id,
+                "head_sha": head_sha,
+                "source_deploy_run_id": source_deploy_run_id,
+                "recheck_message": message.model_dump(mode="json"),
+            },
+        )
+    )
+    application.status = ApplicationStatus.DEPLOYING.value
+    mode = StoryRecheckMode.DEPLOY
+
+    audit = StoryRecheck(
+        id=recheck_id,
+        actor=actor,
+        basis=body.basis,
+        rechecked_at=datetime.now(UTC),
+        mode=mode,
+        application_id=application.id,
+        run_id=run_id,
+        rechecked_quarantine_reason=snapshot,
+    )
+    story.operator_recheck = audit.model_dump(mode="json")
+    _do_transition(story, StoryStatus.DEPLOYING)
+    await db.commit()
+    await db.refresh(story)
+
+    try:
+        await redis.publish_message(DEPLOY_QUEUE, message)
+    except Exception as exc:
+        logger.exception(
+            "story_qa_recheck_publish_outcome_unknown", story_id=story.id, run_id=run_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="QA recheck handoff could not be confirmed",
+        ) from exc
+
+    logger.info(
+        "story_qa_recheck_requested",
+        story_id=story.id,
+        actor=actor,
+        mode=mode.value,
+        run_id=run_id,
+        application_id=application.id,
+    )
+    return StoryRead.model_validate(story, from_attributes=True)
 
 
 @router.post("/{story_id}/fail", response_model=StoryRead)
