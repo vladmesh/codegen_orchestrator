@@ -240,22 +240,12 @@ def preflight(env: dict[str, str], log) -> bool:
 
 
 def sweep(env: dict[str, str], log) -> bool:
-    # The sweep runs here, on the host, while `GITHUB_APP_PRIVATE_KEY_PATH` names
-    # the path the key has *inside a container*. Reading it from the host gets a
-    # permission error on a path that does not exist there, the contour cleanup
-    # dies before it starts, and the run still reports green. The host path is
-    # the bind-mount source the stack was given.
-    deployed = read_env_file(REPO / ".env")
-    host_pem = deployed.get("GITHUB_APP_PEM_PATH") or os.environ.get("GITHUB_APP_PEM_PATH")
-    sweep_env = {**os.environ, **env, "LIVE_CONTOUR": "stand"}
-    if host_pem:
-        sweep_env["GITHUB_APP_PRIVATE_KEY_PATH"] = host_pem
     result = subprocess.run(  # noqa: S603
         # As a module: a path invocation puts `scripts/` on sys.path instead of
         # the repository root, and `shared` then cannot be imported.
         ["uv", "run", "python", "-m", "scripts.clean_live_tests"],  # noqa: S607
         cwd=REPO,
-        env=sweep_env,
+        env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
         capture_output=True,
         text=True,
         check=False,
