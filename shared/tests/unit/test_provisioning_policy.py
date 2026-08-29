@@ -99,19 +99,39 @@ def test_provider_identity_accepts_exact_ip():
     assert provider_ip_matches(expected_ip="203.0.113.10", provider_ip="203.0.113.10") is True
 
 
-@pytest.mark.parametrize("value", [None, "", "0", "-1", " 71234", "71234 ", "seven", "٧١٢٣٤"])
+# An identifier the provider actually issued, copied from the machine manifest of
+# run 33217705274. The parser was written against a decimal shape nobody had
+# observed, and the test agreed with it, so both were wrong together until a live
+# target was refused with `TARGET_ID must be a positive decimal BitLaunch ID`.
+REAL_BITLAUNCH_ID = "6a920e74c9c98a452507b09b"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "0",
+        "71234",
+        "6a920e74c9c98a452507b09",
+        "6a920e74c9c98a452507b09bb",
+        "6A920E74C9C98A452507B09B",
+        f" {REAL_BITLAUNCH_ID}",
+        f"{REAL_BITLAUNCH_ID} ",
+        "zzzzzzzzzzzzzzzzzzzzzzzz",
+    ],
+)
 def test_bitlaunch_server_identity_uses_one_strict_shared_parser(value):
     assert parse_bitlaunch_server_id(value) is None
 
 
-def test_bitlaunch_server_identity_accepts_a_positive_decimal_id():
-    assert parse_bitlaunch_server_id(71234) == "71234"
-    assert parse_bitlaunch_server_id("71234") == "71234"
+def test_bitlaunch_server_identity_accepts_the_identifier_the_provider_issues():
+    assert parse_bitlaunch_server_id(REAL_BITLAUNCH_ID) == REAL_BITLAUNCH_ID
     # Generic destructive-operation policy never authorizes BitLaunch. Its only
     # supported destructive path is the exact run-owned access provisioner.
     assert (
         provider_operation_is_authorized(
-            provider=BITLAUNCH_PROVIDER, provider_id="71234", is_managed=True
+            provider=BITLAUNCH_PROVIDER, provider_id=REAL_BITLAUNCH_ID, is_managed=True
         )
         is False
     )

@@ -17,7 +17,11 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.env_contract import merge_env_contract_fragments
-from shared.provisioning_policy import provider_operation_is_authorized
+from shared.provisioning_policy import (
+    BITLAUNCH_PROVIDER,
+    authorize_run_owned_target,
+    provider_operation_is_authorized,
+)
 
 GITHUB_ORG = "project-factory-organization"
 ENV_CONTRACT_FILENAME = "env.contract.yaml"
@@ -47,20 +51,38 @@ class _CleanupServerPolicyAdapter:
         value = self._server.get("provider")
         return value if isinstance(value, str) else None
 
+    @property
+    def labels(self) -> dict:
+        value = self._server.get("labels")
+        return value if isinstance(value, dict) else {}
+
 
 def cleanup_target_skip_reason(server: object) -> str | None:
     """Return why an API row is not a managed cleanup target, if any.
 
-    Cleanup uses the same fail-closed `is_managed` plus Time4VPS provider-ID
-    admission as provisioning. This decision runs before a key request, SSH,
-    residue scan, or teardown, so inventory-only installation hosts cannot be
-    contacted merely because they appear in the API listing.
+    Cleanup uses the same fail-closed admission as provisioning, and reaches it
+    the same way for each provider: a Time4VPS row through the configured
+    provider-ID allowlist, a BitLaunch row through the run-ownership proof its
+    contour stamped on it. This decision runs before a key request, SSH, residue
+    scan, or teardown, so inventory-only installation hosts cannot be contacted
+    merely because they appear in the API listing.
+
+    A BitLaunch machine cannot be allowlisted — the run that destroys it also
+    created it, minutes earlier — so asking the provider-wide policy about one
+    refused every target the contour had just made, and the harness reported
+    only `no managed target for an owned deploy`. The run tag is the authority
+    here, and it is narrower than an allowlist: it admits this run's machines
+    and nothing else on the account.
     """
     if not isinstance(server, Mapping):
         return "malformed_server_record"
     adapter = _CleanupServerPolicyAdapter(server)
     if not adapter.is_managed:
         return "is_not_managed"
+    if adapter.provider == BITLAUNCH_PROVIDER:
+        if authorize_run_owned_target(adapter, run_tag=os.environ.get("STAND_RUN_TAG")) is None:
+            return "not_owned_by_this_run"
+        return None
     if not provider_operation_is_authorized(
         provider=adapter.provider,
         provider_id=adapter.provider_id,

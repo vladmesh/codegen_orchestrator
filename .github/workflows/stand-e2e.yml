@@ -156,6 +156,14 @@ jobs:
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           inventory="${RUNNER_TEMP}/stand-bootstrap.ini"
+          # A public key is `ssh-ed25519 AAAA... comment`, and ansible splits its
+          # `-e key=value` form on whitespace: passed that way the variable holds
+          # `ssh-ed25519` alone and `authorized_key` fails with `list index out of
+          # range`. The line below it relies on that same splitting on purpose, to
+          # pass two variables. A JSON vars file is the form that cannot be split.
+          bootstrap_vars="${RUNNER_TEMP}/stand-bootstrap-vars.json"
+          jq -Rn --rawfile ssh_public_key "${RUNNER_TEMP}/stand-bootstrap.pub" \
+            '{ssh_public_key: ($ssh_public_key | rtrimstr("\n"))}' > "${bootstrap_vars}"
           {
             echo '[prod]'
             printf '%s ansible_user=root ansible_ssh_private_key_file=%s\n' "${PROD_HOST}" "${key_path}"
@@ -165,7 +173,7 @@ jobs:
           ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg \
             uvx --from ansible-core ansible-playbook -i "${inventory}" \
             services/infra-service/ansible/playbooks/bootstrap.yml \
-            -e "ssh_public_key=$(<"${RUNNER_TEMP}/stand-bootstrap.pub")"
+            -e "@${bootstrap_vars}"
           ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg \
             uvx --from ansible-core ansible-playbook -i "${inventory}" \
             services/infra-service/ansible/playbooks/provision_software.yml \

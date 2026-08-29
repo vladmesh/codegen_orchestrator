@@ -3,38 +3,15 @@
 from __future__ import annotations
 
 import os
-from typing import Protocol
 
 import httpx
 
-from shared.provisioning_policy import BITLAUNCH_PROVIDER, parse_bitlaunch_server_id
+from shared.provisioning_policy import (
+    BITLAUNCH_PROVIDER,
+    authorize_run_owned_target,
+)
 
-_REQUIRED_LABELS = {"contour": "stand", "stand_role": "target"}
-
-
-class ServerIdentity(Protocol):
-    provider: str | None
-    provider_id: str | None
-    is_managed: bool
-    labels: dict
-
-
-def authorize_run_owned_target(server: ServerIdentity, *, run_tag: str | None) -> str | None:
-    """Authorize only this run's exact BitLaunch target, never a general fleet."""
-    labels = server.labels if isinstance(server.labels, dict) else {}
-    provider_id = parse_bitlaunch_server_id(server.provider_id)
-    if (
-        server.provider != BITLAUNCH_PROVIDER
-        or not server.is_managed
-        or provider_id is None
-        or labels.get("provider") != BITLAUNCH_PROVIDER
-        or labels.get("provider_id") != provider_id
-        or not run_tag
-        or labels.get("stand_run_tag") != run_tag
-        or any(labels.get(key) != value for key, value in _REQUIRED_LABELS.items())
-    ):
-        return None
-    return provider_id
+__all__ = ["BITLAUNCH_PROVIDER", "BitLaunchClient", "authorize_run_owned_target"]
 
 
 class BitLaunchClient:

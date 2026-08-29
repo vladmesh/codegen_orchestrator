@@ -11,11 +11,13 @@ async def test_provision_request_publishes_the_existing_provisioner_message():
     database = type("Database", (), {"get": AsyncMock(return_value=server)})()
     redis = type("Redis", (), {"publish_message": AsyncMock()})()
 
-    response = await provision_server("bitlaunch-71234", db=database, redis=redis)
+    response = await provision_server(
+        "bitlaunch-6a920e74c9c98a452507b09b", db=database, redis=redis
+    )
 
-    assert response["server_handle"] == "bitlaunch-71234"
+    assert response["server_handle"] == "bitlaunch-6a920e74c9c98a452507b09b"
     assert response["request_id"]
     redis.publish_message.assert_awaited_once()
     queue, message = redis.publish_message.await_args.args
     assert queue == "provisioner:queue"
-    assert message.server_handle == "bitlaunch-71234"
+    assert message.server_handle == "bitlaunch-6a920e74c9c98a452507b09b"

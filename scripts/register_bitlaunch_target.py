@@ -16,7 +16,12 @@ from pathlib import Path
 import sys
 import urllib.request
 
-BITLAUNCH_PROVIDER = "bitlaunch"
+from shared.provisioning_policy import (
+    BITLAUNCH_ID_LENGTH,
+    BITLAUNCH_PROVIDER,
+    parse_bitlaunch_server_id,
+)
+
 TARGET_ROLE = "target"
 
 
@@ -24,8 +29,13 @@ def build_target_payload(
     *, target_id: str, target_ip: str, run_tag: str, ssh_private_key: str
 ) -> dict[str, object]:
     """Build the API row for one exact target created by this workflow run."""
-    if not target_id.isascii() or not target_id.isdecimal() or int(target_id) <= 0:
-        raise ValueError("TARGET_ID must be a positive decimal BitLaunch ID")
+    # One parser for this identity, not a second copy of the rule: the copy is
+    # how run 33248356742 came to refuse a target the rest of the system would
+    # have accepted.
+    if parse_bitlaunch_server_id(target_id) is None:
+        raise ValueError(
+            f"TARGET_ID must be a {BITLAUNCH_ID_LENGTH}-character lowercase hex BitLaunch ID"
+        )
     if not target_ip or not run_tag or not ssh_private_key:
         raise ValueError("target IP, run tag, and SSH private key are required")
 
