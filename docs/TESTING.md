@@ -21,6 +21,9 @@ make test-unit                 # All services (parallel, ~12s; no host services)
 # Serial mode (verbose output per service)
 uv run bash scripts/test-unit-local.sh --serial
 
+# Same suite as one module entry point (what Secretary's `check broad --module shared` runs)
+uv run python -m shared            # accepts the same flags, e.g. `--serial`
+
 # Service (Docker, single service)
 make test-service SERVICE=api
 
