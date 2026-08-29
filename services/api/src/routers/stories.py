@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.owner_notification import (
     OwnerNotification,
     OwnerNotificationState,
@@ -22,14 +23,14 @@ from shared.contracts.dto.story import (
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.vocab import OwnerNotificationEvent
+from shared.models.application import Application
 from shared.models.run import Run
 from shared.models.story import Story
-from shared.models.user import User
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_redis_client, require_bearer_admin, require_internal_or_admin
+from ..dependencies import get_accept_result_actor, get_redis_client, require_internal_or_admin
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
     StoryAccept,
@@ -49,6 +50,11 @@ router = APIRouter(prefix="/stories", tags=["stories"])
 
 _DEFAULT_COMPLETION_NOTIFICATION_TEXT = (
     "The story is finished. Tell the user the good news that their product is ready."
+)
+
+_DEFAULT_ACCEPTED_COMPLETION_NOTIFICATION_TEXT = (
+    "The story is finished: an operator accepted the result. Tell the user the good news "
+    "that their product is ready."
 )
 
 OWNER_NOTIFICATION_PAGE_MAX = 500
@@ -282,8 +288,18 @@ def _do_transition(story: Story, to_status: StoryStatus) -> None:
     story.status = to_status.value
 
 
-async def _completion_notification_text(story: Story, db: AsyncSession) -> str:
-    """Keep current-cycle deployment evidence, never a pre-reopen QA address."""
+async def _completion_notification_text(
+    story: Story,
+    db: AsyncSession,
+    *,
+    acceptance: StoryAcceptance | None = None,
+) -> str:
+    """Keep a live current-cycle deployment address, never stale QA evidence."""
+    fallback = (
+        _DEFAULT_ACCEPTED_COMPLETION_NOTIFICATION_TEXT
+        if acceptance is not None
+        else _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+    )
     query = (
         select(Run)
         .where(
@@ -298,22 +314,29 @@ async def _completion_notification_text(story: Story, db: AsyncSession) -> str:
         query = query.where(Run.created_at >= story.reopened_at)
     run = (await db.execute(query)).scalars().first()
     if run is None or not isinstance(run.result, dict):
-        return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+        return fallback
 
     outcome = run.result.get("qa_outcome")
-    if outcome != QAOutcome.PASSED and story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
-        return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+    if outcome != QAOutcome.PASSED and acceptance is None:
+        return fallback
     if QA_HANDOFF_KEY not in run.run_metadata:
         if outcome == QAOutcome.PASSED:
             raise KeyError(QA_HANDOFF_KEY)
-        return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+        return fallback
 
     qa_message = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY]).qa_message
+    application_status = (
+        await db.execute(
+            select(Application.status).where(Application.id == qa_message.application_id)
+        )
+    ).scalar_one_or_none()
+    if application_status != ApplicationStatus.RUNNING.value:
+        return fallback
 
     address = qa_message.deployed_url
     if qa_message.bot_username:
         address = f"{address} (Telegram bot @{qa_message.bot_username})"
-    if outcome != QAOutcome.PASSED:
+    if acceptance is not None:
         return (
             "The story is finished: an operator accepted the deployed result. "
             f"Tell the user the good news and give them the address: {address}"
@@ -324,11 +347,16 @@ async def _completion_notification_text(story: Story, db: AsyncSession) -> str:
     )
 
 
-async def _owe_completed_story_notification(story: Story, db: AsyncSession) -> None:
+async def _owe_completed_story_notification(
+    story: Story,
+    db: AsyncSession,
+    *,
+    acceptance: StoryAcceptance | None = None,
+) -> None:
     """Attach the completion obligation to the story in its transition transaction."""
     story.owner_notification = OwnerNotification(
         event=OwnerNotificationEvent.STORY_COMPLETED,
-        text=await _completion_notification_text(story, db),
+        text=await _completion_notification_text(story, db, acceptance=acceptance),
         story_id=story.id,
         project_id=str(story.project_id),
         terminal_status=StoryStatus.COMPLETED,
@@ -344,7 +372,7 @@ async def _complete_story(
     acceptance: StoryAcceptance | None = None,
 ) -> StoryRead:
     """The one completion transaction used by ordinary and accepted-result routes."""
-    await _owe_completed_story_notification(story, db)
+    await _owe_completed_story_notification(story, db, acceptance=acceptance)
     _do_transition(story, StoryStatus.COMPLETED)
     if acceptance is not None:
         story.operator_acceptance = acceptance.model_dump(mode="json")
@@ -427,6 +455,11 @@ async def complete_story(
 ) -> StoryRead:
     body = body or StoryTransition()
     story = await _get_story(story_id, db)
+    if story.status == StoryStatus.WAITING_HUMAN_REVIEW.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Use accept-result to complete a story in waiting_human_review",
+        )
 
     logger.info("story_completed", story_id=story.id, actor=body.actor)
     return await _complete_story(story, db)
@@ -437,14 +470,20 @@ async def accept_story_result(
     story_id: str,
     body: StoryAccept,
     db: AsyncSession = Depends(get_async_session),
-    admin: User = Depends(require_bearer_admin),
+    actor: str = Depends(get_accept_result_actor),
 ) -> StoryRead:
     """Let the authenticated administrator finish a reviewed result with evidence."""
     story = await _get_story(story_id, db)
+    if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="accept-result requires a story in waiting_human_review",
+        )
     acceptance = StoryAcceptance(
-        actor=f"admin:{admin.id}",
+        actor=actor,
         basis=body.basis,
         accepted_at=datetime.now(UTC),
+        overridden_quarantine_reason=story.quarantine_reason,
     )
     completed = await _complete_story(story, db, acceptance=acceptance)
     logger.info(

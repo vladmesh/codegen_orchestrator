@@ -145,6 +145,7 @@ class StoryAcceptance(BaseModel):
     actor: str
     basis: str
     accepted_at: datetime
+    overridden_quarantine_reason: dict[str, Any] | None = None
 
 
 class StoryAccept(BaseModel):

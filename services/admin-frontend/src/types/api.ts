@@ -48,6 +48,7 @@ export interface StoryAcceptance {
   actor: string
   basis: string
   accepted_at: string
+  overridden_quarantine_reason?: Record<string, unknown> | null
 }
 
 export interface Task {
