@@ -8,6 +8,7 @@ guards they all share live in `.projects_guards`.
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.security import HTTPAuthorizationCredentials
 import redis.asyncio as aioredis
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,6 +58,7 @@ from shared.redis.client import RedisStreamClient
 from ..config import get_settings
 from ..database import get_async_session
 from ..dependencies import (
+    _optional_bearer_scheme,
     get_redis_client,
     is_internal_service,
     require_internal_or_admin,
@@ -119,6 +121,7 @@ async def _check_project_access(
     db: AsyncSession,
     *,
     is_internal: bool = False,
+    credentials: HTTPAuthorizationCredentials | None,
 ) -> None:
     """Check if the request may reach this project. Raises 401/403/404 if denied.
 
@@ -126,7 +129,12 @@ async def _check_project_access(
     acting for itself passes, a named user is judged as that user however the
     request was authenticated.
     """
-    actor = await resolve_actor(is_internal=is_internal, telegram_id=telegram_id, db=db)
+    actor = await resolve_actor(
+        is_internal=is_internal,
+        telegram_id=telegram_id,
+        credentials=credentials,
+        db=db,
+    )
 
     if actor is None or actor.is_admin:
         return
@@ -271,13 +279,20 @@ async def get_project(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> Project:
     """Get project by ID."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
     return project
 
 
@@ -291,12 +306,18 @@ async def list_projects(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> list[Project]:
     """List projects, optionally filtered by status or owner_id."""
     # The caller is resolved before any filter is applied, including the admin
     # panel's owner_id filter: passing owner_id must not be a way to read another
     # user's projects and their config.
-    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+    )
 
     query = select(Project)
 
@@ -339,11 +360,18 @@ async def update_project(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> Project:
     """Update project."""
     project = await _load_locked_project(db, project_id)
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
 
     if project_in.title is not None:
         project.title = project_in.title
@@ -371,11 +399,18 @@ async def patch_project(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> Project:
     """Partial update of project (PATCH method)."""
     project = await _load_locked_project(db, project_id)
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
 
     if project_in.title is not None:
         project.title = project_in.title
@@ -402,13 +437,20 @@ async def list_secret_keys(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> dict:
     """List secret key names for a project (no values exposed)."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
 
     config = dict(project.config or {})
     existing_secrets = config.get("secrets") or {}
@@ -567,6 +609,7 @@ async def merge_secrets(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> dict:
     """Atomically merge secrets into project config.
 
@@ -589,7 +632,13 @@ async def merge_secrets(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
 
     keys = _merge_secrets_into_project(project, body.secrets, body.env_hints)
     await db.commit()
@@ -611,6 +660,7 @@ async def set_bot_access(
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> dict:
     """Store the selected bot audience as a deploy-time contract literal.
 
@@ -626,6 +676,7 @@ async def set_bot_access(
         redis,
         x_telegram_id=x_telegram_id,
         is_internal=_is_internal,
+        credentials=credentials,
         operation=AudienceOperation.SET,
         set_mode=body.mode,
         set_audience=body.allowed_telegram_ids,
@@ -646,6 +697,7 @@ async def add_bot_user(
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> dict:
     """Add one Telegram ID to the chosen bot audience.
 
@@ -660,6 +712,7 @@ async def add_bot_user(
         redis,
         x_telegram_id=x_telegram_id,
         is_internal=_is_internal,
+        credentials=credentials,
         operation=AudienceOperation.ADD,
         telegram_id=body.telegram_id,
     )
@@ -674,6 +727,7 @@ async def remove_bot_user(
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> dict:
     """Remove one Telegram ID from the chosen bot audience.
 
@@ -693,6 +747,7 @@ async def remove_bot_user(
         redis,
         x_telegram_id=x_telegram_id,
         is_internal=_is_internal,
+        credentials=credentials,
         operation=AudienceOperation.REMOVE,
         telegram_id=telegram_id,
     )
@@ -706,6 +761,7 @@ async def get_bot_audience_rollout(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> dict:
     """Where a config-only audience rollout stands.
 
@@ -720,6 +776,7 @@ async def get_bot_audience_rollout(
         run_id,
         x_telegram_id=x_telegram_id,
         is_internal=_is_internal,
+        credentials=credentials,
     )
     return {"rollout": rollout.value, "detail": detail}
 
@@ -731,6 +788,7 @@ async def owe_bot_audience_rollout_notification(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> dict:
     """Record that this rollout's terminal outcome still has to reach the owner.
 
@@ -743,6 +801,7 @@ async def owe_bot_audience_rollout_notification(
         run_id,
         x_telegram_id=x_telegram_id,
         is_internal=_is_internal,
+        credentials=credentials,
     )
 
 
@@ -753,6 +812,7 @@ async def bind_telegram_token(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> TelegramTokenVerdict:
     """Validate a Telegram bot token and, if it passes, bind it to the project.
 
@@ -765,7 +825,13 @@ async def bind_telegram_token(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
 
     verdict = await validate_telegram_token(body.token, db=db, project=project)
     if verdict.status == TokenVerdictStatus.REJECTED:
@@ -862,6 +928,7 @@ async def delete_secret(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> dict:
     """Delete a single secret from project config.
 
@@ -873,7 +940,13 @@ async def delete_secret(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
 
     config = dict(project.config or {})
     existing_secrets = config.get("secrets") or {}
@@ -904,6 +977,7 @@ async def _load_for_teardown(
     db: AsyncSession,
     *,
     is_internal: bool,
+    credentials: HTTPAuthorizationCredentials | None,
 ) -> tuple[Project, list[Repository], list[Application]]:
     """Load the project, its repositories and its applications, owner-checked."""
     query = select(Project).where(Project.id == project_id).with_for_update()
@@ -911,7 +985,13 @@ async def _load_for_teardown(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=is_internal,
+        credentials=credentials,
+    )
 
     repos_result = await db.execute(select(Repository).where(Repository.project_id == project_id))
     repos = list(repos_result.scalars())
@@ -1032,6 +1112,7 @@ async def teardown_project(
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> ProjectTeardownResult:
     """Start tearing the project down at its owner's request: undeploy it, then free its bot.
 
@@ -1041,7 +1122,11 @@ async def teardown_project(
     until the undeploy reports the containers down. Poll GET on the same path.
     """
     project, repos, applications = await _load_for_teardown(
-        project_id, x_telegram_id, db, is_internal=_is_internal
+        project_id,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
     )
 
     # The owner asked for this teardown, so its deploys are addressed to them:
@@ -1091,6 +1176,7 @@ async def get_teardown_status(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> ProjectTeardownResult:
     """Where the teardown stands, and the call that finishes it.
 
@@ -1099,7 +1185,11 @@ async def get_teardown_status(
     the token can be bound somewhere else.
     """
     project, repos, applications = await _load_for_teardown(
-        project_id, x_telegram_id, db, is_internal=_is_internal
+        project_id,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
     )
     state = await _teardown_state(db, project, repos, applications)
     await db.commit()
@@ -1179,13 +1269,20 @@ async def delete_project(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ):
     """Delete a project and everything that references it."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
+    await _check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
 
     await _delete_project_records(db, project_id)
 

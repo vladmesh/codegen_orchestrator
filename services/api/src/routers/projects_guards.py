@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +26,7 @@ async def check_project_access(
     db: AsyncSession,
     *,
     is_internal: bool = False,
+    credentials: HTTPAuthorizationCredentials | None,
 ) -> None:
     """Check if the request may reach this project. Raises 401/403/404 if denied.
 
@@ -32,7 +34,12 @@ async def check_project_access(
     acting for itself passes, a named user is judged as that user however the
     request was authenticated.
     """
-    actor = await resolve_actor(is_internal=is_internal, telegram_id=telegram_id, db=db)
+    actor = await resolve_actor(
+        is_internal=is_internal,
+        telegram_id=telegram_id,
+        credentials=credentials,
+        db=db,
+    )
 
     if actor is None or actor.is_admin:
         return
