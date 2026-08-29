@@ -49,7 +49,6 @@ from shared.models import (
     Story,
     Task,
     TaskEvent,
-    User,
 )
 from shared.project_slug import generate_project_slug
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
@@ -101,18 +100,6 @@ def _mutation_response(outcome) -> dict:
         "rollout": outcome.rollout_status.value,
         "rollout_run_id": outcome.rollout_run_id,
     }
-
-
-async def _resolve_user(
-    telegram_id: int | None,
-    db: AsyncSession,
-) -> User | None:
-    """Resolve User from telegram_id."""
-    if not telegram_id:
-        return None
-    query = select(User).where(User.telegram_id == telegram_id)
-    result = await db.execute(query)
-    return result.scalar_one_or_none()
 
 
 async def _check_project_access(
@@ -180,6 +167,8 @@ async def create_project(
     project_in: ProjectCreate,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> Project:
     """Create a new project."""
     try:
@@ -201,17 +190,19 @@ async def create_project(
                 detail="Project with this ID already exists",
             )
 
-        # Resolve owner — required
-        if not x_telegram_id:
+        # Ownership and admission are both derived from the caller principal.
+        # A bearer token names its subject; the Telegram header names an actor
+        # only for an internal service caller.
+        user = await resolve_actor(
+            is_internal=_is_internal,
+            telegram_id=x_telegram_id,
+            credentials=credentials,
+            db=db,
+        )
+        if user is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="X-Telegram-ID header is required",
-            )
-        user = await _resolve_user(x_telegram_id, db)
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User with telegram_id {x_telegram_id} not found",
             )
         owner_id = user.id
 

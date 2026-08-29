@@ -28,7 +28,8 @@ request authenticated by that bearer can act as. An internal key carries a servi
 principal; only under that key may `X-Telegram-ID` name a user actor. A bare
 `X-Telegram-ID` is never authentication. Guards pass the request credential to the
 single actor resolver, so a client-supplied Telegram header cannot replace a bearer
-principal.
+principal. Project ownership/admission and allocation administration use that same
+principal decision, never a header-only user lookup.
 
 ### Engineering-attempt ledger
 

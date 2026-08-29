@@ -263,6 +263,87 @@ async def test_a_bearer_cannot_use_a_foreign_telegram_id_to_reach_projects(
     assert listed.status_code == HTTPStatus.FORBIDDEN, listed.text
 
 
+@pytest.mark.asyncio
+async def test_a_bearer_cannot_create_a_project_for_a_foreign_telegram_user(
+    service_client, bearer_client, owned_project
+):
+    """Project ownership and admission are both bound to the token subject."""
+    intruder_id = await _user_id(service_client, INTRUDER)
+    created = await bearer_client.post(
+        "/api/projects/",
+        json={
+            "id": str(uuid.uuid4()),
+            "title": "not-the-foreign-owner",
+            "initiating_run_id": "test-run-foreign-owner",
+            "status": ProjectStatus.ACTIVE.value,
+            "config": {},
+        },
+        headers=_bearer_headers(intruder_id, OWNER),
+    )
+
+    assert created.status_code == HTTPStatus.FORBIDDEN, created.text
+
+
+@pytest.mark.asyncio
+async def test_a_bearer_creates_a_project_as_its_token_subject_without_a_telegram_header(
+    service_client, bearer_client, owned_project
+):
+    """A bearer replaces the formerly required Telegram header as the owner source."""
+    intruder_id = await _user_id(service_client, INTRUDER)
+    project_id = str(uuid.uuid4())
+    created = await bearer_client.post(
+        "/api/projects/",
+        json={
+            "id": project_id,
+            "title": "bearer-token-owner",
+            "initiating_run_id": "test-run-bearer-owner",
+            "status": ProjectStatus.ACTIVE.value,
+            "config": {},
+        },
+        headers={"Authorization": f"Bearer {create_lk_jwt(intruder_id)}"},
+    )
+
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    assert created.json()["owner_id"] == intruder_id
+
+
+@pytest.mark.asyncio
+async def test_an_internal_key_can_create_a_project_for_its_named_user(
+    agent_client, service_client
+):
+    """The bot's internal-key path still names the project owner explicitly."""
+    await _ensure_user(service_client, OWNER)
+    project_id = str(uuid.uuid4())
+    created = await agent_client.post(
+        "/api/projects/",
+        json={
+            "id": project_id,
+            "title": "internal-key-named-owner",
+            "initiating_run_id": "test-run-internal-owner",
+            "status": ProjectStatus.ACTIVE.value,
+            "config": {},
+        },
+        headers={"X-Telegram-ID": OWNER},
+    )
+
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    assert created.json()["owner_id"] == await _user_id(service_client, OWNER)
+
+
+@pytest.mark.asyncio
+async def test_a_non_admin_bearer_cannot_read_allocations_without_a_telegram_header(
+    service_client, bearer_client, owned_project
+):
+    """An omitted client header cannot turn an LK bearer into an allocation admin."""
+    intruder_id = await _user_id(service_client, INTRUDER)
+    listed = await bearer_client.get(
+        "/api/allocations/",
+        headers={"Authorization": f"Bearer {create_lk_jwt(intruder_id)}"},
+    )
+
+    assert listed.status_code == HTTPStatus.FORBIDDEN, listed.text
+
+
 @pytest.fixture
 async def owned_engineering_attempt(service_client, owned_project) -> str:
     run_id = f"engineering-{uuid.uuid4().hex[:8]}"

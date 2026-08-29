@@ -5,12 +5,14 @@ Phase 4 addition for infrastructure capability.
 """
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import PortAllocation, User
+from shared.models import PortAllocation
 
 from ..database import get_async_session
+from ..dependencies import _optional_bearer_scheme, is_internal_service, resolve_actor
 from ..schemas import PortAllocationRead
 
 router = APIRouter(prefix="/allocations", tags=["allocations"])
@@ -18,23 +20,21 @@ router = APIRouter(prefix="/allocations", tags=["allocations"])
 
 async def _require_admin_if_user(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
     db: AsyncSession = Depends(get_async_session),
 ) -> None:
-    """Require admin if X-Telegram-ID header is provided."""
-    if x_telegram_id is None:
+    """Allow a service, or require the resolved user actor to be an admin."""
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+    )
+    if actor is None:
         return
 
-    query = select(User).where(User.telegram_id == x_telegram_id)
-    result = await db.execute(query)
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with telegram_id {x_telegram_id} not found",
-        )
-
-    if not user.is_admin:
+    if not actor.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required for allocation management",
