@@ -1,4 +1,4 @@
-"""The record that the owner of a story is owed a message, written before they are.
+"""The record that the owner of a story is owed a message.
 
 A terminal story outcome — finished, or stopped for a human — is decided by the
 supervisor and told to the owner through `po:input`. The transition is committed
@@ -8,22 +8,16 @@ front of it, fails transiently, the story has already left the status the
 supervisor scans and no tick ever looks at it again. The owner's product is
 finished and nobody tells them, forever.
 
-So the message is not inferred from a successful publish. It is written down
-*before* the transition, on the run the outcome came from — the same place the
-deploy already leaves its `qa_handoff` plan and the QA run its `qa_ssh_grant` —
-and from that moment the record owns the delivery. `OWED` means "the owner has
-not been told and must be"; only a publish that returned moves it to
-`DELIVERED`. Anything else stays for the sweep, which retries a bounded number
-of times and then alerts an administrator with the identifiers.
+So the message is not inferred from a successful publish. A `story_completed`
+record is committed on the Story with `COMPLETED`; other terminal notices are
+written before their transition on the Run that produced them. From that moment
+the record owns delivery. `OWED` means "the owner has not been told and must
+be"; only a publish that returned moves it to `DELIVERED`.
 
-Written first, the record cannot be evidence that the transition happened, and
-that is the other half of the gap: a record committed on a run whose story
-transition never committed would otherwise let a later tick tell the owner their
-product is finished while the story is still being worked on. So the record
-carries the `terminal_status` the intended transition produces, and nothing is
-published until the story is read and found in it. That check is what makes both
-halves safe with one rule: a transition whose *response* was lost still leaves
-the story terminal, so its message is delivered.
+The record carries the `terminal_status` the transition produces, and nothing is
+published until the story is read and found in it. This protects run-backed
+records whose transition failed and lets a completion whose response was lost
+deliver safely from its committed Story record.
 
 Three endings are not retries and must not look like one. `UNADDRESSABLE` is a
 recipient that resolved to no Telegram chat: a refusal that is logged and
@@ -48,12 +42,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.vocab import OwnerNotificationEvent
 
-#: run_metadata key the record lives under, alongside `qa_handoff`.
+#: JSON key for run-backed terminal notices; completed-story notices live on Story.
 OWNER_NOTIFICATION_KEY = "owner_notification"
 
 
 class OwnerNotificationState(StrEnum):
-    """What is known about the message this run's story owes its owner."""
+    """What is known about the message this story owes its owner."""
 
     #: Written before the terminal transition. The owner has not been told.
     OWED = "owed"

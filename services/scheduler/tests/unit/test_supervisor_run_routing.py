@@ -27,6 +27,7 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionRead,
     EngineeringBudgetReservationState,
 )
+from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
 from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
@@ -127,6 +128,15 @@ def api_client():
     # back and found in the status the transition put it in, so the double
     # answers that read the way the API would after the escalation committed.
     client.get_story.return_value = _make_story(id="story-1", status="waiting_human_review")
+    client.get_story_owner_notification.return_value = OwnerNotification(
+        event="story_completed",
+        text="Tell the user the good news and give them the address: https://example.com",
+        story_id="story-1",
+        project_id="00000000-0000-0000-0000-000000000001",
+        terminal_status=StoryStatus.COMPLETED,
+        state=OwnerNotificationState.OWED,
+        owed_at=datetime.now(UTC),
+    )
     client.start_paid_run.return_value = PaidRunStartRead(
         admission=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED), run_id="qa-test"
     )

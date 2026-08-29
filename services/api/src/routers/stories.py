@@ -9,20 +9,30 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.owner_notification import (
+    OwnerNotification,
+    OwnerNotificationState,
+)
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import (
     VALID_TRANSITIONS,
     StoryStatus,
 )
 from shared.contracts.queues.architect import ArchitectMessage
+from shared.contracts.queues.qa import QAOutcome
+from shared.contracts.vocab import OwnerNotificationEvent
+from shared.models.run import Run
 from shared.models.story import Story
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
-from ..dependencies import get_redis_client
+from ..dependencies import get_redis_client, require_internal_or_admin
 from ..schemas.actions import AdminAction
 from ..schemas.story import (
     StoryCreate,
+    StoryOwnerNotificationRead,
     StoryRead,
     StoryReopen,
     StoryTransition,
@@ -33,6 +43,12 @@ from ._recipients import resolve_project_chat_id
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/stories", tags=["stories"])
+
+_DEFAULT_COMPLETION_NOTIFICATION_TEXT = (
+    "The story is finished. Tell the user the good news that their product is ready."
+)
+
+OWNER_NOTIFICATION_PAGE_MAX = 500
 
 
 def _generate_id() -> str:
@@ -173,6 +189,60 @@ async def list_stories(
     return [StoryRead.model_validate(s, from_attributes=True) for s in items]
 
 
+@router.get("/owner-notifications/owed", response_model=list[StoryOwnerNotificationRead])
+async def list_stories_owing_owner_notification(
+    limit: int = Query(100, ge=1, le=OWNER_NOTIFICATION_PAGE_MAX),
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> list[StoryOwnerNotificationRead]:
+    """Completed stories whose durable completion message is still owed."""
+    notification = Story.owner_notification
+    state = Story.owner_notification[("state")].as_string()
+    query = (
+        select(Story)
+        .where(notification.is_not(None), state == OwnerNotificationState.OWED.value)
+        .order_by(Story.created_at.asc(), Story.id.asc())
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    return [
+        StoryOwnerNotificationRead(
+            id=story.id,
+            owner_notification=OwnerNotification.model_validate(story.owner_notification),
+        )
+        for story in result.scalars().all()
+    ]
+
+
+@router.get("/{story_id}/owner-notification", response_model=OwnerNotification)
+async def get_story_owner_notification(
+    story_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> OwnerNotification:
+    """Read the completion record the completion transaction created."""
+    story = await _get_story(story_id, db)
+    if story.owner_notification is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Owner notification not found"
+        )
+    return OwnerNotification.model_validate(story.owner_notification)
+
+
+@router.patch("/{story_id}/owner-notification", response_model=OwnerNotification)
+async def update_story_owner_notification(
+    story_id: str,
+    notification: OwnerNotification,
+    db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(require_internal_or_admin),
+) -> OwnerNotification:
+    """Settle the story-backed completion notification after one delivery attempt."""
+    story = await _get_story(story_id, db)
+    story.owner_notification = notification.model_dump(mode="json")
+    await db.commit()
+    return notification
+
+
 @router.get("/{story_id}", response_model=StoryRead)
 async def get_story(
     story_id: str,
@@ -207,6 +277,54 @@ async def update_story(
 def _do_transition(story: Story, to_status: StoryStatus) -> None:
     _validate_transition(story.status, to_status.value)
     story.status = to_status.value
+
+
+async def _completion_notification_text(story: Story, db: AsyncSession) -> str:
+    """Keep the QA address that was actually verified, when there is one."""
+    query = (
+        select(Run)
+        .where(
+            Run.story_id == story.id,
+            Run.type == RunType.QA.value,
+            Run.status == RunStatus.COMPLETED.value,
+        )
+        .order_by(Run.completed_at.desc(), Run.id.desc())
+        .limit(1)
+    )
+    run = (await db.execute(query)).scalars().first()
+    if (
+        run is None
+        or not isinstance(run.result, dict)
+        or run.result.get("qa_outcome") != QAOutcome.PASSED
+    ):
+        return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+
+    try:
+        qa_message = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY]).qa_message
+    except (KeyError, TypeError, ValueError):
+        logger.warning("story_completion_has_no_qa_address", story_id=story.id, run_id=run.id)
+        return _DEFAULT_COMPLETION_NOTIFICATION_TEXT
+
+    address = qa_message.deployed_url
+    if qa_message.bot_username:
+        address = f"{address} (Telegram bot @{qa_message.bot_username})"
+    return (
+        "The story is finished: it is deployed and QA passed. Tell the user the good "
+        f"news and give them the address: {address}"
+    )
+
+
+async def _owe_completed_story_notification(story: Story, db: AsyncSession) -> None:
+    """Attach the completion obligation to the story in its transition transaction."""
+    story.owner_notification = OwnerNotification(
+        event=OwnerNotificationEvent.STORY_COMPLETED,
+        text=await _completion_notification_text(story, db),
+        story_id=story.id,
+        project_id=str(story.project_id),
+        terminal_status=StoryStatus.COMPLETED,
+        state=OwnerNotificationState.OWED,
+        owed_at=datetime.now(UTC),
+    ).model_dump(mode="json")
 
 
 @router.post("/{story_id}/human-review", response_model=StoryRead)
@@ -282,6 +400,7 @@ async def complete_story(
     body = body or StoryTransition()
     story = await _get_story(story_id, db)
 
+    await _owe_completed_story_notification(story, db)
     _do_transition(story, StoryStatus.COMPLETED)
     await db.commit()
     await db.refresh(story)

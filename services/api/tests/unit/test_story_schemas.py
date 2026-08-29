@@ -73,6 +73,7 @@ class TestStoryRead:
         mock.type = "technical"
         mock.user_report = None
         mock.quarantine_reason = None
+        mock.owner_notification = None
         mock.created_at = now
         mock.updated_at = now
 
@@ -103,6 +104,7 @@ class TestStoryRead:
         mock.type = "product"
         mock.user_report = "Images still broken on mobile"
         mock.quarantine_reason = None
+        mock.owner_notification = None
         mock.created_at = now
         mock.updated_at = now
 

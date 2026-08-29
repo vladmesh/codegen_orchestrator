@@ -9,6 +9,9 @@ from httpx import ASGITransport, AsyncClient
 from internal_caller import INTERNAL_HEADERS
 import pytest
 
+from shared.contracts.dto.owner_notification import OwnerNotificationState
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
+from shared.contracts.queues.qa import QAMessage
 from src.database import get_async_session
 from src.main import app
 
@@ -29,6 +32,7 @@ def _make_story(**overrides):
         "created_by": "system",
         "user_report": None,
         "quarantine_reason": None,
+        "owner_notification": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -366,6 +370,69 @@ async def test_complete_story():
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert story.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_complete_story_owes_a_story_backed_notification_in_the_same_commit():
+    story = _make_story(id="story-abc", status="in_progress")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/complete")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "completed"
+    record = story.owner_notification
+    assert record["event"] == "story_completed"
+    assert record["story_id"] == "story-abc"
+    assert record["terminal_status"] == "completed"
+    assert record["state"] == OwnerNotificationState.OWED.value
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_complete_story_keeps_the_address_verified_by_qa():
+    story = _make_story(id="story-abc", status="testing")
+    qa_run = MagicMock(
+        id="qa-abc",
+        result={"qa_outcome": "passed"},
+        run_metadata={
+            QA_HANDOFF_KEY: QAHandoffPlan(
+                qa_message=QAMessage(
+                    story_id="story-abc",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    initiating_run_id="deploy-abc",
+                    telegram_chat_id="1",
+                    deployed_url="https://verified.example.com",
+                    application_id=42,
+                    acceptance_criteria="works",
+                    bot_username="verified_bot",
+                    run_id="qa-abc",
+                )
+            ).model_dump(mode="json")
+        },
+    )
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = story
+    qa_result = MagicMock()
+    qa_result.scalars.return_value.first.return_value = qa_run
+    session = _mock_session()
+    session.execute.side_effect = [story_result, qa_result]
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=INTERNAL_HEADERS
+    ) as client:
+        resp = await client.post("/api/stories/story-abc/complete")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert "https://verified.example.com" in story.owner_notification["text"]
+    assert "@verified_bot" in story.owner_notification["text"]
 
 
 @pytest.mark.asyncio

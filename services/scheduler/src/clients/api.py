@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
 from shared.clients.internal_api import InternalAPIClient
 from shared.contracts.dto.application import ApplicationDTO
@@ -18,6 +19,7 @@ from shared.contracts.dto.engineering_budget_policy import (
     EngineeringBudgetAdmissionRead,
 )
 from shared.contracts.dto.incident import IncidentDTO
+from shared.contracts.dto.owner_notification import OwnerNotification
 from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunDTO
@@ -34,6 +36,13 @@ from shared.contracts.dto.temporary_access import (
 from shared.contracts.dto.user import UserDTO
 from shared.contracts.dto.work_admission import PaidRunStartCommand, PaidRunStartRead
 from src.config import get_settings
+
+
+class StoryOwnerNotificationRead(BaseModel):
+    """Internal recovery view of a story-backed completion notification."""
+
+    id: str
+    owner_notification: OwnerNotification
 
 
 class SchedulerAPIClient(InternalAPIClient):
@@ -188,6 +197,24 @@ class SchedulerAPIClient(InternalAPIClient):
         """
         resp = await self.request("GET", "runs/owner-notifications/owed", params={"limit": limit})
         return [RunDTO.model_validate(row) for row in resp.json()]
+
+    async def list_stories_owing_owner_notification(
+        self, *, limit: int
+    ) -> list[StoryOwnerNotificationRead]:
+        """One page of completed stories whose completion message is still owed."""
+        resp = await self.request(
+            "GET", "stories/owner-notifications/owed", params={"limit": limit}
+        )
+        return [StoryOwnerNotificationRead.model_validate(row) for row in resp.json()]
+
+    async def get_story_owner_notification(self, story_id: str) -> OwnerNotification:
+        """Read the completion record written by the story transition transaction."""
+        resp = await self.request("GET", f"stories/{story_id}/owner-notification")
+        return OwnerNotification.model_validate(resp.json())
+
+    async def update_story_owner_notification(self, story_id: str, notification: dict) -> None:
+        """Persist one delivery attempt against a story-backed completion record."""
+        await self.request("PATCH", f"stories/{story_id}/owner-notification", json=notification)
 
     async def list_bot_rollout_runs(self, *, limit: int) -> list[RunDTO]:
         """One page of bot-audience rollouts whose publish or notify is unsettled."""

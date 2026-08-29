@@ -1655,16 +1655,18 @@ failure that lands on the run rather than in a log line.
 
 `shared/contracts/dto/owner_notification.py`. **The invariant: a terminal story transition cannot be
 observed without the owner's message being either already published to `po:input` or durably owed.**
-The record lives in `run_metadata` under `owner_notification`, on the run that produced the outcome
-— the QA run for the story's own endings, the engineering run for the impossible-capacity task
-notice — and is written **before** the transition is committed, for the same reason the SSH grant
-above is written before the key is installed: publishing after the commit has a gap, and committing
-is exactly what takes the subject out of the status whose scan would otherwise come back to it. For
-the three endings owed inside `supervise_testing_stories` that status is `TESTING`; the other two
-paths leave the statuses their own loops scan. The endings are not one ending — the five paths
-produce different terminal statuses, which is why the record carries the `terminal_status` it
-expects instead of assuming one — but the gap has the same shape in all of them, and a publish lost
-in it used to be lost permanently.
+For `story_completed`, the record lives on `stories.owner_notification`, a nullable JSON column. The
+`POST /api/stories/{id}/complete` transaction writes its `OWED` record and the `COMPLETED` status
+together, so every valid completion route, including an operator's bare request, leaves durable
+delivery work. Existing completed stories retain `NULL`; the migration neither creates historical
+notifications nor changes their lifecycle. Other terminal notices remain on the run that produced
+them in `run_metadata.owner_notification`.
+
+The completion endpoint uses the newest completed QA run for this story only when its typed result
+is `passed`; its stored QA handoff provides the deployed URL and optional bot username. This keeps
+the address QA actually verified while leaving a direct completion with no passed QA run a valid
+obligation, with a general PO instruction. In both cases the stored text remains an instruction for
+the PO agent, not user-facing wording.
 
 `OwnerNotification` carries the `POSystemEvent` name PO routes on, the text to publish, the story,
 the project, the `terminal_status` the intended transition produces, an optional `task_id`, `state`,
@@ -1672,9 +1674,9 @@ the project, the `terminal_status` the intended transition produces, an optional
 publishes what the tick that owed it decided; the recipient is *not* stored, because resolving it is
 one of the two things that can fail transiently and must be retried.
 
-**Nothing is published until the story proves the transition committed.** The record is written
-first, so it cannot be evidence of its own transition: the transition is a separate request and can
-fail after the record is durable. Delivery therefore reads the story and publishes only if it is in
+**Nothing is published until the story proves the transition committed.** A run-backed record is
+written before its separate transition; a completion record is committed atomically with its
+transition. Delivery still reads the story and publishes only if it is in
 the record's `terminal_status` — recorded rather than inferred, so the check is the ending that was
 intended and not "any status but the one it started from". Without it this record would trade a lost
 message for a false one, and a false "your product is finished" is worse than a missing one: the
@@ -1683,8 +1685,8 @@ transition that committed and lost its response leaves the story terminal, so it
 Reading the story is itself an API call, so a failed *read* is treated as the transient failure it
 is, not as proof that the transition is missing.
 
-`services/scheduler/src/tasks/owner_notifications.py` is the only seam. All three terminal paths in
-`supervise_testing_stories` reach it — QA passed (`story_completed`), an unverifiable application
+`services/scheduler/src/tasks/owner_notifications.py` is the only seam. QA passed reaches it through
+the story record created by `complete_story`; an unverifiable application
 quarantined (`story_quarantined`), and QA fix attempts exhausted (`story_quarantined`) — and so do
 the supervisor's other two terminal owner notifications, whose publishes both previously sat behind
 a swallowed exception: `_escalate_refused_deploy` with `tell_owner` (`story_impossible_capacity`),
@@ -1732,13 +1734,12 @@ a delivery that failed — and the obligation is written again from scratch, wit
 budget, when routing does reach that ending. Only `owe_owner_notification` may replace a record, and
 only a voided one; the other three endings stop the message for good.
 
-`supervise_owed_owner_notifications` is the recovery pass, and it reads its work from
-`GET /api/runs/owner-notifications/owed` (internal/admin): every run whose `owner_notification.state`
-is `owed`, ordered `(created_at, id)` ascending, bounded by `limit`. Age is not a selection key, so
-a story finished during an outage is still served afterwards; no cursor is needed, unlike the grant
-selection, because every visit either delivers the record or spends one of its bounded attempts, so
-nothing can sit at the head of the page indefinitely. A selected record that does not parse raises
-rather than being skipped — unreadable is not delivered, and this module is its only writer.
+`supervise_owed_owner_notifications` is the recovery pass. It reads legacy run-backed work from
+`GET /api/runs/owner-notifications/owed` and completion work from
+`GET /api/stories/owner-notifications/owed` (both internal/admin), each ordered `(created_at, id)`
+ascending and bounded by `limit`. Age is not a selection key, so a story finished during an outage is
+still served afterwards; no cursor is needed because every visit either delivers the record or spends
+one of its bounded attempts. A selected record that does not parse raises rather than being skipped.
 
 The pass runs **before** story routing in the dispatcher cycle, so a record owed by this tick's
 routing gets exactly the one in-tick attempt routing makes; the other order would spend a second
