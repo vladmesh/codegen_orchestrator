@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -32,7 +33,7 @@ def _import_scheduler_health_checker(
     }
     return subprocess.run(
         [
-            "python3",
+            sys.executable,
             "-c",
             (
                 "from src.tasks.health_checker import HEALTH_CHECK_INTERVAL; "
