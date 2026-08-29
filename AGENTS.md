@@ -39,6 +39,12 @@ Red → Green → Refactor. No exceptions.
 3. **Green**: the minimal code to make the test pass
 4. **Gate**: `make test-unit` + `make lint`, plus a CHANGELOG entry.
 
+**Broad check under Secretary (one canonical form):**
+`python3 -m secretary check broad --reuse --module shared` — the same suite as `make test-unit`
+(`python -m shared` runs the tree's `scripts/test-unit-local.sh`, fixture env included). Run it once,
+after the last edit, and quote `check show --module shared`; do not wrap `make test-unit` in
+`--command`, that receipt is never reusable, and do not substitute a narrower `--module pytest ...`.
+
 **Review Trigger**: a change to `shared/contracts/` or the DB schema that is not described in the plan → **STOP**, ask the user.
 
 ## Rules

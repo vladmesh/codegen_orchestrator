@@ -4,6 +4,13 @@
 
 ### Added
 
+- `python -m shared` is the canonical broad unit suite entry point: it runs the
+  tree's own `scripts/test-unit-local.sh` (same `ALL_SUITES`, same fixture env)
+  with the running interpreter's venv first on PATH. Secretary workers use
+  `check broad --reuse --module shared`, whose receipt records in-tree import
+  provenance and is reused on unchanged content; the shell-wrapped
+  `make test-unit` receipt never was.
+
 - Stand e2e now invokes the selected suite through `scripts/stand_run.py` on
   the dynamic orchestrator, retaining deterministic JUnit alongside its TSV and
   logs. A fresh exact-tag cleanup runner records deletion selection, final
