@@ -4,6 +4,12 @@
 
 ### Added
 
+- Custom Telegram bot audiences now retain the verified sender alongside any
+  dictated IDs, and private audiences retain the project owner unless the
+  persisted `allow_ownerless_audience` opt-out is set by an internal service
+  acting for itself. The PO confirms one structured audience/language/
+  must-requirements summary before it creates a story.
+
 - Operators can recheck a typed, repaired QA infrastructure blocker from a `waiting_human_review`
   story. The audited action derives its actor from the credential, retains its basis and prior
   quarantine evidence, and is idempotent within the current quarantine episode: a queued or running

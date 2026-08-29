@@ -15,7 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import Project
+from shared.models import Project, User
 
 from ..dependencies import resolve_actor
 
@@ -27,7 +27,7 @@ async def check_project_access(
     *,
     is_internal: bool = False,
     credentials: HTTPAuthorizationCredentials | None,
-) -> None:
+) -> User | None:
     """Check if the request may reach this project. Raises 401/403/404 if denied.
 
     Who is acting is `resolve_actor`'s decision, not this function's: a service
@@ -42,11 +42,12 @@ async def check_project_access(
     )
 
     if actor is None or actor.is_admin:
-        return
+        return actor
 
     # Regular user: must be owner; unowned projects are admin-only
     if project.owner_id != actor.id:
         raise HTTPException(status_code=403, detail="Access denied: not project owner")
+    return actor
 
 
 async def load_locked_project(db: AsyncSession, project_id: uuid.UUID) -> Project:

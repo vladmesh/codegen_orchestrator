@@ -31,6 +31,21 @@ single actor resolver, so a client-supplied Telegram header cannot replace a bea
 principal. Project ownership/admission and allocation administration use that same
 principal decision, never a header-only user lookup.
 
+### Telegram bot audiences
+
+The API, not the PO prompt, enforces the private-bot audience boundary. On a
+`custom` selection the verified request caller's Telegram ID is added to every
+dictated ID, so text parsed from a conversation cannot substitute for the
+person asking. Project ownership is created from that same verified caller.
+
+A private audience must include the project owner's Telegram ID. The sole
+escape hatch is the persisted `allow_ownerless_audience` flag, which only an
+authenticated internal service acting for itself may set when a bot is
+intentionally built for someone else. It is explicit rather than inferred:
+natural-language omissions and malformed lists are not evidence that a paying
+owner should lose access. Public bots have no private audience and do not use
+the flag.
+
 ### Engineering-attempt ledger
 
 `engineering_attempt_ledger` is the append-only accounting record for one terminal

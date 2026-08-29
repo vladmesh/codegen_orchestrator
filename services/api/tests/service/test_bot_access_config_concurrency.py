@@ -46,21 +46,24 @@ async def test_bot_access_endpoint_records_each_contract_audience(
     )
     assert created.status_code == status.HTTP_201_CREATED
 
+    requested_audience = str(telegram_id) if mode == "only_me" else audience
+    expected_audience = f"{audience},{telegram_id}" if mode == "custom" else requested_audience
     response = await async_client.post(
         f"/api/projects/{project_id}/config/bot-access",
-        json={"mode": mode, "allowed_telegram_ids": audience},
+        json={"mode": mode, "allowed_telegram_ids": requested_audience},
+        headers={"X-Telegram-ID": str(telegram_id)},
     )
 
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["mode"] == mode
-    assert response.json()["allowed_telegram_ids"] == audience
+    assert response.json()["allowed_telegram_ids"] == expected_audience
     assert response.json()["rollout"] == "not_deployed"
     project = await async_client.get(f"/api/projects/{project_id}")
     assert project.status_code == status.HTTP_200_OK
     assert project.json()["config"] == {
         "agent_type": "claude",
-        "bot_access": {"mode": mode, "allowed_telegram_ids": audience},
-        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": audience},
+        "bot_access": {"mode": mode, "allowed_telegram_ids": expected_audience},
+        "env_overrides": {"TG_BOT_ALLOWED_TELEGRAM_IDS": expected_audience},
     }
 
 
@@ -145,17 +148,20 @@ async def test_bot_access_selection_replaces_legacy_admin_secret(
     project.config = {"secrets": encrypt_dict({"ADMIN_TELEGRAM_ID": "42", "OTHER": "value"})}
     await db_session.commit()
 
+    requested_audience = str(telegram_id) if mode == "only_me" else audience
+    expected_audience = f"{audience},{telegram_id}" if mode == "custom" else requested_audience
     response = await async_client.post(
         f"/api/projects/{project_id}/config/bot-access",
-        json={"mode": mode, "allowed_telegram_ids": audience},
+        json={"mode": mode, "allowed_telegram_ids": requested_audience},
+        headers={"X-Telegram-ID": str(telegram_id)},
     )
 
     assert response.status_code == status.HTTP_200_OK
     project = await async_client.get(f"/api/projects/{project_id}")
     assert project.status_code == status.HTTP_200_OK
     config = project.json()["config"]
-    assert config["bot_access"] == {"mode": mode, "allowed_telegram_ids": audience}
-    assert config["env_overrides"] == {"TG_BOT_ALLOWED_TELEGRAM_IDS": audience}
+    assert config["bot_access"] == {"mode": mode, "allowed_telegram_ids": expected_audience}
+    assert config["env_overrides"] == {"TG_BOT_ALLOWED_TELEGRAM_IDS": expected_audience}
     assert "ADMIN_TELEGRAM_ID" not in config["secrets"]
 
 

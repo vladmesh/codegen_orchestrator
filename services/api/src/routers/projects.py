@@ -76,6 +76,7 @@ from ..utils.telegram_binding import TELEGRAM_TOKEN_KEY, TELEGRAM_USERNAME_KEY, 
 from ..utils.telegram_token import bot_liveness, looks_like_bot_token, validate_telegram_token
 from ..work_admission import admit_project_creation
 from ._bot_access import (
+    AudienceSelection,
     mutate_bot_audience,
     owe_rollout_notification,
     rollout_status,
@@ -669,8 +670,11 @@ async def set_bot_access(
         is_internal=_is_internal,
         credentials=credentials,
         operation=AudienceOperation.SET,
-        set_mode=body.mode,
-        set_audience=body.allowed_telegram_ids,
+        selection=AudienceSelection(
+            mode=body.mode,
+            audience=body.allowed_telegram_ids,
+            allow_ownerless_audience=body.allow_ownerless_audience,
+        ),
     )
     return {
         "mode": outcome.mode,

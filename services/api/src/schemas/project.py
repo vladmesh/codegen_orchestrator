@@ -61,6 +61,10 @@ class BotAccessRequest(BaseModel):
 
     mode: str
     allowed_telegram_ids: str = ""
+    # A private bot normally includes the project owner. This escape hatch is
+    # deliberately accepted only from an internal service acting for itself;
+    # the route enforces that authorization because the schema has no caller.
+    allow_ownerless_audience: bool = False
 
     @model_validator(mode="after")
     def _private_audience_is_not_empty(self) -> "BotAccessRequest":
@@ -70,6 +74,8 @@ class BotAccessRequest(BaseModel):
             raise ValueError("a private bot audience must contain a Telegram ID")
         if self.mode == "public" and self.allowed_telegram_ids != "":
             raise ValueError("a public bot audience must be empty")
+        if self.mode == "public" and self.allow_ownerless_audience:
+            raise ValueError("a public bot does not need allow_ownerless_audience")
         return self
 
 

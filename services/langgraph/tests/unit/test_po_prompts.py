@@ -94,6 +94,14 @@ class TestSystemPrompt:
         assert "story" in SYSTEM_PROMPT.lower()
         assert "create_story" in SYSTEM_PROMPT
 
+    def test_sends_one_confirmation_summary_before_creating_a_story(self):
+        """A project brief is confirmed once, rather than interrogated piecemeal."""
+        assert "exactly one structured summary" in SYSTEM_PROMPT
+        assert "audience (including your Telegram ID)" in SYSTEM_PROMPT
+        assert "languages" in SYSTEM_PROMPT
+        assert "must-requirements" in SYSTEM_PROMPT
+        assert "yes / correct me" in SYSTEM_PROMPT
+
     def test_offers_both_ways_out_of_an_own_token_conflict(self):
         """Without this, the agent asks for another token the user does not have."""
         assert "teardown_project" in SYSTEM_PROMPT

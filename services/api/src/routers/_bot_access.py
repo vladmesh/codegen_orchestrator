@@ -27,7 +27,7 @@ from shared.contracts.bot_rollout import (
     rollout_status_for_run,
 )
 from shared.crypto import decrypt_dict, encrypt_dict
-from shared.models import Run
+from shared.models import Run, User
 from shared.queues import DEPLOY_QUEUE
 from shared.redis.client import RedisStreamClient
 
@@ -35,11 +35,16 @@ from ..utils.bot_audience import (
     LEGACY_BOT_AUDIENCE_KEY,
     AudienceOperation,
     IdempotentOutcome,
+    add_to_audience,
     apply_audience_mutation,
+    custom_audience_requires_verified_caller_detail,
     find_live_rollout_target,
     find_publish_owed_run,
     find_running_without_recorded_sha,
     no_private_audience_detail,
+    owner_missing_from_audience_detail,
+    ownerless_audience_requires_internal_detail,
+    parse_allowed_telegram_ids,
     resolve_updated_audience,
     stage_config_rollout,
     stored_audience,
@@ -70,6 +75,15 @@ class MutationOutcome:
     rollout_run_id: str | None = None
 
 
+@dataclass(frozen=True)
+class AudienceSelection:
+    """The complete request to replace a bot audience."""
+
+    mode: str
+    audience: str
+    allow_ownerless_audience: bool = False
+
+
 def _idempotent_outcome(operation: AudienceOperation) -> IdempotentOutcome:
     if operation is AudienceOperation.ADD:
         return IdempotentOutcome.ALREADY_PRESENT
@@ -78,14 +92,39 @@ def _idempotent_outcome(operation: AudienceOperation) -> IdempotentOutcome:
     return IdempotentOutcome.ALREADY_SET
 
 
-def apply_set_mutation(config: dict, *, mode: str, audience: str) -> dict:
+def apply_set_mutation(
+    config: dict, *, mode: str, audience: str, allow_ownerless_audience: bool
+) -> dict:
     """Rewrite both contract locations for a whole-audience selection."""
     new_config = dict(config)
     overrides = dict(new_config.get("env_overrides") or {})
     overrides["TG_BOT_ALLOWED_TELEGRAM_IDS"] = audience
     new_config["env_overrides"] = overrides
-    new_config["bot_access"] = {"mode": mode, "allowed_telegram_ids": audience}
+    access = {"mode": mode, "allowed_telegram_ids": audience}
+    if allow_ownerless_audience:
+        access["allow_ownerless_audience"] = True
+    new_config["bot_access"] = access
     return new_config
+
+
+async def _project_owner_telegram_id(db: AsyncSession, owner_id: int) -> int:
+    telegram_id = await db.scalar(select(User.telegram_id).where(User.id == owner_id))
+    if telegram_id is None:
+        raise HTTPException(status_code=422, detail="project owner has no Telegram ID")
+    return telegram_id
+
+
+async def _ensure_owner_is_in_private_audience(
+    db: AsyncSession, *, owner_id: int, audience: str, allow_ownerless_audience: bool
+) -> None:
+    if allow_ownerless_audience:
+        return
+    owner_telegram_id = await _project_owner_telegram_id(db, owner_id)
+    if owner_telegram_id not in parse_allowed_telegram_ids(audience):
+        raise HTTPException(
+            status_code=422,
+            detail=owner_missing_from_audience_detail(),
+        )
 
 
 def drop_legacy_secret(config: dict) -> bool:
@@ -142,8 +181,7 @@ async def mutate_bot_audience(
     credentials: HTTPAuthorizationCredentials | None,
     operation: AudienceOperation,
     telegram_id: int | None = None,
-    set_mode: str | None = None,
-    set_audience: str | None = None,
+    selection: AudienceSelection | None = None,
 ) -> tuple[MutationOutcome, StagedPublish | None]:
     """Apply one audience mutation under the project row lock.
 
@@ -166,7 +204,7 @@ async def mutate_bot_audience(
     live to roll out).
     """
     project = await load_locked_project(db, project_id)
-    await check_project_access(
+    actor = await check_project_access(
         project,
         x_telegram_id,
         db,
@@ -181,18 +219,53 @@ async def mutate_bot_audience(
         # set_bot_access owns validation of the mode/audience pair; this path
         # carries the literal in, records the selection, and migrates away a
         # legacy private secret exactly as it always did.
-        assert set_mode is not None and set_audience is not None
-        new_config = apply_set_mutation(config, mode=set_mode, audience=set_audience)
+        assert selection is not None
+        mode = selection.mode
+        audience = selection.audience
+        if mode == "custom":
+            if actor is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=custom_audience_requires_verified_caller_detail(),
+                )
+            audience = add_to_audience(audience, actor.telegram_id)
+        # `resolve_actor` returns None only for an authenticated internal
+        # service acting for itself. A named user, including one named under an
+        # internal key, returns that user and cannot take this escape hatch.
+        if selection.allow_ownerless_audience and actor is not None:
+            raise HTTPException(
+                status_code=403,
+                detail=ownerless_audience_requires_internal_detail(),
+            )
+        if mode != "public":
+            await _ensure_owner_is_in_private_audience(
+                db,
+                owner_id=project.owner_id,
+                audience=audience,
+                allow_ownerless_audience=selection.allow_ownerless_audience,
+            )
+        new_config = apply_set_mutation(
+            config,
+            mode=mode,
+            audience=audience,
+            allow_ownerless_audience=selection.allow_ownerless_audience,
+        )
         changed = new_config["bot_access"] != access
         legacy_dropped = drop_legacy_secret(new_config)
         changed = changed or legacy_dropped
-        updated = set_audience
+        updated = audience
     else:
         stored = stored_audience(config)
         if stored is None:
             raise HTTPException(status_code=422, detail=no_private_audience_detail(config))
         assert telegram_id is not None
         updated = resolve_updated_audience(stored, telegram_id, operation)
+        await _ensure_owner_is_in_private_audience(
+            db,
+            owner_id=project.owner_id,
+            audience=updated,
+            allow_ownerless_audience=bool((access or {}).get("allow_ownerless_audience")),
+        )
         changed = updated != stored
         legacy_dropped = False
         new_config = apply_audience_mutation(config, updated=updated) if changed else config
@@ -254,8 +327,9 @@ async def mutate_bot_audience(
         await redis.publish_message(DEPLOY_QUEUE, staged_publish.message)
         await mark_rollout_published(db, staged_publish.run_id)
 
+    result_mode = new_config.get("bot_access", {}).get("mode", "")
     if legacy_dropped:
-        logger.info("legacy_bot_access_replaced", project_id=str(project_id), mode=set_mode)
+        logger.info("legacy_bot_access_replaced", project_id=str(project_id), mode=result_mode)
 
     logger.info(
         "project_bot_audience_mutated",
@@ -263,7 +337,7 @@ async def mutate_bot_audience(
         operation=operation.value,
         telegram_id=telegram_id,
         audience=updated,
-        mode=set_mode,
+        mode=result_mode,
         rollout="pending" if staged_publish else "not_deployed",
         rollout_run_id=staged_publish.run_id if staged_publish else None,
     )

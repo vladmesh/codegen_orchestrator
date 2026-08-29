@@ -66,6 +66,8 @@ class _ScriptedSession:
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
         self.refresh = AsyncMock()
+        # All mocked private audiences include this project's owner.
+        self.scalar = AsyncMock(return_value=42)
 
     def _empty(self):
         result = MagicMock()
@@ -581,7 +583,7 @@ class TestSetBotAccessIdempotent:
                 with patch_recipient("111"):
                     resp = await c.post(
                         f"/api/projects/{PROJECT_UUID}/config/bot-access",
-                        json={"mode": "custom", "allowed_telegram_ids": "42,84"},
+                        json={"mode": "only_me", "allowed_telegram_ids": "42,84"},
                         headers={"X-Internal-Key": "test-internal-key"},
                     )
         finally:
@@ -589,7 +591,7 @@ class TestSetBotAccessIdempotent:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["mode"] == "custom"
+        assert body["mode"] == "only_me"
         assert body["allowed_telegram_ids"] == "42,84"
         # Nothing running: the write lands but there is nothing to roll out.
         assert body["rollout"] == "not_deployed"
