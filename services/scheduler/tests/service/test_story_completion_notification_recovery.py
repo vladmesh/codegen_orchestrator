@@ -205,8 +205,6 @@ async def test_bearer_admin_acceptance_is_recovered_to_po_input(api_client):
         assert (
             await client.post(f"/api/stories/{story_id}/human-review")
         ).status_code == httpx.codes.OK
-        await _record_running_acceptance_target(client, project_id, story_id)
-
         token = jwt.encode(
             {
                 "sub": str(admin_id),
@@ -330,8 +328,6 @@ async def test_admin_console_acceptance_is_recovered_to_po_input(api_client):
         assert (
             await client.post(f"/api/stories/{story_id}/human-review")
         ).status_code == httpx.codes.OK
-        await _record_running_acceptance_target(client, project_id, story_id)
-
         accepted = await client.post(
             f"/api/stories/{story_id}/accept-result",
             json={"basis": "Verified the running deployment manually."},

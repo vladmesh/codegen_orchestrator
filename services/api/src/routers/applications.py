@@ -535,7 +535,6 @@ async def redeploy_application(
     """Redeploy an application. Creates Deployment record, publishes DeployMessage."""
     body = body or AdminAction()
     app, repo = await _get_app_with_repo(application_id, db)
-    await _refuse_quarantined_story_sideways_run(app.id, repo.project_id, db)
     head_sha = await _resolve_admin_deploy_head_sha(repo)
 
     port = app.port_allocations[0].port if app.port_allocations else 0

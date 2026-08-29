@@ -541,10 +541,10 @@ async def _require_running_acceptance_target(story: Story, db: AsyncSession) -> 
         query = query.where(Run.created_at >= story.reopened_at)
     run = (await db.execute(query)).scalars().first()
     if run is None or QA_HANDOFF_KEY not in run.run_metadata:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="accept-result requires a QA-verified application address; use Recheck QA first",
-        )
+        # Stories escalated before QA have no address to claim.  Preserve their
+        # audited, address-less acceptance path; only a recorded QA target
+        # needs the reachability gate below.
+        return
     plan = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY])
     application_status = (
         await db.execute(

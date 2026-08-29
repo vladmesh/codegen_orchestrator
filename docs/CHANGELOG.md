@@ -13,16 +13,17 @@
   if publication fails after commit. A passed recheck clears the quarantine, completes the story through
   the existing notification seam, and preserves QA's verified address even if a later health probe
   briefly marks the application down. Recheck rejects ambiguous multi-application projects and targets
-  still stopping; standalone admin redeploy and E2E actions reject a matching quarantined story.
+  still stopping; standalone E2E rejects a matching quarantined story, while standalone redeploy remains
+  the restore route for a quarantine Recheck QA cannot repair because it cannot produce a green QA verdict.
 
 - Operators can accept a `waiting_human_review` story directly from the admin UI with a required
   basis. The authenticated shared admin-console account or LK bearer administrator, basis,
   acceptance time, and overridden quarantine evidence are stored with the story; `/complete` cannot
   bypass that audit. The obsolete quarantine evidence is cleared, ordinary completion notification
   recovery still delivers through `po:input`, and an address is included only for a currently running
-  application from the current post-reopen work cycle. Acceptance now refuses when that application is
-  not running and directs the operator to Recheck QA, so an owner is never told the product is ready
-  without a reachable address.
+  application from the current post-reopen work cycle. When that handoff exists, acceptance refuses if
+  its application is not running and directs the operator to Recheck QA, so an owner is never told the
+  product is ready without a reachable address; escalations before QA remain explicitly address-less.
 
 - Completing a story now writes its durable `story_completed` PO notification on
   the story in the same transaction. Recovery delivers it through `po:input`

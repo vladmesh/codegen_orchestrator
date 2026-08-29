@@ -1701,19 +1701,24 @@ same story and application provenance, so ordinary supervision alone completes o
 quarantine remains while work is pending and is cleared only by the later passed QA verdict. A passed
 QA verdict carries its verified address even if a later health probe has temporarily marked the
 application non-running; QA passing is live verification. Human acceptance has no green QA verdict,
-so it refuses unless the handoff application is currently `running` and tells the operator to use
-Recheck QA otherwise. This ensures every operator-finished story either has the QA-verified address or
-was accepted only while its address is reachable. Recheck refuses a project with more than one application,
+so, when the current work cycle records a QA handoff, it refuses unless that handoff application is
+currently `running` and tells the operator to use Recheck QA otherwise. A story escalated before QA
+has no address to claim and remains eligible for audited, address-less acceptance. This ensures every
+operator-finished story either has the QA-verified address, was accepted only while its recorded address
+is reachable, or never had an address to disclose. Recheck refuses a project with more than one application,
 because a create/feature deploy cannot otherwise prove that allocation will honour the capability receipt.
 It also refuses a target still `stopping` with an actionable wait-and-retry reason.
 
 The recheck deploy message is persisted with the Run before publication. Once publication succeeds the
 Run is stamped; if the publisher fails after the transaction commits, the deploy supervisor reads that
 stored message from the queued Run, publishes it and records the stamp. The recovery path is therefore
-the normal deploy queue, never a manual status transition. Standalone administrator `redeploy` and
-`run-e2e` refuse an application named by a quarantined story's QA receipt, so they cannot create a
-green QA result alongside a still-parked story. Deploy-side allocation quarantines have no typed QA
-blocker and Recheck QA refuses them explicitly; that separate operator route is not part of this action.
+the normal deploy queue, never a manual status transition. Standalone administrator `run-e2e` refuses
+an application named by a quarantined story's QA receipt, so it cannot create a green QA result alongside
+a still-parked story. Standalone administrator `redeploy` remains available as the restore route for a
+quarantine Recheck QA cannot repair: it cannot create a QA verdict, retains its existing unlinked admin
+Run, and an operator can then use the audited acceptance action once the application is running. Deploy-side
+allocation quarantines have no typed QA blocker and Recheck QA refuses them explicitly; this redeploy route
+is the corresponding operator recovery.
 
 The completion endpoint uses the newest terminal QA run for this story only when its typed result
 is `passed`; a human acceptance may also use the current QA handoff's deploy address after a failed
