@@ -343,6 +343,25 @@ def no_private_audience_detail(config: dict) -> str:
     )
 
 
+def custom_audience_requires_verified_caller_detail() -> str:
+    """Why an internal service cannot choose a custom user audience alone."""
+    return "a custom bot audience requires a verified Telegram caller so their ID can be included"
+
+
+def owner_missing_from_audience_detail() -> str:
+    """Why a private audience cannot quietly remove the project owner."""
+    return (
+        "a private bot audience must include its project owner; an internal service "
+        "may set allow_ownerless_audience only when the bot is intentionally built "
+        "for someone else"
+    )
+
+
+def ownerless_audience_requires_internal_detail() -> str:
+    """Why an ordinary caller cannot opt out of the owner-audience invariant."""
+    return "allow_ownerless_audience is reserved for an internal service acting for itself"
+
+
 def unrecorded_target_detail() -> str:
     """Why a rollout was refused: running but not attributable to a commit."""
     return (
@@ -359,10 +378,13 @@ __all__ = [
     "StagedRollout",
     "apply_audience_mutation",
     "build_config_rollout_message",
+    "custom_audience_requires_verified_caller_detail",
     "find_live_rollout_target",
     "find_publish_owed_run",
     "find_running_without_recorded_sha",
     "no_private_audience_detail",
+    "owner_missing_from_audience_detail",
+    "ownerless_audience_requires_internal_detail",
     "resolve_updated_audience",
     "stage_config_rollout",
     "stored_audience",
