@@ -122,12 +122,21 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [[ "${url}" == *"/token"* ]]; then
-    printf '{"token":"fake-registry-token"}' > "${output}"
-    printf '200'
+    status="${FAKE_TOKEN_HTTP_STATUS:-200}"
+    exit_code="${FAKE_TOKEN_CURL_EXIT:-0}"
+    if [ "${status}" = "200" ]; then
+        printf '{"token":"fake-registry-token"}' > "${output}"
+    else
+        : > "${output}"
+    fi
 else
+    status="${FAKE_MARKER_HTTP_STATUS:-200}"
+    exit_code="${FAKE_MARKER_CURL_EXIT:-0}"
     : > "${output}"
-    printf '%s' "${FAKE_MARKER_HTTP_STATUS:-200}"
 fi
+
+printf '%s' "${status}"
+exit "${exit_code}"
 """
 
 
@@ -287,6 +296,70 @@ def test_only_a_typed_registry_404_admits_the_missing_release_path(run_pull, sta
     assert not [call for call in calls if call.startswith("pull ")]
     assert not [call for call in calls if call.startswith("tag ")]
     assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "status", "expected_exit", "expected_message"),
+    [
+        ("token", "401", EXIT_REGISTRY_AUTH, "rejected credentials"),
+        ("token", "403", EXIT_REGISTRY_AUTH, "rejected credentials"),
+        ("token", "404", EXIT_REGISTRY_TOOL, "unexpected HTTP 404"),
+        ("token", "429", EXIT_REGISTRY_RATE_LIMIT, "rate-limited"),
+        ("token", "500", EXIT_REGISTRY_TOOL, "unexpected HTTP 500"),
+        ("marker", "401", EXIT_REGISTRY_AUTH, "rejected credentials"),
+        ("marker", "403", EXIT_REGISTRY_AUTH, "rejected credentials"),
+        ("marker", "404", EXIT_NO_RELEASE, "has no release marker"),
+        ("marker", "429", EXIT_REGISTRY_RATE_LIMIT, "rate-limited"),
+        ("marker", "500", EXIT_REGISTRY_TOOL, "unexpected HTTP 500"),
+    ],
+)
+def test_registry_http_outcome_matrix_is_shared_by_token_and_marker_requests(
+    run_pull, endpoint, status, expected_exit, expected_message
+):
+    result, calls, record = run_pull(**{f"FAKE_{endpoint.upper()}_HTTP_STATUS": status})
+
+    assert result.returncode == expected_exit, result.stderr
+    assert expected_message in result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+@pytest.mark.parametrize("endpoint", ["token", "marker"])
+def test_registry_transport_failure_cannot_admit_a_local_build(run_pull, endpoint):
+    result, calls, record = run_pull(**{f"FAKE_{endpoint.upper()}_CURL_EXIT": "6"})
+
+    assert result.returncode == EXIT_REGISTRY_TRANSPORT, result.stderr
+    assert "transport" in result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+@pytest.mark.parametrize("endpoint", ["token", "marker"])
+@pytest.mark.parametrize("curl_exit", ["2", "127"])
+def test_registry_tool_failure_is_reported_separately_from_transport(run_pull, endpoint, curl_exit):
+    result, calls, record = run_pull(**{f"FAKE_{endpoint.upper()}_CURL_EXIT": curl_exit})
+
+    assert result.returncode == EXIT_REGISTRY_TOOL, result.stderr
+    assert "tooling" in result.stderr
+    assert not [call for call in calls if call.startswith("pull ")]
+    assert not [call for call in calls if call.startswith("tag ")]
+    assert not record.exists()
+
+
+def test_marker_request_accepts_all_oci_and_docker_manifest_representations(run_pull, tmp_path):
+    result, _calls, _record = run_pull()
+
+    assert result.returncode == 0, result.stderr
+    curl_log = (tmp_path / "curl.log").read_text()
+    for media_type in (
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    ):
+        assert media_type in curl_log
 
 
 def test_ambiguous_image_tool_failure_is_not_misclassified_as_a_missing_release(run_pull):

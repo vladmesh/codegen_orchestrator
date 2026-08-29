@@ -91,6 +91,12 @@
   and scheduler's shipped and isolated-test cadence both use the allocation
   freshness policy.
 
+- Registry token and release-marker lookups now share one response matrix. It
+  reports curl tooling separately from transport/DNS, rejects auth, rate-limit,
+  and unexpected HTTP responses without authorizing a build, and accepts Docker
+  and OCI manifests or indexes when confirming an existing release marker.
+  `creation_failed` is documented as a `DeleteWorkerCommand` teardown reason.
+
 - Worker creation failures now retain their terminal status, ownership metadata,
   and developer workspace fence until `delete_worker` confirms container removal.
   BitLaunch access provisioning uses the shared stable-ID parser while generic
