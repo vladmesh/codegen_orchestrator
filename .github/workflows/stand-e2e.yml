@@ -224,6 +224,29 @@ jobs:
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'uv --version >/dev/null'
 
+      # The compose services run as `${HOST_UID}:${HOST_GID}` and the App key is
+      # bind-mounted into them read-only, so the file's owner and the process
+      # reading it must be one identity. It is taken from the account bootstrap
+      # created rather than from compose's 1000 default, which a cloud image may
+      # have given to somebody else — the same thing production does with
+      # `chown deploy:deploy /opt/secrets`.
+      #
+      # Its own step because the bootstrap handles secret material and may publish
+      # no outputs at all; a uid is not secret, but that rule is worth more than
+      # the convenience of putting this line there.
+      - name: Discover the runtime identity
+        id: identity
+        env:
+          PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/stand-bootstrap.key"
+          runtime_uid="$(ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" 'id -u deploy')"
+          runtime_gid="$(ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" 'id -g deploy')"
+          test -n "${runtime_uid}" && test -n "${runtime_gid}"
+          echo "runtime_uid=${runtime_uid}" >> "$GITHUB_OUTPUT"
+          echo "runtime_gid=${runtime_gid}" >> "$GITHUB_OUTPUT"
+
       - name: Render protected dynamic configuration
         env:
           ORCHESTRATOR_PUBLIC_IP: ${{ steps.create.outputs.orchestrator_ip }}
@@ -266,6 +289,8 @@ jobs:
           SUMMARIZATION_TRIGGER_TOKENS: ${{ secrets.SUMMARIZATION_TRIGGER_TOKENS }}
           SUMMARIZATION_MAX_SUMMARY_TOKENS: ${{ secrets.SUMMARIZATION_MAX_SUMMARY_TOKENS }}
           GITHUB_APP_PEM_PATH: /opt/secrets/github_app.pem
+          HOST_UID: ${{ steps.identity.outputs.runtime_uid }}
+          HOST_GID: ${{ steps.identity.outputs.runtime_gid }}
           GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
           LIVE_CONTOUR: stand
         run: |
@@ -279,6 +304,7 @@ jobs:
               "BITLAUNCH_API_KEY", "INTERNAL_API_KEY", "POSTGRES_DB", "POSTGRES_USER",
               "POSTGRES_PASSWORD", "SECRETS_ENCRYPTION_KEY", "LK_JWT_SECRET", "GITHUB_ORG",
               "GITHUB_APP_ID", "GITHUB_APP_PEM_PATH", "GITHUB_APP_PRIVATE_KEY_PATH",
+              "HOST_UID", "HOST_GID",
               "REGISTRY_USER", "REGISTRY_PASSWORD", "REGISTRY_PASSWORD_HASH", "LOKI_PUSH_USER",
               "LOKI_PUSH_PASSWORD", "LOKI_PUSH_PASSWORD_HASH", "LOKI_URL", "ADMIN_USER",
               "ADMIN_PASSWORD", "GRAFANA_DB_USER", "GRAFANA_DB_PASSWORD", "GRAFANA_ADMIN_PASSWORD",
@@ -297,15 +323,24 @@ jobs:
       - name: Bring up dynamic orchestrator and wait for API
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          RUNTIME_UID: ${{ steps.identity.outputs.runtime_uid }}
+          RUNTIME_GID: ${{ steps.identity.outputs.runtime_gid }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           scp -i "${key_path}" ${SSH_OPTS} .stand.env \
             root@"${PROD_HOST}":/opt/codegen_orchestrator/.env
+          # Owned by the runtime user rather than by root, and no wider than
+          # before: the directory stays 0700 and the key 0400. Production does the
+          # same thing with `chown deploy:deploy /opt/secrets`; the stand bootstraps
+          # as root and simply never did.
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
-            'install -d -m 0700 /opt/secrets'
+            "install -d -m 0700 -o ${RUNTIME_UID} -g ${RUNTIME_GID} /opt/secrets"
           scp -i "${key_path}" ${SSH_OPTS} .stand-github-app.pem \
             root@"${PROD_HOST}":/opt/secrets/github_app.pem
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
+            "chown ${RUNTIME_UID}:${RUNTIME_GID} /opt/secrets/github_app.pem \
+             && chmod 0400 /opt/secrets/github_app.pem"
           ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
             set -euo pipefail
             cd /opt/codegen_orchestrator
