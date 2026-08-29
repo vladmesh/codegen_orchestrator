@@ -5,7 +5,7 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -324,7 +324,7 @@ async def _completion_notification_text(
         .where(
             Run.story_id == story.id,
             Run.type == RunType.QA.value,
-            Run.status == RunStatus.COMPLETED.value,
+            Run.status.in_((RunStatus.COMPLETED.value, RunStatus.FAILED.value)),
         )
         .order_by(Run.completed_at.desc(), Run.id.desc())
         .limit(1)
@@ -486,6 +486,20 @@ async def _recheck_target(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="recheck-qa target no longer matches the story capability receipt",
         )
+    application_count = await db.scalar(
+        select(func.count())
+        .select_from(Application)
+        .join(Repository, Application.repo_id == Repository.id)
+        .where(Repository.project_id == story.project_id)
+    )
+    if application_count != 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "recheck-qa cannot safely reuse a capability receipt for a project with "
+                "multiple applications"
+            ),
+        )
     deploy_receipt = (
         (
             await db.execute(
@@ -509,6 +523,66 @@ async def _recheck_target(
             detail="recheck-qa target has no deployed SHA in its capability receipt",
         )
     return application, repository, deploy_receipt.id, head_sha
+
+
+async def _require_running_acceptance_target(story: Story, db: AsyncSession) -> None:
+    """Acceptance is only honest when its recorded QA target remains reachable."""
+    query = (
+        select(Run)
+        .where(
+            Run.story_id == story.id,
+            Run.type == RunType.QA.value,
+            Run.status.in_((RunStatus.COMPLETED.value, RunStatus.FAILED.value)),
+        )
+        .order_by(Run.completed_at.desc(), Run.id.desc())
+        .limit(1)
+    )
+    if story.reopened_at is not None:
+        query = query.where(Run.created_at >= story.reopened_at)
+    run = (await db.execute(query)).scalars().first()
+    if run is None or QA_HANDOFF_KEY not in run.run_metadata:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="accept-result requires a QA-verified application address; use Recheck QA first",
+        )
+    plan = QAHandoffPlan.model_validate(run.run_metadata[QA_HANDOFF_KEY])
+    application_status = (
+        await db.execute(
+            select(Application.status).where(Application.id == plan.qa_message.application_id)
+        )
+    ).scalar_one_or_none()
+    if application_status != ApplicationStatus.RUNNING.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="accept-result requires its application to be running; use Recheck QA first",
+        )
+
+
+async def _require_qa_verified_completion_target(story: Story, db: AsyncSession) -> None:
+    """A non-acceptance completion is valid only after the current QA verdict."""
+    query = (
+        select(Run)
+        .where(
+            Run.story_id == story.id,
+            Run.type == RunType.QA.value,
+            Run.status == RunStatus.COMPLETED.value,
+        )
+        .order_by(Run.completed_at.desc(), Run.id.desc())
+        .limit(1)
+    )
+    if story.reopened_at is not None:
+        query = query.where(Run.created_at >= story.reopened_at)
+    run = (await db.execute(query)).scalars().first()
+    if (
+        run is None
+        or not isinstance(run.result, dict)
+        or run.result.get("qa_outcome") != QAOutcome.PASSED
+        or QA_HANDOFF_KEY not in run.run_metadata
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="complete requires a QA-verified application address",
+        )
 
 
 @router.post("/{story_id}/human-review", response_model=StoryRead)
@@ -588,6 +662,7 @@ async def complete_story(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Use accept-result to complete a story in waiting_human_review",
         )
+    await _require_qa_verified_completion_target(story, db)
 
     logger.info("story_completed", story_id=story.id, actor=body.actor)
     return await _complete_story(story, db)
@@ -607,6 +682,7 @@ async def accept_story_result(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="accept-result requires a story in waiting_human_review",
         )
+    await _require_running_acceptance_target(story, db)
     acceptance = StoryAcceptance(
         actor=actor,
         basis=body.basis,
@@ -639,18 +715,41 @@ async def recheck_story_qa(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Story {story_id} not found"
         )
-    if story.operator_recheck is not None:
-        return StoryRead.model_validate(story, from_attributes=True)
     if story.status != StoryStatus.WAITING_HUMAN_REVIEW.value:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="recheck-qa requires a story in waiting_human_review",
         )
 
+    snapshot = dict(story.quarantine_reason or {})
+    if story.operator_recheck is not None:
+        previous = StoryRecheck.model_validate(story.operator_recheck)
+        previous_run = await db.get(Run, previous.run_id)
+        same_episode = previous.rechecked_quarantine_reason == snapshot
+        if (
+            same_episode
+            and previous_run is not None
+            and previous_run.status
+            in {
+                RunStatus.QUEUED.value,
+                RunStatus.RUNNING.value,
+            }
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="recheck-qa is already running for this quarantine episode",
+            )
+
     application, _repository, source_deploy_run_id, head_sha = await _recheck_target(story, db)
     recheck_id = f"recheck-{uuid.uuid4().hex}"
-    snapshot = dict(story.quarantine_reason or {})
 
+    if application.status == ApplicationStatus.STOPPING.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "recheck-qa target application is still stopping; wait for it to stop, then retry"
+            ),
+        )
     if application.status not in {ApplicationStatus.STOPPED.value, ApplicationStatus.RUNNING.value}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -717,6 +816,15 @@ async def recheck_story_qa(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="QA recheck handoff could not be confirmed",
         ) from exc
+
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise RuntimeError("QA recheck deploy run disappeared after publication")
+    run.run_metadata = {
+        **run.run_metadata,
+        "recheck_deploy_dispatched_at": datetime.now(UTC).isoformat(),
+    }
+    await db.commit()
 
     logger.info(
         "story_qa_recheck_requested",

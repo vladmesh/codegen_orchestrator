@@ -101,6 +101,8 @@ DEPLOY_RETRY_KEY_PREFIX = "deploy:retries:"
 #: Where a deploy that carried an infrastructure wait forward started waiting.
 #: Stored in `run_metadata` so the bound survives every re-dispatch.
 INFRASTRUCTURE_WAIT_STARTED_KEY = "infrastructure_wait_started_at"
+RECHECK_DEPLOY_MESSAGE_KEY = "recheck_message"
+RECHECK_DEPLOY_DISPATCHED_AT_KEY = "recheck_deploy_dispatched_at"
 
 # A Run which failed before its EngineeringMessage reached the queue is terminal
 # evidence for recovery, but never provider work. The reservation is released
@@ -721,7 +723,7 @@ async def supervise_stuck_tasks(
     return {"timed_out": timed_out, "working": working, "stopping": stopping}
 
 
-async def supervise_deploying_stories(  # noqa: PLR0912
+async def supervise_deploying_stories(  # noqa: C901, PLR0912
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
@@ -775,8 +777,15 @@ async def supervise_deploying_stories(  # noqa: PLR0912
         if run is None:
             continue
 
-        # Skip runs still in progress
-        if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+        # A recheck deploy persists the exact message before publication. A
+        # process can die after that commit, so a queued recheck without its
+        # dispatch stamp is recovered here instead of remaining DEPLOYING
+        # forever. Other queued deploys have no reconstructable handoff.
+        if run.status is RunStatus.QUEUED:
+            if await _recover_recheck_deploy_handoff(api_client, redis_client, run, log):
+                retried += 1
+            continue
+        if run.status is RunStatus.RUNNING:
             continue
 
         # Only a superseded (CANCELLED) run reaches here without a result; a
@@ -853,6 +862,27 @@ async def supervise_deploying_stories(  # noqa: PLR0912
         "escalated": refused[RefusedDeployAction.ESCALATED],
         "failed": failed,
     }
+
+
+async def _recover_recheck_deploy_handoff(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Publish a durable recheck deploy handoff left queued by a failed caller."""
+    message_data = run.run_metadata.get(RECHECK_DEPLOY_MESSAGE_KEY)
+    if message_data is None or run.run_metadata.get(RECHECK_DEPLOY_DISPATCHED_AT_KEY):
+        return False
+
+    message = DeployMessage.model_validate(message_data)
+    await redis_client.publish_message(DEPLOY_QUEUE, message)
+    await api_client.update_run(
+        run.id,
+        {"run_metadata": {RECHECK_DEPLOY_DISPATCHED_AT_KEY: datetime.now(UTC).isoformat()}},
+    )
+    log.warning("recheck_deploy_handoff_recovered", run_id=run.id)
+    return True
 
 
 async def _handle_deploy_success_story(

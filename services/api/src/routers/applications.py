@@ -16,6 +16,7 @@ import structlog
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.run import RunType
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
 from shared.contracts.queues.qa import QAMessage
@@ -27,6 +28,7 @@ from shared.models import (
     Repository,
     Run,
     Server,
+    Story,
 )
 from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 from shared.redis.client import RedisStreamClient
@@ -106,6 +108,45 @@ async def get_application(
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
     return application
+
+
+async def _refuse_quarantined_story_sideways_run(
+    application_id: int, project_id, db: AsyncSession
+) -> None:
+    """Keep standalone admin runs from bypassing a parked story's QA verdict."""
+    stories = (
+        await db.execute(
+            select(Story).where(
+                Story.project_id == project_id,
+                Story.status == StoryStatus.WAITING_HUMAN_REVIEW.value,
+                Story.quarantine_reason.is_not(None),
+            )
+        )
+    ).scalars()
+    for story in stories:
+        receipt = (
+            (
+                await db.execute(
+                    select(Run)
+                    .where(Run.story_id == story.id, Run.type == RunType.QA.value)
+                    .order_by(Run.completed_at.desc(), Run.id.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if (
+            receipt is not None
+            and (receipt.run_metadata or {}).get("application_id") == application_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Application {application_id} has quarantined story {story.id}; "
+                    "use Recheck QA instead of a standalone admin run"
+                ),
+            )
 
 
 async def _release_bot_if_undeployed(application: Application, db: AsyncSession) -> None:
@@ -494,6 +535,7 @@ async def redeploy_application(
     """Redeploy an application. Creates Deployment record, publishes DeployMessage."""
     body = body or AdminAction()
     app, repo = await _get_app_with_repo(application_id, db)
+    await _refuse_quarantined_story_sideways_run(app.id, repo.project_id, db)
     head_sha = await _resolve_admin_deploy_head_sha(repo)
 
     port = app.port_allocations[0].port if app.port_allocations else 0
@@ -542,6 +584,7 @@ async def run_e2e(
     """
     body = body or AdminAction()
     app, repo = await _get_app_with_repo(application_id, db)
+    await _refuse_quarantined_story_sideways_run(app.id, repo.project_id, db)
 
     if app.status != ApplicationStatus.RUNNING:
         raise HTTPException(

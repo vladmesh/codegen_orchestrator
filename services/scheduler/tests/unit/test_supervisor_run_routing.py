@@ -163,6 +163,45 @@ class TestSuperviseDeployingStories:
     """Poll DEPLOYING stories and route based on deploy run outcome."""
 
     @pytest.mark.asyncio
+    async def test_recheck_publish_failure_is_recovered_from_the_queued_run(
+        self, api_client, redis_client
+    ):
+        """The persisted recheck message gives the next supervisor tick a route forward."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="deploy-recheck-1",
+            status=RunStatus.QUEUED,
+            run_metadata={
+                "recheck_message": {
+                    "task_id": "deploy-recheck-1",
+                    "project_id": "00000000-0000-0000-0000-000000000001",
+                    "unaddressed_reason": "no owner address required",
+                    "story_id": "story-1",
+                    "triggered_by": "admin",
+                    "action": "create",
+                    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "application_id": 42,
+                }
+            },
+        )
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 1
+        redis_client.publish_message.assert_awaited_once()
+        queue, message = redis_client.publish_message.await_args.args
+        assert queue == DEPLOY_QUEUE
+        assert message.task_id == "deploy-recheck-1"
+        api_client.update_run.assert_awaited_once()
+        assert api_client.update_run.await_args.args[1]["run_metadata"][
+            "recheck_deploy_dispatched_at"
+        ]
+
+    @pytest.mark.asyncio
     async def test_success_transitions_to_testing(self, api_client, redis_client):
         """SUCCESS outcome → story TESTING, QA message published."""
         from src.tasks.supervisor import (

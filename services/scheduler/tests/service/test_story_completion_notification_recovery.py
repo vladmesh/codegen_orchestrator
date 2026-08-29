@@ -1,8 +1,4 @@
-"""A direct API completion reaches the scheduler recovery seam.
-
-This is the operator path: no QA run exists, so only the story-backed record
-can carry the PO instruction across the API/scheduler process boundary.
-"""
+"""Completion and notification recovery through the real API and Redis."""
 
 from datetime import UTC, datetime, timedelta
 import os
@@ -13,15 +9,80 @@ import jwt
 import pytest
 
 from shared.contracts.dto.owner_notification import OwnerNotification, OwnerNotificationState
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
 from shared.contracts.queues.po import POSystemEvent, from_flat_fields
+from shared.contracts.queues.qa import QAMessage
 from shared.queues import PO_INPUT_QUEUE
 from shared.redis_client import RedisStreamClient
 
 
-@pytest.mark.asyncio
-async def test_direct_completion_without_qa_is_recovered_to_po_input(api_client):
-    from src.tasks.owner_notifications import supervise_owed_owner_notifications
+async def _record_running_acceptance_target(
+    client: httpx.AsyncClient, project_id: str, story_id: str
+) -> None:
+    """Give an acceptance scenario the current reachable QA handoff it needs."""
+    server = await client.post(
+        "/api/servers/",
+        json={
+            "handle": f"acceptance-{uuid.uuid4().hex[:8]}",
+            "host": "acceptance.test",
+            "public_ip": "10.8.0.9",
+            "ssh_user": "root",
+        },
+    )
+    assert server.status_code == httpx.codes.CREATED, server.text
+    repository = await client.post(
+        "/api/repositories/",
+        json={
+            "project_id": project_id,
+            "name": f"acceptance-{uuid.uuid4().hex[:8]}",
+            "git_url": "https://github.com/test/acceptance.git",
+        },
+    )
+    assert repository.status_code == httpx.codes.CREATED, repository.text
+    application = await client.post(
+        "/api/applications/",
+        json={
+            "repo_id": repository.json()["id"],
+            "server_handle": server.json()["handle"],
+            "service_name": "acceptance-service",
+            "status": "running",
+        },
+    )
+    assert application.status_code == httpx.codes.CREATED, application.text
+    application_id = application.json()["id"]
+    qa_run_id = f"qa-acceptance-{uuid.uuid4().hex[:12]}"
+    qa_run = await client.post(
+        "/api/work-admission/paid-runs",
+        json={
+            "id": qa_run_id,
+            "type": "qa",
+            "project_id": project_id,
+            "story_id": story_id,
+            "run_metadata": {
+                QA_HANDOFF_KEY: QAHandoffPlan(
+                    qa_message=QAMessage(
+                        project_id=project_id,
+                        initiating_run_id="test-run-1",
+                        deployed_url="http://10.8.0.9:8000",
+                        application_id=application_id,
+                        acceptance_criteria="the service responds",
+                        run_id=qa_run_id,
+                    )
+                ).model_dump(mode="json"),
+            },
+        },
+    )
+    assert qa_run.status_code == httpx.codes.OK, qa_run.text
+    terminal = await client.patch(
+        f"/api/runs/{qa_run_id}",
+        json={"status": "completed", "result": {"qa_outcome": "failed"}},
+    )
+    assert terminal.status_code == httpx.codes.OK, terminal.text
 
+
+@pytest.mark.asyncio
+async def test_direct_completion_without_qa_is_refused(api_client):
+    """A completion without a QA-verified address cannot promise a ready product."""
     project_id = str(uuid.uuid4())
     telegram_id = uuid.uuid4().int % 1_000_000_000
     headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
@@ -52,43 +113,9 @@ async def test_direct_completion_without_qa_is_recovered_to_po_input(api_client)
         started = await client.post(f"/api/stories/{story_id}/start")
         assert started.status_code == httpx.codes.OK, started.text
 
-        # No QA run is created. This is the bare operator action the next card
-        # depends on, and it must write durable work before it returns.
         completed = await client.post(f"/api/stories/{story_id}/complete")
-        assert completed.status_code == httpx.codes.OK, completed.text
-        notification = OwnerNotification.model_validate(
-            (await client.get(f"/api/stories/{story_id}/owner-notification")).json()
-        )
-        assert notification.state is OwnerNotificationState.OWED
-
-    redis_client = RedisStreamClient(os.environ["REDIS_URL"])
-    await redis_client.connect()
-    try:
-        newest = await redis_client.redis.xrevrange(PO_INPUT_QUEUE, count=1)
-        before = newest[0][0] if newest else "0-0"
-
-        counts = await supervise_owed_owner_notifications(api_client, redis_client)
-        assert counts["delivered"] >= 1
-
-        unread = await redis_client.redis.xread({PO_INPUT_QUEUE: before})
-        events = [
-            from_flat_fields(fields, POSystemEvent)
-            for _, entries in unread
-            for _, fields in entries
-            if fields.get("type") == "system_event"
-        ]
-        event = next(item for item in events if item.story_id == story_id)
-        assert event.event == "story_completed"
-        assert event.text == notification.text
-        assert event.telegram_chat_id == str(telegram_id)
-        assert event.task_id == story_id
-
-        settled = OwnerNotification.model_validate(
-            (await api_client.request("GET", f"stories/{story_id}/owner-notification")).json()
-        )
-        assert settled.state is OwnerNotificationState.DELIVERED
-    finally:
-        await redis_client.close()
+        assert completed.status_code == httpx.codes.UNPROCESSABLE_ENTITY, completed.text
+        assert "QA-verified application address" in completed.text
 
 
 @pytest.mark.asyncio
@@ -142,6 +169,7 @@ async def test_bearer_admin_acceptance_is_recovered_to_po_input(api_client):
         assert (
             await client.post(f"/api/stories/{story_id}/human-review")
         ).status_code == httpx.codes.OK
+        await _record_running_acceptance_target(client, project_id, story_id)
 
         token = jwt.encode(
             {
@@ -266,6 +294,7 @@ async def test_admin_console_acceptance_is_recovered_to_po_input(api_client):
         assert (
             await client.post(f"/api/stories/{story_id}/human-review")
         ).status_code == httpx.codes.OK
+        await _record_running_acceptance_target(client, project_id, story_id)
 
         accepted = await client.post(
             f"/api/stories/{story_id}/accept-result",
@@ -449,10 +478,10 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(  # no
             },
         )
         assert deployed.status_code == httpx.codes.OK, deployed.text
-        running = await client.patch(
-            f"/api/applications/{application_id}", json={"status": "running"}
+        stopped = await client.patch(
+            f"/api/applications/{application_id}", json={"status": "stopped"}
         )
-        assert running.status_code == httpx.codes.OK, running.text
+        assert stopped.status_code == httpx.codes.OK, stopped.text
 
         redis_client = RedisStreamClient(os.environ["REDIS_URL"])
         await redis_client.connect()
@@ -492,3 +521,8 @@ async def test_recheck_qa_restores_a_quarantined_story_through_completion(  # no
             (await client.get(f"/api/stories/{story_id}/owner-notification")).json()
         )
         assert "http://10.2.0.9:8000" in notification.text
+        project_stories = await client.get("/api/stories/", params={"project_id": project_id})
+        assert project_stories.status_code == httpx.codes.OK, project_stories.text
+        assert [(story["id"], story["status"]) for story in project_stories.json()] == [
+            (story_id, "completed")
+        ]

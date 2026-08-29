@@ -8,13 +8,15 @@ from httpx import AsyncClient
 import pytest
 from redis.asyncio import Redis
 
+from shared.contracts.dto.qa_handoff import QA_HANDOFF_KEY, QAHandoffPlan
+from shared.contracts.queues.qa import QAMessage
 from shared.redis.client import decode_redis_fields
 
 
 @pytest.mark.asyncio
-async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
+async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(  # noqa: PLR0915
     async_client: AsyncClient, redis_client: Redis
-):
+) -> None:
     """A repaired infrastructure target returns through deploy and ordinary QA."""
     head_sha = "0123456789abcdef0123456789abcdef01234567"
 
@@ -92,14 +94,27 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
         },
     )
     assert deploy_receipt.status_code == HTTPStatus.CREATED, deploy_receipt.text
+    quarantined_qa_id = f"qa-quarantine-{uuid.uuid4().hex[:12]}"
     qa_run = await async_client.post(
         "/api/work-admission/paid-runs",
         json={
-            "id": f"qa-quarantine-{uuid.uuid4().hex[:12]}",
+            "id": quarantined_qa_id,
             "type": "qa",
             "project_id": project_id,
             "story_id": story_id,
-            "run_metadata": {"application_id": application_id},
+            "run_metadata": {
+                "application_id": application_id,
+                QA_HANDOFF_KEY: QAHandoffPlan(
+                    qa_message=QAMessage(
+                        project_id=project_id,
+                        initiating_run_id="recheck-init-run",
+                        deployed_url="http://10.0.0.9:8000",
+                        application_id=application_id,
+                        acceptance_criteria="health endpoint answers",
+                        run_id=quarantined_qa_id,
+                    )
+                ).model_dump(mode="json"),
+            },
         },
     )
     assert qa_run.status_code == HTTPStatus.OK, qa_run.text
@@ -124,8 +139,20 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
     )
     assert quarantined.status_code == HTTPStatus.OK, quarantined.text
 
-    before = await redis_client.xlen("deploy:queue")
     headers = {"X-Admin-Console-Operator": "shared-console"}
+    accepted_while_stopped = await async_client.post(
+        f"/api/stories/{story_id}/accept-result",
+        json={"basis": "Manual review."},
+        headers=headers,
+    )
+    assert accepted_while_stopped.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "application to be running" in accepted_while_stopped.text
+
+    sideways_e2e = await async_client.post(f"/api/applications/{application_id}/run-e2e")
+    assert sideways_e2e.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "quarantined story" in sideways_e2e.text
+
+    before = await redis_client.xlen("deploy:queue")
     first = await async_client.post(
         f"/api/stories/{story_id}/recheck-qa",
         json={"basis": "The server was repaired and is reachable."},
@@ -161,6 +188,47 @@ async def test_recheck_stopped_qa_quarantine_creates_one_story_linked_deploy(
         json={"basis": "The server was repaired and is reachable."},
         headers=headers,
     )
-    assert repeated.status_code == HTTPStatus.OK, repeated.text
-    assert repeated.json()["operator_recheck"] == audit
+    assert repeated.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, repeated.text
+    assert "waiting_human_review" in repeated.text
     assert await redis_client.xlen("deploy:queue") == before + 1
+
+    # A completed recheck run and a new typed quarantine start a new recovery
+    # episode. The old audit must not permanently consume this story's route
+    # back to ordinary QA.
+    terminal = await async_client.patch(
+        f"/api/runs/{audit['run_id']}",
+        json={
+            "status": "failed",
+            "result": {"deploy_outcome": "give_up", "error_details": "environment failed again"},
+        },
+    )
+    assert terminal.status_code == HTTPStatus.OK, terminal.text
+    parked_again = await async_client.post(f"/api/stories/{story_id}/human-review")
+    assert parked_again.status_code == HTTPStatus.OK, parked_again.text
+    fresh_blocker = {
+        "qa_outcome": "blocked",
+        "blocker": {
+            "category": "qa_executor_unavailable",
+            "attempted": "start QA executor",
+            "sent": "qa execution request",
+            "received": "executor unavailable",
+        },
+    }
+    refreshed_reason = await async_client.patch(
+        f"/api/stories/{story_id}", json={"quarantine_reason": fresh_blocker}
+    )
+    assert refreshed_reason.status_code == HTTPStatus.OK, refreshed_reason.text
+    stopped_again = await async_client.patch(
+        f"/api/applications/{application_id}", json={"status": "stopped"}
+    )
+    assert stopped_again.status_code == HTTPStatus.OK, stopped_again.text
+
+    rechecked_again = await async_client.post(
+        f"/api/stories/{story_id}/recheck-qa",
+        json={"basis": "The QA executor was repaired."},
+        headers=headers,
+    )
+    assert rechecked_again.status_code == HTTPStatus.OK, rechecked_again.text
+    assert rechecked_again.json()["operator_recheck"]["id"] != audit["id"]
+    assert rechecked_again.json()["operator_recheck"]["run_id"] != audit["run_id"]
+    assert await redis_client.xlen("deploy:queue") == before + 2
