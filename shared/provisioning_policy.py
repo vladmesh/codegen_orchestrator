@@ -37,18 +37,28 @@ def _parse_time4vps_server_id(value: int | str | None) -> str | None:
     return normalized if int(normalized) > 0 else None
 
 
+BITLAUNCH_ID_LENGTH = 24
+_BITLAUNCH_ID_ALPHABET = frozenset("0123456789abcdef")
+
+
 def parse_bitlaunch_server_id(value: int | str | None) -> str | None:
-    """Normalize BitLaunch's positive decimal server IDs in one place.
+    """Normalize BitLaunch's opaque 24-character lowercase hex server IDs.
+
+    The provider issues identifiers like `6a920e74c9c98a452507b09b`; they are
+    not decimal, and a decimal-only parser rejects every real machine. That is
+    not hypothetical: it refused the target of run 33248356742 outright, with
+    `TARGET_ID must be a positive decimal BitLaunch ID`, and it silently denied
+    the destructive-operation policy for every BitLaunch row before that.
 
     BitLaunch access provisioning proves a run-owned database row, its labels,
-    and the provider's current IP separately.  This parser deliberately only
+    and the provider's current IP separately. This parser deliberately only
     validates the stable-ID representation; generic destructive operations do
     not gain BitLaunch authority from a parseable ID.
     """
     normalized = parse_provider_id(value)
-    if normalized is None or not normalized.isascii() or not normalized.isdecimal():
+    if normalized is None or len(normalized) != BITLAUNCH_ID_LENGTH:
         return None
-    return normalized if int(normalized) > 0 else None
+    return normalized if set(normalized) <= _BITLAUNCH_ID_ALPHABET else None
 
 
 class Time4VPSDestructiveOperationPolicy:
@@ -76,6 +86,50 @@ class Time4VPSDestructiveOperationPolicy:
         if not is_managed or normalized is None or normalized not in self.managed_ids():
             return None
         return normalized
+
+
+STAND_TARGET_LABELS = {"contour": "stand", "stand_role": "target"}
+
+
+class RunOwnedServerIdentity(Protocol):
+    """The server fields that prove one run owns one BitLaunch machine."""
+
+    provider: str | None
+    provider_id: str | None
+    is_managed: bool
+    labels: dict
+
+
+def authorize_run_owned_target(
+    server: RunOwnedServerIdentity, *, run_tag: str | None
+) -> str | None:
+    """Authorize only this run's exact BitLaunch target, never a general fleet.
+
+    BitLaunch has no configured ID allowlist and cannot have one: its machines
+    are created by the run that destroys them minutes later, so their IDs cannot
+    be enumerated in advance. The ownership proof is the run tag the contour
+    stamped on the row, checked together with the provider identity — which is a
+    narrower authority than the Time4VPS allowlist, not a broader one.
+
+    This lives beside the provider policies because both the provisioner and the
+    live-harness cleanup have to reach the same verdict about the same row. When
+    only the provisioner knew this rule, cleanup fell back to the provider-wide
+    policy, found no BitLaunch entry, and refused every target of its own run.
+    """
+    labels = server.labels if isinstance(server.labels, dict) else {}
+    provider_id = parse_bitlaunch_server_id(server.provider_id)
+    if (
+        server.provider != BITLAUNCH_PROVIDER
+        or not server.is_managed
+        or provider_id is None
+        or labels.get("provider") != BITLAUNCH_PROVIDER
+        or labels.get("provider_id") != provider_id
+        or not run_tag
+        or labels.get("stand_run_tag") != run_tag
+        or any(labels.get(key) != value for key, value in STAND_TARGET_LABELS.items())
+    ):
+        return None
+    return provider_id
 
 
 _POLICIES: dict[str, DestructiveOperationPolicy] = {

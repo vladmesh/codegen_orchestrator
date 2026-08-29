@@ -36,6 +36,11 @@ on:
         options:
           - claude
           - codex
+      keep_machines:
+        description: 'Debug only: leave the pair and its DNS record in place so a failure can be inspected. Both still expire on the 6h sweep, and every retained hour is billed.'
+        required: false
+        default: false
+        type: boolean
       skip_sweep:
         description: 'Reserved for the later e2e runner; lifecycle cleanup is never skipped'
         required: false
@@ -61,6 +66,18 @@ jobs:
       packages: read
     env:
       STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      # One definition for every ssh and scp in this job. Several of these calls
+      # wait minutes with the connection idle — provisioning runs ansible on the
+      # far side and says nothing meanwhile — and an idle connection is what a
+      # NAT or a load balancer drops. Run 33249511508 died that way at
+      # `client_loop: send disconnect: Broken pipe` after five silent minutes.
+      # Repeating the flags per call is how one call ends up without them, which
+      # is why they are named once here.
+      SSH_OPTS: >-
+        -o StrictHostKeyChecking=accept-new
+        -o BatchMode=yes
+        -o ServerAliveInterval=30
+        -o ServerAliveCountMax=10
     steps:
       - name: Check out lifecycle code
         uses: actions/checkout@v5
@@ -138,6 +155,27 @@ jobs:
           test -n "${TARGET_IP}"
           printf 'orchestrator=%s\ntarget=%s\n' "${ORCHESTRATOR_IP}" "${TARGET_IP}" >> "$GITHUB_STEP_SUMMARY"
 
+      # A GitHub runner pushes the generated project's images (`build-and-push` in
+      # the template's ci.yml runs there, not on the target), and that runner's
+      # trust store is not ours to add to. So the registry has to answer for a
+      # publicly trusted certificate, which needs a name. The run creates one and
+      # removes it with the machines.
+      - name: Give the stand a resolvable name
+        id: dns
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ORCHESTRATOR_IP: ${{ steps.create.outputs.orchestrator_ip }}
+        run: |
+          set -euo pipefail
+          name="$(python3 -m scripts.stand_dns create --run-tag "${STAND_RUN_TAG}" \
+            --ip "${ORCHESTRATOR_IP}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+          # Caddy asks for a certificate as soon as the stack starts, and an
+          # issuer that cannot resolve the name yet spends one of the week's
+          # attempts on a failure.
+          python3 -m scripts.stand_dns await --run-tag "${STAND_RUN_TAG}" --ip "${ORCHESTRATOR_IP}"
+          echo "hostname=${name}" >> "$GITHUB_OUTPUT"
+          echo "stand hostname: ${name}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Prepare protected SSH material
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -156,6 +194,14 @@ jobs:
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           inventory="${RUNNER_TEMP}/stand-bootstrap.ini"
+          # A public key is `ssh-ed25519 AAAA... comment`, and ansible splits its
+          # `-e key=value` form on whitespace: passed that way the variable holds
+          # `ssh-ed25519` alone and `authorized_key` fails with `list index out of
+          # range`. The line below it relies on that same splitting on purpose, to
+          # pass two variables. A JSON vars file is the form that cannot be split.
+          bootstrap_vars="${RUNNER_TEMP}/stand-bootstrap-vars.json"
+          jq -Rn --rawfile ssh_public_key "${RUNNER_TEMP}/stand-bootstrap.pub" \
+            '{ssh_public_key: ($ssh_public_key | rtrimstr("\n"))}' > "${bootstrap_vars}"
           {
             echo '[prod]'
             printf '%s ansible_user=root ansible_ssh_private_key_file=%s\n' "${PROD_HOST}" "${key_path}"
@@ -165,23 +211,23 @@ jobs:
           ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg \
             uvx --from ansible-core ansible-playbook -i "${inventory}" \
             services/infra-service/ansible/playbooks/bootstrap.yml \
-            -e "ssh_public_key=$(<"${RUNNER_TEMP}/stand-bootstrap.pub")"
+            -e "@${bootstrap_vars}"
           ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg \
             uvx --from ansible-core ansible-playbook -i "${inventory}" \
             services/infra-service/ansible/playbooks/provision_software.yml \
             -e "target_host=${PROD_HOST} deploy_user=deploy"
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'install -d -m 0755 /opt/codegen_orchestrator'
           rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-target.env \
-            -e "ssh -i ${key_path} -o StrictHostKeyChecking=accept-new" \
+            -e "ssh -i ${key_path} ${SSH_OPTS}" \
             ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'uv --version >/dev/null'
 
       - name: Render protected dynamic configuration
         env:
           ORCHESTRATOR_PUBLIC_IP: ${{ steps.create.outputs.orchestrator_ip }}
-          ORCHESTRATOR_HOSTNAME: ${{ steps.create.outputs.orchestrator_ip }}
+          ORCHESTRATOR_HOSTNAME: ${{ steps.dns.outputs.hostname }}
           STAND_RUN_TAG: ${{ env.STAND_RUN_TAG }}
           BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
@@ -254,13 +300,13 @@ jobs:
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
-          scp -i "${key_path}" -o StrictHostKeyChecking=accept-new .stand.env \
+          scp -i "${key_path}" ${SSH_OPTS} .stand.env \
             root@"${PROD_HOST}":/opt/codegen_orchestrator/.env
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" \
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
             'install -d -m 0700 /opt/secrets'
-          scp -i "${key_path}" -o StrictHostKeyChecking=accept-new .stand-github-app.pem \
+          scp -i "${key_path}" ${SSH_OPTS} .stand-github-app.pem \
             root@"${PROD_HOST}":/opt/secrets/github_app.pem
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" '
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
             set -euo pipefail
             cd /opt/codegen_orchestrator
             docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml up -d --build --remove-orphans
@@ -271,6 +317,19 @@ jobs:
               sleep 5
               remaining=$((remaining - 5))
             done
+            # Migrations create the tables; the system configuration is separate
+            # data, and the API refuses work without it. A stand that skipped this
+            # answers `500` to the first project the suite creates, with
+            # `Missing work admission config: work_admission.emergency_stop`
+            # buried in its own log — which reads as a broken build rather than
+            # an unseeded database.
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stand.yml"
+            ${COMPOSE} exec -T api python /app/scripts/seed_system_configs.py \
+              --api-base-url http://localhost:8000 \
+              --configs-path /app/scripts/system_configs.yaml
+            ${COMPOSE} exec -T api python /app/scripts/seed_agent_configs.py \
+              --api-base-url http://localhost:8000 \
+              --configs-path /app/scripts/agent_configs.yaml
           '
 
       - name: Register and provision dynamic target
@@ -300,7 +359,7 @@ jobs:
           '
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           tar -C "${RUNNER_TEMP}" -cf - stand-target.json stand-target.key | \
-            ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" '
+            ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
             set -euo pipefail
             umask 077
             cleanup() {
@@ -329,7 +388,7 @@ jobs:
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           release_sha="${GITHUB_SHA}"
           echo "worker image release candidate: ${release_sha}"
-          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+          printf '%s\n' "${GHCR_TOKEN}" | ssh -i "${key_path}" ${SSH_OPTS} \
             root@"${PROD_HOST}" \
             "IFS= read -r GHCR_TOKEN && export GHCR_TOKEN && \
              cd /opt/codegen_orchestrator && \
@@ -344,7 +403,7 @@ jobs:
             case "${pulled}" in
               9)
                 echo "no release matches this tree (exit ${pulled}); building on the stand"
-                ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+                ssh -i "${key_path}" ${SSH_OPTS} \
                   root@"${PROD_HOST}" \
                   'cd /opt/codegen_orchestrator && export PATH=/usr/local/bin:$PATH && make ensure-worker-images'
                 ;;
@@ -371,7 +430,7 @@ jobs:
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           remote_command=$(printf 'cd /opt/codegen_orchestrator && uv run python scripts/stand_run.py --suite %q --worker %q --qa %q' "${SUITE}" "${WORKER}" "${QA}")
-          ssh -i "${key_path}" -o StrictHostKeyChecking=accept-new root@"${PROD_HOST}" "${remote_command}" \
+          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" "${remote_command}" \
             >"${RUNNER_TEMP}/remote-invocation.log" 2>&1
 
       # Copy only the runner's public reports.  This short-lived handoff is how
@@ -391,7 +450,7 @@ jobs:
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           if [ -n "${PROD_HOST}" ]; then
             for name in junit.xml report.tsv run.log claude-claude.log claude-codex.log codex-claude.log codex-codex.log; do
-              scp -i "${key_path}" -o StrictHostKeyChecking=accept-new \
+              scp -i "${key_path}" ${SSH_OPTS} \
                 root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
             done
           fi
@@ -476,9 +535,38 @@ jobs:
           name: stand-e2e-handoff-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stand-e2e-handoff
 
+      # Retention is bounded by the sweep below, which now takes the record as
+      # well as the machines: leaving a name pointing at an address the provider
+      # will reassign is the one way retention could outlive the run that owns it.
+      - name: Retain the pair for inspection
+        if: ${{ always() && inputs.keep_machines }}
+        run: |
+          set -euo pipefail
+          {
+            echo '### Pair retained for inspection'
+            echo
+            echo "Run tag \`${STAND_RUN_TAG}\`. Billed until removed; the 6h sweep takes both."
+            echo
+            echo 'Remove early with:'
+            echo '```'
+            echo "python3 -m scripts.stand_lifecycle cleanup --run-tag ${STAND_RUN_TAG}"
+            echo "python3 -m scripts.stand_dns cleanup --run-tag ${STAND_RUN_TAG}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the run's DNS record
+        if: ${{ always() && !inputs.keep_machines }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Derived from the run tag alone, so this needs nothing the run may
+          # have failed to publish.
+          python3 -m scripts.stand_dns cleanup --run-tag "${STAND_RUN_TAG}"
+
       - name: Cleanup and observe run-tagged machines
         id: cleanup-observation
-        if: always()
+        if: ${{ always() && !inputs.keep_machines }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -567,6 +655,7 @@ jobs:
     environment: stand
     env:
       BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - name: Check out lifecycle code
         uses: actions/checkout@v5
@@ -575,3 +664,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m scripts.stand_lifecycle sweep --ttl-hours 6
+          # The machines are what expire; their names have to go with them, or a
+          # retained run leaves a hostname that later resolves to somebody else's
+          # address.
+          python3 -m scripts.stand_dns sweep --ttl-hours 6

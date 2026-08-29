@@ -224,7 +224,10 @@ def run_pytest(target: str, env: dict[str, str], extra: dict[str, str], log_path
 
 def preflight(env: dict[str, str], log) -> bool:
     result = subprocess.run(  # noqa: S603
-        [sys.executable, str(REPO / "scripts" / "stand_preflight.py")],  # noqa: S607
+        # As a module, not a path: running `python scripts/x.py` puts `scripts/`
+        # on sys.path instead of the repository root, and the script cannot then
+        # import `shared`. That has refused a run twice.
+        [sys.executable, "-m", "scripts.stand_preflight"],  # noqa: S607
         cwd=REPO,
         env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
         capture_output=True,
@@ -238,7 +241,9 @@ def preflight(env: dict[str, str], log) -> bool:
 
 def sweep(env: dict[str, str], log) -> bool:
     result = subprocess.run(  # noqa: S603
-        ["uv", "run", "python", str(REPO / "scripts" / "clean_live_tests.py")],  # noqa: S607
+        # As a module: a path invocation puts `scripts/` on sys.path instead of
+        # the repository root, and `shared` then cannot be imported.
+        ["uv", "run", "python", "-m", "scripts.clean_live_tests"],  # noqa: S607
         cwd=REPO,
         env={**os.environ, **env, "LIVE_CONTOUR": "stand"},
         capture_output=True,
@@ -325,12 +330,17 @@ def main() -> int:
         if not passed:
             failed += 1
 
-    if not args.skip_sweep:
-        sweep(env, log)
+    # Cleanup is part of the result, not an epilogue. A sweep that failed leaves
+    # database rows, GitHub repositories, workers and workspaces behind for the
+    # next serialized run to inherit, and reporting green over that hides the
+    # residue until it breaks something else.
+    swept = args.skip_sweep or sweep(env, log)
 
     write_junit_report(run_dir / "junit.xml", results)
     log(report.read_text(encoding="utf-8").rstrip())
-    return 1 if failed else 0
+    if not swept:
+        log("cleanup failed; the run is not green regardless of the suite result")
+    return 1 if failed or not swept else 0
 
 
 if __name__ == "__main__":

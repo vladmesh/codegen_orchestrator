@@ -11,13 +11,13 @@ def _target(**overrides):
     labels = {
         "contour": "stand",
         "provider": "bitlaunch",
-        "provider_id": "71234",
+        "provider_id": "6a920e74c9c98a452507b09b",
         "stand_run_tag": "gha-41-1",
         "stand_role": "target",
     }
     labels.update(overrides.pop("labels", {}))
     return SimpleNamespace(
-        handle="bitlaunch-71234",
+        handle="bitlaunch-6a920e74c9c98a452507b09b",
         public_ip="203.0.113.19",
         host="203.0.113.19",
         status="pending_setup",
@@ -25,7 +25,7 @@ def _target(**overrides):
         os_template=None,
         is_managed=True,
         provider=overrides.pop("provider", "bitlaunch"),
-        provider_id=overrides.pop("provider_id", "71234"),
+        provider_id=overrides.pop("provider_id", "6a920e74c9c98a452507b09b"),
         labels=labels,
         **overrides,
     )
@@ -45,7 +45,7 @@ def test_only_the_exact_run_owned_bitlaunch_target_is_authorized(overrides, run_
 
 
 def test_exact_run_owned_bitlaunch_target_is_authorized():
-    assert authorize_run_owned_target(_target(), run_tag="gha-41-1") == "71234"
+    assert authorize_run_owned_target(_target(), run_tag="gha-41-1") == "6a920e74c9c98a452507b09b"
 
 
 @pytest.mark.asyncio
@@ -62,11 +62,11 @@ async def test_bitlaunch_server_observation_uses_the_server_endpoint_and_envelop
         "src.provisioner.bitlaunch.httpx.AsyncClient", MagicMock(return_value=context)
     )
 
-    ip = await BitLaunchClient("provider-token").get_server_ip("71234")
+    ip = await BitLaunchClient("provider-token").get_server_ip("6a920e74c9c98a452507b09b")
 
     assert ip == "203.0.113.19"
     client.get.assert_awaited_once_with(
-        "https://app.bitlaunch.io/api/servers/71234",
+        "https://app.bitlaunch.io/api/servers/6a920e74c9c98a452507b09b",
         headers={"Authorization": "Bearer provider-token"},
     )
     response.raise_for_status.assert_called_once_with()
@@ -77,14 +77,18 @@ async def test_bitlaunch_checks_provider_binding_before_reserving_or_changing_ta
     monkeypatch.setenv("STAND_RUN_TAG", "gha-41-1")
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_target()))
-    binding = AsyncMock(side_effect=node._provider_identity_mismatch("bitlaunch-71234"))
+    binding = AsyncMock(
+        side_effect=node._provider_identity_mismatch("bitlaunch-6a920e74c9c98a452507b09b")
+    )
     monkeypatch.setattr(node, "_init_bitlaunch_client", binding)
     reserve = AsyncMock()
     monkeypatch.setattr("src.provisioner.node.reserve_provisioning_attempt", reserve)
     update_status = AsyncMock()
     monkeypatch.setattr("src.provisioner.node.update_server_status", update_status)
 
-    result = await node.run({"server_to_provision": "bitlaunch-71234", "errors": []})
+    result = await node.run(
+        {"server_to_provision": "bitlaunch-6a920e74c9c98a452507b09b", "errors": []}
+    )
 
     assert result["provisioning_result"] == {
         "status": "failed",
@@ -92,7 +96,7 @@ async def test_bitlaunch_checks_provider_binding_before_reserving_or_changing_ta
     }
     binding.assert_awaited_once()
     reserve.assert_not_awaited()
-    update_status.assert_awaited_once_with("bitlaunch-71234", "error")
+    update_status.assert_awaited_once_with("bitlaunch-6a920e74c9c98a452507b09b", "error")
 
 
 @pytest.mark.asyncio
@@ -114,12 +118,14 @@ async def test_bitlaunch_ip_mismatch_is_denied_before_ssh_or_reservation(monkeyp
     status = AsyncMock()
     monkeypatch.setattr("src.provisioner.node.update_server_status", status)
 
-    result = await node.run({"server_to_provision": "bitlaunch-71234", "errors": []})
+    result = await node.run(
+        {"server_to_provision": "bitlaunch-6a920e74c9c98a452507b09b", "errors": []}
+    )
 
     assert result["provisioning_result"]["reason"] == "provider_identity_mismatch"
     reserve.assert_not_awaited()
     ssh_key.assert_not_awaited()
-    status.assert_awaited_once_with("bitlaunch-71234", "error")
+    status.assert_awaited_once_with("bitlaunch-6a920e74c9c98a452507b09b", "error")
 
 
 @pytest.mark.asyncio
@@ -150,7 +156,9 @@ async def test_bitlaunch_uses_stored_creation_key_and_both_existing_ssh_playbook
         AsyncMock(return_value={"provisioning_result": {"status": "success"}}),
     )
 
-    result = await node.run({"server_to_provision": "bitlaunch-71234", "errors": []})
+    result = await node.run(
+        {"server_to_provision": "bitlaunch-6a920e74c9c98a452507b09b", "errors": []}
+    )
 
     assert result["provisioning_result"]["status"] == "success"
     assert [call.kwargs["playbook_name"] for call in ansible.run_playbook.call_args_list] == [
@@ -161,6 +169,6 @@ async def test_bitlaunch_uses_stored_creation_key_and_both_existing_ssh_playbook
     assert ansible.run_playbook.call_args_list[0].kwargs["ssh_private_key"] == "creation-key"
     assert ansible.run_playbook.call_args_list[0].kwargs["deploy_user"] == "deploy"
     labels.assert_awaited_once_with(
-        "bitlaunch-71234", {"provisioning_phase": "software_installation"}
+        "bitlaunch-6a920e74c9c98a452507b09b", {"provisioning_phase": "software_installation"}
     )
-    complete.assert_awaited_once_with("bitlaunch-71234")
+    complete.assert_awaited_once_with("bitlaunch-6a920e74c9c98a452507b09b")

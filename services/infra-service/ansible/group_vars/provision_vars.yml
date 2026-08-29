@@ -39,6 +39,9 @@ timezone: "UTC"
 essential_packages:
   - curl
   - git
+  # The stand builds its worker base images here whenever no published
+  # release matches its tree, and that build is driven by the Makefile.
+  - make
   - htop
   - vim
   - net-tools

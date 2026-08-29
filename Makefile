@@ -383,7 +383,7 @@ test-live-pipeline:
 # mega run.
 stand-preflight:
 	@set -a; . ./.env; set +a; \
-	uv run python scripts/stand_preflight.py
+	uv run python -m scripts.stand_preflight
 
 # One entry point for every e2e on the stand. SUITE is a named suite — mega, llm,
 # matrix — or any pytest target, so a new scenario needs no new plumbing.
@@ -403,7 +403,7 @@ WORKER ?= claude
 QA ?= codex
 stand-run:
 	@set -a; . ./.env; set +a; \
-	uv run python scripts/stand_run.py --suite "$(SUITE)" --worker "$(WORKER)" --qa "$(QA)" $(ARGS)
+	uv run python -m scripts.stand_run --suite "$(SUITE)" --worker "$(WORKER)" --qa "$(QA)" $(ARGS)
 
 # Kept as the short name for the plain mega.
 stand-e2e:
@@ -411,12 +411,12 @@ stand-e2e:
 
 # Sweep this contour and no other.
 stand-clean:
-	@LIVE_CONTOUR=stand uv run python scripts/clean_live_tests.py
+	@LIVE_CONTOUR=stand uv run python -m scripts.clean_live_tests
 
 # Cleanup DB and artifacts left by live tests
 test-live-clean:
 	@echo "🧹 Running comprehensive live test cleanup (DB, GitHub, Workers, Workspaces, Servers)..."
-	@uv run python scripts/clean_live_tests.py
+	@uv run python -m scripts.clean_live_tests
 
 # Destroys production and rebuilds it from the deployed revision. Ordinary
 # cleanup is `test-live-clean`; this is for when a live run on production has
