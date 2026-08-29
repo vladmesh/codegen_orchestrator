@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +39,12 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.models import EngineeringAttemptLedger, Project, Run, User
 
 from ..database import get_async_session
-from ..dependencies import is_internal_service, require_internal_or_admin, resolve_actor
+from ..dependencies import (
+    _optional_bearer_scheme,
+    is_internal_service,
+    require_internal_or_admin,
+    resolve_actor,
+)
 from ..engineering_budget_admission import finalize_engineering_reservation
 from ..schemas import RunCreate, RunRead, RunUpdate
 
@@ -177,6 +183,7 @@ async def _check_run_access(
     db: AsyncSession,
     *,
     is_internal: bool = False,
+    credentials: HTTPAuthorizationCredentials | None,
 ) -> None:
     """Check if the request may reach this run. Raises 401/403/404 if denied.
 
@@ -185,7 +192,12 @@ async def _check_run_access(
     a request that names a user is judged as that user however it was
     authenticated; a service acting for itself passes.
     """
-    actor = await resolve_actor(is_internal=is_internal, telegram_id=telegram_id, db=db)
+    actor = await resolve_actor(
+        is_internal=is_internal,
+        telegram_id=telegram_id,
+        credentials=credentials,
+        db=db,
+    )
 
     if actor is None or actor.is_admin:
         return
@@ -246,7 +258,7 @@ async def create_run(
 
 
 @router.get("/engineering-attempts", response_model=list[EngineeringAttemptRead])
-async def list_engineering_attempts(
+async def list_engineering_attempts(  # noqa: PLR0913
     user_id: int | None = None,
     project_id: uuid.UUID | None = None,
     story_id: str | None = None,
@@ -258,9 +270,15 @@ async def list_engineering_attempts(
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> list[EngineeringAttemptLedger]:
     """List canonical engineering-attempt ledger rows. This router has no writer."""
-    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+    )
     if run_id is not None and actor is not None and not actor.is_admin:
         named_owner = await db.scalar(
             select(EngineeringAttemptLedger.user_id).where(
@@ -301,6 +319,7 @@ async def get_run(
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> Run:
     """Get run by ID."""
     query = select(Run).where(Run.id == run_id)
@@ -313,13 +332,19 @@ async def get_run(
             detail=f"Run {run_id} not found",
         )
 
-    await _check_run_access(run, x_telegram_id, db, is_internal=_is_internal)
+    await _check_run_access(
+        run,
+        x_telegram_id,
+        db,
+        is_internal=_is_internal,
+        credentials=credentials,
+    )
     await _attach_ledger_compatibility([run], db)
     return run
 
 
 @router.get("/", response_model=list[RunRead])
-async def list_runs(
+async def list_runs(  # noqa: PLR0913
     project_id: uuid.UUID | None = None,
     task_id: str | None = None,
     story_id: str | None = None,
@@ -333,11 +358,17 @@ async def list_runs(
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> list[Run]:
     """List runs with optional filters."""
     # Resolved before any filter is applied: naming a user_id must not be a way to
     # read another user's runs, and neither must holding the internal key.
-    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+    )
 
     query = select(Run)
 
@@ -551,6 +582,7 @@ async def update_run(
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     _is_internal: bool = Depends(is_internal_service),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
 ) -> Run:
     """Update run status and result.
 
@@ -565,7 +597,12 @@ async def update_run(
     run = await _lock_run(run_id, db)
 
     # Only services acting for themselves, and admins, can update runs
-    actor = await resolve_actor(is_internal=_is_internal, telegram_id=x_telegram_id, db=db)
+    actor = await resolve_actor(
+        is_internal=_is_internal,
+        telegram_id=x_telegram_id,
+        credentials=credentials,
+        db=db,
+    )
     if actor is not None and not actor.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

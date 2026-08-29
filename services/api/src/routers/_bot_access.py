@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import uuid
 
 from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -138,6 +139,7 @@ async def mutate_bot_audience(
     *,
     x_telegram_id: int | None,
     is_internal: bool,
+    credentials: HTTPAuthorizationCredentials | None,
     operation: AudienceOperation,
     telegram_id: int | None = None,
     set_mode: str | None = None,
@@ -164,7 +166,13 @@ async def mutate_bot_audience(
     live to roll out).
     """
     project = await load_locked_project(db, project_id)
-    await check_project_access(project, x_telegram_id, db, is_internal=is_internal)
+    await check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=is_internal,
+        credentials=credentials,
+    )
 
     config = dict(project.config or {})
     access = config.get("bot_access")
@@ -278,6 +286,7 @@ async def rollout_status(
     *,
     x_telegram_id: int | None,
     is_internal: bool,
+    credentials: HTTPAuthorizationCredentials | None,
 ) -> tuple[BotRolloutStatus, str]:
     """Where a rollout stands, after proving it belongs to this project.
 
@@ -294,7 +303,13 @@ async def rollout_status(
     # this project. A named user who is not the owner is refused here exactly
     # as they are on every other project read.
     project = await load_locked_project(db, project_id)
-    await check_project_access(project, x_telegram_id, db, is_internal=is_internal)
+    await check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=is_internal,
+        credentials=credentials,
+    )
 
     status_value, detail = rollout_status_for_run(
         run_status=run.status,
@@ -311,6 +326,7 @@ async def owe_rollout_notification(
     *,
     x_telegram_id: int | None,
     is_internal: bool,
+    credentials: HTTPAuthorizationCredentials | None,
 ) -> dict:
     """Record that this rollout's terminal outcome is still owed to the owner.
 
@@ -329,7 +345,13 @@ async def owe_rollout_notification(
         raise HTTPException(status_code=404, detail="Rollout run not found")
 
     project = await load_locked_project(db, project_id)
-    await check_project_access(project, x_telegram_id, db, is_internal=is_internal)
+    await check_project_access(
+        project,
+        x_telegram_id,
+        db,
+        is_internal=is_internal,
+        credentials=credentials,
+    )
 
     existing = (run.run_metadata or {}).get(BOT_ROLLOUT_NOTIFY_KEY)
     if existing is not None:

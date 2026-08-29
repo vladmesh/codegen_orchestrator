@@ -91,6 +91,12 @@
 
 ### Fixed
 
+- API actor guards now require the request credential when resolving a caller.
+  LK bearer requests are always judged as the token subject, while
+  `X-Telegram-ID` may name an actor only for an internal-key service caller.
+  Project ownership/admission and allocation administration now use that same
+  principal decision rather than a header-only user lookup.
+
 - Stand image resolution now checks the deployed revision's release marker through
   a typed, read-only GHCR manifest response: only HTTP 404 falls back to a local
   build. Creation teardown carries a distinct reason that preserves execution

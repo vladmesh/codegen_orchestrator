@@ -20,6 +20,17 @@ and types had drifted apart, and `PATCH /api/projects/{id}` answered 422 to ever
 now fails on any name defined under both trees; its `KNOWN_DUPLICATES` backlog is
 empty and may not grow.
 
+### API caller principals
+
+Every non-anonymous API request has a caller principal. An LK bearer token carries
+the immutable `user_id` from its token subject, and its owner is the only user a
+request authenticated by that bearer can act as. An internal key carries a service
+principal; only under that key may `X-Telegram-ID` name a user actor. A bare
+`X-Telegram-ID` is never authentication. Guards pass the request credential to the
+single actor resolver, so a client-supplied Telegram header cannot replace a bearer
+principal. Project ownership/admission and allocation administration use that same
+principal decision, never a header-only user lookup.
+
 ### Engineering-attempt ledger
 
 `engineering_attempt_ledger` is the append-only accounting record for one terminal

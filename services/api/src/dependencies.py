@@ -60,7 +60,7 @@ async def resolve_actor(
     *,
     is_internal: bool,
     telegram_id: int | None,
-    credentials: HTTPAuthorizationCredentials | None = None,
+    credentials: HTTPAuthorizationCredentials | None,
     db: AsyncSession,
 ) -> User | None:
     """Who is acting on this request? This is the only place that decides.
