@@ -29,6 +29,7 @@ from shared.redis_client import RedisStreamClient
 if TYPE_CHECKING:
     from ...clients.api import SchedulerAPIClient
 
+from ... import startup
 from ..owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
@@ -37,14 +38,20 @@ from .common import (
     STORY_HUMAN_REVIEW_ACTION,
     _fail_story_on_invalid_result,
     _parse_datetime,
-    _qa_failure_limit,
-    _qa_fix_limit,
     _qa_handoff_recovery_minutes,
 )
 from .handoff import _execute_qa_handoff
 
 logger = structlog.get_logger(__name__)
 MAX_QA_LOOPS = 2  # max QA→Engineering cycles before story is marked failed
+
+
+def _qa_failure_limit() -> int:
+    return startup.get_config().get_int("supervisor.qa_failure_max_fingerprint_attempts")
+
+
+def _qa_fix_limit() -> int:
+    return startup.get_config().get_int("supervisor.qa_max_fix_attempts")
 
 
 async def supervise_testing_stories(

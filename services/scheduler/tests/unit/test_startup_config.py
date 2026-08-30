@@ -12,7 +12,7 @@ os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 from shared.config_store import ConfigStore, ConfigStoreUnavailableError
 from src import main, startup
 from src.tasks import task_dispatcher
-from src.tasks.supervisor.common import _max_deploy_retries
+from src.tasks.supervisor.deploy import _max_deploy_retries
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 

@@ -149,7 +149,7 @@ class TestSuperviseStuckStories:
     async def test_fails_story_after_max_retries(self, api_client, redis_client):
         """Story retried 3 times -> fail the story."""
         from src.tasks.supervisor import supervise_stuck_stories
-        from src.tasks.supervisor.common import _max_architect_retries
+        from src.tasks.supervisor.liveness import _max_architect_retries
 
         max_retries = _max_architect_retries()
         old_enough = datetime.now(UTC) - timedelta(minutes=10 * (max_retries + 1))

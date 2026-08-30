@@ -25,38 +25,6 @@ logger = structlog.get_logger(__name__)
 STORY_HUMAN_REVIEW_ACTION = "human-review"
 
 
-def _max_deploy_retries() -> int:
-    return startup.get_config().get_int("deploy.max_deploy_retries")
-
-
-def _max_deploy_fix_attempts() -> int:
-    return startup.get_config().get_int("deploy.max_deploy_fix_attempts")
-
-
-def _deploy_retry_ttl() -> int:
-    return startup.get_config().get_int("deploy.deploy_retry_ttl")
-
-
-def _story_stuck_threshold() -> int:
-    return startup.get_config().get_int("supervisor.story_stuck_threshold_minutes")
-
-
-def _max_architect_retries() -> int:
-    return startup.get_config().get_int("supervisor.story_max_architect_retries")
-
-
-def _story_retry_ttl() -> int:
-    return startup.get_config().get_int("supervisor.story_retry_ttl")
-
-
-def _qa_failure_limit() -> int:
-    return startup.get_config().get_int("supervisor.qa_failure_max_fingerprint_attempts")
-
-
-def _qa_fix_limit() -> int:
-    return startup.get_config().get_int("supervisor.qa_max_fix_attempts")
-
-
 def _qa_handoff_recovery_minutes() -> int:
     return startup.get_config().get_int("supervisor.qa_handoff_recovery_minutes")
 

@@ -32,6 +32,7 @@ from shared.redis_client import RedisStreamClient
 if TYPE_CHECKING:
     from ...clients.api import SchedulerAPIClient
 
+from ... import startup
 from .._recipients import resolve_project_recipient
 from ..owner_notifications import (
     deliver_owed_notification,
@@ -49,17 +50,26 @@ from ..worker_liveness import (
 from .common import (
     STORY_HUMAN_REVIEW_ACTION,
     _admissible_target_exists,
-    _max_architect_retries,
     _notify_admin_failure,
     _parse_datetime,
     _resource_wait_timeout_minutes,
-    _story_retry_ttl,
-    _story_stuck_threshold,
 )
 
 logger = structlog.get_logger(__name__)
 
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
+
+
+def _story_stuck_threshold() -> int:
+    return startup.get_config().get_int("supervisor.story_stuck_threshold_minutes")
+
+
+def _max_architect_retries() -> int:
+    return startup.get_config().get_int("supervisor.story_max_architect_retries")
+
+
+def _story_retry_ttl() -> int:
+    return startup.get_config().get_int("supervisor.story_retry_ttl")
 
 
 async def supervise_stuck_stories(

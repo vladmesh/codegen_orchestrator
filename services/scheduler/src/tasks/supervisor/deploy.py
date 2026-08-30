@@ -56,6 +56,7 @@ from shared.redis_client import RedisStreamClient
 if TYPE_CHECKING:
     from ...clients.api import SchedulerAPIClient
 
+from ... import startup
 from .._recipients import resolve_project_recipient
 from ..owner_notifications import (
     deliver_owed_notification,
@@ -64,10 +65,7 @@ from ..owner_notifications import (
 from .common import (
     STORY_HUMAN_REVIEW_ACTION,
     _admissible_target_exists,
-    _deploy_retry_ttl,
     _fail_story_on_invalid_result,
-    _max_deploy_fix_attempts,
-    _max_deploy_retries,
     _notify_admin_failure,
     _parse_datetime,
     _qa_handoff_recovery_minutes,
@@ -114,6 +112,18 @@ class RefusedDeployAction(StrEnum):
     REDISPATCHED = "redispatched"
     WAITING = "waiting"
     ESCALATED = "escalated"
+
+
+def _max_deploy_retries() -> int:
+    return startup.get_config().get_int("deploy.max_deploy_retries")
+
+
+def _max_deploy_fix_attempts() -> int:
+    return startup.get_config().get_int("deploy.max_deploy_fix_attempts")
+
+
+def _deploy_retry_ttl() -> int:
+    return startup.get_config().get_int("deploy.deploy_retry_ttl")
 
 
 #: The API exposes story transitions as action endpoints, not as status values:
