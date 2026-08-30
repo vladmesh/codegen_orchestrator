@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import pytest
@@ -62,6 +63,45 @@ def test_po_events_after_ignores_other_po_input_message_types(monkeypatch):
 
 def test_turn_observation_budget_covers_the_engineering_cold_start():
     assert target.TURN_OBSERVATION_TIMEOUT == target.ENGINEERING_TIMEOUT
+
+
+def test_live_target_uses_the_producer_owned_po_queue_constant():
+    source = inspect.getsource(target)
+
+    assert 'PO_INPUT = "po:input"' not in source
+    assert "PO_INPUT_QUEUE" in source
+
+
+def test_fenced_terminal_attempt_allows_an_unrelated_ordinary_retry():
+    attempts = [
+        {
+            "id": "fenced-attempt",
+            "status": "failed",
+            "run_metadata": {"active_turn_request_id": "turn-1"},
+        },
+        {
+            "id": "ordinary-retry",
+            "status": "completed",
+            "run_metadata": {"active_turn_request_id": "turn-2"},
+        },
+    ]
+
+    attempt = target._fenced_terminal_attempt(attempts, "turn-1")
+
+    assert attempt["id"] == "fenced-attempt"
+
+
+def test_fenced_terminal_attempt_explains_a_re_dispatch():
+    attempts = [
+        {
+            "id": "replacement-attempt",
+            "status": "completed",
+            "run_metadata": {"active_turn_request_id": "turn-2"},
+        }
+    ]
+
+    with pytest.raises(AssertionError, match="re-dispatched"):
+        target._fenced_terminal_attempt(attempts, "turn-1")
 
 
 @pytest.mark.asyncio

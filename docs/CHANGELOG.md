@@ -4,6 +4,11 @@
 
 ### Added
 
+- The stand-only Definition-of-Done restart target now identifies terminal
+  adoption by its fenced turn request rather than counting task attempts, so a
+  later ordinary retry remains diagnostic instead of turning the restart proof
+  red. Its PO stream lookup now uses the shared producer queue constant.
+
 - Hardened the stand-only Definition-of-Done target against unrelated PO input,
   cold worker creation, and terminal worker history. Its operator acceptance
   fixture now reaches human review through the public story actions before it

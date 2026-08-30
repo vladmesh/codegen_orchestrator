@@ -44,11 +44,11 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn
 from shared.live_contour import require_live_contour
-from shared.queues import STORY_WORKERS_KEY
+from shared.queues import PO_INPUT_QUEUE, STORY_WORKERS_KEY
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
-PO_INPUT = "po:input"
+PO_INPUT = PO_INPUT_QUEUE
 OPERATOR = "live-dod-operator"
 OWNER_NOTIFICATION_TIMEOUT = 180
 # A cold stand may need the full noop engineering budget before the first
@@ -193,6 +193,47 @@ def _flat_fields(fields: dict[str, str] | list[str]) -> dict[str, str]:
     if isinstance(fields, dict):
         return {str(key): str(value) for key, value in fields.items()}
     return dict(zip(fields[::2], fields[1::2], strict=True))
+
+
+def _fenced_terminal_attempt(
+    attempts: list[dict[str, Any]], active_turn_request_id: str
+) -> dict[str, Any]:
+    """Find the one settled run that adopted the turn fenced before restart."""
+    terminal_statuses = {"completed", "failed", "cancelled"}
+    terminal_attempts = [
+        attempt for attempt in attempts if attempt.get("status") in terminal_statuses
+    ]
+    fenced_attempts = [
+        attempt
+        for attempt in terminal_attempts
+        if attempt.get("run_metadata", {}).get("active_turn_request_id") == active_turn_request_id
+    ]
+    if len(fenced_attempts) == 1:
+        return fenced_attempts[0]
+
+    observed_request_ids = [
+        attempt.get("run_metadata", {}).get("active_turn_request_id")
+        for attempt in terminal_attempts
+    ]
+    if not fenced_attempts and any(
+        request_id and request_id != active_turn_request_id for request_id in observed_request_ids
+    ):
+        raise AssertionError(
+            "fenced engineering turn was re-dispatched instead of adopted: "
+            f"expected request_id={active_turn_request_id}, "
+            f"terminal request_ids={observed_request_ids}"
+        )
+    if not fenced_attempts:
+        raise AssertionError(
+            "fenced engineering turn did not settle: "
+            f"expected request_id={active_turn_request_id}, "
+            f"terminal request_ids={observed_request_ids}. A retry after an ordinary "
+            "failure remains valid only when the fenced request is also retained."
+        )
+    raise AssertionError(
+        "fenced engineering turn settled more than once: "
+        f"request_id={active_turn_request_id}, attempts={fenced_attempts}"
+    )
 
 
 def _restart_engineering_consumer() -> None:
@@ -397,9 +438,7 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
                 for run in runs_response.json()
                 if run.get("task_id") == ctx["task_id"] and run.get("type") == "engineering"
             ]
-            assert len(attempts) == 1, f"restart created duplicate engineering attempts: {attempts}"
-            attempt = attempts[0]
-            assert attempt["status"] in {"completed", "failed", "cancelled"}
+            attempt = _fenced_terminal_attempt(attempts, active_turn.request_id)
             assert attempt["run_metadata"]["active_turn_request_id"] == active_turn.request_id
             output = _redis_text("XRANGE", f"worker:{worker_id}:output", "-", "+")
             assert active_turn.request_id in output, (
