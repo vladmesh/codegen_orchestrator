@@ -51,6 +51,12 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 PO_INPUT = PO_INPUT_QUEUE
 OPERATOR = "live-dod-operator"
 OWNER_NOTIFICATION_TIMEOUT = 180
+RESTART_TASK_TITLE = "Add backend ping endpoint"
+RESTART_TASK_DESCRIPTION = (
+    "Add a GET /ping endpoint to the scaffolded backend service that returns HTTP 200 with the "
+    'JSON body {"pong": true}, plus a unit test for it. Keep GET /health unchanged, keep the '
+    "project backend-only and require no user-provided secrets. Commit and push the change."
+)
 # A cold stand may need the full noop engineering budget before the first
 # worker records its turn: dispatcher tick, image pull, container start, lease.
 TURN_OBSERVATION_TIMEOUT = ENGINEERING_TIMEOUT
@@ -285,8 +291,15 @@ async def test_normal_route_completes_and_tells_po_the_qa_verified_address(norma
     assert ctx["deployed_url"] in event.text
 
 
-async def test_operator_acceptance_is_audited_notified_and_refuses_a_stopping_target(normal_route):
-    """(b) accept-result shares completion delivery and will not bless a stopped app."""
+async def test_operator_acceptance_is_audited_and_notified(normal_route):
+    """(b) accept-result is audited and shares the completion delivery with the normal route.
+
+    The stopping-target refusal is not proved here: it fires only for a story whose
+    current cycle recorded a QA hand-off, and no product transition returns a completed
+    story to review with that hand-off intact (reopen filters earlier QA runs by
+    ``reopened_at``). Its coverage is the offline service test in
+    ``services/api/tests/service/test_story_recheck.py``.
+    """
     ctx = normal_route
     async with (
         api_client_as_test_user() as api,
@@ -326,30 +339,6 @@ async def test_operator_acceptance_is_audited_notified_and_refuses_a_stopping_ta
         assert event.text == notification["text"]
         assert event.event == notification["event"] == "story_completed"
 
-        # The normal route has the QA handoff that makes accept-result enforce
-        # reachability. completed -> waiting_human_review is not a legal story
-        # transition, so this direct fixture is retained solely for that guard.
-        # The fresh story above reaches its review state through product actions.
-        parked_normal = await api.patch(
-            f"/api/stories/{ctx['story_id']}",
-            json={"status": StoryStatus.WAITING_HUMAN_REVIEW.value},
-        )
-        parked_normal.raise_for_status()
-        stop = await api_internal.post(
-            f"/api/applications/{ctx['application_id']}/stop",
-            json={"actor": "live-dod"},
-        )
-        stop.raise_for_status()
-        assert stop.json()["status"] == ApplicationStatus.STOPPING.value
-
-        refused = await api_internal.post(
-            f"/api/stories/{ctx['story_id']}/accept-result",
-            headers={"X-Admin-Console-Operator": OPERATOR},
-            json={"basis": "must not accept a stopping deployment"},
-        )
-        assert refused.status_code == 422
-        assert "application to be running" in refused.json()["detail"]
-
 
 @pytest.mark.live_llm_stand_token
 async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans():
@@ -372,6 +361,12 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
             trigger_scaffold(ctx)
             await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
             assert ctx.get("scaffold_status") == ProjectStatus.ACTIVE
+            # The shared health task can be honestly closed with no commit once the
+            # scaffold already ships GET /health, and a turn that lands no commit is
+            # judged failed regardless of adoption. This proof needs a turn whose
+            # result is a real push, so it asks for an endpoint the scaffold lacks.
+            ctx["task_title"] = RESTART_TASK_TITLE
+            ctx["task_description"] = RESTART_TASK_DESCRIPTION
             await create_story_and_task(api, ctx)
 
             worker = await _wait_for_active_turn(ctx["project_id"])
@@ -440,10 +435,19 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
             ]
             attempt = _fenced_terminal_attempt(attempts, active_turn.request_id)
             assert attempt["run_metadata"]["active_turn_request_id"] == active_turn.request_id
-            output = _redis_text("XRANGE", f"worker:{worker_id}:output", "-", "+")
-            assert active_turn.request_id in output, (
-                "replacement did not reclaim retained broker output"
+            # The broker output stream does not outlive the story: story cleanup
+            # deletes the worker and its streams seconds after the task settles, so
+            # the reclaim is proved by what only a consumed output can produce — the
+            # settled attempt's commit and the worker report stored on the task.
+            assert attempt["status"] == "completed", attempt
+            assert (attempt.get("result") or {}).get("commit_sha"), (
+                "replacement settled the attempt without the reclaimed output's commit"
             )
+            events_response = await api_internal.get(f"/api/tasks/{ctx['task_id']}/events")
+            events_response.raise_for_status()
+            assert any(
+                event.get("event_type") == "worker_report" for event in events_response.json()
+            ), "replacement did not persist the reclaimed worker report"
 
             inventory = {entry["id"]: entry for entry in _worker_inventory()}
             holder = _redis_text("GET", f"workspace:lock:{ctx['project_id']}")
