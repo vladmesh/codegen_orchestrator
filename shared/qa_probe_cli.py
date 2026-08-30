@@ -1,22 +1,4 @@
-"""The one command a central QA executor container has for reaching a deployment.
-
-The exploratory QA executor is a CLI coding agent now, so it has a shell — and a
-shell is not a boundary. The boundary is that nothing inside the container can
-address the target: no SSH key, no fleet key, no Telegram session, no container
-name it did not learn from the runtime. The only route out is this script, which
-posts a named call with typed arguments to the QA runtime's capability endpoint
-on the management host and prints what comes back. Every check the endpoint
-performs — one deployment, one physical root, its own loopback ports, its own
-containers, GET only — is the same check the in-process tool set performed, and
-it is performed there, where the credentials are, not here.
-
-The script is injected into the executor's ephemeral workspace by worker-manager
-and is stdlib-only on purpose: the QA image is not asked to carry a dependency
-so that a QA run can happen.
-
-`QA_PROBE_USAGE` is the same text the QA prompt shows the agent, so the prompt
-and the script cannot describe different commands.
-"""
+"""Stdlib-only CLI for typed calls to a run-scoped QA capability endpoint."""
 
 from __future__ import annotations
 
@@ -32,9 +14,7 @@ __all__ = [
 QA_PROBE_NAME = "qa"
 QA_PROBE_PATH = f"/workspace/{QA_PROBE_NAME}"
 
-# The two calls the endpoint answers that are not target operations: what this
-# run may reach, and the run's final result. Named here because the script below
-# and the endpoint that serves it must agree on them.
+# Shared names for the endpoint and injected script.
 CAPABILITIES_CALL = "capabilities"
 SUBMIT_VERDICT_CALL = "submit_qa_result"
 
@@ -53,8 +33,7 @@ qa report FILE                      — store the Markdown QA report
 qa finish FILE                      — submit the final result JSON and end the run\
 """
 
-# Kept as source text rather than a module because it runs inside the executor
-# container, which has python3 and nothing of this repository.
+# Source text runs in the executor container without this repository installed.
 QA_PROBE_SCRIPT = '''#!/usr/bin/env python3
 """qa — the only way this container can reach the deployment under test."""
 

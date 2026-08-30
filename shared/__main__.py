@@ -1,17 +1,4 @@
-"""Canonical broad unit suite as one Python module entry point.
-
-``python -m shared`` runs exactly what ``make test-unit`` runs: ``scripts/test-unit-local.sh`` from
-the tree this ``shared`` package was imported from. The shell script stays the single owner of the
-``ALL_SUITES`` table and of the fixture environment (``scripts/check-ci-gate.py`` reads the table
-off it), so this module adds no second list to keep in sync.
-
-Why a module and not the shell form: Secretary's ``check broad --module shared`` records which tree
-the check imported ``shared`` from and can reuse the receipt on unchanged content; a
-``--command 'make test-unit'`` receipt attests nothing and is re-run every time.
-
-``shared`` is still not a package (``docs/decisions/shared-is-not-a-package.md``): this file only
-gives the tree an executable entry point, it does not make it installable.
-"""
+"""Canonical broad unit suite entry point for the in-tree shared package."""
 
 from __future__ import annotations
 
@@ -30,14 +17,9 @@ def build_command(argv: list[str]) -> list[str]:
 
 
 def build_env(base: dict[str, str], interpreter: str) -> dict[str, str]:
-    """PATH with the running interpreter's directory first.
-
-    The runner calls ``python -m pytest`` by name. Under ``uv run`` the venv is already first on
-    PATH; under ``check broad`` only the interpreter is pinned, so the same venv is put first here
-    and the suite cannot fall through to a system python without pytest.
-    """
+    """Put the requested interpreter's environment first on PATH."""
     env = dict(base)
-    # Not resolved: the venv's ``python`` is a symlink into a toolchain dir that has no ``python``.
+    # Preserve the venv directory when its Python executable is a symlink.
     interpreter_dir = str(Path(interpreter).absolute().parent)
     entries = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
     if not entries or entries[0] != interpreter_dir:

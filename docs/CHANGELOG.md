@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Reduced historical source prose to current lifecycle, security, and failure
+  invariants without changing executable behavior.
+
 - Removed unreachable LangGraph schemas/state, obsolete SSH container helpers,
   compatibility aliases, and unused scaffold/git/inventory code while retaining
   the live allocator, HTTP health probe, and BitLaunch policy boundary.
