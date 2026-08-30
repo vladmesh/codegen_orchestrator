@@ -34,6 +34,7 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessObservation,
 )
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.dto.users_grant import GrantIntentLifecycleResult
 from shared.contracts.dto.work_admission import PaidRunStartCommand, PaidRunStartRead
 from src.config import get_settings
 
@@ -162,13 +163,13 @@ class SchedulerAPIClient(InternalAPIClient):
 
     async def resume_initial_owner_grant(
         self, project_id: str, *, story_id: str, head_sha: str
-    ) -> dict:
+    ) -> GrantIntentLifecycleResult:
         resp = await self.request(
             "POST",
             f"projects/{project_id}/users/grant-intents/lifecycle",
             json={"kind": "initial_owner", "story_id": story_id, "head_sha": head_sha},
         )
-        return resp.json()
+        return GrantIntentLifecycleResult.model_validate(resp.json())
 
     async def create_run_if_absent(self, run_data: dict) -> RunDTO:
         """Create a run, or return the one already carrying this id.

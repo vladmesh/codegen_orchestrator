@@ -152,7 +152,10 @@ async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_g
     )
     api.resume_initial_owner_grant.return_value = {
         "intent_id": "users-grant-initial_owner-00000000000000000000000000000001-84",
+        "disposition": "dispatched",
+        "status": "queued",
         "execution_run_id": "deploy-grant-attempt",
+        "target": {"application_id": None, "deployment_id": None, "sha": "a" * 40},
     }
     gh.get_pull_request.return_value = {
         "number": 42,
@@ -189,7 +192,7 @@ async def test_applied_initial_owner_intent_does_not_skip_a_later_create_deploy(
     )
     api.resume_initial_owner_grant.return_value = {
         "intent_id": "users-grant-initial_owner-00000000000000000000000000000001-84",
-        "execution_run_id": None,
+        "disposition": "already_applied",
         "status": "applied",
     }
     recipient.return_value = SimpleNamespace(telegram_chat_id="84", unaddressed_reason="")

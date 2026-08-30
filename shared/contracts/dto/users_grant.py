@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.git_ref import CommitSha
 
@@ -23,6 +23,51 @@ class GrantIntentStatus(StrEnum):
     APPLIED = "applied"
     RETRYABLE = "retryable"
     FAILED = "failed"
+
+
+class GrantIntentLifecycleDisposition(StrEnum):
+    """What this lifecycle call did with a permanent-access intent.
+
+    A durable intent can retain its current execution reference for worker
+    completion checks and audit. That reference is never evidence that this
+    particular call dispatched work: only ``DISPATCHED`` carries a new attempt.
+    """
+
+    DISPATCHED = "dispatched"
+    ALREADY_APPLIED = "already_applied"
+    IN_FLIGHT = "in_flight"
+
+
+class GrantIntentDispatchTarget(BaseModel):
+    """The immutable target bound to the deploy Run created by this call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    application_id: int | None = None
+    deployment_id: int | None = None
+    sha: CommitSha
+
+
+class GrantIntentLifecycleResult(BaseModel):
+    """Per-call result of creating or resuming a grant-intent lifecycle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    intent_id: str = Field(min_length=1, max_length=255)
+    status: GrantIntentStatus
+    disposition: GrantIntentLifecycleDisposition
+    execution_run_id: str | None = None
+    target: GrantIntentDispatchTarget | None = None
+    created: bool = False
+
+    @model_validator(mode="after")
+    def _dispatch_owns_its_attempt(self) -> "GrantIntentLifecycleResult":
+        if self.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+            if self.execution_run_id is None or self.target is None:
+                raise ValueError("dispatched grant intent requires its run and immutable target")
+        elif self.execution_run_id is not None or self.target is not None:
+            raise ValueError("only dispatched grant intent may carry an execution run or target")
+        return self
 
 
 class GrantIntent(BaseModel):

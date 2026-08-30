@@ -33,6 +33,13 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import AllocationFailureReason
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.user import UserDTO
+from shared.contracts.dto.users_grant import (
+    USERS_GRANT_INTENT_KEY,
+    GrantIntentDispatchTarget,
+    GrantIntentLifecycleDisposition,
+    GrantIntentLifecycleResult,
+    GrantIntentStatus,
+)
 from shared.contracts.dto.work_admission import (
     PaidRunStartRead,
     WorkAdmissionOutcome,
@@ -743,6 +750,160 @@ class TestSuperviseDeployingStories:
 
         run_data = api_client.create_run.call_args[0][0]
         assert run_data["run_metadata"]["head_sha"] == "a" * 40
+
+    @pytest.mark.asyncio
+    async def test_applied_owner_seed_reconciles_response_loss_without_a_retry(
+        self, api_client, redis_client
+    ):
+        """A lost completion response is not a second deploy attempt."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={
+                "head_sha": "a" * 40,
+                USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
+            },
+            result={
+                "deploy_outcome": DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+            },
+        )
+        api_client.resume_initial_owner_grant.return_value = GrantIntentLifecycleResult(
+            intent_id="users-grant-initial_owner-seed",
+            status=GrantIntentStatus.APPLIED,
+            disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
+        )
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["tested"] == 1
+        assert result["retried"] == 0
+        redis_client._redis.incr.assert_not_awaited()
+        api_client.create_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_owner_seed_recovery_counts_only_a_fresh_lifecycle_attempt(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={
+                "head_sha": "a" * 40,
+                USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
+            },
+            result={"deploy_outcome": DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value},
+        )
+        api_client.resume_initial_owner_grant.return_value = GrantIntentLifecycleResult(
+            intent_id="users-grant-initial_owner-seed",
+            status=GrantIntentStatus.QUEUED,
+            disposition=GrantIntentLifecycleDisposition.DISPATCHED,
+            execution_run_id="deploy-grant-fresh",
+            target=GrantIntentDispatchTarget(sha="a" * 40),
+        )
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 1
+        redis_client._redis.incr.assert_not_awaited()
+        api_client.create_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_applied_owner_seed_infrastructure_recovery_falls_through_to_normal_deploy(
+        self, api_client, redis_client
+    ):
+        """An applied intent does not claim the old attempt was re-dispatched."""
+        from src.tasks.supervisor.deploy import (
+            RefusedDeployAction,
+            _handle_deploy_infrastructure_wait,
+            logger,
+        )
+
+        run = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={
+                "head_sha": "a" * 40,
+                USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
+            },
+            result=refused_deploy_result().model_dump(mode="json"),
+        )
+        api_client.resume_initial_owner_grant.return_value = GrantIntentLifecycleResult(
+            intent_id="users-grant-initial_owner-seed",
+            status=GrantIntentStatus.APPLIED,
+            disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
+        )
+        recipient = SimpleNamespace(telegram_chat_id="900000001", unaddressed_reason="")
+
+        with (
+            patch(
+                "src.tasks.supervisor.deploy._admissible_target_exists",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "src.tasks.supervisor.deploy.resolve_project_recipient",
+                new_callable=AsyncMock,
+                return_value=recipient,
+            ),
+        ):
+            action = await _handle_deploy_infrastructure_wait(
+                api_client,
+                redis_client,
+                "story-1",
+                "00000000-0000-0000-0000-000000000001",
+                run,
+                run.result,
+                logger,
+            )
+
+        assert action is RefusedDeployAction.REDISPATCHED
+        api_client.create_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_applied_owner_seed_secret_recovery_falls_through_to_normal_deploy(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor.deploy import _redispatch_waiting_deploy, logger
+
+        run = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={
+                "head_sha": "a" * 40,
+                USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
+            },
+            result=_WAITING_SECRET_RESULT,
+        )
+        api_client.resume_initial_owner_grant.return_value = GrantIntentLifecycleResult(
+            intent_id="users-grant-initial_owner-seed",
+            status=GrantIntentStatus.APPLIED,
+            disposition=GrantIntentLifecycleDisposition.ALREADY_APPLIED,
+        )
+        recipient = SimpleNamespace(telegram_chat_id="900000001", unaddressed_reason="")
+
+        with patch(
+            "src.tasks.supervisor.deploy.resolve_project_recipient",
+            new_callable=AsyncMock,
+            return_value=recipient,
+        ):
+            assert await _redispatch_waiting_deploy(
+                api_client,
+                redis_client,
+                "story-1",
+                "00000000-0000-0000-0000-000000000001",
+                run,
+                logger,
+            )
+
+        api_client.create_run.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_cancelled_deploy_is_redeployed_not_left_waiting(self, api_client, redis_client):

@@ -50,6 +50,15 @@ every PR poll, QA cycle, story fix and supervisor recovery keeps its own Run id.
 Retries after ordinary deploy, infrastructure, secret, or post-health grant
 failure reacquire that seed through the same lifecycle operation.
 
+`GrantIntentLifecycleResult` is the per-call boundary for that operation. Only
+`dispatched` carries the newly minted Run id and its immutable target;
+`already_applied` and `in_flight` carry neither, even though the durable intent
+retains its safe execution history. PR polling must use that disposition rather
+than an intent's historical execution id. A lost completion response reconciles
+the source deploy through the ordinary successful-deploy handoff without spending
+a retry; infrastructure and user-secret recovery only claim an intent
+redispatch when the result is `dispatched`.
+
 After smoke success, deploy grants through `POST /users/grant` and requires
 `GET /users/access` to report that exact identity active before the API records
 APPLIED or reports access live. An incoming ownership transfer changes

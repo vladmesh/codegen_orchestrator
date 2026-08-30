@@ -18,7 +18,10 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.users_grant import (
     USERS_GRANT_INTENT_KEY,
     GrantIntent,
+    GrantIntentDispatchTarget,
     GrantIntentKind,
+    GrantIntentLifecycleDisposition,
+    GrantIntentLifecycleResult,
     GrantIntentStatus,
 )
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
@@ -139,7 +142,7 @@ async def _lifecycle(  # noqa: PLR0913
     actor: str,
     target: tuple[int | None, int | None, str],
     story_id: str | None,
-) -> tuple[UsersGrantIntent, Run | None, bool]:
+) -> tuple[UsersGrantIntent, Run | None, bool, GrantIntentLifecycleDisposition]:
     """The sole create/lookup/rebind/dispatch-preparation operation.
 
     The durable record is locked while this decides whether to resume its one
@@ -172,7 +175,7 @@ async def _lifecycle(  # noqa: PLR0913
         db.add(intent)
         await db.flush()
     elif intent.status == GrantIntentStatus.APPLIED.value:
-        return intent, None, False
+        return intent, None, False, GrantIntentLifecycleDisposition.ALREADY_APPLIED
     rebound = False
     if intent is not None and _target_changed(intent, target):
         intent.target_history = [
@@ -191,7 +194,7 @@ async def _lifecycle(  # noqa: PLR0913
 
     live_run = None if rebound else await _execution_is_live(db, intent)
     if live_run is not None:
-        return intent, live_run, False
+        return intent, live_run, False, GrantIntentLifecycleDisposition.IN_FLIGHT
 
     run = Run(
         id=f"deploy-grant-{uuid.uuid4().hex}",
@@ -214,7 +217,7 @@ async def _lifecycle(  # noqa: PLR0913
     intent.execution_run_id = run.id
     intent.status = GrantIntentStatus.PUBLISH_OWED.value
     intent.attempts += 1
-    return intent, run, created
+    return intent, run, created, GrantIntentLifecycleDisposition.DISPATCHED
 
 
 async def _dispatch_lifecycle(
@@ -223,30 +226,50 @@ async def _dispatch_lifecycle(
     project: Project,
     intent: UsersGrantIntent,
     run: Run | None,
-) -> GrantIntent:
-    if run is None or intent.status != GrantIntentStatus.PUBLISH_OWED.value:
-        return _as_dto(intent)
-    recipient = await resolve_project_recipient(db, project.id, event="users_grant_intent")
-    message = DeployMessage(
-        task_id=run.id,
-        project_id=str(project.id),
-        telegram_chat_id=recipient.telegram_chat_id,
-        unaddressed_reason=recipient.unaddressed_reason,
-        triggered_by=DeployTrigger.PO,
-        action=DeployAction(run.run_metadata["deploy_action"]),
-        head_sha=intent.target_sha,
-    )
-    await db.commit()
-    try:
-        await redis.publish_message(DEPLOY_QUEUE, message)
-    except Exception:
-        raise HTTPException(
-            status_code=503, detail="grant intent is durable but dispatch is still owed"
-        ) from None
-    if intent.status == GrantIntentStatus.PUBLISH_OWED.value:
-        intent.status = GrantIntentStatus.QUEUED.value
+    disposition: GrantIntentLifecycleDisposition,
+    created: bool,
+) -> GrantIntentLifecycleResult:
+    if run is not None and intent.status == GrantIntentStatus.PUBLISH_OWED.value:
+        recipient = await resolve_project_recipient(db, project.id, event="users_grant_intent")
+        message = DeployMessage(
+            task_id=run.id,
+            project_id=str(project.id),
+            telegram_chat_id=recipient.telegram_chat_id,
+            unaddressed_reason=recipient.unaddressed_reason,
+            triggered_by=DeployTrigger.PO,
+            action=DeployAction(run.run_metadata["deploy_action"]),
+            head_sha=intent.target_sha,
+        )
         await db.commit()
-    return _as_dto(intent)
+        try:
+            await redis.publish_message(DEPLOY_QUEUE, message)
+        except Exception:
+            raise HTTPException(
+                status_code=503, detail="grant intent is durable but dispatch is still owed"
+            ) from None
+        if intent.status == GrantIntentStatus.PUBLISH_OWED.value:
+            intent.status = GrantIntentStatus.QUEUED.value
+            await db.commit()
+    if disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+        assert run is not None
+        return GrantIntentLifecycleResult(
+            intent_id=intent.id,
+            status=GrantIntentStatus(intent.status),
+            disposition=disposition,
+            execution_run_id=run.id,
+            target=GrantIntentDispatchTarget(
+                application_id=intent.target_application_id,
+                deployment_id=intent.target_deployment_id,
+                sha=intent.target_sha,
+            ),
+            created=created,
+        )
+    return GrantIntentLifecycleResult(
+        intent_id=intent.id,
+        status=GrantIntentStatus(intent.status),
+        disposition=disposition,
+        created=created,
+    )
 
 
 async def _stage_live_intent(  # noqa: PLR0913
@@ -256,9 +279,9 @@ async def _stage_live_intent(  # noqa: PLR0913
     target_user: User,
     kind: GrantIntentKind,
     actor: str,
-) -> tuple[GrantIntent, bool]:
+) -> GrantIntentLifecycleResult:
     target = await _live_target(db, project.id)
-    intent, run, created = await _lifecycle(
+    intent, run, created, disposition = await _lifecycle(
         db,
         project,
         target_user=target_user,
@@ -267,7 +290,7 @@ async def _stage_live_intent(  # noqa: PLR0913
         target=target,
         story_id=None,
     )
-    return await _dispatch_lifecycle(db, redis, project, intent, run), created
+    return await _dispatch_lifecycle(db, redis, project, intent, run, disposition, created)
 
 
 @router.post("/{project_id}/users/grant")
@@ -279,12 +302,12 @@ async def grant_user(
     redis: RedisStreamClient = Depends(get_redis_client),
     _is_internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
-) -> dict:
+) -> GrantIntentLifecycleResult:
     project = await load_locked_project(db, project_id)
     actor = await check_project_access(
         project, x_telegram_id, db, is_internal=_is_internal, credentials=credentials
     )
-    intent, created = await _stage_live_intent(
+    lifecycle = await _stage_live_intent(
         db,
         redis,
         project,
@@ -292,13 +315,10 @@ async def grant_user(
         GrantIntentKind.ADD_USER,
         f"user:{actor.id}" if actor is not None else "internal_service",
     )
-    logger.info("users_grant_intent_staged", intent_id=intent.id, created=created)
-    return {
-        "intent_id": intent.id,
-        "execution_run_id": intent.execution_run_id,
-        "status": intent.status.value,
-        "created": created,
-    }
+    logger.info(
+        "users_grant_intent_staged", intent_id=lifecycle.intent_id, created=lifecycle.created
+    )
+    return lifecycle
 
 
 @router.post("/{project_id}/ownership-transfer")
@@ -310,12 +330,12 @@ async def transfer_ownership(
     redis: RedisStreamClient = Depends(get_redis_client),
     _is_internal: bool = Depends(is_internal_service),
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer_scheme),
-) -> dict:
+) -> GrantIntentLifecycleResult:
     project = await load_locked_project(db, project_id)
     actor = await check_project_access(
         project, x_telegram_id, db, is_internal=_is_internal, credentials=credentials
     )
-    intent, created = await _stage_live_intent(
+    lifecycle = await _stage_live_intent(
         db,
         redis,
         project,
@@ -323,12 +343,7 @@ async def transfer_ownership(
         GrantIntentKind.INCOMING_OWNER,
         f"user:{actor.id}" if actor is not None else "internal_service",
     )
-    return {
-        "intent_id": intent.id,
-        "execution_run_id": intent.execution_run_id,
-        "status": intent.status.value,
-        "created": created,
-    }
+    return lifecycle
 
 
 @router.post("/{project_id}/users/grant-intents/lifecycle")
@@ -338,7 +353,7 @@ async def resume_initial_owner_intent(
     db: AsyncSession = Depends(get_async_session),
     redis: RedisStreamClient = Depends(get_redis_client),
     _internal: None = Depends(require_internal_or_admin),
-) -> dict:
+) -> GrantIntentLifecycleResult:
     """Internal seed/recovery entrypoint; producers cannot attach grants themselves."""
     if body.kind is not GrantIntentKind.INITIAL_OWNER or body.head_sha is None:
         raise HTTPException(
@@ -354,7 +369,7 @@ async def resume_initial_owner_intent(
         raise HTTPException(
             status_code=409, detail="project owner has no verified Telegram identity"
         )
-    intent, run, created = await _lifecycle(
+    intent, run, created, disposition = await _lifecycle(
         db,
         project,
         target_user=owner,
@@ -363,13 +378,7 @@ async def resume_initial_owner_intent(
         target=(None, None, body.head_sha),
         story_id=body.story_id,
     )
-    dto = await _dispatch_lifecycle(db, redis, project, intent, run)
-    return {
-        "intent_id": dto.id,
-        "execution_run_id": dto.execution_run_id,
-        "status": dto.status.value,
-        "created": created,
-    }
+    return await _dispatch_lifecycle(db, redis, project, intent, run, disposition, created)
 
 
 @router.get("/{project_id}/users/grant-intents/{intent_id}")

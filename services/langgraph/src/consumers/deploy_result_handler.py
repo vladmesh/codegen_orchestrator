@@ -151,6 +151,7 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 telegram_chat_id=telegram_chat_id,
                 redis=redis,
                 reason=failure,
+                application_id=application_id,
             )
 
     logger.info(
@@ -261,6 +262,7 @@ async def _handle_owner_access_failure(
     telegram_chat_id: str,
     redis: RedisStreamClient,
     reason: str,
+    application_id: int | None,
 ) -> dict:
     """Keep a grant/readback failure retryable without disclosing credentials."""
     error_msg = f"Deployed service did not verify permanent access: {reason}"
@@ -275,6 +277,9 @@ async def _handle_owner_access_failure(
                 deployed_url=result["deployed_url"],
                 deployment_result=result.get("deployment_result"),
                 smoke_result=result.get("smoke_result"),
+                application_id=application_id,
+                bot_username=result.get("bot_username"),
+                test_identity_slot=_declares_test_identity_slot(result),
                 error_details=reason,
             ).model_dump(mode="json"),
         },

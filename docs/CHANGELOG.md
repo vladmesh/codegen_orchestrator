@@ -4,7 +4,10 @@
 
 - Reworked permanent generated-service grants into API-owned durable intents,
   separate immutable deploy attempts, stale-target rebinding, and supervisor
-  recovery after deploy or access-proof failures.
+  recovery after deploy or access-proof failures. Lifecycle calls now return a
+  typed per-call disposition: only a dispatched call exposes its fresh Run and
+  target. Applied intent recovery reconciles the source deploy without consuming
+  retries, and a later merged PR always creates its own deploy Run.
 
 ### Changed
 

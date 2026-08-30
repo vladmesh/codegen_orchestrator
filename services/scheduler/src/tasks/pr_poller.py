@@ -12,6 +12,10 @@ import structlog
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.users_grant import (
+    GrantIntentLifecycleDisposition,
+    GrantIntentLifecycleResult,
+)
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
@@ -253,15 +257,18 @@ async def poll_merged_prs(
         # Every merged PR has its own immutable attempt even before a story has
         # completed, which prevents QA/fix cycles from reusing an old SHA.
         if await _needs_initial_owner_seed(api_client, project_id, action):
-            lifecycle = await api_client.resume_initial_owner_grant(
-                project_id, story_id=story_id, head_sha=head_sha
+            lifecycle = GrantIntentLifecycleResult.model_validate(
+                await api_client.resume_initial_owner_grant(
+                    project_id, story_id=story_id, head_sha=head_sha
+                )
             )
             log.info(
                 "poll_merged_initial_owner_lifecycle",
-                intent_id=lifecycle["intent_id"],
-                run_id=lifecycle.get("execution_run_id"),
+                intent_id=lifecycle.intent_id,
+                disposition=lifecycle.disposition.value,
+                run_id=lifecycle.execution_run_id,
             )
-            if lifecycle["execution_run_id"] is not None:
+            if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
                 deployed += 1
                 continue
 

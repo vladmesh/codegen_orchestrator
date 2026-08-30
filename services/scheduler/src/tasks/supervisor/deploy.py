@@ -35,7 +35,11 @@ from shared.contracts.dto.run_result import (
     DeployRunResult,
 )
 from shared.contracts.dto.story import StoryStatus
-from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY
+from shared.contracts.dto.users_grant import (
+    USERS_GRANT_INTENT_KEY,
+    GrantIntentLifecycleDisposition,
+    GrantIntentLifecycleResult,
+)
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.deploy import (
     DeployAction,
@@ -113,6 +117,20 @@ class RefusedDeployAction(StrEnum):
     REDISPATCHED = "redispatched"
     WAITING = "waiting"
     ESCALATED = "escalated"
+
+
+class DeployRetryAction(StrEnum):
+    """One retry tick's truthful outcome.
+
+    ``RETRIED`` means a fresh Run was dispatched. ``RECONCILED`` means the
+    service-side completion won but its response was lost, so the source Run
+    follows the normal successful-deploy handoff without consuming a retry.
+    """
+
+    RETRIED = "retried"
+    RECONCILED = "reconciled"
+    IN_FLIGHT = "in_flight"
+    FAILED = "failed"
 
 
 def _max_deploy_retries() -> int:
@@ -234,12 +252,14 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912
             # that stops a failing deploy from looping.
             if outcome is DeployOutcome.CANCELLED:
                 log.info("deploy_supervisor_redeploy_after_cancel", run_id=run.id)
-            was_retried = await _handle_deploy_retry(
+            retry_action = await _handle_deploy_retry(
                 api_client, redis_client, redis, story_id, project_id, run, log
             )
-            if was_retried:
+            if retry_action is DeployRetryAction.RETRIED:
                 retried += 1
-            else:
+            elif retry_action is DeployRetryAction.RECONCILED:
+                tested += 1
+            elif retry_action is DeployRetryAction.FAILED:
                 failed += 1
 
         elif outcome is DeployOutcome.WAITING_INFRASTRUCTURE:
@@ -281,7 +301,7 @@ async def _recover_recheck_deploy_handoff(
     redis_client: RedisStreamClient,
     run,
     log: structlog.stdlib.BoundLogger,
-) -> bool:
+) -> DeployRetryAction:
     """Publish a durable recheck deploy handoff left queued by a failed caller.
 
     The same age fence as QA handoff recovery leaves the original publisher time
@@ -632,7 +652,8 @@ async def _handle_deploy_retry(
 ) -> bool:
     """Deploy failed with RETRY — re-publish deploy message if retries remain.
 
-    Returns True if retried, False if max retries exceeded.
+    Returns whether a new attempt was dispatched, an already-completed
+    grant was reconciled, or ordinary recovery failed.
     """
     head_sha = _deploy_run_head_sha(run)
     if not head_sha:
@@ -641,7 +662,28 @@ async def _handle_deploy_retry(
         await _notify_admin_failure(
             run.id, project_id, "deploy retry could not find original head_sha"
         )
-        return False
+        return DeployRetryAction.FAILED
+
+    lifecycle = await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha)
+    if lifecycle is not None:
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.ALREADY_APPLIED:
+            if run.result is None:
+                return DeployRetryAction.FAILED
+            success_result = run.result.model_copy(
+                update={"deploy_outcome": DeployOutcome.SUCCESS, "error_details": None}
+            )
+            reconciled = await _handle_deploy_success_story(
+                api_client, redis_client, story_id, project_id, run, success_result, log
+            )
+            return DeployRetryAction.RECONCILED if reconciled else DeployRetryAction.FAILED
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+            log.info(
+                "deploy_supervisor_resumed_owner_intent",
+                source_run_id=run.id,
+                execution_run_id=lifecycle.execution_run_id,
+            )
+            return DeployRetryAction.RETRIED
+        return DeployRetryAction.IN_FLIGHT
 
     retry_key = f"{DEPLOY_RETRY_KEY_PREFIX}{story_id}"
     attempts = await redis.incr(retry_key)
@@ -657,14 +699,7 @@ async def _handle_deploy_retry(
         await api_client.fail_story(story_id)
         await redis.delete(retry_key)
         await _notify_admin_failure(run.id, project_id, f"deploy retries exhausted ({attempts})")
-        return False
-
-    # A run that carried a permanent owner intent must reacquire it through
-    # the API lifecycle. That creates a new immutable attempt and keeps a
-    # successful recovery from silently handing QA a service without access.
-    if await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha):
-        log.info("deploy_supervisor_resumed_owner_intent", source_run_id=run.id)
-        return True
+        return DeployRetryAction.FAILED
 
     # Re-publish deploy message for retry
     new_run_id = f"deploy-retry-{uuid.uuid4().hex[:8]}"
@@ -703,7 +738,7 @@ async def _handle_deploy_retry(
         attempt=attempts,
         max_retries=_max_deploy_retries(),
     )
-    return True
+    return DeployRetryAction.RETRIED
 
 
 async def _handle_deploy_give_up(
@@ -728,13 +763,16 @@ def _deploy_run_head_sha(run) -> str | None:
 
 async def _resume_initial_owner_intent(
     api_client: SchedulerAPIClient, project_id: str, story_id: str, run, head_sha: str
-) -> bool:
+) -> GrantIntentLifecycleResult | None:
     """Recover only the API-owned initial-owner intent referenced by this run."""
     intent_id = (getattr(run, "run_metadata", None) or {}).get(USERS_GRANT_INTENT_KEY)
     if not isinstance(intent_id, str) or not intent_id.startswith("users-grant-initial_owner-"):
-        return False
-    await api_client.resume_initial_owner_grant(project_id, story_id=story_id, head_sha=head_sha)
-    return True
+        return None
+    return GrantIntentLifecycleResult.model_validate(
+        await api_client.resume_initial_owner_grant(
+            project_id, story_id=story_id, head_sha=head_sha
+        )
+    )
 
 
 async def _route_refused_deploy(
@@ -975,7 +1013,11 @@ async def _handle_deploy_infrastructure_wait(
         )
         return RefusedDeployAction.ESCALATED
 
-    if await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha):
+    lifecycle = await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha)
+    if (
+        lifecycle is not None
+        and lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED
+    ):
         log.info("infrastructure_wait_resumed_owner_intent", run_id=run.id)
         return RefusedDeployAction.REDISPATCHED
 
@@ -1185,7 +1227,11 @@ async def _redispatch_waiting_deploy(
 
     await api_client.transition_story(story_id, "deploy")
 
-    if await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha):
+    lifecycle = await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha)
+    if (
+        lifecycle is not None
+        and lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED
+    ):
         log.info("waiting_secret_resumed_owner_intent", run_id=run.id)
         return True
 

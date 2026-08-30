@@ -151,11 +151,47 @@ async def test_retryable_stale_intent_rebinds_and_applied_redelivery_stops(async
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
-    assert repeated.json()["execution_run_id"] == rebound.json()["execution_run_id"]
+    # An applied intent is durable history, not this call's deploy attempt.
+    # A caller must not mistake the old attempt id for a newly dispatched run.
+    assert repeated.json()["disposition"] == "already_applied"
+    assert repeated.json()["execution_run_id"] is None
     intent = await async_client.get(f"/api/projects/{project_id}/users/grant-intents/{intent_id}")
     assert intent.json()["target_sha"] == "b" * 40
     assert intent.json()["target_history"][0]["sha"] == sha
     assert redis.publish_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_initial_owner_lifecycle_returns_only_the_run_dispatched_by_this_call(async_client):
+    """An APPLIED seed never lends its old run to a later merged PR."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, _, _, _, sha = await _target(async_client)
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        first = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        assert first.json()["disposition"] == "dispatched"
+        assert first.json()["execution_run_id"].startswith("deploy-grant-")
+        intent_id = first.json()["intent_id"]
+        applied = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{intent_id}/complete",
+            json={"execution_run_id": first.json()["execution_run_id"], "active": True},
+        )
+        assert applied.json()["status"] == GrantIntentStatus.APPLIED.value
+        repeated = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": "b" * 40},
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+
+    assert repeated.json()["disposition"] == "already_applied"
+    assert repeated.json()["execution_run_id"] is None
 
 
 @pytest.mark.asyncio
