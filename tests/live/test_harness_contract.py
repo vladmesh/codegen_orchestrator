@@ -40,8 +40,6 @@ from shared.contracts.service_ports import (
 )
 from shared.live_contour import require_live_contour
 
-# Every test here drives the harness against fakes, so the run needs no credential
-# to start — see the guard in conftest.pytest_collection_modifyitems.
 pytestmark = pytest.mark.needs_no_api_credential
 
 
@@ -409,8 +407,6 @@ fi
 
 
 def test_server_cleanup_removes_containers_with_anonymous_volumes(tmp_path):
-    """`docker rm` must carry `-v` so anonymous volumes (unlabelled, invisible to
-    the label-scoped volume sweep) die with their container."""
     calls = tmp_path / "docker-calls"
     state = tmp_path / "container-state"
     state.write_text("up\n")
@@ -446,7 +442,6 @@ fi
 
 
 def test_server_cleanup_retries_anonymous_volume_after_live_reference_clears(tmp_path):
-    """The retained candidate record is what makes an orphaned anonymous volume retryable."""
     project = "live-test-2c3e830f"
     volume = "a" * 64
     image = "sha256:deadbeef"
@@ -592,12 +587,6 @@ fi
 
 
 def test_remote_residue_command_reports_stacks_and_only_stacks(tmp_path):
-    """Execute the inventory the global sweep runs on a target.
-
-    It has to see a stack through both names Docker gives it and through its
-    service directory, and stay quiet about anything else on the host — a noisy
-    inventory makes `make test-live-clean` fail on hosts that are in fact clean.
-    """
     stack = "live-te-" + "c" * 32
     services = tmp_path / "services"
     (services / stack).mkdir(parents=True)
@@ -692,12 +681,6 @@ async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, t
 
 @pytest.mark.asyncio
 async def test_wait_deploy_skips_infra_ports_and_picks_web_module(monkeypatch, tmp_path):
-    """Regression: deploy allocates a port per module (web + postgres + redis).
-
-    Only the web module serves HTTP /health. The infra ports come first here to
-    prove they are skipped, so deployed_url does not point at postgres/redis and
-    the non-LLM QA health gate can reach a real service.
-    """
     manifest = OwnershipManifest("project-1")
     ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
     responses = {
@@ -753,17 +736,6 @@ async def test_wait_deploy_picks_backend_when_tg_bot_allocation_comes_first(monk
 
 @pytest.mark.asyncio
 async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_path):
-    """Regression: /api/servers/ and its ports are require_internal_or_admin.
-
-    The harness user carries only X-Telegram-ID and is not admin, so those
-    endpoints answer 403 unless the request also sends X-Internal-Key. Without
-    it wait_deploy would iterate a `{"detail": ...}` error body and raise
-    `TypeError: string indices must be integers` before registering the deploy
-    in the ownership manifest, so cleanup never removes /opt/services/<project>.
-
-    Assert both auth-gated calls carry X-Internal-Key and, on a valid RUNNING
-    application, server_deployment and port_allocation reach the manifest.
-    """
     manifest = OwnershipManifest("project-1")
     ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
     responses = {
@@ -784,7 +756,6 @@ async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_pa
 
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
-    # The real clients, so what the assertion sees is what the API would receive.
     api = pipeline_helpers.api_client_as_test_user(
         base_url="http://test", transport=httpx.MockTransport(handler)
     )
@@ -798,8 +769,6 @@ async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_pa
     assert set(server_endpoint_headers) == {"/api/servers/", "/api/servers/server-1/ports"}
     for headers in server_endpoint_headers.values():
         assert headers["X-Internal-Key"] == "test-internal-key"
-        # The server endpoints answer 403 to the non-admin harness user, so the
-        # observer must not name one — see hotfix #232.
         assert pipeline_helpers.USER_AUTH_HEADER not in headers
 
     assert ctx["server_ip"] == "192.0.2.1"
@@ -819,14 +788,6 @@ async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_wait_deploy_fails_loudly_when_servers_endpoint_rejects(monkeypatch, tmp_path):
-    """A non-200 from the auth-gated servers endpoint must surface as a clear
-    HTTP error, not a `TypeError` from iterating an error body.
-
-    The failure lands in the window this card closes — the stack may already be
-    running on the target — so what teardown is left holding matters: the
-    write-ahead deploy record placed when the story was created must survive untouched,
-    and no port allocation may be claimed, since none was ever read.
-    """
     manifest = OwnershipManifest("project-1")
     manifest.own("server_deployment", "run")
     ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
@@ -855,12 +816,6 @@ async def test_wait_deploy_fails_loudly_when_servers_endpoint_rejects(monkeypatc
 
 @pytest.mark.asyncio
 async def test_wait_deploy_enriches_the_write_ahead_deploy_record(monkeypatch, tmp_path):
-    """The resolved target completes the written-ahead record, it does not repeat it.
-
-    Two records for one stack would make teardown clean it twice and report the
-    second, empty pass as residue; a replaced record would drop the server the
-    write-ahead already knew about.
-    """
     manifest = OwnershipManifest("project-1")
     manifest.own("server_deployment", "run")
     ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
@@ -930,7 +885,6 @@ exit 0
 
 
 def _fake_deploy_target(tmp_path: Path, stack_name: str):
-    """A stand-in deploy target running one stack: its dir and its containers."""
     service_base = tmp_path / "services"
     (service_base / stack_name / "infra").mkdir(parents=True)
     (service_base / stack_name / "infra" / "docker-compose.yml").write_text("services: {}\n")
@@ -947,7 +901,6 @@ def _fake_deploy_target(tmp_path: Path, stack_name: str):
 
 
 async def _create_project_with_stubbed_api(monkeypatch, tmp_path, *, project_name: str):
-    """Run the real project-creation helper against a stubbed API."""
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -971,7 +924,6 @@ async def _create_project_with_stubbed_api(monkeypatch, tmp_path, *, project_nam
 
 
 async def _create_story_with_stubbed_api(ctx: dict):
-    """Drive the real story helper — the engineering entry point — against stubs."""
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/stories/":
@@ -987,18 +939,9 @@ async def _create_story_with_stubbed_api(ctx: dict):
 
 @pytest.mark.asyncio
 async def test_creating_the_story_writes_the_deploy_ahead_of_the_stack(monkeypatch, tmp_path):
-    """The deploy is owned on disk before any target can be running it.
-
-    Creating the story is what makes a deploy reachable — the scheduler opens the
-    story PR and pr_poller turns its merge into a deploy run, none of it asking
-    the harness. Ownership that waits for a RUNNING application can therefore
-    arrive after the stack does. A second process must be able to tear the stack
-    down from this file alone, so the record is on disk before the story exists.
-    """
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
     manifest_file = tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
 
-    # Before the story: no deploy is reachable, nothing is owned.
     assert [item["kind"] for item in json.loads(manifest_file.read_text())["resources"]] == [
         "project"
     ]
@@ -1012,12 +955,6 @@ async def test_creating_the_story_writes_the_deploy_ahead_of_the_stack(monkeypat
 
 @pytest.mark.asyncio
 async def test_the_deploy_is_owned_before_the_story_that_leads_to_it_exists(monkeypatch, tmp_path):
-    """Ownership precedes the first request that can start the chain to a deploy.
-
-    Story creation is several API calls; a crash inside them must not be a window
-    where the pipeline can already be moving towards a deploy the manifest does
-    not know about.
-    """
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
     manifest_file = tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
     owned_when_story_posted = None
@@ -1039,14 +976,6 @@ async def test_the_deploy_is_owned_before_the_story_that_leads_to_it_exists(monk
 
 @pytest.mark.asyncio
 async def test_a_run_that_creates_no_story_owns_no_stack(monkeypatch, tmp_path):
-    """A run that never creates a story can reach no deploy, and owns no stack.
-
-    A write-ahead record carries no target, so teardown clears its stack name on
-    every server the API lists. For the scaffold pipeline — no story, so no story
-    PR for poll_merged_prs to turn into a deploy run — that is an SSH round trip
-    to hosts no stack of its can be on, and one unreachable host would fail the
-    teardown of a test that deployed nothing.
-    """
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
 
     kinds = [resource.kind for resource in ctx["manifest"].resources]
@@ -1059,12 +988,6 @@ async def test_a_run_that_creates_no_story_owns_no_stack(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_deploy_watched_without_a_story_is_owned_anyway(monkeypatch, tmp_path):
-    """Under uncertainty the harness owns rather than skips.
-
-    A future run that reaches a deploy by some path other than a story would be
-    invisible to teardown. wait_deploy therefore takes the record itself, and the
-    cost of being wrong here is one SSH round trip, not an orphaned stack.
-    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name="live-te-abc")
 
@@ -1083,19 +1006,11 @@ async def test_a_deploy_watched_without_a_story_is_owned_anyway(monkeypatch, tmp
 
 @pytest.mark.asyncio
 async def test_manifest_file_alone_tears_down_a_written_ahead_stack(monkeypatch, tmp_path):
-    """Teardown resumed from the manifest file clears the target it never saw.
-
-    This is what `make test-live-clean` does after a run's process is gone: it
-    rebuilds the manifest from `.live-manifests/<run>.json` and cleans what it
-    lists. The written-ahead record carries no server, so teardown must clear the
-    stack name on every server the API lists rather than skip it.
-    """
     stack = "live-te-" + "a" * 32
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name=stack)
     await _create_story_with_stubbed_api(ctx)
     service_base, containers, env = _fake_deploy_target(tmp_path, stack)
 
-    # Rebuild ownership from the file exactly as scripts/clean_live_tests.py does.
     data = json.loads((tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json").read_text())
     resumed = OwnershipManifest(
         run_id=data["run_id"],
@@ -1127,16 +1042,6 @@ async def test_manifest_file_alone_tears_down_a_written_ahead_stack(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_failure_between_deploy_and_port_lookup_leaves_no_stack_behind(monkeypatch, tmp_path):
-    """Inject the defect's window: the stack is up, the harness dies before the
-    port is known, and teardown must still leave the target empty.
-
-    Run 7 of the mega died exactly here — RUNNING application, failure before the
-    ownership block — and teardown reported a fully clean run while the stack
-    kept the port that broke run 8.
-
-    The context is built the way a real run builds it: project, then story, which
-    is where the stack is owned.
-    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     stack = "live-te-" + "b" * 32
     ctx = await _create_project_with_stubbed_api(monkeypatch, tmp_path, project_name=stack)
@@ -1151,8 +1056,6 @@ async def test_failure_between_deploy_and_port_lookup_leaves_no_stack_behind(mon
             return httpx.Response(200, json=[{"id": 21, "status": "running"}], request=request)
         if url == "/api/tasks/":
             return httpx.Response(200, json=[], request=request)
-        # The stack is live on the target; the harness dies before it can read
-        # which port the allocator gave it.
         return httpx.Response(500, json={"detail": "boom"}, request=request)
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -1277,7 +1180,6 @@ async def test_cleanup_guard_preserves_run_and_cleanup_failures(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cleanup_guard_skips_cleanup_and_still_raises_primary_error(monkeypatch):
-    """LIVE_NO_CLEANUP leaves owned resources in place but never masks the failure."""
     monkeypatch.setenv(LIVE_NO_CLEANUP_ENV, "1")
     manifest = OwnershipManifest("run-1")
     manifest.own("project", "project-1")
@@ -1306,8 +1208,18 @@ async def test_cleanup_guard_skips_cleanup_and_still_raises_primary_error(monkey
 
 
 @pytest.mark.asyncio
-async def test_cleanup_guard_skips_cleanup_on_success_when_flag_set(monkeypatch):
-    monkeypatch.setenv(LIVE_NO_CLEANUP_ENV, "1")
+@pytest.mark.parametrize(
+    ("skip_cleanup", "expected_cleaned"),
+    [
+        pytest.param(True, [], id="skip-on-success"),
+        pytest.param(False, [True], id="run-on-success"),
+    ],
+)
+async def test_cleanup_guard_success_respects_opt_out(monkeypatch, skip_cleanup, expected_cleaned):
+    if skip_cleanup:
+        monkeypatch.setenv(LIVE_NO_CLEANUP_ENV, "1")
+    else:
+        monkeypatch.delenv(LIVE_NO_CLEANUP_ENV, raising=False)
     manifest = OwnershipManifest("run-1")
     manifest.own("project", "project-1")
     cleaned = []
@@ -1318,23 +1230,7 @@ async def test_cleanup_guard_skips_cleanup_on_success_when_flag_set(monkeypatch)
     async with cleanup_guard(cleanup, manifest=manifest):
         pass
 
-    assert cleaned == []
-
-
-@pytest.mark.asyncio
-async def test_cleanup_guard_runs_cleanup_when_flag_unset(monkeypatch):
-    monkeypatch.delenv(LIVE_NO_CLEANUP_ENV, raising=False)
-    manifest = OwnershipManifest("run-1")
-    manifest.own("project", "project-1")
-    cleaned = []
-
-    async def cleanup():
-        cleaned.append(True)
-
-    async with cleanup_guard(cleanup, manifest=manifest):
-        pass
-
-    assert cleaned == [True]
+    assert cleaned == expected_cleaned
 
 
 @pytest.mark.asyncio
@@ -1358,8 +1254,6 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
 
     assert len(cleanup_contexts) == 1
     manifest = cleanup_contexts[0]["manifest"]
-    # A project that dies before its repository exists never gets a story, so no
-    # deploy run can be created for it and there is no stack to own.
     assert [(resource.kind, resource.identifier) for resource in manifest.resources] == [
         ("project", cleanup_contexts[0]["project_id"]),
     ]
@@ -1507,21 +1401,11 @@ async def test_common_live_project_gets_persisted_manifest(monkeypatch, tmp_path
     assert data == {"id": "common-project"}
     resource = ctx["manifest"].resources[0]
     assert (resource.kind, resource.identifier) == ("project", ctx["project_id"])
-    # The file is named after the run, which is its own identity now: the
-    # project is one of the resources that run owns, not its name.
     assert (tmp_path / ".live-manifests" / f"{ctx['manifest'].run_id}.json").is_file()
 
 
 @pytest.mark.asyncio
 async def test_the_project_is_created_for_this_run(monkeypatch, tmp_path):
-    """The run hands its id to the platform, once, when it creates the project.
-
-    That is the whole propagation contract from this side: the harness names its
-    run before anything exists, and the platform carries that name onto every
-    worker the run causes. If this request ever stopped carrying it, no live run
-    could find its own containers after they died — so it is asserted on the
-    request the harness actually makes.
-    """
     posted = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -1534,8 +1418,6 @@ async def test_the_project_is_created_for_this_run(monkeypatch, tmp_path):
         _, ctx = await create_test_project_context(api)
 
     assert posted[0]["initiating_run_id"] == ctx["manifest"].run_id
-    # The run is not the project under another name: a project is one of the
-    # things this run owns, and one run can own several.
     assert ctx["manifest"].run_id != ctx["project_id"]
 
 
@@ -1610,7 +1492,6 @@ def test_active_work_fence_makes_ack_failure_red():
 
 @pytest.mark.asyncio
 async def test_unproven_workflow_cancellation_marker_fences_external_cleanup(monkeypatch):
-    """A workflow_cancellation_unproven fence must stop cleanup before GitHub deletion."""
     manifest = OwnershipManifest("project-1")
     manifest.own("project", "project-1")
     manifest.own("github_repository", "org/repo")
@@ -1835,7 +1716,6 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
         "wait-runs",
         "active-work",
         "capability-streams",
-        # Second quiescence proof, behind the consumer fence.
         "wait-runs",
         "server",
         "workers",
@@ -1847,7 +1727,6 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
 
 @pytest.mark.asyncio
 async def test_cleanup_cancels_run_created_after_the_first_runs_snapshot(monkeypatch):
-    """A supervisor-created run that appears after the first scan must not escape teardown."""
     events = []
     manifest = OwnershipManifest("project-1")
     manifest.own("project", "project-1")
@@ -1860,7 +1739,6 @@ async def test_cleanup_cancels_run_created_after_the_first_runs_snapshot(monkeyp
         if request.method == "GET" and request.url.path == "/api/runs/":
             scans += 1
             if scans == 2:
-                # QA run created by the supervisor after the first snapshot.
                 statuses["qa-9"] = "queued"
             return httpx.Response(
                 200,
@@ -1909,7 +1787,6 @@ async def test_cleanup_cancels_run_created_after_the_first_runs_snapshot(monkeyp
 
 @pytest.mark.asyncio
 async def test_cleanup_fails_closed_when_new_runs_never_go_terminal(monkeypatch, tmp_path):
-    """Unprovable quiescence stops teardown before any external or DB deletion."""
     external = []
     manifest = OwnershipManifest("project-1")
     manifest.own("project", "project-1")
@@ -1918,7 +1795,6 @@ async def test_cleanup_fails_closed_when_new_runs_never_go_terminal(monkeypatch,
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET" and request.url.path == "/api/runs/":
-            # The supervisor keeps producing work; nothing ever settles.
             return httpx.Response(
                 200,
                 json=[{"id": "deploy-1", "project_id": "project-1", "status": "running"}],
@@ -1974,53 +1850,59 @@ def _runs_transport(runs: list[dict]) -> httpx.MockTransport:
 
 
 @pytest.mark.asyncio
-async def test_qa_gate_requires_separate_passed_terminal_run(monkeypatch):
-    """The gate reports the pipeline's own QA run, not a health probe of its own."""
+@pytest.mark.parametrize(
+    ("runs", "timeout", "expected", "error"),
+    [
+        pytest.param(
+            [_qa_run()],
+            1,
+            {"run_id": "qa-1", "status": "completed", "qa_outcome": "passed"},
+            None,
+            id="passed-terminal-run",
+        ),
+        pytest.param(
+            [
+                _qa_run(
+                    status="failed",
+                    result={"qa_outcome": "failed", "summary": "1/1 GET check(s) failed"},
+                )
+            ],
+            1,
+            None,
+            "status=failed outcome=failed",
+            id="failed-terminal-run",
+        ),
+        pytest.param(
+            [_qa_run(id="qa-other", story_id="story-other")],
+            0.01,
+            None,
+            "no QA run reached a terminal state",
+            id="foreign-story-run",
+        ),
+        pytest.param(
+            [_qa_run(status="running", result=None)],
+            0.01,
+            None,
+            "no QA run reached a terminal state",
+            id="nonterminal-run",
+        ),
+    ],
+)
+async def test_qa_gate_terminal_and_story_fences(monkeypatch, runs, timeout, expected, error):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    async with httpx.AsyncClient(
-        transport=_runs_transport([_qa_run()]), base_url="http://test"
-    ) as api:
-        result = await run_non_llm_qa(api, "story-1", timeout=1, poll_interval=0)
-
-    assert result == {"run_id": "qa-1", "status": "completed", "qa_outcome": "passed"}
-
-
-@pytest.mark.asyncio
-async def test_qa_gate_rejects_non_passing_terminal_outcome(monkeypatch):
-    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    runs = [
-        _qa_run(
-            status="failed",
-            result={"qa_outcome": "failed", "summary": "1/1 GET check(s) failed"},
-        )
-    ]
     async with httpx.AsyncClient(transport=_runs_transport(runs), base_url="http://test") as api:
-        with pytest.raises(AssertionError, match="status=failed outcome=failed"):
-            await run_non_llm_qa(api, "story-1", timeout=1, poll_interval=0)
+        if error:
+            with pytest.raises(AssertionError, match=error):
+                await run_non_llm_qa(api, "story-1", timeout=timeout, poll_interval=0)
+        else:
+            result = await run_non_llm_qa(api, "story-1", timeout=timeout, poll_interval=0)
 
-
-@pytest.mark.asyncio
-async def test_qa_gate_ignores_runs_of_other_stories(monkeypatch):
-    """A project carries QA runs of other stories; only this mega's run counts."""
-    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    runs = [_qa_run(id="qa-other", story_id="story-other")]
-    async with httpx.AsyncClient(transport=_runs_transport(runs), base_url="http://test") as api:
-        with pytest.raises(AssertionError, match="no QA run reached a terminal state"):
-            await run_non_llm_qa(api, "story-1", timeout=0.01, poll_interval=0)
-
-
-@pytest.mark.asyncio
-async def test_qa_gate_waits_out_a_non_terminal_run(monkeypatch):
-    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    runs = [_qa_run(status="running", result=None)]
-    async with httpx.AsyncClient(transport=_runs_transport(runs), base_url="http://test") as api:
-        with pytest.raises(AssertionError, match="no QA run reached a terminal state"):
-            await run_non_llm_qa(api, "story-1", timeout=0.01, poll_interval=0)
+    if error is None:
+        assert result == expected
 
 
 @pytest.mark.asyncio
 async def test_qa_gate_rejects_a_user_scoped_observer():
-    """list_runs hides unowned runs from a user-scoped caller — crash, don't blind-poll."""
     async with httpx.AsyncClient(
         transport=_runs_transport([_qa_run()]),
         base_url="http://test",
@@ -2030,12 +1912,7 @@ async def test_qa_gate_rejects_a_user_scoped_observer():
             await run_non_llm_qa(api, "story-1", timeout=1, poll_interval=0)
 
 
-# ── Run evidence collection ordering ─────────────────────────────────────
-
-
 class _RecordingCollector:
-    """A run-evidence collector that records the order it was driven in."""
-
     def __init__(self, events: list[str]):
         self.events = events
 
@@ -2048,13 +1925,6 @@ class _RecordingCollector:
 
 @pytest.mark.asyncio
 async def test_engineering_evidence_pass_does_not_wait_out_a_poll_interval(monkeypatch):
-    """The first capture happens before the first sleep.
-
-    Discovery by label means a pass no longer has to catch a worker alive, but
-    it still has to land before worker-manager *removes* the container, and the
-    next attempt for the same project is what triggers that removal. A pass that
-    never runs sees nothing at all.
-    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -2065,8 +1935,6 @@ async def test_engineering_evidence_pass_does_not_wait_out_a_poll_interval(monke
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url="http://test"
     ) as api:
-        # timeout=0 runs no poll iteration at all: whatever capture happens here
-        # is the one that does not depend on winning any race.
         await pipeline_helpers.wait_engineering(
             api, ctx, timeout=0, on_poll=lambda: events.append("capture")
         )
@@ -2076,13 +1944,6 @@ async def test_engineering_evidence_pass_does_not_wait_out_a_poll_interval(monke
 
 @pytest.mark.asyncio
 async def test_qa_evidence_pass_precedes_the_terminal_run_it_reports(monkeypatch):
-    """The QA executor is captured before QA's terminal run is even read.
-
-    ``run_qa_executor`` enqueues the executor's DeleteWorkerCommand in its
-    ``finally`` block, before the QA consumer persists the terminal run. A
-    capture that waited for that run would be reading a container that is
-    already being removed, so the capture point has to sit inside the wait.
-    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     events: list[str] = []
 
@@ -2107,7 +1968,6 @@ async def test_qa_evidence_pass_precedes_the_terminal_run_it_reports(monkeypatch
 
 
 def test_evidence_pass_refreshes_ownership_before_it_captures(monkeypatch):
-    """Redis names a worker while it lives; the manifest keeps the name after."""
     events: list[str] = []
     monkeypatch.setattr(
         pipeline_helpers,
@@ -2121,12 +1981,6 @@ def test_evidence_pass_refreshes_ownership_before_it_captures(monkeypatch):
 
 
 def test_evidence_pass_still_captures_when_ownership_discovery_fails(monkeypatch):
-    """A broken Redis read is recorded as evidence, and never skips the capture.
-
-    The capture is the part that does not need Redis at all — it asks docker for
-    a label — so a Redis failure must not be allowed to take the whole pass with
-    it.
-    """
     events: list[str] = []
 
     def explode(ctx: dict) -> None:
@@ -2139,11 +1993,7 @@ def test_evidence_pass_still_captures_when_ownership_discovery_fails(monkeypatch
     assert events == ["error: worker ownership refresh failed: redis unreachable", "capture"]
 
 
-# ── Environment contract preflight ───────────────────────────────────────
-
-
 def _probe_stdout(payload: dict) -> str:
-    """Container stdout: structlog noise around the marked probe payload."""
     return (
         "2026-07-16 10:00:00 [info] github_token_issued\n"
         + pipeline_helpers.ENV_CONTRACT_PROBE_MARKER
@@ -2164,12 +2014,6 @@ def _probe_payload(**overrides) -> dict:
 
 
 def test_env_contract_probe_reads_the_ref_deploy_resolves(monkeypatch):
-    """The probe must read the exact ref, not a guessed branch.
-
-    devops.env_contract_loader resolves the contract at the deploy's head SHA,
-    so a probe that checked main instead would pass while the deployed tree is
-    missing a fragment.
-    """
     captured = {}
 
     def fake_exec(service, module, args, timeout=30):
@@ -2190,7 +2034,6 @@ def test_env_contract_probe_reads_the_ref_deploy_resolves(monkeypatch):
 
 
 def test_env_contract_probe_payload_survives_container_log_noise(monkeypatch):
-    """Container logs share stdout with the payload, so the marker delimits it."""
     monkeypatch.setattr(
         pipeline_helpers,
         "docker_exec_python_module",
@@ -2239,7 +2082,6 @@ def test_record_env_contract_accepts_expected_fragments(monkeypatch):
 
 
 def test_record_env_contract_rejects_missing_fragment(monkeypatch):
-    """A repo without the backend fragment cannot resolve a typed deploy env."""
     payload = _probe_payload(fragment_paths=["infra/env.contract.yaml"])
     monkeypatch.setattr(
         pipeline_helpers,
@@ -2250,7 +2092,6 @@ def test_record_env_contract_rejects_missing_fragment(monkeypatch):
 
     assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="scaffold") is False
     assert "services/backend/env.contract.yaml" in ctx["env_contract_errors"]["scaffold"]
-    # The observed paths still reach the debug dump for the failed phase.
     assert ctx["env_contract_probes"]["scaffold"]["fragment_paths"] == ["infra/env.contract.yaml"]
 
 
@@ -2268,11 +2109,6 @@ def test_record_env_contract_rejects_empty_contract(monkeypatch):
 
 
 def test_record_env_contract_rejects_sha_absent_from_main(monkeypatch):
-    """The merged check must prove main contains the SHA deploy resolves.
-
-    Without it the mega would accept a contract that only ever existed on the
-    story branch.
-    """
     payload = _probe_payload(merged_into_main=False)
     monkeypatch.setattr(
         pipeline_helpers,
@@ -2289,8 +2125,6 @@ def test_record_env_contract_rejects_sha_absent_from_main(monkeypatch):
     assert "not contained in main" in ctx["env_contract_errors"]["merged"]
 
 
-# ── Typed deploy outcome ─────────────────────────────────────────────────
-
 HARNESS_USER_ID = 7
 
 
@@ -2301,12 +2135,6 @@ def _deploy_run(
     head_sha: str | None = "abc123",
     user_id: int | None = None,
 ) -> dict:
-    """One /api/runs/ record shaped as the API returns it.
-
-    ``head_sha=None`` is the engineering-triggered deploy run: pr_poller records
-    the merged SHA, engineering does not. ``user_id=None`` is how every deploy
-    run is really stored — neither producer attributes it to a user.
-    """
     metadata = {"triggered_by": "pr_poll", "head_sha": head_sha} if head_sha else {}
     return {
         "id": run_id,
@@ -2320,13 +2148,6 @@ def _deploy_run(
 
 
 def _runs_api(runs: list[dict]):
-    """A GET /api/runs/ that answers as services/api/src/routers/runs.py does.
-
-    The ownership narrowing is the part that matters: list_runs restricts the
-    result to the caller's own runs for any non-admin X-Telegram-ID, and the
-    internal key does not lift it. Faking the endpoint without that rule is what
-    let the 2026-07-16 blindness through a green contract suite.
-    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         params = request.url.params
@@ -2345,7 +2166,6 @@ def _runs_api(runs: list[dict]):
 
 
 def _runs_client(runs: list[dict], *, as_user: bool = False) -> httpx.AsyncClient:
-    """Client for the fake runs API, authenticated the way the harness would."""
     headers = dict(pipeline_helpers.internal_headers())
     if as_user:
         headers.update(pipeline_helpers.AUTH_HEADERS)
@@ -2358,7 +2178,6 @@ def _runs_client(runs: list[dict], *, as_user: bool = False) -> httpx.AsyncClien
 
 @pytest.mark.asyncio
 async def test_cleanup_cancels_unowned_project_runs_through_internal_client(monkeypatch, tmp_path):
-    """Cleanup must see unowned deploy/QA runs without trusting API narrowing."""
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     runs = [
@@ -2470,8 +2289,6 @@ async def test_cleanup_cancels_unowned_project_runs_through_internal_client(monk
 
 @pytest.mark.asyncio
 async def test_wait_deploy_run_selects_the_run_carrying_the_merged_sha(monkeypatch):
-    """Only the pr_poller run records head_sha; the engineering-triggered deploy
-    run does not, so it is not the run this mega's contract check must follow."""
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     runs = [
         _deploy_run("deploy-eng-1", head_sha=None),
@@ -2489,15 +2306,6 @@ async def test_wait_deploy_run_selects_the_run_carrying_the_merged_sha(monkeypat
 
 @pytest.mark.asyncio
 async def test_wait_deploy_run_finds_the_unowned_run_the_user_filter_hid(monkeypatch):
-    """Regression, 2026-07-16: deploy `deploy-poll-ea0bed35` succeeded while the
-    mega waited 420s for a run it could not see.
-
-    list_runs narrows to `Run.user_id == caller` for any non-admin X-Telegram-ID,
-    internal key or not, and pr_poller's deploy run has no user_id — so the
-    harness user was answered `[]` for the whole wait. Observed as a plain
-    internal service, the same run is found, and the request must reach the API
-    with the internal key and without the user header.
-    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     seen = {}
     runs = [_deploy_run("deploy-poll-ea0bed35", head_sha="ea0bed35c0ffee", user_id=None)]
@@ -2524,11 +2332,6 @@ async def test_wait_deploy_run_finds_the_unowned_run_the_user_filter_hid(monkeyp
 
 @pytest.mark.asyncio
 async def test_wait_deploy_run_rejects_a_user_scoped_client(monkeypatch):
-    """The 2026-07-16 client must fail loudly instead of polling a blind endpoint.
-
-    Proven against the same fake API: as a user it sees nothing, so a wait would
-    only ever end in a false timeout.
-    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     runs = [_deploy_run("deploy-poll-ea0bed35")]
     ctx = {"project_id": "project-1", "story_id": "story-1"}
@@ -2546,21 +2349,36 @@ async def test_wait_deploy_run_rejects_a_user_scoped_client(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_wait_deploy_run_ignores_another_storys_deploy_run(monkeypatch):
-    """A project outlives one story: an earlier story's deploy run also carries a
-    merged head_sha, and deploying that SHA is not what this mega asserts about.
-
-    The run is checked against this story even if the API were to widen its
-    filter, so the contract check cannot silently follow a foreign deploy.
-    """
+@pytest.mark.parametrize(
+    ("runs", "overwide_api", "error"),
+    [
+        pytest.param(
+            [_deploy_run("deploy-poll-other", story_id="story-earlier", head_sha="dead00")],
+            True,
+            "story-1",
+            id="foreign-story-run",
+        ),
+        pytest.param(
+            [_deploy_run("deploy-eng-1", head_sha=None)],
+            False,
+            "no deploy run with a merged head_sha",
+            id="missing-merged-sha",
+        ),
+        pytest.param([], False, "no deploy run with a merged head_sha", id="no-deploy-run"),
+    ],
+)
+async def test_wait_deploy_run_refuses_unusable_candidates(monkeypatch, runs, overwide_api, error):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    runs = [_deploy_run("deploy-poll-other", story_id="story-earlier", head_sha="dead00")]
     ctx = {"project_id": "project-1", "story_id": "story-1"}
+    transport = (
+        httpx.MockTransport(lambda request: httpx.Response(200, json=runs))
+        if overwide_api
+        else httpx.MockTransport(_runs_api(runs))
+    )
 
     async with httpx.AsyncClient(
         base_url="http://test",
-        # A deliberately over-wide API: it ignores the story_id filter entirely.
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=runs)),
+        transport=transport,
         headers=pipeline_helpers.internal_headers(),
     ) as api_internal:
         run = await pipeline_helpers.wait_deploy_run(
@@ -2569,38 +2387,7 @@ async def test_wait_deploy_run_ignores_another_storys_deploy_run(monkeypatch):
 
     assert run is None
     assert "deploy_run_id" not in ctx
-    assert "story-1" in ctx["deploy_run_error"]
-
-
-@pytest.mark.asyncio
-async def test_wait_deploy_run_rejects_a_deploy_run_without_a_merged_sha(monkeypatch):
-    """An engineering-triggered deploy run records no head_sha, so the mega has no
-    ref to check the environment contract at and must not accept it."""
-    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    ctx = {"project_id": "project-1", "story_id": "story-1"}
-
-    async with _runs_client([_deploy_run("deploy-eng-1", head_sha=None)]) as api_internal:
-        run = await pipeline_helpers.wait_deploy_run(
-            api_internal, ctx, timeout=0.001, poll_interval=0
-        )
-
-    assert run is None
-    assert "deploy_run_id" not in ctx
-    assert "no deploy run with a merged head_sha" in ctx["deploy_run_error"]
-
-
-@pytest.mark.asyncio
-async def test_wait_deploy_run_times_out_without_a_merged_deploy_run(monkeypatch):
-    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-    ctx = {"project_id": "project-1", "story_id": "story-1"}
-
-    async with _runs_client([]) as api_internal:
-        run = await pipeline_helpers.wait_deploy_run(
-            api_internal, ctx, timeout=0.001, poll_interval=0
-        )
-
-    assert run is None
-    assert "no deploy run with a merged head_sha" in ctx["deploy_run_error"]
+    assert error in ctx["deploy_run_error"]
 
 
 @pytest.mark.asyncio
@@ -2633,15 +2420,11 @@ async def test_wait_deploy_outcome_types_the_run_result(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_wait_deploy_outcome_reports_a_failed_deploy(monkeypatch):
-    """A deployed app can answer while the run itself concluded a failure, so the
-    outcome the mega gates on comes from the run, not from ApplicationStatus."""
-    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-
-    async def get(url, headers=None):
-        return httpx.Response(
-            200,
-            json={
+@pytest.mark.parametrize(
+    ("payload", "timeout", "outcome", "context_key", "context_value"),
+    [
+        pytest.param(
+            {
                 "id": "deploy-poll-1",
                 "status": "failed",
                 "result": {
@@ -2649,83 +2432,61 @@ async def test_wait_deploy_outcome_reports_a_failed_deploy(monkeypatch):
                     "error_details": "STRIPE_SECRET_KEY missing",
                 },
             },
-            request=httpx.Request("GET", url),
-        )
-
-    ctx = {"deploy_run_id": "deploy-poll-1"}
-    result = await pipeline_helpers.wait_deploy_outcome(SimpleNamespace(get=get), ctx, timeout=1)
-
-    assert result.deploy_outcome is DeployOutcome.WAITING_FOR_USER_SECRET
-    assert ctx["deploy_outcome"] == "waiting_for_user_secret"
-    assert ctx["deploy_error_details"] == "STRIPE_SECRET_KEY missing"
-
-
-@pytest.mark.asyncio
-async def test_wait_deploy_outcome_rejects_an_untyped_result(monkeypatch):
-    """Run.result is a JSON column: a payload that is not a DeployRunResult must
-    be reported, not read as if its keys meant anything."""
+            1,
+            DeployOutcome.WAITING_FOR_USER_SECRET,
+            "deploy_error_details",
+            "STRIPE_SECRET_KEY missing",
+            id="typed-failed-outcome",
+        ),
+        pytest.param(
+            {"id": "deploy-poll-1", "status": "completed", "result": {"qa_outcome": "passed"}},
+            1,
+            None,
+            "deploy_outcome_error",
+            "not a DeployRunResult",
+            id="untyped-result",
+        ),
+        pytest.param(
+            {"id": "deploy-poll-1", "status": "completed", "result": None},
+            1,
+            None,
+            "deploy_outcome_error",
+            "carries no result",
+            id="terminal-without-result",
+        ),
+        pytest.param(
+            {"id": "deploy-poll-1", "status": "running", "result": None},
+            0.001,
+            None,
+            "deploy_outcome_error",
+            "did not reach a terminal state",
+            id="stuck-nonterminal-run",
+        ),
+    ],
+)
+async def test_wait_deploy_outcome_preserves_type_and_terminal_fences(
+    monkeypatch, payload, timeout, outcome, context_key, context_value
+):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
 
     async def get(url, headers=None):
-        return httpx.Response(
-            200,
-            json={
-                "id": "deploy-poll-1",
-                "status": "completed",
-                "result": {"qa_outcome": "passed"},
-            },
-            request=httpx.Request("GET", url),
-        )
-
-    ctx = {"deploy_run_id": "deploy-poll-1"}
-    result = await pipeline_helpers.wait_deploy_outcome(SimpleNamespace(get=get), ctx, timeout=1)
-
-    assert result is None
-    assert "not a DeployRunResult" in ctx["deploy_outcome_error"]
-    assert "deploy_outcome" not in ctx
-
-
-@pytest.mark.asyncio
-async def test_wait_deploy_outcome_rejects_terminal_run_without_result(monkeypatch):
-    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-
-    async def get(url, headers=None):
-        return httpx.Response(
-            200,
-            json={"id": "deploy-poll-1", "status": "completed", "result": None},
-            request=httpx.Request("GET", url),
-        )
-
-    ctx = {"deploy_run_id": "deploy-poll-1"}
-    result = await pipeline_helpers.wait_deploy_outcome(SimpleNamespace(get=get), ctx, timeout=1)
-
-    assert result is None
-    assert "carries no result" in ctx["deploy_outcome_error"]
-
-
-@pytest.mark.asyncio
-async def test_wait_deploy_outcome_times_out_on_a_stuck_run(monkeypatch):
-    """The wait is bounded: a run that never goes terminal must not hang the mega."""
-    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
-
-    async def get(url, headers=None):
-        return httpx.Response(
-            200,
-            json={"id": "deploy-poll-1", "status": "running", "result": None},
-            request=httpx.Request("GET", url),
-        )
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
 
     ctx = {"deploy_run_id": "deploy-poll-1"}
     result = await pipeline_helpers.wait_deploy_outcome(
-        SimpleNamespace(get=get), ctx, timeout=0.001, poll_interval=0
+        SimpleNamespace(get=get), ctx, timeout=timeout, poll_interval=0
     )
 
-    assert result is None
-    assert "did not reach a terminal state" in ctx["deploy_outcome_error"]
+    if outcome is None:
+        assert result is None
+        assert "deploy_outcome" not in ctx
+    else:
+        assert result.deploy_outcome is outcome
+        assert ctx["deploy_outcome"] == outcome.value
+    assert context_value in ctx[context_key]
 
 
 def test_debug_dump_retains_env_contract_and_deploy_outcome(monkeypatch, tmp_path):
-    """An early contract failure must leave its evidence in the dump."""
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     monkeypatch.setattr(
         pipeline_helpers.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="")
@@ -2775,8 +2536,6 @@ entries:
 
 
 class _FakeGitHub:
-    """Stands in for the GitHub App client inside the probe script."""
-
     files = {
         "infra/env.contract.yaml": _INFRA_FRAGMENT,
         "services/backend/env.contract.yaml": _BACKEND_FRAGMENT,
@@ -2797,7 +2556,6 @@ class _FakeGitHub:
 
 
 def _run_probe(monkeypatch, capsys, *, ref, verify_merged_into_main=False):
-    """Execute the shared probe module against a fake repository."""
     _FakeGitHub.requested_refs = []
     monkeypatch.setattr(live_harness_cleanup, "GitHubAppClient", _FakeGitHub)
     asyncio.run(
@@ -2822,12 +2580,10 @@ def test_env_contract_probe_merges_real_fragments_at_one_ref(monkeypatch, capsys
     ]
     assert probe["entries"] == ["BACKEND_PORT", "COMPOSE_PROJECT_NAME"]
     assert probe["merged_into_main"] is None
-    # Every read is pinned to the deploy ref; none silently fall back to main.
     assert set(_FakeGitHub.requested_refs) == {"abc123"}
 
 
 def test_env_contract_probe_reports_merge_into_main(monkeypatch, capsys):
-    """A SHA already contained in main compares as identical or behind."""
     requested = []
 
     class Client:
@@ -2852,7 +2608,6 @@ def test_env_contract_probe_reports_merge_into_main(monkeypatch, capsys):
 
 
 def test_env_contract_probe_reports_sha_outside_main(monkeypatch, capsys):
-    """A story-branch SHA main never took compares as diverged or ahead."""
 
     class Client:
         async def __aenter__(self):
@@ -2874,7 +2629,6 @@ def test_env_contract_probe_reports_sha_outside_main(monkeypatch, capsys):
 
 
 def test_env_contract_probe_reports_a_repo_without_fragments(monkeypatch, capsys):
-    """A repo carrying no contract is the missing-contract case deploy rejects."""
     monkeypatch.setattr(_FakeGitHub, "files", {"README.md": "# no contract"})
 
     probe = _run_probe(monkeypatch, capsys, ref="abc123")
@@ -2884,13 +2638,6 @@ def test_env_contract_probe_reports_a_repo_without_fragments(monkeypatch, capsys
 
 
 def test_record_env_contract_records_unreachable_probe_instead_of_raising(monkeypatch):
-    """A probe that cannot run must not lose the mega's debug artifact.
-
-    record_env_contract is called outside the fixture's try block, so an escaping
-    exception skips the `yield ctx` + dump_debug path and the early failure leaves
-    no artifact behind. GitHub 5xx, a dead container or a non-zero exit must be
-    recorded as the phase error and reported like any other contract failure.
-    """
     monkeypatch.setattr(
         pipeline_helpers,
         "docker_exec_python_module",
@@ -2917,7 +2664,6 @@ def test_record_env_contract_records_unparseable_probe_output(monkeypatch):
 
 
 def test_record_env_contract_records_container_timeout(monkeypatch):
-    """A hung container raises TimeoutExpired out of subprocess, not a RuntimeError."""
 
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd="docker compose exec", timeout=60)
@@ -2930,7 +2676,6 @@ def test_record_env_contract_records_container_timeout(monkeypatch):
 
 
 def test_debug_dump_retains_probe_exception_without_a_probe(monkeypatch, tmp_path):
-    """The dump for a phase whose probe never returned still names the reason."""
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     monkeypatch.setattr(
         pipeline_helpers.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="")
@@ -2950,16 +2695,8 @@ def test_debug_dump_retains_probe_exception_without_a_probe(monkeypatch, tmp_pat
     assert "502 Bad Gateway" in text
 
 
-# ── The three client kinds and the auth gate (card 1157) ─────────────────
-
-
 def _auth_gate_api(seen: list[httpx.Headers]):
-    """A /api that answers as `require_authenticated_caller` does since PR #233.
-
-    The rule the mega tripped over on 2026-08-07: a credential is required on
-    every /api route, and X-Telegram-ID is not one — it names the actor, it does
-    not authenticate it. Only the internal key (or an LK token) admits a caller.
-    """
+    """A credential admits the caller; a Telegram header only identifies one."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request.headers)
@@ -2972,17 +2709,9 @@ def _auth_gate_api(seen: list[httpx.Headers]):
 
 @pytest.mark.asyncio
 async def test_user_client_passes_the_auth_gate_and_is_still_judged_as_the_user(monkeypatch):
-    """Regression, 2026-08-07: `ensure_test_user` got 401 on POST /api/users/upsert.
-
-    The pre-fix composition — X-Telegram-ID alone — is rejected by the same fake
-    gate, which is what makes this a test of the header composition and not of a
-    function's existence. The user client must carry both: the key to be let in,
-    the user header to be acted for.
-    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     seen: list[httpx.Headers] = []
 
-    # What the harness sent before this card, against the same gate.
     async with httpx.AsyncClient(
         base_url="http://test",
         transport=_auth_gate_api(seen),
@@ -3002,7 +2731,6 @@ async def test_user_client_passes_the_auth_gate_and_is_still_judged_as_the_user(
 
 @pytest.mark.asyncio
 async def test_internal_service_client_passes_the_gate_without_naming_a_user(monkeypatch):
-    """Kind two: admitted by the key, acting as a service rather than as anybody."""
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     seen: list[httpx.Headers] = []
 
@@ -3017,13 +2745,6 @@ async def test_internal_service_client_passes_the_gate_without_naming_a_user(mon
 
 @pytest.mark.asyncio
 async def test_run_observer_client_carries_no_user_header(monkeypatch):
-    """Sentinel against the return of the defect hotfix #232 repaired.
-
-    A user header on this client would re-hide every unowned deploy and QA run
-    behind list_runs' ownership narrowing, and the mega would wait out its full
-    420s for a deploy that already succeeded. Proven end to end against the fake
-    API that reproduces the narrowing: the run has no user_id and is still found.
-    """
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     runs = [_deploy_run("deploy-poll-unowned", head_sha="ea0bed35c0ffee", user_id=None)]
 
@@ -3041,13 +2762,11 @@ async def test_run_observer_client_carries_no_user_header(monkeypatch):
 
 
 def _collected(*, offline: bool):
-    """One collected item, as the guard sees it: marked offline, or not."""
     marker = getattr(pytest.mark, live_conftest.NO_API_CREDENTIAL_MARKER).mark
     return SimpleNamespace(get_closest_marker=lambda name: marker if offline else None)
 
 
 def test_missing_internal_api_key_is_a_named_error_before_any_request(monkeypatch):
-    """No KeyError, no mid-run 401: the variable is named, before the first test."""
     monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
 
     with pytest.raises(RuntimeError, match="INTERNAL_API_KEY"):
@@ -3065,7 +2784,6 @@ def test_missing_internal_api_key_is_a_named_error_before_any_request(monkeypatc
 
 
 def test_the_guard_lets_an_all_offline_run_start_without_the_key(monkeypatch):
-    """A run that calls no API asks nothing of the environment."""
     monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
 
     live_conftest.pytest_collection_modifyitems(
@@ -3074,11 +2792,6 @@ def test_the_guard_lets_an_all_offline_run_start_without_the_key(monkeypatch):
 
 
 def _offline_live_ignore_flags() -> list[str]:
-    """The --ignore flags CI's `make test-live` uses, read from the Makefile itself.
-
-    Read rather than repeated: a stack-touching module added to that list, or
-    dropped from it, must move this test with it.
-    """
     makefile = (resolve_repo_root(Path(__file__)) / "Makefile").read_text()
     assignment = re.search(
         r"^LIVE_OFFLINE_IGNORE_FLAGS =((?:[^\n]*\\\n)*[^\n]*)$", makefile, re.MULTILINE
@@ -3089,7 +2802,6 @@ def _offline_live_ignore_flags() -> list[str]:
 
 
 def _collect_only(*args: str) -> subprocess.CompletedProcess:
-    """Collect a live selection with no INTERNAL_API_KEY, exactly as CI's env has none."""
     env = {k: v for k, v in os.environ.items() if k != "INTERNAL_API_KEY"}
     return subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", *args],
@@ -3102,12 +2814,6 @@ def _collect_only(*args: str) -> subprocess.CompletedProcess:
 
 
 def test_stand_only_sprint_dod_target_collects_without_a_stand():
-    """The custom stand target is syntax-checked by the keyless CI path.
-
-    Collection needs the same named credential guard as any stack-touching
-    module, but it does not contact a stack.  A synthetic value therefore
-    proves this target remains discoverable without provisioning a stand.
-    """
     env = {**os.environ, "INTERNAL_API_KEY": "collection-only"}
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "tests/live/test_sprint_dod.py"],
@@ -3121,8 +2827,6 @@ def test_stand_only_sprint_dod_target_collects_without_a_stand():
     assert "3 tests collected" in result.stdout
 
 
-# The two live selections CI's fast-checks runs with no key in the environment:
-# `make test-live`, and the Redis cleanup regression on its own.
 CI_KEYLESS_SELECTIONS = (
     ("tests/live/", *_offline_live_ignore_flags()),
     ("tests/live/test_capability_cleanup_redis.py",),
@@ -3130,33 +2834,17 @@ CI_KEYLESS_SELECTIONS = (
 
 
 def test_cis_keyless_live_selections_start_but_a_stack_run_still_does_not():
-    """Regression, CI 2026-08-07: the guard aborted fast-checks' `make test-live`.
-
-    A session-wide demand for the key made the offline group — which drives the
-    harness against fakes and needs no API — die at startup with INTERNALERROR
-    before collecting a single test. Run for real, at the same selections CI
-    runs, with the variable absent just as it is on the runner.
-    """
     for selection in CI_KEYLESS_SELECTIONS:
         result = _collect_only(*selection)
         assert result.returncode == 0, f"{selection}: {result.stdout}{result.stderr}"
         assert "INTERNAL_API_KEY" not in result.stdout + result.stderr
 
-    # The same absent variable is still a named refusal for a run that reaches
-    # the API — the guard is scoped, not removed.
     stack_run = _collect_only("tests/live/test_full_pipeline.py")
     assert stack_run.returncode != 0
     assert "INTERNAL_API_KEY is not set in the environment" in stack_run.stdout + stack_run.stderr
 
 
 def test_every_module_ci_runs_without_a_key_declares_the_exception():
-    """The marker is the guard's only exception, so those modules must carry it.
-
-    Says which module is missing it. Without this, a module added to `tests/live/`
-    that CI's keyless selections collect silently re-arms the abort that broke
-    fast-checks, and the reader of that failure gets an INTERNALERROR traceback
-    instead of a name.
-    """
     live_dir = Path(__file__).resolve().parent
     ignored = {Path(flag.removeprefix("--ignore=")).name for flag in _offline_live_ignore_flags()}
     keyless = {path.name for path in live_dir.glob("test_*.py") if path.name not in ignored}
@@ -3172,11 +2860,6 @@ def test_every_module_ci_runs_without_a_key_declares_the_exception():
 
 
 def test_live_modules_do_not_compose_auth_headers_of_their_own():
-    """One place per kind: the runner modules ask for a client, they do not build one.
-
-    test_harness_contract.py is exempt — it is the module that asserts what the
-    headers are, so it has to name them.
-    """
     live_dir = Path(__file__).resolve().parent
     for name in (
         "conftest.py",

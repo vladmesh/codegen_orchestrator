@@ -1,21 +1,3 @@
-"""Offline regressions for the worker/QA combination evidence artifact.
-
-These drive the collector against a fake docker, so they run with no stack. The
-fake is a label index and nothing else: containers go in with the labels
-worker-manager stamps on them, and the only way to get one back out is to ask
-for a run id — which is exactly the constraint the real
-``docker ps -a --filter label=com.codegen.run.id=…`` puts on this module.
-
-The fake also refuses to forget that it was asked. ``listed_states`` records the
-state each container was in every time it was handed to the collector, so a test
-can assert that a worker's evidence was collected without the collector ever
-having seen it alive.
-
-The real daemon is exercised in
-``tests/integration/backend/test_run_evidence_by_label.py``, where a worker is
-created through worker-manager, killed, forgotten by Redis, and only then read.
-"""
-
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
@@ -58,8 +40,6 @@ from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.queues.worker import WorkerLabel, WorkerOwnership
 from shared.contracts.worker_evidence import RemovalFact, RemovedWorkerEvidence
 
-# Every test here drives the harness against fakes, so the run needs no credential
-# to start — see the guard in conftest.pytest_collection_modifyitems.
 pytestmark = pytest.mark.needs_no_api_credential
 
 REPO = "live-test-llm-1a2b3c4d"
@@ -71,13 +51,10 @@ QA_WORKER_ID = "qa-abc123abc123"
 QA_CONTAINER = f"worker-{QA_WORKER_ID}"
 RUN_START = datetime(2026, 8, 13, 12, 0, 0, tzinfo=UTC)
 CODEX_REPOSITORY = "ghcr.io/org/codegen-orchestrator/worker-base-codex"
-# When the delete path captured a removal record, in the fakes below.
 REMOVED_AT = "2026-08-13T12:00:20+00:00"
 
 
 class FakeDocker:
-    """A docker that answers label queries and can lose a container mid-run."""
-
     def __init__(
         self, containers: dict[str, dict] | None = None, logs: dict[str, str] | None = None
     ):
@@ -86,8 +63,6 @@ class FakeDocker:
         self.log_reads: list[str] = []
         self.listed_states: list[str] = []
         self.listing_error: str | None = None
-        # The durable half: what worker-manager wrote before it removed a
-        # container, keyed by run exactly as `worker:evidence:removed:<run>` is.
         self.removed: dict[str, list[RemovedWorkerEvidence]] = {}
         self.removal_record_error: str | None = None
 
@@ -96,18 +71,10 @@ class FakeDocker:
         self.logs_by_container[container] = log
 
     def remove(self, container: str) -> None:
-        """What worker-manager does on delete: the container stops existing."""
         self.containers.pop(container, None)
         self.logs_by_container.pop(container, None)
 
     def delete(self, container: str, *, run_id: str = RUN_ID, **overrides) -> None:
-        """The whole delete path: capture the ending, then remove the container.
-
-        The order is the point. After `remove` there is nothing left to read, so
-        a test that deletes this way is testing what a run can still know about
-        a worker it never saw — which is every worker deleted before its first
-        evidence pass.
-        """
         self.removed.setdefault(run_id, []).append(removal_record(container, **overrides))
         self.remove(container)
 
@@ -151,8 +118,6 @@ class FakeDocker:
         def removed_workers(run_id: str) -> list[RemovedWorkerEvidence]:
             if self.removal_record_error is not None:
                 raise RuntimeError(self.removal_record_error)
-            # Round-tripped through the wire format on purpose: this is what a
-            # reader actually gets back out of Redis, not an in-process object.
             return parse_removed_workers(
                 [record.model_dump_json() for record in self.removed.get(run_id, [])]
             )
@@ -178,7 +143,6 @@ def removal_record(
     transcript_dir: str | None = "/data/worker-transcripts",
     delete_reason: str | None = "failed",
 ) -> RemovedWorkerEvidence:
-    """One record in the shape worker-manager writes it, for a fake to serve."""
     worker_id = worker_id or container.removeprefix("worker-")
     return RemovedWorkerEvidence(
         worker_id=worker_id,
@@ -269,7 +233,6 @@ def container_payload(
 
 @pytest.fixture
 def transcripts(tmp_path: Path) -> Path:
-    """A retained transcript on the host, as worker-wrapper leaves it."""
     directory = tmp_path / "worker-transcripts" / DEV_WORKER_ID
     directory.mkdir(parents=True)
     (directory / "req-1.log").write_text("--- stdout ---\n--- stderr ---\n", encoding="utf-8")
@@ -278,7 +241,6 @@ def transcripts(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def codex_docker(transcripts: Path) -> FakeDocker:
-    """A Codex developer worker that exited 0 without reporting a result."""
     return FakeDocker(
         containers={
             DEV_CONTAINER: container_payload(
@@ -324,17 +286,7 @@ def base_ctx(collector: RunEvidenceCollector, **overrides) -> dict:
     return ctx
 
 
-# ── Discovery by run label ───────────────────────────────────────────────
-
-
 def test_a_worker_never_sampled_alive_is_still_fully_attributed(codex_docker, tmp_path):
-    """The whole card in one test: found by label, read after it died.
-
-    The container is already exited when the first — and only — pass runs, and
-    the fake proves it: every state the collector was ever handed is `exited`.
-    A collector that depended on catching the worker alive would have nothing
-    here, which is what the previous attempt could not get past.
-    """
     collector = collector_for(codex_docker)
 
     collector.capture()
@@ -353,13 +305,7 @@ def test_a_worker_never_sampled_alive_is_still_fully_attributed(codex_docker, tm
 
 
 def test_a_dead_worker_is_read_after_its_redis_metadata_is_gone(codex_docker, tmp_path):
-    """Nothing in a capture reads Redis, so its deletion cannot take evidence.
-
-    worker-manager removes the container *before* it deletes `worker:meta:<id>`
-    (services/worker-manager/src/manager.py), so anything that needed Redis to
-    still be there would already be too late. The label is on the container.
-    """
-    collector = collector_for(codex_docker, owned_workers=lambda: [])  # Redis knows nothing
+    collector = collector_for(codex_docker, owned_workers=lambda: [])
     collector.capture()
 
     worker = build_artifact(base_ctx(collector), root=tmp_path)["workers"][0]
@@ -368,7 +314,6 @@ def test_a_dead_worker_is_read_after_its_redis_metadata_is_gone(codex_docker, tm
 
 
 def test_another_runs_worker_is_never_this_runs_evidence(transcripts, tmp_path):
-    """The query is scoped to one run id, and nothing else answers it."""
     docker = FakeDocker()
     docker.add(
         DEV_CONTAINER,
@@ -412,12 +357,6 @@ def test_another_runs_worker_is_never_this_runs_evidence(transcripts, tmp_path):
 
 
 def test_a_qa_executor_of_this_run_needs_no_creation_window_to_be_claimed(transcripts, tmp_path):
-    """A QA executor is ours because it is labelled ours, not because of when.
-
-    The previous attempt attributed QA executors by comparing their creation
-    time against the run's start, because a QA worker id carries no project.
-    That heuristic is gone: the run id is on the container.
-    """
     docker = FakeDocker()
     docker.add(
         QA_CONTAINER,
@@ -427,7 +366,6 @@ def test_a_qa_executor_of_this_run_needs_no_creation_window_to_be_claimed(transc
             worker_type="qa",
             exit_code=3,
             transcript_source=str(transcripts),
-            # Older than the collector's own start: still ours, on the label.
             created=RUN_START - timedelta(minutes=5),
         ),
         "qa_executor_failed",
@@ -443,27 +381,16 @@ def test_a_qa_executor_of_this_run_needs_no_creation_window_to_be_claimed(transc
 
 
 def test_role_falls_back_to_the_worker_id_when_no_container_can_be_read():
-    """A worker id names its role even when nothing else can be inspected."""
     assert role_from_worker_id("qa-abc123abc123") is WorkerRole.QA_EXECUTOR
     assert role_from_worker_id(DEV_WORKER_ID) is WorkerRole.DEVELOPER
 
 
 def test_a_collector_without_a_run_id_is_refused():
-    """There is no unowned evidence: the run id is the whole discovery key."""
     with pytest.raises(ValueError, match="scoped to a run id"):
         RunEvidenceCollector(run_id="")
 
 
-# ── What the label query cannot cover ────────────────────────────────────
-
-
 def test_a_removed_container_the_run_owned_is_reported_not_omitted(codex_docker, tmp_path):
-    """`docker ps -a` forgets a removed container; the artifact does not.
-
-    This is the one case the label cannot answer, and the ownership manifest is
-    the second source that keeps it from becoming an omission — which would read
-    as "nothing ran".
-    """
     manifest = OwnershipManifest(run_id=RUN_ID)
     manifest.own("worker", DEV_WORKER_ID)
     manifest.own("worker", "qa-ffffffffffff")
@@ -486,12 +413,6 @@ def test_a_removed_container_the_run_owned_is_reported_not_omitted(codex_docker,
 
 
 def test_the_artifact_is_written_without_being_told_where(tmp_path, monkeypatch):
-    """The live harness calls this with no root, and that is how it is called.
-
-    Every unit test passed one, so `None / "docs"` went unseen until it raised in
-    the pipeline fixture's `finally` — failing a combination whose pipeline had
-    passed, and leaving the run with no artifact at all.
-    """
     monkeypatch.setattr(run_evidence, "orchestrator_root", lambda: tmp_path)
     ctx = base_ctx(collector_for(FakeDocker()))
 
@@ -502,7 +423,6 @@ def test_the_artifact_is_written_without_being_told_where(tmp_path, monkeypatch)
 
 
 def test_an_owned_worker_the_label_never_listed_is_accounted_for_on_every_pass(tmp_path):
-    """Reconciliation happens in the pass, not only in the final emit."""
     docker = FakeDocker()
     collector = RunEvidenceCollector(
         run_id=RUN_ID,
@@ -521,7 +441,6 @@ def test_an_owned_worker_the_label_never_listed_is_accounted_for_on_every_pass(t
 
 
 def test_a_sampled_worker_keeps_its_capture_over_the_manifest(codex_docker, tmp_path):
-    """Reconciliation never downgrades evidence that was actually collected."""
     collector = RunEvidenceCollector(
         run_id=RUN_ID,
         probe=codex_docker.probe(),
@@ -530,7 +449,7 @@ def test_a_sampled_worker_keeps_its_capture_over_the_manifest(codex_docker, tmp_
     )
     collector.capture()
     codex_docker.remove(DEV_CONTAINER)
-    collector.capture()  # the manifest still names it; the exit is already ours
+    collector.capture()
 
     worker = build_artifact(base_ctx(collector), root=tmp_path)["workers"][0]
     assert worker["exit_code"]["value"] == 0
@@ -538,12 +457,6 @@ def test_a_sampled_worker_keeps_its_capture_over_the_manifest(codex_docker, tmp_
 
 
 def test_a_worker_listed_running_that_is_then_removed_states_the_loss(transcripts, tmp_path):
-    """Never keep reporting "still running" for a container that is gone.
-
-    A worker listed alive at one pass and removed before the next used to keep
-    its "the container was still running" record forever — an exit that reads as
-    pending when it will never be readable at all.
-    """
     docker = FakeDocker(
         containers={
             DEV_CONTAINER: container_payload(
@@ -556,21 +469,19 @@ def test_a_worker_listed_running_that_is_then_removed_states_the_loss(transcript
         logs={DEV_CONTAINER: "worker_started worker_id=" + DEV_WORKER_ID},
     )
     collector = collector_for(docker)
-    collector.capture()  # alive here
-    docker.remove(DEV_CONTAINER)  # a retry removes it before the next pass
+    collector.capture()
+    docker.remove(DEV_CONTAINER)
     collector.capture()
 
     worker = build_artifact(base_ctx(collector), root=tmp_path)["workers"][0]
     assert worker["container_present"] is False
     assert worker["exit_code"]["status"] == CaptureStatus.MISSED.value
     assert "removed between two evidence passes" in worker["exit_code"]["reason"]
-    # What was read while it lived is evidence and stays.
     assert "worker_started" in worker["log_tail"]["value"]["text"]
     assert worker["agent_type_executed"]["value"] == "codex"
 
 
 def test_a_container_removed_between_listing_and_inspection_says_so(codex_docker, tmp_path):
-    """The listing is already an attribution; the inspection can still lose."""
     listed = ListedWorker(
         container=DEV_CONTAINER,
         worker_id=DEV_WORKER_ID,
@@ -588,7 +499,6 @@ def test_a_container_removed_between_listing_and_inspection_says_so(codex_docker
 
 
 def test_a_failed_listing_does_not_declare_every_container_lost(transcripts, tmp_path):
-    """A broken probe is not evidence that anything was removed."""
     docker = FakeDocker(
         containers={
             DEV_CONTAINER: container_payload(
@@ -615,7 +525,6 @@ def test_a_failed_listing_does_not_declare_every_container_lost(transcripts, tmp
 
 
 def test_probe_failure_is_recorded_not_raised(tmp_path):
-    """Evidence collection never changes a matrix verdict."""
 
     def explode(run_id: str) -> list[ListedWorker]:
         raise RuntimeError("docker daemon unreachable")
@@ -652,18 +561,7 @@ def test_ownership_reconciliation_failure_is_recorded_not_raised(codex_docker, t
     assert artifact["workers"][0]["exit_code"]["value"] == 0
 
 
-# ── Workers the run never had a chance to see ────────────────────────────
-
-
 def test_a_worker_deleted_before_the_first_pass_still_carries_its_exit(codex_docker, tmp_path):
-    """The blind spot of the label, closed by whoever removed the container.
-
-    Nothing observes this worker while it exists. It is created, it ends, and
-    the ordinary delete path takes it away — capturing first — all before the
-    run's only evidence pass. `docker ps -a` cannot answer for it, so the
-    artifact would carry nothing at all if the removal had not written its
-    ending down.
-    """
     codex_docker.delete(DEV_CONTAINER, exit_code=137)
     assert codex_docker.containers == {}
 
@@ -685,11 +583,8 @@ def test_a_worker_deleted_before_the_first_pass_still_carries_its_exit(codex_doc
     assert worker["agent_type_executed"]["value"] == "codex"
     assert worker["delete_reason"] == "failed"
     assert worker["ownership_labels"][WorkerLabel.RUN.value] == RUN_ID
-    # The exit is attributable afterwards because the record kept the address
-    # of the transcript the container's mount would have named.
     assert worker["transcript"]["host_dir"]["value"].endswith(DEV_WORKER_ID)
     assert artifact["capture_errors"] == []
-    # And the run reports on it as a worker of this run, not as an absence.
     assert artifact["run"]["attempts"] == 1
     assert artifact["combination"]["worker_executed"]["value"] == "codex"
 
@@ -697,7 +592,6 @@ def test_a_worker_deleted_before_the_first_pass_still_carries_its_exit(codex_doc
 def test_a_removed_qa_executor_makes_the_qa_cell_answer_for_a_real_container(
     codex_docker, tmp_path
 ):
-    """The QA half is the half most likely to be deleted before anyone looks."""
     codex_docker.delete(
         QA_CONTAINER, worker_type="qa", agent_type="claude", exit_code=0, transcript_dir=None
     )
@@ -716,7 +610,6 @@ def test_a_removed_qa_executor_makes_the_qa_cell_answer_for_a_real_container(
 
 
 def test_a_removal_record_that_missed_the_exit_says_so_rather_than_nothing(codex_docker, tmp_path):
-    """A capture that failed at the source is still a finding, never an omission."""
     codex_docker.delete(
         DEV_CONTAINER,
         exit_code=None,
@@ -739,9 +632,8 @@ def test_a_removal_record_that_missed_the_exit_says_so_rather_than_nothing(codex
 def test_a_removal_record_never_overwrites_what_a_pass_read_off_the_container(
     codex_docker, tmp_path
 ):
-    """The live read is richer, and the two must not fight over the record."""
     collector = collector_for(codex_docker)
-    collector.capture()  # reads the exited container: exit 0, real transcript files
+    collector.capture()
     codex_docker.delete(DEV_CONTAINER, exit_code=137)
 
     collector.capture()
@@ -754,7 +646,6 @@ def test_a_removal_record_never_overwrites_what_a_pass_read_off_the_container(
 
 
 def test_a_running_container_that_is_deleted_is_completed_by_its_record(transcripts, tmp_path):
-    """The lost race the previous attempt could only ever report as a loss."""
     docker = FakeDocker(
         containers={
             DEV_CONTAINER: container_payload(
@@ -767,7 +658,7 @@ def test_a_running_container_that_is_deleted_is_completed_by_its_record(transcri
         logs={DEV_CONTAINER: "still working"},
     )
     collector = collector_for(docker)
-    collector.capture()  # saw it alive, so it has no exit code yet
+    collector.capture()
     docker.delete(DEV_CONTAINER, exit_code=143)
 
     collector.capture()
@@ -779,7 +670,6 @@ def test_a_running_container_that_is_deleted_is_completed_by_its_record(transcri
 
 
 def test_one_runs_removal_records_are_never_read_into_another_run(codex_docker, tmp_path):
-    """Records are filed under a run, and read back under one."""
     codex_docker.delete(DEV_CONTAINER, exit_code=137, run_id="live-someone-else")
 
     collector = collector_for(codex_docker)
@@ -790,7 +680,6 @@ def test_one_runs_removal_records_are_never_read_into_another_run(codex_docker, 
 
 
 def test_a_removal_record_read_failure_is_recorded_not_raised(codex_docker, tmp_path):
-    """Evidence collection never changes a matrix verdict — this source either."""
     codex_docker.removal_record_error = "redis is unreachable"
 
     collector = collector_for(codex_docker)
@@ -800,12 +689,10 @@ def test_a_removal_record_read_failure_is_recorded_not_raised(codex_docker, tmp_
     assert artifact["capture_errors"] == [
         "removed worker evidence read failed: redis is unreachable"
     ]
-    # The container the label did list is still fully reported.
     assert artifact["workers"][0]["exit_code"]["value"] == 0
 
 
 def test_a_worker_in_no_source_at_all_is_still_named_with_its_reason(codex_docker, tmp_path):
-    """No container, no record: the manifest's stated miss is what is left."""
     codex_docker.delete(DEV_CONTAINER, exit_code=137)
     codex_docker.removed.clear()  # the capture itself never reached Redis
 
@@ -819,11 +706,7 @@ def test_a_worker_in_no_source_at_all_is_still_named_with_its_reason(codex_docke
     assert "no removal record was written for it" in worker["exit_code"]["reason"]
 
 
-# ── Reading one container ────────────────────────────────────────────────
-
-
 def test_running_container_is_not_reported_as_exit_zero(transcripts, tmp_path):
-    """A worker still running has no exit code, and the artifact says which."""
     docker = FakeDocker(
         containers={
             DEV_CONTAINER: container_payload(
@@ -845,7 +728,6 @@ def test_running_container_is_not_reported_as_exit_zero(transcripts, tmp_path):
 
 
 def test_a_container_that_never_started_is_not_reported_as_exit_zero(transcripts, tmp_path):
-    """Docker says 0 for a container that never ran; that is not a clean exit."""
     payload = container_payload(
         worker_id=DEV_WORKER_ID,
         agent_type="codex",
@@ -875,11 +757,6 @@ def test_a_later_pass_cannot_erase_a_captured_exit(codex_docker, tmp_path):
 
 
 def test_attempts_counts_every_developer_container(transcripts, tmp_path):
-    """Two Codex deaths are two attempts, both attributable.
-
-    Both are still labelled with this run, so the second attempt's arrival does
-    not cost the first one its evidence even if the first is read only now.
-    """
     second_id = f"dev-{REPO[:20]}-aabbccdd"
     docker = FakeDocker(
         containers={
@@ -915,9 +792,6 @@ def test_attempts_counts_every_developer_container(transcripts, tmp_path):
     } == {"task-1", "task-2"}
 
 
-# ── The QA cell ──────────────────────────────────────────────────────────
-
-
 def test_qa_cell_is_not_exercised_when_the_worker_died_first(codex_docker, tmp_path):
     collector = collector_for(codex_docker)
     collector.capture()
@@ -930,9 +804,6 @@ def test_qa_cell_is_not_exercised_when_the_worker_died_first(codex_docker, tmp_p
     )
     assert cell["run_id"] is None
     assert cell["outcome"] is None
-    # The qa-worker was configured to select claude, and no QA container ever
-    # ran because the developer worker died first. The cell reports what was
-    # observed — nothing — and names the configuration only as the reason.
     assert cell["executor_selected"] == "claude"
     assert cell["executor_executed"]["status"] == CaptureStatus.MISSED.value
     assert cell["executor_executed"]["value"] is None
@@ -946,13 +817,6 @@ def test_qa_cell_is_not_exercised_when_the_worker_died_first(codex_docker, tmp_p
 def test_qa_executor_evidence_survives_the_delete_its_own_client_enqueues(
     codex_docker, transcripts, tmp_path
 ):
-    """The QA executor's exit is read off its labelled container, dead or alive.
-
-    The QA client enqueues the executor's DeleteWorkerCommand in its `finally`
-    block, before the QA consumer persists the terminal run — so the container
-    is dead well before anything asks about QA. Being dead is not the problem;
-    being *removed* is, and until that lands the label still finds it.
-    """
     codex_docker.add(
         QA_CONTAINER,
         container_payload(
@@ -991,7 +855,6 @@ def test_qa_executor_evidence_survives_the_delete_its_own_client_enqueues(
 def test_qa_executor_that_was_never_observed_is_not_claimed_from_configuration(
     codex_docker, tmp_path
 ):
-    """A configured selector is a plan; the cell only claims what it saw run."""
     collector = collector_for(codex_docker)
     collector.capture()
     ctx = base_ctx(
@@ -1004,7 +867,7 @@ def test_qa_executor_that_was_never_observed_is_not_claimed_from_configuration(
 
     artifact = build_artifact(ctx, root=tmp_path)
     cell = artifact["qa"]
-    assert cell["state"] == QAExercise.EXERCISED.value  # a terminal QA run exists
+    assert cell["state"] == QAExercise.EXERCISED.value
     assert cell["executor_selected"] == "claude"
     assert cell["executor_executed"]["status"] == CaptureStatus.MISSED.value
     assert "not evidenced" in cell["executor_executed"]["reason"]
@@ -1052,9 +915,6 @@ def test_deterministic_qa_declares_that_it_starts_no_executor(codex_docker):
     assert cell["mode"] == "deterministic_health"
     assert cell["executor_executed"]["status"] == CaptureStatus.MISSED.value
     assert "starts no QA executor" in cell["executor_executed"]["reason"]
-
-
-# ── Classification ───────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -1127,9 +987,6 @@ def test_classify_outcome(codex_docker, overrides, expected):
     assert classify_outcome(base_ctx(collector_for(codex_docker), **overrides)) == expected
 
 
-# ── The privacy boundary ─────────────────────────────────────────────────
-
-
 def test_log_tail_redacts_secret_environment_values():
     environment = {
         "GITHUB_TOKEN": "ghp_supersecret",
@@ -1154,7 +1011,6 @@ def test_log_tail_is_bounded():
 
 
 def test_artifact_carries_no_agent_stdout_only_a_transcript_pointer(codex_docker, tmp_path):
-    """Codex CLI output stays in the retained transcript, referenced by path."""
     collector = collector_for(codex_docker)
     collector.capture()
 
@@ -1185,9 +1041,6 @@ def test_unreadable_transcript_directory_says_why(transcripts, tmp_path):
     assert transcript["files"]["value"] == []
 
 
-# ── The schema ───────────────────────────────────────────────────────────
-
-
 def test_capture_cannot_be_empty_without_a_reason():
     with pytest.raises(ValueError, match="must say why"):
         Capture(CaptureStatus.MISSED)
@@ -1198,7 +1051,6 @@ def test_capture_cannot_be_empty_without_a_reason():
 
 
 def test_artifact_schema_field_by_field(codex_docker, tmp_path):
-    """Every field a post-mortem reads, asserted where it lives."""
     (tmp_path / "deployed-worker-images.json").write_text(
         json.dumps(
             {
