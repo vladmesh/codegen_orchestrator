@@ -105,7 +105,7 @@ def _user(user_id: int, *, is_admin: bool):
 @pytest.mark.asyncio
 async def test_owner_id_does_not_widen_a_regular_user(monkeypatch):
     """A non-admin passing someone else's owner_id still gets only their own."""
-    from src.routers import projects as projects_router
+    from src.routers.projects import lifecycle as projects_router
 
     async def _resolve_actor(*, is_internal, telegram_id, credentials, db):
         return _user(7, is_admin=False)
@@ -139,7 +139,7 @@ async def test_owner_id_does_not_widen_a_regular_user(monkeypatch):
 @pytest.mark.asyncio
 async def test_owner_id_still_works_for_an_admin(monkeypatch):
     """The admin panel keeps its cross-owner filter."""
-    from src.routers import projects as projects_router
+    from src.routers.projects import lifecycle as projects_router
 
     async def _resolve_actor(*, is_internal, telegram_id, credentials, db):
         return _user(1, is_admin=True)

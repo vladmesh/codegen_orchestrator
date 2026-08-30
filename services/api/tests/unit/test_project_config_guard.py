@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 import pytest
 
-from src.routers.projects import _vet_config_write
+from src.routers.projects.secrets import _vet_config_write
 from src.schemas.project import BotAccessRequest
 
 BOT_TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"  # noqa: S105

@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Split the projects API router into lifecycle, secrets, bot, Telegram, and teardown domains while
+  preserving its public routes and consolidating project access checks in the canonical guards module.
+
 - Extracted executor diagnostics and worker teardown/removal evidence from
   WorkerManager into explicit collaborators while preserving worker lifecycle
   ordering and the manager's public diagnostic and deletion facades.

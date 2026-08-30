@@ -13,7 +13,7 @@ from shared.contracts.dto.work_admission import WorkAdmissionOutcome, WorkAdmiss
 from shared.contracts.vocab import AgentType
 from src.database import get_async_session
 from src.main import app
-from src.routers import projects
+from src.routers.projects import lifecycle as projects_lifecycle
 
 PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
 
@@ -67,7 +67,7 @@ def _cleanup_overrides():
 @pytest.fixture(autouse=True)
 def _allow_count_admission(monkeypatch):
     monkeypatch.setattr(
-        projects,
+        projects_lifecycle,
         "admit_project_creation",
         AsyncMock(return_value=WorkAdmissionRead(outcome=WorkAdmissionOutcome.ADMITTED)),
     )
@@ -128,7 +128,9 @@ async def test_create_project_uses_current_runtime_default_agent_when_omitted(mo
     user = _make_user(user_id=5, telegram_id=42000)
     session = _mock_session(existing_project=None, resolve_user=user)
     monkeypatch.setattr(
-        projects, "get_settings", lambda: SimpleNamespace(default_agent_type=AgentType.CODEX)
+        projects_lifecycle,
+        "get_settings",
+        lambda: SimpleNamespace(default_agent_type=AgentType.CODEX),
     )
 
     async def override():
@@ -157,7 +159,9 @@ async def test_create_project_preserves_explicit_agent_over_runtime_default(monk
     user = _make_user(user_id=5, telegram_id=42000)
     session = _mock_session(existing_project=None, resolve_user=user)
     monkeypatch.setattr(
-        projects, "get_settings", lambda: SimpleNamespace(default_agent_type=AgentType.FACTORY)
+        projects_lifecycle,
+        "get_settings",
+        lambda: SimpleNamespace(default_agent_type=AgentType.FACTORY),
     )
 
     async def override():
