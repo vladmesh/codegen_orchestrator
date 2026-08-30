@@ -335,6 +335,7 @@ LIVE_OFFLINE_IGNORE_FLAGS = \
 	--ignore=tests/live/test_ci_prompt.py \
 	--ignore=tests/live/test_deploy_infra.py \
 	--ignore=tests/live/test_full_pipeline.py \
+	--ignore=tests/live/test_sprint_dod.py \
 	--ignore=tests/live/test_health.py \
 	--ignore=tests/live/test_parallel_engineering.py \
 	--ignore=tests/live/test_pipeline_engineering.py \

@@ -3101,6 +3101,26 @@ def _collect_only(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def test_stand_only_sprint_dod_target_collects_without_a_stand():
+    """The custom stand target is syntax-checked by the keyless CI path.
+
+    Collection needs the same named credential guard as any stack-touching
+    module, but it does not contact a stack.  A synthetic value therefore
+    proves this target remains discoverable without provisioning a stand.
+    """
+    env = {**os.environ, "INTERNAL_API_KEY": "collection-only"}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "tests/live/test_sprint_dod.py"],
+        cwd=resolve_repo_root(Path(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "3 tests collected" in result.stdout
+
+
 # The two live selections CI's fast-checks runs with no key in the environment:
 # `make test-live`, and the Redis cleanup regression on its own.
 CI_KEYLESS_SELECTIONS = (

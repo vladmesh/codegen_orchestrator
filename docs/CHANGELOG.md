@@ -4,6 +4,11 @@
 
 ### Added
 
+- Added the stand-only Definition-of-Done live target for normal owner completion, audited
+  `accept-result`, and an LLM `stand_token` engineering-consumer restart. It records the PO
+  instruction boundary, acceptance audit and running-target refusal, then proves the retained
+  broker turn, worker inventory facts, and absence of detached worker or workspace-lock state.
+
 - Operators can drain the engineering consumer before a deploy through the admin Workers page. The
   credential-derived action persists and audits its drain state, leaves the existing ten-second
   shutdown handoff unchanged, and is honored by recreated consumers until explicitly resumed. A drain
