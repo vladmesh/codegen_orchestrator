@@ -47,10 +47,9 @@ members = [
 ]
 
 [tool.uv.sources]
-# Only workspace members here. `shared` is not a package and has no entry: it
+# Only workspace members appear here. `shared` has no entry: it
 # reaches consumers as a bind-mount (compose) or a `COPY shared` (images), and
-# tests import it from the repo tree via PYTHONPATH. See
-# docs/decisions/shared-is-not-a-package.md. Every name below has to be depended
+# tests import it from the repo tree via PYTHONPATH. Every name below has to be depended
 # on by something, enforced by tests/unit/test_uv_sources_are_used.py.
 api = { workspace = true }
 langgraph-orchestrator = { workspace = true }

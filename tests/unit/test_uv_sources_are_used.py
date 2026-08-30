@@ -3,8 +3,7 @@
 `[tool.uv.sources]` only redirects where a requirement resolves from; it does not
 create a requirement. An entry nobody depends on installs nothing and is invisible
 in `uv.lock`, but reads like a declared package boundary. Three such entries for
-`shared` lived here until they were removed — see
-docs/decisions/shared-is-not-a-package.md.
+`shared` is imported from the repository tree rather than installed as a workspace member.
 
 Referrers are collected from the root pyproject (project dependencies and every
 dependency group) and from every workspace member's pyproject, so a source entry

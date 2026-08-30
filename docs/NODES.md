@@ -8,7 +8,7 @@ Every agent is a LangGraph node with its own set of tools and its own specializa
 
 **Role**: the central coordinator. Manages the project lifecycle through API tools, the single point of communication with the user.
 
-**Implementation**: LangGraph `create_react_agent` in `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container — no separate Docker container needed. Conversation state persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); falls back to in-memory `MemorySaver` without `CHECKPOINT_DATABASE_URL`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) — old messages are summarized into a running summary stored in `state["context"]` instead of being silently dropped.
+**Implementation**: LangGraph `create_react_agent` in `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container. Conversation state is persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); without `CHECKPOINT_DATABASE_URL` it uses in-memory `MemorySaver`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) into a running summary in `state["context"]`.
 
 **Tools** (`src/agents/po/tools.py`):
 - `create_project`, `list_projects`, `get_project`: project management through the API
@@ -24,7 +24,7 @@ outright, with the same effect.
 teardown of the user's own project. The POST sends an undeploy (`DeployTrigger.PO`) to every
 application still up and comes back `pending`; the GET reports where that stands and, once every
 application reads `not_deployed`, archives the project and releases the bot. Only `completed` means
-the token is reusable: until `compose down -v` has run, the old bot is still long-polling and
+the token is reusable: until `compose down -v` has run, the bot is still long-polling and
 Telegram answers 409 to whoever binds the token second, so the tool waits for that status before
 telling the agent the bot is free. A failed undeploy run surfaces as `failed` rather than an endless
 wait. Someone else's project is refused with 403 and stays untouched. This is the way out of a
@@ -79,17 +79,6 @@ incomplete cost coverage without exposing reservation internals.
 To resume: `POST /tasks/{id}/resume` (the admin gives guidance, task WHR → IN_DEV).
 
 **Output**: code in the repository, pushed to the story branch | Or `GAVE_UP` → the WHR flow
-
----
-
-## 🧪 Tester — removed
-
-There is no Tester node. The Engineering Subgraph is `START → developer → done | blocked`.
-
-Testing happens in two places instead. The Developer runs `make test` and `make lint` inside its own
-worker before reporting a result, and CI runs on the pushed branch afterwards, where
-`_wait_for_ci_and_fix` in `engineering_worker.py` handles a red gate. A future tester would sit
-after deploy, validating a running service rather than a working tree.
 
 ---
 
@@ -266,4 +255,4 @@ Redis (deploy:queue) → deploy-worker → DevOps Subgraph
 Redis (po:proactive) → Telegram Bot → User
 ```
 
-**Important**: the PO ReactAgent coordinates the whole flow through LangChain tools. The Scaffolder (a separate service) prepares the repository (copier + make setup + git push) before the architect runs. Worker-manager mounts the pre-scaffolded workspace volume from `/data/workspaces/{repo_id}/` into the worker container. A deploy after a merge is detected by the PR poller in the scheduler; webhooks have been removed.
+**Important**: the PO ReactAgent coordinates the flow through LangChain tools. The Scaffolder prepares the repository before the architect runs. Worker-manager mounts the pre-scaffolded workspace volume from `/data/workspaces/{repo_id}/` into the worker container. The scheduler PR poller detects a merge and triggers deploy.

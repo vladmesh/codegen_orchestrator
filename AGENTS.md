@@ -11,7 +11,6 @@ Instructions for AI assistants working on this project.
 | [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md) | The generation pipeline stage by stage |
 | [docs/NODES.md](docs/NODES.md) | A description of the LangGraph agent nodes |
 | [docs/GLOSSARY.md](docs/GLOSSARY.md) | What an entity is called and what it means |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Product arcs and what is deferred |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | What has already been done |
 
 ## Related projects

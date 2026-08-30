@@ -33,10 +33,11 @@ Isolated Docker containers with AI coding agents are used for code generation.
 
 Instead of Docker-in-Docker (Sysbox), the system uses the **Flat Dev Environment** paradigm, managed from the host through `worker-manager`. This solves the problems with RAM, layer caches and stability.
 
-1. **Dual-Network Setup**:
-   Every worker is connected to two networks:
-   - `internal` (the shared codegen network) — for talking to `api`, `redis` and `worker-manager`.
-   - `dev_proj_<worker_id>` — an isolated network for the project's sidecar containers.
+1. **Network setup**:
+   Developer Workers use `codegen_worker` for the worker control plane and
+   `dev_proj_<worker_id>` for their project's sidecar containers. QA Executors
+   use the isolated `codegen_qa_egress` network and reach a deployment only
+   through their per-run capability endpoint.
 
 2. **Compose Proxy**:
    The workers (the injected AI agents) **have no access to Docker**. To start infrastructure dependencies they call `http://127.0.0.1:9090/infra/compose`; worker-wrapper forwards the request through the authenticated worker-broker to worker-manager.
@@ -62,17 +63,9 @@ The worker-base image `worker-base-common` is unified:
 
 ## Worker Lifecycle & Cleanup
 
-### Stream Cleanup
-`delete_worker()` now cleans `worker:{id}:input` and `worker:{id}:output` streams (were orphaned forever before).
-
-### Orphan GC
-Reverse check (Redis → Docker): scans `worker:status` entries and cleans stale ones where the container is gone. Introspect API shows `GONE` status for stale workers.
-
 ### Workspace GC
-Scans both `WORKSPACE_BASE_PATH` and `SCAFFOLDED_WORKSPACE_PATH`. Max age: 35h. Also cleans stale `workspace:active_projects` Redis entries. When workspace is deleted, calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` flag so scaffolder re-creates it before next task dispatch.
-
-### Stale Worker Auto-Cleanup
-`_check_project_lock()` verifies `worker:status` — workers in terminal states (DEAD/FAILED/STOPPED) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual intervention.
+When a workspace is garbage-collected, worker-manager notifies the API so the
+repository's `workspace_ready` marker is cleared before the next task dispatch.
 
 ## Worker-Manager Introspection API
 

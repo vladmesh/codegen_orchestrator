@@ -14,10 +14,6 @@ Generated projects are built from [service-template](https://github.com/vladmesh
 a spec-first framework, so the pipeline reasons about a declared contract instead of guessing at
 free-form code.
 
-**Status**: Telegram bots in Python are the working project type, verified end to end. What is done
-and what is next is in [docs/ROADMAP.md](docs/ROADMAP.md); what the product is meant to be is in
-[docs/VISION.md](docs/VISION.md).
-
 ## How a request flows
 
 ```mermaid
@@ -47,9 +43,8 @@ graph TD
     QA --> |result| PO
 ```
 
-A project moves through `DRAFT → scaffold → ACTIVE → architect → tasks → PR_REVIEW → DEPLOYING →
-TESTING → COMPLETED`. Each arrow is a queue with a typed contract, not a function call, so a stage
-can fail and be retried without the rest of the system knowing.
+A Project has the lifecycle states `draft`, `active`, `paused`, and `archived`. Pipeline activity is
+represented by its Stories, Tasks, and Runs; queues carry typed contracts between pipeline stages.
 
 Stage by stage: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes and their tools:
 [docs/NODES.md](docs/NODES.md). The queues and DTOs themselves:

@@ -48,11 +48,8 @@ A runtime entity that links a repository to a server. One application = one depl
 An immutable record of a deploy attempt. Every deploy creates a new record. Linked to an Application through `application_id`. The result is recorded through `DeploymentResult`: `pending`, `success`, `failed`, `canceled`.
 **Table:** `service_deployments`
 
-### Service Status
-The runtime state of a deployed project service. Separate from the project lifecycle status. Values: `not_deployed`, `running`, `degraded`, `down`, `stopped`. Stored in `project.service_status`.
-
 ### Repository Status
-Availability of the git repository. Values: `active` (available on GitHub), `missing` (deleted or unavailable). Replaces the old `ProjectStatus.MISSING`.
+Availability of the git repository. Values: `active` (available on GitHub) and `missing` (deleted or unavailable).
 
 ### Service Agent
 A LangGraph ReactAgent living inside the langgraph service, doing specialized domain work with access to the consumer's tools.
@@ -96,7 +93,7 @@ The AI that works inside a worker container — a Developer Worker or a QA Execu
 
 ### Story
 A large feature or user need. Generates one or more Tasks. Lives at the level of the whole project.
-**Types:** `product` (user value) | `technical` (internal initiatives, e.g. Rust migration).
+**Types:** `product` (user value) | `technical` (internal work).
 **Statuses:** `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (also: `reopened`, `waiting_human_review`, `failed`, `archived`). `pr_review` — all tasks are done, a PR is created from the story branch into main, waiting for CI + auto-merge. `deploying` — deploy gate: the story waits for a successful deploy. `testing` — the deployed service goes through QA testing. `waiting_human_review` — the developer agent reported a blocker; waiting for admin intervention. `reopened` — the user reported a problem with a completed/failed story; the architect reviews it and creates fix tasks.
 **Table:** `stories`
 
@@ -108,7 +105,7 @@ An entity in the DB that links code to a specific git repository. Every reposito
 **Table:** `repositories`
 
 ### Task
-*(Formerly WorkItem)*. The unit of work planning for a developer/agent.
+The unit of work planning for a developer/agent.
 **Statuses:** `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (also: `blocked`, `waiting_resources`, `waiting_human_review`, `failed`, `cancelled`)
 `waiting_resources` — the allocator found no current capacity to place the task, but the request fits on at least one managed server. The scheduler checks fresh metrics and automatically returns the task to `todo` without incrementing `current_iteration`; a waiting timeout moves it to `waiting_human_review`.
 `waiting_human_review` — the developer agent reported a blocker through `POST localhost:9090/result` with `{"success": false, "reason": "..."}`. The pipeline is paused until admin intervention (`POST /tasks/{id}/resume`).
@@ -122,13 +119,13 @@ A record in the DB for discussing technical decisions before coding starts.
 ## Data & Messaging
 
 ### Run
-*(Formerly Task)*. An entity in PostgreSQL. Tracks the execution of asynchronous work (engineering, deploy, QA).
+An entity in PostgreSQL that tracks one asynchronous engineering, deploy, or QA attempt.
 **Types:** `RunType` — `ENGINEERING`, `DEPLOY`, `QA`
 **Statuses:** `QUEUED` → `RUNNING` → `COMPLETED` / `FAILED` / `CANCELLED`
 
-**Relations:** Project, Story (optional, via `story_id` FK)
+**Relations:** Project, Story (optional), Task (optional)
 
-**Table:** `tasks` (renaming in progress)
+**Table:** `runs`
 
 ### Message
 Data in a Redis Stream queue. Contains a `task_id` and the parameters for processing.

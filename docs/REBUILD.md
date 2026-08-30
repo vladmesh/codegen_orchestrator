@@ -20,12 +20,10 @@ circuits, whether anything built is behind the tree on `shared`. Details in
 
 ## How shared gets delivered
 
-`shared` is not an installable package: it is not installed into the venv, and there is no installed
-copy anymore. It also declares no package boundary of its own — the root `pyproject.toml` has no
-`[tool.uv.sources]` entry for it and there are no per-subpackage `pyproject.toml` files under
-`shared/`; why it is this way and not a workspace member is in
-[decisions/shared-is-not-a-package.md](decisions/shared-is-not-a-package.md). The only source is the
-repository tree, and it reaches its consumers through three channels.
+`shared` is an importable source package in the repository tree, not an installable or distributable
+workspace member. The root `pyproject.toml` has no `[tool.uv.sources]` entry for it; the only
+`pyproject.toml` under `shared/` declares third-party dependency parity. The repository tree is the
+only source, and it reaches consumers through three channels.
 
 **Bind-mount** `./shared:/app/shared` — ten compose services: `api`, `langgraph`,
 `deploy-worker`, `qa-worker`, `engineering-worker`, `architect`, `infra-service`, `telegram_bot`,
@@ -42,7 +40,8 @@ restart, and a test run imports `shared` from the tree.
 
 **Import from the tree over `PYTHONPATH`** — locally and in tests. `scripts/test-unit-local.sh` and
 `[tool.pytest.ini_options] pythonpath` keep the repository root importable, so a test run always reads
-`shared/` as it is on disk, with no copy step at all.
+`shared/` as it is on disk, with no copy step at all. `python -m shared` is the canonical in-tree
+entry point for the unit suite.
 
 Since `shared` is not installed anywhere, its `dependencies` install nothing: every
 consumer has to repeat them in its own `pyproject.toml`. This is watched by
@@ -245,8 +244,6 @@ Expected: `alembic_version` equals the latest revision in
 
 ## Small things that cause confusion
 
-- `--profile build` in the Makefile targets has no effect: there are no profiles in compose,
-  `docker compose config --profiles` is empty. The flag is left over from a previous build scheme.
 - `make down` not only stops the stack but also removes orphaned `worker-*` containers and the
   `codegen_worker` network.
 - `make stop` is an alias of `make down`, not a pause.
