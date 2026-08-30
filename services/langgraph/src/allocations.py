@@ -9,6 +9,7 @@ Used by:
 """
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
@@ -24,11 +25,21 @@ from shared.server_admission import (
 
 from .clients.api import api_client
 from .config.settings import get_settings
-from .schemas.api_types import AllocationInfo
 
 logger = structlog.get_logger(__name__)
 
 DEFAULT_ALLOCATION_MIN_DISK_MB = 1024
+
+
+class AllocationInfo(TypedDict, total=False):
+    """Port allocation information returned by the API client."""
+
+    id: int
+    server_handle: str
+    port: int
+    application_id: int | None
+    service_name: str
+    server_ip: str | None
 
 
 class AllocationError(Exception):

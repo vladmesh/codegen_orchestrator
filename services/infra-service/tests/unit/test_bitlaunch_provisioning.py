@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.provisioner.bitlaunch import BitLaunchClient, authorize_run_owned_target
+from shared.provisioning_policy import authorize_run_owned_target
+from src.provisioner.bitlaunch import BitLaunchClient
 from src.provisioner.node import ProvisionerNode
 
 

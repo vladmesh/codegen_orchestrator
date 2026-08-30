@@ -20,6 +20,9 @@ API_ROUTERS = REPO_ROOT / "services/api/src/routers"
     [
         "src.tools",
         "src.schemas.tools",
+        "src.schemas",
+        "src.schemas.api_types",
+        "src.state",
         "src.config.agent_config_cache",
         "src.subgraphs.devops.env_analyzer",
         "src.subgraphs.devops.env_groups",
@@ -116,6 +119,7 @@ def test_allocator_lives_at_new_location():
     mod = importlib.import_module("src.allocations")
     assert hasattr(mod, "ensure_project_allocations")
     assert hasattr(mod, "AllocationError")
+    assert hasattr(mod, "AllocationInfo")
 
 
 def test_deploy_environment_path_has_no_llm_dependency():

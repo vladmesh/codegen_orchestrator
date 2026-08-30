@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Removed unreachable LangGraph schemas/state, obsolete SSH container helpers,
+  compatibility aliases, and unused scaffold/git/inventory code while retaining
+  the live allocator, HTTP health probe, and BitLaunch policy boundary.
+
 ### Added
 
 - The stand-only Definition-of-Done restart target now identifies terminal

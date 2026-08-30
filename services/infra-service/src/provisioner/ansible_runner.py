@@ -217,9 +217,3 @@ class AnsibleRunner:
                 os.remove(inventory_path)
             if private_key_path and os.path.exists(private_key_path):
                 os.remove(private_key_path)
-
-
-# Function alias for backward compatibility if needed, but we prefer class usage now
-def run_ansible_playbook(*args, **kwargs):
-    runner = AnsibleRunner()
-    return runner.run_playbook(*args, **kwargs)

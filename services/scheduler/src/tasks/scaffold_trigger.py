@@ -6,8 +6,7 @@ For DRAFT projects: publishes mode=full (copier + make setup + git push).
 For ACTIVE projects with TODO tasks: publishes mode=ensure (clone + setup if missing).
 
 Deduplication: uses Redis set ``scaffold:inflight`` to prevent duplicate
-messages for the same project.  The scaffolder consumer must call
-``clear_scaffold_inflight()`` after processing each job.
+messages for the same project until the configured TTL expires.
 """
 
 from __future__ import annotations
@@ -56,12 +55,6 @@ async def _mark_inflight(redis_client: RedisStreamClient, project_id: str) -> bo
     member_key = f"{SCAFFOLD_INFLIGHT_KEY}:{project_id}"
     was_set = await redis_client.redis.set(member_key, "1", nx=True, ex=_scaffold_inflight_ttl())
     return bool(was_set)
-
-
-async def clear_scaffold_inflight(redis_client: RedisStreamClient, project_id: str) -> None:
-    """Remove the inflight marker for a project (called by scaffolder after processing)."""
-    member_key = f"{SCAFFOLD_INFLIGHT_KEY}:{project_id}"
-    await redis_client.redis.delete(member_key)
 
 
 async def trigger_scaffolds(
