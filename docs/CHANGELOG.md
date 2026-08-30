@@ -4,6 +4,11 @@
 
 ### Added
 
+- Hardened the stand-only Definition-of-Done target against unrelated PO input,
+  cold worker creation, and terminal worker history. Its operator acceptance
+  fixture now reaches human review through the public story actions before it
+  exercises the existing completed-story reachability guard.
+
 - Added the stand-only Definition-of-Done live target for normal owner completion, audited
   `accept-result`, and an LLM `stand_token` engineering-consumer restart. It records the PO
   instruction boundary, acceptance audit and running-target refusal, then proves the retained
