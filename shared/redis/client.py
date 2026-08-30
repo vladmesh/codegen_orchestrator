@@ -1,17 +1,4 @@
-"""Redis Streams client: publishing, consuming and the diagnostics around loss.
-
-Three things a stream entry can do besides being processed, and where each one
-becomes visible:
-
-- it stays unacked → the group's PEL keeps it and the consumer's *recurring*
-  XAUTOCLAIM sweep brings it back (``_reclaim_pending``);
-- it cannot be decoded or validated → it is copied to ``{stream}:dlq`` and only
-  then ACKed (``_reject_entry``);
-- the stream was trimmed under it → XAUTOCLAIM hands back a body-less entry,
-  which is logged and counted (``_record_lost_entry``).
-
-None of the three is a silent ``continue``.
-"""
+"""Redis Streams client with PEL reclaim, DLQ quarantine, and trimmed-entry diagnostics."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -42,13 +29,7 @@ logger = structlog.get_logger(__name__)
 
 
 def decode_redis_value(value: Any) -> Any:
-    """Normalize a Redis response value to str.
-
-    redis-py 8 stopped applying ``decode_responses=True`` to the field maps and
-    entry IDs returned by XREADGROUP / XREAD / XAUTOCLAIM (they arrive as bytes),
-    even though XRANGE and most other commands still decode. We normalize at the
-    boundary so callers always receive str regardless of the redis-py version.
-    """
+    """Normalize Redis bytes responses at the client boundary."""
     return value.decode() if isinstance(value, bytes) else value
 
 
@@ -63,23 +44,13 @@ class StreamMessage:
 
     message_id: str
     data: dict[str, Any]
-    # True when this entry came back from an XAUTOCLAIM sweep of the PEL rather
-    # than from a fresh XREADGROUP delivery. A consumer that runs several jobs
-    # at once needs the difference: a reclaimed entry may still belong to a
-    # worker that is alive, and taking it over would run the same job twice.
+    # Reclaimed entries may still belong to a live worker.
     reclaimed: bool = False
-
-    # Helper to parse known DTOs if needed, but 'data' is raw dict
 
 
 @dataclass
 class TypedMessage[T]:
-    """A schema-validated message from a Redis Stream.
-
-    ``value`` is a validated Pydantic model, so consumers never touch the raw
-    dict. Decode and validation failures are handled terminally inside
-    ``consume_typed`` and never surface as a TypedMessage.
-    """
+    """A schema-validated Redis Stream message."""
 
     message_id: str
     value: T
@@ -87,28 +58,19 @@ class TypedMessage[T]:
 
 DEFAULT_STREAM_MAXLEN = 1000
 
-# Floor on how often a live consumer re-runs its XAUTOCLAIM sweep. The sweep is
-# a single round trip against an empty PEL, but a caller may pass
-# ``pending_timeout_ms=0`` (the proactive listener does, so a dead predecessor's
-# notifications are picked up at once), and without a floor that would put an
-# XAUTOCLAIM on every turn of the read loop.
+# Prevent a zero reclaim timeout from busy-looping XAUTOCLAIM.
 MIN_RECLAIM_INTERVAL_MS = 1_000
 
-# Redis hash counting, per ``{stream}|{group}``, the PEL entries XAUTOCLAIM
-# handed back without a body. Kept in Redis rather than in the process, because
-# the loss it counts is exactly the kind that outlives the consumer that saw it.
+# Durable diagnostic count for body-less trimmed PEL entries.
 LOST_ENTRIES_KEY = "stream:diagnostics:lost_entries"
 
-# Dead-letter stream naming, per docs/ERROR_HANDLING.md: engineering:queue →
-# engineering:queue:dlq.
+# Dead-letter stream suffix.
 DLQ_SUFFIX = ":dlq"
 
-# What made an entry undeliverable, as written to the DLQ ``failure`` field.
 DLQ_FAILURE_DECODE = "decode_error"
 DLQ_FAILURE_VALIDATION = "validation_error"
 
-# XAUTOCLAIM answers with [cursor, entries] on Redis 6.2 and
-# [cursor, entries, deleted_ids] on Redis 7+.
+# Redis 7 adds deleted IDs to XAUTOCLAIM's response.
 _XAUTOCLAIM_WITH_DELETED_LEN = 3
 
 
@@ -118,26 +80,14 @@ def dlq_stream(stream: str) -> str:
 
 
 def resolve_reclaim_interval_ms(pending_timeout_ms: int, override: int | None = None) -> int:
-    """How long a consumer waits between XAUTOCLAIM sweeps.
-
-    An entry cannot become claimable sooner than ``pending_timeout_ms`` after it
-    was last delivered, so sweeping faster than that buys nothing but round
-    trips; sweeping at exactly that period bounds the pickup delay at twice the
-    timeout. ``MIN_RECLAIM_INTERVAL_MS`` keeps a zero timeout from turning the
-    read loop into a sweep loop.
-    """
+    """Use the claim timeout as the sweep interval, with a nonzero floor."""
     if override is not None:
         return override
     return max(pending_timeout_ms, MIN_RECLAIM_INTERVAL_MS)
 
 
 def _delete_at(data: Any, locs: list[list]) -> tuple[Any, list[str]]:
-    """A copy of *data* without the keys named by *locs*, and the names removed.
-
-    A ``loc`` step that resolves to neither a key nor an index is a union tag —
-    it names the candidate model that complained, not a place in the payload —
-    so it is stepped over rather than followed.
-    """
+    """Copy data without fields named by validation locations."""
     pruned = copy.deepcopy(data)
     dropped: list[str] = []
     for loc in locs:
@@ -154,26 +104,14 @@ def _delete_at(data: Any, locs: list[list]) -> tuple[Any, list[str]]:
 
 
 def _candidate_of(loc: list, data: Any) -> Any:
-    """Which union member reported this error, or None for the payload itself.
-
-    Pydantic prefixes a union member's errors with that member's name, and that
-    name is not a key of the payload — which is exactly how it is told apart
-    from a nested field.
-    """
+    """Return the reporting union member, if a location names one."""
     if loc and isinstance(data, dict) and loc[0] not in data:
         return loc[0]
     return None
 
 
 def unexpected_field_prunings(data: Any, exc: ValidationError) -> list[tuple[Any, list[str]]]:
-    """Payload variants with the fields *exc* called unexpected removed.
-
-    One variant per union member whose *only* complaint was unexpected fields.
-    A member that also reported a missing field, a wrong type or a version
-    literal it does not satisfy is not looking at a merely newer payload, and
-    contributes no variant: forgiving that would turn a strict boundary into a
-    guess.
-    """
+    """Produce candidates only when unexpected fields are the sole error."""
     errors = exc.errors(include_url=False, include_input=False)
     if not errors or not isinstance(data, dict | list):
         return []
@@ -196,19 +134,7 @@ def unexpected_field_prunings(data: Any, exc: ValidationError) -> list[tuple[Any
 
 
 def validate_tolerating_additions(adapter: TypeAdapter, data: Any) -> tuple[Any, list[str]]:
-    """Validate *data*, forgiving only fields the schema does not know yet.
-
-    Returns ``(value, dropped_field_names)``. A publisher that adds a field is
-    the routine way a contract moves forward — the worker image and the service
-    that reads its results are built separately, so one of them is the older one
-    for a while. Destroying the message over that difference is the worst of the
-    available answers.
-
-    Forgiveness lives here, on the read side, and nowhere else: the contracts
-    keep ``extra="forbid"``, so publishing an unknown field still fails at the
-    publisher. Any other validation failure re-raises unchanged, which keeps a
-    payload that is wrong (rather than new) on the poison path.
-    """
+    """Accept only payloads made valid by dropping unknown fields."""
     try:
         return adapter.validate_python(data), []
     except ValidationError as exc:
@@ -217,8 +143,6 @@ def validate_tolerating_additions(adapter: TypeAdapter, data: Any) -> tuple[Any,
                 return adapter.validate_python(candidate), dropped
             except ValidationError:
                 continue
-        # Removing the unexpected fields did not make it valid, so they were not
-        # the whole story. Report the original failure.
         raise
 
 
@@ -412,8 +336,7 @@ class RedisStreamClient:
             )
             new_cursor = decode_redis_value(result[0])
             claimed = result[1]
-            # Redis 7 reports the ids it dropped from the PEL in a third element;
-            # Redis 6.2 leaves a body-less entry in the claimed list instead.
+            # Redis 7 reports trimmed IDs separately; Redis 6.2 returns body-less entries.
             deleted = result[2] if len(result) >= _XAUTOCLAIM_WITH_DELETED_LEN else []
 
             for message_id, fields in claimed:
@@ -426,15 +349,7 @@ class RedisStreamClient:
             for message_id in deleted:
                 await self._record_lost_entry(stream, group, decode_redis_value(message_id))
 
-            # Follow the cursor whenever Redis moved it, even when this page
-            # brought back nothing. XAUTOCLAIM gives up after scanning about
-            # ``count * 10`` PEL entries, so a page filled with entries a
-            # healthy consumer is still holding answers with an advanced cursor,
-            # no claims and no deleted ids. Stopping there stranded every stale
-            # entry behind that fresh prefix: the next sweep starts at "0-0"
-            # again, walks into the same prefix and stops again, for as long as
-            # the prefix stays fresh. Only a terminal or non-advancing cursor
-            # means the PEL has been walked to its end.
+            # Advance through fresh entries; only a terminal cursor ends the PEL scan.
             if new_cursor in ("0-0", cursor):
                 break
             cursor = new_cursor
@@ -450,20 +365,7 @@ class RedisStreamClient:
         pending_timeout_ms: int,
         reclaim_interval_ms: int,
     ) -> AsyncIterator[tuple[str, dict[str, str], bool] | None]:
-        """Yield raw ``(message_id, fields, reclaimed)`` entries from a stream.
-
-        Shared read plumbing for ``consume`` and ``consume_typed``: ensures the
-        group exists, then alternates an XAUTOCLAIM sweep of the PEL with a
-        blocking XREADGROUP. Never acks — the caller owns ack semantics. Yields
-        ``None`` when a blocking read returns empty so callers can cede the
-        event loop.
-
-        The sweep runs *inside* the read loop, on ``reclaim_interval_ms``. It
-        used to run once, before the loop: this generator is created once per
-        process, so an entry that became stuck after start-up stayed in the PEL
-        until the service was restarted, while six consumers were written
-        expecting reclaim to bring it back.
-        """
+        """Alternate recurring PEL reclaim and blocking reads without ACKing."""
         await self.ensure_consumer_group(stream, group)
         reclaim_interval_s = reclaim_interval_ms / 1000
         next_reclaim_at = 0.0
@@ -471,8 +373,7 @@ class RedisStreamClient:
         while True:
             try:
                 if claim_pending and time.monotonic() >= next_reclaim_at:
-                    # Scheduled before the sweep, so a sweep that raises waits
-                    # its full interval instead of retrying on the next turn.
+                    # A failed sweep waits for its next scheduled interval.
                     next_reclaim_at = time.monotonic() + reclaim_interval_s
                     async for entry in self._reclaim_pending(
                         stream, group, consumer, count, pending_timeout_ms
@@ -489,11 +390,7 @@ class RedisStreamClient:
                 )
 
                 if not messages:
-                    # Cede control to the event loop. The XREADGROUP block above
-                    # normally suspends, but some backends (e.g. fakeredis in
-                    # tests) ignore the block timeout and return immediately —
-                    # without this yield the loop would busy-spin and starve
-                    # other tasks on the same loop.
+                    # Prevent immediate-return backends from busy-spinning.
                     await asyncio.sleep(0)
                     yield None
                     continue
@@ -567,15 +464,7 @@ class RedisStreamClient:
                 logger.debug("message_acked", message_id=message_id)
 
     async def _terminal_ack(self, stream: str, group: str, message_id: str) -> None:
-        """ACK a poison entry, tolerating a failing XACK.
-
-        The terminal ACK for an invalid message runs inside the ``consume_typed``
-        generator, outside the consumer's own try/except. If XACK hit a transient
-        Redis error and propagated, it would kill the consumer generator and
-        silently stop the stream from being consumed. So a failed ACK is logged
-        and swallowed: the entry stays in the PEL, gets reclaimed, re-validated
-        (fails again) and re-ACKed, while the loop keeps serving valid messages.
-        """
+        """ACK poison entries without stopping the consumer on transient failure."""
         try:
             await self.redis.xack(stream, group, message_id)
         except Exception as e:
@@ -596,17 +485,7 @@ class RedisStreamClient:
         failure: str,
         reason: Any,
     ) -> bool:
-        """Copy a poison entry to ``{stream}:dlq``. True when it landed there.
-
-        The body travels verbatim. It may hold secrets — tokens in ``env_vars``,
-        an ``api_key`` — which is exactly why it is not logged and why
-        ``reason`` carries only the shape of the failure with values elided.
-        The DLQ is a different destination from a log: it is a stream in the
-        same Redis, under the same credentials, next to the stream the payload
-        already sat on in cleartext, whereas logs are shipped to Loki and read
-        by a wider audience. Copying the body between two streams of one Redis
-        crosses no trust boundary; writing it to a log would.
-        """
+        """Copy poison entries to the same Redis DLQ without logging their bodies."""
         target = dlq_stream(stream)
         entry = {
             "source_stream": stream,
@@ -620,8 +499,7 @@ class RedisStreamClient:
         try:
             dlq_id = await self.redis.xadd(target, entry, **self._xadd_kwargs())
         except Exception as e:
-            # The exception is raised while handling a payload that may contain
-            # secrets, so only its type is logged, never its message.
+            # Payload-handling failures log only their type because bodies may contain secrets.
             logger.error(
                 "typed_consume_quarantine_failed",
                 stream=stream,
@@ -651,13 +529,7 @@ class RedisStreamClient:
         failure: str,
         reason: Any,
     ) -> None:
-        """Quarantine a poison entry, then ACK it away.
-
-        The ACK happens only once the DLQ write landed. An entry that could not
-        be quarantined stays in the PEL, where the recurring reclaim brings it
-        back when Redis takes writes again: destroying a message because its
-        diagnostics copy failed is the failure this path exists to end.
-        """
+        """ACK poison entries only after their DLQ copy succeeds."""
         if await self._quarantine_entry(
             stream, group, message_id, fields=fields, failure=failure, reason=reason
         ):
@@ -676,27 +548,7 @@ class RedisStreamClient:
         pending_timeout_ms: int = 60_000,
         reclaim_interval_ms: int | None = None,
     ) -> AsyncIterator["TypedMessage[T] | None"]:
-        """Consume and validate messages against a Pydantic type.
-
-        Yields ``TypedMessage`` holding a validated model. Never auto-acks: the
-        caller acks after successful processing, so a transient handler failure
-        leaves the entry in the PEL for reclaim.
-
-        Decode and validation errors are terminal for the *source* stream: a
-        message that cannot be JSON decoded or fails schema validation can never
-        succeed on retry, so leaving it unacked would poison the reclaim loop
-        forever. It is not destroyed, though — it is logged with its values
-        elided, copied to ``{stream}:dlq``, and only then ACKed away.
-
-        A payload that fails only because it carries fields this consumer's
-        schema does not know is not poison: it is a newer publisher, and it is
-        accepted with those fields dropped (see
-        ``validate_tolerating_additions``).
-
-        Args:
-            message_type: A Pydantic model type, a union of models, or a prebuilt
-                ``TypeAdapter``. Used to validate each message.
-        """
+        """Validate typed messages; quarantine terminal errors before ACKing."""
         adapter = (
             message_type if isinstance(message_type, TypeAdapter) else TypeAdapter(message_type)
         )
@@ -719,9 +571,7 @@ class RedisStreamClient:
             try:
                 data = self._decode_entry(fields)
             except json.JSONDecodeError as e:
-                # str(JSONDecodeError) is positional only ("Expecting value:
-                # line 1 column 1"), so it carries no payload. Never log the raw
-                # fields — the payload may hold secrets (tokens in env_vars, api_key).
+                # Never log raw fields: queue payloads may contain secrets.
                 logger.error(
                     "typed_consume_decode_failed",
                     stream=stream,
@@ -741,9 +591,7 @@ class RedisStreamClient:
             try:
                 value, dropped = validate_tolerating_additions(adapter, data)
             except ValidationError as e:
-                # Log structured errors with input elided. str(e) and the raw
-                # data both echo field values, which may include secrets, so
-                # they must never reach the logs.
+                # Validation input may contain secrets, so log only safe errors.
                 errors = safe_validation_errors(e)
                 logger.error(
                     "typed_consume_validation_failed",

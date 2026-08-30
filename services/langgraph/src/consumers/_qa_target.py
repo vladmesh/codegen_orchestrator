@@ -1,33 +1,4 @@
-"""The one target a central QA run can reach, and the identity it reaches it with.
-
-QA used to be an agent living on the deploy target with the fleet's own server
-key in its hands. It is central now, and this module is the whole of what a run
-can do to the machine it is testing:
-
-* **a capability set.** A run has one, resolved once from deployment data before
-  any tool exists: the physical root of its deployment directory (resolved on
-  the target, so a symlink cannot widen it), the containers of its compose
-  project as docker itself reports them, the loopback ports allocated to its
-  application, and its public URL. Every tool derives its boundary from that set
-  and from nothing else. A tool whose boundary cannot be derived from it does
-  not exist here — that is why there is no `docker ps`, no `docker images` and
-  no host diagnostics: those enumerate the machine, not the deployment.
-* **a one-shot SSH key into an account it does not own.** The account is
-  `QATarget.qa_ssh_user`: an unprivileged account provisioning created on the
-  target for exactly this, recorded on the server row, and never the
-  administrative account the fleet key opens. The runner's whole power over it
-  is to append one `restrict`ed, expiring key to the `authorized_keys` the
-  provisioning role opened, and to take that key back out; it creates no
-  account, no directory and no file, so a target that was not provisioned for QA
-  refuses the install instead of being made to admit a run. The agent holds
-  neither key. That a key may be out there is written down before it is
-  installed (`QASshGrant`), so an ambiguous failure leaves a record the sweep can
-  act on.
-* **a closed set of typed operations.** There is no "run this shell command"
-  here: every method below names what it does, checks its arguments against the
-  capability set, and refuses anything else. The write guard is the absence of a
-  write, not a filter over one.
-"""
+"""Target-scoped, read-only QA operations and one-shot SSH grant handling."""
 
 from __future__ import annotations
 
@@ -50,59 +21,34 @@ logger = structlog.get_logger(__name__)
 
 SERVICE_BASE_DIR = "/opt/services"
 GRANT_MARKER_PREFIX = "codegen-qa-run"
-# An sshd-side backstop for the case both the runner and the sweep are lost.
-# The runner's `finally` is the primary removal and the sweep is the second one;
-# this is what stops a forgotten key from outliving the machine.
+# SSHD expiry backs up runner and sweep grant removal.
 GRANT_LIFETIME_S = 3600
 REMOTE_EXEC_TIMEOUT = 60
 LOCALHOST_PROBE_TIMEOUT = 30
 MAX_REMOTE_OUTPUT = 8000
 MAX_PORT = 65535
 STATUS_MARKER = "<<qa-http-status:"
-# Exit statuses `_CONTAINED_READ` answers with, so the caller can tell a refusal
-# from a read that simply found nothing.
+# Contained-read refusal statuses.
 READ_UNRESOLVABLE = 3
 READ_OUTSIDE_ROOT = 4
-# Exit statuses `_INSTALL_GRANT` answers with when the identity itself is not on
-# the target: no such account, and no `authorized_keys` to append to. Both say
-# the same thing about the host, and both are the provisioner's business rather
-# than this run's — see :class:`QAIdentityAbsentError`.
+# Provisioning-identity refusal statuses.
 IDENTITY_ABSENT = 3
 IDENTITY_KEYS_ABSENT = 4
-# Compose stamps this on every container it creates, and it is the deployment's
-# own name for its containers — not a naming convention this code assumes.
+# Docker's authoritative deployment-container label.
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 
-# How far docker on the target is retried before a run gives up on it. Both
-# calls that read the container runtime use this policy — the listing that builds
-# the capability set, here, and the `docker inspect` of each container in
-# `_qa_runner` — because a daemon that is mid-restart or a wrapper that lost a
-# race deserves the same second chance whichever call arrives first, and a
-# container may still be failing its first health check when QA starts. Nothing
-# about the retry makes a down container pass: it only stops a transient state
-# from being reported as one.
+# Shared retry policy for target Docker reads.
 CONTAINER_PROBE_ATTEMPTS = 3
 CONTAINER_PROBE_RETRY_DELAY = 5
 
-# How the QA account reaches docker. It is not in the `docker` group — that
-# group is root on the host — and cannot open the socket, so every docker call
-# goes through the wrapper provisioning installed, which refuses on the target
-# every sub-command that writes or escapes. The membership test below still
-# decides *which* containers a run may name; this decides what may be done to
-# any of them, and it is enforced by the machine rather than by the caller.
+# The restricted target wrapper enforces read-only Docker access.
 QA_DOCKER_WRAPPER = "/usr/local/bin/qa-docker"
 QA_DOCKER = ("sudo", "-n", QA_DOCKER_WRAPPER)
 
-# Read-only docker sub-commands that name a container. Each one is bounded by
-# the run's container capability: the container it names must be in the set.
-# Sub-commands that name no container (ps, images, version, a bare stats) are
-# absent on purpose — their answer is about the host, and no element of the
-# capability set can bound them.
+# Each Docker command must name a container in the run capability set.
 CONTAINER_SCOPED_DOCKER = frozenset({"diff", "inspect", "logs", "port", "stats", "top"})
 
-# Reading the application's own files is in scope; reading the credentials the
-# deploy put next to them is not, and QA has no test that needs them. This sits
-# on top of physical containment, not instead of it.
+# Secret paths remain forbidden inside the physical deployment root.
 SECRET_FILE_PATTERNS = (
     re.compile(r"(^|/)\.env(\.|$)"),
     re.compile(r"\.(pem|key|p12|pfx)$"),
@@ -110,9 +56,7 @@ SECRET_FILE_PATTERNS = (
     re.compile(r"(^|/)\.ssh(/|$)"),
 )
 
-# Resolve the path on the target and read it only if what it resolves to is
-# inside the physical root. The path arrives as $1 and the root as $2, so
-# nothing the agent names is ever interpolated into this text.
+# Resolve the requested path and require physical-root containment.
 _CONTAINED_READ = """
 set -eu
 root=$1; requested=$2; limit=$3
@@ -129,12 +73,7 @@ esac
 head -c "$limit" -- "$resolved"
 """
 
-# Append one run key to an account that already exists, and to nothing else.
-# The account name arrives as $1 and the entry as $2, so nothing is interpolated
-# into this text. Every path out that is not "the key was appended" is an error:
-# an absent account or an absent `authorized_keys` means this target was never
-# provisioned for QA, and creating either here would be the runtime minting
-# itself access instead of borrowing what provisioning laid out.
+# Append only to an account and authorized_keys file provisioning already created.
 _INSTALL_GRANT = """
 set -eu
 user=$1; entry=$2
@@ -147,18 +86,7 @@ flock 9
 printf '%s\\n' "$entry" >> "$keys"
 """
 
-# Remove one run's key from that account and print how many of its lines are
-# still there. An account or a file that is not there holds no key, so both
-# answer zero rather than failing: this runs for records that may never have
-# installed anything.
-#
-# The rewrite refuses to copy an empty filter result over the file. The QA
-# account's `authorized_keys` is opened by provisioning with a comment line that
-# is never a key and never carries a run marker, so a filter that kept nothing
-# did not find only our key — it failed, and copying that would leave a file the
-# next run cannot append to under a lock it cannot take. Leaving it alone makes
-# the readback report the marker as still there, which is the residue the sweep
-# is for.
+# Preserve authorized_keys when filtering produces no replacement content.
 _REVOKE_GRANT = """
 set -eu
 user=$1; marker=$2
@@ -184,15 +112,7 @@ class QAGrantError(RuntimeError):
 
 
 class QAIdentityAbsentError(QAGrantError):
-    """The account provisioning was supposed to leave here is not on the target.
-
-    Told apart from every other grant failure because it is not a fact about
-    this run: the row says the host has a QA identity and the host says it has
-    none. Nothing here creates it — that is provisioning's job and the reason
-    this runtime holds no power to make accounts — so the run ends, and the
-    caller reports it where a missing identity is already reported: against the
-    server, in the provisioning journal.
-    """
+    """The target lacks the provisioning-owned QA account or authorized_keys."""
 
 
 class QACapabilityError(RuntimeError):
@@ -200,16 +120,7 @@ class QACapabilityError(RuntimeError):
 
 
 class QAContainerRuntimeError(QACapabilityError):
-    """Docker on the target did not answer when this run's containers were listed.
-
-    Separated from every other capability failure because it is not a fact about
-    reaching the host — SSH worked and the deployment directory resolved — but
-    the same fact the later `docker inspect` of each container can meet: the
-    container runtime is not answering. The two calls must not be classified
-    differently just because one happens to run first, so this one is named and
-    routed to the container probe's own outcome instead of joining
-    "could not get onto the server".
-    """
+    """Target Docker did not answer a deployment-container query."""
 
 
 @dataclass(frozen=True)
@@ -217,20 +128,14 @@ class QATarget:
     """Where the run's one deployment lives, and how to address it."""
 
     server_ip: str
-    # The administrative account the fleet key opens — `root` on a server row
-    # `server_sync` created. It is used twice per run, by the runner only, to put
-    # the run's key into the QA account and to take it out. No run is ever
-    # performed as this account.
+    # Used only to issue and revoke the unprivileged QA identity.
     ssh_user: str
-    # The unprivileged account provisioning made for QA runs on this host, taken
-    # from the server row. This is who the run is.
+    # Provisioned unprivileged account used for the QA session.
     qa_ssh_user: str
     server_handle: str
     project_name: str
     deployed_url: str
-    # Ports the platform allocated to this application. This is the deployment
-    # data the loopback capability is built from; nothing is guessed from what
-    # happens to be listening.
+    # Allocated loopback ports are the only ports QA may probe.
     allocated_ports: frozenset[int] = frozenset()
     bot_username: str | None = None
 
@@ -244,14 +149,11 @@ class QACapabilities:
     """Everything this run may see, and the only source of any tool's boundary."""
 
     deployed_url: str
-    # The deployment directory as the target itself resolves it. Containment is
-    # checked against this, after resolution, so a symlink inside the tree
-    # cannot point out of it and stay "inside" by spelling.
+    # Target-resolved root prevents symlinks from widening access.
     physical_root: str
     containers: frozenset[str]
     loopback_ports: frozenset[int]
-    # The one bot this deployment answers as. The Telegram tool addresses this
-    # and nothing else, so its boundary comes from here like every other tool's.
+    # The Telegram capability addresses only this bot.
     bot_username: str | None = None
 
     def describe(self) -> dict:
@@ -287,12 +189,7 @@ class QAGrantJournal(Protocol):
 
 
 def _on_target(argv: list[str]) -> list[str]:
-    """How this argv is actually spelled on the target.
-
-    Everything but docker runs as the QA account itself. Docker runs through the
-    wrapper, because the account has no other way to reach the daemon — and that
-    is the point: the target, not this process, is what refuses `docker exec`.
-    """
+    """Route Docker through the target's restricted wrapper."""
     if argv and argv[0] == "docker":
         return [*QA_DOCKER, *argv[1:]]
     return argv
@@ -310,24 +207,7 @@ def _reject_secret_path(path: str) -> None:
 async def resolve_capabilities(
     conn: asyncssh.SSHClientConnection, target: QATarget
 ) -> QACapabilities:
-    """Ask the target what this run's deployment actually is.
-
-    Two of the three elements can only be answered by the target: what the
-    deployment directory resolves to physically, and which containers docker
-    considers part of this compose project. Both are read once, with the run's
-    own identity, before any tool exists — so every later check is a membership
-    test against a fixed set rather than a rule a tool invented.
-
-    The listing is the run's first call into docker, so it is also the first
-    place a target whose container runtime is down can be found. It is retried
-    like every other read of that runtime, and what it raises says which of the
-    two failures happened: a deployment directory that does not resolve is a
-    capability failure, docker not answering is `QAContainerRuntimeError`.
-
-    Raises:
-        QACapabilityError: the deployment directory does not resolve on the target.
-        QAContainerRuntimeError: docker on the target did not answer the listing.
-    """
+    """Resolve one fixed capability set before any target operation exists."""
     root = await conn.run(f"readlink -f -- {shlex.quote(target.service_dir)}", check=False)
     physical_root = (root.stdout or "").strip()
     if root.exit_status != 0 or not physical_root:

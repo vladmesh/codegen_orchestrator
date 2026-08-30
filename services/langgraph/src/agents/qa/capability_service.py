@@ -1,34 +1,4 @@
-"""The QA runtime's capability endpoint: what a central executor container may ask for.
-
-The exploratory QA executor runs as a coding agent in its own container now, so
-it cannot hold this run's target session — and it is not given one. It is given
-a URL and a token for this endpoint, and this endpoint is the same dictionary of
-typed calls the in-process agent used (``agents/qa/tools.build_qa_callables``),
-served over HTTP for exactly one run.
-
-What that buys, precisely:
-
-* the SSH identity, the fleet key and the Telegram session stay in this process,
-  on the management host. Nothing that reaches the executor's container can be
-  replayed against the target after the run, because the executor never holds a
-  credential — only a token to an endpoint that dies with the run;
-* the target sees exactly what it saw before: one deployment, one physical root,
-  its own loopback ports, its own containers, GET only. Those checks did not
-  move — they are still performed here, by the same code, before anything is
-  sent over the wire;
-* the verdict comes back through this endpoint rather than the worker output
-  stream, so the runner's own record of the run is what the run is judged from.
-
-What it does not buy is a shell that does not exist: the executor's container
-does have one. What makes that shell harmless is not this endpoint but the
-network the container is on — `codegen_qa_egress`, declared `internal: true`, on
-which the only reachable things are this endpoint, the worker broker, and a
-per-run CONNECT-only proxy allowlisted to the assigned CLI's model backend. The
-deployment's public URL is not reachable from there at all, so this endpoint's
-GET-only `http_get` is the only way to it. See
-`services/worker-manager/src/qa_egress.py` for the boundary and
-`docs/DEPLOY.md` for how it is deployed.
-"""
+"""Per-run typed QA endpoint; target credentials remain on the management host."""
 
 from __future__ import annotations
 
@@ -83,10 +53,7 @@ class QACapabilityService:
         self._token = secrets.token_urlsafe(32)
         self._runner: web.AppRunner | None = None
         self.verdict_received = asyncio.Event()
-        # Whether the executor ever reached the target through this endpoint.
-        # It is how the runner tells "no agent ever started" from "an agent ran
-        # and produced nothing" — the first is an executor failure, the second
-        # is a QA run with no trustworthy answer.
+        # Distinguishes an executor failure from a run with no verdict.
         self.calls_served = 0
 
     @property
@@ -168,13 +135,7 @@ class QACapabilityService:
 
     @staticmethod
     def _check_arguments(name: str, call: Callable, args: dict) -> None:
-        """Refuse a call whose arguments are not the ones the call declares.
-
-        Binding by name against the signature is what keeps the HTTP front-end
-        from being wider than the in-process one: an executor cannot pass an
-        extra keyword, and cannot omit a required one and have the boundary
-        guess.
-        """
+        """Bind arguments to the callable signature without widening the API."""
         try:
             inspect.signature(call).bind(**args)
         except TypeError as exc:

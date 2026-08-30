@@ -1,20 +1,4 @@
-"""The transport every service uses to reach the internal API.
-
-Five services used to carry a near-identical copy of `_get_client` / `_api_path` /
-`_request`, and a copy could quietly disagree: `telegram_bot` sent no
-`X-Internal-Key` at all. The wire contract lives here now — the `/api` prefix, the
-two headers, `raise_for_status()` — so a caller cannot forget a header without
-rewriting this module. Services keep their own application methods and subclass
-this for the transport; the only thing they vary is the timeout.
-
-Two callers in `shared/` are synchronous or read the internal API outside a
-service client (`config_store`, `notifications`), so the wire contract is written
-once in `InternalAPITransport` and the async and sync clients only differ in how
-they send.
-
-`shared` is a tree, not a package (docs/decisions/shared-is-not-a-package.md), so
-this is a plain module next to the other clients.
-"""
+"""Shared transport for authenticated internal API requests."""
 
 from __future__ import annotations
 

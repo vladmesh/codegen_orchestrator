@@ -1,24 +1,4 @@
-"""Which contour a live run belongs to, and the names it is allowed to own.
-
-Production and the stand share one GitHub organization, one provider account and
-one set of sweep tools. The only boundary between them is the name a live run
-gives the things it creates, so that name is defined here once and read from here
-everywhere — the harness that creates a project, and the sweep that deletes one.
-A prefix that lived in two files could drift, and the drift would not be a failed
-test: the stand's sweep would delete production's run.
-
-The boundary is narrower than it looks. `generate_project_slug` truncates a title
-before appending the project UUID, so a deployed stack keeps only the first seven
-characters of the prefix:
-
-    live-test   -> live-te-<uuid32>        stand-test  -> stand-t-<uuid32>
-    live-crud   -> live-cr-<uuid32>        stand-crud  -> stand-c-<uuid32>
-
-Two prefixes that agree on those seven characters are indistinguishable to every
-sweep that works on stack names, whatever their full titles look like.
-`assert_prefixes_distinct` states that requirement and the tests enforce it, so a
-new contour cannot be added with a name that silently aliases an existing one.
-"""
+"""Define live-run ownership contours and collision-free resource prefixes."""
 
 from __future__ import annotations
 
@@ -33,20 +13,13 @@ DEFAULT_CONTOUR = "prod"
 
 @dataclass(frozen=True)
 class Contour:
-    """The project title prefixes one contour owns.
-
-    `pipeline` and `crud` are what live tests create today. `legacy` names
-    prefixes no test creates any more but whose leftovers a sweep must still
-    recognise — dropping one would strand its orphans forever.
-    """
+    """Project title prefixes a contour may create or clean up."""
 
     name: str
     pipeline: str
     crud: str
     legacy: tuple[str, ...] = ()
-    #: Whether a live run may create resources in this contour. Production may
-    #: not: live runs create projects, repositories and deployed stacks and then
-    #: delete them, and production carries real users' data.
+    #: Only an owning contour may create live-run resources.
     allows_live_runs: bool = True
 
     @property
@@ -66,11 +39,7 @@ class Contour:
 
 
 CONTOURS: dict[str, Contour] = {
-    # Production keeps the names it has always used. `mega-test` predates the
-    # current harness and creates nothing today; it stays so old residue is
-    # still sweepable.
-    # Production keeps its names so residue from before that rule is still
-    # sweepable, but no live run may create anything here.
+    # Production prefixes remain sweepable but are never creatable by live runs.
     "prod": Contour(
         name="prod",
         pipeline="live-test",
@@ -78,20 +47,13 @@ CONTOURS: dict[str, Contour] = {
         legacy=("mega-test",),
         allows_live_runs=False,
     ),
-    # The stand shares production's organization, so its names must be readable
-    # at a glance and distinct within the first seven characters: `stand-t-`
-    # against `stand-c-`.
+    # Stack-name slugs must remain distinct after Compose truncation.
     "stand": Contour(name="stand", pipeline="stand-test", crud="stand-crud"),
 }
 
 
 def current_contour() -> Contour:
-    """Return the contour this process runs in.
-
-    Unset means production: the default has to be the contour whose behaviour
-    predates this module, so an environment that never heard of it keeps working
-    exactly as before.
-    """
+    """Return the selected contour; unset remains production."""
     name = os.getenv(CONTOUR_ENV) or DEFAULT_CONTOUR
     try:
         return CONTOURS[name]
@@ -101,16 +63,7 @@ def current_contour() -> Contour:
 
 
 def require_live_contour() -> Contour:
-    """Return the contour a live run may create resources in, or refuse.
-
-    E2E belongs on the stand. A live run creates projects, repositories, servers
-    and deployed stacks and then deletes them; production carries real users'
-    projects and real users' data, and a sweep that matched one name too many
-    there would take them with it.
-
-    This is deliberately a refusal at creation, not at cleanup: production's
-    names stay known so residue left from before this rule can still be removed.
-    """
+    """Require a contour that owns live-run resource creation and cleanup."""
     contour = current_contour()
     if not contour.allows_live_runs:
         raise RuntimeError(
@@ -122,12 +75,7 @@ def require_live_contour() -> Contour:
 
 
 def assert_prefixes_distinct(contours: list[Contour] | None = None) -> None:
-    """Fail unless every prefix in every contour owns a distinct stack-name space.
-
-    Checked across contours, not only inside one: two contours that agree on a
-    truncated prefix share their deployed stacks with no way to tell whose is
-    whose, and the first sweep to run deletes both.
-    """
+    """Reject contours whose truncated stack-name prefixes collide."""
     seen: dict[str, str] = {}
     for contour in contours if contours is not None else list(CONTOURS.values()):
         for prefix, slug in zip(contour.project_prefixes, contour.slug_prefixes, strict=True):
