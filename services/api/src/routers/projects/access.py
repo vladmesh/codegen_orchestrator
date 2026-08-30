@@ -232,7 +232,6 @@ async def _dispatch_lifecycle(
         project_id=str(project.id),
         telegram_chat_id=recipient.telegram_chat_id,
         unaddressed_reason=recipient.unaddressed_reason,
-        story_id=run.story_id,
         triggered_by=DeployTrigger.PO,
         action=DeployAction(run.run_metadata["deploy_action"]),
         head_sha=intent.target_sha,

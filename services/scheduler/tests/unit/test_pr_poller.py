@@ -169,6 +169,44 @@ async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_g
     redis.publish_message.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.resolve_project_recipient")
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_applied_initial_owner_intent_does_not_skip_a_later_create_deploy(
+    mock_gh_cls, recipient
+):
+    """A QA fix still deploys its merged SHA after the owner access is already live."""
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(project_id="00000000-0000-0000-0000-000000000001", pr_number=43)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    api.get_project.return_value = SimpleNamespace(
+        config={"modules": ["backend", "tg_bot"]}, owner_id=7
+    )
+    api.resume_initial_owner_grant.return_value = {
+        "intent_id": "users-grant-initial_owner-00000000000000000000000000000001-84",
+        "execution_run_id": None,
+        "status": "applied",
+    }
+    recipient.return_value = SimpleNamespace(telegram_chat_id="84", unaddressed_reason="")
+    gh.get_pull_request.return_value = {
+        "number": 43,
+        "merged_at": "2026-03-20T03:30:00Z",
+        "head": {"sha": "b" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 1
+
+    api.create_run.assert_awaited_once()
+    deploy_msg = redis.publish_message.call_args.args[1]
+    assert deploy_msg.head_sha == "b" * 40
+    assert deploy_msg.story_id == story.id
+
+
 def _failed_run(run_id: int, sha: str) -> dict:
     return {
         "id": run_id,

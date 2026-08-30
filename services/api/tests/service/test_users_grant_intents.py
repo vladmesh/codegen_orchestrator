@@ -103,6 +103,8 @@ async def test_intent_is_durable_before_publish_and_not_a_run(async_client):
     intent = await async_client.get(f"/api/projects/{project_id}/users/grant-intents/{intent_id}")
     assert intent.json()["status"] == GrantIntentStatus.PUBLISH_OWED.value
     assert intent.json()["execution_run_id"].startswith("deploy-grant-")
+    deploy_message = redis.publish_message.await_args.args[1]
+    assert deploy_message.story_id == ""
 
 
 @pytest.mark.asyncio

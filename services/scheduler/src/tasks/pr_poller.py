@@ -261,8 +261,9 @@ async def poll_merged_prs(
                 intent_id=lifecycle["intent_id"],
                 run_id=lifecycle.get("execution_run_id"),
             )
-            deployed += 1
-            continue
+            if lifecycle["execution_run_id"] is not None:
+                deployed += 1
+                continue
 
         run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
         run_data = {

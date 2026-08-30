@@ -23,9 +23,11 @@
 
 - Aligned durable grant readback with the generated service's `UserAccess`
   response (`status: active|inactive`), failed closed on malformed responses,
-  and limited initial-owner injection to its one deduplicated owner-seed run.
-  Repeated permanent-access requests now short-circuit an applied intent and
-  reject a stale target rather than redeploying an old SHA.
+  and limited initial-owner injection to its one durable seed intent. Repeated
+  permanent-access requests now short-circuit an applied intent; retryable
+  stale targets rebind to the current target without redeploying an old SHA.
+  A later pre-completion PR gets its own ordinary deploy Run after the seed is
+  already applied.
 
 - Split the projects API router into lifecycle, secrets, bot, Telegram, and teardown domains while
   preserving its public routes and consolidating project access checks in the canonical guards module.
