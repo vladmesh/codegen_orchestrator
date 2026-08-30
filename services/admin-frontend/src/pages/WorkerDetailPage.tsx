@@ -10,6 +10,10 @@ import type {
   WorkerLogsResponse,
 } from '@/types/api'
 
+function inventoryFact(value: string | null | undefined, error: string | null | undefined, absent = 'none') {
+  return value ?? error ?? absent
+}
+
 type Tab = 'console' | 'files'
 
 export function WorkerDetailPage() {
@@ -115,7 +119,9 @@ export function WorkerDetailPage() {
         <Card>
           <p className="text-sm text-muted-foreground">Container</p>
           <p className="mt-1 font-mono text-xs text-foreground">
-            {worker.container ? `${worker.container.state ?? 'unknown'}: ${worker.container.id.slice(0, 12)}` : 'absent'}
+            {worker.container
+              ? `${worker.container.state ?? 'unknown'}: ${worker.container.id.slice(0, 12)}`
+              : inventoryFact(null, worker.container_error, 'absent')}
           </p>
         </Card>
         <Card>
@@ -128,7 +134,9 @@ export function WorkerDetailPage() {
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Agent process</p>
-          <p className="mt-1 font-mono text-xs text-foreground">{worker.agent_process_status ?? 'unknown'}</p>
+          <p className="mt-1 font-mono text-xs text-foreground">
+            {inventoryFact(worker.agent_process_status, worker.agent_process_status_error, 'absent')}
+          </p>
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Broker lease</p>
@@ -139,13 +147,17 @@ export function WorkerDetailPage() {
         <Card>
           <p className="text-sm text-muted-foreground">Story binding</p>
           <p className="mt-1 font-mono text-xs text-foreground">
-            {worker.story_bindings.length ? worker.story_bindings.join(', ') : 'none'}
+            {worker.story_bindings.length
+              ? worker.story_bindings.join(', ')
+              : inventoryFact(null, worker.story_bindings_error)}
           </p>
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Attempt run</p>
           <p className="mt-1 font-mono text-xs text-foreground">
-            {worker.attempt_run ? `${worker.attempt_run.status}: ${worker.attempt_run.id}` : 'none'}
+            {worker.attempt_run
+              ? `${worker.attempt_run.status}: ${worker.attempt_run.id}`
+              : inventoryFact(null, worker.attempt_run_error)}
           </p>
         </Card>
         <Card>

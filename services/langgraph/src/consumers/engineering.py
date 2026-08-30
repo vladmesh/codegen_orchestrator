@@ -53,12 +53,16 @@ ENGINEERING_SLOTS_CONFIG_KEY = "engineering.worker_slots"
 
 
 async def _engineering_consumer_is_draining() -> bool:
-    """Read the operator decision before this consumer reserves another entry."""
-    state = await api_client.get("engineering-consumer/drain")
-    draining = state["draining"]
-    if not isinstance(draining, bool):
-        raise RuntimeError("engineering consumer drain state is not boolean")
-    return draining
+    """Read the operator decision without turning an API blip into a restart."""
+    try:
+        state = await api_client.get("engineering-consumer/drain")
+        draining = state["draining"]
+        if not isinstance(draining, bool):
+            raise RuntimeError("engineering consumer drain state is not boolean")
+        return draining
+    except Exception as exc:
+        logger.warning("engineering_consumer_drain_unreadable", error_type=type(exc).__name__)
+        return False
 
 
 # Re-export for backward compatibility with tests

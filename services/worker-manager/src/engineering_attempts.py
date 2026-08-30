@@ -3,6 +3,7 @@
 from typing import Any
 
 from shared.clients.internal_api import InternalAPIClient
+from shared.contracts.dto.run import RunStatus, RunType
 
 
 class EngineeringAttemptInventory(InternalAPIClient):
@@ -12,7 +13,7 @@ class EngineeringAttemptInventory(InternalAPIClient):
         response = await self.request(
             "GET",
             "runs/",
-            params={"run_type": "engineering", "status": "running"},
+            params={"run_type": RunType.ENGINEERING.value, "status": RunStatus.RUNNING.value},
         )
         data = response.json()
         if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):

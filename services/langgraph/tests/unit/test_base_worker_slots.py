@@ -170,6 +170,52 @@ class TestOperatorDrain:
 
         assert not consume_called
 
+    @pytest.mark.asyncio()
+    async def test_drain_after_an_idle_consumer_reserved_a_slot_leaves_new_entry_in_pel(
+        self, mock_api_client
+    ):
+        """A drain can arrive while XREADGROUP is blocked after slot reservation."""
+        from src.consumers._base import run_queue_worker
+
+        idle = asyncio.Event()
+        release_entry = asyncio.Event()
+        drained = False
+
+        async def consume(*_args, **_kwargs):
+            idle.set()
+            yield None
+            await release_entry.wait()
+            yield StreamMessage(message_id="1-0", data={"project_id": "p"})
+            while True:
+                yield None
+                await asyncio.sleep(0.01)
+
+        redis = _redis(consume)
+        process = AsyncMock()
+
+        async def is_draining():
+            return drained
+
+        with (
+            patch("src.consumers._base.RedisStreamClient", return_value=redis),
+            patch("src.consumers._base.SLOT_WAIT_SECONDS", 0.01),
+        ):
+            worker = asyncio.create_task(
+                run_queue_worker("test", "queue", process, is_draining=is_draining)
+            )
+            await asyncio.wait_for(idle.wait(), timeout=1)
+            drained = True
+            release_entry.set()
+            await asyncio.sleep(0.03)
+            import src.consumers._base as base
+
+            base._shutdown = True
+            await asyncio.wait_for(worker, timeout=2)
+            base._shutdown = False
+
+        process.assert_not_awaited()
+        redis.ack.assert_not_awaited()
+
 
 class TestParallelConsumption:
     """Two projects work at the same time; one slot stays sequential."""

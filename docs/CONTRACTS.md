@@ -1723,25 +1723,37 @@ from claiming new entries. The actor is derived from the credential: an LK beare
 `admin:<credential subject>`, while the admin console is `admin_console:<nginx basic-auth user>` and
 can only arrive through nginx's internal credential plus replaced `X-Admin-Console-Operator` header.
 The browser sends no actor field. The active state is the typed
-`system_configs.engineering.consumer_drain` value (`draining`, `requested_at`, `actor`); each change
-also appends a `work_admission_audits` record with before/after state and actor. `DELETE` clears the
-state explicitly. It does not alter the existing ten-second shutdown budget, acknowledge a PEL entry,
-or delete a worker. A running engineering consumer checks this durable state before every claim and
-continues its already in-flight jobs. A recreated consumer reads the same state before its first claim,
-so it remains drained until an operator clears it; clearing permits an already-running consumer to
-claim again.
+`system_configs.engineering.consumer_drain` value (`draining`, `requested_at`, `actor`); every drain
+or resume request also appends a `work_admission_audits` record with before/after state and actor,
+including a repeated drain. `DELETE` clears the state explicitly. It does not alter the existing
+ten-second shutdown budget, acknowledge a PEL entry, or delete a worker. A running engineering
+consumer checks this durable state before reserving a slot and on every path through its consume loop.
+If XREADGROUP read an entry as the drain became active, that entry is already in this consumer's PEL;
+the consumer leaves it unacknowledged and does not process it, so normal PEL reclaim uses the existing
+handoff contract. A recreated consumer reads the same state before its first claim, so it remains
+drained until an operator clears it; clearing permits an already-running consumer to claim again.
+While the drain is active, consumers poll the API once per second. If that read is unavailable or
+malformed, the consumer logs the unknown state, treats that read as accepting work, and keeps running
+rather than restarting and cancelling in-flight jobs; the next successful read resumes the durable
+drain decision.
 
 The worker-manager inventory deliberately presents independent facts instead of one health verdict:
 
-- `container` is Docker's container id, image, and state.
-- `agent_process_status` is the worker's `worker:status:{worker_id}` record, never Docker health.
+- `container` is Docker's container id, image, and state; `container_error` means Docker could not
+  answer, rather than that the container is absent.
+- `agent_process_status` is the worker's `worker:status:{worker_id}` record, never Docker health;
+  `agent_process_status_error` means that record was unreadable.
 - `active_turn_lease` is `worker:active-turn:{worker_id}`, including attempt, request, broker lease,
   start, and deadline; an unreadable lease is reported separately rather than as absent.
-- `story_bindings` are every `story:workers` binding that names the worker.
-- `attempt_run` is the active engineering Run named by the worker's existing `attempt_id` metadata.
+- `story_bindings` are every `story:workers` binding that names the worker; an unreadable hash is
+  carried as `story_bindings_error`, never as an empty list.
+- `attempt_run` is the active engineering Run named by the worker's existing `attempt_id` metadata;
+  `attempt_run_error` means the running-Run read or the local attempt id was unavailable.
 - `waiting_attempt` is a running engineering Run whose `AttemptTurnMetadata` names that worker and
   has an active turn request id. It reports the Run id/status and request identity; a running Run that
-  lacks that recorded active request is not converted into a waiter.
+  lacks that recorded active request is not converted into a waiter. `waiting_attempt_error` means
+  running attempts were unreadable. Thus every fact is present, absent, or explicitly unknown; unknown
+  is never rendered as absent.
 
 The inventory obtains running attempts from the API's existing Run records and the remaining facts
 from Docker or Redis. It creates no orphan detector or ownership inference. Thus a container can be

@@ -71,6 +71,15 @@ SLOT_WAIT_SECONDS = 1.0
 SHUTDOWN_DRAIN_SECONDS = 10.0
 
 
+async def _wait_while_draining(is_draining: DrainCheck | None, service_name: str) -> bool:
+    """Yield a polling interval when the durable operator drain is active."""
+    if is_draining is None or not await is_draining():
+        return False
+    logger.info("consumer_drain_waiting", worker=service_name)
+    await asyncio.sleep(SLOT_WAIT_SECONDS)
+    return True
+
+
 class TerminalMessageValidationError(Exception):
     """Validation failure raised only while parsing the Redis message."""
 
@@ -416,9 +425,7 @@ async def run_queue_worker(
     async def reserve_slot() -> bool:
         """Hold one slot for the next entry. False only when shutting down."""
         while not _shutdown:
-            if is_draining is not None and await is_draining():
-                logger.info("consumer_drain_waiting", worker=service_name)
-                await asyncio.sleep(SLOT_WAIT_SECONDS)
+            if await _wait_while_draining(is_draining, service_name):
                 continue
             await refresh_slots()
             if await gate.acquire(SLOT_WAIT_SECONDS):
@@ -442,10 +449,14 @@ async def run_queue_worker(
         ):
             if _shutdown:
                 break
+            # XREADGROUP has already put a non-empty entry in this consumer's
+            # PEL. Do not dispatch or ACK it while drained: a replacement
+            # consumer reclaims it through the ordinary handoff path.
+            if await _wait_while_draining(is_draining, service_name):
+                continue
             if msg is None:
                 await refresh_slots()
                 continue
-
             # The sweep runs while this consumer's own jobs are in flight, and
             # they are idle for as long as they run. Their entries come back
             # here; taking one would be the same job twice in one workspace.

@@ -52,17 +52,16 @@ async def _set_drain(*, draining: bool, actor: str, db: AsyncSession) -> Enginee
         config.value = stored_state
         config.updated_by = actor
 
-    if before.draining != state.draining:
-        db.add(
-            WorkAdmissionAudit(
-                subject="engineering_consumer_drain",
-                outcome="draining" if draining else "resumed",
-                control_name="engineering_consumer",
-                before_value={"draining": before.draining},
-                after_value=stored_state,
-                actor=actor,
-            )
+    db.add(
+        WorkAdmissionAudit(
+            subject="engineering_consumer_drain",
+            outcome="draining" if draining else "resumed",
+            control_name="engineering_consumer",
+            before_value={"draining": before.draining},
+            after_value=stored_state,
+            actor=actor,
         )
+    )
     await db.commit()
     return state
 

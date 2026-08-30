@@ -3,6 +3,7 @@
 import pytest
 from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock
+import docker as docker_sdk
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -66,18 +67,26 @@ class TestListWorkers:
 
     def test_returns_workers_with_metadata(self, redis, docker):
         redis.keys = AsyncMock(return_value=["worker:status:w1", "worker:status:w2"])
-        redis.hgetall = AsyncMock(
-            side_effect=[
-                # w1 status
-                {"status": "RUNNING"},
-                # w1 meta
-                {"workspace_path": "/tmp/ws/w1/workspace", "dev_network": "dev_proj_w1", "project_id": "p1"},
-                # w2 status
-                {"status": "PAUSED"},
-                # w2 meta
-                {"workspace_path": "/tmp/ws/w2/workspace", "dev_network": "dev_proj_w2"},
-            ]
-        )
+
+        async def hgetall(key):
+            return {
+                "story:workers": {},
+                "worker:status:w1": {"status": "RUNNING"},
+                "worker:meta:w1": {
+                    "workspace_path": "/tmp/ws/w1/workspace",
+                    "dev_network": "dev_proj_w1",
+                    "project_id": "p1",
+                },
+                "worker:active-turn:w1": {},
+                "worker:status:w2": {"status": "PAUSED"},
+                "worker:meta:w2": {
+                    "workspace_path": "/tmp/ws/w2/workspace",
+                    "dev_network": "dev_proj_w2",
+                },
+                "worker:active-turn:w2": {},
+            }[key]
+
+        redis.hgetall = AsyncMock(side_effect=hgetall)
         redis.get = AsyncMock(
             side_effect=[
                 # w1 last_activity
@@ -106,13 +115,15 @@ class TestListWorkers:
         """Worker in Redis says RUNNING but container doesn't exist → GONE."""
         redis.keys = AsyncMock(return_value=["worker:status:w1"])
         redis.hgetall = AsyncMock(
-            side_effect=[
-                {"status": "RUNNING"},  # status
-                {"workspace_path": "/tmp/ws/w1/workspace", "project_id": "p1"},  # meta
-            ]
+            side_effect=lambda key: {
+                "story:workers": {},
+                "worker:status:w1": {"status": "RUNNING"},
+                "worker:meta:w1": {"workspace_path": "/tmp/ws/w1/workspace", "project_id": "p1"},
+                "worker:active-turn:w1": {},
+            }[key]
         )
         redis.get = AsyncMock(return_value=None)
-        docker.inspect_container = AsyncMock(side_effect=Exception("Not Found"))
+        docker.inspect_container = AsyncMock(side_effect=docker_sdk.errors.NotFound("Not Found"))
         app = _make_app(redis=redis, docker=docker)
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/")
@@ -124,13 +135,15 @@ class TestListWorkers:
         """Worker with status != RUNNING should keep its status even without container."""
         redis.keys = AsyncMock(return_value=["worker:status:w1"])
         redis.hgetall = AsyncMock(
-            side_effect=[
-                {"status": "COMPLETED"},
-                {},
-            ]
+            side_effect=lambda key: {
+                "story:workers": {},
+                "worker:status:w1": {"status": "COMPLETED"},
+                "worker:meta:w1": {},
+                "worker:active-turn:w1": {},
+            }[key]
         )
         redis.get = AsyncMock(return_value=None)
-        docker.inspect_container = AsyncMock(side_effect=Exception("Not Found"))
+        docker.inspect_container = AsyncMock(side_effect=docker_sdk.errors.NotFound("Not Found"))
         app = _make_app(redis=redis, docker=docker)
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/")
@@ -184,6 +197,42 @@ class TestListWorkers:
         assert worker["attempt_run"] == {"id": "running-attempt", "status": "running"}
         assert worker["waiting_attempt"] is None
 
+    def test_inventory_never_reports_unreadable_facts_as_absent(self, redis, docker):
+        redis.keys = AsyncMock(return_value=["worker:status:w1"])
+
+        async def hgetall(key):
+            if key == "worker:status:w1":
+                return {"status": "RUNNING"}
+            if key == "worker:meta:w1":
+                return {"attempt_id": "attempt-1"}
+            if key == "worker:active-turn:w1":
+                raise RuntimeError("active turn unavailable")
+            if key == "story:workers":
+                return {"story-1": "w1"}
+            raise AssertionError(f"unexpected key {key}")
+
+        redis.hgetall = AsyncMock(side_effect=hgetall)
+        redis.get = AsyncMock(return_value=None)
+        docker.inspect_container = AsyncMock(side_effect=RuntimeError("docker unavailable"))
+        app = _make_app(redis=redis, docker=docker)
+        app.state.engineering_attempts = MagicMock()
+        app.state.engineering_attempts.list_running = AsyncMock(side_effect=RuntimeError("api unavailable"))
+
+        with TestClient(app) as c:
+            resp = c.get("/api/introspect/workers/")
+
+        assert resp.status_code == HTTPStatus.OK
+        worker = resp.json()[0]
+        assert worker["container"] is None
+        assert worker["container_error"] == "container is unreadable"
+        assert worker["active_turn_lease"] is None
+        assert worker["active_turn_lease_error"] == "active turn lease is invalid or unreadable"
+        assert worker["story_bindings"] == ["story-1"]
+        assert worker["attempt_run"] is None
+        assert worker["attempt_run_error"] == "running engineering attempts unavailable"
+        assert worker["waiting_attempt"] is None
+        assert worker["waiting_attempt_error"] == "running engineering attempts unavailable"
+
 
 class TestGetWorker:
     def test_worker_found(self, redis, docker):
@@ -219,7 +268,7 @@ class TestGetWorker:
             ]
         )
         redis.get = AsyncMock(return_value=None)
-        docker.inspect_container = AsyncMock(side_effect=Exception("Not Found"))
+        docker.inspect_container = AsyncMock(side_effect=docker_sdk.errors.NotFound("Not Found"))
         app = _make_app(redis=redis, docker=docker)
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/w1")

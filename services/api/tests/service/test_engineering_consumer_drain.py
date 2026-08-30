@@ -50,6 +50,25 @@ async def test_engineering_consumer_drain_is_durable_and_uses_the_proxy_actor(
     assert audit.before_value == {"draining": False}
     assert audit.after_value["draining"] is True
 
+    redrained = await async_client.post(
+        "/api/engineering-consumer/drain",
+        headers={"X-Admin-Console-Operator": "second-operator"},
+    )
+    assert redrained.status_code == HTTPStatus.OK, redrained.text
+    assert redrained.json()["actor"] == "admin_console:second-operator"
+
+    audits = (
+        await db_session.scalars(
+            select(WorkAdmissionAudit)
+            .where(WorkAdmissionAudit.subject == "engineering_consumer_drain")
+            .order_by(WorkAdmissionAudit.created_at)
+        )
+    ).all()
+    assert [(item.outcome, item.actor) for item in audits] == [
+        ("draining", "admin_console:release-operator"),
+        ("draining", "admin_console:second-operator"),
+    ]
+
     resumed = await async_client.delete("/api/engineering-consumer/drain", headers=headers)
     assert resumed.status_code == HTTPStatus.OK, resumed.text
     assert resumed.json() == {"draining": False, "requested_at": None, "actor": None}

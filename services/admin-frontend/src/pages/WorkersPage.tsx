@@ -6,6 +6,10 @@ import { relativeTime } from '@/lib/utils'
 import type { EngineeringConsumerDrain, WorkerSummary } from '@/types/api'
 import { requestEngineeringConsumerDrain, requestEngineeringConsumerResume } from './engineeringConsumerDrain'
 
+function inventoryFact(value: string | null | undefined, error: string | null | undefined, absent = 'none') {
+  return value ?? error ?? absent
+}
+
 export function WorkersPage() {
   const queryClient = useQueryClient()
   const { data: workers, isLoading } = useQuery({
@@ -100,19 +104,23 @@ export function WorkersPage() {
                     <StatusBadge status={w.status.toLowerCase()} />
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {w.container?.state ?? 'absent'}
+                    {inventoryFact(w.container?.state, w.container_error, 'absent')}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {w.agent_process_status ?? 'unknown'}
+                    {inventoryFact(w.agent_process_status, w.agent_process_status_error, 'absent')}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-foreground">
                     {w.active_turn_lease?.request_id.slice(0, 12) ?? w.active_turn_lease_error ?? 'none'}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {w.story_bindings.length ? w.story_bindings.map((story) => story.slice(0, 8)).join(', ') : 'none'}
+                    {w.story_bindings.length
+                      ? w.story_bindings.map((story) => story.slice(0, 8)).join(', ')
+                      : inventoryFact(null, w.story_bindings_error)}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-foreground">
-                    {w.attempt_run ? `${w.attempt_run.status}: ${w.attempt_run.id.slice(0, 12)}` : 'none'}
+                    {w.attempt_run
+                      ? `${w.attempt_run.status}: ${w.attempt_run.id.slice(0, 12)}`
+                      : inventoryFact(null, w.attempt_run_error)}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-foreground">
                     {w.waiting_attempt ? `${w.waiting_attempt.run_status}: ${w.waiting_attempt.run_id.slice(0, 12)}` : w.waiting_attempt_error ?? 'none'}
