@@ -1732,10 +1732,15 @@ If XREADGROUP read an entry as the drain became active, that entry is already in
 the consumer leaves it unacknowledged and does not process it, so normal PEL reclaim uses the existing
 handoff contract. A recreated consumer reads the same state before its first claim, so it remains
 drained until an operator clears it; clearing permits an already-running consumer to claim again.
-While the drain is active, consumers poll the API once per second. If that read is unavailable or
-malformed, the consumer logs the unknown state, treats that read as accepting work, and keeps running
-rather than restarting and cancelling in-flight jobs; the next successful read resumes the durable
-drain decision.
+While the drain is active, consumers poll the API once per second. A successful read is retained as a
+module-local last-known decision. If a later read is unavailable or malformed, the consumer keeps
+applying that decision, logs the transition to unreadable once, and keeps retrying rather than
+restarting and cancelling in-flight jobs. Before any successful read, the state is unknown and the
+consumer keeps its current behaviour without asserting that work is accepted; the first successful
+read establishes the decision. A long drain can grow the PEL: the consumer continues its `consume()`
+loop and claims fresh entries into its own pending set once per polling interval before leaving them
+unacknowledged. Those entries are reclaimable after the existing 60-second `pending_timeout_ms` and
+are not delivery-count DLQed, but reclaim after the deploy depends on a consumer being alive.
 
 The worker-manager inventory deliberately presents independent facts instead of one health verdict:
 

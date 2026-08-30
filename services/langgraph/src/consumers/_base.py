@@ -48,7 +48,7 @@ logger = structlog.get_logger(__name__)
 
 # Type alias for job processor functions
 ProcessFn = Callable[[dict, RedisStreamClient], Awaitable[dict]]
-DrainCheck = Callable[[], Awaitable[bool]]
+DrainCheck = Callable[[], Awaitable[bool | None]]
 
 # One in-flight job per consumer: what every consumer did before slots existed.
 DEFAULT_QUEUE_SLOTS = 1
@@ -73,7 +73,7 @@ SHUTDOWN_DRAIN_SECONDS = 10.0
 
 async def _wait_while_draining(is_draining: DrainCheck | None, service_name: str) -> bool:
     """Yield a polling interval when the durable operator drain is active."""
-    if is_draining is None or not await is_draining():
+    if is_draining is None or await is_draining() is not True:
         return False
     logger.info("consumer_drain_waiting", worker=service_name)
     await asyncio.sleep(SLOT_WAIT_SECONDS)

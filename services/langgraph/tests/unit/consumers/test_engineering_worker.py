@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from src.consumers.engineering import EngineeringSuccessParams
@@ -42,6 +43,38 @@ def mock_api():
 
 def _project():
     return make_project(name="test-project", config={"modules": ["backend"]})
+
+
+class TestEngineeringConsumerDrain:
+    @pytest.mark.asyncio
+    async def test_unreadable_drain_keeps_the_last_known_decision(self, monkeypatch):
+        """An API restart cannot make a drained consumer admit a new turn."""
+        from src.consumers import engineering
+
+        monkeypatch.setattr(engineering, "_last_engineering_consumer_drain", None, raising=False)
+        monkeypatch.setattr(
+            engineering, "_engineering_consumer_drain_read_failed", False, raising=False
+        )
+        monkeypatch.setattr(
+            engineering.api_client,
+            "get",
+            AsyncMock(
+                side_effect=[
+                    httpx.ConnectError("api unavailable"),
+                    {"draining": True},
+                    httpx.ConnectError("api unavailable"),
+                    httpx.ConnectError("api unavailable"),
+                ]
+            ),
+        )
+
+        with patch.object(engineering, "logger") as logger:
+            assert await engineering._engineering_consumer_is_draining() is None
+            assert await engineering._engineering_consumer_is_draining() is True
+            assert await engineering._engineering_consumer_is_draining() is True
+            assert await engineering._engineering_consumer_is_draining() is True
+
+        assert logger.warning.call_count == 2
 
 
 class TestHandleEngineeringSuccess:
