@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Replaced the field-by-field contract copy with a compact registry pointing to
+  canonical REST and queue sources, owners, delivery rules, and lifecycle fences.
+
 - Consolidated equivalent offline live-harness test scenarios and removed duplicate test setup and
   historical prose while retaining cleanup, evidence, ownership, and authentication coverage.
 
