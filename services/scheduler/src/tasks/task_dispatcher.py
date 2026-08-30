@@ -36,7 +36,6 @@ from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ._recipients import resolve_project_recipient
-from .bot_rollouts import reconcile_bot_rollouts
 from .owner_notifications import (
     deliver_owed_notification,
     owe_owner_notification,
@@ -571,11 +570,6 @@ async def task_dispatcher_loop() -> None:
                 # into a quarantine over a leftover test user.
                 testing = await supervise_testing_stories(api_client, redis_client)
                 temporary_access = await supervise_temporary_access(api_client, redis_client)
-                # Rollout reconciliation runs after the routing that can publish
-                # new work: a record owed by this tick is attempted next tick,
-                # which is the same one-attempt-per-tick pacing the owner
-                # notification sweep above gets.
-                bot_rollouts = await reconcile_bot_rollouts(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -614,10 +608,6 @@ async def task_dispatcher_loop() -> None:
                     + owner_notifications["exhausted"]
                     + owner_notifications["unaddressable"]
                     + owner_notifications["voided"]
-                    + bot_rollouts["published"]
-                    + bot_rollouts["publish_retrying"]
-                    + bot_rollouts["publish_exhausted"]
-                    + bot_rollouts["notified"]
                 )
                 if supervisor_active:
                     logger.info(
@@ -657,14 +647,6 @@ async def task_dispatcher_loop() -> None:
                         # sent, nothing was spent, and the ending is owed again
                         # if routing does reach it.
                         owner_notify_voided=owner_notifications["voided"],
-                        # Bot-audience rollouts: publish recovered from a
-                        # committed-but-unpublished staging vs. still being
-                        # retried vs. given up and handed to a human; plus the
-                        # promised terminal outcomes delivered this tick.
-                        bot_rollout_published=bot_rollouts["published"],
-                        bot_rollout_publish_retrying=bot_rollouts["publish_retrying"],
-                        bot_rollout_publish_exhausted=bot_rollouts["publish_exhausted"],
-                        bot_rollout_notified=bot_rollouts["notified"],
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")

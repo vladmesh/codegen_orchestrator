@@ -31,17 +31,23 @@ internal key is a service principal and may name an actor through
 project ownership, allocation administration, and recipient resolution use that
 principal rather than an untrusted header lookup.
 
-### Telegram bot audiences
+### Generated-service user grants
 
-Canonical parsing and rollout rules live in `shared/contracts/bot_access.py`,
-`shared/contracts/bot_rollout.py`, and `services/api/src/routers/_bot_access.py`.
+Generated Telegram services use their `USERS_GRANT_CAPABILITY` generated secret
+only through the deploy resolver's in-memory `secret_values`. A grant intent is
+typed `users_grant_intent` metadata on the durable deploy Run. It binds one
+verified channel/external identity, initiating actor, and immutable target
+application/deployment/SHA without holding secret material. The Run is written
+before publish; repeats resume its same intent. After smoke success, deploy
+grants through `POST /users/grant` and requires `GET /users/access` to report
+that exact identity active before marking the intent applied or reporting access
+live. An incoming ownership transfer changes `Project.owner_id` only in the
+post-readback transaction that records the applied intent. The capability is
+never an override, project configuration value, URL, event field, or log value.
 
-- A `custom` private audience includes the verified caller as well as dictated
-  ids; conversational text cannot replace the requester.
-- A private audience includes the project owner. Only an authenticated internal
-  service acting for itself can persist the explicit
-  `allow_ownerless_audience` opt-out.
-- Public audiences have no private list and do not use that opt-out.
+The existing `TG_BOT_TEST_TELEGRAM_ID` temporary-access slot remains a separate
+revocable QA lifecycle. `users.grant` has no revoke or expiry protocol, so it
+must not be used as a QA TTL grant until the template adds one.
 
 ## Accounting, admission, and executor selection
 

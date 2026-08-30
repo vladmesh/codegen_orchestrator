@@ -20,6 +20,7 @@ from shared.contracts.dto.application import (
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
+from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY, GrantIntent
 from shared.contracts.env_overrides import (
     EMPTY_OVERRIDES_DIGEST,
     env_overrides_digest,
@@ -66,9 +67,6 @@ __all__ = [
 ]
 
 logger = structlog.get_logger(__name__)
-
-_BOT_AUDIENCE_KEY = "TG_BOT_ALLOWED_TELEGRAM_IDS"
-_LEGACY_BOT_AUDIENCE_KEY = "ADMIN_TELEGRAM_ID"
 
 _config: ConfigStore | None = None
 
@@ -220,9 +218,7 @@ def _build_subgraph_input(
 def _effective_env_overrides(project: ProjectDTO, message_overrides: dict | None) -> dict[str, str]:
     """Combine persisted project literals with per-deploy literals.
 
-    Bot access is project configuration because it is product policy, while QA's
-    temporary identity remains a deploy-scoped override. Both are still accepted
-    only when the generated repository declares them as contract literals.
+    Only explicitly declared non-secret literals can be supplied this way.
     """
     configured = (project.config or {}).get("env_overrides", {})
     if not isinstance(configured, dict) or not all(
@@ -233,38 +229,7 @@ def _effective_env_overrides(project: ProjectDTO, message_overrides: dict | None
         isinstance(key, str) and isinstance(value, str) for key, value in message_overrides.items()
     ):
         raise ValueError("deploy env_overrides must be a string mapping")
-    bot_access = (project.config or {}).get("bot_access")
-    if isinstance(bot_access, dict) and _BOT_AUDIENCE_KEY in message_overrides:
-        selected_audience = bot_access.get("allowed_telegram_ids")
-        if message_overrides[_BOT_AUDIENCE_KEY] != selected_audience:
-            raise ValueError("deploy cannot override the configured bot audience")
-    secrets = (project.config or {}).get("secrets", {})
-    if (
-        isinstance(secrets, dict)
-        and _LEGACY_BOT_AUDIENCE_KEY in secrets
-        and not isinstance(bot_access, dict)
-        and _BOT_AUDIENCE_KEY in message_overrides
-    ):
-        raise ValueError("deploy cannot override the legacy private bot audience")
     return {**configured, **message_overrides}
-
-
-def _legacy_bot_audience_needs_contract_resolution(project: ProjectDTO) -> bool:
-    """Keep a legacy private bot out of the redundant-deploy shortcut.
-
-    The typed resolver can migrate the encrypted legacy value only after it has
-    loaded the generated repository's environment contract. At this point the
-    secret key is enough to know that the shortcut must not decide the deploy.
-    """
-    config = project.config or {}
-    secrets = config.get("secrets", {})
-    overrides = config.get("env_overrides", {})
-    return (
-        isinstance(secrets, dict)
-        and _LEGACY_BOT_AUDIENCE_KEY in secrets
-        and not isinstance(config.get("bot_access"), dict)
-        and (not isinstance(overrides, dict) or _BOT_AUDIENCE_KEY not in overrides)
-    )
 
 
 async def _already_deployed_application(
@@ -488,6 +453,36 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             )
             return live_work_unsettled({"status": "failed", "error": error_msg})
 
+        grant_intent = None
+        stored_intent = (run.run_metadata or {}).get(USERS_GRANT_INTENT_KEY)
+        if stored_intent is not None:
+            try:
+                grant_intent = GrantIntent.model_validate(stored_intent)
+            except ValueError:
+                return await _handle_deploy_failure(
+                    task_id=task_id,
+                    project_id=project_id,
+                    story_id=story_id,
+                    error_msg="grant intent is malformed",
+                    callback_stream=callback_stream,
+                    telegram_chat_id=telegram_chat_id,
+                    redis=redis,
+                    deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+                    deploy_fix_attempt=msg.deploy_fix_attempt,
+                )
+            if grant_intent.project_id != project_id or grant_intent.target_sha != msg.head_sha:
+                return await _handle_deploy_failure(
+                    task_id=task_id,
+                    project_id=project_id,
+                    story_id=story_id,
+                    error_msg="grant intent target does not match deploy message",
+                    callback_stream=callback_stream,
+                    telegram_chat_id=telegram_chat_id,
+                    redis=redis,
+                    deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+                    deploy_fix_attempt=msg.deploy_fix_attempt,
+                )
+
         # Lifecycle actions (stop/undeploy) — skip both allocation and the DevOps
         # subgraph. They bring down an application that already exists; allocating
         # would create one instead of finding the one the message names.
@@ -531,9 +526,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
         # A fenced deploy has to run: the shortcut would report a value removed
         # while the run that set it is still live on GitHub Actions.
         application_id = None
-        if not msg.fence_active_deploys and not _legacy_bot_audience_needs_contract_resolution(
-            project
-        ):
+        if grant_intent is None and not msg.fence_active_deploys:
             application_id = await _already_deployed_application(
                 allocated_resources, msg.head_sha, env_overrides
             )
@@ -679,6 +672,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 story_id=story_id,
                 redis=redis,
                 application_id=result.get("application_id"),
+                grant_intent=grant_intent,
             )
         elif result.get("missing_user_secrets"):
             missing = [

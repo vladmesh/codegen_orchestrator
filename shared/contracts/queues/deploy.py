@@ -41,6 +41,7 @@ class DeployOutcome(StrEnum):
     ALLOCATION_MISSING = "allocation_missing"
     ENVIRONMENT_CONTRACT_INVALID = "environment_contract_invalid"
     ENVIRONMENT_RESOLUTION_FAILED = "environment_resolution_failed"
+    OWNER_ACCESS_PROOF_FAILED = "owner_access_proof_failed"
     HEAD_SHA_MISSING = "head_sha_missing"
     # The deploy never started: no server could be allocated for the application,
     # for a reason that is about the platform and not about the project (see

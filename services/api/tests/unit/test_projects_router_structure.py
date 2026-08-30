@@ -12,9 +12,9 @@ def test_projects_router_is_a_thin_package_without_duplicate_guards():
     assert not (ROUTERS / "projects.py").exists()
     for module in (
         "__init__.py",
+        "access.py",
         "lifecycle.py",
         "secrets.py",
-        "bot.py",
         "telegram.py",
         "teardown.py",
     ):
@@ -86,32 +86,20 @@ def test_projects_route_table_keeps_its_public_surface():
         ),
         (
             "POST",
-            "/api/projects/{project_id}/config/bot-access",
-            "set_bot_access_api_projects__project_id__config_bot_access_post",
+            "/api/projects/{project_id}/users/grant",
+            "grant_user_api_projects__project_id__users_grant_post",
             ("200", "422"),
         ),
         (
             "POST",
-            "/api/projects/{project_id}/config/bot-access/users",
-            "add_bot_user_api_projects__project_id__config_bot_access_users_post",
-            ("200", "422"),
-        ),
-        (
-            "DELETE",
-            "/api/projects/{project_id}/config/bot-access/users/{telegram_id}",
-            "remove_bot_user_api_projects__project_id__config_bot_access_users__telegram_id__delete",
-            ("200", "422"),
-        ),
-        (
-            "GET",
-            "/api/projects/{project_id}/config/bot-access/rollouts/{run_id}",
-            "get_bot_audience_rollout_api_projects__project_id__config_bot_access_rollouts__run_id__get",
+            "/api/projects/{project_id}/ownership-transfer",
+            "transfer_ownership_api_projects__project_id__ownership_transfer_post",
             ("200", "422"),
         ),
         (
             "POST",
-            "/api/projects/{project_id}/config/bot-access/rollouts/{run_id}/notify-owed",
-            "owe_bot_audience_rollout_notification_api_projects__project_id__config_bot_access_rollouts__run_id__notify_owed_post",
+            "/api/projects/{project_id}/ownership-transfer/{run_id}/apply",
+            "apply_transfer_api_projects__project_id__ownership_transfer__run_id__apply_post",
             ("200", "422"),
         ),
         (

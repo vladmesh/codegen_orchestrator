@@ -3,9 +3,8 @@
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from shared.contracts.bot_access import parse_allowed_telegram_ids
 from shared.contracts.dto.base import TimestampedDTO
 
 # The request schemas are the contract every client already imports; the API
@@ -13,9 +12,9 @@ from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.project import ProjectCreate, ProjectStatus, ProjectUpdate
 
 __all__ = [
-    "BotAccessRequest",
-    "BotUserMutationRequest",
+    "GrantUserRequest",
     "MergeSecretsRequest",
+    "OwnershipTransferRequest",
     "ProjectBase",
     "ProjectCreate",
     "ProjectRead",
@@ -47,51 +46,19 @@ class ProjectRead(ProjectBase, TimestampedDTO):
     initiating_run_id: str | None = None
 
 
+class GrantUserRequest(BaseModel):
+    """One verified Telegram identity to give permanent access."""
+
+    model_config = ConfigDict(extra="forbid")
+    telegram_id: int = Field(strict=True, ge=1)
+
+
+class OwnershipTransferRequest(GrantUserRequest):
+    """The verified incoming owner; transfer waits for active readback."""
+
+
 class MergeSecretsRequest(BaseModel):
     """Schema for atomic secret merge."""
 
     secrets: dict[str, str]
     env_hints: dict[str, str] | None = None
-
-
-class BotAccessRequest(BaseModel):
-    """The product audience selected for a Telegram bot."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    mode: str
-    allowed_telegram_ids: str = ""
-    # A private bot normally includes the project owner. This escape hatch is
-    # deliberately accepted only from an internal service acting for itself;
-    # the route enforces that authorization because the schema has no caller.
-    allow_ownerless_audience: bool = False
-
-    @model_validator(mode="after")
-    def _private_audience_is_not_empty(self) -> "BotAccessRequest":
-        if self.mode not in {"only_me", "public", "custom"}:
-            raise ValueError("mode must be only_me, public, or custom")
-        if self.mode != "public" and not parse_allowed_telegram_ids(self.allowed_telegram_ids):
-            raise ValueError("a private bot audience must contain a Telegram ID")
-        if self.mode == "public" and self.allowed_telegram_ids != "":
-            raise ValueError("a public bot audience must be empty")
-        if self.mode == "public" and self.allow_ownerless_audience:
-            raise ValueError("a public bot does not need allow_ownerless_audience")
-        return self
-
-
-# Telegram IDs are positive integers well above any port number; a 0 or negative
-# value is never a Telegram account id.
-MIN_TELEGRAM_ID = 1
-
-
-class BotUserMutationRequest(BaseModel):
-    """One typed Telegram ID to add to (or remove from) the chosen audience.
-
-    The body carries exactly one ID on purpose: the conversational operation is
-    "add user X", and a caller that wanted to replace the whole list would have
-    to use set_bot_access instead of smuggling a replacement through here.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    telegram_id: int = Field(strict=True, ge=MIN_TELEGRAM_ID)

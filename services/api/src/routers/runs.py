@@ -6,16 +6,10 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import and_, or_, select, tuple_
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.bot_rollout import (
-    BOT_ROLLOUT_METADATA_KEY,
-    BOT_ROLLOUT_NOTIFY_KEY,
-    BotRolloutNotifyState,
-    BotRolloutPublishState,
-)
 from shared.contracts.dto.deploy_dispatch import (
     DISPATCH_CLAIMED_AT_KEY,
     DISPATCH_LEASE,
@@ -36,6 +30,11 @@ from shared.contracts.dto.owner_notification import (
 )
 from shared.contracts.dto.qa_ssh_grant import QA_SSH_GRANT_KEY, QASshGrantState
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.users_grant import (
+    USERS_GRANT_INTENT_KEY,
+    GrantIntent,
+    GrantIntentKind,
+)
 from shared.models import EngineeringAttemptLedger, Project, Run, User
 
 from ..database import get_async_session
@@ -241,6 +240,34 @@ async def create_run(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"User with id {run_data['user_id']} not found",
             )
+
+    # A generated Telegram service always begins with a durable owner-grant
+    # intent on its deploy Run. The Run is committed before its producer may
+    # publish, so recovery has the exact SHA and identity it must resume.
+    if run.type == RunType.DEPLOY.value and run_data.get("project_id") is not None:
+        metadata = dict(run_data.get("run_metadata") or {})
+        project = await db.get(Project, run_data["project_id"])
+        head_sha = metadata.get("head_sha")
+        if (
+            project is not None
+            and "tg_bot" in (project.config or {}).get("modules", [])
+            and isinstance(head_sha, str)
+            and USERS_GRANT_INTENT_KEY not in metadata
+        ):
+            owner = await db.get(User, project.owner_id)
+            if owner is None:
+                raise HTTPException(status_code=409, detail="project owner is missing")
+            metadata[USERS_GRANT_INTENT_KEY] = GrantIntent(
+                id=f"users-grant-initial-owner-{run.id}",
+                kind=GrantIntentKind.INITIAL_OWNER,
+                project_id=str(project.id),
+                channel="telegram",
+                external_id=str(owner.telegram_id),
+                target_sha=head_sha,
+                initiating_actor="deploy_producer",
+                incoming_owner_id=owner.id,
+            ).model_dump(mode="json")
+            run_data["run_metadata"] = metadata
 
     db_run = Run(**run_data)
     db.add(db_run)
@@ -484,50 +511,6 @@ async def list_runs_owing_owner_notification(
     query = (
         select(Run)
         .where(notification.is_not(None), state == OwnerNotificationState.OWED.value)
-        .order_by(Run.created_at.asc(), Run.id.asc())
-        .limit(limit)
-    )
-    result = await db.execute(query)
-    return list(result.scalars().all())
-
-
-@router.get("/bot-rollouts/unsettled", response_model=list[RunRead])
-async def list_unsettled_bot_rollout_runs(
-    limit: int = Query(100, ge=1, le=500),
-    db: AsyncSession = Depends(get_async_session),
-    _is_internal: bool = Depends(require_internal_or_admin),
-) -> list[Run]:
-    """Every configuration-only rollout whose publish or notify is unsettled.
-
-    Selected by the state of the records, oldest first, for the same reason as
-    the owner-notification selection above: the commit/publish gap is closed by
-    re-attempting from a durable record, not from a time window. A run qualifies
-    while its rollout record says the queue write is still owed (bounded
-    attempts, then an admin alert) or its notify record says the owner has not
-    heard the ending. Both settle by transition, so no record can stay in the
-    selection across more ticks than its bound.
-    """
-    rollout = Run.run_metadata[BOT_ROLLOUT_METADATA_KEY]
-    publish_state = Run.run_metadata[(BOT_ROLLOUT_METADATA_KEY, "publish")].as_string()
-    notify = Run.run_metadata[BOT_ROLLOUT_NOTIFY_KEY]
-    notify_state = Run.run_metadata[(BOT_ROLLOUT_NOTIFY_KEY, "state")].as_string()
-    query = (
-        select(Run)
-        .where(
-            # A deploy run carrying rollout bookkeeping...
-            rollout.is_not(None),
-            or_(
-                # ...whose message may never have reached the queue, or
-                #
-                # An ABANDONED record deliberately does not qualify: its
-                # bounded attempts ran out, a human was alerted, and selecting
-                # it forever would spend a sweep page on runs nothing may
-                # touch again.
-                publish_state == BotRolloutPublishState.PUBLISH_OWED.value,
-                # ...whose owner is still owed the terminal outcome.
-                and_(notify.is_not(None), notify_state == BotRolloutNotifyState.OWED.value),
-            ),
-        )
         .order_by(Run.created_at.asc(), Run.id.asc())
         .limit(limit)
     )

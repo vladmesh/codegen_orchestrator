@@ -9,7 +9,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.bot_rollout import BOT_ROLLOUT_METADATA_KEY
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus, ProjectTeardownResult, TeardownStatus
 from shared.contracts.dto.run import RunStatus
@@ -100,10 +99,9 @@ async def _stalled_undeploy_error(
     was cancelled would otherwise sit in `undeploying` forever, with nothing to say
     so and no way for a retry to send it down again.
 
-    Configuration-only bot-audience rollouts also write deploy runs carrying the
-    same application id; they are not teardown attempts and are skipped here —
-    otherwise a rollout finishing between two teardown polls would read as "the
-    undeploy succeeded" or its failure as "the undeploy failed".
+    Access-grant deploy runs may carry the same application id. They are not
+    teardown attempts and are skipped here, so a grant finishing between polls
+    cannot be misread as an undeploy verdict.
     """
     runs = (
         await db.execute(
@@ -115,11 +113,6 @@ async def _stalled_undeploy_error(
     for run in runs:
         metadata = run.run_metadata or {}
         if metadata.get("application_id") != application_id:
-            continue
-        if BOT_ROLLOUT_METADATA_KEY in metadata or (
-            metadata.get("triggered_by") == "bot_audience_rollout"
-        ):
-            # Not an undeploy: this run redeployed the application.
             continue
         if run.status not in (RunStatus.FAILED.value, RunStatus.CANCELLED.value):
             return None

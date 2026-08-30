@@ -216,11 +216,6 @@ class SchedulerAPIClient(InternalAPIClient):
         """Persist one delivery attempt against a story-backed completion record."""
         await self.request("PATCH", f"stories/{story_id}/owner-notification", json=notification)
 
-    async def list_bot_rollout_runs(self, *, limit: int) -> list[RunDTO]:
-        """One page of bot-audience rollouts whose publish or notify is unsettled."""
-        resp = await self.request("GET", "runs/bot-rollouts/unsettled", params={"limit": limit})
-        return [RunDTO.model_validate(row) for row in resp.json()]
-
     async def update_run(self, run_id: str, data: dict) -> None:
         """Patch run fields (status, error_message, result)."""
         await self.request("PATCH", f"runs/{run_id}", json=data)

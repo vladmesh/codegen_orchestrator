@@ -4,6 +4,19 @@
 
 ### Changed
 
+- Replaced generated Telegram bot audience configuration with the generated
+  `users.grant` capability. Production deploy resolution persists the capability
+  as a generated secret, injects it only through `secret_values`, and requires
+  grant plus active readback for the verified project owner after smoke success.
+  The remaining QA temporary-access TTL slot is unchanged because `users.grant`
+  has no revocation or expiry capability.
+
+- Added durable typed `users_grant_intent` deploy metadata for initial owners,
+  added users, and incoming owners. Grant dispatch is persisted before publish,
+  binds a verified identity and target application/deployment/SHA, and records
+  access only after the generated service reports the identity active. Ownership
+  transfer is committed with the incoming-owner readback verdict.
+
 - Split the projects API router into lifecycle, secrets, bot, Telegram, and teardown domains while
   preserving its public routes and consolidating project access checks in the canonical guards module.
 
