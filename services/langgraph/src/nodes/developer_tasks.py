@@ -78,11 +78,6 @@ def format_env_hints(project_spec: dict) -> str:
     return "\n".join(lines)
 
 
-def format_generated_access_requirements(project_spec: dict) -> str:
-    """The generated service owns permanent bot access through users.grant."""
-    return ""
-
-
 def build_create_task(
     project_name: str,
     description: str,
@@ -109,8 +104,6 @@ def build_create_task(
         )
 
     env_hints_section = format_env_hints(project_spec)
-    generated_access_section = format_generated_access_requirements(project_spec)
-
     detailed_spec = project_spec.get("detailed_spec") or feature_description or "N/A"
 
     return f"""# Task: Build {project_name}
@@ -123,7 +116,7 @@ def build_create_task(
 
 **Detailed Spec**:
 {detailed_spec}
-{env_hints_section}{generated_access_section}
+{env_hints_section}
 ## Project Structure (already scaffolded)
 
 The project was scaffolded with `copier` from `service-template`.
@@ -155,8 +148,6 @@ def build_feature_task(
     task_description = feature_description or description or "No description provided"
     modules_str = ", ".join(modules)
     env_hints_section = format_env_hints(project_spec)
-    generated_access_section = format_generated_access_requirements(project_spec)
-
     return f"""# Task: {action_label} in {project_name}
 
 ## What To Do
@@ -168,7 +159,7 @@ def build_feature_task(
 **Name**: {project_name}
 **Description**: {description}
 **Modules**: {modules_str}
-{env_hints_section}{generated_access_section}
+{env_hints_section}
 ## Important
 
 - This is an **existing, working project** — do NOT regenerate or restructure it

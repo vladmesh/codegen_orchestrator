@@ -161,12 +161,13 @@ async def test_tg_bot_without_generated_grant_capability_is_rejected():
     assert error.value.outcome == "environment_contract_invalid"
 
 
-def test_local_template_fixture_declares_no_production_grant_value():
+def test_local_template_fixture_declares_backend_grant_capability():
     entries = yaml.safe_load(
-        (_template_fixture() / "services/tg_bot/env.contract.yaml").read_text()
+        (_template_fixture() / "services/backend/env.contract.yaml").read_text()
     )["entries"]
     capability = GeneratedSecretEntry.model_validate(entries["USERS_GRANT_CAPABILITY"])
     assert capability.source == "generated_secret"
+    assert capability.consumers == ["backend"]
 
 
 @pytest.mark.asyncio

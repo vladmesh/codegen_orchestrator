@@ -228,6 +228,7 @@ async def _apply_grant_intent(  # noqa: PLR0913
         return safe_failure
     if intent.kind is GrantIntentKind.INCOMING_OWNER:
         try:
+            await _write_intent_status(task_id, intent.with_status(GrantIntentStatus.APPLYING))
             await api_client.post(f"projects/{project_id}/ownership-transfer/{task_id}/apply")
         except Exception:
             await _write_intent_status(

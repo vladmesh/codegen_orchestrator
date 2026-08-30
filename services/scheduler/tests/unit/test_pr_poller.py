@@ -1,5 +1,6 @@
 """Unit tests for poll_merged_prs — exact PR lookup via story.pr_number."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -133,6 +134,38 @@ async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
     assert deploy_msg.head_sha == "b" * 40
     # Never calls list_pull_requests — no chance to pick up stale PR #3
     gh.list_pull_requests.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_first_tg_bot_deploy_owns_the_deduplicated_initial_owner_intent(mock_gh_cls):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(project_id="00000000-0000-0000-0000-000000000001", pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    api.get_project.return_value = SimpleNamespace(
+        config={"modules": ["backend", "tg_bot"]}, owner_id=7
+    )
+    api.get_user.return_value = SimpleNamespace(telegram_id=84)
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "merged_at": "2026-03-20T03:15:00Z",
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 1
+
+    run = api.create_run.await_args.args[0]
+    assert run["id"] == "users-grant-initial-owner-00000000000000000000000000000001-84"
+    assert run["run_metadata"] == {
+        "triggered_by": "initial_owner_seed",
+        "head_sha": "a" * 40,
+    }
+    assert redis.publish_message.await_args.args[1].task_id == run["id"]
 
 
 def _failed_run(run_id: int, sha: str) -> dict:

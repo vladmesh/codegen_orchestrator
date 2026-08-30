@@ -47,6 +47,23 @@ def _failure_fingerprint(failed_jobs: list[dict], unavailable_reason: str | None
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+async def _initial_owner_seed_run_id(
+    api_client: SchedulerAPIClient, project_id: str, action: str
+) -> str | None:
+    """Return the only deploy-run identity eligible to seed an initial owner."""
+    if action != "create":
+        return None
+    project = await api_client.get_project(project_id)
+    config = getattr(project, "config", None)
+    if not isinstance(config, dict) or "tg_bot" not in config.get("modules", []):
+        return None
+    owner = await api_client.get_user(project.owner_id)
+    if owner is None or not owner.telegram_id:
+        logger.warning("initial_owner_seed_identity_missing", project_id=project_id)
+        return None
+    return f"users-grant-initial-owner-{uuid.UUID(project_id).hex}-{owner.telegram_id}"
+
+
 def _ci_metadata(task: object) -> dict | None:
     metadata = getattr(task, "failure_metadata", None) or {}
     value = metadata.get("ci_failure")
@@ -236,15 +253,21 @@ async def poll_merged_prs(
         has_completed = any(s.status in _COMPLETED_STATUSES for s in all_stories)
         action = "feature" if has_completed else "create"
 
-        # Publish deploy message
+        # The first generated Telegram deployment owns the one deduplicated
+        # owner seed. Machinery retries and later feature deploys are ineligible.
         run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
+        trigger = "pr_poll"
+        initial_owner_seed_id = await _initial_owner_seed_run_id(api_client, project_id, action)
+        if initial_owner_seed_id is not None:
+            run_id = initial_owner_seed_id
+            trigger = "initial_owner_seed"
         run_data = {
             "id": run_id,
             "type": "deploy",
             "project_id": str(project_id),
             "story_id": story_id,
             "run_metadata": {
-                "triggered_by": "pr_poll",
+                "triggered_by": trigger,
                 "head_sha": head_sha,
             },
         }

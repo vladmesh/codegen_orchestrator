@@ -15,7 +15,12 @@ async def test_grant_sends_capability_only_as_header_and_requires_active_readbac
         httpx.Response(200, request=httpx.Request("POST", "https://service/users/grant")),
         httpx.Response(
             200,
-            json={"channel": "telegram", "external_id": "84", "active": True},
+            json={
+                "user_id": 12,
+                "status": "active",
+                "channel": "telegram",
+                "external_id": "84",
+            },
             request=httpx.Request("GET", "https://service/users/access"),
         ),
     ]
@@ -52,11 +57,43 @@ async def test_grant_sends_capability_only_as_header_and_requires_active_readbac
                 httpx.Response(200, request=httpx.Request("POST", "https://service/users/grant")),
                 httpx.Response(
                     200,
-                    json={"channel": "telegram", "external_id": "84", "active": False},
+                    json={
+                        "user_id": 12,
+                        "status": "inactive",
+                        "channel": "telegram",
+                        "external_id": "84",
+                    },
                     request=httpx.Request("GET", "https://service/users/access"),
                 ),
             ],
             GrantFailureKind.INACTIVE,
+        ),
+        (
+            [
+                httpx.Response(200, request=httpx.Request("POST", "https://service/users/grant")),
+                httpx.Response(
+                    200,
+                    json={"channel": "telegram", "external_id": "84"},
+                    request=httpx.Request("GET", "https://service/users/access"),
+                ),
+            ],
+            GrantFailureKind.MALFORMED_ACCESS,
+        ),
+        (
+            [
+                httpx.Response(200, request=httpx.Request("POST", "https://service/users/grant")),
+                httpx.Response(
+                    200,
+                    json={
+                        "user_id": 12,
+                        "status": "unknown",
+                        "channel": "telegram",
+                        "external_id": "84",
+                    },
+                    request=httpx.Request("GET", "https://service/users/access"),
+                ),
+            ],
+            GrantFailureKind.MALFORMED_ACCESS,
         ),
     ],
 )
@@ -70,3 +107,16 @@ async def test_grant_client_returns_a_bounded_safe_failure(responses, failure):
 
     assert proof.active is False
     assert proof.failure is failure
+
+
+@pytest.mark.asyncio
+async def test_grant_client_treats_transport_failure_as_safe_failure():
+    transport = AsyncMock()
+    transport.request.side_effect = httpx.ConnectError("unavailable")
+
+    proof = await GeneratedServiceGrantClient(
+        "https://service", transport=transport
+    ).grant_and_resolve(channel="telegram", external_id="84", capability="never-report")
+
+    assert proof.active is False
+    assert proof.failure is GrantFailureKind.TRANSPORT

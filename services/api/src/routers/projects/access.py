@@ -82,9 +82,8 @@ async def _stage_intent(  # noqa: PLR0913
     target_user: User,
     kind: GrantIntentKind,
     actor: str,
-) -> tuple[Run, DeployMessage, bool]:
+) -> tuple[Run, DeployMessage | None, bool]:
     """Write the intent and deploy Run before returning its queue message."""
-    application_id, deployment_id, head_sha = await _live_target(db, project.id)
     run_id = _intent_id(kind, project.id, target_user.telegram_id)
     existing = await db.get(Run, run_id)
     if existing is not None:
@@ -94,11 +93,25 @@ async def _stage_intent(  # noqa: PLR0913
                 status_code=409, detail="grant intent id is held by an unrelated run"
             )
         intent = GrantIntent.model_validate(stored)
-        if intent.project_id != str(project.id) or intent.external_id != str(
-            target_user.telegram_id
+        if (
+            intent.kind is not kind
+            or intent.project_id != str(project.id)
+            or intent.external_id != str(target_user.telegram_id)
         ):
             raise HTTPException(
                 status_code=409, detail="grant intent target does not match request"
+            )
+        if intent.status is GrantIntentStatus.APPLIED:
+            return existing, None, False
+        application_id, deployment_id, head_sha = await _live_target(db, project.id)
+        if (
+            intent.target_application_id != application_id
+            or intent.target_deployment_id != deployment_id
+            or intent.target_sha != head_sha
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="grant intent target is no longer the live deployment; request a new grant",
             )
         recipient = await resolve_project_recipient(db, project.id, event="users_grant_resume")
         return (
@@ -114,6 +127,7 @@ async def _stage_intent(  # noqa: PLR0913
             ),
             False,
         )
+    application_id, deployment_id, head_sha = await _live_target(db, project.id)
     intent = GrantIntent(
         id=run_id,
         kind=kind,
@@ -153,9 +167,12 @@ async def _stage_intent(  # noqa: PLR0913
 
 
 async def _publish_staged_intent(
-    db: AsyncSession, redis: RedisStreamClient, run: Run, message: DeployMessage
+    db: AsyncSession, redis: RedisStreamClient, run: Run, message: DeployMessage | None
 ) -> GrantIntent:
     """Publish only after the durable intent is committed; repeats use the same Run."""
+    intent = GrantIntent.model_validate(run.run_metadata[USERS_GRANT_INTENT_KEY])
+    if message is None:
+        return intent
     await db.commit()
     try:
         await redis.publish_message(DEPLOY_QUEUE, message)
@@ -163,7 +180,6 @@ async def _publish_staged_intent(
         raise HTTPException(
             status_code=503, detail="grant intent is durable but dispatch is still owed"
         ) from None
-    intent = GrantIntent.model_validate(run.run_metadata[USERS_GRANT_INTENT_KEY])
     if intent.status is GrantIntentStatus.PUBLISH_OWED:
         run.run_metadata = {
             **run.run_metadata,
@@ -254,6 +270,12 @@ async def apply_transfer(
         raise HTTPException(
             status_code=409, detail="run is not this project's incoming-owner intent"
         )
+    if intent.status is GrantIntentStatus.APPLIED:
+        if project.owner_id == intent.incoming_owner_id:
+            return {"intent_id": intent.id, "status": GrantIntentStatus.APPLIED.value}
+        raise HTTPException(status_code=409, detail="applied transfer does not own this project")
+    if intent.status is not GrantIntentStatus.APPLYING:
+        raise HTTPException(status_code=409, detail="incoming owner has not passed active readback")
     if intent.outgoing_owner_id != project.owner_id:
         raise HTTPException(
             status_code=409, detail="project ownership changed while transfer was pending"

@@ -101,11 +101,6 @@ class LanggraphAPIClient(InternalAPIClient):
         resp = await self.request("GET", f"users/by-telegram/{telegram_id}")
         return UserDTO.model_validate(resp.json())
 
-    async def get_user(self, user_id: int) -> UserDTO:
-        """Read the verified owner identity for a deploy-side access proof."""
-        resp = await self.request("GET", f"users/{user_id}")
-        return UserDTO.model_validate(resp.json())
-
     async def update_server(self, server_handle: str, payload: dict) -> dict:
         return await self._patch_json(f"servers/{server_handle}", json=payload)
 

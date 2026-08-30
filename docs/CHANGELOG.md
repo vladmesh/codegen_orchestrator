@@ -17,6 +17,12 @@
   access only after the generated service reports the identity active. Ownership
   transfer is committed with the incoming-owner readback verdict.
 
+- Aligned durable grant readback with the generated service's `UserAccess`
+  response (`status: active|inactive`), failed closed on malformed responses,
+  and limited initial-owner injection to its one deduplicated owner-seed run.
+  Repeated permanent-access requests now short-circuit an applied intent and
+  reject a stale target rather than redeploying an old SHA.
+
 - Split the projects API router into lifecycle, secrets, bot, Telegram, and teardown domains while
   preserving its public routes and consolidating project access checks in the canonical guards module.
 

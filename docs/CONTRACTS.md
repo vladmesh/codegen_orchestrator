@@ -45,6 +45,15 @@ live. An incoming ownership transfer changes `Project.owner_id` only in the
 post-readback transaction that records the applied intent. The capability is
 never an override, project configuration value, URL, event field, or log value.
 
+An `INITIAL_OWNER` intent belongs only to the dedicated, stable
+`initial_owner_seed` deploy Run whose id is derived from the project and verified
+owner identity. It is deduplicated on that pair. QA temporary-access grant or
+revoke runs, and supervisor retry, infrastructure-wait, and secret-wait runs,
+are ineligible even when they carry a deployment SHA. An `ADD_USER` or
+`INCOMING_OWNER` retry may resume only while its immutable target is still the
+live deployment; an applied intent short-circuits, and a stale target is
+rejected rather than redeployed.
+
 The existing `TG_BOT_TEST_TELEGRAM_ID` temporary-access slot remains a separate
 revocable QA lifecycle. `users.grant` has no revoke or expiry protocol, so it
 must not be used as a QA TTL grant until the template adds one.

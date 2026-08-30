@@ -76,6 +76,11 @@ OWNER_NOTIFICATION_PAGE_MAX = 500
 ENGINEERING_ATTEMPT_PAGE_MAX = 500
 
 
+def _initial_owner_intent_id(project_id: uuid.UUID, telegram_id: int) -> str:
+    """The one deploy Run which may seed this owner's permanent access."""
+    return f"users-grant-initial-owner-{project_id.hex}-{telegram_id}"
+
+
 class EngineeringAttemptRead(BaseModel):
     """Read-only representation of the canonical engineering ledger."""
 
@@ -241,9 +246,9 @@ async def create_run(
                 detail=f"User with id {run_data['user_id']} not found",
             )
 
-    # A generated Telegram service always begins with a durable owner-grant
-    # intent on its deploy Run. The Run is committed before its producer may
-    # publish, so recovery has the exact SHA and identity it must resume.
+    # Only a dedicated, stable owner-seed Run may carry the initial grant. QA
+    # slot grant/revoke and supervisor recovery deploys carry head_sha too, but
+    # are not user-grant work and must never execute this intent.
     if run.type == RunType.DEPLOY.value and run_data.get("project_id") is not None:
         metadata = dict(run_data.get("run_metadata") or {})
         project = await db.get(Project, run_data["project_id"])
@@ -253,19 +258,47 @@ async def create_run(
             and "tg_bot" in (project.config or {}).get("modules", [])
             and isinstance(head_sha, str)
             and USERS_GRANT_INTENT_KEY not in metadata
+            and metadata.get("triggered_by") == "initial_owner_seed"
         ):
             owner = await db.get(User, project.owner_id)
             if owner is None:
                 raise HTTPException(status_code=409, detail="project owner is missing")
+            if owner.telegram_id is None:
+                raise HTTPException(
+                    status_code=409, detail="project owner has no verified Telegram identity"
+                )
+            intent_id = _initial_owner_intent_id(project.id, owner.telegram_id)
+            if run_data["id"] != intent_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="initial owner seed must use its deduplicated grant intent id",
+                )
+            existing = await db.get(Run, intent_id)
+            if existing is not None:
+                stored = (existing.run_metadata or {}).get(USERS_GRANT_INTENT_KEY)
+                try:
+                    intent = GrantIntent.model_validate(stored)
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=409, detail="initial owner grant id is held by an unrelated run"
+                    ) from None
+                if (
+                    intent.kind is not GrantIntentKind.INITIAL_OWNER
+                    or intent.project_id != str(project.id)
+                    or intent.external_id != str(owner.telegram_id)
+                ):
+                    raise HTTPException(
+                        status_code=409, detail="initial owner grant target does not match request"
+                    )
+                return existing
             metadata[USERS_GRANT_INTENT_KEY] = GrantIntent(
-                id=f"users-grant-initial-owner-{run.id}",
+                id=intent_id,
                 kind=GrantIntentKind.INITIAL_OWNER,
                 project_id=str(project.id),
                 channel="telegram",
                 external_id=str(owner.telegram_id),
                 target_sha=head_sha,
                 initiating_actor="deploy_producer",
-                incoming_owner_id=owner.id,
             ).model_dump(mode="json")
             run_data["run_metadata"] = metadata
 
