@@ -116,9 +116,6 @@ class LanggraphAPIClient(InternalAPIClient):
     async def allocate_next_port(self, server_handle: str, payload: dict) -> dict:
         return await self._post_json(f"servers/{server_handle}/ports/allocate-next", json=payload)
 
-    async def create_service_deployment(self, payload: dict) -> dict:
-        return await self._post_json("service-deployments/", json=payload)
-
     async def create_deployment(self, payload: dict) -> dict:
         return await self._post_json("service-deployments/", json=payload)
 

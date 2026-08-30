@@ -6,12 +6,9 @@ import os
 
 import httpx
 
-from shared.provisioning_policy import (
-    BITLAUNCH_PROVIDER,
-    authorize_run_owned_target,
-)
+from shared.provisioning_policy import BITLAUNCH_PROVIDER
 
-__all__ = ["BITLAUNCH_PROVIDER", "BitLaunchClient", "authorize_run_owned_target"]
+__all__ = ["BITLAUNCH_PROVIDER", "BitLaunchClient"]
 
 
 class BitLaunchClient:

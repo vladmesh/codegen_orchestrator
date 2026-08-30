@@ -20,6 +20,7 @@ from shared.contracts.dto.server import ServerDTO, ServerStatus
 from shared.notifications import notify_admins_best_effort
 from shared.provisioning_policy import (
     TIME4VPS_PROVIDER,
+    authorize_run_owned_target,
     authorized_provider_id,
     provider_ip_matches,
 )
@@ -38,7 +39,7 @@ from .api_client import (
     update_server_labels,
     update_server_status,
 )
-from .bitlaunch import BITLAUNCH_PROVIDER, BitLaunchClient, authorize_run_owned_target
+from .bitlaunch import BITLAUNCH_PROVIDER, BitLaunchClient
 from .handlers import handle_provisioning_success
 from .incidents import create_incident
 from .operations import reinstall_and_provision, reset_server_password
