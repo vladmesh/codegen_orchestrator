@@ -285,8 +285,15 @@ async def test_normal_route_completes_and_tells_po_the_qa_verified_address(norma
     assert ctx["deployed_url"] in event.text
 
 
-async def test_operator_acceptance_is_audited_notified_and_refuses_a_stopping_target(normal_route):
-    """(b) accept-result shares completion delivery and will not bless a stopped app."""
+async def test_operator_acceptance_is_audited_and_notified(normal_route):
+    """(b) accept-result is audited and shares the completion delivery with the normal route.
+
+    The stopping-target refusal is not proved here: it fires only for a story whose
+    current cycle recorded a QA hand-off, and no product transition returns a completed
+    story to review with that hand-off intact (reopen filters earlier QA runs by
+    ``reopened_at``). Its coverage is the offline service test in
+    ``services/api/tests/service/test_story_recheck.py``.
+    """
     ctx = normal_route
     async with (
         api_client_as_test_user() as api,
@@ -325,30 +332,6 @@ async def test_operator_acceptance_is_audited_notified_and_refuses_a_stopping_ta
         )
         assert event.text == notification["text"]
         assert event.event == notification["event"] == "story_completed"
-
-        # The normal route has the QA handoff that makes accept-result enforce
-        # reachability. completed -> waiting_human_review is not a legal story
-        # transition, so this direct fixture is retained solely for that guard.
-        # The fresh story above reaches its review state through product actions.
-        parked_normal = await api.patch(
-            f"/api/stories/{ctx['story_id']}",
-            json={"status": StoryStatus.WAITING_HUMAN_REVIEW.value},
-        )
-        parked_normal.raise_for_status()
-        stop = await api_internal.post(
-            f"/api/applications/{ctx['application_id']}/stop",
-            json={"actor": "live-dod"},
-        )
-        stop.raise_for_status()
-        assert stop.json()["status"] == ApplicationStatus.STOPPING.value
-
-        refused = await api_internal.post(
-            f"/api/stories/{ctx['story_id']}/accept-result",
-            headers={"X-Admin-Console-Operator": OPERATOR},
-            json={"basis": "must not accept a stopping deployment"},
-        )
-        assert refused.status_code == 422
-        assert "application to be running" in refused.json()["detail"]
 
 
 @pytest.mark.live_llm_stand_token
