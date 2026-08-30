@@ -99,6 +99,7 @@ services:
       # containers cannot resolve Compose DNS.
       - WORKER_BROKER_URL=http://172.31.0.31:8001
       - WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
       - SCAFFOLDED_WORKSPACE_PATH=/tmp/codegen/workspaces
       - WORKER_TRANSCRIPT_STORAGE_PATH=/tmp/codegen/worker-transcripts
       - FACTORY_API_KEY=sk-test-factory-key
