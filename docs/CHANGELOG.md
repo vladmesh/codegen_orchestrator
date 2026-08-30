@@ -4,6 +4,18 @@
 
 ### Added
 
+- Operators can drain the engineering consumer before a deploy through the admin Workers page. The
+  credential-derived action persists and audits its drain state, leaves the existing ten-second
+  shutdown handoff unchanged, and is honored by recreated consumers until explicitly resumed. A drain
+  is checked after an entry is read as well as before slot reservation, leaving an entry read during
+  the drain in the PEL for normal handoff. An unreadable drain poll retains the process-local last
+  successful decision, so an API restart cannot reopen a drained consumer; before its first successful
+  read, a recreated consumer fails closed and does not claim work. Repeated drain actions are audited.
+  Worker inventory now
+  shows Docker container, agent-process status, active turn lease, story binding, and waiting attempt
+  as separate three-valued facts, making a live but unowned container visible instead of healthy and
+  never presenting an unreadable source as absent.
+
 - Engineering consumer rollouts now hand a reclaimed live turn to the replacement consumer instead
   of publishing a second prompt. The story-worker binding is written when the dynamic worker is
   acknowledged; the attempt's durable turn metadata and the broker lease identify the exact retained

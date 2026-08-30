@@ -1716,6 +1716,57 @@ is possible only if the wrapper has not polled for at least the sixty-second rec
 output before reclaim. The ledger deduplicates the attempt record, not provider calls, so it is not a
 provider-charge mutex.
 
+### Engineering consumer operator drain and worker inventory
+
+`POST /api/engineering-consumer/drain` records the durable decision to stop engineering consumers
+from claiming new entries. The actor is derived from the credential: an LK bearer administrator is
+`admin:<credential subject>`, while the admin console is `admin_console:<nginx basic-auth user>` and
+can only arrive through nginx's internal credential plus replaced `X-Admin-Console-Operator` header.
+The browser sends no actor field. The active state is the typed
+`system_configs.engineering.consumer_drain` value (`draining`, `requested_at`, `actor`); every drain
+or resume request also appends a `work_admission_audits` record with before/after state and actor,
+including a repeated drain. `DELETE` clears the state explicitly. It does not alter the existing
+ten-second shutdown budget, acknowledge a PEL entry, or delete a worker. A running engineering
+consumer checks this durable state before reserving a slot and on every path through its consume loop.
+If XREADGROUP read an entry as the drain became active, that entry is already in this consumer's PEL;
+the consumer leaves it unacknowledged and does not process it, so normal PEL reclaim uses the existing
+handoff contract. A recreated consumer refuses to claim until it has successfully read the decision
+at least once. A read of `draining` keeps it drained until an operator clears it; a read of `false`
+permits an already-running consumer to claim again.
+While the drain is active, consumers poll the API once per second. A successful read is retained as a
+module-local last-known decision. If a later read is unavailable or malformed, the consumer keeps
+applying that decision, logs the transition to unreadable once, and keeps retrying rather than
+restarting and cancelling in-flight jobs. Before any successful read, including during process
+startup, the state is unknown and the consumer does not claim work while it keeps polling; the first
+successful read establishes the decision. A long drain can grow the PEL: the consumer continues its `consume()`
+loop and claims fresh entries into its own pending set once per polling interval before leaving them
+unacknowledged. Those entries are reclaimable after the existing 60-second `pending_timeout_ms` and
+are not delivery-count DLQed, but reclaim after the deploy depends on a consumer being alive.
+
+The worker-manager inventory deliberately presents independent facts instead of one health verdict:
+
+- `container` is Docker's container id, image, and state; `container_error` means Docker could not
+  answer, rather than that the container is absent.
+- `agent_process_status` is the worker's `worker:status:{worker_id}` record, never Docker health;
+  `agent_process_status_error` means that record was unreadable.
+- `active_turn_lease` is `worker:active-turn:{worker_id}`, including attempt, request, broker lease,
+  start, and deadline; an unreadable lease is reported separately rather than as absent.
+- `story_bindings` are every `story:workers` binding that names the worker; an unreadable hash is
+  carried as `story_bindings_error`, never as an empty list.
+- `attempt_run` is the active engineering Run named by the worker's existing `attempt_id` metadata;
+  `attempt_run_error` means the running-Run read or the local attempt id was unavailable.
+- `waiting_attempt` is a running engineering Run whose `AttemptTurnMetadata` names that worker and
+  has an active turn request id. It reports the Run id/status and request identity; a running Run that
+  lacks that recorded active request is not converted into a waiter. `waiting_attempt_error` means
+  running attempts were unreadable. Thus every fact is present, absent, or explicitly unknown; unknown
+  is never rendered as absent.
+
+The inventory obtains running attempts from the API's existing Run records and the remaining facts
+from Docker or Redis. It creates no orphan detector or ownership inference. Thus a container can be
+`running`, its agent process can say `RUNNING`, and its attempt Run can say `running` while both its
+lease and waiting attempt are `none`: the visible 2026-08-27 23:11 shape, not a healthy attached-worker
+verdict.
+
 `POST /api/stories/{id}/accept-result` is the human completion route for a story in
 `waiting_human_review`. It requires a non-blank `basis` and reaches the same completion transaction
 as `POST /complete`. An LK bearer administrator records `actor=admin:<credential subject>`;

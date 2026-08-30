@@ -48,6 +48,7 @@ logger = structlog.get_logger(__name__)
 
 # Type alias for job processor functions
 ProcessFn = Callable[[dict, RedisStreamClient], Awaitable[dict]]
+DrainCheck = Callable[[], Awaitable[bool | None]]
 
 # One in-flight job per consumer: what every consumer did before slots existed.
 DEFAULT_QUEUE_SLOTS = 1
@@ -68,6 +69,22 @@ SLOT_WAIT_SECONDS = 1.0
 # job does not ACK, so its entry stays in the PEL and is reclaimed once its
 # live-work lease expires.
 SHUTDOWN_DRAIN_SECONDS = 10.0
+
+
+async def _wait_while_draining(is_draining: DrainCheck | None, service_name: str) -> bool:
+    """Yield a polling interval while the drain decision is active or unknown."""
+    if is_draining is None:
+        return False
+    draining = await is_draining()
+    if draining is False:
+        return False
+    logger.info(
+        "consumer_drain_waiting",
+        worker=service_name,
+        decision="draining" if draining else "unknown",
+    )
+    await asyncio.sleep(SLOT_WAIT_SECONDS)
+    return True
 
 
 class TerminalMessageValidationError(Exception):
@@ -362,6 +379,7 @@ async def run_queue_worker(
     *,
     slots_config_key: str | None = None,
     default_slots: int = DEFAULT_QUEUE_SLOTS,
+    is_draining: DrainCheck | None = None,
 ) -> None:
     """Generic worker loop for Redis Stream queue consumption.
 
@@ -374,6 +392,8 @@ async def run_queue_worker(
             may run at once. Omitted means a fixed `default_slots`.
         default_slots: Slot count used before configuration is read, and when it
             cannot be read at all.
+        is_draining: Optional durable operator decision that stops new claims
+            while already-started jobs continue to settle.
     """
     global _shutdown
     _shutdown = False
@@ -412,6 +432,8 @@ async def run_queue_worker(
     async def reserve_slot() -> bool:
         """Hold one slot for the next entry. False only when shutting down."""
         while not _shutdown:
+            if await _wait_while_draining(is_draining, service_name):
+                continue
             await refresh_slots()
             if await gate.acquire(SLOT_WAIT_SECONDS):
                 return True
@@ -434,10 +456,14 @@ async def run_queue_worker(
         ):
             if _shutdown:
                 break
+            # XREADGROUP has already put a non-empty entry in this consumer's
+            # PEL. Do not dispatch or ACK it while drained: a replacement
+            # consumer reclaims it through the ordinary handoff path.
+            if await _wait_while_draining(is_draining, service_name):
+                continue
             if msg is None:
                 await refresh_slots()
                 continue
-
             # The sweep runs while this consumer's own jobs are in flight, and
             # they are idle for as long as they run. Their entries come back
             # here; taking one would be the same job twice in one workspace.
@@ -482,6 +508,7 @@ def start_worker(
     *,
     slots_config_key: str | None = None,
     default_slots: int = DEFAULT_QUEUE_SLOTS,
+    is_draining: DrainCheck | None = None,
 ) -> None:
     """Entry point: register signal handlers and run the worker loop.
 
@@ -492,6 +519,7 @@ def start_worker(
         group: Consumer group name (defaults to WORKER_GROUP)
         slots_config_key: System-config key holding this consumer's slot count
         default_slots: Slot count used until configuration answers
+        is_draining: Optional durable operator decision that stops new claims.
     """
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
@@ -504,5 +532,6 @@ def start_worker(
             group=group,
             slots_config_key=slots_config_key,
             default_slots=default_slots,
+            is_draining=is_draining,
         )
     )

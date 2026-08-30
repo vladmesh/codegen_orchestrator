@@ -11,6 +11,7 @@ from .config import settings
 from .manager import WorkerManager
 from .consumer import WorkerCommandConsumer
 from .events import DockerEventsListener
+from .engineering_attempts import EngineeringAttemptInventory
 from .compose_runner import ComposeRunner
 from .routers.compose import router as compose_router
 from .routers.introspect import router as introspect_router
@@ -65,6 +66,7 @@ async def lifespan(app: FastAPI):
     app.state.docker = worker_manager.docker
     app.state.redis = redis
     app.state.worker_manager = worker_manager
+    app.state.engineering_attempts = EngineeringAttemptInventory(settings.API_BASE_URL)
     app.state.scaffolded_workspace_path = settings.SCAFFOLDED_WORKSPACE_PATH
 
     # Start Consumer
@@ -139,6 +141,7 @@ async def lifespan(app: FastAPI):
         pass
 
     await redis.close()
+    await app.state.engineering_attempts.close()
     logger.info("shutdown_complete")
 
 

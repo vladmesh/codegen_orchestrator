@@ -11,22 +11,23 @@ from ..schemas.system_config import SystemConfigCreate, SystemConfigRead, System
 
 router = APIRouter(prefix="/system-configs", tags=["system-configs"])
 
-PROTECTED_WORK_ADMISSION_KEYS = frozenset(
+PROTECTED_TYPED_CONTROL_KEYS = frozenset(
     {
         "work_admission.emergency_stop",
         "work_admission.max_projects_per_user",
         "work_admission.max_concurrent_paid_runs",
         "work_admission.engineering_executor_override",
         "work_admission.qa_executor_override",
+        "engineering.consumer_drain",
     }
 )
 
 
 def _reject_protected_key(key: str) -> None:
-    if key in PROTECTED_WORK_ADMISSION_KEYS:
+    if key in PROTECTED_TYPED_CONTROL_KEYS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Work-admission configuration must use its typed command",
+            detail="Protected configuration must use its typed command",
         )
 
 

@@ -51,6 +51,39 @@ from .story_context import (
 # still working, lowering it drains back to sequential without a redeploy.
 ENGINEERING_SLOTS_CONFIG_KEY = "engineering.worker_slots"
 
+# This is process-local memory of the durable API decision, not another source
+# of truth. A new consumer starts unknown and reads system_configs before its
+# first claim; an API outage preserves a decision it has already observed.
+_last_engineering_consumer_drain: bool | None = None
+_engineering_consumer_drain_read_failed = False
+
+
+async def _engineering_consumer_is_draining() -> bool | None:
+    """Read the operator decision without turning an API blip into a restart."""
+    global _engineering_consumer_drain_read_failed, _last_engineering_consumer_drain
+
+    try:
+        state = await api_client.get("engineering-consumer/drain")
+        draining = state["draining"]
+        if not isinstance(draining, bool):
+            raise RuntimeError("engineering consumer drain state is not boolean")
+    except (httpx.HTTPError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+        if not _engineering_consumer_drain_read_failed:
+            logger.warning(
+                "engineering_consumer_drain_unreadable",
+                error_type=type(exc).__name__,
+                last_known_decision=_last_engineering_consumer_drain,
+            )
+            _engineering_consumer_drain_read_failed = True
+        return _last_engineering_consumer_drain
+
+    if _engineering_consumer_drain_read_failed:
+        logger.info("engineering_consumer_drain_readable")
+    _engineering_consumer_drain_read_failed = False
+    _last_engineering_consumer_drain = draining
+    return draining
+
+
 # Re-export for backward compatibility with tests
 __all__ = [
     "_build_story_context",
@@ -442,6 +475,7 @@ def main():
         queue=ENGINEERING_QUEUE,
         process_fn=process_engineering_job,
         slots_config_key=ENGINEERING_SLOTS_CONFIG_KEY,
+        is_draining=_engineering_consumer_is_draining,
     )
 
 
