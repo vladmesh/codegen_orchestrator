@@ -51,6 +51,12 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 PO_INPUT = PO_INPUT_QUEUE
 OPERATOR = "live-dod-operator"
 OWNER_NOTIFICATION_TIMEOUT = 180
+RESTART_TASK_TITLE = "Add backend ping endpoint"
+RESTART_TASK_DESCRIPTION = (
+    "Add a GET /ping endpoint to the scaffolded backend service that returns HTTP 200 with the "
+    'JSON body {"pong": true}, plus a unit test for it. Keep GET /health unchanged, keep the '
+    "project backend-only and require no user-provided secrets. Commit and push the change."
+)
 # A cold stand may need the full noop engineering budget before the first
 # worker records its turn: dispatcher tick, image pull, container start, lease.
 TURN_OBSERVATION_TIMEOUT = ENGINEERING_TIMEOUT
@@ -355,6 +361,12 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
             trigger_scaffold(ctx)
             await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
             assert ctx.get("scaffold_status") == ProjectStatus.ACTIVE
+            # The shared health task can be honestly closed with no commit once the
+            # scaffold already ships GET /health, and a turn that lands no commit is
+            # judged failed regardless of adoption. This proof needs a turn whose
+            # result is a real push, so it asks for an endpoint the scaffold lacks.
+            ctx["task_title"] = RESTART_TASK_TITLE
+            ctx["task_description"] = RESTART_TASK_DESCRIPTION
             await create_story_and_task(api, ctx)
 
             worker = await _wait_for_active_turn(ctx["project_id"])
