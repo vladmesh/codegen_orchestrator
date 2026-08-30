@@ -280,7 +280,8 @@ def api_client(world, monkeypatch):
 
     monkeypatch.setattr("src.tasks.owner_notifications.notify_admins_best_effort", _alert)
     monkeypatch.setattr("src.tasks._recipients.notify_admins_best_effort", _alert)
-    monkeypatch.setattr("src.tasks.supervisor.notify_admins_best_effort", _alert)
+    monkeypatch.setattr("src.tasks.supervisor.common.notify_admins_best_effort", _alert)
+    monkeypatch.setattr("src.tasks.supervisor.qa.notify_admins_best_effort", _alert)
     return client
 
 
@@ -500,7 +501,7 @@ class TestTheDeployRefusalTakesTheSameSeam:
     async def test_an_impossible_placement_owes_before_it_parks_the_story(
         self, world, api_client, redis_client
     ):
-        from src.tasks.supervisor import _escalate_refused_deploy
+        from src.tasks.supervisor.deploy import _escalate_refused_deploy
 
         world.publish_failures = 1
         result = refused_deploy_result(AllocationFailureReason.IMPOSSIBLE_CAPACITY)
@@ -530,7 +531,7 @@ class TestTheDeployRefusalTakesTheSameSeam:
         self, world, api_client, redis_client
     ):
         """`tell_owner=False` stays admin-only; the seam does not invent a message."""
-        from src.tasks.supervisor import _escalate_refused_deploy
+        from src.tasks.supervisor.deploy import _escalate_refused_deploy
 
         result = refused_deploy_result(AllocationFailureReason.SERVER_NOT_PROVISIONED)
         run = _refused_deploy_run(result)
@@ -644,7 +645,7 @@ class TestTheImpossibleEngineeringPlacementTakesTheSameSeam:
 
 def _prior_failure(index: int) -> dict:
     """A recorded QA failure with the fingerprint of the one under test."""
-    from src.tasks.supervisor import _qa_failure_fingerprint
+    from src.tasks.supervisor.qa import _qa_failure_fingerprint
 
     return {
         "qa_run_id": f"qa-old-{index}",

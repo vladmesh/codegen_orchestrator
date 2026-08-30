@@ -1103,7 +1103,7 @@ class TestSuperviseFailedTasks:
     @pytest.mark.asyncio
     async def test_retries_failed_task_with_iterations_left(self, api_client, redis_client):
         """Failed task with retries left → retry (backlog → todo)."""
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _task(
@@ -1124,7 +1124,7 @@ class TestSuperviseFailedTasks:
     @pytest.mark.asyncio
     async def test_escalates_failed_task_retries_exhausted(self, api_client, redis_client):
         """Failed task with retries exhausted → waiting_human_review."""
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _task(

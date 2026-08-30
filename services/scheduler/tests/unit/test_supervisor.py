@@ -77,7 +77,7 @@ class TestSuperviseStuckStories:
     @pytest.mark.asyncio
     async def test_retries_stuck_story(self, api_client, redis_client):
         """Story stuck in created > threshold -> republish to architect:queue."""
-        from src.tasks.task_dispatcher import supervise_stuck_stories
+        from src.tasks.supervisor import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
         api_client.get_stories_by_status.side_effect = lambda status: (
@@ -103,7 +103,7 @@ class TestSuperviseStuckStories:
     @pytest.mark.asyncio
     async def test_skips_recent_story(self, api_client, redis_client):
         """Story created recently -> no action."""
-        from src.tasks.task_dispatcher import supervise_stuck_stories
+        from src.tasks.supervisor import supervise_stuck_stories
 
         recent = datetime.now(UTC) - timedelta(minutes=1)
         api_client.get_stories_by_status.side_effect = lambda status: (
@@ -126,7 +126,7 @@ class TestSuperviseStuckStories:
     @pytest.mark.asyncio
     async def test_skips_story_with_tasks(self, api_client, redis_client):
         """Story in created but has tasks -> architect ran, skip."""
-        from src.tasks.task_dispatcher import supervise_stuck_stories
+        from src.tasks.supervisor import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
         api_client.get_stories_by_status.side_effect = lambda status: (
@@ -148,8 +148,8 @@ class TestSuperviseStuckStories:
     @pytest.mark.asyncio
     async def test_fails_story_after_max_retries(self, api_client, redis_client):
         """Story retried 3 times -> fail the story."""
-        from src.tasks.supervisor import _max_architect_retries
-        from src.tasks.task_dispatcher import supervise_stuck_stories
+        from src.tasks.supervisor import supervise_stuck_stories
+        from src.tasks.supervisor.liveness import _max_architect_retries
 
         max_retries = _max_architect_retries()
         old_enough = datetime.now(UTC) - timedelta(minutes=10 * (max_retries + 1))
@@ -180,7 +180,7 @@ class TestSuperviseStuckStories:
     @pytest.mark.asyncio
     async def test_skips_created_story_when_project_has_active(self, api_client, redis_client):
         """Story stuck in created but project has an in_progress story -> skip."""
-        from src.tasks.task_dispatcher import supervise_stuck_stories
+        from src.tasks.supervisor import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
         proj_id = "00000000-0000-0000-0000-000000000001"
@@ -289,7 +289,7 @@ class TestSuperviseFailedTasks:
     @pytest.mark.asyncio
     async def test_retries_failed_task(self, api_client, redis_client):
         """Failed task with iterations left -> reopen to todo."""
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _make_task(
@@ -317,7 +317,7 @@ class TestSuperviseFailedTasks:
     @pytest.mark.asyncio
     async def test_escalates_to_whr_when_retries_exhausted(self, api_client, redis_client):
         """Failed task at max iterations -> escalate to waiting_human_review."""
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _make_task(
@@ -344,7 +344,7 @@ class TestSuperviseFailedTasks:
     @pytest.mark.asyncio
     async def test_skips_task_without_story(self, api_client, redis_client):
         """Failed task without story_id -> skip (standalone task)."""
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _make_task(
@@ -372,7 +372,7 @@ class TestSuperviseFailedTasks:
             AllocationFailureReason,
             EngineeringRunResult,
         )
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         task = _make_task(id="task-1", story_id="story-1", status="failed")
         api_client.get_tasks_by_status.return_value = [task]
@@ -404,7 +404,7 @@ class TestSuperviseFailedTasks:
         self, api_client, redis_client
     ):
         """A failed task without a run must still be retried instead of aborting the tick."""
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _make_task(id="task-1", story_id="story-1", status="failed", current_iteration=1)
@@ -438,7 +438,7 @@ class TestSuperviseFailedTasks:
             AllocationFailureReason,
             EngineeringRunResult,
         )
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _make_task(id="task-1", story_id="story-1", status="failed")
@@ -453,7 +453,7 @@ class TestSuperviseFailedTasks:
         ]
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as notify:
             result = await supervise_failed_tasks(api_client, redis_client)
 
@@ -474,7 +474,7 @@ class TestSuperviseFailedTasks:
             AllocationFailureReason,
             EngineeringRunResult,
         )
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _make_task(id="task-1", story_id="story-1", status="failed")
@@ -493,7 +493,7 @@ class TestSuperviseFailedTasks:
         ]
         api_client.get_project.return_value = SimpleNamespace(owner_id=42)
 
-        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
+        with patch("src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result == {"retried": 0, "escalated": 0}
@@ -536,7 +536,7 @@ class TestEngineeringRefusalRouting:
     async def test_each_disposition_routes_the_way_the_matrix_says(
         self, api_client, redis_client, case
     ):
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         expected = case.engineering
         api_client.get_tasks_by_status.return_value = [
@@ -546,7 +546,7 @@ class TestEngineeringRefusalRouting:
         api_client.get_project.return_value = SimpleNamespace(owner_id=42)
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as notify:
             result = await supervise_failed_tasks(api_client, redis_client)
 
@@ -600,8 +600,8 @@ class TestSuperviseWaitingResourceTasks:
         from shared.contracts.dto.engineering import EngineeringStatus
         from shared.contracts.dto.run import RunStatus
         from shared.contracts.dto.run_result import AllocationFailureReason, EngineeringRunResult
-        from src.tasks.supervisor import supervise_waiting_resource_tasks
-        from src.tasks.task_dispatcher import dispatch_todo_tasks, supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks, supervise_waiting_resource_tasks
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         task = _make_task(
             status="failed",
@@ -667,7 +667,7 @@ class TestSuperviseWaitingResourceTasks:
             AllocationFailureReason,
             EngineeringRunResult,
         )
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         started_at = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
         task = _make_task(
@@ -709,7 +709,7 @@ class TestSuperviseWaitingResourceTasks:
         api_client.get_tasks_by_status.return_value = [task]
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as notify:
             result = await supervise_waiting_resource_tasks(api_client, redis_client)
 
@@ -764,7 +764,7 @@ class TestProvisioningAdmissionInResourceWait:
             AllocationFailureReason,
             EngineeringRunResult,
         )
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         task = _make_task(id="task-1", story_id="story-1", status="failed")
         api_client.get_tasks_by_status.return_value = [task]
@@ -781,7 +781,7 @@ class TestProvisioningAdmissionInResourceWait:
         api_client.get_project.return_value = SimpleNamespace(owner_id=42)
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as notify:
             result = await supervise_failed_tasks(api_client, redis_client)
 
@@ -804,7 +804,7 @@ class TestProvisioningAdmissionInResourceWait:
             AllocationFailureReason,
             EngineeringRunResult,
         )
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _make_task(id="task-1", story_id="story-1", status="failed")
@@ -833,7 +833,7 @@ class TestSuperviseStuckTasks:
     @pytest.mark.asyncio
     async def test_does_not_infer_worker_death_from_task_row_age(self, api_client, redis_client):
         """An old task row has no authority over a worker it cannot observe."""
-        from src.tasks.task_dispatcher import supervise_stuck_tasks
+        from src.tasks.supervisor import supervise_stuck_tasks
 
         old = datetime.now(UTC) - timedelta(minutes=45)
         api_client.get_tasks_by_status.return_value = [
@@ -854,7 +854,7 @@ class TestSuperviseStuckTasks:
     @pytest.mark.asyncio
     async def test_skips_recent_in_dev_task(self, api_client, redis_client):
         """Task recently updated -> no action."""
-        from src.tasks.task_dispatcher import supervise_stuck_tasks
+        from src.tasks.supervisor import supervise_stuck_tasks
 
         recent = datetime.now(UTC) - timedelta(minutes=5)
         api_client.get_tasks_by_status.return_value = [
@@ -948,7 +948,7 @@ class TestStoryWorkerCleanup:
     @pytest.mark.asyncio
     async def test_escalation_transitions_story_to_whr(self, api_client, redis_client):
         """Task retries exhausted -> story transitioned to WHR (not failed)."""
-        from src.tasks.task_dispatcher import supervise_failed_tasks
+        from src.tasks.supervisor import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _make_task(

@@ -51,8 +51,6 @@ from .story_completion import (
     complete_stories,
 )
 from .supervisor import (
-    STORY_RETRY_KEY_PREFIX,
-    _parse_datetime,
     supervise_deploying_stories,
     supervise_failed_tasks,
     supervise_stuck_stories,
@@ -67,25 +65,15 @@ from .worker_liveness import terminal_task_statuses
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
-# Re-export for backward compatibility with tests
 __all__ = [
-    "STORY_RETRY_KEY_PREFIX",
     "_build_cumulative_context",
     "_cleanup_story_worker",
-    "_parse_datetime",
     "_parse_owner_repo",
     "_trigger_next_story",
     "complete_stories",
     "dispatch_todo_tasks",
     "poll_merged_prs",
-    "supervise_deploying_stories",
-    "supervise_failed_tasks",
-    "supervise_stuck_stories",
-    "supervise_stuck_tasks",
-    "supervise_testing_stories",
-    "supervise_waiting_resource_tasks",
     "supervise_temporary_access",
-    "supervise_waiting_user_secret_stories",
     "task_dispatcher_loop",
 ]
 

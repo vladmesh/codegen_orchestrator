@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Split scheduler supervision into cohesive liveness, deploy, QA, handoff, and shared-support
+  modules while preserving the runtime facade and supervision behavior.
+
 - Removed unreachable provisioner-graph compatibility state, test-only developer delegates,
   router helper re-exports, phantom worker activity metadata, and redundant Compose replicas.
 
