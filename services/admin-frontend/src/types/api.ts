@@ -259,7 +259,6 @@ export interface WorkerSummary {
   repo_id: string | null
   workspace_path: string | null
   dev_network: string | null
-  last_activity: string | null
   error: string | null
   container: WorkerContainerFact | null
   container_error: string | null

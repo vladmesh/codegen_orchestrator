@@ -2,7 +2,7 @@
 
 import pytest
 from http import HTTPStatus
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 import docker as docker_sdk
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -89,13 +89,7 @@ class TestListWorkers:
         redis.hgetall = AsyncMock(side_effect=hgetall)
         redis.get = AsyncMock(
             side_effect=[
-                # w1 last_activity
-                "1710000000",
-                # w1 error
                 None,
-                # w2 last_activity
-                None,
-                # w2 error
                 "something broke",
             ]
         )
@@ -108,8 +102,13 @@ class TestListWorkers:
         assert data[0]["id"] == "w1"
         assert data[0]["status"] == "RUNNING"
         assert data[0]["project_id"] == "p1"
+        assert "last_activity" not in data[0]
         assert data[1]["id"] == "w2"
         assert data[1]["error"] == "something broke"
+        assert redis.get.await_args_list == [
+            call("worker:error:w1"),
+            call("worker:error:w2"),
+        ]
 
     def test_stale_worker_shown_as_gone(self, redis, docker):
         """Worker in Redis says RUNNING but container doesn't exist → GONE."""

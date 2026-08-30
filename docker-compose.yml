@@ -117,8 +117,6 @@ services:
     networks:
       - internal
     restart: unless-stopped
-    deploy:
-      replicas: 1
 
   qa-worker:
     image: codegen-orchestrator/langgraph:local
@@ -170,8 +168,6 @@ services:
       - internal
       - qa_egress
     restart: unless-stopped
-    deploy:
-      replicas: 1
 
   engineering-worker:
     image: codegen-orchestrator/langgraph:local
@@ -204,8 +200,6 @@ services:
     networks:
       - internal
     restart: unless-stopped
-    deploy:
-      replicas: 1
 
   architect:
     image: codegen-orchestrator/langgraph:local
@@ -235,8 +229,6 @@ services:
     networks:
       - internal
     restart: unless-stopped
-    deploy:
-      replicas: 1
 
   infra-service:
     image: codegen-orchestrator/infra-service:local
@@ -462,8 +454,6 @@ services:
     networks:
       - internal
     restart: unless-stopped
-    deploy:
-      replicas: 1
 
   # === Reverse Proxy + Registry ===
 

@@ -357,14 +357,12 @@ class TestDeveloperNodeStoryContext:
         assert "Scaffold project" in task_md
 
     def test_build_task_message_passes_story_context(self):
-        """_build_task_message forwards story_context to underlying builders."""
-        from src.nodes.developer import DeveloperNode
+        """Task rendering includes story context for create and feature actions."""
+        from src.nodes.developer_tasks import build_task_message
 
-        node = DeveloperNode()
         ctx = "- ~~Previous work~~ — done (see .story/old_tasks/)"
 
-        # Test with feature action
-        task_md = node._build_task_message(
+        task_md = build_task_message(
             project_name="test-project",
             description="An API",
             modules=["backend"],
@@ -376,8 +374,7 @@ class TestDeveloperNodeStoryContext:
         )
         assert "Previous work" in task_md
 
-        # Test with create action
-        task_md = node._build_task_message(
+        task_md = build_task_message(
             project_name="test-project",
             description="An API",
             modules=["backend"],

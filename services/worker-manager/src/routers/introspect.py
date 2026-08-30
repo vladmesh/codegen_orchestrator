@@ -39,7 +39,6 @@ class WorkerSummary(BaseModel):
     repo_id: str | None = None
     workspace_path: str | None = None
     dev_network: str | None = None
-    last_activity: str | None = None
     error: str | None = None
     container: "ContainerFact | None" = None
     container_error: str | None = None
@@ -288,7 +287,6 @@ async def list_workers(request: Request):
             logger.warning("worker_inventory_metadata_unreadable", worker_id=worker_id, error_type=type(exc).__name__)
             meta = {}
             meta_error = "worker metadata is unreadable"
-        last_activity = await redis.get(f"worker:last_activity:{worker_id}")
         error = await redis.get(f"worker:error:{worker_id}")
 
         # Docker and the worker process report different facts. Preserve both.
@@ -306,7 +304,6 @@ async def list_workers(request: Request):
                 repo_id=meta.get("repo_id"),
                 workspace_path=meta.get("workspace_path"),
                 dev_network=meta.get("dev_network"),
-                last_activity=last_activity,
                 error=error,
                 container=container,
                 container_error=container_error,
@@ -339,7 +336,6 @@ async def get_worker(worker_id: str, request: Request):
         logger.warning("worker_inventory_metadata_unreadable", worker_id=worker_id, error_type=type(exc).__name__)
         meta = {}
         meta_error = "worker metadata is unreadable"
-    last_activity = await redis.get(f"worker:last_activity:{worker_id}")
     error = await redis.get(f"worker:error:{worker_id}")
     context = await _inventory_context(request)
 
@@ -361,7 +357,6 @@ async def get_worker(worker_id: str, request: Request):
         repo_id=meta.get("repo_id"),
         workspace_path=meta.get("workspace_path"),
         dev_network=meta.get("dev_network"),
-        last_activity=last_activity,
         error=error,
         container_id=container_id,
         image=image,

@@ -83,9 +83,6 @@ export function WorkersPage() {
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Attempt Run</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Waiting</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Project</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                  Last Activity
-                </th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Error</th>
               </tr>
             </thead>
@@ -136,9 +133,6 @@ export function WorkersPage() {
                     ) : (
                       <span className="text-muted-foreground">-</span>
                     )}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {w.last_activity ? relativeTime(w.last_activity) : '-'}
                   </td>
                   <td className="max-w-xs truncate px-4 py-3 text-red-400">
                     {w.error ?? ''}
