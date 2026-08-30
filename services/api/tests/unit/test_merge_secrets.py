@@ -60,8 +60,10 @@ def _mock_session(project=None, user=None):
 
 
 @pytest.mark.asyncio
-@patch("src.routers.projects.encrypt_dict", return_value={"KEY_A": "enc-a", "KEY_B": "enc-b"})
-@patch("src.routers.projects.decrypt_dict", return_value={"KEY_A": "val-a"})
+@patch(
+    "src.routers.projects.secrets.encrypt_dict", return_value={"KEY_A": "enc-a", "KEY_B": "enc-b"}
+)
+@patch("src.routers.projects.secrets.decrypt_dict", return_value={"KEY_A": "val-a"})
 async def test_merge_secrets_adds_new_key(mock_decrypt, mock_encrypt):
     """POST merges new secret with existing ones."""
     user = _make_user()
@@ -95,8 +97,8 @@ async def test_merge_secrets_adds_new_key(mock_decrypt, mock_encrypt):
 
 
 @pytest.mark.asyncio
-@patch("src.routers.projects.encrypt_dict", return_value={"KEY_A": "enc-a"})
-@patch("src.routers.projects.decrypt_dict", return_value={})
+@patch("src.routers.projects.secrets.encrypt_dict", return_value={"KEY_A": "enc-a"})
+@patch("src.routers.projects.secrets.decrypt_dict", return_value={})
 async def test_merge_secrets_with_env_hints(mock_decrypt, mock_encrypt):
     """POST stores env_hints alongside secrets."""
     user = _make_user()
@@ -160,8 +162,8 @@ async def test_merge_secrets_empty_secrets_rejected():
 
 
 @pytest.mark.asyncio
-@patch("src.routers.projects.encrypt_dict", side_effect=lambda d: d)
-@patch("src.routers.projects.decrypt_dict", side_effect=lambda d: d)
+@patch("src.routers.projects.secrets.encrypt_dict", side_effect=lambda d: d)
+@patch("src.routers.projects.secrets.decrypt_dict", side_effect=lambda d: d)
 async def test_merge_secrets_assigns_new_dict_object(mock_decrypt, mock_encrypt):
     """merge_secrets must assign a NEW dict to project.config, not the same object.
 
@@ -198,8 +200,8 @@ async def test_merge_secrets_assigns_new_dict_object(mock_decrypt, mock_encrypt)
 
 
 @pytest.mark.asyncio
-@patch("src.routers.projects.encrypt_dict", return_value={"KEY_A": "enc-new"})
-@patch("src.routers.projects.decrypt_dict", return_value={"KEY_A": "old-val"})
+@patch("src.routers.projects.secrets.encrypt_dict", return_value={"KEY_A": "enc-new"})
+@patch("src.routers.projects.secrets.decrypt_dict", return_value={"KEY_A": "old-val"})
 async def test_merge_secrets_overwrites_existing_key(mock_decrypt, mock_encrypt):
     """POST with existing key updates its value."""
     project = _make_project(config={"secrets": {"KEY_A": "enc-old"}})

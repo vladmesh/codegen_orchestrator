@@ -149,7 +149,7 @@ def test_the_exempt_readers_still_exist():
 @pytest.mark.parametrize(
     ("module", "guard"),
     [
-        ("routers/projects.py", "_check_project_access"),
+        ("routers/projects_guards.py", "check_project_access"),
         ("routers/runs.py", "_check_run_access"),
         ("dependencies.py", "require_internal_or_admin"),
     ],

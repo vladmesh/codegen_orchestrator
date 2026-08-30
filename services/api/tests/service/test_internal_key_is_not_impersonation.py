@@ -6,7 +6,7 @@ carry the end user in `X-Telegram-ID`. If the key alone decided access, a Telegr
 user could ask the PO agent for a stranger's project and get it: the agent holds
 the key, and the owner check used to return early on it.
 
-So the rule the endpoints under `_check_project_access` follow is: a request that
+So the rule the endpoints using `check_project_access` follow is: a request that
 names a user is judged as that user, key or no key. A service call with no user
 named still goes through untouched.
 """
