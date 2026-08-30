@@ -20,6 +20,7 @@ from shared.contracts.dto.run_result import AllocationFailureReason, Engineering
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import ActionType
+from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -38,6 +39,7 @@ from .engineering_result_handler import (
     fail_job as _fail_job,
     handle_engineering_success as _handle_engineering_success,
     handle_worker_gave_up as _handle_worker_gave_up,
+    prepare_terminal_settlement,
 )
 from .story_context import (
     build_story_context as _build_story_context,
@@ -69,7 +71,9 @@ def _parse_telegram_id(telegram_chat_id: str) -> dict:
     return {}
 
 
-async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationError) -> dict:
+async def _handle_invalid_engineering_message(
+    job_data: dict, exc: ValidationError, redis: RedisStreamClient
+) -> dict:
     """Terminal handling for a malformed job: log only safe error fields, fail the run so the
     outcome is durable, and return so the queue loop ACKs the poison entry.
 
@@ -90,7 +94,7 @@ async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationErr
         return live_work_unsettled({"status": "failed", "error": "invalid_engineering_message"})
 
     try:
-        return await _fail_job(raw_task_id, "invalid engineering message", None)
+        return await _fail_job(raw_task_id, "invalid engineering message", None, redis=redis)
     except httpx.HTTPStatusError as fail_exc:
         if fail_exc.response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR:
             logger.warning(
@@ -106,7 +110,9 @@ async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationErr
 logger = structlog.get_logger(__name__)
 
 
-async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDTO) -> dict | None:
+async def _resolve_allocations(
+    task_id: str, project_id: str, project: ProjectDTO, redis: RedisStreamClient
+) -> dict | None:
     """Resolve or create resource allocations. Returns dict or None on failure."""
     logger.info("allocating_resources", task_id=task_id, project_id=project_id)
     result = await resource_allocator_node.run(
@@ -125,6 +131,7 @@ async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDT
         min_disk_mb = result.get("allocation_min_disk_mb")
         if reason and (not isinstance(required_ram_mb, int) or not isinstance(min_disk_mb, int)):
             raise RuntimeError("allocation failure omitted admission requirements")
+        await prepare_terminal_settlement(task_id, redis=redis, turn_result_consumed=False)
         await api_client.patch(
             f"runs/{task_id}",
             json={
@@ -154,6 +161,39 @@ async def _load_engineering_executor_decision(task_id: str) -> ExecutorDecision:
     return decision
 
 
+async def _recorded_attempt_turn(task_id: str) -> AttemptTurnMetadata:
+    """Read the durable handoff record for this still-running engineering attempt."""
+    run = await api_client.get_run(task_id)
+    return AttemptTurnMetadata.from_run_metadata(run.run_metadata)
+
+
+async def _existing_attempt_worker(
+    redis: RedisStreamClient,
+    *,
+    story_id: str | None,
+    task_id: str,
+    attempt_turn: AttemptTurnMetadata,
+) -> str | None:
+    """Resolve an existing worker from durable ownership records only."""
+    if story_id:
+        worker_id = await get_story_worker(redis.redis, story_id)
+        if worker_id:
+            logger.info(
+                "reusing_story_worker",
+                story_id=story_id,
+                worker_id=worker_id,
+                task_id=task_id,
+            )
+            return worker_id
+    if attempt_turn.worker_id:
+        logger.info(
+            "adopting_recorded_engineering_turn",
+            worker_id=attempt_turn.worker_id,
+            task_id=task_id,
+        )
+    return attempt_turn.worker_id
+
+
 async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single engineering job by running Engineering Subgraph."""
     from ..subgraphs.engineering import create_engineering_subgraph
@@ -163,7 +203,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     try:
         msg = EngineeringMessage.model_validate(job_data)
     except ValidationError as exc:
-        return await _handle_invalid_engineering_message(job_data, exc)
+        return await _handle_invalid_engineering_message(job_data, exc, redis)
 
     task_id = msg.task_id
     project_id = msg.project_id
@@ -201,7 +241,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         project = await api_client.get_project(project_id, **_parse_telegram_id(telegram_chat_id))
         if not project:
-            return await _fail_job(task_id, f"Project {project_id} not found", planning_task_id)
+            return await _fail_job(
+                task_id, f"Project {project_id} not found", planning_task_id, redis=redis
+            )
 
         try:
             executor_decision = await _load_engineering_executor_decision(task_id)
@@ -210,6 +252,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 task_id,
                 f"Invalid executor decision snapshot: {exc}",
                 planning_task_id,
+                redis=redis,
             )
 
         if not description:
@@ -228,20 +271,17 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 "Skipping scaffolding — developer will work with existing repo.",
             )
 
-        allocated_resources = await _resolve_allocations(task_id, project_id, project)
+        allocated_resources = await _resolve_allocations(task_id, project_id, project, redis)
         if allocated_resources is None:
             return live_work_unsettled({"status": "failed", "error": "Resource allocation failed"})
 
-        existing_worker_id = None
-        if story_id:
-            existing_worker_id = await get_story_worker(redis.redis, story_id)
-            if existing_worker_id:
-                logger.info(
-                    "reusing_story_worker",
-                    story_id=story_id,
-                    worker_id=existing_worker_id,
-                    task_id=task_id,
-                )
+        attempt_turn = await _recorded_attempt_turn(task_id)
+        existing_worker_id = await _existing_attempt_worker(
+            redis,
+            story_id=story_id,
+            task_id=task_id,
+            attempt_turn=attempt_turn,
+        )
 
         primary_repo = await api_client.get_primary_repository(project_id)
         repo_id = primary_repo.id if primary_repo else None
@@ -274,17 +314,20 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "executor_decision": executor_decision,
             "commit_sha": None,
             "worker_id": existing_worker_id,
+            "attempt_turn": attempt_turn,
             "engineering_status": EngineeringStatus.IDLE,
             "iteration_count": 0,
             "test_results": None,
             "needs_human_approval": False,
             "human_approval_reason": None,
             "branch": branch,
+            "story_id": story_id,
             "worker_report": None,
             "worker_observability": None,
             "gave_up_reason": None,
             "stop_reason": None,
             "agent_limit_seconds": None,
+            "turn_result_consumed": False,
             "errors": [],
         }
 
@@ -330,6 +373,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     story_id=story_id,
                     deploy_fix_attempt=deploy_fix_attempt,
                     worker_observability=result.get("worker_observability"),
+                    turn_result_consumed=result.get("turn_result_consumed", True),
                 )
             )
 
@@ -344,6 +388,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 telegram_chat_id=telegram_chat_id,
                 redis=redis,
                 worker_observability=result.get("worker_observability"),
+                turn_result_consumed=result.get("turn_result_consumed", True),
             )
         else:
             # FAILED (technical) or unexpected status — treat as technical failure
@@ -366,6 +411,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 result.get("worker_observability"),
                 stop_reason=result.get("stop_reason"),
                 agent_limit_seconds=result.get("agent_limit_seconds"),
+                redis=redis,
+                turn_result_consumed=result.get("turn_result_consumed", False),
             )
 
     except Exception as e:
@@ -385,7 +432,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             telegram_chat_id=telegram_chat_id,
             project_id=project_id or "",
         )
-        return await _fail_job(task_id, str(e), planning_task_id)
+        return await _fail_job(task_id, str(e), planning_task_id, redis=redis)
 
 
 def main():

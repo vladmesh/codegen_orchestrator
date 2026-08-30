@@ -802,7 +802,34 @@ class TestBranchPassing:
         await node.run(state)
 
         call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["branch"] == "story/story-abc"
+        assert call_kwargs["story"].branch == "story/story-abc"
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_story_id_passed_to_request_spawn(self, mock_github_cls, mock_api, mock_spawn):
+        """The registry key is the consumer's story id, not a parsed branch."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_github_cls.return_value.branch_contains_commit = AsyncMock(return_value=True)
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        state = _make_state(action="feature", status="active")
+        state["story_id"] = "story-abc"
+        state["branch"] = "renamed/story-branch"
+        await DeveloperNode().run(state)
+
+        assert mock_spawn.call_args.kwargs["story"].story_id == "story-abc"
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
@@ -828,7 +855,7 @@ class TestBranchPassing:
         await node.run(state)
 
         call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["branch"] is None
+        assert call_kwargs["story"].branch is None
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.send_task_to_worker", new_callable=AsyncMock)

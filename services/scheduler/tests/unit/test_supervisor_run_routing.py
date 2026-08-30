@@ -175,6 +175,7 @@ class TestSuperviseDeployingStories:
         api_client.get_latest_run_by_story.return_value = _make_run(
             id="deploy-recheck-1",
             status=RunStatus.QUEUED,
+            created_at=datetime.now(UTC) - timedelta(minutes=6),
             run_metadata={
                 "recheck_message": {
                     "task_id": "deploy-recheck-1",
@@ -200,6 +201,38 @@ class TestSuperviseDeployingStories:
         assert api_client.update_run.await_args.args[1]["run_metadata"][
             "recheck_deploy_dispatched_at"
         ]
+
+    @pytest.mark.asyncio
+    async def test_recheck_handoff_waits_for_the_recovery_age_bound(self, api_client, redis_client):
+        """A tick cannot republish a recheck while its original caller may still stamp it."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="deploy-recheck-new",
+            status=RunStatus.QUEUED,
+            created_at=datetime.now(UTC) - timedelta(minutes=4),
+            run_metadata={
+                "recheck_message": {
+                    "task_id": "deploy-recheck-new",
+                    "project_id": "00000000-0000-0000-0000-000000000001",
+                    "unaddressed_reason": "no owner address required",
+                    "story_id": "story-1",
+                    "triggered_by": "admin",
+                    "action": "create",
+                    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "application_id": 42,
+                }
+            },
+        )
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 0
+        redis_client.publish_message.assert_not_awaited()
+        api_client.update_run.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_success_transitions_to_testing(self, api_client, redis_client):

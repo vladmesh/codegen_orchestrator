@@ -6,6 +6,7 @@ Tests commit_sha gate in _handle_engineering_success.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -30,6 +31,7 @@ def mock_api():
     with patch("src.consumers.engineering.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
+        api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
         api.get_project = AsyncMock(return_value=None)
         api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/test-project")
@@ -57,6 +59,7 @@ class TestHandleEngineeringSuccess:
                 "transcript_path": "/artifacts/worker-transcripts/worker/req.log",
                 "agent_profile": {"model": "claude-sonnet"},
             },
+            redis=mock_redis,
         )
 
         patch = mock_api.patch.call_args.kwargs["json"]
@@ -86,6 +89,7 @@ class TestHandleEngineeringSuccess:
                     "cost_microusd": 40_001,
                 },
             },
+            redis=mock_redis,
         )
 
         attempt = mock_api.patch.call_args.kwargs["json"]["engineering_attempt"]

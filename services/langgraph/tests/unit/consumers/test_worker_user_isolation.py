@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ def mock_api():
     with patch("src.consumers.engineering.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
+        api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
         api.get_project = AsyncMock(return_value=None)
         with patch("src.consumers.engineering_result_handler.api_client", api):
             yield api

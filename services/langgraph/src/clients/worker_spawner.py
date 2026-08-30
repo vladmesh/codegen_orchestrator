@@ -32,11 +32,11 @@ from shared.contracts.queues.worker_result import (
     WorkerResultAdapter,
     WorkerStopReason,
 )
-from shared.contracts.worker_turn import AttemptTurnMetadata
+from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.diagnostics import safe_validation_errors
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
-from shared.redis.client import DEFAULT_STREAM_MAXLEN, decode_redis_value
+from shared.redis.client import DEFAULT_STREAM_MAXLEN, decode_redis_fields, decode_redis_value
 
 from ..config.constants import Timeouts
 from ..config.settings import get_settings
@@ -45,6 +45,7 @@ logger = get_logger(__name__)
 CREATION_TIMEOUT = 60
 READY_POLL_TIMEOUT = 300  # Max wait for image build + container start
 READY_POLL_INTERVAL = 2  # Poll interval for worker status
+ADOPTION_OUTPUT_LOOKBACK_SECONDS = 1.0
 
 
 @dataclass
@@ -73,6 +74,15 @@ class SpawnResult:
     transcript_truncated: bool | None = None
     stop_reason: WorkerStopReason | None = None
     agent_limit_seconds: int | None = None
+    turn_result_consumed: bool = False
+
+
+@dataclass(frozen=True)
+class StoryWorkerBinding:
+    """Consumer-owned identity and branch for one story worker."""
+
+    story_id: str | None = None
+    branch: str | None = None
 
 
 class WorkerOutputDecodeError(Exception):
@@ -152,6 +162,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             factory_evidence=result.factory_evidence,
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
+            turn_result_consumed=True,
         )
     if isinstance(result, WorkerBlockedResult):
         return SpawnResult(
@@ -171,6 +182,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             factory_evidence=result.factory_evidence,
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
+            turn_result_consumed=True,
         )
     # WorkerFailedResult
     return SpawnResult(
@@ -192,6 +204,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         factory_evidence=result.factory_evidence,
         transcript_path=result.transcript_path,
         transcript_truncated=result.transcript_truncated,
+        turn_result_consumed=True,
     )
 
 
@@ -269,6 +282,16 @@ def _observe_poison_entry(stream: str, msg_id, request_id: str | None, error: st
     )
 
 
+def _matches_output_request(msg_data: dict, output_request_id: str | None) -> bool:
+    """Return whether an output entry belongs to the requested adoption turn."""
+    if output_request_id is None:
+        return True
+    return (
+        decode_redis_value(msg_data.get(b"request_id", msg_data.get("request_id")))
+        == output_request_id
+    )
+
+
 async def _wait_for_response(
     redis_client: redis.Redis,
     group_name: str,
@@ -277,6 +300,7 @@ async def _wait_for_response(
     timeout_s: float,
     stream: str = WORKER_RESPONSES,
     worker_id: str | None = None,
+    output_request_id: str | None = None,
 ) -> dict | None:
     """Wait for a specific response in the stream.
 
@@ -326,6 +350,13 @@ async def _wait_for_response(
         if messages:
             for _, stream_msgs in messages:
                 for msg_id, msg_data in stream_msgs:
+                    if not _matches_output_request(msg_data, output_request_id):
+                        # Results from previous turns are retained for a
+                        # bounded period. They are not this handoff, even when
+                        # their payload is malformed.
+                        await redis_client.xack(stream, group_name, msg_id)
+                        continue
+
                     # Missing 'data' field — poison entry, ACK terminally.
                     if b"data" not in msg_data and "data" not in msg_data:
                         await redis_client.xack(stream, group_name, msg_id)
@@ -350,12 +381,126 @@ async def _wait_for_response(
                             raise WorkerOutputDecodeError(stream) from e
                         continue
 
+                    if output_request_id is not None:
+                        await redis_client.xack(stream, group_name, msg_id)
+                        return resp
+
                     # If no request_id filter, return any message
                     if request_id is None or resp.get("request_id") == request_id:
                         await redis_client.xack(stream, group_name, msg_id)
                         return resp
                     # ACK non-matching messages so they don't pile up
                     await redis_client.xack(stream, group_name, msg_id)
+    return None
+
+
+async def await_turn_output(
+    redis_client: redis.Redis,
+    *,
+    worker_id: str,
+    request_id: str,
+    timeout_seconds: float,
+) -> SpawnResult | None:
+    """Attach to one already-published worker turn without sending another prompt.
+
+    A group starts at ``0`` because the former consumer may have died after the
+    broker accepted output but before it settled the engineering Run.  The
+    broker stamps the output with the request identity it leased, so retained
+    results from an earlier story turn cannot be adopted by mistake.
+    """
+    output_stream = f"worker:{worker_id}:output"
+    group_name = f"langgraph-adopt-{request_id[:8]}-{uuid.uuid4().hex[:8]}"
+    consumer_id = f"langgraph-adopt-{uuid.uuid4().hex[:8]}"
+    try:
+        await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
+        try:
+            output_resp = await _wait_for_response(
+                redis_client,
+                group_name,
+                consumer_id,
+                None,
+                timeout_seconds,
+                output_stream,
+                worker_id=worker_id,
+                output_request_id=request_id,
+            )
+        except WorkerOutputDecodeError:
+            return _invalid_worker_result(request_id, worker_id)
+        if output_resp is None:
+            return None
+        return spawn_result_from_output(output_resp, request_id, worker_id)
+    finally:
+        try:
+            await redis_client.xgroup_destroy(output_stream, group_name)
+        except Exception:
+            logger.debug("cleanup_adopt_output_group_failed", worker_id=worker_id, exc_info=True)
+
+
+async def _recorded_turn_for_worker(
+    worker_id: str,
+    ownership: WorkerOwnership,
+    redis_client: redis.Redis,
+    turn_metadata: AttemptTurnMetadata | None,
+) -> tuple[str, float | None] | None:
+    """Return the exact turn this attempt can adopt, never a health heuristic."""
+    if turn_metadata is None:
+        return None
+    metadata = turn_metadata
+    request_id = metadata.active_turn_request_id
+    if metadata.worker_id != worker_id or request_id is None:
+        return None
+
+    active = WorkerActiveTurn.from_redis_fields(
+        decode_redis_fields(await redis_client.hgetall(active_turn_key(worker_id)))
+    )
+    if active is None:
+        return request_id, None
+    if active.attempt_id != ownership.attempt_id:
+        raise RuntimeError(f"worker {worker_id} is leased by another engineering attempt")
+    if active.request_id != request_id:
+        raise RuntimeError(f"worker {worker_id} active-turn record disagrees with attempt metadata")
+    remaining = max((active.deadline_at - datetime.now(UTC)).total_seconds(), 0.0)
+    return request_id, remaining
+
+
+async def _adopt_recorded_turn(
+    worker_id: str,
+    ownership: WorkerOwnership,
+    redis_client: redis.Redis,
+    turn_metadata: AttemptTurnMetadata | None,
+) -> SpawnResult | None:
+    """Return a durable handoff result, or ``None`` when no turn was published."""
+    recorded = await _recorded_turn_for_worker(worker_id, ownership, redis_client, turn_metadata)
+    if recorded is None:
+        return None
+    request_id, remaining = recorded
+    timeout = remaining if remaining is not None else ADOPTION_OUTPUT_LOOKBACK_SECONDS
+    result = await await_turn_output(
+        redis_client,
+        worker_id=worker_id,
+        request_id=request_id,
+        timeout_seconds=timeout,
+    )
+    if result is not None:
+        logger.info(
+            "engineering_turn_adopted",
+            worker_id=worker_id,
+            attempt_id=ownership.attempt_id,
+            request_id=request_id,
+        )
+        return result
+    if remaining is not None:
+        # The owner waited through the broker-recorded deadline.  This is a
+        # termination request, not a container-health inference.
+        await publish_worker_deletion(redis_client, request_id, worker_id, "timeout")
+        return SpawnResult(
+            request_id=request_id,
+            success=False,
+            exit_code=-1,
+            output=f"Timeout waiting for adopted worker turn after {timeout}s.",
+            error_message="execution_timeout",
+            worker_id=worker_id,
+        )
     return None
 
 
@@ -440,7 +585,7 @@ async def record_turn_on_attempt(attempt_id: str, request_id: str) -> None:
     )
 
 
-async def _publish_worker_deletion(
+async def publish_worker_deletion(
     redis_client: redis.Redis, request_id: str, worker_id: str, reason: str
 ) -> None:
     """Ask worker-manager to take a worker away.
@@ -460,6 +605,30 @@ async def _publish_worker_deletion(
     )
 
 
+async def _register_story_worker(
+    redis_client: redis.Redis, worker_id: str, story_id: str | None
+) -> None:
+    if story_id is None:
+        return
+    from .story_worker_registry import set_story_worker
+
+    await set_story_worker(redis_client, story_id, worker_id)
+
+
+async def _handle_spawn_interruption(
+    error: Exception,
+    *,
+    redis_client: redis.Redis,
+    request_id: str,
+    worker_id: str | None,
+) -> SpawnResult:
+    """Tear down a worker when an ordinary spawn failure stops its waiter."""
+    logger.error("spawn_failed", error=str(error), worker_id=worker_id)
+    if worker_id:
+        await publish_worker_deletion(redis_client, request_id, worker_id, "failed")
+    return SpawnResult(request_id, False, -1, str(error))
+
+
 async def request_spawn(
     repo: str,
     github_token: str,
@@ -471,7 +640,7 @@ async def request_spawn(
     repo_id: str | None = None,
     agent_type: AgentType = AgentType.CLAUDE,
     story_md: str | None = None,
-    branch: str | None = None,
+    story: StoryWorkerBinding = StoryWorkerBinding(),
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
@@ -528,7 +697,7 @@ async def request_spawn(
                 },
                 ownership=ownership,
                 repo_id=repo_id,
-                branch=branch,
+                branch=story.branch,
             ),
             context={"source": "langgraph", "repo": repo, "project_id": ownership.project_id},
         )
@@ -552,6 +721,7 @@ async def request_spawn(
         worker_id = create_resp.get("worker_id")
         logger.info("worker_ack_received", request_id=request_id, worker_id=worker_id)
         await record_worker_on_attempt(ownership.attempt_id, worker_id)
+        await _register_story_worker(redis_client, worker_id, story.story_id)
 
         # 3b. Poll worker status until RUNNING (image build + container start)
         ready_failure = await _wait_until_ready(redis_client, worker_id, request_id)
@@ -575,7 +745,7 @@ async def request_spawn(
             redis_client, worker_id, request_id, ownership.attempt_id, task_content, story_md
         )
 
-        # Wait for output (worker output doesn't have request_id, so pass None)
+        # The fresh worker's output stream is private to this one turn.
         try:
             output_resp = await _wait_for_response(
                 redis_client,
@@ -616,15 +786,19 @@ async def request_spawn(
                 error_message="execution_timeout",
             )
 
-    except Exception as e:
-        logger.error("spawn_failed", error=str(e), worker_id=worker_id)
-        # The container exists from the ACK onwards. Anything that goes wrong
-        # after that point leaves it holding this project's workspace lock with
-        # nobody waiting for its output, so it is taken away here rather than
-        # left for a sweep that only collects workers Redis has already lost.
-        if worker_id:
-            await _publish_worker_deletion(redis_client, request_id, worker_id, "failed")
-        return SpawnResult(request_id, False, -1, str(e))
+    except asyncio.CancelledError:
+        logger.info(
+            "worker_spawn_wait_cancelled",
+            worker_id=worker_id,
+        )
+        raise
+    except Exception as error:
+        return await _handle_spawn_interruption(
+            error,
+            redis_client=redis_client,
+            request_id=request_id,
+            worker_id=worker_id,
+        )
     finally:
         # Cleanup consumer groups (ignore errors - groups may not exist)
         try:
@@ -648,6 +822,7 @@ async def send_task_to_worker(
     clear_session: bool = False,
     story_md: str | None = None,
     branch: str | None = None,
+    turn_metadata: AttemptTurnMetadata | None = None,
 ) -> SpawnResult:
     """Send a new task to an existing worker and wait for output.
 
@@ -675,6 +850,10 @@ async def send_task_to_worker(
     output_stream = f"worker:{worker_id}:output"
 
     try:
+        adopted = await _adopt_recorded_turn(worker_id, ownership, redis_client, turn_metadata)
+        if adopted is not None:
+            return adopted
+
         # 1. Set up output stream consumer group BEFORE sending task
         try:
             await redis_client.xgroup_create(output_stream, group_name, id="$", mkstream=True)
@@ -718,6 +897,7 @@ async def send_task_to_worker(
                 float(timeout_seconds),
                 output_stream,
                 worker_id=worker_id,
+                output_request_id=request_id,
             )
         except WorkerOutputDecodeError:
             # Undecodable worker output — explicit invalid result, not a timeout.

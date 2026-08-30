@@ -539,7 +539,7 @@ cannot poison-loop the reclaim.
 | `worker:{worker_id}:input` | — | DeveloperWorkerInput | langgraph (DeveloperNode) | worker-wrapper | Task input to Developer worker |
 | `worker:{worker_id}:output` | — | DeveloperWorkerOutput | worker-wrapper | langgraph (DeveloperNode) | Developer worker results |
 
-> **Note:** Worker I/O streams use `worker:{worker_id}:input/output` pattern. Used only for Developer workers. The worker-broker owns their Redis access: input is leased before processing and ACKed only after one typed output is accepted. Both input and output use approximate `MAXLEN` retention (default 1000 entries); sessions use a finite broker TTL (default 3600 seconds). PO communicates via `po:input` / `po:response:{request_id}` (see PO ReactAgent I/O below).
+> **Note:** Worker I/O streams use `worker:{worker_id}:input/output` pattern. Used only for Developer workers. The worker-broker owns their Redis access: input is leased before processing and ACKed only after one typed output is accepted. Both input and output use approximate `MAXLEN` retention (default 1000 entries); sessions use a finite broker TTL (default 3600 seconds). An engineering output also carries the broker-owned `request_id` stream field when it settles a leased engineering turn. PO communicates via `po:input` / `po:response:{request_id}` (see PO ReactAgent I/O below).
 
 ---
 
@@ -1676,6 +1676,45 @@ together, so every valid completion route, including an operator's bare request,
 delivery work. Existing completed stories retain `NULL`; the migration neither creates historical
 notifications nor changes their lifecycle. Other terminal notices remain on the run that produced
 them in `run_metadata.owner_notification`.
+
+### Engineering consumer rollout handoff
+
+An engineering consumer shutdown has a fixed ten-second drain budget. It gives in-flight jobs that
+long to settle, then cancels their awaiting coroutines; it does not wait for a coding-agent turn.
+The entry remains unacknowledged in the Redis PEL and is reclaimable after the sixty-second
+live-work lease expires.
+
+The single durable handoff record lives on the engineering attempt Run in its typed
+`AttemptTurnMetadata`: `worker_id`, `active_turn_request_id`, requested time and turn backstop are
+written before the prompt is published. The worker broker mirrors a leased prompt at
+`worker:active-turn:{worker_id}` with the same attempt, request, lease and deadline, and clears that
+lease only after it durably writes the typed output. The output is stamped with that broker-owned
+request id. The Run record is active until the attempt reaches its one terminal settlement; its
+broker lease is transient execution evidence, not an ownership heuristic.
+
+On PEL reclaim, the new engineering consumer reads that Run record or the story-worker binding and
+attaches only when the broker lease and request identity agree. It reads the matching retained
+output without publishing another prompt, skipping retained malformed entries that carry another
+request id, then performs the normal terminal Run write. Ordinary reuse waits only for the turn's own
+broker-stamped request id, so retained output from an earlier turn cannot supply this turn's commit.
+
+Before every engineering terminal Run write, the terminal-settlement guard reads the durable record.
+A consumed typed worker result, including a typed worker failure, settles without teardown so a story
+worker remains available for deliberate reuse. An unconsumed recorded turn requests worker deletion
+before the Run can settle terminally, including output timeout, adoption mismatch, transient broker
+failure, or output mapping failure. If `worker:active-turn:{worker_id}` is leased by another
+engineering attempt, that owner fence takes precedence: the failed attempt settles without deletion.
+Cancellation is not terminal settlement and leaves the PEL entry unacknowledged for reclaim. The
+spawn-layer deletion calls remain belt-and-braces for failures before the terminal guard is reached.
+If the record is present but no prompt was leased and no matching output exists, the replacement may
+publish a new turn; if a leased turn reaches its recorded deadline, it requests worker deletion.
+Container health is never evidence that a turn is owned. The engineering attempt ledger's unique
+`engineering-run:{run_id}` key and locked terminal writer retain the first provider-charge record on
+this adoption path as on the original path. In the narrow active-turn-key-absent path, a second prompt
+is possible only if the wrapper has not polled for at least the sixty-second reclaim lease despite its
+500 ms polling interval: a healthy wrapper would have leased the first prompt or produced a retained
+output before reclaim. The ledger deduplicates the attempt record, not provider calls, so it is not a
+provider-charge mutex.
 
 `POST /api/stories/{id}/accept-result` is the human completion route for a story in
 `waiting_human_review`. It requires a non-blank `basis` and reaches the same completion transaction

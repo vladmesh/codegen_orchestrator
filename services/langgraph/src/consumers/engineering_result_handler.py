@@ -16,17 +16,68 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.worker_result import WorkerStopReason
 from shared.contracts.vocab import OwnerNotificationEvent
+from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
+from shared.redis.client import decode_redis_fields
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ..clients.story_worker_registry import set_story_worker
-from ..clients.worker_spawner import delete_worker
+from ..clients.worker_spawner import delete_worker, publish_worker_deletion
 from ._events import publish_callback_event, publish_story_event
 from ._live_work import live_work_settled, live_work_unsettled
 
 logger = structlog.get_logger(__name__)
+
+
+async def prepare_terminal_settlement(
+    task_id: str,
+    *,
+    redis: RedisStreamClient,
+    turn_result_consumed: bool,
+) -> None:
+    """Enforce the turn handoff invariant before a terminal Run write.
+
+    A typed worker result has already settled the recorded turn and leaves a
+    story worker available for its next deliberate reuse. Every other terminal
+    outcome must first request worker deletion, unless the broker's owner fence
+    names a different engineering attempt. Failure to inspect or publish leaves
+    the Run non-terminal, so its PEL entry remains reclaimable.
+    """
+    if turn_result_consumed:
+        return
+
+    run = await api_client.get_run(task_id)
+    turn = AttemptTurnMetadata.from_run_metadata(run.run_metadata)
+    if turn.worker_id is None or turn.active_turn_request_id is None:
+        return
+
+    active = WorkerActiveTurn.from_redis_fields(
+        decode_redis_fields(await redis.redis.hgetall(active_turn_key(turn.worker_id)))
+    )
+    if active is not None and active.attempt_id != task_id:
+        logger.warning(
+            "terminal_settlement_worker_leased_elsewhere",
+            task_id=task_id,
+            worker_id=turn.worker_id,
+            owning_attempt_id=active.attempt_id,
+        )
+        return
+
+    await publish_worker_deletion(
+        redis.redis,
+        turn.active_turn_request_id,
+        turn.worker_id,
+        "failed",
+    )
+    logger.info(
+        "terminal_settlement_worker_teardown_requested",
+        task_id=task_id,
+        worker_id=turn.worker_id,
+        request_id=turn.active_turn_request_id,
+        active_turn_request_id=active.request_id if active is not None else None,
+    )
 
 
 @dataclass
@@ -46,6 +97,7 @@ class EngineeringSuccessParams:
     story_id: str | None = None
     deploy_fix_attempt: int = 0
     worker_observability: dict | None = None
+    turn_result_consumed: bool = True
 
 
 def _observability_patch(worker_observability: dict | None) -> dict:
@@ -156,8 +208,16 @@ async def fail_job(
     worker_observability: dict | None = None,
     stop_reason: WorkerStopReason | None = None,
     agent_limit_seconds: int | None = None,
+    *,
+    redis: RedisStreamClient,
+    turn_result_consumed: bool = False,
 ) -> dict:
     """Mark a run as failed and optionally update planning task."""
+    await prepare_terminal_settlement(
+        task_id,
+        redis=redis,
+        turn_result_consumed=turn_result_consumed,
+    )
     await api_client.patch(
         f"runs/{task_id}",
         json={
@@ -184,6 +244,7 @@ async def handle_worker_gave_up(
     telegram_chat_id: str,
     redis: RedisStreamClient,
     worker_observability: dict | None = None,
+    turn_result_consumed: bool = True,
 ) -> dict:
     """Handle worker gave_up: task/story → WHR, admin notified, user informed.
 
@@ -198,6 +259,11 @@ async def handle_worker_gave_up(
         reason=reason[:200],
     )
 
+    await prepare_terminal_settlement(
+        task_id,
+        redis=redis,
+        turn_result_consumed=turn_result_consumed,
+    )
     await api_client.patch(
         f"runs/{task_id}",
         json={
@@ -306,6 +372,11 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
 
     if not result.get("commit_sha"):
         logger.error("no_commit_sha", task_id=task_id, project_id=project_id)
+        await prepare_terminal_settlement(
+            task_id,
+            redis=redis,
+            turn_result_consumed=params.turn_result_consumed,
+        )
         await api_client.patch(
             f"runs/{task_id}",
             json={
@@ -360,6 +431,11 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
         commit_sha=result.get("commit_sha"),
         selected_modules=result.get("selected_modules"),
         test_results=result.get("test_results"),
+    )
+    await prepare_terminal_settlement(
+        task_id,
+        redis=redis,
+        turn_result_consumed=params.turn_result_consumed,
     )
     await api_client.patch(
         f"runs/{task_id}",

@@ -18,8 +18,11 @@ async def test_non_allocation_error_keeps_its_original_run_message():
             new=AsyncMock(return_value={"errors": ["No repository found for project"]}),
         ),
         patch("src.consumers.engineering.api_client.patch", new=AsyncMock()) as patch_run,
+        patch("src.consumers.engineering.prepare_terminal_settlement", new=AsyncMock()),
     ):
-        result = await _resolve_allocations("task-1", "project-1", make_project())
+        result = await _resolve_allocations(
+            "task-1", "project-1", make_project(), redis=AsyncMock()
+        )
 
     assert result is None
     assert patch_run.await_args.kwargs["json"]["error_message"] == "No repository found for project"

@@ -210,15 +210,22 @@ async def submit_output(
     redis: Redis = app.state.redis
     metadata = await _worker(redis, worker_id, x_worker_broker_token, WorkerControlPlaneOperation.OUTPUT_SUBMIT)
     result = parse_worker_result(submission.result)
+    active_turn = WorkerActiveTurn.from_redis_fields(await redis.hgetall(active_turn_key(worker_id)))
+    output_fields = {"data": json.dumps(result.model_dump(mode="json"))}
+    if active_turn is not None and active_turn.lease_id == submission.lease_id:
+        # The consumer that owns a reclaimed engineering entry must be able to
+        # distinguish this turn from an older result retained on the same
+        # reusable worker stream.  The request identity is broker-owned: the
+        # wrapper cannot choose it in its result payload.
+        output_fields["request_id"] = active_turn.request_id
     await redis.xadd(
         metadata["output_stream"],
-        {"data": json.dumps(result.model_dump(mode="json"))},
+        output_fields,
         maxlen=settings.STREAM_MAXLEN,
         approximate=True,
     )
     # ACK comes after the typed output is durably accepted. A failed submission leaves the input pending.
     await redis.xack(metadata["input_stream"], metadata["consumer_group"], submission.lease_id)
-    active_turn = WorkerActiveTurn.from_redis_fields(await redis.hgetall(active_turn_key(worker_id)))
     if active_turn is not None and active_turn.lease_id == submission.lease_id:
         await redis.delete(active_turn_key(worker_id))
     return {"ok": True}
