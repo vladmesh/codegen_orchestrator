@@ -525,7 +525,7 @@ async def test_delete_worker_full_cleanup():
     await redis.set(f"worker:error:{worker_id}", "some error")
     await redis.hset(active_turn_key(worker_id), mapping={"worker_id": worker_id})
 
-    with patch("src.manager.ComposeRunner") as mock_runner_cls:
+    with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
         # Mock compose runner to avoid filesystem side effects
         mock_runner = MagicMock()
         mock_runner.run = AsyncMock(return_value=(0, "", ""))
@@ -562,7 +562,7 @@ async def test_delete_worker_uses_real_runner_recovery_profile(tmp_path):
 
     result = MagicMock(returncode=0, stdout="", stderr="")
     with (
-        patch("src.manager.settings.SCAFFOLDED_WORKSPACE_PATH", str(tmp_path)),
+        patch("src.worker_removal.settings.SCAFFOLDED_WORKSPACE_PATH", str(tmp_path)),
         patch("src.compose_runner.subprocess.run", return_value=result) as mock_run,
     ):
         await manager.delete_worker(worker_id)
@@ -601,7 +601,7 @@ async def test_gc_removes_orphaned_container():
 
     with (
         patch("src.manager.workspace_mod.remove_workspace"),
-        patch("src.manager.ComposeRunner") as mock_runner_cls,
+        patch("src.worker_removal.ComposeRunner") as mock_runner_cls,
         patch("os.listdir", return_value=[]),
     ):
         mock_runner = MagicMock()
