@@ -1,11 +1,13 @@
 """Tests for multi-turn worker spawner API (Iteration 2: worker-reuse-ci-fix)."""
 
+from datetime import UTC, datetime, timedelta
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from shared.contracts.queues.worker import WorkerOwnership
+from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn, active_turn_key
 
 _OWNERSHIP = WorkerOwnership(project_id="proj-1", run_id="run-1", attempt_id="eng-attempt-1")
 
@@ -119,6 +121,75 @@ class TestWaitForResponseLiveness:
 
 
 class TestSendTaskToWorker:
+    @pytest.mark.asyncio
+    @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
+    @patch("redis.asyncio.Redis.from_url")
+    async def test_restart_adopts_the_active_turn_without_publishing_a_second_prompt(
+        self, mock_redis_from_url, mock_settings
+    ):
+        """The replacement consumer waits for the broker-recorded turn it reclaimed."""
+        mock_redis = AsyncMock()
+        mock_redis_from_url.return_value = mock_redis
+        request_id = "turn-from-the-restarted-consumer"
+        now = datetime.now(UTC)
+        active = WorkerActiveTurn(
+            worker_id="dev-123",
+            attempt_id=_OWNERSHIP.attempt_id,
+            request_id=request_id,
+            lease_id="1-0",
+            started_at=now,
+            deadline_at=now + timedelta(minutes=30),
+        )
+
+        async def hgetall(key):
+            return active.as_redis_fields() if key == active_turn_key("dev-123") else {}
+
+        mock_redis.hgetall = hgetall
+        mock_redis.xgroup_create = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(
+            return_value=[
+                (
+                    b"worker:dev-123:output",
+                    [
+                        (
+                            b"1-1",
+                            {
+                                b"request_id": request_id.encode(),
+                                b"data": json.dumps(
+                                    {
+                                        "status": "completed",
+                                        "content": "finished after restart",
+                                        "commit_sha": "a" * 40,
+                                    }
+                                ).encode(),
+                            },
+                        )
+                    ],
+                )
+            ]
+        )
+        mock_redis.xack = AsyncMock()
+        mock_redis.xadd = AsyncMock()
+        mock_redis.xgroup_destroy = AsyncMock()
+        mock_redis.aclose = AsyncMock()
+
+        from src.clients.worker_spawner import send_task_to_worker
+
+        result = await send_task_to_worker(
+            ownership=_OWNERSHIP,
+            worker_id="dev-123",
+            task_content="this must not be published twice",
+            timeout_seconds=10,
+            turn_metadata=AttemptTurnMetadata(
+                worker_id="dev-123",
+                active_turn_request_id=request_id,
+            ),
+        )
+
+        assert result.success is True
+        assert result.request_id == request_id
+        mock_redis.xadd.assert_not_awaited()
+
     @pytest.mark.asyncio
     @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
     @patch("redis.asyncio.Redis.from_url")

@@ -870,9 +870,18 @@ async def _recover_recheck_deploy_handoff(
     run,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
-    """Publish a durable recheck deploy handoff left queued by a failed caller."""
+    """Publish a durable recheck deploy handoff left queued by a failed caller.
+
+    The same age fence as QA handoff recovery leaves the original publisher time
+    to stamp a successful publish, so a supervisor tick cannot duplicate its
+    task id in that transaction-to-stamp window.
+    """
     message_data = run.run_metadata.get(RECHECK_DEPLOY_MESSAGE_KEY)
     if message_data is None or run.run_metadata.get(RECHECK_DEPLOY_DISPATCHED_AT_KEY):
+        return False
+
+    age_minutes = (datetime.now(UTC) - _parse_datetime(run.created_at)).total_seconds() / 60
+    if age_minutes < _qa_handoff_recovery_minutes():
         return False
 
     message = DeployMessage.model_validate(message_data)

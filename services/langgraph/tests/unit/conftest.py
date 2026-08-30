@@ -11,6 +11,7 @@ from shared.config_store import ConfigStore
 from shared.contracts.dto.executor_decision import ExecutorDecision, ExecutorDecisionSource
 from shared.contracts.dto.run import RunType
 from shared.contracts.vocab import AgentType
+from shared.contracts.worker_turn import AttemptTurnMetadata
 
 # Add /app to sys.path so that 'src' module can be imported.
 # This is needed because the volume mount for tests doesn't include the src module.
@@ -57,4 +58,9 @@ def paid_run_executor_for_legacy_unit_states(monkeypatch):
         engineering,
         "_load_engineering_executor_decision",
         AsyncMock(return_value=engineering_decision),
+    )
+    monkeypatch.setattr(
+        engineering,
+        "_recorded_attempt_turn",
+        AsyncMock(return_value=AttemptTurnMetadata()),
     )

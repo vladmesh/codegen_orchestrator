@@ -322,6 +322,7 @@ class DeveloperNode(FunctionalNode):
                 ownership=spawn_kwargs["ownership"],
                 story_md=spawn_kwargs["story_md"],
                 branch=spawn_kwargs["branch"],
+                turn_metadata=state.get("attempt_turn"),
             )
             # A timeout requests teardown, but it does not prove that the
             # previous container is gone.  Do not create a sibling worker;

@@ -20,6 +20,7 @@ from shared.contracts.dto.run_result import AllocationFailureReason, Engineering
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.vocab import ActionType
+from shared.contracts.worker_turn import AttemptTurnMetadata
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -154,6 +155,39 @@ async def _load_engineering_executor_decision(task_id: str) -> ExecutorDecision:
     return decision
 
 
+async def _recorded_attempt_turn(task_id: str) -> AttemptTurnMetadata:
+    """Read the durable handoff record for this still-running engineering attempt."""
+    run = await api_client.get_run(task_id)
+    return AttemptTurnMetadata.from_run_metadata(run.run_metadata)
+
+
+async def _existing_attempt_worker(
+    redis: RedisStreamClient,
+    *,
+    story_id: str | None,
+    task_id: str,
+    attempt_turn: AttemptTurnMetadata,
+) -> str | None:
+    """Resolve an existing worker from durable ownership records only."""
+    if story_id:
+        worker_id = await get_story_worker(redis.redis, story_id)
+        if worker_id:
+            logger.info(
+                "reusing_story_worker",
+                story_id=story_id,
+                worker_id=worker_id,
+                task_id=task_id,
+            )
+            return worker_id
+    if attempt_turn.worker_id:
+        logger.info(
+            "adopting_recorded_engineering_turn",
+            worker_id=attempt_turn.worker_id,
+            task_id=task_id,
+        )
+    return attempt_turn.worker_id
+
+
 async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single engineering job by running Engineering Subgraph."""
     from ..subgraphs.engineering import create_engineering_subgraph
@@ -232,16 +266,13 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         if allocated_resources is None:
             return live_work_unsettled({"status": "failed", "error": "Resource allocation failed"})
 
-        existing_worker_id = None
-        if story_id:
-            existing_worker_id = await get_story_worker(redis.redis, story_id)
-            if existing_worker_id:
-                logger.info(
-                    "reusing_story_worker",
-                    story_id=story_id,
-                    worker_id=existing_worker_id,
-                    task_id=task_id,
-                )
+        attempt_turn = await _recorded_attempt_turn(task_id)
+        existing_worker_id = await _existing_attempt_worker(
+            redis,
+            story_id=story_id,
+            task_id=task_id,
+            attempt_turn=attempt_turn,
+        )
 
         primary_repo = await api_client.get_primary_repository(project_id)
         repo_id = primary_repo.id if primary_repo else None
@@ -274,6 +305,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "executor_decision": executor_decision,
             "commit_sha": None,
             "worker_id": existing_worker_id,
+            "attempt_turn": attempt_turn,
             "engineering_status": EngineeringStatus.IDLE,
             "iteration_count": 0,
             "test_results": None,

@@ -17,6 +17,7 @@ from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.executor_decision import ExecutorDecision
 from shared.contracts.queues.worker import WorkerOwnership
 from shared.contracts.queues.worker_result import WorkerStopReason
+from shared.contracts.worker_turn import AttemptTurnMetadata
 
 from ..nodes.base import FunctionalNode
 from ..nodes.developer import developer_node
@@ -77,6 +78,7 @@ class EngineeringState(TypedDict):
     engineering_status: str  # EngineeringStatus: idle | done | gave_up | failed
     commit_sha: str | None
     worker_id: str | None
+    attempt_turn: AttemptTurnMetadata
     worker_report: str | None
     worker_observability: dict | None
     gave_up_reason: str | None

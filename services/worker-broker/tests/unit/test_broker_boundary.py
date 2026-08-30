@@ -210,6 +210,7 @@ async def test_authenticated_registration_lease_output_session_and_compose_forwa
         worker_token,
     )
     output = await redis.xrange(registration.output_stream)
+    assert output[0][1]["request_id"] == "request-1"
     result = json.loads(output[0][1]["data"])
     assert result["status"] == "failed"
     assert result["error"] == "agent failed"
