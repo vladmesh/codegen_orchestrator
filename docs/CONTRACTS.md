@@ -1694,12 +1694,17 @@ broker lease is transient execution evidence, not an ownership heuristic.
 
 On PEL reclaim, the new engineering consumer reads that Run record or the story-worker binding and
 attaches only when the broker lease and request identity agree. It reads the matching retained
-output without publishing another prompt, then performs the normal terminal Run write. If the
-record is present but no prompt was leased and no matching output exists, the replacement may publish
-a new turn; if a leased turn reaches its recorded deadline, it requests worker deletion. Container
-health is never evidence that a turn is owned. The engineering attempt ledger's unique
-`engineering-run:{run_id}` key and locked terminal writer retain the first provider-charge record on
-this adoption path as on the original path.
+output without publishing another prompt, skipping retained malformed entries that carry another
+request id, then performs the normal terminal Run write. An ordinary exception after publication
+requests worker deletion before the job can settle terminally; cancellation alone leaves the PEL
+entry unacknowledged for reclaim. If the record is present but no prompt was leased and no matching
+output exists, the replacement may publish a new turn; if a leased turn reaches its recorded
+deadline, it requests worker deletion. Container health is never evidence that a turn is owned. The
+engineering attempt ledger's unique `engineering-run:{run_id}` key and locked terminal writer retain
+the first provider-charge record on this adoption path as on the original path. In the narrow
+active-turn-key-absent path, however, the first prompt can still be unread while adoption publishes a
+second one: the ledger deduplicates the attempt record, not provider calls, so it is not a
+provider-charge mutex.
 
 `POST /api/stories/{id}/accept-result` is the human completion route for a story in
 `waiting_human_review`. It requires a non-blank `basis` and reaches the same completion transaction

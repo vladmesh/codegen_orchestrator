@@ -312,6 +312,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "needs_human_approval": False,
             "human_approval_reason": None,
             "branch": branch,
+            "story_id": story_id,
             "worker_report": None,
             "worker_observability": None,
             "gave_up_reason": None,

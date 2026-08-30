@@ -19,7 +19,7 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.worker import AgentType, WorkerOwnership
 
 from ..clients.api import api_client
-from ..clients.worker_spawner import request_spawn, send_task_to_worker
+from ..clients.worker_spawner import StoryWorkerBinding, request_spawn, send_task_to_worker
 from ..config.constants import Timeouts
 from .base import FunctionalNode
 from .developer_tasks import (
@@ -228,8 +228,8 @@ class DeveloperNode(FunctionalNode):
         )
 
         task_title = self._get_task_title(action, project_name)
-        story_md = state.get("story_md")
         branch = state.get("branch")
+        story = StoryWorkerBinding(story_id=state.get("story_id"), branch=branch)
 
         # Spawn or reuse worker
         spawn_kwargs = {
@@ -241,8 +241,8 @@ class DeveloperNode(FunctionalNode):
             "ownership": ownership,
             "repo_id": str(repo_id) if repo_id else None,
             "agent_type": agent_type,
-            "story_md": story_md,
-            "branch": branch,
+            "story_md": state.get("story_md"),
+            "story": story,
         }
         worker_result = await self._get_worker_result(
             state=state,
@@ -321,7 +321,7 @@ class DeveloperNode(FunctionalNode):
                 timeout_seconds=Timeouts.WORKER_SPAWN,
                 ownership=spawn_kwargs["ownership"],
                 story_md=spawn_kwargs["story_md"],
-                branch=spawn_kwargs["branch"],
+                branch=spawn_kwargs["story"].branch,
                 turn_metadata=state.get("attempt_turn"),
             )
             # A timeout requests teardown, but it does not prove that the

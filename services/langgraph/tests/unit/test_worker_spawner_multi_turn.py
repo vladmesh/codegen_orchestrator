@@ -190,6 +190,85 @@ class TestSendTaskToWorker:
         assert result.request_id == request_id
         mock_redis.xadd.assert_not_awaited()
 
+    # ---------- spawn interruption cleanup ----------
+    @pytest.mark.asyncio
+    @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
+    @patch("redis.asyncio.Redis.from_url")
+    @patch("src.clients.worker_spawner._send_turn", new_callable=AsyncMock)
+    @patch("src.clients.worker_spawner._wait_until_ready", new_callable=AsyncMock)
+    @patch("src.clients.worker_spawner._wait_for_response", new_callable=AsyncMock)
+    @patch("src.prompts.load_developer_instructions", return_value="test instructions")
+    async def test_post_turn_exception_requests_worker_deletion(
+        self,
+        _mock_instructions,
+        mock_wait_for_response,
+        mock_wait_until_ready,
+        _mock_send_turn,
+        mock_redis_from_url,
+        _mock_settings,
+    ):
+        """A failed output wait tears down the published worker before settling."""
+        mock_redis = AsyncMock()
+        mock_redis_from_url.return_value = mock_redis
+        mock_redis.xgroup_create = AsyncMock()
+        mock_redis.xgroup_destroy = AsyncMock()
+        mock_redis.aclose = AsyncMock()
+        mock_redis.xadd = AsyncMock()
+        mock_wait_until_ready.return_value = None
+        mock_wait_for_response.side_effect = [
+            {"success": True, "worker_id": "dev-live-turn"},
+            RuntimeError("output stream unavailable"),
+        ]
+
+        from src.clients.worker_spawner import request_spawn
+
+        result = await request_spawn(
+            repo="org/repo",
+            github_token="ghs_test",  # noqa: S106
+            task_content="complete the work",
+            ownership=_OWNERSHIP,
+        )
+
+        assert result.success is False
+        cleanup_payloads = [
+            json.loads(call.args[1]["data"])
+            for call in mock_redis.xadd.await_args_list
+            if call.args[0] == "worker:commands"
+        ]
+        assert cleanup_payloads[-1]["worker_id"] == "dev-live-turn"
+        assert cleanup_payloads[-1]["reason"] == "failed"
+
+    @pytest.mark.asyncio
+    @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
+    @patch("redis.asyncio.Redis.from_url")
+    @patch("src.clients.worker_spawner._wait_for_response", new_callable=AsyncMock)
+    @patch("src.prompts.load_developer_instructions", return_value="test instructions")
+    async def test_keyboard_interrupt_is_not_converted_to_a_failed_spawn(
+        self,
+        _mock_instructions,
+        mock_wait_for_response,
+        mock_redis_from_url,
+        _mock_settings,
+    ):
+        """Process shutdown signals must escape spawn bookkeeping."""
+        mock_redis = AsyncMock()
+        mock_redis_from_url.return_value = mock_redis
+        mock_redis.xgroup_create = AsyncMock()
+        mock_redis.xgroup_destroy = AsyncMock()
+        mock_redis.aclose = AsyncMock()
+        mock_redis.xadd = AsyncMock()
+        mock_wait_for_response.side_effect = KeyboardInterrupt()
+
+        from src.clients.worker_spawner import request_spawn
+
+        with pytest.raises(KeyboardInterrupt):
+            await request_spawn(
+                repo="org/repo",
+                github_token="ghs_test",  # noqa: S106
+                task_content="complete the work",
+                ownership=_OWNERSHIP,
+            )
+
     @pytest.mark.asyncio
     @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
     @patch("redis.asyncio.Redis.from_url")

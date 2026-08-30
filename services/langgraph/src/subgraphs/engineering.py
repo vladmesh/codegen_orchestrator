@@ -74,6 +74,9 @@ class EngineeringState(TypedDict):
     # Story branch name (e.g. "story/{story_id}")
     branch: str | None
 
+    # Durable story identity supplied by the consumer for worker registration.
+    story_id: str | None
+
     # Engineering result
     engineering_status: str  # EngineeringStatus: idle | done | gave_up | failed
     commit_sha: str | None

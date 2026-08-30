@@ -76,6 +76,14 @@ class SpawnResult:
     agent_limit_seconds: int | None = None
 
 
+@dataclass(frozen=True)
+class StoryWorkerBinding:
+    """Consumer-owned identity and branch for one story worker."""
+
+    story_id: str | None = None
+    branch: str | None = None
+
+
 class WorkerOutputDecodeError(Exception):
     """A worker output stream entry could not be JSON-decoded.
 
@@ -270,6 +278,16 @@ def _observe_poison_entry(stream: str, msg_id, request_id: str | None, error: st
     )
 
 
+def _matches_output_request(msg_data: dict, output_request_id: str | None) -> bool:
+    """Return whether an output entry belongs to the requested adoption turn."""
+    if output_request_id is None:
+        return True
+    return (
+        decode_redis_value(msg_data.get(b"request_id", msg_data.get("request_id")))
+        == output_request_id
+    )
+
+
 async def _wait_for_response(
     redis_client: redis.Redis,
     group_name: str,
@@ -328,6 +346,13 @@ async def _wait_for_response(
         if messages:
             for _, stream_msgs in messages:
                 for msg_id, msg_data in stream_msgs:
+                    if not _matches_output_request(msg_data, output_request_id):
+                        # Results from previous turns are retained for a
+                        # bounded period. They are not this handoff, even when
+                        # their payload is malformed.
+                        await redis_client.xack(stream, group_name, msg_id)
+                        continue
+
                     # Missing 'data' field — poison entry, ACK terminally.
                     if b"data" not in msg_data and "data" not in msg_data:
                         await redis_client.xack(stream, group_name, msg_id)
@@ -353,14 +378,6 @@ async def _wait_for_response(
                         continue
 
                     if output_request_id is not None:
-                        stream_request_id = decode_redis_value(
-                            msg_data.get(b"request_id", msg_data.get("request_id"))
-                        )
-                        if stream_request_id != output_request_id:
-                            # Results from previous turns are retained for a
-                            # bounded period. They are not this handoff.
-                            await redis_client.xack(stream, group_name, msg_id)
-                            continue
                         await redis_client.xack(stream, group_name, msg_id)
                         return resp
 
@@ -584,18 +601,9 @@ async def _publish_worker_deletion(
     )
 
 
-def _story_id_from_branch(branch: str | None) -> str | None:
-    """Return the story identity carried by the consumer-owned story branch."""
-    if branch is None or not branch.startswith("story/"):
-        return None
-    story_id = branch.removeprefix("story/")
-    return story_id or None
-
-
 async def _register_story_worker(
-    redis_client: redis.Redis, worker_id: str, branch: str | None
+    redis_client: redis.Redis, worker_id: str, story_id: str | None
 ) -> None:
-    story_id = _story_id_from_branch(branch)
     if story_id is None:
         return
     from .story_worker_registry import set_story_worker
@@ -604,24 +612,14 @@ async def _register_story_worker(
 
 
 async def _handle_spawn_interruption(
-    error: BaseException,
+    error: Exception,
     *,
     redis_client: redis.Redis,
     request_id: str,
     worker_id: str | None,
-    turn_published: bool,
 ) -> SpawnResult:
-    """Keep a published turn recoverable and clean up only pre-turn failures."""
-    if isinstance(error, asyncio.CancelledError):
-        logger.info(
-            "worker_spawn_wait_cancelled",
-            worker_id=worker_id,
-            turn_published=turn_published,
-        )
-        raise error
+    """Tear down a worker when an ordinary spawn failure stops its waiter."""
     logger.error("spawn_failed", error=str(error), worker_id=worker_id)
-    if worker_id and turn_published:
-        raise error
     if worker_id:
         await _publish_worker_deletion(redis_client, request_id, worker_id, "failed")
     return SpawnResult(request_id, False, -1, str(error))
@@ -638,7 +636,7 @@ async def request_spawn(
     repo_id: str | None = None,
     agent_type: AgentType = AgentType.CLAUDE,
     story_md: str | None = None,
-    branch: str | None = None,
+    story: StoryWorkerBinding = StoryWorkerBinding(),
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
@@ -660,7 +658,6 @@ async def request_spawn(
     group_name = f"langgraph-client-{request_id[:8]}"
 
     worker_id = None
-    turn_published = False
 
     try:
         # 1. Create consumer group for responses
@@ -696,7 +693,7 @@ async def request_spawn(
                 },
                 ownership=ownership,
                 repo_id=repo_id,
-                branch=branch,
+                branch=story.branch,
             ),
             context={"source": "langgraph", "repo": repo, "project_id": ownership.project_id},
         )
@@ -720,7 +717,7 @@ async def request_spawn(
         worker_id = create_resp.get("worker_id")
         logger.info("worker_ack_received", request_id=request_id, worker_id=worker_id)
         await record_worker_on_attempt(ownership.attempt_id, worker_id)
-        await _register_story_worker(redis_client, worker_id, branch)
+        await _register_story_worker(redis_client, worker_id, story.story_id)
 
         # 3b. Poll worker status until RUNNING (image build + container start)
         ready_failure = await _wait_until_ready(redis_client, worker_id, request_id)
@@ -743,7 +740,6 @@ async def request_spawn(
         await _send_turn(
             redis_client, worker_id, request_id, ownership.attempt_id, task_content, story_md
         )
-        turn_published = True
 
         # Wait for output (worker output doesn't have request_id, so pass None)
         try:
@@ -786,13 +782,18 @@ async def request_spawn(
                 error_message="execution_timeout",
             )
 
-    except BaseException as error:
+    except asyncio.CancelledError:
+        logger.info(
+            "worker_spawn_wait_cancelled",
+            worker_id=worker_id,
+        )
+        raise
+    except Exception as error:
         return await _handle_spawn_interruption(
             error,
             redis_client=redis_client,
             request_id=request_id,
             worker_id=worker_id,
-            turn_published=turn_published,
         )
     finally:
         # Cleanup consumer groups (ignore errors - groups may not exist)
