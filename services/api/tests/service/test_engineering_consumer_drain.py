@@ -56,5 +56,6 @@ async def test_engineering_consumer_drain_is_durable_and_uses_the_proxy_actor(
 
     cleared = await db_session.get(SystemConfig, "engineering.consumer_drain")
     assert cleared is not None
+    await db_session.refresh(cleared)
     assert cleared.value == {"draining": False}
     assert cleared.updated_by == "admin_console:release-operator"

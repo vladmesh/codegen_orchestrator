@@ -12,6 +12,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - WORKER_BROKER_URL=http://worker-broker:8001
+      - INTERNAL_API_KEY=test-internal-api-key
       - ENVIRONMENT=test
       - 'WORKER_DOCKER_LABELS={"com.codegen.environment": "test"}'
       - WORKER_IMAGE_PREFIX=worker-test

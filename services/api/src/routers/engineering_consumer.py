@@ -37,18 +37,19 @@ async def _set_drain(*, draining: bool, actor: str, db: AsyncSession) -> Enginee
         )
     else:
         state = _cleared_drain()
+    stored_state = state.model_dump(mode="json", exclude_none=True)
 
     if config is None:
         config = SystemConfig(
             key=DRAIN_CONFIG_KEY,
-            value=state.model_dump(mode="json"),
+            value=stored_state,
             category="engineering",
             description="Operator-controlled engineering consumer drain state",
             updated_by=actor,
         )
         db.add(config)
     else:
-        config.value = state.model_dump(mode="json")
+        config.value = stored_state
         config.updated_by = actor
 
     if before.draining != state.draining:
@@ -58,7 +59,7 @@ async def _set_drain(*, draining: bool, actor: str, db: AsyncSession) -> Enginee
                 outcome="draining" if draining else "resumed",
                 control_name="engineering_consumer",
                 before_value={"draining": before.draining},
-                after_value=state.model_dump(mode="json"),
+                after_value=stored_state,
                 actor=actor,
             )
         )

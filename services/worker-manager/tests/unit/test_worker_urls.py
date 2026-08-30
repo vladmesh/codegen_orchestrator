@@ -33,3 +33,11 @@ def test_service_compose_supplies_required_broker_internal_token():
     for service in ("worker-manager", "worker-manager-test-runner"):
         environment = compose["services"][service]["environment"]
         assert "WORKER_BROKER_INTERNAL_TOKEN=test-worker-broker-internal-token" in environment
+
+
+def test_service_compose_supplies_internal_api_key_for_attempt_inventory():
+    compose_path = Path(__file__).parents[4] / "docker/test/service/worker-manager.yml"
+    compose = yaml.safe_load(compose_path.read_text())
+
+    environment = compose["services"]["worker-manager"]["environment"]
+    assert "INTERNAL_API_KEY=test-internal-api-key" in environment
