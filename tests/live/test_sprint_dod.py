@@ -413,6 +413,4 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
                 assert ctx["story_id"] in inventory[holder]["story_bindings"], (
                     f"workspace lock holder {holder} is not bound to the story"
                 )
-            _assert_no_orphan_workers(
-                list(inventory.values()), ctx["project_id"], ctx["story_id"]
-            )
+            _assert_no_orphan_workers(list(inventory.values()), ctx["project_id"], ctx["story_id"])

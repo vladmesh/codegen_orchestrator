@@ -57,9 +57,7 @@ def test_po_events_after_ignores_other_po_input_message_types(monkeypatch):
 
     events = target._po_events_after("0-0")
 
-    assert [(event.story_id, event.event) for event in events] == [
-        ("story-1", "story_completed")
-    ]
+    assert [(event.story_id, event.event) for event in events] == [("story-1", "story_completed")]
 
 
 def test_turn_observation_budget_covers_the_engineering_cold_start():
