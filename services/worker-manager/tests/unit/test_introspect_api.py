@@ -138,6 +138,52 @@ class TestListWorkers:
         data = resp.json()
         assert data[0]["status"] == "COMPLETED"
 
+    def test_inventory_keeps_container_process_lease_binding_and_waiter_separate(self, redis, docker):
+        redis.keys = AsyncMock(return_value=["worker:status:orphaned-worker"])
+        redis.hgetall = AsyncMock(
+            side_effect=[
+                {"story-1": "another-worker"},  # no story-worker binding for this worker
+                {"status": "RUNNING"},
+                {
+                    "project_id": "p1",
+                    "worker_type": "developer",
+                    "attempt_id": "running-attempt",
+                },
+                {},  # no broker active-turn lease
+            ]
+        )
+        redis.get = AsyncMock(return_value=None)
+        docker.inspect_container = AsyncMock(
+            return_value={
+                "Id": "container-up",
+                "Config": {"Image": "worker:latest"},
+                "State": {"Status": "running"},
+            }
+        )
+        app = _make_app(redis=redis, docker=docker)
+        app.state.engineering_attempts = MagicMock()
+        app.state.engineering_attempts.list_running = AsyncMock(
+            return_value=[
+                {
+                    "id": "running-attempt",
+                    "status": "running",
+                    "run_metadata": {"worker_id": "another-worker"},
+                }
+            ]
+        )
+
+        with TestClient(app) as c:
+            resp = c.get("/api/introspect/workers/")
+
+        assert resp.status_code == HTTPStatus.OK
+        worker = resp.json()[0]
+        assert worker["container"]["state"] == "running"
+        assert worker["agent_process_status"] == "RUNNING"
+        assert worker["active_turn_lease"] is None
+        assert worker["story_bindings"] == []
+        assert worker["attempt_run"] == {"id": "running-attempt", "status": "running"}
+        assert worker["waiting_attempt"] is None
+
 
 class TestGetWorker:
     def test_worker_found(self, redis, docker):

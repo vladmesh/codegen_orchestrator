@@ -115,7 +115,7 @@ export function WorkerDetailPage() {
         <Card>
           <p className="text-sm text-muted-foreground">Container</p>
           <p className="mt-1 font-mono text-xs text-foreground">
-            {worker.container_id?.slice(0, 12) ?? '-'}
+            {worker.container ? `${worker.container.state ?? 'unknown'}: ${worker.container.id.slice(0, 12)}` : 'absent'}
           </p>
         </Card>
         <Card>
@@ -125,6 +125,36 @@ export function WorkerDetailPage() {
         <Card>
           <p className="text-sm text-muted-foreground">Network</p>
           <p className="mt-1 font-mono text-xs text-foreground">{worker.dev_network ?? '-'}</p>
+        </Card>
+        <Card>
+          <p className="text-sm text-muted-foreground">Agent process</p>
+          <p className="mt-1 font-mono text-xs text-foreground">{worker.agent_process_status ?? 'unknown'}</p>
+        </Card>
+        <Card>
+          <p className="text-sm text-muted-foreground">Broker lease</p>
+          <p className="mt-1 font-mono text-xs text-foreground">
+            {worker.active_turn_lease?.request_id ?? worker.active_turn_lease_error ?? 'none'}
+          </p>
+        </Card>
+        <Card>
+          <p className="text-sm text-muted-foreground">Story binding</p>
+          <p className="mt-1 font-mono text-xs text-foreground">
+            {worker.story_bindings.length ? worker.story_bindings.join(', ') : 'none'}
+          </p>
+        </Card>
+        <Card>
+          <p className="text-sm text-muted-foreground">Attempt run</p>
+          <p className="mt-1 font-mono text-xs text-foreground">
+            {worker.attempt_run ? `${worker.attempt_run.status}: ${worker.attempt_run.id}` : 'none'}
+          </p>
+        </Card>
+        <Card>
+          <p className="text-sm text-muted-foreground">Waiting for result</p>
+          <p className="mt-1 font-mono text-xs text-foreground">
+            {worker.waiting_attempt
+              ? `${worker.waiting_attempt.run_status}: ${worker.waiting_attempt.run_id}`
+              : worker.waiting_attempt_error ?? 'none'}
+          </p>
         </Card>
       </div>
 

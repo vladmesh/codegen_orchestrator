@@ -6,12 +6,15 @@ All data comes from Redis metadata + Docker + host filesystem.
 
 from http import HTTPStatus
 from pathlib import Path
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.worker_turn import AttemptTurnMetadata, WorkerActiveTurn
+from shared.queues import STORY_WORKERS_KEY
 from shared.redis import decode_redis_fields
 
 from ..config import settings
@@ -37,11 +40,52 @@ class WorkerSummary(BaseModel):
     dev_network: str | None = None
     last_activity: str | None = None
     error: str | None = None
+    container: "ContainerFact | None" = None
+    agent_process_status: str | None = None
+    active_turn_lease: "ActiveTurnLease | None" = None
+    active_turn_lease_error: str | None = None
+    story_bindings: list[str] = []
+    attempt_run: "AttemptRun | None" = None
+    waiting_attempt: "WaitingAttempt | None" = None
+    waiting_attempt_error: str | None = None
+
+
+class ContainerFact(BaseModel):
+    id: str
+    image: str | None = None
+    state: str | None = None
+
+
+class ActiveTurnLease(BaseModel):
+    attempt_id: str
+    request_id: str
+    lease_id: str
+    started_at: str
+    deadline_at: str
+
+
+class WaitingAttempt(BaseModel):
+    run_id: str
+    run_status: str
+    request_id: str
+    requested_at: str | None = None
+
+
+class AttemptRun(BaseModel):
+    id: str
+    status: str
 
 
 class WorkerDetail(WorkerSummary):
     container_id: str | None = None
     image: str | None = None
+
+
+class _InventoryContext(BaseModel):
+    attempt_runs: dict[str, AttemptRun] = {}
+    waiting_attempts: dict[str, WaitingAttempt] = {}
+    story_bindings: dict[str, list[str]] = {}
+    waiting_attempt_error: str | None = None
 
 
 class WorkerLogsResponse(BaseModel):
@@ -100,6 +144,106 @@ async def _get_workspace_path(redis, worker_id: str, request: Request | None = N
     return path
 
 
+async def _inventory_context(request: Request) -> _InventoryContext | None:
+    """Read facts which need the existing API Run and story-worker records."""
+    attempts = getattr(request.app.state, "engineering_attempts", None)
+    if attempts is None:
+        return None
+    try:
+        active_runs = await attempts.list_running()
+    except Exception as exc:
+        logger.warning("worker_inventory_attempts_unavailable", error_type=type(exc).__name__)
+        return _InventoryContext(waiting_attempt_error="running engineering attempts unavailable")
+
+    attempt_runs: dict[str, AttemptRun] = {}
+    waiting_attempts: dict[str, WaitingAttempt] = {}
+    for run in active_runs:
+        run_id = run.get("id")
+        run_status = run.get("status")
+        if not isinstance(run_id, str) or not isinstance(run_status, str):
+            logger.warning("worker_inventory_attempt_identity_invalid")
+            continue
+        attempt_runs[run_id] = AttemptRun(id=run_id, status=run_status)
+        try:
+            turn = AttemptTurnMetadata.from_run_metadata(run.get("run_metadata"))
+        except Exception:
+            logger.warning("worker_inventory_attempt_metadata_invalid", run_id=run.get("id"))
+            continue
+        if turn.worker_id is None or turn.active_turn_request_id is None:
+            continue
+        waiting_attempts[turn.worker_id] = WaitingAttempt(
+            run_id=run_id,
+            run_status=run_status,
+            request_id=turn.active_turn_request_id,
+            requested_at=(
+                turn.active_turn_requested_at.isoformat() if turn.active_turn_requested_at is not None else None
+            ),
+        )
+
+    bindings = decode_redis_fields(await request.app.state.redis.hgetall(STORY_WORKERS_KEY))
+    story_bindings: dict[str, list[str]] = {}
+    for story_id, worker_id in bindings.items():
+        story_bindings.setdefault(worker_id, []).append(story_id)
+    return _InventoryContext(
+        attempt_runs=attempt_runs,
+        waiting_attempts=waiting_attempts,
+        story_bindings=story_bindings,
+    )
+
+
+async def _container_fact(docker, worker_id: str) -> ContainerFact | None:
+    container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
+    try:
+        attrs = await docker.inspect_container(container_name)
+    except Exception:
+        return None
+    container_id = attrs.get("Id")
+    if not isinstance(container_id, str):
+        return None
+    config = attrs.get("Config")
+    state = attrs.get("State")
+    return ContainerFact(
+        id=container_id,
+        image=config.get("Image") if isinstance(config, dict) else None,
+        state=state.get("Status") if isinstance(state, dict) else None,
+    )
+
+
+async def _inventory_fields(
+    redis,
+    worker_id: str,
+    attempt_id: str | None,
+    context: _InventoryContext | None,
+) -> dict[str, Any]:
+    if context is None:
+        return {}
+    lease_error = None
+    lease = None
+    try:
+        active_turn = WorkerActiveTurn.from_redis_fields(
+            decode_redis_fields(await redis.hgetall(f"worker:active-turn:{worker_id}"))
+        )
+        if active_turn is not None:
+            lease = ActiveTurnLease(
+                attempt_id=active_turn.attempt_id,
+                request_id=active_turn.request_id,
+                lease_id=active_turn.lease_id,
+                started_at=active_turn.started_at.isoformat(),
+                deadline_at=active_turn.deadline_at.isoformat(),
+            )
+    except Exception:
+        lease_error = "active turn lease is invalid or unreadable"
+        logger.warning("worker_inventory_active_turn_unreadable", worker_id=worker_id)
+    return {
+        "active_turn_lease": lease,
+        "active_turn_lease_error": lease_error,
+        "story_bindings": context.story_bindings.get(worker_id, []),
+        "attempt_run": context.attempt_runs.get(attempt_id) if attempt_id else None,
+        "waiting_attempt": context.waiting_attempts.get(worker_id),
+        "waiting_attempt_error": context.waiting_attempt_error,
+    }
+
+
 # --- Endpoints ---
 
 
@@ -109,6 +253,7 @@ async def list_workers(request: Request):
     redis = request.app.state.redis
     docker = request.app.state.docker
     keys = await redis.keys("worker:status:*")
+    context = await _inventory_context(request)
 
     workers = []
     for key in keys:
@@ -118,12 +263,10 @@ async def list_workers(request: Request):
         last_activity = await redis.get(f"worker:last_activity:{worker_id}")
         error = await redis.get(f"worker:error:{worker_id}")
 
-        # Cross-check with Docker — override status if container is gone
+        # Docker and the worker process report different facts. Preserve both.
         redis_status = status_data.get("status", WorkerStatus.UNKNOWN)
-        container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
-        try:
-            await docker.inspect_container(container_name)
-        except Exception:
+        container = await _container_fact(docker, worker_id)
+        if container is None:
             if redis_status == WorkerStatus.RUNNING:
                 redis_status = WorkerStatus.GONE
 
@@ -137,6 +280,9 @@ async def list_workers(request: Request):
                 dev_network=meta.get("dev_network"),
                 last_activity=last_activity,
                 error=error,
+                container=container,
+                agent_process_status=status_data.get("status"),
+                **await _inventory_fields(redis, worker_id, meta.get("attempt_id"), context),
             )
         )
 
@@ -153,16 +299,16 @@ async def get_worker(worker_id: str, request: Request):
     meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
     last_activity = await redis.get(f"worker:last_activity:{worker_id}")
     error = await redis.get(f"worker:error:{worker_id}")
+    context = await _inventory_context(request)
 
     container_id = None
     image = None
     redis_status = status_data.get("status", WorkerStatus.UNKNOWN)
-    container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
-    try:
-        attrs = await docker.inspect_container(container_name)
-        container_id = attrs.get("Id")
-        image = attrs.get("Config", {}).get("Image")
-    except Exception:
+    container = await _container_fact(docker, worker_id)
+    if container is not None:
+        container_id = container.id
+        image = container.image
+    else:
         if redis_status == "RUNNING":
             redis_status = "GONE"
 
@@ -177,6 +323,9 @@ async def get_worker(worker_id: str, request: Request):
         error=error,
         container_id=container_id,
         image=image,
+        container=container,
+        agent_process_status=status_data.get("status"),
+        **await _inventory_fields(redis, worker_id, meta.get("attempt_id"), context),
     )
 
 

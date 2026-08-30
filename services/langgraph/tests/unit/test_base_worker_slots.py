@@ -134,6 +134,43 @@ class TestConfiguredSlots:
         assert await _read_configured_slots("k", 2, "test") == 0
 
 
+class TestOperatorDrain:
+    @pytest.mark.asyncio()
+    async def test_drain_leaves_queued_work_unclaimed_while_a_consumer_stays_up(
+        self, mock_api_client
+    ):
+        from src.consumers._base import run_queue_worker
+
+        consume_called = False
+
+        async def consume(*_args, **_kwargs):
+            nonlocal consume_called
+            consume_called = True
+            raise AssertionError("a draining consumer must not read the queue")
+            yield  # pragma: no cover
+
+        redis = _redis(consume)
+
+        async def draining():
+            return True
+
+        with (
+            patch("src.consumers._base.RedisStreamClient", return_value=redis),
+            patch("src.consumers._base.SLOT_WAIT_SECONDS", 0.01),
+        ):
+            worker = asyncio.create_task(
+                run_queue_worker("test", "queue", AsyncMock(), is_draining=draining)
+            )
+            await asyncio.sleep(0.02)
+            import src.consumers._base as base
+
+            base._shutdown = True
+            await asyncio.wait_for(worker, timeout=2)
+            base._shutdown = False
+
+        assert not consume_called
+
+
 class TestParallelConsumption:
     """Two projects work at the same time; one slot stays sequential."""
 

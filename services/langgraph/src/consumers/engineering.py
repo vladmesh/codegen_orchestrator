@@ -51,6 +51,16 @@ from .story_context import (
 # still working, lowering it drains back to sequential without a redeploy.
 ENGINEERING_SLOTS_CONFIG_KEY = "engineering.worker_slots"
 
+
+async def _engineering_consumer_is_draining() -> bool:
+    """Read the operator decision before this consumer reserves another entry."""
+    state = await api_client.get("engineering-consumer/drain")
+    draining = state["draining"]
+    if not isinstance(draining, bool):
+        raise RuntimeError("engineering consumer drain state is not boolean")
+    return draining
+
+
 # Re-export for backward compatibility with tests
 __all__ = [
     "_build_story_context",
@@ -442,6 +452,7 @@ def main():
         queue=ENGINEERING_QUEUE,
         process_fn=process_engineering_job,
         slots_config_key=ENGINEERING_SLOTS_CONFIG_KEY,
+        is_draining=_engineering_consumer_is_draining,
     )
 
 

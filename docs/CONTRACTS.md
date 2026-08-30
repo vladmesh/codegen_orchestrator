@@ -1716,6 +1716,39 @@ is possible only if the wrapper has not polled for at least the sixty-second rec
 output before reclaim. The ledger deduplicates the attempt record, not provider calls, so it is not a
 provider-charge mutex.
 
+### Engineering consumer operator drain and worker inventory
+
+`POST /api/engineering-consumer/drain` records the durable decision to stop engineering consumers
+from claiming new entries. The actor is derived from the credential: an LK bearer administrator is
+`admin:<credential subject>`, while the admin console is `admin_console:<nginx basic-auth user>` and
+can only arrive through nginx's internal credential plus replaced `X-Admin-Console-Operator` header.
+The browser sends no actor field. The active state is the typed
+`system_configs.engineering.consumer_drain` value (`draining`, `requested_at`, `actor`); each change
+also appends a `work_admission_audits` record with before/after state and actor. `DELETE` clears the
+state explicitly. It does not alter the existing ten-second shutdown budget, acknowledge a PEL entry,
+or delete a worker. A running engineering consumer checks this durable state before every claim and
+continues its already in-flight jobs. A recreated consumer reads the same state before its first claim,
+so it remains drained until an operator clears it; clearing permits an already-running consumer to
+claim again.
+
+The worker-manager inventory deliberately presents independent facts instead of one health verdict:
+
+- `container` is Docker's container id, image, and state.
+- `agent_process_status` is the worker's `worker:status:{worker_id}` record, never Docker health.
+- `active_turn_lease` is `worker:active-turn:{worker_id}`, including attempt, request, broker lease,
+  start, and deadline; an unreadable lease is reported separately rather than as absent.
+- `story_bindings` are every `story:workers` binding that names the worker.
+- `attempt_run` is the active engineering Run named by the worker's existing `attempt_id` metadata.
+- `waiting_attempt` is a running engineering Run whose `AttemptTurnMetadata` names that worker and
+  has an active turn request id. It reports the Run id/status and request identity; a running Run that
+  lacks that recorded active request is not converted into a waiter.
+
+The inventory obtains running attempts from the API's existing Run records and the remaining facts
+from Docker or Redis. It creates no orphan detector or ownership inference. Thus a container can be
+`running`, its agent process can say `RUNNING`, and its attempt Run can say `running` while both its
+lease and waiting attempt are `none`: the visible 2026-08-27 23:11 shape, not a healthy attached-worker
+verdict.
+
 `POST /api/stories/{id}/accept-result` is the human completion route for a story in
 `waiting_human_review`. It requires a non-blank `basis` and reaches the same completion transaction
 as `POST /complete`. An LK bearer administrator records `actor=admin:<credential subject>`;

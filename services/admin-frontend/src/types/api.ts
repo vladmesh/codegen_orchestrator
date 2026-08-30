@@ -261,11 +261,51 @@ export interface WorkerSummary {
   dev_network: string | null
   last_activity: string | null
   error: string | null
+  container: WorkerContainerFact | null
+  agent_process_status: string | null
+  active_turn_lease: WorkerActiveTurnLease | null
+  active_turn_lease_error: string | null
+  story_bindings: string[]
+  attempt_run: WorkerAttemptRun | null
+  waiting_attempt: WorkerWaitingAttempt | null
+  waiting_attempt_error: string | null
 }
 
 export interface WorkerDetail extends WorkerSummary {
   container_id: string | null
   image: string | null
+}
+
+export interface WorkerContainerFact {
+  id: string
+  image: string | null
+  state: string | null
+}
+
+export interface WorkerActiveTurnLease {
+  attempt_id: string
+  request_id: string
+  lease_id: string
+  started_at: string
+  deadline_at: string
+}
+
+export interface WorkerWaitingAttempt {
+  run_id: string
+  run_status: string
+  request_id: string
+  requested_at: string | null
+}
+
+export interface WorkerAttemptRun {
+  id: string
+  status: string
+}
+
+export interface EngineeringConsumerDrain {
+  draining: boolean
+  requested_at: string | null
+  actor: string | null
 }
 
 export interface WorkerLogsResponse {

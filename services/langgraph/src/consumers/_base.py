@@ -48,6 +48,7 @@ logger = structlog.get_logger(__name__)
 
 # Type alias for job processor functions
 ProcessFn = Callable[[dict, RedisStreamClient], Awaitable[dict]]
+DrainCheck = Callable[[], Awaitable[bool]]
 
 # One in-flight job per consumer: what every consumer did before slots existed.
 DEFAULT_QUEUE_SLOTS = 1
@@ -362,6 +363,7 @@ async def run_queue_worker(
     *,
     slots_config_key: str | None = None,
     default_slots: int = DEFAULT_QUEUE_SLOTS,
+    is_draining: DrainCheck | None = None,
 ) -> None:
     """Generic worker loop for Redis Stream queue consumption.
 
@@ -374,6 +376,8 @@ async def run_queue_worker(
             may run at once. Omitted means a fixed `default_slots`.
         default_slots: Slot count used before configuration is read, and when it
             cannot be read at all.
+        is_draining: Optional durable operator decision that stops new claims
+            while already-started jobs continue to settle.
     """
     global _shutdown
     _shutdown = False
@@ -412,6 +416,10 @@ async def run_queue_worker(
     async def reserve_slot() -> bool:
         """Hold one slot for the next entry. False only when shutting down."""
         while not _shutdown:
+            if is_draining is not None and await is_draining():
+                logger.info("consumer_drain_waiting", worker=service_name)
+                await asyncio.sleep(SLOT_WAIT_SECONDS)
+                continue
             await refresh_slots()
             if await gate.acquire(SLOT_WAIT_SECONDS):
                 return True
@@ -482,6 +490,7 @@ def start_worker(
     *,
     slots_config_key: str | None = None,
     default_slots: int = DEFAULT_QUEUE_SLOTS,
+    is_draining: DrainCheck | None = None,
 ) -> None:
     """Entry point: register signal handlers and run the worker loop.
 
@@ -492,6 +501,7 @@ def start_worker(
         group: Consumer group name (defaults to WORKER_GROUP)
         slots_config_key: System-config key holding this consumer's slot count
         default_slots: Slot count used until configuration answers
+        is_draining: Optional durable operator decision that stops new claims.
     """
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
@@ -504,5 +514,6 @@ def start_worker(
             group=group,
             slots_config_key=slots_config_key,
             default_slots=default_slots,
+            is_draining=is_draining,
         )
     )
