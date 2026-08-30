@@ -162,6 +162,9 @@
 
 ### Fixed
 
+- The main-only backend Docker-in-Docker integration compose now supplies
+  worker-manager's required internal API key, allowing the service to start.
+
 - API actor guards now require the request credential when resolving a caller.
   LK bearer requests are always judged as the token subject, while
   `X-Telegram-ID` may name an actor only for an internal-key service caller.
