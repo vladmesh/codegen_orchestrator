@@ -105,7 +105,7 @@ before the project is created.
 2. Mounts the pre-scaffolded workspace (`/data/workspaces/{repo_id}/`) — the code is already in place
 3. Worker-manager creates/checks out story feature branch (`story/{story_id}`)
 4. Injects the static instructions from `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` → an agent-specific file (`CLAUDE.md` / `AGENTS.md`)
-5. Injects a dynamic `TASK.md` into `/workspace/TASK.md` with the project-specific task. Previous tasks archived in `.story/old_tasks/`
+5. Injects a dynamic `TASK.md` into `/workspace/TASK.md` with the project-specific task
 6. Starts the coding agent (Claude Code, Droid or Codex) in non-interactive mode
 7. The agent commits and pushes to the feature branch. Worker-wrapper pulls from the current branch (not a hardcoded `main`)
 8. The agent reports the result over HTTP: `curl -X POST localhost:9090/result -d '{"success":true,"commit":"<sha>","summary":"..."}'`
@@ -145,5 +145,4 @@ environment.
 |------|------------|--------|
 | **Scaffolder** | Copier template | ✅ Implemented |
 | **Developer** | Claude Code / Factory.ai Droid / OpenAI Codex | ✅ Implemented (Native execution, Flat Dev Environment) |
-| **Tester** | — | ❌ Removed. The Developer runs the tests through `make`; CI checks run after the subgraph |
 | **DevOps** | GitHub Actions (deploy.yml) | ✅ Implemented |

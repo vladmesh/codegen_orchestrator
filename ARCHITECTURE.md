@@ -1,7 +1,5 @@
 # Architecture
 
-> **Up to date as of**: 2026-03-19
-
 ## Overview
 
 Codegen Orchestrator is a multi-agent system for automatic project generation and deployment. The user describes what they want in Telegram → the system creates, tests and deploys it.
@@ -46,9 +44,8 @@ Work on the orchestrator itself is scoped and tracked outside this repository, o
 
 ### Capabilities
 The capabilities of a Developer agent are configured through `WorkerConfig.capabilities`:
-- `git`, `github` — working with repositories
-- `python`, `node` — runtime environments
-- Docker is no longer provided inside the container (DinD was removed). Infrastructure is brought up through the compose proxy (`curl localhost:9090/infra/compose`): worker-wrapper forwards the request through worker-broker, which authenticates it before worker-manager runs it.
+- `git`, `github_cli`, `curl`
+- Docker is not available inside the container. Infrastructure is brought up through the compose proxy (`curl localhost:9090/infra/compose`): worker-wrapper forwards the request through worker-broker, which authenticates it before worker-manager runs it.
 
 ### Project placement
 
@@ -78,7 +75,7 @@ taken from the default value.
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, `qa-worker` and `architect` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `architect` | Story→tasks LLM decomposition. Consumes `architect:queue`. A container of the `langgraph` image, not part of `scheduler` |
 | `scheduler` | Background workers: task dispatcher (scaffold trigger, dispatch unblocked tasks), story completion, pr_poller, supervisor, provisioner trigger and result listener, github_sync, fail-closed Time4VPS server sync, health_checker, app_health_prober, ssl_checker, analytics_aggregator, rag_summarizer, queue_cleanup, temporary_access |
-| `infra-service` | An Ansible runner, SSH operations (formerly infrastructure-worker) |
+| `infra-service` | An Ansible runner and SSH operations |
 | `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues and users. Nginx proxies `/api/*` → api:8000 (stamping `X-Internal-Key` in, so the browser never holds it), `/wm-api/*` → worker-manager. Basic auth via htpasswd decides who reaches that proxy. Grafana is embedded at `/grafana/` |
 | `user-dashboard` | React 19 + Vite SPA. The end user's own view of their projects: auth through Telegram, analytics from Loki |
 | `loki` | Log aggregation (7-day retention) |
@@ -111,13 +108,6 @@ are set: `X-Internal-Key`, which authenticates the call as internal, and `X-Corr
 which keeps a request traceable across services. There is no second way in: a raw `httpx` call
 to the API from service code is a defect, not a shortcut.
 
-The rule exists because the alternative was tried. The transport used to be copied into
-`services/{langgraph,scheduler,infra-service,scaffolder,telegram_bot}/src/clients/api.py`, and
-the copies drifted: `telegram_bot` sent no `X-Internal-Key` at all and used a 10s timeout
-against everyone else's 30s, `scaffolder` had lost both URL guards, and the PO tools bypassed
-the typed client with 19 raw `httpx` calls carrying no correlation id. Authentication that one
-caller silently omits is not authentication, so the copies had to go before the API could
-require the header.
 
 ## Graph
 
@@ -158,7 +148,7 @@ graph TD
     DepGraph --> |"run.result = DeployOutcome"| API
     Dispatcher --> |"supervise: deploy SUCCESS → QA"| QAQueue[qa:queue]
     QAQueue --> QAConsumer[QA Consumer]
-    QAConsumer --> |"SSH to prod server<br/>Claude Code QA test"| QAResult{QA Pass?}
+    QAConsumer --> |"subscription executor or API fallback"| QAResult{QA Pass?}
 
     %% Feedback Loops
     EngGraph --> |"task done → API"| API
@@ -204,7 +194,7 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
 All tasks done → Dispatcher creates PR story/* → main (auto-merge) → story pr_review
 PR merged (PR poller, 30s) → deploy:queue → deploy
-Deploy success → run.result = DeployOutcome → supervisor → qa:queue → QA consumer SSHes to prod → Claude Code tests → story testing
+Deploy success → run.result = DeployOutcome → supervisor → qa:queue → QA consumer runs deterministic checks, then its assigned subscription executor → story testing
 QA pass → run.result = QAOutcome.PASSED → supervisor → story completed → PO notification
 QA fail → run.result = QAOutcome.FAILED → supervisor → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA
 CI failure on story branch (PR poller) → fix task created → story back to in_progress
@@ -215,8 +205,8 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
 - **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (auto-merge on green)
-- **DevOps Subgraph**: typed environment-contract resolution and Ansible deployment via infra-service. Deploy failures use deterministic typed outcomes; unclassified subgraph and smoke failures resolve to RETRY. A future remediation agent may analyze failed runs asynchronously, outside the deploy path.
-- **QA Consumer**: runs the QA agent centrally and reaches the deployment only through typed read-only tools, each bounded by a capability set resolved from that deployment, over a one-shot unprivileged SSH identity issued for the run and reconciled by a sweep. Tests endpoints, checks responses against story description. Pass → story completed. Fail → creates fix task, loops back to engineering.
+- **DevOps Subgraph**: typed environment-contract resolution and Ansible deployment via infra-service. Deploy failures use deterministic typed outcomes; unclassified subgraph and smoke failures resolve to RETRY.
+- **QA Consumer**: runs deterministic probes first, then its assigned subscription executor centrally; an API agent is an optional fallback after that executor fails. Deployment access is limited by a per-run capability set and an unprivileged SSH identity. Pass → story completed. Fail → creates a fix task and returns to engineering.
 - **Unified Redis Consumers**: every consumer reads through `RedisStreamClient.consume()` / `consume_typed()` with PEL recovery (`claim_pending=True`) — an entry left unacked is reclaimed by the running consumer on its next `XAUTOCLAIM` sweep, restart or no restart, and a poison entry goes to `{stream}:dlq` rather than being ACKed away. The PO consumer reads through the same client and differs only in what it does with an entry: it dispatches concurrently, and keeps the ids it has in flight so its own sweep cannot hand it work it is already running. Delivery stays at-least-once between processes, as it is for every other consumer. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns) and [ERROR_HANDLING.md](docs/ERROR_HANDLING.md)
 
 ## External dependencies
@@ -238,7 +228,6 @@ Detailed documentation lives in separate files:
 | **Pipeline V2** | [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md) |
 | **Testing** | [docs/TESTING.md](docs/TESTING.md) |
 | **Deploy** | [docs/DEPLOY.md](docs/DEPLOY.md) |
-| Roadmap | [docs/ROADMAP.md](docs/ROADMAP.md) |
 | Resource Management | [docs/resource-management.md](docs/resource-management.md) |
 | Coding Agents (Claude/Droid) | [docs/coding-agents.md](docs/coding-agents.md) |
 | Parallel Workers | [docs/parallel-workers.md](docs/parallel-workers.md) |
@@ -249,8 +238,7 @@ Detailed documentation lives in separate files:
 
 ### Observability Stack
 
-Observability is assembled from three independent streams. There is no external tracing stack: Langfuse,
-ClickHouse and MinIO were removed as non-working, and the instrumentation is left only as logs and data in Postgres.
+Observability is assembled from logs, hardware metrics, and PostgreSQL data.
 
 **Logs.**
 

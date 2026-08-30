@@ -52,7 +52,7 @@ Full pipeline: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes: [docs/NO
 **Key non-obvious details:**
 - `engineering-worker` and `deploy-worker` share the `langgraph` Docker image (different entrypoints)
 - `shared/` is never installed as a package. Compose services bind-mount it (`./shared:/app/shared`), images `COPY` it, tests import it from the tree via `PYTHONPATH`. Editing `shared/` needs no sync and no rebuild for bind-mounted services — see [docs/REBUILD.md](docs/REBUILD.md).
-- `shared/pyproject.toml` is the only pyproject under `shared/`: it declares shared's third-party deps but installs nothing, and every consumer repeats them in its own `pyproject.toml`, enforced by `shared/tests/unit/test_shared_dependency_parity.py`. `shared` has no `[tool.uv.sources]` entry — see [docs/decisions/shared-is-not-a-package.md](docs/decisions/shared-is-not-a-package.md).
+- `shared/pyproject.toml` declares shared's third-party dependency parity but installs nothing; every consumer repeats those dependencies in its own `pyproject.toml`, enforced by `shared/tests/unit/test_shared_dependency_parity.py`. `shared` has no `[tool.uv.sources]` entry — see [docs/REBUILD.md](docs/REBUILD.md).
 - External coding agents (Claude Code, Factory.ai Droid) run inside worker containers managed by `worker-manager`
 
 **Related Projects**: `/home/dev/projects/service-template` — spec-first framework for generating microservices
@@ -102,7 +102,7 @@ If a schema or enum doesn't exist for something — create it in `shared/contrac
 Terms have precise meanings. Misusing them causes confusion in code, logs, container names, and docs.
 
 Key distinctions:
-- **Worker** = ephemeral Docker container with CLI coding agent inside. Only Developer Workers exist. Nothing else is a "worker".
+- **Worker** = an ephemeral Docker container with a CLI coding agent: Developer Workers write code and QA Executors perform exploratory QA.
 - **Consumer** = a role, not a service name. `langgraph` service is a consumer of `engineering:queue`. Don't name containers `*-worker` if they're consumers.
 - **Service** = long-lived process, one container = one service.
 - **Service Agent** = LangGraph ReactAgent inside the `langgraph` service (PO, Architect). Not a worker.
@@ -209,7 +209,6 @@ def deploy_to_server(server_handle: str):
 - [GLOSSARY.md](docs/GLOSSARY.md) — project terminology
 - [playbooks/line2-engineering.md](docs/playbooks/line2-engineering.md) — manual test matrix
 
-### Direction and history
+### Product and history
 - [VISION.md](docs/VISION.md) — what the product is, who it is for, architectural invariants
-- [ROADMAP.md](docs/ROADMAP.md) — product arcs and what is deferred
 - [CHANGELOG.md](docs/CHANGELOG.md) — release history

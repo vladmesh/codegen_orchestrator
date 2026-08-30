@@ -1,7 +1,5 @@
 # Test Infrastructure
 
-> **Up to date as of**: 2026-08-04
-
 ## Test Layers
 
 | Layer | Location | Dependencies | CI | Speed |
@@ -69,10 +67,7 @@ Both must pass.
 | shared | 9 files | — | — | — |
 | packages (worker-wrapper) | 9 files | — | 3 files | — |
 
-`make test-unit` runs the 15 suites listed in `ALL_SUITES` (`scripts/test-unit-local.sh`).
-`scaffolder` joined them in August 2026: the service had unit tests and a `pyproject.toml`
-but was absent from `[tool.uv.workspace] members` and from every CI target, so its 67 tests
-ran nowhere.
+`make test-unit` runs the suites listed in `ALL_SUITES` (`scripts/test-unit-local.sh`).
 
 ## The CI gate covers the tree, not a list
 
@@ -146,12 +141,10 @@ when CI is manually dispatched for `main`; it stays out of pull requests, where 
 nested-daemon suite costs more than it protects. On `main`, `Required CI Gate` consumes that job
 before worker images may be released, so a failed DinD run blocks the release marker for the exact
 SHA it tested.
-Until secretary-774 supplies host-side gates with a real Docker socket, worker-path coverage comes
-from `make test-live-engineering` (`tests/live/test_pipeline_engineering.py`). Use
-`make test-live-pipeline` for the broader scaffold, engineering and deploy path. The default
-`make test-live` intentionally excludes pipeline tests and does not cover worker creation.
-Until secretary-774 automates a host-side gate, the engineer releasing changes to worker-manager
-or worker startup runs `make test-live-engineering` manually before release.
+Worker-path coverage is available through `make test-live-engineering`
+(`tests/live/test_pipeline_engineering.py`). Use `make test-live-pipeline` for the broader
+scaffold, engineering, and deploy path. The default `make test-live` intentionally excludes
+pipeline tests and does not cover worker creation.
 
 The Docker-in-Docker suite spins up the full stack:
 - **Services**: api, langgraph, engineering-worker, worker-manager

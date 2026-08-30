@@ -4,13 +4,12 @@ The secrets management architecture in Codegen Orchestrator separates the respon
 
 ## 1. Classification of Secrets
 
-We distinguish three levels of secrets, which have different lifecycle and storage models.
+We distinguish two levels of secrets, which have different lifecycle and storage models.
 
 | Level | Description | Examples | Owner | Storage (Master) | Usage |
 |---------|----------|---------|----------|-------------------|---------------|
 | **L1. Platform** | The infrastructure keys of the Orchestrator itself | `GH_APP_PRIVATE_KEY`, `POSTGRES_URL`, `OPENAI_API_KEY`, `CLOUDFLARE_API_TOKEN` | The Orchestrator's DevOps | K8s Secrets / `.env` | Injected into the service containers (Worker, API, Infra) |
-| **L2. Project** | Secrets for running the generated applications | `TELEGRAM_BOT_TOKEN`, `STRIPE_KEY` | The user | **GitHub Repository Secrets** (in the project repo) | CI/CD pipelines (`service_template`), Ansible |
-| **L3. User** | The user's personal keys for providers (Future) | User's Cloudflare Key, AWS Key | The user | **Encrypted DB Table** (`user_vault`) | Infra Service (for provisioning on behalf of the user) |
+| **L2. Project** | Secrets for running generated applications | `TELEGRAM_BOT_TOKEN`, `STRIPE_KEY` | The user | Encrypted project configuration and GitHub repository secrets | Deployment workflows |
 
 ---
 
@@ -31,7 +30,6 @@ distinct per-worker broker credential.
 The key point: **the secrets are encrypted at rest in PostgreSQL** (Fernet encryption).
 *   **Storage**: `project.config.secrets` (JSONB) — all values are encrypted as Fernet tokens (`gAAAAA...`).
 *   **Encryption**: `shared/crypto.py` — `SecretsCipher` reads `SECRETS_ENCRYPTION_KEY` from the env. `encrypt_dict`/`decrypt_dict` encrypt/decrypt all the values in a dict.
-*   **Graceful degradation**: when decrypting plaintext values (legacy) — a warning to the log, the value is returned as-is. On the next write it migrates to encrypted (encrypt-on-write).
 *   **Lifecycle**:
     1.  The user enters a token (for example, a Telegram Token) through the PO in Telegram.
     2.  PO tool `set_project_secret` → atomic merge via `POST /projects/{id}/config/secrets` (server-side `SELECT FOR UPDATE` locking, handles concurrent writes).
@@ -39,14 +37,6 @@ The key point: **the secrets are encrypted at rest in PostgreSQL** (Fernet encry
 *   **Usage**:
     *   The secrets are available decrypted only at runtime (when `decrypt_dict` is called)
     *   In the DB they are always encrypted — even a direct SELECT shows only Fernet tokens
-
-### Level 3: User Secrets (The Provider Accounts) - *Future/Complex*
-For the case where the user needs to provision resources in their own account (for example, a VPS on their DigitalOcean).
-*   **Storage**: the `user_vault` table (user_id, key, encrypted_value).
-*   **Encryption**: Symmetric Key Encryption (AES-GCM), the encryption key is an L1 Secret (`VAULT_MASTER_KEY`).
-*   **Usage**: the Infra Service decrypts them "on the fly" before calling the provider (Terraform/Ansible).
-
----
 
 ## 3. Integration with Components
 
@@ -84,4 +74,4 @@ Application deployment is fully delegated to GitHub Actions. This allows secure 
 3.  **Infra Service provisions Server** → Uses L1 Keys (Time4VPS API) for server setup. Ansible playbooks for Docker/firewall/users.
 4.  **Scaffolder pushes code** → CI (`ci.yml`, auto on push) → builds Docker images → pushes to self-hosted registry.
 5.  **Orchestrator triggers deploy** → DevOps subgraph: environment-contract resolution → DOTENV → GitHub Secrets → `workflow_dispatch deploy.yml` → pull images from registry → `docker compose up`.
-6.  **Feature deploy** → Developer pushes → CI passes → GitHub webhook → API → `deploy:queue` → re-resolve env → deploy.
+6.  **Feature deploy** → a merged story PR is detected by the scheduler PR poller → `deploy:queue` → re-resolve env → deploy.

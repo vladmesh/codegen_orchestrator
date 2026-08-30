@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Removed historical planning and incident documents, reconciled living documentation with current
+  pipeline, QA, secret, worker, and lifecycle behavior, and retained shared delivery instructions in
+  the rebuild guide.
+
 - Reduced historical source prose to current lifecycle, security, and failure
   invariants without changing executable behavior.
 
@@ -721,8 +725,7 @@
   a privileged nested-daemon suite costs more than it protects. Its job and test step remain
   unconditional and are not advisory, so the run is red when the suite fails and cannot go green by
   skipping. It is a separate workflow from `Required CI Gate`, so it reports on `main` and does not
-  block a merge — see `docs/ci-gate-baseline.md` for what changing that would take. The CI contract
-  asserts the trigger set, the branch and the non-advisory shape.
+  block a merge. The CI contract asserts the trigger set, the branch and the non-advisory shape.
 
 - Whoever removes a worker captures its ending first. Before `delete_worker` removes a worker's
   container it reads that container's exit code, a bounded and redacted log tail, its image, its
@@ -2088,10 +2091,8 @@
 - `shared` has one declared form left, and it is the tree. The three editable entries in the root
   `[tool.uv.sources]` (`codegen-orchestrator-shared-contracts`, `-redis`, `-log-config`) and the
   three `pyproject.toml` files behind them are gone: nothing depended on those names, they were
-  absent from `uv.lock`, and they installed nothing while reading like a package boundary. Why that
-  route and not making `shared` a workspace member or cutting it into real packages is written down
-  in `docs/decisions/shared-is-not-a-package.md`, linked from `docs/REBUILD.md`, which now names all
-  three delivery channels including the import from the tree over `PYTHONPATH`.
+  absent from `uv.lock`, and they installed nothing while reading like a package boundary.
+  `docs/REBUILD.md` names the delivery channels including the import from the tree over `PYTHONPATH`.
   `tests/unit/test_uv_sources_are_used.py` fails if a source entry that nothing depends on comes
   back. `shared/pyproject.toml` is untouched and stays the single declaration of `shared`'s
   third-party dependencies; no Dockerfile and no compose service changed, and `uv.lock` did not move.
@@ -3132,7 +3133,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Grouped by date.
   - Updated `/triage` skill: story matching on task creation, template tasks via API with repository_id
 
 ### Changed
-- **Replace Milestone with Story type field** (task-6fe23f2a): Added `type` field (product/technical) to Story model, schemas, and router with filter support. Dropped `milestones` table, `milestone_id` from tasks, and all Milestone code (model, schemas, router, DTO, tests, seed script). Rewrote `generate_roadmap.py` to generate ROADMAP.md from stories grouped by type. Updated docs (DEV_PIPELINE, GLOSSARY, checkpoint, triage skills). Set Rust migration story to type=technical.
+- **Replace Milestone with Story type field** (task-6fe23f2a): Added `type` field (product/technical) to Story model, schemas, and router with filter support. Dropped `milestones` table, `milestone_id` from tasks, and all Milestone code (model, schemas, router, DTO, tests, seed script). Updated product-planning documentation and related docs. Set Rust migration story to type=technical.
 - **Project ID → UUID + schema cleanup** (task-7163e7ac): Changed `Project.id` from `String(255)` to native PostgreSQL `UUID` with auto-generation. Migrated all 13 FK `project_id` columns to `Uuid` type. Removed legacy `github_repo_id` and `repository_url` from Project model. Added `visibility` column to Repository. Migrated webhook lookup to `Repository.provider_repo_id`. Added `get_primary_repository` to API clients. Updated all DTOs, schemas, routers, workers, tests, scripts, and skills. Alembic migration handles mixed-format ID conversion (short hex, strings, existing UUIDs).
 
 ### Added
@@ -3201,7 +3202,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/). Grouped by date.
   - `WorkItem.milestone_id` FK — links work items to milestones
   - `?milestone_id=X` filter on work items list endpoint
   - Alembic migration for `milestones` table + `work_items.milestone_id` column
-  - `scripts/generate_roadmap.py` + `make roadmap` — generates ROADMAP.md from API
+  - product-planning generation tooling
   - `scripts/seed_milestones.py` — one-time migration of existing ROADMAP phases
   - 33 unit tests (DTO, model, schemas, router, roadmap formatter)
 - **Brainstorm model in DB** (#61): Brainstorms as first-class DB entities instead of markdown-only files.

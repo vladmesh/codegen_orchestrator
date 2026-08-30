@@ -1,7 +1,5 @@
 # Pipeline V2 — Full Flow
 
-> Target architecture. Not everything works this way yet — this is the spec we're building toward.
-
 ## Overview
 
 ```
@@ -41,13 +39,11 @@ Everything is sequential per project. One story at a time, one task at a time.
 **Trigger**: New repository created (or first story on unscaffolded repo)
 
 1. Create GitHub repo (via GitHub App)
-2. Clone empty repo into workspace: `/data/workspaces/{repo_id}/`
-3. Run `copier copy service-template workspace --data modules=... --vcs-ref=HEAD`
-4. Run `make setup` (uv venv, framework generate, ruff format)
-5. `git push` — scaffolded code is now in GitHub
-6. Set branch protection on `main` (require PR, require `ci` status check). Non-fatal — scaffold succeeds even if protection fails.
-7. Save `tree` output to repository config in DB
-8. Update `project.status = scaffolded`
+2. Clone the repository into `/data/workspaces/{repo_id}/`
+3. Run Copier and `make setup`
+4. Push the scaffolded code
+5. Save the tree to repository configuration
+6. Set the Project lifecycle to `active`
 
 **Outputs**: GitHub repo with full scaffolded project, workspace on disk, tree in DB
 
@@ -130,10 +126,9 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 10. Dispatcher transitions task to `done`
 
 **Next task in same story**:
-1. Same worker container, same workspace (workspace has state from previous tasks)
-2. New `TASK.md` written with next task + previous task events as context
+1. Same worker container and workspace
+2. New `TASK.md` written with the next task and task events as context
 3. Claude invoked again — `--resume` session (fresh on first task or retry)
-4. Previous tasks visible via `.story/old_tasks/` directory
 5. Repeat
 
 ### Developer Gave-Up Escalation
@@ -178,7 +173,7 @@ If the developer agent encounters an unsolvable problem:
 - **Green CI** → auto-merge → PR poller detects merged PR → deploy
 - **Red CI** → PR poller detects CI failure → creates fix task → story back to `in_progress`
 
-**PR merge detection**: PR poller (`scheduler/src/tasks/pr_poller.py`) polls GitHub for merged PRs and CI failures on stories in `pr_review` status (every 30s). No webhook dependency — works reliably for all repos including newly scaffolded ones.
+**PR merge detection**: PR poller (`scheduler/src/tasks/pr_poller.py`) polls GitHub for merged PRs and CI failures on stories in `pr_review` status every 30 seconds.
 
 ---
 
@@ -201,7 +196,7 @@ If the developer agent encounters an unsolvable problem:
 **Supervisor routing** (`supervise_deploying_stories()` in scheduler, 30s poll):
 - Reads deploy run outcome from DB
 - SUCCESS → story `testing`, create QA run, publish `QAMessage` to `qa:queue`
-- CODE_FIX / SMOKE_FAILURE → create fix task, dispatch to `engineering:queue` (legacy outcomes only)
+- CODE_FIX / SMOKE_FAILURE → create a fix task and dispatch it to `engineering:queue`
 - RETRY → redeploy with counter (max 3 consecutive failures)
 - GIVE_UP → story `failed`, admin notified
 
@@ -279,7 +274,7 @@ created → in_progress → pr_review → deploying → testing → completed
                                              → failed
                       → failed (after max retries)
          pr_review → in_progress (CI failed on story branch → fix task created)
-                   → deploying (PR merged → webhook/polling triggers deploy)
+                   → deploying (PR poller detects a merged PR)
                    → failed
          deploying → testing (deploy success → QA handoff)
                   → in_progress (deploy failure → fix task)
@@ -315,7 +310,7 @@ todo → in_dev → in_ci → testing → done
 
 1. **One story at a time** per project. Next story starts only after current completes.
 2. **One task at a time** per story. Dispatcher guard enforces this.
-3. **Tasks form a linear chain**. Each blocked_by the previous. No parallelism.
+3. **Tasks form a linear chain**. Each `blocked_by` the preceding task. No parallelism.
 4. **Final task is auto-generated**. Always: test + CI green + push.
 5. **QA loops** until pass. Each failure → new fix task → re-deploy → re-QA.
 
@@ -333,7 +328,7 @@ todo → in_dev → in_ci → testing → done
 ### What Worker sees
 - TASK.md (per-task, written by dispatcher/developer node)
 - AGENTS.md (in project root, from scaffold, auto-loaded by Claude Code)
-- Previous task events (appended to TASK.md as context)
+- Task events appended to `TASK.md` as context
 - Full scaffolded codebase (via workspace volume)
 
 ### What QA sees
