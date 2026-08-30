@@ -454,7 +454,7 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             return live_work_unsettled({"status": "failed", "error": error_msg})
 
         grant_intent = None
-        stored_intent = (run.run_metadata or {}).get(USERS_GRANT_INTENT_KEY)
+        stored_intent = (getattr(run, "run_metadata", None) or {}).get(USERS_GRANT_INTENT_KEY)
         if stored_intent is not None:
             try:
                 grant_intent = GrantIntent.model_validate(stored_intent)

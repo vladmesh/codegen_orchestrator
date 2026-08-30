@@ -262,29 +262,3 @@ async def test_merge_secrets_refuses_bot_tokens(secrets):
     assert "telegram/token" in resp.json()["detail"]
     session.commit.assert_not_called()
     assert project.config == {}
-
-
-@pytest.mark.asyncio
-async def test_merge_secrets_refuses_the_legacy_bot_access_key():
-    """New access choices must go through the contract audience endpoint."""
-    project = _make_project(config={})
-    session = _mock_session(project=project, user=_make_user())
-
-    async def override():
-        yield session
-
-    app.dependency_overrides[get_async_session] = override
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test", headers=INTERNAL_HEADERS
-    ) as client:
-        response = await client.post(
-            f"/api/projects/{PROJECT_UUID}/config/secrets",
-            json={"secrets": {"ADMIN_TELEGRAM_ID": "42"}},
-            headers={"X-Telegram-ID": "12345"},
-        )
-
-    assert response.status_code == 422  # noqa: PLR2004
-    assert "bot-access" in response.json()["detail"]
-    session.execute.assert_not_called()
-    session.commit.assert_not_called()

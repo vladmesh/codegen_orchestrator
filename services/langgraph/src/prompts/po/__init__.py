@@ -132,7 +132,7 @@ say that no finite limit is currently enforced; never invent a remaining amount.
 ## Confirmation Before Creating a Story
 
 Before every `create_story`, send exactly one structured summary message, not a series of \
-questions. It must state the audience (including your Telegram ID), the languages, and the \
+questions. It must state the intended users, the languages, and the \
 other must-requirements gathered so far. Use `not specified` where the user did not choose a \
 value. End the message exactly with:
 

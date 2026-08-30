@@ -23,7 +23,6 @@ from src.agents.po.tools import (
     list_stories,
     notify_user,
     reopen_story,
-    set_bot_access,
     set_project_secret,
     set_reminder,
     teardown_project,
@@ -339,23 +338,6 @@ class TestSetProjectSecret:
         assert headers.get("X-Telegram-ID") == "77777"
 
     @pytest.mark.asyncio
-    async def test_legacy_bot_access_secret_is_refused(self, mock_api_client):
-        """The PO cannot create a bot audience through the legacy secret path."""
-        result = await set_project_secret.ainvoke(
-            {
-                "project_id": "abc",
-                "key": "ADMIN_TELEGRAM_ID",
-                "value": "42",
-                "hint": "Telegram ID of the bot admin",
-            },
-            config=_make_config("user-42"),
-        )
-
-        assert result.startswith("Error:")
-        assert "set_bot_access" in result
-        mock_api_client.post_raw.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_no_hint_no_env_hints(self, mock_api_client):
         """When no hint is provided, env_hints should not be in payload."""
         mock_api_client.post_raw.return_value = _make_response({"keys": ["TOKEN"]})
@@ -380,59 +362,6 @@ class TestSetProjectSecret:
 
         mock_api_client.get_raw.assert_not_called()
         mock_api_client.patch_raw.assert_not_called()
-
-
-class TestBotAccess:
-    @pytest.mark.asyncio
-    async def test_only_me_stores_the_callers_contract_audience(self, mock_api_client):
-        mock_api_client.post_raw.return_value = _make_response({"mode": "only_me"})
-
-        result = await set_bot_access.ainvoke(
-            {"project_id": "abc", "mode": "only_me"}, config=_make_config("77777")
-        )
-
-        assert "only_me" in result
-        assert mock_api_client.post_raw.call_args.args[0] == "projects/abc/config/bot-access"
-        assert mock_api_client.post_raw.call_args.kwargs["json"] == {
-            "mode": "only_me",
-            "allowed_telegram_ids": "77777",
-        }
-
-    @pytest.mark.asyncio
-    async def test_public_stores_an_explicit_empty_audience(self, mock_api_client):
-        mock_api_client.post_raw.return_value = _make_response({"mode": "public"})
-
-        await set_bot_access.ainvoke(
-            {"project_id": "abc", "mode": "public"}, config=_make_config("77777")
-        )
-
-        assert mock_api_client.post_raw.call_args.kwargs["json"] == {
-            "mode": "public",
-            "allowed_telegram_ids": "",
-        }
-
-    async def test_custom_stores_the_selected_contract_audience(self, mock_api_client):
-        mock_api_client.post_raw.return_value = _make_response({"mode": "custom"})
-
-        result = await set_bot_access.ainvoke(
-            {"project_id": "abc", "mode": "custom", "allowed_telegram_ids": "77777,88888"},
-            config=_make_config("77777"),
-        )
-
-        assert "custom" in result
-        assert mock_api_client.post_raw.call_args.kwargs["json"] == {
-            "mode": "custom",
-            "allowed_telegram_ids": "77777,88888",
-        }
-
-    @pytest.mark.asyncio
-    async def test_custom_requires_a_base_audience(self, mock_api_client):
-        result = await set_bot_access.ainvoke(
-            {"project_id": "abc", "mode": "custom"}, config=_make_config("77777")
-        )
-
-        assert result.startswith("Error:")
-        mock_api_client.post_raw.assert_not_called()
 
 
 class TestValidateTelegramToken:
@@ -1242,7 +1171,7 @@ class TestReopenStory:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 18
+        expected_count = 17
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -1252,10 +1181,9 @@ class TestGetAllTools:
             "create_project",
             "list_projects",
             "get_project",
-            "set_bot_access",
-            "add_bot_user",
-            "remove_bot_user",
+            "grant_project_user",
             "set_project_secret",
+            "transfer_project_ownership",
             "validate_telegram_token",
             "teardown_project",
             "create_story",

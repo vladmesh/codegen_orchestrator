@@ -604,7 +604,7 @@ class TestTaskMessageDescription:
                 "modules": ["backend", "tg_bot"],
                 "description": "A telegram bot",
                 "env_hints": {
-                    "ADMIN_TELEGRAM_ID": "Telegram ID of the bot admin",
+                    "WEATHER_API_ACCOUNT_ID": "Account ID for the weather provider",
                     "OPENAI_API_KEY": "OpenAI key for generating responses",
                 },
             },
@@ -616,8 +616,8 @@ class TestTaskMessageDescription:
             project_spec=project_spec,
         )
         assert "Provided Environment Variables" in task_md
-        assert "ADMIN_TELEGRAM_ID" in task_md
-        assert "Telegram ID of the bot admin" in task_md
+        assert "WEATHER_API_ACCOUNT_ID" in task_md
+        assert "Account ID for the weather provider" in task_md
         assert "OPENAI_API_KEY" in task_md
         assert "os.getenv" in task_md
 
@@ -640,25 +640,6 @@ class TestTaskMessageDescription:
             project_spec=project_spec,
         )
         assert "Provided Environment Variables" not in task_md
-
-    def test_custom_access_tells_the_worker_to_keep_its_rules_above_the_contract(self):
-        """Custom policy must not replace the template's configured audience."""
-        from src.nodes.developer import DeveloperNode
-
-        task_md = DeveloperNode()._build_create_task(
-            project_name="test-project",
-            description="A Telegram bot",
-            modules=["backend", "tg_bot"],
-            project_spec={
-                "config": {
-                    "bot_access": {"mode": "custom", "allowed_telegram_ids": "42,84"},
-                },
-            },
-        )
-
-        assert "Custom Bot Access" in task_md
-        assert "TG_BOT_ALLOWED_TELEGRAM_IDS" in task_md
-        assert "42,84" in task_md
 
     def test_feature_task_includes_env_hints(self):
         """_build_feature_task should include env_hints section when hints exist."""
