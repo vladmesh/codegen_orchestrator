@@ -435,10 +435,19 @@ async def test_restart_mid_llm_turn_preserves_one_attempt_and_leaves_no_orphans(
             ]
             attempt = _fenced_terminal_attempt(attempts, active_turn.request_id)
             assert attempt["run_metadata"]["active_turn_request_id"] == active_turn.request_id
-            output = _redis_text("XRANGE", f"worker:{worker_id}:output", "-", "+")
-            assert active_turn.request_id in output, (
-                "replacement did not reclaim retained broker output"
+            # The broker output stream does not outlive the story: story cleanup
+            # deletes the worker and its streams seconds after the task settles, so
+            # the reclaim is proved by what only a consumed output can produce — the
+            # settled attempt's commit and the worker report stored on the task.
+            assert attempt["status"] == "completed", attempt
+            assert (attempt.get("result") or {}).get("commit_sha"), (
+                "replacement settled the attempt without the reclaimed output's commit"
             )
+            events_response = await api_internal.get(f"/api/tasks/{ctx['task_id']}/events")
+            events_response.raise_for_status()
+            assert any(
+                event.get("event_type") == "worker_report" for event in events_response.json()
+            ), "replacement did not persist the reclaimed worker report"
 
             inventory = {entry["id"]: entry for entry in _worker_inventory()}
             holder = _redis_text("GET", f"workspace:lock:{ctx['project_id']}")
