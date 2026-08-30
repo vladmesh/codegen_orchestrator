@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import yaml
 
-from shared.contracts.env_contract import GeneratedSecretEntry
-from shared.contracts.env_contract import merge_env_contract_fragments
+from shared.contracts.env_contract import GeneratedSecretEntry, merge_env_contract_fragments
 from shared.contracts.env_usage import load_env_contract_fragments
 from src.subgraphs.devops.env_contract_loader import load_environment_contract
 from src.subgraphs.devops.graph import resolve_secrets
