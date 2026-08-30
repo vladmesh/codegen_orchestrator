@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Consolidated equivalent offline live-harness test scenarios and removed duplicate test setup and
+  historical prose while retaining cleanup, evidence, ownership, and authentication coverage.
+
 - Removed historical planning and incident documents, reconciled living documentation with current
   pipeline, QA, secret, worker, and lifecycle behavior, and retained shared delivery instructions in
   the rebuild guide.

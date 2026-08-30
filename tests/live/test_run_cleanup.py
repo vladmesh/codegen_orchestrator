@@ -1,16 +1,3 @@
-"""Run-scoped cleanup, against a daemon and a Redis that only exist in memory.
-
-These are the rules the module holds everywhere: what a run's label selects is
-removed, what it does not select is not touched, a second pass is a no-op, a
-`worker:meta` key retained for attribution is deleted only once the run's
-evidence accounts for the worker it names, and nothing labelled is removed at all
-until that evidence names its worker.
-
-The same rules against a real daemon, with two runs alive at once, are in
-`tests/integration/backend/test_run_scoped_cleanup.py`. What is proved here is
-the decision logic; what is proved there is that Docker agrees.
-"""
-
 from dataclasses import dataclass, field
 import json
 from types import SimpleNamespace
@@ -51,8 +38,6 @@ def _container(name: str, run_id: str, worker_id: str, kind: str = "worker") -> 
 
 @dataclass
 class FakeDaemon:
-    """Containers, networks and Redis keys, with the run label as the only index."""
-
     containers: dict[str, LabelledResource] = field(default_factory=dict)
     networks: dict[str, LabelledResource] = field(default_factory=dict)
     keys: dict[str, str] = field(default_factory=dict)
@@ -82,7 +67,6 @@ class FakeDaemon:
             self.keys[key] = run_id
 
     def unlabelled(self, name: str) -> None:
-        """A long-lived service container: no ownership labels of any kind."""
         self.containers[name] = LabelledResource(name=name, kind="", worker_id="", run_id="")
 
     def ops(self) -> CleanupOps:
@@ -116,7 +100,6 @@ class FakeDaemon:
 
 
 def test_a_run_is_cleaned_from_its_label_alone():
-    """Containers, the QA sidecar beside them and the dev network under them."""
     daemon = FakeDaemon()
     daemon.own(RUN, "dev-1")
     daemon.own(RUN, "qa-1", proxy=True)
@@ -131,7 +114,6 @@ def test_a_run_is_cleaned_from_its_label_alone():
 
 
 def test_a_neighbouring_run_and_the_services_survive():
-    """The label is the fence as well as the finder."""
     daemon = FakeDaemon()
     daemon.own(RUN, "dev-1")
     daemon.own(NEIGHBOUR, "dev-2", proxy=True)
@@ -153,7 +135,6 @@ def test_a_neighbouring_run_and_the_services_survive():
 
 
 def test_running_it_twice_leaves_what_running_it_once_left():
-    """Idempotent, and the second pass is not an error."""
     daemon = FakeDaemon()
     daemon.own(RUN, "dev-1", proxy=True)
 
@@ -169,7 +150,6 @@ def test_running_it_twice_leaves_what_running_it_once_left():
 
 
 def test_a_container_that_will_not_go_away_fails_loudly():
-    """Verification is the point: a cleanup that did not clean must be red."""
     daemon = FakeDaemon()
     daemon.own(RUN, "dev-1")
     daemon.stuck.add("worker-dev-1")
@@ -182,7 +162,6 @@ def test_a_container_that_will_not_go_away_fails_loudly():
 
 
 def test_a_resource_labelled_another_run_is_refused_not_removed():
-    """A listing that answers with a neighbour is a defect, not an instruction."""
     daemon = FakeDaemon()
     daemon.own(NEIGHBOUR, "dev-2")
     ops = daemon.ops()
@@ -204,7 +183,6 @@ def test_a_resource_labelled_another_run_is_refused_not_removed():
 
 
 def test_a_retained_worker_name_outlives_a_run_with_no_evidence_for_it():
-    """The expected residue of a failed removal record is not swept as an anomaly."""
     daemon = FakeDaemon()
     daemon.own(RUN, "dev-1")
     daemon.containers.clear()
@@ -218,7 +196,6 @@ def test_a_retained_worker_name_outlives_a_run_with_no_evidence_for_it():
 
 
 def test_the_retained_name_is_removed_once_the_run_accounts_for_the_worker():
-    """Accounted for means the run's evidence holds a record for it."""
     daemon = FakeDaemon()
     daemon.own(RUN, "dev-1")
     daemon.containers.clear()
@@ -232,11 +209,8 @@ def test_the_retained_name_is_removed_once_the_run_accounts_for_the_worker():
 
 
 def test_the_stray_keys_of_a_worker_with_no_name_left_are_still_removed():
-    """A worker whose metadata is already deleted is found by its container."""
     daemon = FakeDaemon()
     daemon.own(RUN, "dev-1")
-    # What `delete_worker` leaves when it got as far as deleting `worker:meta`
-    # and no further: the name is gone, and keys under it are not.
     daemon.meta.pop("dev-1")
     daemon.keys.pop("worker:meta:dev-1")
 
@@ -248,7 +222,6 @@ def test_the_stray_keys_of_a_worker_with_no_name_left_are_still_removed():
 
 
 def _probe(listed, *, inspect, removed=()):
-    """A run-evidence probe over containers this test decides the fate of."""
     return ContainerProbe(
         list_run_workers=lambda run_id: [
             ListedWorker(container=f"worker-{worker_id}", worker_id=worker_id, ownership={})
@@ -261,15 +234,11 @@ def _probe(listed, *, inspect, removed=()):
 
 
 def _unreadable(container: str):
-    """The transient, non-NotFound docker failure a capture cannot recover from."""
     raise RuntimeError(f"docker inspect {container} failed: daemon temporarily unavailable")
 
 
 class TestRemovalIsFencedByAccounting:
-    """A capture that failed is not a licence to remove what it failed to read."""
-
     def test_a_listed_worker_the_evidence_cannot_name_is_kept_and_the_cleanup_is_red(self):
-        """The container is that worker's last attribution; it outlives the cleanup."""
         daemon = FakeDaemon()
         daemon.own(RUN, "dev-1", proxy=True)
 
@@ -283,7 +252,6 @@ class TestRemovalIsFencedByAccounting:
         assert daemon.keys[f"worker:status:{'dev-1'}"] == RUN
 
     def test_one_workers_missing_record_does_not_hold_up_an_accounted_one(self):
-        """The fence is per worker: what is named is still removed."""
         daemon = FakeDaemon()
         daemon.own(RUN, "dev-1")
         daemon.own(RUN, "dev-2")
@@ -295,13 +263,6 @@ class TestRemovalIsFencedByAccounting:
         assert sorted(daemon.networks) == ["dev_proj_dev-1"]
 
     def test_a_capture_that_failed_becomes_a_named_miss_and_then_a_removal(self):
-        """The reviewer's scenario: the listing succeeds and one inspect does not.
-
-        The worker is not silently removed and it does not fence the teardown
-        forever either. It is written into the artifact as a missed capture that
-        says why its ending could not be read — an acceptable ending — and only
-        that record authorises the removal.
-        """
         daemon = FakeDaemon()
         daemon.own(RUN, "dev-1")
         ops = daemon.ops()
@@ -327,7 +288,6 @@ class TestRemovalIsFencedByAccounting:
         assert daemon.containers == {}
 
     def test_a_worker_already_read_is_not_downgraded_to_a_miss(self):
-        """Accounting adds names; it never restates a known ending as an unknown one."""
         daemon = FakeDaemon()
         daemon.own(RUN, "dev-1")
         inspected = {
@@ -362,13 +322,10 @@ class TestRemovalIsFencedByAccounting:
 
 
 class TestTheArtifactOnlyEverGains:
-    """One run has one evidence artifact, and no pass over it can know less."""
-
     def _artifact(self, path):
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _record(self, worker_id: str, *, exit_code) -> dict:
-        """One worker record in the shape the collector really writes them."""
         collector = RunEvidenceCollector(run_id=RUN, probe=_probe([], inspect=_unreadable))
         collector.observe_absent(worker_id, WorkerRole.DEVELOPER, "the ending was not read")
         [record] = collector.records()
@@ -381,11 +338,9 @@ class TestTheArtifactOnlyEverGains:
         return record
 
     def test_the_spelling_of_a_captured_status_is_one_spelling(self):
-        """The merge reads the artifact's JSON; this holds it to the collector's word."""
         assert run_cleanup.CAPTURED == CaptureStatus.CAPTURED.value
 
     def test_a_later_poorer_pass_cannot_unname_a_worker(self, tmp_path):
-        """The defect: the second pass runs after the sources are gone."""
         path = tmp_path / "evidence.json"
         first = RunEvidenceCollector(
             run_id=RUN,
@@ -397,8 +352,6 @@ class TestTheArtifactOnlyEverGains:
 
         assert [record["worker_id"] for record in self._artifact(path)["workers"]] == ["dev-1"]
 
-        # The manifest round-trip's own collector: container, removal record and
-        # `worker:meta` are all gone by now, so it knows about nothing at all.
         second = RunEvidenceCollector(
             run_id=RUN, probe=_probe([], inspect=lambda container: None), owned_workers=list
         )
@@ -410,7 +363,6 @@ class TestTheArtifactOnlyEverGains:
         assert artifact["passes"] == 2
 
     def test_a_later_richer_pass_fills_a_record_in(self):
-        """Merging is not "first writer wins" either: a real ending replaces a miss."""
         merged = merge_worker_records(
             [self._record("dev-1", exit_code=None)], [self._record("dev-1", exit_code=137)]
         )
@@ -443,7 +395,6 @@ class TestTheArtifactOnlyEverGains:
             )
 
     def test_an_unreadable_artifact_is_not_replaced(self, tmp_path):
-        """What cannot be read cannot be merged, and so must not be overwritten."""
         path = tmp_path / "evidence.json"
         path.write_text("{not json", encoding="utf-8")
 
@@ -455,14 +406,11 @@ class TestTheArtifactOnlyEverGains:
 
 
 def test_an_unscoped_cleanup_is_refused():
-    """There is no run whose label is everybody's."""
     with pytest.raises(RunCleanupError):
         clean_run(FakeDaemon().ops(), "", accounted_workers=set())
 
 
 class TestTheDockerCliOperations:
-    """What the harness's real operations make of the docker CLI's answers."""
-
     def _ops(self, monkeypatch, respond, tmp_path):
         monkeypatch.setattr(run_cleanup.subprocess, "run", respond)
         monkeypatch.setattr(run_cleanup.time, "sleep", lambda _seconds: None)
@@ -530,11 +478,6 @@ class TestTheDockerCliOperations:
         assert ops.remove_container("worker-dev-1") == "still exists after removal wait"
 
     def test_a_removed_network_is_absent_in_the_daemons_own_wording(self, monkeypatch, tmp_path):
-        """A network gone is `network <name> not found`, never `no such object`.
-
-        Reading that wording as a failure made every removed `dev_proj_*` network
-        end a live run in a cleanup error, with the network already gone.
-        """
 
         def respond(cmd, **kwargs):
             if cmd[:3] == ["docker", "network", "rm"]:
@@ -550,7 +493,6 @@ class TestTheDockerCliOperations:
         assert ops.remove_network("dev_proj_dev-1") is None
 
     def test_a_network_removed_by_someone_else_is_accepted(self, monkeypatch, tmp_path):
-        """`docker network rm` refuses a network already gone; that is not a failure."""
 
         def respond(cmd, **kwargs):
             return SimpleNamespace(
@@ -564,7 +506,6 @@ class TestTheDockerCliOperations:
         assert ops.remove_network("dev_proj_dev-1") is None
 
     def test_a_failure_naming_another_network_is_not_read_as_absence(self, monkeypatch, tmp_path):
-        """Absence is claimed for the network asked about, not for any `not found`."""
 
         def respond(cmd, **kwargs):
             if cmd[:3] == ["docker", "network", "rm"]:
@@ -582,7 +523,6 @@ class TestTheDockerCliOperations:
     def test_an_operational_failure_is_reported_without_quoting_the_daemon(
         self, monkeypatch, tmp_path
     ):
-        """A failed inspect can quote an environment; the reason must be safe."""
 
         def respond(cmd, **kwargs):
             if cmd[:3] == ["docker", "rm", "-f"]:
