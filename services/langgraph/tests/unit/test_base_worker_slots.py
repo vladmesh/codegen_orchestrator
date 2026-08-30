@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from shared.redis_client import StreamMessage
@@ -169,6 +170,52 @@ class TestOperatorDrain:
             base._shutdown = False
 
         assert not consume_called
+
+    @pytest.mark.asyncio()
+    async def test_unreadable_drain_before_first_read_leaves_available_work_unclaimed(
+        self, mock_api_client, monkeypatch
+    ):
+        """A fresh consumer must not claim while its durable decision is unknown."""
+        from src.consumers import engineering
+        from src.consumers._base import run_queue_worker
+
+        consume_called = False
+
+        async def consume(*_args, **_kwargs):
+            nonlocal consume_called
+            consume_called = True
+            yield StreamMessage(message_id="1-0", data={"project_id": "project-1"})
+
+        redis = _redis(consume)
+        monkeypatch.setattr(engineering, "_last_engineering_consumer_drain", None)
+        monkeypatch.setattr(engineering, "_engineering_consumer_drain_read_failed", False)
+        monkeypatch.setattr(
+            engineering.api_client,
+            "get",
+            AsyncMock(side_effect=httpx.ConnectError("api unavailable")),
+        )
+
+        with (
+            patch("src.consumers._base.RedisStreamClient", return_value=redis),
+            patch("src.consumers._base.SLOT_WAIT_SECONDS", 0.01),
+        ):
+            worker = asyncio.create_task(
+                run_queue_worker(
+                    "test",
+                    "queue",
+                    AsyncMock(),
+                    is_draining=engineering._engineering_consumer_is_draining,
+                )
+            )
+            await asyncio.sleep(0.02)
+            import src.consumers._base as base
+
+            base._shutdown = True
+            await asyncio.wait_for(worker, timeout=2)
+            base._shutdown = False
+
+        assert not consume_called
+        redis.ack.assert_not_awaited()
 
     @pytest.mark.asyncio()
     async def test_drain_after_an_idle_consumer_reserved_a_slot_leaves_new_entry_in_pel(

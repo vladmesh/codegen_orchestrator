@@ -72,10 +72,17 @@ SHUTDOWN_DRAIN_SECONDS = 10.0
 
 
 async def _wait_while_draining(is_draining: DrainCheck | None, service_name: str) -> bool:
-    """Yield a polling interval when the durable operator drain is active."""
-    if is_draining is None or await is_draining() is not True:
+    """Yield a polling interval while the drain decision is active or unknown."""
+    if is_draining is None:
         return False
-    logger.info("consumer_drain_waiting", worker=service_name)
+    draining = await is_draining()
+    if draining is False:
+        return False
+    logger.info(
+        "consumer_drain_waiting",
+        worker=service_name,
+        decision="draining" if draining else "unknown",
+    )
     await asyncio.sleep(SLOT_WAIT_SECONDS)
     return True
 

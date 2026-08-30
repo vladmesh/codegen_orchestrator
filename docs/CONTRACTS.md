@@ -1730,14 +1730,15 @@ ten-second shutdown budget, acknowledge a PEL entry, or delete a worker. A runni
 consumer checks this durable state before reserving a slot and on every path through its consume loop.
 If XREADGROUP read an entry as the drain became active, that entry is already in this consumer's PEL;
 the consumer leaves it unacknowledged and does not process it, so normal PEL reclaim uses the existing
-handoff contract. A recreated consumer reads the same state before its first claim, so it remains
-drained until an operator clears it; clearing permits an already-running consumer to claim again.
+handoff contract. A recreated consumer refuses to claim until it has successfully read the decision
+at least once. A read of `draining` keeps it drained until an operator clears it; a read of `false`
+permits an already-running consumer to claim again.
 While the drain is active, consumers poll the API once per second. A successful read is retained as a
 module-local last-known decision. If a later read is unavailable or malformed, the consumer keeps
 applying that decision, logs the transition to unreadable once, and keeps retrying rather than
-restarting and cancelling in-flight jobs. Before any successful read, the state is unknown and the
-consumer keeps its current behaviour without asserting that work is accepted; the first successful
-read establishes the decision. A long drain can grow the PEL: the consumer continues its `consume()`
+restarting and cancelling in-flight jobs. Before any successful read, including during process
+startup, the state is unknown and the consumer does not claim work while it keeps polling; the first
+successful read establishes the decision. A long drain can grow the PEL: the consumer continues its `consume()`
 loop and claims fresh entries into its own pending set once per polling interval before leaving them
 unacknowledged. Those entries are reclaimable after the existing 60-second `pending_timeout_ms` and
 are not delivery-count DLQed, but reclaim after the deploy depends on a consumer being alive.
