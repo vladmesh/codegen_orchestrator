@@ -149,7 +149,7 @@ async def _pending_count(client: RedisStreamClient) -> int:
 async def test_pipeline_event_reaches_the_owner_telegram_chat(
     api_client, scheduler_api, stream_client
 ):
-    from src.tasks.supervisor import _request_resources_via_po
+    from src.tasks.supervisor.liveness import _request_resources_via_po
 
     user_id, project_id = await _owner_and_project(api_client)
     # The whole point of the card: these are different numbers, and only one of

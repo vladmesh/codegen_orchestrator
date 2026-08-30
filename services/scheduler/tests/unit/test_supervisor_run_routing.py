@@ -407,7 +407,7 @@ class TestSuperviseDeployingStories:
         api_client.fail_story.return_value = {}
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -446,7 +446,7 @@ class TestSuperviseDeployingStories:
         api_client.fail_story.return_value = {}
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -479,7 +479,7 @@ class TestSuperviseDeployingStories:
         api_client.fail_story.return_value = {}
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -509,7 +509,7 @@ class TestSuperviseDeployingStories:
         api_client.fail_story.return_value = {}
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -792,7 +792,7 @@ class TestSuperviseDeployingStories:
         )
         redis_client._redis.incr.return_value = 3
 
-        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
+        with patch("src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -812,7 +812,7 @@ class TestSuperviseDeployingStories:
         )
         api_client.fail_story.return_value = {}
 
-        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
+        with patch("src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -869,7 +869,7 @@ class TestSuperviseDeployingStories:
         # Max retries hit
         redis_client._redis.incr.return_value = 3  # default max is 3
 
-        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
+        with patch("src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -932,7 +932,7 @@ class TestSuperviseDeployingStories:
         api_client.fail_story.return_value = {}
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -952,7 +952,7 @@ class TestSuperviseDeployingStories:
         api_client.fail_story.return_value = {}
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -1101,7 +1101,7 @@ class TestSuperviseWaitingUserSecretStories:
         )
         api_client.list_project_secret_keys.return_value = ["TELEGRAM_BOT_TOKEN"]
 
-        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
+        with patch("src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_waiting_user_secret_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -1638,7 +1638,7 @@ class TestSuperviseTestingStories:
         api_client.fail_story.return_value = {}
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_testing_stories(api_client, redis_client)
 
@@ -1658,7 +1658,7 @@ class TestSuperviseTestingStories:
         api_client.fail_story.return_value = {}
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_testing_stories(api_client, redis_client)
 
@@ -1729,7 +1729,7 @@ class TestDeployRefusedByAdmission:
         self._fleet(api_client, admissible=False)
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -1769,7 +1769,7 @@ class TestDeployRefusedByAdmission:
         self._fleet(api_client, admissible=True)
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -1807,7 +1807,7 @@ class TestDeployRefusedByAdmission:
         self._fleet(api_client, admissible=False)
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -1849,7 +1849,7 @@ class TestDeployRefusedByAdmission:
         self._fleet(api_client, admissible=True)
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -1898,7 +1898,7 @@ class TestDeployRefusedByAdmission:
         self._fleet(api_client, admissible=True)
 
         with patch(
-            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+            "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
         ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -1936,7 +1936,7 @@ class TestDeployRefusedByAdmission:
                 },
             ),
             patch(
-                "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+                "src.tasks.supervisor.common.notify_admins_best_effort", new_callable=AsyncMock
             ) as mock_notify,
         ):
             result = await supervise_deploying_stories(api_client, redis_client)

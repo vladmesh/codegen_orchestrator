@@ -11,7 +11,8 @@ os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
 from shared.config_store import ConfigStore, ConfigStoreUnavailableError
 from src import main, startup
-from src.tasks import supervisor, task_dispatcher
+from src.tasks import task_dispatcher
+from src.tasks.supervisor.common import _max_deploy_retries
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -25,7 +26,7 @@ def test_task_modules_read_config_initialized_after_import(monkeypatch):
     monkeypatch.setattr(startup, "config", config)
 
     assert task_dispatcher._dispatch_interval() == 47
-    assert supervisor._max_deploy_retries() == 9
+    assert _max_deploy_retries() == 9
 
 
 def test_task_modules_fail_before_scheduler_config_initialization(monkeypatch):
