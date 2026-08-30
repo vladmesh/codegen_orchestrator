@@ -20,7 +20,7 @@ from shared.contracts.dto.application import (
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult, MissingUserSecret
-from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY, GrantIntent
+from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY
 from shared.contracts.env_overrides import (
     EMPTY_OVERRIDES_DIGEST,
     env_overrides_digest,
@@ -457,8 +457,10 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
         stored_intent = (getattr(run, "run_metadata", None) or {}).get(USERS_GRANT_INTENT_KEY)
         if stored_intent is not None:
             try:
-                grant_intent = GrantIntent.model_validate(stored_intent)
-            except ValueError:
+                if not isinstance(stored_intent, str):
+                    raise ValueError("grant intent reference is not a string")
+                grant_intent = await api_client.get_users_grant_intent(project_id, stored_intent)
+            except (TypeError, ValueError):
                 return await _handle_deploy_failure(
                     task_id=task_id,
                     project_id=project_id,
@@ -470,7 +472,11 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                     deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
                     deploy_fix_attempt=msg.deploy_fix_attempt,
                 )
-            if grant_intent.project_id != project_id or grant_intent.target_sha != msg.head_sha:
+            if (
+                grant_intent.project_id != project_id
+                or grant_intent.target_sha != msg.head_sha
+                or grant_intent.execution_run_id != task_id
+            ):
                 return await _handle_deploy_failure(
                     task_id=task_id,
                     project_id=project_id,

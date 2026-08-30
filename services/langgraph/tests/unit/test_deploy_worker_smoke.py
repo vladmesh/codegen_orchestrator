@@ -50,6 +50,8 @@ def mock_api():
             )
         )
         api.get_user = AsyncMock(return_value=SimpleNamespace(telegram_id=12345))
+        api.get_users_grant_intent = AsyncMock(return_value=_initial_owner_intent())
+        api.complete_users_grant_intent = AsyncMock()
         api.get_primary_repository = AsyncMock(
             return_value=make_repository(git_url="https://github.com/org/my-project")
         )
@@ -85,7 +87,7 @@ def _job(*, callback_stream=None, telegram_chat_id="12345"):
     }
 
 
-def _initial_owner_intent() -> dict:
+def _initial_owner_intent() -> GrantIntent:
     return GrantIntent(
         id="users-grant-initial-owner-deploy-smoke-1",
         kind=GrantIntentKind.INITIAL_OWNER,
@@ -94,7 +96,8 @@ def _initial_owner_intent() -> dict:
         external_id="12345",
         target_sha="a" * 40,
         initiating_actor="deploy_producer",
-    ).model_dump(mode="json")
+        execution_run_id="deploy-smoke-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -132,7 +135,7 @@ async def test_bot_owner_is_granted_and_read_back_before_deploy_success(
 ):
     mock_api.get_project.return_value = make_project(config={"modules": ["backend", "tg_bot"]})
     mock_api.get_run.return_value = make_run(
-        run_metadata={USERS_GRANT_INTENT_KEY: _initial_owner_intent()}
+        run_metadata={USERS_GRANT_INTENT_KEY: _initial_owner_intent().id}
     )
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
@@ -157,6 +160,12 @@ async def test_bot_owner_is_granted_and_read_back_before_deploy_success(
     )
     completed = [call for call in mock_api.patch.call_args_list if "completed" in str(call)]
     assert len(completed) == 1
+    mock_api.complete_users_grant_intent.assert_awaited_once_with(
+        "proj-1",
+        _initial_owner_intent().id,
+        execution_run_id="deploy-smoke-1",
+        active=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -165,7 +174,7 @@ async def test_bot_owner_readback_failure_never_records_deploy_success(
 ):
     mock_api.get_project.return_value = make_project(config={"modules": ["backend", "tg_bot"]})
     mock_api.get_run.return_value = make_run(
-        run_metadata={USERS_GRANT_INTENT_KEY: _initial_owner_intent()}
+        run_metadata={USERS_GRANT_INTENT_KEY: _initial_owner_intent().id}
     )
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
@@ -190,6 +199,13 @@ async def test_bot_owner_readback_failure_never_records_deploy_success(
     ]
     assert len(failed) == 1
     assert not [call for call in mock_api.patch.call_args_list if "completed" in str(call)]
+    mock_api.complete_users_grant_intent.assert_awaited_once_with(
+        "proj-1",
+        _initial_owner_intent().id,
+        execution_run_id="deploy-smoke-1",
+        active=False,
+        detail="inactive",
+    )
 
 
 @pytest.mark.asyncio

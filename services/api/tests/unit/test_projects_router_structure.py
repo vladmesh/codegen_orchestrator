@@ -98,8 +98,20 @@ def test_projects_route_table_keeps_its_public_surface():
         ),
         (
             "POST",
-            "/api/projects/{project_id}/ownership-transfer/{run_id}/apply",
-            "apply_transfer_api_projects__project_id__ownership_transfer__run_id__apply_post",
+            "/api/projects/{project_id}/users/grant-intents/lifecycle",
+            "resume_initial_owner_intent_api_projects__project_id__users_grant_intents_lifecycle_post",
+            ("200", "422"),
+        ),
+        (
+            "GET",
+            "/api/projects/{project_id}/users/grant-intents/{intent_id}",
+            "get_intent_api_projects__project_id__users_grant_intents__intent_id__get",
+            ("200", "422"),
+        ),
+        (
+            "POST",
+            "/api/projects/{project_id}/users/grant-intents/{intent_id}/complete",
+            "complete_intent_api_projects__project_id__users_grant_intents__intent_id__complete_post",
             ("200", "422"),
         ),
         (

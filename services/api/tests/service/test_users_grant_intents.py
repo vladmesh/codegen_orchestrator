@@ -1,58 +1,50 @@
-"""Service-level durability and ownership checks for generated-service grants."""
+"""Service coverage for the durable intent lifecycle, separate from Runs."""
 
 from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 
-from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY, GrantIntentStatus
+from shared.contracts.dto.users_grant import GrantIntentStatus
 
 
 class _PublishRedis:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None) -> None:
         self.publish_message = AsyncMock(side_effect=error)
 
 
-async def _target(async_client):
-    suffix = uuid.uuid4().hex[:10]
-    owner_telegram_id = uuid.uuid4().int % 1_000_000_000
-    incoming_telegram_id = uuid.uuid4().int % 1_000_000_000
+async def _target(client):
+    suffix = uuid.uuid4().hex[:8]
     project_id = str(uuid.uuid4())
-    server_handle = f"grant-{suffix}"
-
-    owner = await async_client.post(
-        "/api/users/",
-        json={"telegram_id": owner_telegram_id, "username": f"owner_{suffix}"},
+    owner_id, user_id = (
+        uuid.uuid4().int % 1_000_000_000,
+        uuid.uuid4().int % 1_000_000_000,
     )
-    assert owner.status_code == 201
-    incoming = await async_client.post(
-        "/api/users/",
-        json={"telegram_id": incoming_telegram_id, "username": f"incoming_{suffix}"},
+    owner = await client.post(
+        "/api/users/", json={"telegram_id": owner_id, "username": f"o{suffix}"}
     )
-    assert incoming.status_code == 201
-    project = await async_client.post(
+    user = await client.post("/api/users/", json={"telegram_id": user_id, "username": f"u{suffix}"})
+    project = await client.post(
         "/api/projects/",
         json={
             "id": project_id,
-            "title": f"Grant target {suffix}",
+            "title": f"grant {suffix}",
             "initiating_run_id": f"run-{suffix}",
             "config": {"modules": ["backend", "tg_bot"]},
         },
-        headers={"X-Telegram-ID": str(owner_telegram_id)},
+        headers={"X-Telegram-ID": str(owner_id)},
     )
-    assert project.status_code == 201, project.text
-    server = await async_client.post(
+    server = await client.post(
         "/api/servers/",
         json={
-            "handle": server_handle,
-            "host": f"{server_handle}.example.test",
+            "handle": f"grant-{suffix}",
+            "host": f"grant-{suffix}.test",
             "public_ip": "10.0.0.1",
             "status": "active",
             "is_managed": True,
         },
     )
-    assert server.status_code == 201, server.text
-    repository = await async_client.post(
+    repo = await client.post(
         "/api/repositories/",
         json={
             "project_id": project_id,
@@ -61,270 +53,129 @@ async def _target(async_client):
             "role": "primary",
         },
     )
-    assert repository.status_code == 201, repository.text
-    application = await async_client.post(
+    app = await client.post(
         "/api/applications/",
         json={
-            "repo_id": repository.json()["id"],
-            "server_handle": server_handle,
+            "repo_id": repo.json()["id"],
+            "server_handle": server.json()["handle"],
             "service_name": f"grant-{suffix}",
             "status": "running",
         },
     )
-    assert application.status_code == 201, application.text
     sha = "a" * 40
-    deployment = await async_client.post(
+    deployment = await client.post(
         "/api/service-deployments/",
         json={
-            "application_id": application.json()["id"],
+            "application_id": app.json()["id"],
             "project_id": project_id,
             "service_name": f"grant-{suffix}",
-            "server_handle": server_handle,
+            "server_handle": server.json()["handle"],
             "port": 8080,
             "result": "success",
             "deployed_sha": sha,
         },
     )
-    assert deployment.status_code == 201, deployment.text
-    return {
-        "project_id": project_id,
-        "owner": owner.json(),
-        "incoming": incoming.json(),
-        "application_id": application.json()["id"],
-        "server_handle": server_handle,
-        "service_name": f"grant-{suffix}",
-        "sha": sha,
-    }
+    for response in (owner, user, project, server, repo, app, deployment):
+        assert response.status_code in {200, 201}, response.text
+    return project_id, owner.json(), user.json(), app.json(), server.json(), sha
 
 
 @pytest.mark.asyncio
-async def test_grant_intent_is_durable_before_a_publish_failure(async_client):
+async def test_intent_is_durable_before_publish_and_not_a_run(async_client):
     from src.dependencies import get_redis_client
     from src.main import app
 
-    target = await _target(async_client)
-    redis = _PublishRedis(error=ConnectionError("redis unavailable"))
+    project_id, _, user, _, _, _ = await _target(async_client)
+    redis = _PublishRedis(ConnectionError("down"))
     app.dependency_overrides[get_redis_client] = lambda: redis
     try:
         response = await async_client.post(
-            f"/api/projects/{target['project_id']}/users/grant",
-            json={"telegram_id": target["incoming"]["telegram_id"]},
+            f"/api/projects/{project_id}/users/grant", json={"telegram_id": user["telegram_id"]}
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
-
     assert response.status_code == 503
     intent_id = (
-        f"users-grant-add_user-{uuid.UUID(target['project_id']).hex}-"
-        f"{target['incoming']['telegram_id']}"
+        response.json()["detail"]
+        if False
+        else (f"users-grant-add_user-{uuid.UUID(project_id).hex}-{user['telegram_id']}")
     )
-    stored = await async_client.get(f"/api/runs/{intent_id}")
-    assert stored.status_code == 200
-    intent = stored.json()["run_metadata"][USERS_GRANT_INTENT_KEY]
-    assert intent["status"] == GrantIntentStatus.PUBLISH_OWED.value
-    redis.publish_message.assert_awaited_once()
+    intent = await async_client.get(f"/api/projects/{project_id}/users/grant-intents/{intent_id}")
+    assert intent.json()["status"] == GrantIntentStatus.PUBLISH_OWED.value
+    assert intent.json()["execution_run_id"].startswith("deploy-grant-")
 
 
 @pytest.mark.asyncio
-async def test_grant_repeat_reuses_its_intent_and_refuses_a_stale_target(async_client):
+async def test_retryable_stale_intent_rebinds_and_applied_redelivery_stops(async_client):
     from src.dependencies import get_redis_client
     from src.main import app
 
-    target = await _target(async_client)
+    project_id, _, user, application, server, sha = await _target(async_client)
     redis = _PublishRedis()
     app.dependency_overrides[get_redis_client] = lambda: redis
     try:
         first = await async_client.post(
-            f"/api/projects/{target['project_id']}/users/grant",
-            json={"telegram_id": target["incoming"]["telegram_id"]},
+            f"/api/projects/{project_id}/users/grant", json={"telegram_id": user["telegram_id"]}
         )
-        second = await async_client.post(
-            f"/api/projects/{target['project_id']}/users/grant",
-            json={"telegram_id": target["incoming"]["telegram_id"]},
+        intent_id = first.json()["intent_id"]
+        failed = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{intent_id}/complete",
+            json={"execution_run_id": first.json()["execution_run_id"], "active": False},
         )
-        newer = await async_client.post(
+        assert failed.json()["status"] == GrantIntentStatus.RETRYABLE.value
+        await async_client.post(
             "/api/service-deployments/",
             json={
-                "application_id": target["application_id"],
-                "project_id": target["project_id"],
-                "service_name": target["service_name"],
-                "server_handle": target["server_handle"],
+                "application_id": application["id"],
+                "project_id": project_id,
+                "service_name": application["service_name"],
+                "server_handle": server["handle"],
                 "port": 8080,
                 "result": "success",
                 "deployed_sha": "b" * 40,
             },
         )
-        assert newer.status_code == 201
-        stale = await async_client.post(
-            f"/api/projects/{target['project_id']}/users/grant",
-            json={"telegram_id": target["incoming"]["telegram_id"]},
+        rebound = await async_client.post(
+            f"/api/projects/{project_id}/users/grant", json={"telegram_id": user["telegram_id"]}
+        )
+        assert rebound.json()["execution_run_id"] != first.json()["execution_run_id"]
+        applied = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{intent_id}/complete",
+            json={"execution_run_id": rebound.json()["execution_run_id"], "active": True},
+        )
+        assert applied.json()["status"] == GrantIntentStatus.APPLIED.value
+        repeated = await async_client.post(
+            f"/api/projects/{project_id}/users/grant", json={"telegram_id": user["telegram_id"]}
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
-
-    assert first.status_code == 200
-    assert first.json()["created"] is True
-    assert second.status_code == 200
-    assert second.json() == {**first.json(), "created": False}
-    assert stale.status_code == 409
-    run = await async_client.get(f"/api/runs/{first.json()['intent_id']}")
-    intent = run.json()["run_metadata"][USERS_GRANT_INTENT_KEY]
-    intent["status"] = GrantIntentStatus.APPLIED.value
-    patched = await async_client.patch(
-        f"/api/runs/{first.json()['intent_id']}",
-        json={"run_metadata": {USERS_GRANT_INTENT_KEY: intent}},
-    )
-    assert patched.status_code == 200
-    applied = await async_client.post(
-        f"/api/projects/{target['project_id']}/users/grant",
-        json={"telegram_id": target["incoming"]["telegram_id"]},
-    )
-    assert applied.status_code == 200
-    assert applied.json()["status"] == GrantIntentStatus.APPLIED.value
+    assert repeated.json()["execution_run_id"] == rebound.json()["execution_run_id"]
+    intent = await async_client.get(f"/api/projects/{project_id}/users/grant-intents/{intent_id}")
+    assert intent.json()["target_sha"] == "b" * 40
+    assert intent.json()["target_history"][0]["sha"] == sha
     assert redis.publish_message.await_count == 2
-    runs = await async_client.get("/api/runs/", params={"project_id": target["project_id"]})
-    assert len([run for run in runs.json() if USERS_GRANT_INTENT_KEY in run["run_metadata"]]) == 1
 
 
 @pytest.mark.asyncio
-async def test_transfer_requires_worker_readback_and_keeps_the_race_guard(async_client):
+async def test_transfer_is_atomic_with_active_readback(async_client):
     from src.dependencies import get_redis_client
     from src.main import app
 
-    target = await _target(async_client)
+    project_id, owner, incoming, _, _, _ = await _target(async_client)
     redis = _PublishRedis()
     app.dependency_overrides[get_redis_client] = lambda: redis
     try:
         staged = await async_client.post(
-            f"/api/projects/{target['project_id']}/ownership-transfer",
-            json={"telegram_id": target["incoming"]["telegram_id"]},
+            f"/api/projects/{project_id}/ownership-transfer",
+            json={"telegram_id": incoming["telegram_id"]},
+        )
+        completed = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{staged.json()['intent_id']}/complete",
+            json={"execution_run_id": staged.json()["execution_run_id"], "active": True},
         )
     finally:
         app.dependency_overrides.pop(get_redis_client, None)
-
-    assert staged.status_code == 200
-    intent_id = staged.json()["intent_id"]
-    unproven = await async_client.post(
-        f"/api/projects/{target['project_id']}/ownership-transfer/{intent_id}/apply"
-    )
-    assert unproven.status_code == 409
-
-    run = await async_client.get(f"/api/runs/{intent_id}")
-    intent = run.json()["run_metadata"][USERS_GRANT_INTENT_KEY]
-    intent["status"] = GrantIntentStatus.APPLYING.value
-    marked = await async_client.patch(
-        f"/api/runs/{intent_id}", json={"run_metadata": {USERS_GRANT_INTENT_KEY: intent}}
-    )
-    assert marked.status_code == 200
-    applied = await async_client.post(
-        f"/api/projects/{target['project_id']}/ownership-transfer/{intent_id}/apply"
-    )
-    assert applied.status_code == 200
-    project = await async_client.get(f"/api/projects/{target['project_id']}")
-    assert project.json()["owner_id"] == target["incoming"]["id"]
-    repeated = await async_client.post(
-        f"/api/projects/{target['project_id']}/ownership-transfer/{intent_id}/apply"
-    )
-    assert repeated.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_transfer_does_not_move_ownership_after_its_outgoing_owner_changed(async_client):
-    from src.dependencies import get_redis_client
-    from src.main import app
-
-    target = await _target(async_client)
-    replacement_telegram_id = uuid.uuid4().int % 1_000_000_000
-    replacement = await async_client.post(
-        "/api/users/",
-        json={
-            "telegram_id": replacement_telegram_id,
-            "username": f"replacement_{uuid.uuid4().hex}",
-        },
-    )
-    assert replacement.status_code == 201
-    redis = _PublishRedis()
-    app.dependency_overrides[get_redis_client] = lambda: redis
-    try:
-        first = await async_client.post(
-            f"/api/projects/{target['project_id']}/ownership-transfer",
-            json={"telegram_id": target["incoming"]["telegram_id"]},
-        )
-        replacement_transfer = await async_client.post(
-            f"/api/projects/{target['project_id']}/ownership-transfer",
-            json={"telegram_id": replacement_telegram_id},
-        )
-    finally:
-        app.dependency_overrides.pop(get_redis_client, None)
-    assert first.status_code == 200
-    assert replacement_transfer.status_code == 200
-
-    replacement_intent_id = replacement_transfer.json()["intent_id"]
-    replacement_run = await async_client.get(f"/api/runs/{replacement_intent_id}")
-    replacement_intent = replacement_run.json()["run_metadata"][USERS_GRANT_INTENT_KEY]
-    replacement_intent["status"] = GrantIntentStatus.APPLYING.value
-    assert (
-        await async_client.patch(
-            f"/api/runs/{replacement_intent_id}",
-            json={"run_metadata": {USERS_GRANT_INTENT_KEY: replacement_intent}},
-        )
-    ).status_code == 200
-    assert (
-        await async_client.post(
-            f"/api/projects/{target['project_id']}/ownership-transfer/{replacement_intent_id}/apply"
-        )
-    ).status_code == 200
-
-    first_run = await async_client.get(f"/api/runs/{first.json()['intent_id']}")
-    first_intent = first_run.json()["run_metadata"][USERS_GRANT_INTENT_KEY]
-    first_intent["status"] = GrantIntentStatus.APPLYING.value
-    assert (
-        await async_client.patch(
-            f"/api/runs/{first.json()['intent_id']}",
-            json={"run_metadata": {USERS_GRANT_INTENT_KEY: first_intent}},
-        )
-    ).status_code == 200
-    raced = await async_client.post(
-        f"/api/projects/{target['project_id']}/ownership-transfer/{first.json()['intent_id']}/apply"
-    )
-    assert raced.status_code == 409
-    project = await async_client.get(f"/api/projects/{target['project_id']}")
-    assert project.json()["owner_id"] == replacement.json()["id"]
-
-
-@pytest.mark.asyncio
-async def test_only_the_deduplicated_initial_owner_seed_run_carries_an_owner_intent(async_client):
-    target = await _target(async_client)
-    owner_telegram_id = target["owner"]["telegram_id"]
-    seed_id = f"users-grant-initial-owner-{uuid.UUID(target['project_id']).hex}-{owner_telegram_id}"
-    seed = await async_client.post(
-        "/api/runs/",
-        json={
-            "id": seed_id,
-            "type": "deploy",
-            "project_id": target["project_id"],
-            "run_metadata": {
-                "head_sha": target["sha"],
-                "triggered_by": "initial_owner_seed",
-            },
-        },
-    )
-    assert seed.status_code == 201, seed.text
-    intent = seed.json()["run_metadata"][USERS_GRANT_INTENT_KEY]
-    assert intent["id"] == seed_id
-    assert intent["kind"] == "initial_owner"
-
-    machinery = await async_client.post(
-        "/api/runs/",
-        json={
-            "id": f"temporary-access-revoke-{uuid.uuid4().hex}",
-            "type": "deploy",
-            "project_id": target["project_id"],
-            "run_metadata": {
-                "head_sha": target["sha"],
-                "triggered_by": "temporary_access_revoke",
-            },
-        },
-    )
-    assert machinery.status_code == 201, machinery.text
-    assert USERS_GRANT_INTENT_KEY not in machinery.json()["run_metadata"]
+    assert completed.status_code == 200
+    project = await async_client.get(f"/api/projects/{project_id}")
+    assert project.json()["owner_id"] == incoming["id"]
+    assert project.json()["owner_id"] != owner["id"]

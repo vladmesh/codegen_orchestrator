@@ -34,25 +34,29 @@ principal rather than an untrusted header lookup.
 ### Generated-service user grants
 
 Generated Telegram services use their `USERS_GRANT_CAPABILITY` generated secret
-only through the deploy resolver's in-memory `secret_values`. A grant intent is
-typed `users_grant_intent` metadata on the durable deploy Run. It binds one
-verified channel/external identity, initiating actor, and immutable target
-application/deployment/SHA without holding secret material. The Run is written
-before publish; repeats resume its same intent. After smoke success, deploy
-grants through `POST /users/grant` and requires `GET /users/access` to report
-that exact identity active before marking the intent applied or reporting access
-live. An incoming ownership transfer changes `Project.owner_id` only in the
-post-readback transaction that records the applied intent. The capability is
-never an override, project configuration value, URL, event field, or log value.
+only through the deploy resolver's in-memory `secret_values`. `users_grant_intents`
+is the durable, typed non-secret record. Its identity is `(kind, project, verified
+channel/external identity)`, not a deploy Run id. The API lifecycle operation is
+the sole route that creates, finds, binds or rebinds an intent and dispatches a
+permanent grant attempt. Every deploy Run it creates is one immutable execution
+attempt and holds only the intent reference plus its exact SHA.
 
-An `INITIAL_OWNER` intent belongs only to the dedicated, stable
-`initial_owner_seed` deploy Run whose id is derived from the project and verified
-owner identity. It is deduplicated on that pair. QA temporary-access grant or
-revoke runs, and supervisor retry, infrastructure-wait, and secret-wait runs,
-are ineligible even when they carry a deployment SHA. An `ADD_USER` or
-`INCOMING_OWNER` retry may resume only while its immutable target is still the
-live deployment; an applied intent short-circuits, and a stale target is
-rejected rather than redeployed.
+An APPLIED intent wins redelivery and is never rewritten or dispatched again. A
+non-applied intent on its current live target resumes one attempt; a stale target
+retains the same intent and audit identity, records the replaced target, binds the
+current live application/deployment/SHA, and dispatches a new Run. It never
+redeploys the old SHA. Initial-owner seeding finds the single durable intent while
+every PR poll, QA cycle, story fix and supervisor recovery keeps its own Run id.
+Retries after ordinary deploy, infrastructure, secret, or post-health grant
+failure reacquire that seed through the same lifecycle operation.
+
+After smoke success, deploy grants through `POST /users/grant` and requires
+`GET /users/access` to report that exact identity active before the API records
+APPLIED or reports access live. An incoming ownership transfer changes
+`Project.owner_id` only in that readback completion transaction. The capability
+is never an override, project configuration value, URL, event field, or log value.
+QA temporary-access grant or revoke remains ineligible for these permanent
+intents, even when it carries a deployment SHA.
 
 The existing `TG_BOT_TEST_TELEGRAM_ID` temporary-access slot remains a separate
 revocable QA lifecycle. `users.grant` has no revoke or expiry protocol, so it

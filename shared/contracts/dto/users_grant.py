@@ -50,6 +50,8 @@ class GrantIntent(BaseModel):
     detail: str | None = Field(default=None, max_length=512)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     applied_at: datetime | None = None
+    execution_run_id: str | None = None
+    target_history: list[dict[str, object]] = Field(default_factory=list)
 
     def with_status(self, status: GrantIntentStatus, *, detail: str | None = None) -> "GrantIntent":
         """Return a safe state transition without changing the target."""

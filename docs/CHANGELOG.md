@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reworked permanent generated-service grants into API-owned durable intents,
+  separate immutable deploy attempts, stale-target rebinding, and supervisor
+  recovery after deploy or access-proof failures.
+
 ### Changed
 
 - Replaced generated Telegram bot audience configuration with the generated

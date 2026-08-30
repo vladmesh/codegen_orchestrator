@@ -15,7 +15,6 @@ from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.users_grant import (
-    USERS_GRANT_INTENT_KEY,
     GrantIntent,
     GrantIntentKind,
     GrantIntentStatus,
@@ -212,40 +211,45 @@ async def _apply_grant_intent(  # noqa: PLR0913
     Every persisted or logged result below is a bounded diagnostic, never the
     capability or a decrypted project secret.
     """
+    if intent.status is GrantIntentStatus.APPLIED:
+        return None
     if intent.target_application_id is not None and intent.target_application_id != application_id:
+        await api_client.complete_users_grant_intent(
+            project_id,
+            intent.id,
+            execution_run_id=task_id,
+            active=False,
+            detail="target_application_mismatch",
+        )
         return "target_application_mismatch"
     capability = secret_values.get(_USERS_GRANT_CAPABILITY)
     if not isinstance(capability, str) or not capability:
+        await api_client.complete_users_grant_intent(
+            project_id,
+            intent.id,
+            execution_run_id=task_id,
+            active=False,
+            detail="capability_unavailable",
+        )
         return "capability_unavailable"
     proof = await GeneratedServiceGrantClient(deployed_url).grant_and_resolve(
         channel=intent.channel, external_id=intent.external_id, capability=capability
     )
     if not proof.active:
         safe_failure = proof.failure.value if proof.failure is not None else "unverified"
-        await _write_intent_status(
-            task_id, intent.with_status(GrantIntentStatus.RETRYABLE, detail=safe_failure)
+        await api_client.complete_users_grant_intent(
+            project_id, intent.id, execution_run_id=task_id, active=False, detail=safe_failure
         )
         return safe_failure
-    if intent.kind is GrantIntentKind.INCOMING_OWNER:
-        try:
-            await _write_intent_status(task_id, intent.with_status(GrantIntentStatus.APPLYING))
-            await api_client.post(f"projects/{project_id}/ownership-transfer/{task_id}/apply")
-        except Exception:
-            await _write_intent_status(
-                task_id,
-                intent.with_status(GrantIntentStatus.RETRYABLE, detail="ownership_apply_failed"),
-            )
+    try:
+        await api_client.complete_users_grant_intent(
+            project_id, intent.id, execution_run_id=task_id, active=True
+        )
+    except Exception:
+        if intent.kind is GrantIntentKind.INCOMING_OWNER:
             return "ownership_apply_failed"
-        return None
-    await _write_intent_status(task_id, intent.with_status(GrantIntentStatus.APPLIED))
+        return "intent_apply_failed"
     return None
-
-
-async def _write_intent_status(task_id: str, intent: GrantIntent) -> None:
-    await api_client.patch(
-        f"runs/{task_id}",
-        json={"run_metadata": {USERS_GRANT_INTENT_KEY: intent.model_dump(mode="json")}},
-    )
 
 
 async def _handle_owner_access_failure(

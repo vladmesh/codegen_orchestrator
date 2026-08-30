@@ -138,7 +138,7 @@ async def test_deploys_correct_sha_in_fix_cycle(mock_gh_cls):
 
 @pytest.mark.asyncio
 @patch("src.tasks.pr_poller.GitHubAppClient")
-async def test_first_tg_bot_deploy_owns_the_deduplicated_initial_owner_intent(mock_gh_cls):
+async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_gh_cls):
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
     api = AsyncMock()
@@ -150,7 +150,10 @@ async def test_first_tg_bot_deploy_owns_the_deduplicated_initial_owner_intent(mo
     api.get_project.return_value = SimpleNamespace(
         config={"modules": ["backend", "tg_bot"]}, owner_id=7
     )
-    api.get_user.return_value = SimpleNamespace(telegram_id=84)
+    api.resume_initial_owner_grant.return_value = {
+        "intent_id": "users-grant-initial_owner-00000000000000000000000000000001-84",
+        "execution_run_id": "deploy-grant-attempt",
+    }
     gh.get_pull_request.return_value = {
         "number": 42,
         "merged_at": "2026-03-20T03:15:00Z",
@@ -159,13 +162,11 @@ async def test_first_tg_bot_deploy_owns_the_deduplicated_initial_owner_intent(mo
 
     assert await poll_merged_prs(api, redis) == 1
 
-    run = api.create_run.await_args.args[0]
-    assert run["id"] == "users-grant-initial-owner-00000000000000000000000000000001-84"
-    assert run["run_metadata"] == {
-        "triggered_by": "initial_owner_seed",
-        "head_sha": "a" * 40,
-    }
-    assert redis.publish_message.await_args.args[1].task_id == run["id"]
+    api.resume_initial_owner_grant.assert_awaited_once_with(
+        "00000000-0000-0000-0000-000000000001", story_id="story-1", head_sha="a" * 40
+    )
+    api.create_run.assert_not_awaited()
+    redis.publish_message.assert_not_awaited()
 
 
 def _failed_run(run_id: int, sha: str) -> dict:

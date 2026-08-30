@@ -160,6 +160,16 @@ class SchedulerAPIClient(InternalAPIClient):
         resp = await self.request("POST", "runs/", json=run_data)
         return RunDTO.model_validate(resp.json())
 
+    async def resume_initial_owner_grant(
+        self, project_id: str, *, story_id: str, head_sha: str
+    ) -> dict:
+        resp = await self.request(
+            "POST",
+            f"projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "story_id": story_id, "head_sha": head_sha},
+        )
+        return resp.json()
+
     async def create_run_if_absent(self, run_data: dict) -> RunDTO:
         """Create a run, or return the one already carrying this id.
 

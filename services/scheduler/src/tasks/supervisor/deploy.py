@@ -35,6 +35,7 @@ from shared.contracts.dto.run_result import (
     DeployRunResult,
 )
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.users_grant import USERS_GRANT_INTENT_KEY
 from shared.contracts.dto.work_admission import PaidRunStartCommand, WorkAdmissionOutcome
 from shared.contracts.queues.deploy import (
     DeployAction,
@@ -221,7 +222,11 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912
             else:
                 failed += 1
 
-        elif outcome in (DeployOutcome.RETRY, DeployOutcome.CANCELLED):
+        elif outcome in (
+            DeployOutcome.RETRY,
+            DeployOutcome.CANCELLED,
+            DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+        ):
             # A cancelled deploy did not fail and did not deploy: something took
             # the project away from it — the fence a temporary-access revoke
             # takes, or another deploy holding the lock. The story still needs
@@ -654,6 +659,13 @@ async def _handle_deploy_retry(
         await _notify_admin_failure(run.id, project_id, f"deploy retries exhausted ({attempts})")
         return False
 
+    # A run that carried a permanent owner intent must reacquire it through
+    # the API lifecycle. That creates a new immutable attempt and keeps a
+    # successful recovery from silently handing QA a service without access.
+    if await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha):
+        log.info("deploy_supervisor_resumed_owner_intent", source_run_id=run.id)
+        return True
+
     # Re-publish deploy message for retry
     new_run_id = f"deploy-retry-{uuid.uuid4().hex[:8]}"
     await api_client.create_run(
@@ -712,6 +724,17 @@ def _deploy_run_head_sha(run) -> str | None:
     """Read the exact commit a deploy run targeted, from its run_metadata."""
     run_metadata = getattr(run, "run_metadata", None) or {}
     return run_metadata.get("head_sha")
+
+
+async def _resume_initial_owner_intent(
+    api_client: SchedulerAPIClient, project_id: str, story_id: str, run, head_sha: str
+) -> bool:
+    """Recover only the API-owned initial-owner intent referenced by this run."""
+    intent_id = (getattr(run, "run_metadata", None) or {}).get(USERS_GRANT_INTENT_KEY)
+    if not isinstance(intent_id, str) or not intent_id.startswith("users-grant-initial_owner-"):
+        return False
+    await api_client.resume_initial_owner_grant(project_id, story_id=story_id, head_sha=head_sha)
+    return True
 
 
 async def _route_refused_deploy(
@@ -952,6 +975,10 @@ async def _handle_deploy_infrastructure_wait(
         )
         return RefusedDeployAction.ESCALATED
 
+    if await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha):
+        log.info("infrastructure_wait_resumed_owner_intent", run_id=run.id)
+        return RefusedDeployAction.REDISPATCHED
+
     new_run_id = f"deploy-infra-{uuid.uuid4().hex[:8]}"
     await api_client.create_run(
         {
@@ -1157,6 +1184,10 @@ async def _redispatch_waiting_deploy(
         return False
 
     await api_client.transition_story(story_id, "deploy")
+
+    if await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha):
+        log.info("waiting_secret_resumed_owner_intent", run_id=run.id)
+        return True
 
     new_run_id = f"deploy-secret-{uuid.uuid4().hex[:8]}"
     await api_client.create_run(
