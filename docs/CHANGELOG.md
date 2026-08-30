@@ -4,6 +4,21 @@
 
 ### Added
 
+- The stand-only Definition-of-Done restart target now identifies terminal
+  adoption by its fenced turn request rather than counting task attempts, so a
+  later ordinary retry remains diagnostic instead of turning the restart proof
+  red. Its PO stream lookup now uses the shared producer queue constant.
+
+- Hardened the stand-only Definition-of-Done target against unrelated PO input,
+  cold worker creation, and terminal worker history. Its operator acceptance
+  fixture now reaches human review through the public story actions before it
+  exercises the existing completed-story reachability guard.
+
+- Added the stand-only Definition-of-Done live target for normal owner completion, audited
+  `accept-result`, and an LLM `stand_token` engineering-consumer restart. It records the PO
+  instruction boundary, acceptance audit and running-target refusal, then proves the retained
+  broker turn, worker inventory facts, and absence of detached worker or workspace-lock state.
+
 - Operators can drain the engineering consumer before a deploy through the admin Workers page. The
   credential-derived action persists and audits its drain state, leaves the existing ten-second
   shutdown handoff unchanged, and is honored by recreated consumers until explicitly resumed. A drain

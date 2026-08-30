@@ -49,6 +49,10 @@ def pytest_configure(config):
         f"{NO_API_CREDENTIAL_MARKER}: builds no client against the live API — it drives the "
         "harness against fakes, or against Redis alone — so the run needs no INTERNAL_API_KEY",
     )
+    config.addinivalue_line(
+        "markers",
+        "live_llm_stand_token: requires a real Claude or Codex stand_token coding turn",
+    )
 
 
 def pytest_collection_modifyitems(session, config, items):
