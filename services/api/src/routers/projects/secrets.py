@@ -23,7 +23,6 @@ router = APIRouter()
 delete_router = APIRouter()
 
 
-
 @router.get("/{project_id}/config/secrets/keys")
 async def list_secret_keys(
     project_id: uuid.UUID,

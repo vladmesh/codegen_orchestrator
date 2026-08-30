@@ -37,6 +37,8 @@ def _state(entries: dict, resources: dict | None = None, secrets: dict | None = 
         "repo_info": {"html_url": "https://github.com/org/repo"},
         "environment_contract": {"entries": entries},
     }
+
+
 @patch("src.subgraphs.devops.secret_resolver.api_client")
 @patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={})
 async def test_contract_resolves_every_source_without_mixing_persisted_maps(_decrypt, api_client):
@@ -88,6 +90,8 @@ async def test_contract_resolves_every_source_without_mixing_persisted_maps(_dec
     }
     persisted = api_client.merge_secrets.call_args.args[1]
     assert set(persisted) == {"APP_SECRET_KEY"}
+
+
 async def test_contract_missing_user_secret_is_a_typed_waiting_outcome():
     entries = {
         "MISSING": {

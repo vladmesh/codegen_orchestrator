@@ -186,9 +186,7 @@ async def test_bot_owner_readback_failure_never_records_deploy_success(
 
     assert result["status"] == "failed"
     failed = [
-        call
-        for call in mock_api.patch.call_args_list
-        if "owner_access_proof_failed" in str(call)
+        call for call in mock_api.patch.call_args_list if "owner_access_proof_failed" in str(call)
     ]
     assert len(failed) == 1
     assert not [call for call in mock_api.patch.call_args_list if "completed" in str(call)]
