@@ -122,6 +122,27 @@ def test_allocator_lives_at_new_location():
     assert hasattr(mod, "AllocationInfo")
 
 
+def test_orchestrator_state_is_limited_to_provisioner_inputs_and_results():
+    graph = importlib.import_module("src.graph")
+
+    assert set(graph.OrchestratorState.__annotations__) == {
+        "messages",
+        "server_to_provision",
+        "is_incident_recovery",
+        "correlation_id",
+        "provisioning_result",
+        "current_agent",
+        "errors",
+    }
+
+
+def test_provisioner_graph_uses_the_proxy_node_directly():
+    nodes = importlib.import_module("src.nodes")
+
+    assert hasattr(nodes, "provisioner_proxy")
+    assert not hasattr(nodes, "provisioner")
+
+
 def test_deploy_environment_path_has_no_llm_dependency():
     devops_dir = Path(__file__).parents[2] / "src/subgraphs/devops"
     deploy_files = [

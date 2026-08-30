@@ -757,11 +757,10 @@ class TestCreateTaskDetailedSpecFallback:
         assert "Fallback from queue" in task_md
 
     def test_build_task_message_passes_feature_description_to_create(self):
-        """_build_task_message forwards feature_description for action=create."""
-        from src.nodes.developer import DeveloperNode
+        """Task rendering includes feature_description for create actions."""
+        from src.nodes.developer_tasks import build_task_message
 
-        node = DeveloperNode()
-        task_md = node._build_task_message(
+        task_md = build_task_message(
             project_name="test-project",
             description="Short desc",
             modules=["backend"],

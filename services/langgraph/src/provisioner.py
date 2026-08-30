@@ -115,28 +115,10 @@ async def _run_provisioning_graph(server_handle: str, is_incident_recovery: bool
         "messages": [HumanMessage(content=f"Provision server {server_handle}")],
         "server_to_provision": server_handle,
         "is_incident_recovery": is_incident_recovery,
+        "correlation_id": None,
+        "provisioning_result": None,
         "current_agent": "provisioner",
         "errors": [],
-        # Initialize required fields
-        "current_project": None,
-        "project_spec": None,
-        "project_intent": None,
-        "po_intent": None,
-        "allocated_resources": {},
-        "deployed_url": None,
-        "repo_info": None,
-        "project_complexity": None,
-        "provisioning_result": None,
-        # Dynamic PO Phase 2 fields
-        "thread_id": None,
-        "active_capabilities": [],
-        "task_summary": None,
-        # Dynamic PO Phase 3 fields
-        "chat_id": None,
-        "correlation_id": None,
-        "awaiting_user_response": False,
-        "user_confirmed_complete": False,
-        "po_iterations": 0,
     }
 
     config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}, "recursion_limit": 60}

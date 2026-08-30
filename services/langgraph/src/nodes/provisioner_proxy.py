@@ -83,6 +83,4 @@ class ProvisionerProxyNode(FunctionalNode):
             }
 
 
-# Export same interface as old provisioner module
 provisioner_proxy_node = ProvisionerProxyNode()
-run = provisioner_proxy_node.run

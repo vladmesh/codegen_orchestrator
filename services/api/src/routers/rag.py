@@ -20,26 +20,13 @@ from ..schemas.rag import (
     RAGQueryResult,
     RAGSummaryRead,
 )
-from .rag_ingest import (  # noqa: F401 – re-exported for backward compatibility
-    CHUNK_OVERLAP_TOKENS,
-    CHUNK_TOKEN_TARGET,
-    EMBEDDING_DIMENSIONS,
-    EMBEDDING_MODEL,
-    ENCODING_NAME,
-    MAX_SIGNATURE_SKEW_SECONDS,
-    apply_document_fields,
-    build_signature,
-    chunk_document,
-    generate_chunk_embeddings,
+from .rag_ingest import (
     get_encoding,
-    hash_text,
-    parse_scope,
-    resolve_scope_ids,
     upsert_document,
     validate_payload_targets,
     verify_ingest_signature,
 )
-from .rag_search import (  # noqa: F401 – re-exported for backward compatibility
+from .rag_search import (
     apply_token_budget,
     get_query_embedding,
     search_chunks,
@@ -48,34 +35,6 @@ from .rag_search import (  # noqa: F401 – re-exported for backward compatibili
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/rag", tags=["rag"])
-
-__all__ = [
-    # Router
-    "router",
-    # Constants
-    "CHUNK_OVERLAP_TOKENS",
-    "CHUNK_TOKEN_TARGET",
-    "EMBEDDING_DIMENSIONS",
-    "EMBEDDING_MODEL",
-    "ENCODING_NAME",
-    "MAX_SIGNATURE_SKEW_SECONDS",
-    # Ingest helpers
-    "apply_document_fields",
-    "build_signature",
-    "chunk_document",
-    "generate_chunk_embeddings",
-    "get_encoding",
-    "hash_text",
-    "parse_scope",
-    "resolve_scope_ids",
-    "upsert_document",
-    "validate_payload_targets",
-    "verify_ingest_signature",
-    # Search helpers
-    "apply_token_budget",
-    "get_query_embedding",
-    "search_chunks",
-]
 
 
 @router.post("/messages", response_model=RAGMessageRead, status_code=status.HTTP_201_CREATED)

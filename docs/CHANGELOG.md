@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Removed unreachable provisioner-graph compatibility state, test-only developer delegates,
+  router helper re-exports, phantom worker activity metadata, and redundant Compose replicas.
+
 - Replaced the field-by-field contract copy with a compact registry pointing to
   canonical REST and queue sources, owners, delivery rules, and lifecycle fences.
 

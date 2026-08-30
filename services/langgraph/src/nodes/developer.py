@@ -32,18 +32,6 @@ from .developer_tasks import (
     get_task_title,
 )
 
-__all__ = [
-    "DeveloperNode",
-    "developer_node",
-    "build_task_message",
-    "build_create_task",
-    "build_feature_task",
-    "determine_repository",
-    "format_env_hints",
-    "format_story_context",
-    "get_task_title",
-]
-
 logger = structlog.get_logger()
 
 # Max error message length for Telegram display
@@ -202,7 +190,7 @@ class DeveloperNode(FunctionalNode):
         primary_repo = await api_client.get_primary_repository(project_id) if project_id else None
         git_url = primary_repo.git_url if primary_repo else None
         repo_id = primary_repo.id if primary_repo else None
-        repo_details = self._determine_repository(git_url, project_name, project_spec.get("slug"))
+        repo_details = determine_repository(git_url, project_name, project_spec.get("slug"))
         repo_full_name = repo_details["full_name"]
         owner = repo_details["owner"]
         repo_name = repo_details["name"]
@@ -216,7 +204,7 @@ class DeveloperNode(FunctionalNode):
         access_token = await github_client.get_token(owner, repo_name)
 
         # Build comprehensive task message for Claude
-        task_message = self._build_task_message(
+        task_message = build_task_message(
             project_name=project_name,
             description=project_description,
             modules=modules,
@@ -227,7 +215,7 @@ class DeveloperNode(FunctionalNode):
             story_context=state.get("story_context"),
         )
 
-        task_title = self._get_task_title(action, project_name)
+        task_title = get_task_title(action, project_name)
         branch = state.get("branch")
         story = StoryWorkerBinding(story_id=state.get("story_id"), branch=branch)
 
@@ -523,21 +511,6 @@ class DeveloperNode(FunctionalNode):
         if isinstance(model_usage, dict):
             return next((name for name in model_usage if isinstance(name, str)), None)
         return None
-
-    # ------------------------------------------------------------------
-    # Thin delegations (keeps tests calling node._method_name working)
-    # ------------------------------------------------------------------
-
-    def _determine_repository(
-        self, git_url: str | None, project_name: str, project_slug: str | None = None
-    ) -> dict:
-        return determine_repository(git_url, project_name, project_slug)
-
-    def _get_task_title(self, action: str, project_name: str) -> str:
-        return get_task_title(action, project_name)
-
-    def _build_task_message(self, **kwargs) -> str:
-        return build_task_message(**kwargs)
 
     def _build_create_task(self, **kwargs) -> str:
         return build_create_task(**kwargs)
