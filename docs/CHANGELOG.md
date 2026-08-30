@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Extracted executor diagnostics and worker teardown/removal evidence from
+  WorkerManager into explicit collaborators while preserving worker lifecycle
+  ordering and the manager's public diagnostic and deletion facades.
+
 - Split scheduler supervision into cohesive liveness, deploy, QA, handoff, and shared-support
   modules while preserving the runtime facade and supervision behavior.
 

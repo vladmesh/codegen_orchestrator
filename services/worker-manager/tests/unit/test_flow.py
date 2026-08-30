@@ -11,7 +11,10 @@ from shared.contracts.queues.worker import WorkerOwnership
 @pytest.fixture(autouse=True)
 def patch_settings(worker_settings):
     """Patch settings for all tests in this module."""
-    with patch("src.manager.settings", worker_settings):
+    with (
+        patch("src.manager.settings", worker_settings),
+        patch("src.worker_removal.settings", worker_settings),
+    ):
         yield
 
 

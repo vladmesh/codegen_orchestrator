@@ -284,7 +284,7 @@ class TestItCannotReachTheApplicationAtAll:
     async def test_deleting_the_executor_takes_the_proxy_with_it(self, qa_worker, tmp_path):
         wrapper, manager, _ = await qa_worker()
 
-        with patch("src.manager.settings") as settings:
+        with patch("src.worker_removal.settings") as settings:
             settings.WORKER_IMAGE_PREFIX = "worker"
             settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
             await manager.delete_worker("qa-1", reason="completed")
@@ -469,7 +469,7 @@ class TestTheOneCommandItIsGiven:
         assert await manager.redis.hget("worker:status:qa-1", "status") == WorkerStatus.FAILED
 
         workspace = tmp_path / f"{workspace_mod.QA_WORKSPACE_PREFIX}qa-1"
-        with patch("src.manager.settings") as settings:
+        with patch("src.worker_removal.settings") as settings:
             settings.WORKER_IMAGE_PREFIX = "worker"
             settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
             await manager.delete_worker("qa-1", reason="failed")
@@ -483,7 +483,7 @@ class TestNothingSurvivesTheRun:
         workspace = tmp_path / f"{workspace_mod.QA_WORKSPACE_PREFIX}qa-1"
         (workspace / "scratch.md").write_text("notes")
 
-        with patch("src.manager.settings") as settings:
+        with patch("src.worker_removal.settings") as settings:
             settings.WORKER_IMAGE_PREFIX = "worker"
             settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
             await manager.delete_worker("qa-1", reason="completed")
@@ -503,8 +503,8 @@ class TestNothingSurvivesTheRun:
         )
 
         with (
-            patch("src.manager.settings") as settings,
-            patch("src.manager.ComposeRunner") as compose,
+            patch("src.worker_removal.settings") as settings,
+            patch("src.worker_removal.ComposeRunner") as compose,
         ):
             settings.WORKER_IMAGE_PREFIX = "worker"
             settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)

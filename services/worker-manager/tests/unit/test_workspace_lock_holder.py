@@ -26,6 +26,7 @@ from shared.redis import decode_redis_fields
 from shared.queues import WORKER_COMMANDS
 
 from src.garbage_collector import garbage_collect_workspaces
+from src.executor_diagnostics import ExecutorDiagnostics
 from src.manager import WorkerManager
 
 
@@ -70,7 +71,7 @@ async def _create(manager: WorkerManager, worker_id: str, run_id: str) -> str:
 def _compose_runner_patch():
     runner = MagicMock()
     runner.run = AsyncMock(return_value=(0, "", ""))
-    patcher = patch("src.manager.ComposeRunner")
+    patcher = patch("src.worker_removal.ComposeRunner")
     return patcher, runner
 
 
@@ -152,7 +153,7 @@ async def test_workspace_lock_refusal_does_not_poison_executor_inventory(docker,
     with pytest.raises(RuntimeError, match="already has active worker"):
         await _create(manager, "worker-b", "run-b")
 
-    assert await manager._executor_leases() == {
+    assert await ExecutorDiagnostics(redis=redis, docker=docker)._executor_leases() == {
         AgentType.CLAUDE: 0,
         AgentType.CODEX: 0,
     }
@@ -220,8 +221,8 @@ async def test_a_qa_executor_does_not_release_a_developer_workers_lock(docker):
     )
 
     with (
-        patch("src.manager.workspace_mod.remove_workspace"),
-        patch("src.manager.qa_egress.tear_down", new_callable=AsyncMock),
+        patch("src.worker_removal.workspace_mod.remove_workspace"),
+        patch("src.worker_removal.qa_egress.tear_down", new_callable=AsyncMock),
     ):
         await manager.delete_worker("qa-executor", reason="completed")
 

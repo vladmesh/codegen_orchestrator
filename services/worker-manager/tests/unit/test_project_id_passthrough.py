@@ -375,8 +375,8 @@ class TestDeleteWorkerPreservation:
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
         with (
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
-            patch("src.manager.ComposeRunner") as mock_runner_cls,
+            patch("src.worker_removal.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.worker_removal.ComposeRunner") as mock_runner_cls,
         ):
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
@@ -402,8 +402,8 @@ class TestDeleteWorkerPreservation:
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
         with (
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
-            patch("src.manager.ComposeRunner") as mock_runner_cls,
+            patch("src.worker_removal.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.worker_removal.ComposeRunner") as mock_runner_cls,
         ):
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
@@ -470,7 +470,7 @@ class TestDeleteWorkerRemovesFromActiveSet:
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+        with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
             mock_runner_cls.return_value = mock_runner
@@ -706,7 +706,7 @@ class TestProjectMutex:
                 repo_id="repo-1",
             )
 
-        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+        with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
             mock_runner_cls.return_value = mock_runner
@@ -746,7 +746,7 @@ class TestProjectMutex:
         mock_docker.remove_container.side_effect = RuntimeError("docker remove failed")
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+        with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
             mock_runner_cls.return_value = mock_runner
@@ -806,7 +806,7 @@ class TestFailureCounter:
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+        with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
             mock_runner_cls.return_value = mock_runner
@@ -834,7 +834,7 @@ class TestFailureCounter:
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+        with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
             mock_runner_cls.return_value = mock_runner
@@ -864,7 +864,7 @@ class TestFailureCounter:
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+        with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
             mock_runner_cls.return_value = mock_runner
@@ -893,7 +893,7 @@ class TestFailureCounter:
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+        with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
             mock_runner_cls.return_value = mock_runner
@@ -921,7 +921,7 @@ class TestFailureCounter:
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+        with patch("src.worker_removal.ComposeRunner") as mock_runner_cls:
             mock_runner = MagicMock()
             mock_runner.run = AsyncMock(return_value=(0, "", ""))
             mock_runner_cls.return_value = mock_runner

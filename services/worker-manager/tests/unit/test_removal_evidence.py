@@ -30,7 +30,7 @@ from shared.contracts.worker_evidence import (
     removed_worker_evidence_key,
 )
 from src.config import settings
-from src.manager import WorkerManager
+from src.worker_removal import WorkerRemoval
 
 pytestmark = pytest.mark.asyncio
 
@@ -94,6 +94,15 @@ def docker_double(order: list[str], payload: dict | None = None, logs: str = "wr
     return docker
 
 
+def removal(redis, docker) -> WorkerRemoval:
+    return WorkerRemoval(
+        redis,
+        docker,
+        unregister_broker_worker=AsyncMock(),
+        release_workspace_lock=AsyncMock(),
+    )
+
+
 async def owned_worker(redis, *, worker_type: str = "developer", ownership=OWNERSHIP) -> None:
     """The Redis record a worker of this run has by the time it is deleted."""
     mapping = {"worker_type": worker_type}
@@ -111,7 +120,7 @@ async def test_the_ending_is_captured_before_the_container_is_removed():
     """Read it while it exists, or never: removal is the point of no return."""
     redis = aioredis.FakeRedis(decode_responses=True)
     order: list[str] = []
-    manager = WorkerManager(redis=redis, docker_client=docker_double(order))
+    manager = removal(redis=redis, docker=docker_double(order))
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID, reason="failed")
@@ -136,7 +145,7 @@ async def test_the_ending_is_captured_before_the_container_is_removed():
 async def test_the_record_outlives_the_metadata_the_deletion_erases():
     """`delete_worker` deletes `worker:meta`. The evidence is not in it."""
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker_double([]))
+    manager = removal(redis=redis, docker=docker_double([]))
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID)
@@ -150,7 +159,7 @@ async def test_the_record_outlives_the_metadata_the_deletion_erases():
 async def test_one_runs_record_never_collects_another_runs_worker():
     """The record is filed under the worker's own run, not the deleter's."""
     redis = aioredis.FakeRedis(decode_responses=True)
-    manager = WorkerManager(redis=redis, docker_client=docker_double([]))
+    manager = removal(redis=redis, docker=docker_double([]))
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID)
@@ -163,7 +172,7 @@ async def test_a_qa_executor_is_recorded_as_one():
     """The role comes off the record worker-manager held, not a name prefix."""
     redis = aioredis.FakeRedis(decode_responses=True)
     docker = docker_double([])
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis, worker_type="qa")
 
     await manager.delete_worker(WORKER_ID)
@@ -177,7 +186,7 @@ async def test_a_container_that_cannot_be_read_is_still_removed_and_still_record
     order: list[str] = []
     docker = docker_double(order)
     docker.inspect_container = AsyncMock(side_effect=RuntimeError("daemon said no"))
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID)
@@ -197,7 +206,7 @@ async def test_an_unreadable_log_does_not_cost_the_exit_code():
     redis = aioredis.FakeRedis(decode_responses=True)
     docker = docker_double([])
     docker.read_container_logs = AsyncMock(side_effect=RuntimeError("log driver is not local"))
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID)
@@ -218,7 +227,7 @@ async def test_a_capture_that_runs_long_is_cut_off_and_the_removal_proceeds(monk
         await asyncio.sleep(30)
 
     docker.inspect_container = AsyncMock(side_effect=hang)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
 
     await asyncio.wait_for(manager.delete_worker(WORKER_ID), timeout=5)
@@ -232,7 +241,7 @@ async def test_a_record_that_cannot_be_stored_never_fails_the_deletion():
     redis = aioredis.FakeRedis(decode_responses=True)
     order: list[str] = []
     docker = docker_double(order)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
     original_hset = redis.hset
 
@@ -260,7 +269,7 @@ async def test_a_record_that_cannot_be_stored_keeps_the_workers_last_durable_nam
     redis = aioredis.FakeRedis(decode_responses=True)
     order: list[str] = []
     docker = docker_double(order)
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
     original_hset = redis.hset
 
@@ -285,7 +294,7 @@ async def test_a_worker_whose_metadata_names_no_owner_is_still_removed():
     """There is no run to file it under, and that must not stop the cleanup."""
     redis = aioredis.FakeRedis(decode_responses=True)
     order: list[str] = []
-    manager = WorkerManager(redis=redis, docker_client=docker_double(order))
+    manager = removal(redis=redis, docker=docker_double(order))
     await owned_worker(redis, ownership=None)
 
     await manager.delete_worker(WORKER_ID)
@@ -298,7 +307,7 @@ async def test_a_worker_removed_while_it_still_ran_says_so_instead_of_exit_zero(
     """`delete_worker` force-removes. A killed worker did not exit cleanly."""
     redis = aioredis.FakeRedis(decode_responses=True)
     docker = docker_double([], payload=container_payload(status="running", exit_code=0))
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID, reason="timeout")
@@ -314,7 +323,7 @@ async def test_the_tail_is_redacted_against_the_containers_own_secrets():
     """A container log that echoed a credential must not persist it."""
     redis = aioredis.FakeRedis(decode_responses=True)
     docker = docker_double([], logs=f"agent failed: auth={API_KEY}\n")
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID)
@@ -329,7 +338,7 @@ async def test_the_tail_is_bounded_and_keeps_the_end():
     redis = aioredis.FakeRedis(decode_responses=True)
     noise = "x" * (REMOVAL_LOG_TAIL_MAX_CHARS * 3)
     docker = docker_double([], logs=f"{noise}\nthe last thing it said")
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID)
@@ -343,7 +352,7 @@ async def test_the_stored_record_is_one_line_of_json():
     """Its readers pull it back a line at a time through redis-cli."""
     redis = aioredis.FakeRedis(decode_responses=True)
     docker = docker_double([], logs="first line\nsecond line\n")
-    manager = WorkerManager(redis=redis, docker_client=docker)
+    manager = removal(redis=redis, docker=docker)
     await owned_worker(redis)
 
     await manager.delete_worker(WORKER_ID)

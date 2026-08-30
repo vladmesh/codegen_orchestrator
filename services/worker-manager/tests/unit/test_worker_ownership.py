@@ -295,9 +295,9 @@ async def test_deleting_a_qa_executor_does_not_release_a_developers_workspace(tm
     )
 
     with (
-        patch("src.manager.settings") as settings,
-        patch("src.manager.workspace_mod.remove_workspace"),
-        patch("src.manager.qa_egress.tear_down", new_callable=AsyncMock),
+        patch("src.worker_removal.settings") as settings,
+        patch("src.worker_removal.workspace_mod.remove_workspace"),
+        patch("src.worker_removal.qa_egress.tear_down", new_callable=AsyncMock),
     ):
         settings.WORKER_IMAGE_PREFIX = "worker"
         settings.SCAFFOLDED_WORKSPACE_PATH = str(tmp_path)
