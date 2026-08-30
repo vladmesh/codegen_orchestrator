@@ -1695,15 +1695,25 @@ broker lease is transient execution evidence, not an ownership heuristic.
 On PEL reclaim, the new engineering consumer reads that Run record or the story-worker binding and
 attaches only when the broker lease and request identity agree. It reads the matching retained
 output without publishing another prompt, skipping retained malformed entries that carry another
-request id, then performs the normal terminal Run write. An ordinary exception after publication
-requests worker deletion before the job can settle terminally; cancellation alone leaves the PEL
-entry unacknowledged for reclaim. If the record is present but no prompt was leased and no matching
-output exists, the replacement may publish a new turn; if a leased turn reaches its recorded
-deadline, it requests worker deletion. Container health is never evidence that a turn is owned. The
-engineering attempt ledger's unique `engineering-run:{run_id}` key and locked terminal writer retain
-the first provider-charge record on this adoption path as on the original path. In the narrow
-active-turn-key-absent path, however, the first prompt can still be unread while adoption publishes a
-second one: the ledger deduplicates the attempt record, not provider calls, so it is not a
+request id, then performs the normal terminal Run write. Ordinary reuse waits only for the turn's own
+broker-stamped request id, so retained output from an earlier turn cannot supply this turn's commit.
+
+Before every engineering terminal Run write, the terminal-settlement guard reads the durable record.
+A consumed typed worker result, including a typed worker failure, settles without teardown so a story
+worker remains available for deliberate reuse. An unconsumed recorded turn requests worker deletion
+before the Run can settle terminally, including output timeout, adoption mismatch, transient broker
+failure, or output mapping failure. If `worker:active-turn:{worker_id}` is leased by another
+engineering attempt, that owner fence takes precedence: the failed attempt settles without deletion.
+Cancellation is not terminal settlement and leaves the PEL entry unacknowledged for reclaim. The
+spawn-layer deletion calls remain belt-and-braces for failures before the terminal guard is reached.
+If the record is present but no prompt was leased and no matching output exists, the replacement may
+publish a new turn; if a leased turn reaches its recorded deadline, it requests worker deletion.
+Container health is never evidence that a turn is owned. The engineering attempt ledger's unique
+`engineering-run:{run_id}` key and locked terminal writer retain the first provider-charge record on
+this adoption path as on the original path. In the narrow active-turn-key-absent path, a second prompt
+is possible only if the wrapper has not polled for at least the sixty-second reclaim lease despite its
+500 ms polling interval: a healthy wrapper would have leased the first prompt or produced a retained
+output before reclaim. The ledger deduplicates the attempt record, not provider calls, so it is not a
 provider-charge mutex.
 
 `POST /api/stories/{id}/accept-result` is the human completion route for a story in

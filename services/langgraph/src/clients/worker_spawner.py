@@ -74,6 +74,7 @@ class SpawnResult:
     transcript_truncated: bool | None = None
     stop_reason: WorkerStopReason | None = None
     agent_limit_seconds: int | None = None
+    turn_result_consumed: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             factory_evidence=result.factory_evidence,
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
+            turn_result_consumed=True,
         )
     if isinstance(result, WorkerBlockedResult):
         return SpawnResult(
@@ -180,6 +182,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
             factory_evidence=result.factory_evidence,
             transcript_path=result.transcript_path,
             transcript_truncated=result.transcript_truncated,
+            turn_result_consumed=True,
         )
     # WorkerFailedResult
     return SpawnResult(
@@ -201,6 +204,7 @@ def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | N
         factory_evidence=result.factory_evidence,
         transcript_path=result.transcript_path,
         transcript_truncated=result.transcript_truncated,
+        turn_result_consumed=True,
     )
 
 
@@ -488,7 +492,7 @@ async def _adopt_recorded_turn(
     if remaining is not None:
         # The owner waited through the broker-recorded deadline.  This is a
         # termination request, not a container-health inference.
-        await _publish_worker_deletion(redis_client, request_id, worker_id, "timeout")
+        await publish_worker_deletion(redis_client, request_id, worker_id, "timeout")
         return SpawnResult(
             request_id=request_id,
             success=False,
@@ -581,7 +585,7 @@ async def record_turn_on_attempt(attempt_id: str, request_id: str) -> None:
     )
 
 
-async def _publish_worker_deletion(
+async def publish_worker_deletion(
     redis_client: redis.Redis, request_id: str, worker_id: str, reason: str
 ) -> None:
     """Ask worker-manager to take a worker away.
@@ -621,7 +625,7 @@ async def _handle_spawn_interruption(
     """Tear down a worker when an ordinary spawn failure stops its waiter."""
     logger.error("spawn_failed", error=str(error), worker_id=worker_id)
     if worker_id:
-        await _publish_worker_deletion(redis_client, request_id, worker_id, "failed")
+        await publish_worker_deletion(redis_client, request_id, worker_id, "failed")
     return SpawnResult(request_id, False, -1, str(error))
 
 
@@ -741,7 +745,7 @@ async def request_spawn(
             redis_client, worker_id, request_id, ownership.attempt_id, task_content, story_md
         )
 
-        # Wait for output (worker output doesn't have request_id, so pass None)
+        # The fresh worker's output stream is private to this one turn.
         try:
             output_resp = await _wait_for_response(
                 redis_client,
@@ -893,6 +897,7 @@ async def send_task_to_worker(
                 float(timeout_seconds),
                 output_stream,
                 worker_id=worker_id,
+                output_request_id=request_id,
             )
         except WorkerOutputDecodeError:
             # Undecodable worker output — explicit invalid result, not a timeout.

@@ -85,6 +85,7 @@ class EngineeringState(TypedDict):
     worker_report: str | None
     worker_observability: dict | None
     gave_up_reason: str | None
+    turn_result_consumed: bool
 
     # Why the worker's turn ended without a result, and the limit it was
     # measured against. Both are recorded on the attempt so a failed run says

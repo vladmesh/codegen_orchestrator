@@ -324,10 +324,12 @@ class DeveloperNode(FunctionalNode):
                 branch=spawn_kwargs["story"].branch,
                 turn_metadata=state.get("attempt_turn"),
             )
-            # A timeout requests teardown, but it does not prove that the
-            # previous container is gone.  Do not create a sibling worker;
-            # the worker-manager's owner-fenced workspace lock and supervisor
-            # removal reconciliation decide when another attempt may start.
+            # An unconsumed turn failure reaches the terminal-settlement guard:
+            # it requests teardown unless the broker lease belongs to another
+            # attempt. That request does not prove the prior container is gone,
+            # so do not create a sibling worker; the worker-manager's
+            # owner-fenced workspace lock and removal reconciliation decide when
+            # another attempt may start.
         else:
             worker_result = await request_spawn(**spawn_kwargs)
         return worker_result
@@ -357,6 +359,7 @@ class DeveloperNode(FunctionalNode):
                     "worker_observability": DeveloperNode._worker_observability(
                         worker_result, state.get("project_spec") or {}, agent_type
                     ),
+                    "turn_result_consumed": worker_result.turn_result_consumed,
                 }
 
             logger.info(
@@ -380,6 +383,7 @@ class DeveloperNode(FunctionalNode):
                 "worker_observability": DeveloperNode._worker_observability(
                     worker_result, state.get("project_spec") or {}, agent_type
                 ),
+                "turn_result_consumed": worker_result.turn_result_consumed,
             }
 
         if worker_result.gave_up_reason:
@@ -399,6 +403,7 @@ class DeveloperNode(FunctionalNode):
                 ),
                 "errors": state.get("errors", [])
                 + [f"Worker gave up: {worker_result.gave_up_reason}"],
+                "turn_result_consumed": worker_result.turn_result_consumed,
             }
 
         error_msg = worker_result.error_message or worker_result.output or "Unknown error"
@@ -424,6 +429,7 @@ class DeveloperNode(FunctionalNode):
             "worker_observability": DeveloperNode._worker_observability(
                 worker_result, state.get("project_spec") or {}, agent_type
             ),
+            "turn_result_consumed": worker_result.turn_result_consumed,
         }
 
     @staticmethod

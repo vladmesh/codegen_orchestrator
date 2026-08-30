@@ -358,13 +358,26 @@ class TestMalformedOutputHandling:
         mock_client = AsyncMock()
         mock_redis_mod.from_url.return_value = mock_client
         mock_client.xgroup_create = AsyncMock()
-        mock_client.xadd = AsyncMock()
+        published_inputs = []
+
+        async def capture_input(stream, data, **kwargs):
+            published_inputs.append((stream, data, kwargs))
+
+        mock_client.xadd = capture_input
         mock_client.xack = AsyncMock()
         mock_client.xgroup_destroy = AsyncMock()
         mock_client.aclose = AsyncMock()
-        mock_client.xreadgroup = AsyncMock(
-            return_value=[(b"worker:dev-1:output", [(b"1-0", {b"data": b"{bad json"})])]
-        )
+
+        async def malformed_matching_output(*_args, **_kwargs):
+            request_id = json.loads(published_inputs[0][1]["data"])["request_id"]
+            return [
+                (
+                    b"worker:dev-1:output",
+                    [(b"1-0", {b"request_id": request_id.encode(), b"data": b"{bad json"})],
+                )
+            ]
+
+        mock_client.xreadgroup = malformed_matching_output
 
         from src.clients.worker_spawner import send_task_to_worker
 

@@ -287,27 +287,31 @@ class TestSendTaskToWorker:
 
         mock_redis.xadd = capture_xadd
         mock_redis.xgroup_create = AsyncMock()
-        mock_redis.xreadgroup = AsyncMock(
-            return_value=[
+
+        async def completed_output(*_args, **_kwargs):
+            request_id = json.loads(captured_xadds[0][1]["data"])["request_id"]
+            return [
                 (
                     b"worker:dev-123:output",
                     [
                         (
                             b"1-0",
                             {
+                                b"request_id": request_id.encode(),
                                 b"data": json.dumps(
                                     {
                                         "status": "completed",
                                         "content": "Fixed the test",
                                         "commit_sha": "abc123",
                                     }
-                                ).encode()
+                                ).encode(),
                             },
                         )
                     ],
                 )
             ]
-        )
+
+        mock_redis.xreadgroup = completed_output
         mock_redis.xack = AsyncMock()
         mock_redis.xgroup_destroy = AsyncMock()
         mock_redis.aclose = AsyncMock()
@@ -374,28 +378,38 @@ class TestSendTaskToWorker:
         mock_redis = AsyncMock()
         mock_redis_from_url.return_value = mock_redis
 
-        mock_redis.xadd = AsyncMock(return_value="msg-id")
+        captured_xadds = []
+
+        async def capture_xadd(stream, data, **kwargs):
+            captured_xadds.append((stream, data, kwargs))
+            return "msg-id"
+
+        mock_redis.xadd = capture_xadd
         mock_redis.xgroup_create = AsyncMock()
-        mock_redis.xreadgroup = AsyncMock(
-            return_value=[
+
+        async def failed_output(*_args, **_kwargs):
+            request_id = json.loads(captured_xadds[0][1]["data"])["request_id"]
+            return [
                 (
                     b"worker:dev-123:output",
                     [
                         (
                             b"1-0",
                             {
+                                b"request_id": request_id.encode(),
                                 b"data": json.dumps(
                                     {
                                         "status": "failed",
                                         "error": "Agent process failed",
                                     }
-                                ).encode()
+                                ).encode(),
                             },
                         )
                     ],
                 )
             ]
-        )
+
+        mock_redis.xreadgroup = failed_output
         mock_redis.xack = AsyncMock()
         mock_redis.xgroup_destroy = AsyncMock()
         mock_redis.aclose = AsyncMock()

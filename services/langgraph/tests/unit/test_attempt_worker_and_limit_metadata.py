@@ -8,6 +8,7 @@ work was measured against, and which of the three stops it hit.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -118,6 +119,7 @@ class TestStopReasonReachesTheRun:
 
         with patch("src.consumers.engineering_result_handler.api_client") as api:
             api.patch = AsyncMock()
+            api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
             await fail_job(
                 ATTEMPT_ID,
                 "Agent process exceeded its 3600s turn limit",
@@ -125,6 +127,7 @@ class TestStopReasonReachesTheRun:
                 None,
                 stop_reason=WorkerStopReason.AGENT_LIMIT_EXCEEDED,
                 agent_limit_seconds=3600,
+                redis=AsyncMock(),
             )
 
         metadata = api.patch.await_args[1]["json"]["run_metadata"]
@@ -138,7 +141,8 @@ class TestStopReasonReachesTheRun:
 
         with patch("src.consumers.engineering_result_handler.api_client") as api:
             api.patch = AsyncMock()
-            await fail_job(ATTEMPT_ID, "something else broke", None, None)
+            api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
+            await fail_job(ATTEMPT_ID, "something else broke", None, None, redis=AsyncMock())
 
         assert "run_metadata" not in api.patch.await_args[1]["json"]
 

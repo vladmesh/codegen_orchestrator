@@ -1,5 +1,6 @@
 """Engineering consumer validates its input via EngineeringMessage before business logic."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -20,6 +21,7 @@ async def test_malformed_job_is_terminal_not_poison_loop():
     """A job missing a required field fails the run and returns (so the queue loop ACKs
     it) instead of raising — a raise would leave the entry unacked and reclaim forever."""
     api = AsyncMock()
+    api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
     redis = AsyncMock()
     # project_id is required by EngineeringMessage — omit it.
     bad_job = {"task_id": "eng-1", "telegram_chat_id": "123", "action": "feature"}
@@ -44,6 +46,7 @@ async def test_malformed_job_reraises_when_terminal_write_is_transiently_lost():
     """If failing the run hits a transient API error (5xx), do NOT ACK — re-raise so the
     queue loop leaves the poison entry for claim_pending to retry once the API recovers."""
     api = AsyncMock()
+    api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
     api.patch = AsyncMock(side_effect=_http_error(503))
     redis = AsyncMock()
     bad_job = {
@@ -67,6 +70,7 @@ async def test_malformed_job_acks_when_run_is_non_retryably_unwritable():
     """A non-retryable client error (404 — no such run) is terminal: return so the loop ACKs
     instead of poison-looping on a run that will never accept the write."""
     api = AsyncMock()
+    api.get_run = AsyncMock(return_value=SimpleNamespace(run_metadata={}))
     api.patch = AsyncMock(side_effect=_http_error(404))
     redis = AsyncMock()
     bad_job = {"task_id": "eng-1", "telegram_chat_id": "123", "action": "feature"}

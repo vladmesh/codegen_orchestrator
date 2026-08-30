@@ -8,8 +8,10 @@
   of publishing a second prompt. The story-worker binding is written when the dynamic worker is
   acknowledged; the attempt's durable turn metadata and the broker lease identify the exact retained
   output, which carries the broker-owned request id. Shutdown still drains for ten seconds, then PEL
-  reclaim adopts the turn or requests its deletion at its recorded deadline. Ordinary post-publication
-  failures now request deletion before terminal settlement, while cancelled waits remain reclaimable;
+  reclaim adopts the turn or requests its deletion at its recorded deadline. Terminal settlement now
+  centrally tears down every unconsumed recorded turn before its Run can become terminal, except for a
+  worker owner-fenced to another engineering attempt; consumed typed output retains story-worker reuse.
+  Reused-worker waits fence output by the current turn request id, cancelled waits remain reclaimable,
   adoption ignores malformed historical output for another request, and worker registration uses the
   consumer's story id rather than a branch-name convention. Recheck-deploy recovery now shares QA
   handoff's five-minute age fence, closing the commit-to-dispatch-stamp duplicate window.
