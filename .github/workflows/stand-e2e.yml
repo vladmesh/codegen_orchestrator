@@ -462,6 +462,9 @@ jobs:
         if: always()
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
+          SUITE: ${{ steps.suite.outputs.value }}
+          WORKER: ${{ inputs.worker }}
+          QA: ${{ inputs.qa }}
         run: |
           set -euo pipefail
           evidence_dir="${RUNNER_TEMP}/stand-e2e-handoff"
@@ -472,7 +475,17 @@ jobs:
             cp "${RUNNER_TEMP}/remote-invocation.log" "${run_dir}/remote-invocation.log" || true
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           if [ -n "${PROD_HOST}" ]; then
-            for name in junit.xml report.tsv run.log claude-claude.log claude-codex.log codex-claude.log codex-codex.log; do
+            reports=(junit.xml report.tsv run.log)
+            if [ "${SUITE}" = "matrix" ]; then
+              reports+=(claude-claude.log claude-codex.log codex-claude.log codex-codex.log)
+            else
+              # A named single-cell suite and a custom target produce exactly
+              # the pair the runner was asked for. Trying all matrix filenames
+              # here made scp wait on three files that cannot exist (21 seconds
+              # in run 33446639363), obscuring rather than improving evidence.
+              reports+=("${QA}-${WORKER}.log")
+            fi
+            for name in "${reports[@]}"; do
               scp -i "${key_path}" ${SSH_OPTS} \
                 root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
             done
