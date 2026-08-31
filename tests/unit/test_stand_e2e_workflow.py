@@ -10,8 +10,16 @@ from pathlib import Path
 import yaml
 
 from scripts.stand_acceptance import PROTECTED_STAND_SECRET_NAMES
+from scripts.stand_run import (
+    MATRIX_RUNNER_TIMEOUT_SECONDS,
+    STAND_CLEANUP_JOB_TIMEOUT_MINUTES,
+    STAND_JOB_TIMEOUT_MINUTES,
+    STAND_PROVISIONING_TIMEOUT_SECONDS,
+    SUITES,
+)
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
+MAKEFILE = Path(__file__).parents[2] / "Makefile"
 
 
 def _workflow() -> dict:
@@ -52,8 +60,26 @@ def test_only_one_e2e_at_a_time():
 def test_every_named_suite_is_offered_plus_an_arbitrary_target():
     options = _workflow()["on"]["workflow_dispatch"]["inputs"]["suite"]["options"]
 
-    assert {"mega", "llm", "matrix"} <= set(options)
+    assert set(options) == {"mega-noop", "mega-llm", "matrix", "custom"}
     assert "custom" in options, "an e2e invented later must be startable without a code change"
+
+
+def test_workflow_suite_names_match_the_runner_canonical_suite_table():
+    options = _workflow()["on"]["workflow_dispatch"]["inputs"]["suite"]["options"]
+
+    assert set(options) - {"custom"} == set(SUITES)
+    assert _workflow()["on"]["workflow_dispatch"]["inputs"]["suite"]["default"] == "mega-noop"
+    assert "inputs.suite" in _workflow()["run-name"]
+
+
+def test_worker_and_qa_inputs_describe_when_the_runner_uses_them():
+    inputs = _workflow()["on"]["workflow_dispatch"]["inputs"]
+
+    for name in ("worker", "qa"):
+        description = inputs[name]["description"]
+        assert "mega-llm" in description
+        assert "matrix" in description
+        assert "mega-noop" in description
 
 
 def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
@@ -74,10 +100,26 @@ def test_the_machine_manifest_is_collected_and_scanned_before_handoff_upload():
 
 
 def test_the_matrix_fits_in_the_job_timeout():
-    """Four full pipeline runs, each up to 45 minutes by the runner's own cap."""
+    """The provisioned stand, four cells, and their cleanup reserve fit strictly."""
     job = _workflow()["jobs"]["e2e"]
 
-    assert job["timeout-minutes"] >= 180
+    assert job["timeout-minutes"] == STAND_JOB_TIMEOUT_MINUTES
+    assert job["timeout-minutes"] * 60 > (
+        STAND_PROVISIONING_TIMEOUT_SECONDS + MATRIX_RUNNER_TIMEOUT_SECONDS
+    )
+    assert _workflow()["jobs"]["cleanup"]["timeout-minutes"] == STAND_CLEANUP_JOB_TIMEOUT_MINUTES
+
+
+def test_make_targets_preserve_the_canonical_suite_contract():
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert 'test-live-mega-noop:\n\t@echo "Running mega-noop' in makefile
+    assert "pytest tests/live/test_full_pipeline.py::TestFullPipeline -v" in makefile
+    assert "test-live-mega: test-live-mega-noop" in makefile
+    assert 'test-live-mega-llm:\n\t@echo "Running mega-llm' in makefile
+    assert "pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v" in makefile
+    assert "test-live-matrix:\n\t@$(MAKE) --no-print-directory stand-run SUITE=matrix" in makefile
+    assert "# Legacy aggregate, not a named suite:" in makefile
 
 
 def test_lifecycle_preflight_and_create_replace_the_static_host():

@@ -38,6 +38,66 @@ a crashed worker's lease expires and is pruned while teardown waits.
 The repository root is derived from `tests/live/live_harness.py`. `ORCHESTRATOR_ROOT` may override
 it, but the target must contain `pyproject.toml` and `tests/live`.
 
+## Stand suite contract
+
+The stand runner (`scripts/stand_run.py`) is the canonical contract for named E2E suites. A name
+always identifies one pytest node, whether the run can spend model budget, its number of agent
+combinations, and its subprocess timeout. The GitHub Actions dropdown exposes only the canonical
+names. `mega` and `llm` remain temporary runner aliases for `mega-noop` and `mega-llm`; reports,
+JUnit metadata, logs, and run directories always record the canonical name.
+
+| Suite | Pytest target | LLM/model turns | Runs | Project / engineering / deploy / QA | Cleanup | Pytest cap | Expected duration |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `mega-noop` | `tests/live/test_full_pipeline.py::TestFullPipeline` | 0; noop engineering and deterministic QA | 1 | one project; noop engineering; deploy; deterministic QA | manifest-owned, fail-closed | 40 min | measured from stand artifacts; no baseline measurement yet |
+| `mega-llm` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | one developer + one QA executor turn | 1 selected `--worker` / `--qa` pair | one project; selected developer; deploy; selected QA executor | manifest-owned, fail-closed | 60 min | measured from stand artifacts; no baseline measurement yet |
+| `matrix` | `tests/live/test_full_pipeline.py::TestFullPipelineLLM` | 8 total: developer + QA for each cell | 4: Claude/Codex QA × Claude/Codex developer | one complete LLM pipeline per cell | after every pytest cell and a final runner sweep, both fail-closed | 60 min per cell | measured from stand artifacts; no baseline measurement yet |
+
+The local target names reflect that same contract:
+
+- `make test-live-mega-noop` runs only the noop class.
+- `make test-live-mega` is a compatibility alias for `test-live-mega-noop`.
+- `make test-live-mega-llm` runs only the LLM class for one locally configured pair.
+- `make test-live-matrix` delegates the four paid cells to the stand runner.
+- `make test-live-pipeline` is a legacy aggregate of scaffold, engineering, and both full-pipeline
+  classes. It is not a named suite and intentionally remains visible until duplicate coverage is
+  removed in a later iteration.
+
+### Timeout budget
+
+The timeout values are deliberate bounds, not duration estimates. The pipeline's explicit waits
+sum to 30 minutes for noop (`120 + 420 + 420 + 420 + 120 + 300` seconds) and 53 minutes for LLM
+(`120 + 1800 + 420 + 420 + 120 + 300`). The 40- and 60-minute pytest caps add time for
+manifest-owned teardown and diagnostics. A QA executor switch is separately limited to three
+minutes; runner preflight and final sweep are each five minutes.
+
+For the largest workflow path, provisioning has a 45-minute budget. Its configured waits include
+two 10-minute machine allocations, five minutes for DNS, three minutes for API readiness, and 20
+minutes for target provisioning; the remainder is bootstrap/Ansible reserve. The matrix runner is
+bounded at 262 minutes (`5m preflight + 4 × (60m cell + 3m switch) + 5m sweep`). The E2E job cap is
+360 minutes, a strict 53-minute reserve over provisioning plus that runner path. Lifecycle cleanup
+runs in its own 30-minute GitHub job, because jobs do not share an outer timeout.
+
+### Invariant map and first-iteration baseline
+
+All named suites exercise the product acceptance path: project creation, scaffold, engineering,
+deploy, and QA verdict. The LLM suites additionally prove selected executor wiring; the noop suite
+is intentionally the free deterministic counterpart. The static baseline at this point is one
+noop run, one selected LLM pair, or four unique matrix pairs; it does not claim unmeasured wall
+times.
+
+| Invariant level | Primary evidence | Suites |
+| --- | --- | --- |
+| Product acceptance | `TestFullPipeline` / `TestFullPipelineLLM` status, deploy, health, and QA assertions | all named suites |
+| Execution evidence | `run_evidence` artifact and runner per-pair log/JUnit/TSV | all named suites; pair-specific for LLM/matrix |
+| Diagnostics | bounded debug dumps, runner log, and public report files | all named suites |
+| Ownership fence | `OwnershipManifest`, run labels, and fenced teardown | all named suites |
+| Neighbour isolation | manifest-scoped cleanup regressions; no prefix or shared-stream deletion | all named suites |
+| Redaction | stand acceptance admission scans only public evidence | all named suites |
+| Cleanup verification | cleanup guard plus runner sweep; either failure is red | all named suites |
+
+`tests/live/po_default_preflight.py` is retained as a separate operator preflight. It is not part
+of `matrix` in this iteration, so no named suite currently claims PO-default coverage.
+
 ## LIVE_NO_CLEANUP
 
 Set `LIVE_NO_CLEANUP=1` to leave a run's owned resources in place after teardown so a failed or
