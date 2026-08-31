@@ -45,12 +45,13 @@ QA_EXECUTOR_ENV = "QA_EXECUTOR_AGENT_TYPE"
 AGENTS = ("claude", "codex")
 RUN_ROOT = Path.home() / "e2e-runs"
 EXECUTOR_SWITCH_TIMEOUT_SECONDS = 180
-# The noop lifecycle has 2,900s of explicit waits at its worst case (scaffold,
-# engineering, deploy/run/outcome, health, QA, completed-story/PO delivery,
-# deployment record, undeploy run and terminal resource release).  The cap
-# includes manifest teardown and diagnostics; the LLM route does not run this
-# lifecycle acceptance yet.  See tests/live/README.md for the ledger.
-NOOP_SUITE_TIMEOUT_SECONDS = 3300
+# The noop lifecycle has 3,680s of explicit waits at its worst case: scaffold,
+# two ordered engineering Tasks, story aggregation, deploy/run/outcome, the
+# bounded public health probe, QA, completed-story/PO delivery, deployment
+# record, undeploy Run and terminal resource release. The cap leaves 820s for
+# manifest teardown and diagnostics; the LLM route does not run this lifecycle
+# acceptance yet. See tests/live/README.md for the ledger.
+NOOP_SUITE_TIMEOUT_SECONDS = 4500
 LLM_SUITE_TIMEOUT_SECONDS = 3600
 CUSTOM_TARGET_TIMEOUT_SECONDS = 2700
 PREFLIGHT_TIMEOUT_SECONDS = 300

@@ -213,6 +213,37 @@ async def release_engineering_budget_admission(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.get("/admissions/{attempt_id}", response_model=EngineeringBudgetAdmissionRead)
+async def get_engineering_budget_admission(
+    attempt_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> EngineeringBudgetAdmissionRead:
+    """Read one immutable reservation outcome without re-running admission.
+
+    Terminal handling changes only the stored reservation state.  A live
+    acceptance caller needs that exact state to distinguish an unlimited noop
+    attempt from a released, settled, or conservative unknown-cost reservation.
+    """
+    reservation = await db.scalar(
+        select(EngineeringBudgetReservation).where(
+            EngineeringBudgetReservation.attempt_id == attempt_id
+        )
+    )
+    if reservation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admission not found")
+    return EngineeringBudgetAdmissionRead(
+        attempt_id=reservation.attempt_id,
+        user_id=reservation.user_id,
+        outcome=reservation.outcome,
+        reservation_microusd=reservation.reservation_microusd,
+        known_spend_microusd=reservation.known_spend_microusd,
+        active_held_microusd=reservation.active_held_microusd,
+        available_microusd=None,
+        reservation_state=reservation.state,
+    )
+
+
 @router.get("/{user_id}", response_model=EngineeringBudgetPolicyLookup)
 async def get_named_engineering_budget_policy(
     user_id: int,

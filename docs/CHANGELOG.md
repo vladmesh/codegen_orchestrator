@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Completed the remaining free `mega-noop` acceptance tail without invoking an
+  LLM: one Story now has two dependency-ordered noop Tasks, asserts that the
+  second cannot receive engineering work before the first is done, and records
+  the actual single Story-worker lifecycle before deploy. Each engineering Run
+  now proves its admitted audit, immutable noop executor decision, typed
+  terminal result, reservation state, and canonical no-provider-cost ledger
+  row. Added internal read-only admission/reservation evidence endpoints and
+  offline contracts. The noop cap is now 75 minutes because its defensible
+  worst-case budget includes both Tasks and bounded public-probe time; no live
+  E2E or model call was run.
+
 - Fixed per-application undeploy to release only the terminal application's
   runtime port allocations in the same API transaction as its
   `not_deployed` status and bot-binding release. The operation is idempotent;

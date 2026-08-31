@@ -77,11 +77,25 @@ def test_canonical_suites_have_exact_targets_and_timeouts():
 
 def test_noop_cap_covers_the_completed_story_and_undeploy_lifecycle():
     """A new lifecycle wait must not silently exceed the named suite cap."""
-    explicit_waits = 120 + 420 + 420 + 420 + 120 + 20 + 300 + 180 + 180 + 120 + 300 + 300
+    explicit_waits = (
+        120  # scaffold
+        + 840  # two ordered noop engineering Tasks
+        + 60  # story aggregation after both Tasks are done
+        + 420  # merged deploy Run
+        + 420  # deploy
+        + 120  # typed deploy outcome
+        + 320  # five-attempt public health probe (two 30s paths + four sleeps)
+        + 300  # deterministic QA
+        + 180  # Story.completed
+        + 180  # durable PO notification
+        + 120  # exact service-deployment record
+        + 300  # undeploy Run
+        + 300  # terminal application/resource release
+    )
 
-    assert explicit_waits == 2900
-    assert NOOP_SUITE_TIMEOUT_SECONDS == 3300
-    assert NOOP_SUITE_TIMEOUT_SECONDS - explicit_waits >= 300
+    assert explicit_waits == 3680
+    assert NOOP_SUITE_TIMEOUT_SECONDS == 4500
+    assert NOOP_SUITE_TIMEOUT_SECONDS - explicit_waits >= 800
 
 
 def test_legacy_aliases_resolve_to_canonical_suite_names():
