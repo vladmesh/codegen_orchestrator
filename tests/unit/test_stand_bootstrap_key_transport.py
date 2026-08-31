@@ -1,16 +1,11 @@
-"""The bootstrap public key must reach Ansible as one indivisible value.
+"""The minimal control-plane bootstrap uses root SSH only.
 
-An SSH public key is `ssh-ed25519 AAAA... comment` — it contains spaces. Ansible
-splits its `-e key=value` extra-vars form on whitespace, so a key passed that way
-arrives as `ssh-ed25519` alone and `authorized_key` fails with `Module failed:
-list index out of range`, which names neither the key nor the truncation.
-
-The adjacent playbook call relies on exactly that splitting to pass two
-variables, which is why the mistake reads as correct in review.
-
-This has now cost two runs on separate days: 33181190496 on 2026-08-28 and
-33247710739 on 2026-08-29, the second after the fix had already been made and
-then lost in a merge. It was lost because nothing held it. This holds it.
+The previous two-play sequence created a deploy SSH account and therefore had
+to transport a public key without Ansible splitting it at whitespace. The stand
+workflow never connected as that account: root SSH owns bootstrap, checkout,
+and the remote runner. The deploy account now exists only as the runtime UID/GID
+whose ownership narrows `/opt/secrets`, so carrying an unused public key would
+add work and an unnecessary access path to every disposable host.
 """
 
 from pathlib import Path
@@ -30,21 +25,8 @@ def _bootstrap_script() -> str:
     raise AssertionError(f"the workflow no longer has a {BOOTSTRAP_STEP!r} step")
 
 
-def test_public_key_is_not_passed_through_splittable_extra_vars() -> None:
+def test_control_plane_does_not_pass_an_unused_public_key_to_ansible() -> None:
     script = _bootstrap_script()
-    assert '-e "ssh_public_key=' not in script, (
-        "the public key is passed through ansible's whitespace-split `-e key=value` form, "
-        "so only `ssh-ed25519` reaches the playbook and authorized_key fails with "
-        "`list index out of range`"
-    )
-
-
-def test_public_key_is_passed_as_a_vars_file() -> None:
-    script = _bootstrap_script()
-    assert '-e "@' in script, (
-        "the bootstrap playbook should receive its variables through a file reference, "
-        "which is the form ansible cannot split"
-    )
-    assert "--rawfile ssh_public_key" in script, (
-        "the vars file should carry the key as one raw value rather than an interpolated string"
-    )
+    assert "ssh_public_key" not in script
+    assert "stand-bootstrap.pub" not in script
+    assert '-e "@' not in script

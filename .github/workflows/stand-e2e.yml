@@ -9,11 +9,11 @@ on:
       suite:
         description: 'What to run'
         required: true
-        default: 'mega'
+        default: 'mega-noop'
         type: choice
         options:
-          - mega
-          - llm
+          - mega-noop
+          - mega-llm
           - matrix
           - custom
       target:
@@ -21,7 +21,7 @@ on:
         required: false
         type: string
       worker:
-        description: 'Coding agent (ignored by mega and matrix)'
+        description: 'Coding agent for mega-llm or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
         required: false
         default: 'claude'
         type: choice
@@ -29,7 +29,7 @@ on:
           - claude
           - codex
       qa:
-        description: 'QA executor (ignored by mega and matrix)'
+        description: 'QA executor for mega-llm or custom only; matrix runs all four Claude/Codex pairs and mega-noop ignores it'
         required: false
         default: 'codex'
         type: choice
@@ -60,7 +60,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: stand
-    timeout-minutes: 180
+    # 360m > 45m provisioning + 262m runner matrix budget. The runner's 5m
+    # fail-closed sweep is included; lifecycle cleanup has its own 30m job.
+    timeout-minutes: 360
     permissions:
       contents: read
       packages: read
@@ -185,39 +187,25 @@ jobs:
           umask 077
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           printf '%s\n' "${SSH_PRIVATE_KEY}" > "${key_path}"
-          ssh-keygen -y -f "${key_path}" > "${RUNNER_TEMP}/stand-bootstrap.pub"
 
       - name: Bootstrap dynamic orchestrator
+        # A new Ubuntu image still needs enough room for apt/Docker retries;
+        # this bound is deliberately above the expected (not yet live-verified)
+        # 2–3 minute minimal-control-plane path.
+        timeout-minutes: 15
         env:
           PROD_HOST: ${{ steps.create.outputs.orchestrator_ip }}
         run: |
           set -euo pipefail
           key_path="${RUNNER_TEMP}/stand-bootstrap.key"
           inventory="${RUNNER_TEMP}/stand-bootstrap.ini"
-          # A public key is `ssh-ed25519 AAAA... comment`, and ansible splits its
-          # `-e key=value` form on whitespace: passed that way the variable holds
-          # `ssh-ed25519` alone and `authorized_key` fails with `list index out of
-          # range`. The line below it relies on that same splitting on purpose, to
-          # pass two variables. A JSON vars file is the form that cannot be split.
-          bootstrap_vars="${RUNNER_TEMP}/stand-bootstrap-vars.json"
-          jq -Rn --rawfile ssh_public_key "${RUNNER_TEMP}/stand-bootstrap.pub" \
-            '{ssh_public_key: ($ssh_public_key | rtrimstr("\n"))}' > "${bootstrap_vars}"
           {
             echo '[prod]'
             printf '%s ansible_user=root ansible_ssh_private_key_file=%s\n' "${PROD_HOST}" "${key_path}"
           } > "${inventory}"
-          uvx --from ansible-core ansible-galaxy collection install \
-            -r services/infra-service/ansible/requirements.yml
-          ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg \
+          ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg ANSIBLE_PIPELINING=True \
             uvx --from ansible-core ansible-playbook -i "${inventory}" \
-            services/infra-service/ansible/playbooks/bootstrap.yml \
-            -e "@${bootstrap_vars}"
-          ANSIBLE_CONFIG=services/infra-service/ansible/ansible.cfg \
-            uvx --from ansible-core ansible-playbook -i "${inventory}" \
-            services/infra-service/ansible/playbooks/provision_software.yml \
-            -e "target_host=${PROD_HOST} deploy_user=deploy"
-          ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" \
-            'install -d -m 0755 /opt/codegen_orchestrator'
+            services/infra-service/ansible/playbooks/provision_stand_control_plane.yml
           rsync -a --delete --exclude .git --exclude .stand.env --exclude .stand-target.env \
             -e "ssh -i ${key_path} ${SSH_OPTS}" \
             ./ root@"${PROD_HOST}":/opt/codegen_orchestrator/
@@ -554,6 +542,7 @@ jobs:
     if: ${{ always() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     environment: stand
+    timeout-minutes: 30
     env:
       STAND_RUN_TAG: gha-${{ github.run_id }}-${{ github.run_attempt }}
       BITLAUNCH_API_KEY: ${{ secrets.BITLAUNCH_API_KEY }}

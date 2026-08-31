@@ -1,0 +1,165 @@
+---
+# Minimal, stand-only bootstrap for the disposable orchestrator/control plane.
+#
+# The stand creates a separate machine for the application target. That target
+# is registered and provisioned through the product's provision_software.yml
+# path after this control plane is running, so this playbook deliberately does
+# not install target layout, QA identities, monitoring, firewall, or host
+# policy. It must remain builtins-only: the GitHub workflow can avoid a Galaxy
+# download before it starts this short-lived host.
+
+- name: Provision stand control plane
+  hosts: prod
+  become: true
+  gather_facts: false
+  vars:
+    stand_runtime_user: deploy
+    stand_uv_version: "0.6.14"
+    stand_checkout_root: /opt/codegen_orchestrator
+
+  pre_tasks:
+    - name: Wait for control plane to be reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 60
+
+    # Keep this as the one fact collection for the whole bootstrap. The former
+    # bootstrap.yml + provision_software.yml sequence collected it twice.
+    - name: Gather control plane facts
+      ansible.builtin.setup:
+
+    - name: Wait for any possibly running apt/dpkg processes
+      ansible.builtin.shell: >-
+        while fuser /var/lib/dpkg/lock >/dev/null 2>&1 ||
+        fuser /var/lib/apt/lists/lock >/dev/null 2>&1 ||
+        fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1;
+        do sleep 5; done
+      changed_when: false
+
+    - name: Update apt cache without changing the base image
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+  tasks:
+    - name: Install control-plane host tools
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - git
+          - gnupg
+          - make
+          - rsync
+        state: present
+
+    - name: Create runtime user
+      ansible.builtin.user:
+        name: "{{ stand_runtime_user }}"
+        shell: /bin/bash
+        create_home: true
+
+    - name: Create Docker apt keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download Docker signing key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Read Debian architecture for Docker repository
+      ansible.builtin.command: dpkg --print-architecture
+      register: stand_docker_architecture
+      changed_when: false
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch={{ stand_docker_architecture.stdout }}
+          signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu
+          {{ ansible_facts['distribution_release'] }} stable
+        filename: docker
+        state: present
+
+    - name: Install Docker Engine and compose tooling
+      ansible.builtin.apt:
+        name:
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-ce
+          - docker-ce-cli
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker service is started and enabled
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Download pinned uv for stand runner
+      ansible.builtin.get_url:
+        url: "https://github.com/astral-sh/uv/releases/download/{{ stand_uv_version }}/uv-x86_64-unknown-linux-gnu.tar.gz"
+        dest: "/tmp/uv-{{ stand_uv_version }}.tar.gz"
+        mode: "0644"
+
+    - name: Extract pinned uv for stand runner
+      ansible.builtin.unarchive:
+        src: "/tmp/uv-{{ stand_uv_version }}.tar.gz"
+        dest: /tmp
+        remote_src: true
+
+    - name: Install pinned uv for stand runner
+      ansible.builtin.copy:
+        src: /tmp/uv-x86_64-unknown-linux-gnu/uv
+        dest: /usr/local/bin/uv
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Remove downloaded uv archive
+      ansible.builtin.file:
+        path: "/tmp/uv-{{ stand_uv_version }}.tar.gz"
+        state: absent
+
+    - name: Create stand checkout root
+      ansible.builtin.file:
+        path: "{{ stand_checkout_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+  post_tasks:
+    # These checks are intentionally commands, not a successful task list: a
+    # failing daemon, missing compose/buildx plugin, stale uv binary, or absent
+    # runtime user must stop before protected configuration is copied.
+    - name: Verify Docker daemon is running
+      ansible.builtin.command: docker info
+      changed_when: false
+
+    - name: Verify Docker compose plugin is available
+      ansible.builtin.command: docker compose version
+      changed_when: false
+
+    - name: Verify Docker buildx plugin is available
+      ansible.builtin.command: docker buildx version
+      changed_when: false
+
+    - name: Verify pinned uv is available to the remote runner
+      ansible.builtin.command: /usr/local/bin/uv --version
+      changed_when: false
+
+    - name: Verify runtime user identity
+      ansible.builtin.command: "id {{ stand_runtime_user }}"
+      changed_when: false

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Replaced the stand orchestrator's broad target provisioning with a minimal,
+  builtins-only control-plane bootstrap. It retains root SSH, the runtime user,
+  Docker Engine with compose/buildx, pinned `uv`, checkout tooling, and
+  fail-closed postconditions, while the separate application target continues
+  through the unchanged full provisioning path. The measured prior bootstrap
+  was about seven minutes; the expected 2–3 minute path awaits live
+  confirmation.
+
+- Fixed the `mega-noop` completion-event matcher to follow the PO subject
+  contract: story-level owner notifications carry the story id in the emitted
+  event's `task_id`, while their durable notification record has no task.
+
+- Extended the free `mega-noop` stand acceptance from deploy and deterministic
+  QA to the complete user lifecycle: it now records a live health probe, waits
+  for `Story.completed`, proves the durable `story_completed` owner record and
+  matching new PO input event, verifies the selected successful deployment's
+  merged SHA, and performs the product undeploy API path through
+  `Application.not_deployed` and owned port-allocation absence. The suite cap
+  now reflects those bounded lifecycle waits; no live or LLM run was performed.
+
+- Defined the canonical stand E2E suite contract: `mega-noop`, `mega-llm`, and
+  the four-cell `matrix` now resolve to exact pytest nodes with canonical names
+  in logs and reports. Legacy `mega`/`llm` aliases remain compatible, suite
+  timeouts are derived from the full pipeline's waits, and the stand workflow
+  now reserves enough time for provisioning and the largest matrix path.
+
 - Regenerated the complete vendored service-template fixture from pinned commit
   `edf54dfb1c323d60480761e06ceb982bd79ac9d2` with its recorded Copier inputs.
   The fixture now carries Copier answers and a whole-render digest regression so

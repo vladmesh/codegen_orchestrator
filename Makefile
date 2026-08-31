@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
+.PHONY: lint format ci-contract export-env-contract-schema test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-live-smoke test-live-engineering test-live-mega test-live-mega-noop test-live-mega-llm test-live-matrix test-live-pipeline test-clean danger-prod-reset stand-preflight stand-run stand-e2e stand-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -40,6 +40,9 @@ help:
 	@echo "  make test-integration     - Run all integration tests"
 	@echo "  make test-live            - Run all live tests (from host, no LLM)"
 	@echo "  make test-live N=health   - Run specific live test file"
+	@echo "  make test-live-mega-noop  - Run only the free noop full-pipeline class"
+	@echo "  make test-live-mega-llm   - Run only the one-pair LLM full-pipeline class"
+	@echo "  make test-live-matrix     - Run four LLM pairs through the stand runner"
 	@echo "  make test-e2e-scaffold    - Run scaffolding E2E tests"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
@@ -367,12 +370,24 @@ test-live-engineering:
 	@echo "Running engineering pipeline test (~3-5 min)..."
 	@uv run pytest tests/live/test_pipeline_engineering.py -v --tb=long -x -s
 
-test-live-mega:
-	@echo "Running MEGA pipeline test (~7-10 min)..."
-	@uv run pytest tests/live/test_full_pipeline.py -v --tb=long -x -s
+test-live-mega-noop:
+	@echo "Running mega-noop: TestFullPipeline only (no LLM)..."
+	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipeline -v --tb=long -x -s
 
+# Temporary compatibility alias. Its exact target is mega-noop, never the whole file.
+test-live-mega: test-live-mega-noop
+
+test-live-mega-llm:
+	@echo "Running mega-llm: TestFullPipelineLLM only (one selected developer/QA pair)..."
+	@uv run pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v --tb=long -x -s
+
+# Four paid stand cells: Claude/Codex developer × Claude/Codex QA.
+test-live-matrix:
+	@$(MAKE) --no-print-directory stand-run SUITE=matrix
+
+# Legacy aggregate, not a named suite: scaffold + engineering + both full-pipeline classes.
 test-live-pipeline:
-	@echo "Running ALL pipeline tests sequentially (~15 min)..."
+	@echo "Running legacy aggregate: scaffold, engineering, then both full-pipeline classes..."
 	@uv run pytest tests/live/test_pipeline_scaffold.py tests/live/test_pipeline_engineering.py tests/live/test_full_pipeline.py -v --tb=long -x -s
 
 
@@ -386,11 +401,11 @@ stand-preflight:
 	@set -a; . ./.env; set +a; \
 	uv run python -m scripts.stand_preflight
 
-# One entry point for every e2e on the stand. SUITE is a named suite — mega, llm,
+# One entry point for every e2e on the stand. SUITE is a named suite — mega-noop, mega-llm,
 # matrix — or any pytest target, so a new scenario needs no new plumbing.
 #
-#   make stand-run SUITE=mega
-#   make stand-run SUITE=llm WORKER=codex QA=claude
+#   make stand-run SUITE=mega-noop
+#   make stand-run SUITE=mega-llm WORKER=codex QA=claude
 #   make stand-run SUITE=matrix
 #   make stand-run SUITE=tests/live/test_api_crud.py
 #
@@ -399,16 +414,16 @@ stand-preflight:
 #
 #   setsid nohup make stand-run SUITE=matrix > /dev/null 2>&1 &
 #   tail -f ~/e2e-runs/latest/run.log
-SUITE ?= mega
+SUITE ?= mega-noop
 WORKER ?= claude
 QA ?= codex
 stand-run:
 	@set -a; . ./.env; set +a; \
 	uv run python -m scripts.stand_run --suite "$(SUITE)" --worker "$(WORKER)" --qa "$(QA)" $(ARGS)
 
-# Kept as the short name for the plain mega.
+# Kept as the short name for the canonical noop mega.
 stand-e2e:
-	@$(MAKE) stand-run SUITE=mega
+	@$(MAKE) stand-run SUITE=mega-noop
 
 # Sweep this contour and no other.
 stand-clean:
