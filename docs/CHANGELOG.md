@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Made stand evidence collection suite-aware: single-cell `mega-noop`,
+  `mega-llm`, and custom runs now fetch only their selected QA/worker log,
+  while `matrix` still fetches all four cells. This removes three guaranteed
+  missing-file SSH/SCP waits from every single-cell run.
+
 - Completed the remaining free `mega-noop` acceptance tail without invoking an
   LLM: one Story now has two dependency-ordered noop Tasks, asserts that the
   second cannot receive engineering work before the first is done, and records

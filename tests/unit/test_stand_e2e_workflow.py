@@ -103,6 +103,19 @@ def test_the_machine_manifest_is_collected_and_scanned_before_handoff_upload():
     )
 
 
+def test_handoff_collects_only_logs_the_selected_suite_can_produce():
+    """A one-cell suite must not spend SSH retries probing the other matrix cells."""
+    collect = _steps()["Record machine manifest"]
+    script = collect["run"]
+
+    assert collect["env"]["SUITE"] == "${{ steps.suite.outputs.value }}"
+    assert collect["env"]["WORKER"] == "${{ inputs.worker }}"
+    assert collect["env"]["QA"] == "${{ inputs.qa }}"
+    assert 'if [ "${SUITE}" = "matrix" ]' in script
+    assert 'reports+=("${QA}-${WORKER}.log")' in script
+    assert 'for name in "${reports[@]}"' in script
+
+
 def test_the_matrix_fits_in_the_job_timeout():
     """The provisioned stand, four cells, and their cleanup reserve fit strictly."""
     job = _workflow()["jobs"]["e2e"]
