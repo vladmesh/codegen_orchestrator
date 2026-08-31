@@ -99,7 +99,9 @@ async def test_owner_notification_requires_durable_identity_url_and_new_po_event
                             "text": "Done: http://198.51.100.2:8010",
                             "story_id": "story-1",
                             "project_id": "project-1",
-                            "task_id": "",
+                            # Story-level notifications use the story as the PO
+                            # subject even though the durable record has no task.
+                            "task_id": "story-1",
                         },
                     ]
                 ],
@@ -108,6 +110,7 @@ async def test_owner_notification_requires_durable_identity_url_and_new_po_event
 
     assert result is not None
     assert ctx["owner_notification_po_event"]["text"] == notification["text"]
+    assert ctx["owner_notification_po_event"]["task_id"] == "story-1"
 
 
 @pytest.mark.asyncio

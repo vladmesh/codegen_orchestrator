@@ -1112,6 +1112,10 @@ def _matching_completion_event(
     events: list[POSystemEvent], notification: dict, ctx: dict
 ) -> POSystemEvent | None:
     """Return the one new PO event that is the durable completion record."""
+    # POSystemEvent always names a subject through task_id. A story-level
+    # notification has no task in its durable record, so the producer uses the
+    # story id as that subject.
+    expected_subject = notification.get("task_id") or notification.get("story_id")
     matches = [
         event
         for event in events
@@ -1119,7 +1123,7 @@ def _matching_completion_event(
         and event.story_id == ctx["story_id"]
         and event.project_id == ctx["project_id"]
         and event.text == notification.get("text")
-        and event.task_id == (notification.get("task_id") or "")
+        and event.task_id == expected_subject
     ]
     return matches[0] if len(matches) == 1 else None
 
