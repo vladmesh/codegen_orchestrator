@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Replaced the stand orchestrator's broad target provisioning with a minimal,
+  builtins-only control-plane bootstrap. It retains root SSH, the runtime user,
+  Docker Engine with compose/buildx, pinned `uv`, checkout tooling, and
+  fail-closed postconditions, while the separate application target continues
+  through the unchanged full provisioning path. The measured prior bootstrap
+  was about seven minutes; the expected 2–3 minute path awaits live
+  confirmation.
+
 - Fixed the `mega-noop` completion-event matcher to follow the PO subject
   contract: story-level owner notifications carry the story id in the emitted
   event's `task_id`, while their durable notification record has no task.

@@ -20,6 +20,10 @@ from scripts.stand_run import (
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
 MAKEFILE = Path(__file__).parents[2] / "Makefile"
+CONTROL_PLANE_PLAYBOOK = (
+    WORKFLOW.parents[2]
+    / "services/infra-service/ansible/playbooks/provision_stand_control_plane.yml"
+)
 
 
 def _workflow() -> dict:
@@ -236,19 +240,70 @@ def test_selected_suite_runs_through_the_supported_remote_runner_and_preserves_f
 def test_remote_runner_is_provisioned_and_only_runs_after_target_provisioning():
     steps = _steps()
     run = steps["Run selected stand suite"]
-    provision = (
-        WORKFLOW.parents[2] / "services/infra-service/ansible/playbooks/provision_software.yml"
-    ).read_text()
-    provision_vars = (
-        WORKFLOW.parents[2] / "services/infra-service/ansible/group_vars/provision_vars.yml"
-    ).read_text()
+    control_plane = CONTROL_PLANE_PLAYBOOK.read_text()
 
-    assert "Install pinned uv for stand runner" in provision
-    assert "uv_version" in provision_vars
+    assert "Install pinned uv for stand runner" in control_plane
     assert "uv --version" in steps["Bootstrap dynamic orchestrator"]["run"]
     assert run["if"] == "success()"
     assert "remote-invocation.log" in run["run"]
     assert ">/dev/null 2>&1" not in run["run"]
+
+
+def test_control_plane_bootstrap_is_minimal_and_keeps_target_provisioning_separate():
+    """The disposable control plane is not a deploy target.
+
+    Target-only hardening remains owned by the product provisioning path that
+    runs after the stand has registered the separate target machine.
+    """
+    bootstrap = _steps()["Bootstrap dynamic orchestrator"]
+    bootstrap_run = bootstrap["run"]
+    control_plane = CONTROL_PLANE_PLAYBOOK.read_text()
+    target_provision = (
+        WORKFLOW.parents[2] / "services/infra-service/ansible/playbooks/provision_software.yml"
+    ).read_text()
+
+    assert bootstrap["timeout-minutes"] == 15
+    assert "provision_stand_control_plane.yml" in bootstrap_run
+    assert "playbooks/bootstrap.yml" not in bootstrap_run
+    assert "playbooks/provision_software.yml" not in bootstrap_run
+    assert "ansible-galaxy collection install" not in bootstrap_run
+    assert "ANSIBLE_PIPELINING=True" in bootstrap_run
+
+    assert "gather_facts: false" in control_plane
+    assert "Gather control plane facts" in control_plane
+    assert "Wait for any possibly running apt/dpkg processes" in control_plane
+    assert "upgrade: dist" not in control_plane
+    assert "Create runtime user" in control_plane
+    assert "docker-ce" in control_plane
+    assert "docker compose version" in control_plane
+    assert "docker buildx version" in control_plane
+    assert "uv --version" in control_plane
+    assert "Verify runtime user identity" in control_plane
+    assert "/opt/codegen_orchestrator" in control_plane
+    for target_only in (
+        "name: deploy_target",
+        "name: qa_identity",
+        "name: monitoring",
+        "ufw:",
+        "timezone:",
+    ):
+        assert target_only not in control_plane
+
+    for preserved_target_work in (
+        "Upgrade all packages",
+        "upgrade: dist",
+        "name: deploy_target",
+        "name: qa_identity",
+        "name: monitoring",
+    ):
+        assert preserved_target_work in target_provision
+
+    # The root workflow connection is deliberate, while protected material is
+    # still narrowed to the unprivileged runtime identity after bootstrap.
+    bring_up = _steps()["Bring up dynamic orchestrator and wait for API"]["run"]
+    assert "ansible_user=root" in bootstrap_run
+    assert "install -d -m 0700 -o ${RUNTIME_UID} -g ${RUNTIME_GID} /opt/secrets" in bring_up
+    assert "chmod 0400 /opt/secrets/github_app.pem" in bring_up
 
 
 def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_cancellation():

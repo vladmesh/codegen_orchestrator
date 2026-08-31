@@ -58,7 +58,9 @@ SWEEP_TIMEOUT_SECONDS = 300
 
 # The workflow provisions a disposable pair before invoking this runner. Its
 # bounded operations total 2,280s (two machine waits, DNS, API readiness, and
-# target provisioning); the remaining seven minutes cover bootstrap/Ansible.
+# target provisioning). The old target-oriented control-plane bootstrap measured
+# about seven minutes; the minimal replacement is expected to need 2–3 minutes,
+# pending a live confirmation. The overall provisioning bound remains unchanged.
 STAND_PROVISIONING_TIMEOUT_SECONDS = 2700
 # A matrix has four 60-minute LLM cells.  Each cell can require a full executor
 # switch; runner preflight and the fail-closed sweep have their own bounds.
