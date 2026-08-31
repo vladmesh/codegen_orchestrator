@@ -144,3 +144,41 @@ async def test_live_legacy_blocks_only_new_capability_handoffs(async_client, db_
     history = await async_client.get(f"/api/temporary-access-grants/{legacy_id}")
     assert history.status_code == status.HTTP_200_OK
     assert history.json()["status"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_legacy_id_collision_is_refused_and_its_history_stays_visible_to_recovery(
+    async_client, db_engine
+) -> None:
+    project_id, run_id = await _project_with_qa_run(async_client)
+    legacy_id = f"tempaccess-{run_id}"
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as session:
+        session.add(
+            TemporaryAccessGrant(
+                id=legacy_id,
+                project_id=project_id,
+                legacy_env_key="retired-slot",
+                legacy_subject="8202532144",
+                head_sha=HEAD_SHA,
+                qa_run_id=run_id,
+                grant_run_id="legacy-grant-run",
+                qa_message=_payload(project_id, run_id)["qa_message"],
+                status="revoked",
+                granted_at=datetime.now(UTC),
+                revoked_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    collision = await async_client.post(
+        "/api/temporary-access-grants/", json=_payload(project_id, run_id, id=legacy_id)
+    )
+    recovery_history = await async_client.get(
+        "/api/temporary-access-grants/", params={"qa_run_id": run_id}
+    )
+
+    assert collision.status_code == status.HTTP_409_CONFLICT
+    assert "prior release drain" in collision.json()["detail"]
+    assert recovery_history.status_code == status.HTTP_200_OK
+    assert [grant["id"] for grant in recovery_history.json()] == [legacy_id]

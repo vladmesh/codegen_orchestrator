@@ -191,6 +191,13 @@ def _operation_succeeded(run) -> bool:
     )
 
 
+def _operation_was_cancelled(run) -> bool:
+    """Cancelled deploy-lock/fence operations have not touched the service."""
+    return run.status is RunStatus.CANCELLED or (
+        run.result is not None and run.result.deploy_outcome is DeployOutcome.CANCELLED
+    )
+
+
 def _age_minutes(moment: datetime) -> float:
     reference = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
     return (datetime.now(UTC) - reference).total_seconds() / 60
@@ -217,6 +224,9 @@ async def _settle_grant(api_client, redis_client, grant, counts, log) -> None:
                 log,
             )
         return
+    if _operation_was_cancelled(run):
+        await _redispatch_grant_without_effect(api_client, redis_client, grant, counts)
+        return
     if not _operation_succeeded(run):
         await _retry_grant_operation(
             api_client, redis_client, grant, "grant proof failed", counts, log
@@ -226,6 +236,21 @@ async def _settle_grant(api_client, redis_client, grant, counts, log) -> None:
         grant.id, TemporaryAccessGrantUpdate(status=TemporaryAccessStatus.GRANTED)
     )
     await _settle_granted(api_client, redis_client, granted, counts, log)
+
+
+async def _redispatch_grant_without_effect(api_client, redis_client, grant, counts) -> None:
+    """Replace a cancelled deploy-lock operation without spending proof budget."""
+    run_id = _new_operation_run_id("grant")
+    await api_client.update_temporary_access_grant(
+        grant.id,
+        TemporaryAccessGrantUpdate(
+            grant_run_id=run_id,
+            grant_attempts=grant.grant_attempts,
+            last_error="grant capability operation cancelled before effect",
+        ),
+    )
+    await _publish_operation(api_client, redis_client, grant, run_id, "grant")
+    counts["dispatched"] += 1
 
 
 async def _retry_grant_operation(api_client, redis_client, grant, detail, counts, log) -> None:
@@ -328,6 +353,9 @@ async def _settle_revoke(api_client, redis_client, grant, counts, log) -> None:
                 log,
             )
         return
+    if _operation_was_cancelled(run):
+        await _redispatch_revoke_without_effect(api_client, redis_client, grant, counts)
+        return
     if _operation_succeeded(run):
         await api_client.update_temporary_access_grant(
             grant.id, TemporaryAccessGrantUpdate(status=TemporaryAccessStatus.REVOKED)
@@ -337,6 +365,25 @@ async def _settle_revoke(api_client, redis_client, grant, counts, log) -> None:
     await _record_revoke_failure(
         api_client, redis_client, grant, "revoke proof failed", counts, log
     )
+
+
+async def _redispatch_revoke_without_effect(api_client, redis_client, grant, counts) -> None:
+    """Replace a cancelled deploy-lock operation without consuming cleanup budget."""
+    if grant.revoke_reason is None:
+        raise ValueError("revoking grant has no reason")
+    run_id = _new_operation_run_id("revoke")
+    await api_client.update_temporary_access_grant(
+        grant.id,
+        TemporaryAccessGrantUpdate(
+            status=TemporaryAccessStatus.REVOKING,
+            revoke_reason=grant.revoke_reason,
+            revoke_run_id=run_id,
+            revoke_attempts=grant.revoke_attempts,
+            last_error="revoke capability operation cancelled before effect",
+        ),
+    )
+    await _publish_operation(api_client, redis_client, grant, run_id, "revoke")
+    counts["dispatched"] += 1
 
 
 def _revoke_retries_are_spent(grant) -> bool:

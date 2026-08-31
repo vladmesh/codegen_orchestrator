@@ -18,6 +18,11 @@
   capability-target migration without colliding with an existing Alembic
   revision.
 
+- Classified temporary QA records at the API boundary so legacy id collisions
+  fail closed while QA-run recovery still sees their terminal history. Cancelled
+  deploy-lock and fence operations now redispatch the immutable target without
+  consuming grant or revoke proof budget.
+
 - Centralized runtime and deploy diagnostic redaction. Deployer, GitHub-secret,
   and smoke failure surfaces now remove resolved secrets, encoded dotenv
   content, authorization values, and Telegram Bot API tokens before logs,

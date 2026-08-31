@@ -375,6 +375,11 @@ capability operation is dispatched. The post-health deploy worker resolves the
 generated capability only in `secret_values`, then proves grant or revoke with
 the matching access readback. Legacy live records without a target fail closed
 until the preceding release drains them; revoked legacy history remains readable.
+An id-colliding legacy record is never hydrated as a capability record, while a
+narrow QA-run history lookup still sees it so recovery cannot replay its handoff.
+Cancelled deploy-lock or fence operations are redispatched against their stored
+target without consuming a grant or revoke proof budget; failed, missing, and
+stale operations remain independently bounded.
 
 ### QA handoff and restricted access
 

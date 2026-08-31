@@ -16,7 +16,7 @@ from shared.contracts.dto.temporary_access import (
 )
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.contracts.queues.qa import QAMessage
-from shared.queues import DEPLOY_QUEUE
+from shared.queues import DEPLOY_QUEUE, QA_QUEUE
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -180,6 +180,29 @@ async def test_stale_grant_retries_the_stored_target_with_a_recorded_bound() -> 
 
 
 @pytest.mark.asyncio
+async def test_cancelled_grant_redispatches_the_exact_target_without_spending_budget() -> None:
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    grant = _grant(grant_attempts=2)
+    api = AsyncMock()
+    api.list_temporary_access_grants_under_watch.return_value = [grant]
+    api.get_run_if_missing_returns_none.return_value = _operation_run(
+        RunStatus.CANCELLED, outcome=DeployOutcome.CANCELLED
+    )
+    redis = AsyncMock()
+
+    counts = await supervise_temporary_access(api, redis)
+
+    update = api.update_temporary_access_grant.await_args.args[1]
+    assert update.grant_attempts == grant.grant_attempts
+    assert update.grant_run_id != grant.grant_run_id
+    publish = redis.publish_message.await_args.args[1]
+    assert publish.project_id == grant.project_id
+    assert publish.head_sha == grant.head_sha
+    assert counts["dispatched"] == 1
+
+
+@pytest.mark.asyncio
 async def test_grant_attempt_exhaustion_fails_handoff_then_starts_cleanup() -> None:
     from src.tasks.temporary_access import supervise_temporary_access
 
@@ -199,6 +222,66 @@ async def test_grant_attempt_exhaustion_fails_handoff_then_starts_cleanup() -> N
         and update.revoke_attempts == 1
         for update in updates
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("qa_run", "grant_overrides", "reason"),
+    [
+        (_operation_run(RunStatus.COMPLETED), {}, TemporaryAccessRevokeReason.RUN_TERMINAL),
+        (None, {}, TemporaryAccessRevokeReason.RUN_MISSING),
+        (
+            _operation_run(RunStatus.RUNNING),
+            {"granted_at": datetime.now(UTC) - timedelta(minutes=61)},
+            TemporaryAccessRevokeReason.EXPIRED,
+        ),
+    ],
+)
+async def test_granted_access_starts_cleanup_for_terminal_missing_or_expired_qa(
+    qa_run, grant_overrides, reason
+) -> None:
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    grant = _grant(status=TemporaryAccessStatus.GRANTED, **grant_overrides)
+    api = AsyncMock()
+    api.list_temporary_access_grants_under_watch.return_value = [grant]
+    api.get_run_if_missing_returns_none.return_value = qa_run
+    redis = AsyncMock()
+
+    counts = await supervise_temporary_access(api, redis)
+
+    update = api.update_temporary_access_grant.await_args.args[1]
+    assert update.status is TemporaryAccessStatus.REVOKING
+    assert update.revoke_reason is reason
+    assert update.revoke_attempts == 1
+    assert redis.publish_message.await_args.args[0] == DEPLOY_QUEUE
+    assert counts["dispatched"] == 1
+
+
+@pytest.mark.asyncio
+async def test_qa_is_released_once_only_after_grant_proof() -> None:
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    grant = _grant()
+    proved_grant = _grant(status=TemporaryAccessStatus.GRANTED)
+    api = AsyncMock()
+    api.list_temporary_access_grants_under_watch.return_value = [grant]
+    api.get_run_if_missing_returns_none.side_effect = [
+        _operation_run(RunStatus.COMPLETED, outcome=DeployOutcome.SUCCESS),
+        _operation_run(RunStatus.RUNNING),
+    ]
+    api.update_temporary_access_grant.side_effect = [proved_grant, proved_grant]
+    redis = AsyncMock()
+
+    counts = await supervise_temporary_access(api, redis)
+
+    assert redis.publish_message.await_args.args[0] == QA_QUEUE
+    published = redis.publish_message.await_args.args[1]
+    assert published.project_id == grant.qa_message.project_id
+    assert published.run_id == grant.qa_message.run_id
+    assert published.deployed_url == grant.qa_message.deployed_url
+    assert published.application_id == grant.qa_message.application_id
+    assert counts["released"] == 1
 
 
 @pytest.mark.asyncio
@@ -229,6 +312,36 @@ async def test_stale_revoke_is_replaced_before_it_can_hold_access_forever() -> N
         for update in updates
     )
     assert redis.publish_message.await_args.args[1].head_sha == grant.head_sha
+
+
+@pytest.mark.asyncio
+async def test_cancelled_revoke_redispatches_the_exact_target_without_spending_budget() -> None:
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    grant = _grant(
+        status=TemporaryAccessStatus.REVOKING,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+        revoke_run_id="temporary-access-revoke-cancelled",
+        revoke_attempts=2,
+    )
+    api = AsyncMock()
+    api.list_temporary_access_grants_under_watch.return_value = [grant]
+    api.get_run_if_missing_returns_none.return_value = _operation_run(
+        RunStatus.CANCELLED, outcome=DeployOutcome.CANCELLED
+    )
+    redis = AsyncMock()
+
+    counts = await supervise_temporary_access(api, redis)
+
+    update = api.update_temporary_access_grant.await_args.args[1]
+    assert update.status is TemporaryAccessStatus.REVOKING
+    assert update.revoke_attempts == grant.revoke_attempts
+    assert update.revoke_run_id != grant.revoke_run_id
+    publish = redis.publish_message.await_args.args[1]
+    assert publish.project_id == grant.project_id
+    assert publish.head_sha == grant.head_sha
+    assert counts["revoke_failed"] == 0
+    assert counts["dispatched"] == 1
 
 
 @pytest.mark.asyncio

@@ -34,6 +34,20 @@ _LEGACY_REMEDIATION = (
 )
 
 
+def _is_legacy(grant: TemporaryAccessGrant) -> bool:
+    """A target-less row belongs to the retired environment-slot lifecycle."""
+    return grant.target_base_url is None
+
+
+def _reject_legacy_record(
+    grant: TemporaryAccessGrant, *, allow_revoked_history: bool = False
+) -> None:
+    if _is_legacy(grant) and not (
+        allow_revoked_history and grant.status == TemporaryAccessStatus.REVOKED.value
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_LEGACY_REMEDIATION)
+
+
 async def _load(grant_id: str, db: AsyncSession, *, lock: bool = False) -> TemporaryAccessGrant:
     grant = await db.get(TemporaryAccessGrant, grant_id, with_for_update=lock)
     if grant is None:
@@ -84,6 +98,10 @@ async def create_grant(
     """Persist the exact identity and target before a capability call is queued."""
     existing = await db.get(TemporaryAccessGrant, grant_in.id)
     if existing is not None:
+        # An id from the retired slot lifecycle can collide with the durable
+        # capability id for the same QA run. It is history, not a record a
+        # capability caller may hydrate or continue.
+        _reject_legacy_record(existing)
         return existing
     await _reject_live_legacy(db)
     held = await db.scalar(
@@ -133,7 +151,13 @@ async def list_grants(
 ) -> list[TemporaryAccessGrant]:
     # A live legacy row blocks only capability-backed creation. It must not
     # prevent this sweep from reconciling unrelated, target-bound records.
-    query = select(TemporaryAccessGrant).where(TemporaryAccessGrant.target_base_url.is_not(None))
+    query = select(TemporaryAccessGrant)
+    # Recovery asks whether this QA run ever had a lifecycle. Include legacy
+    # history for that narrow lookup so it cannot re-publish a handoff after a
+    # recorded slot lifecycle. General capability reconciliation never obtains
+    # target-less rows.
+    if qa_run_id is None:
+        query = query.where(TemporaryAccessGrant.target_base_url.is_not(None))
     if project_id is not None:
         query = query.where(TemporaryAccessGrant.project_id == project_id)
     if qa_run_id is not None:
@@ -155,8 +179,7 @@ async def get_grant(
     _: None = Depends(require_internal_or_admin),
 ) -> TemporaryAccessGrant:
     grant = await _load(grant_id, db)
-    if grant.target_base_url is None and grant.status != TemporaryAccessStatus.REVOKED.value:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_LEGACY_REMEDIATION)
+    _reject_legacy_record(grant, allow_revoked_history=True)
     return grant
 
 
@@ -168,8 +191,7 @@ async def update_grant(
     _: None = Depends(require_internal_or_admin),
 ) -> TemporaryAccessGrant:
     grant = await _load(grant_id, db, lock=True)
-    if grant.target_base_url is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_LEGACY_REMEDIATION)
+    _reject_legacy_record(grant)
     for field, value in update.model_dump(exclude_unset=True).items():
         if field == "qa_dispatched":
             if value and grant.qa_dispatched_at is None:
@@ -200,8 +222,7 @@ async def escalate_grant(
     _: None = Depends(require_internal_or_admin),
 ) -> TemporaryAccessGrant:
     grant = await _load(grant_id, db, lock=True)
-    if grant.target_base_url is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_LEGACY_REMEDIATION)
+    _reject_legacy_record(grant)
     run = await db.get(Run, grant.qa_run_id, with_for_update=True)
     if run is not None and run.status not in _TERMINAL_RUN_STATUSES:
         run.status = RunStatus.FAILED.value
