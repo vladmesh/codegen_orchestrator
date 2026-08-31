@@ -454,6 +454,8 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
             return live_work_unsettled({"status": "failed", "error": error_msg})
 
         grant_intent = None
+        temporary_access_grant = None
+        temporary_access_operation = None
         stored_intent = (getattr(run, "run_metadata", None) or {}).get(USERS_GRANT_INTENT_KEY)
         if stored_intent is not None:
             try:
@@ -482,6 +484,44 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                     project_id=project_id,
                     story_id=story_id,
                     error_msg="grant intent target does not match deploy message",
+                    callback_stream=callback_stream,
+                    telegram_chat_id=telegram_chat_id,
+                    redis=redis,
+                    deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+                    deploy_fix_attempt=msg.deploy_fix_attempt,
+                )
+
+        temporary_access_metadata = getattr(run, "run_metadata", None) or {}
+        stored_temporary_access_grant = temporary_access_metadata.get("temporary_access_grant_id")
+        if stored_temporary_access_grant is not None:
+            temporary_access_operation = temporary_access_metadata.get("temporary_access_operation")
+            if not isinstance(stored_temporary_access_grant, str) or not isinstance(
+                temporary_access_operation, str
+            ):
+                return await _handle_deploy_failure(
+                    task_id=task_id,
+                    project_id=project_id,
+                    story_id=story_id,
+                    error_msg="temporary access operation is malformed",
+                    callback_stream=callback_stream,
+                    telegram_chat_id=telegram_chat_id,
+                    redis=redis,
+                    deploy_outcome=DeployOutcome.OWNER_ACCESS_PROOF_FAILED,
+                    deploy_fix_attempt=msg.deploy_fix_attempt,
+                )
+            temporary_access_grant = await api_client.get_temporary_access_grant(
+                stored_temporary_access_grant
+            )
+            if (
+                temporary_access_grant.project_id != project_id
+                or temporary_access_grant.head_sha != msg.head_sha
+                or temporary_access_operation not in {"grant", "revoke"}
+            ):
+                return await _handle_deploy_failure(
+                    task_id=task_id,
+                    project_id=project_id,
+                    story_id=story_id,
+                    error_msg="temporary access target does not match deploy message",
                     callback_stream=callback_stream,
                     telegram_chat_id=telegram_chat_id,
                     redis=redis,
@@ -679,6 +719,8 @@ async def process_deploy_job(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 redis=redis,
                 application_id=result.get("application_id"),
                 grant_intent=grant_intent,
+                temporary_access_grant=temporary_access_grant,
+                temporary_access_operation=temporary_access_operation,
             )
         elif result.get("missing_user_secrets"):
             missing = [

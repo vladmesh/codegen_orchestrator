@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+from sqlalchemy.ext.asyncio import AsyncSession
+{% if param_type_imports %}
+
+{% for imp in param_type_imports %}
+{{ imp }}
+{% endfor %}
+{% endif %}
+
+from ..generated.protocols import {{ protocol_name }}
+
+{% if imports %}
+from shared.generated.schemas import (
+{% for model in imports|sort %}
+    {{ model }},
+{% endfor %}
+)
+{% endif %}
+
+class {{ controller_class_name }}({{ protocol_name }}):
+{% for handler in handlers %}
+
+    async def {{ handler.name }}(
+        self,
+        session: AsyncSession,
+{% for param in handler.params %}
+        {{ param.name }}: {{ param.type }},
+{% endfor %}
+{% if handler.input_model %}
+        payload: {{ handler.input_model }},
+{% endif %}
+    ) -> {{ handler.computed_return_type }}:
+        raise NotImplementedError("Method {{ handler.name }} not implemented")
+{% endfor %}

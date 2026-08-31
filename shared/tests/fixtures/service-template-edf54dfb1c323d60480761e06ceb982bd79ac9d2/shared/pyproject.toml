@@ -1,0 +1,14 @@
+[project]
+name = "shared"
+version = "0.1.0"
+description = "Shared library for service-template services"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.5",
+    "faststream[redis]>=0.5.1",
+    "structlog>=24.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

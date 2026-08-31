@@ -1,0 +1,15 @@
+.venv/
+services/*/.venv/
+.framework/
+!.framework/
+!.framework/**
+__pycache__/
+*.pyc
+.git/
+.env
+.env.local
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage

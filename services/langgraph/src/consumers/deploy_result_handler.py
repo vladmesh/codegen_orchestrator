@@ -10,16 +10,15 @@ from datetime import UTC, datetime
 
 import structlog
 
-from shared.contracts.bot_access import TEST_IDENTITY_ENV_KEY
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
+from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO, TemporaryAccessStatus
 from shared.contracts.dto.users_grant import (
     GrantIntent,
     GrantIntentKind,
     GrantIntentStatus,
 )
-from shared.contracts.env_contract import CanonicalEnvContract
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
 from shared.redis_client import RedisStreamClient
 
@@ -31,20 +30,6 @@ from ._live_work import live_work_settled, live_work_unsettled
 logger = structlog.get_logger(__name__)
 
 _USERS_GRANT_CAPABILITY = "USERS_GRANT_CAPABILITY"
-
-
-def _declares_test_identity_slot(result: dict) -> bool:
-    """Whether the commit that was just deployed has a test identity slot.
-
-    Read from the contract this deploy resolved, so the answer describes the
-    running code rather than whatever the branch declares now. A deploy that
-    skipped contract resolution reports no slot: nothing may deploy a value the
-    generated repository has not declared.
-    """
-    contract = result.get("environment_contract")
-    if contract is None:
-        return False
-    return TEST_IDENTITY_ENV_KEY in CanonicalEnvContract.model_validate(contract).entries
 
 
 async def _handle_smoke_failure(
@@ -127,6 +112,8 @@ async def _handle_deploy_success(  # noqa: PLR0913
     redis: RedisStreamClient,
     application_id: int | None = None,
     grant_intent: GrantIntent | None = None,
+    temporary_access_grant: TemporaryAccessGrantDTO | None = None,
+    temporary_access_operation: str | None = None,
 ) -> dict:
     """Handle successful deploy — update run, no story transitions.
 
@@ -154,6 +141,27 @@ async def _handle_deploy_success(  # noqa: PLR0913
                 application_id=application_id,
             )
 
+    if temporary_access_grant is not None and temporary_access_operation is not None:
+        failure = await _apply_temporary_access_operation(
+            task_id=task_id,
+            project_id=project_id,
+            application_id=application_id,
+            secret_values=result.get("secret_values", {}),
+            grant=temporary_access_grant,
+            operation=temporary_access_operation,
+        )
+        if failure is not None:
+            return await _handle_owner_access_failure(
+                result=result,
+                task_id=task_id,
+                project_id=project_id,
+                callback_stream=callback_stream,
+                telegram_chat_id=telegram_chat_id,
+                redis=redis,
+                reason=failure,
+                application_id=application_id,
+            )
+
     logger.info(
         "deploy_job_success",
         task_id=task_id,
@@ -166,7 +174,6 @@ async def _handle_deploy_success(  # noqa: PLR0913
         smoke_result=smoke_result,
         application_id=application_id,
         bot_username=result.get("bot_username"),
-        test_identity_slot=_declares_test_identity_slot(result),
     )
     await api_client.patch(
         f"runs/{task_id}",
@@ -253,6 +260,65 @@ async def _apply_grant_intent(  # noqa: PLR0913
     return None
 
 
+async def _apply_temporary_access_operation(
+    *,
+    task_id: str,
+    project_id: str,
+    application_id: int | None,
+    secret_values: dict,
+    grant: TemporaryAccessGrantDTO,
+    operation: str,
+) -> str | None:
+    """Use this deploy's capability only while its durable operation is current."""
+    if (
+        grant.project_id != project_id
+        or application_id != grant.target_application_id
+        or operation not in {"grant", "revoke"}
+    ):
+        return "temporary_access_target_mismatch"
+    # The grant was read before the deploy began. Recovery can replace it with
+    # cleanup while that deploy is still queued or running, so the durable
+    # operation transition is re-read immediately before the remote effect.
+    # A delayed delivery must never re-grant after a proved revoke.
+    current = await api_client.get_temporary_access_grant(grant.id)
+    expected_run_id = current.grant_run_id if operation == "grant" else current.revoke_run_id
+    expected_status = (
+        TemporaryAccessStatus.GRANTING if operation == "grant" else TemporaryAccessStatus.REVOKING
+    )
+    if current.status is not expected_status or expected_run_id != task_id:
+        logger.info(
+            "temporary_access_operation_superseded",
+            grant_id=grant.id,
+            task_id=task_id,
+            operation=operation,
+            status=current.status.value,
+        )
+        return "temporary_access_operation_superseded"
+    if (
+        current.project_id != project_id
+        or application_id != current.target_application_id
+        or current.head_sha != grant.head_sha
+    ):
+        return "temporary_access_target_mismatch"
+    capability = secret_values.get(_USERS_GRANT_CAPABILITY)
+    if not isinstance(capability, str) or not capability:
+        return "capability_unavailable"
+    client = GeneratedServiceGrantClient(current.target_base_url)
+    if operation == "grant":
+        proof = await client.grant_and_resolve(
+            channel=current.channel, external_id=current.external_id, capability=capability
+        )
+        if proof.active:
+            return None
+    else:
+        proof = await client.revoke_and_resolve(
+            channel=current.channel, external_id=current.external_id, capability=capability
+        )
+        if not proof.active and proof.failure is None:
+            return None
+    return proof.failure.value if proof.failure is not None else "unverified"
+
+
 async def _handle_owner_access_failure(
     *,
     result: dict,
@@ -265,8 +331,8 @@ async def _handle_owner_access_failure(
     application_id: int | None,
 ) -> dict:
     """Keep a grant/readback failure retryable without disclosing credentials."""
-    error_msg = f"Deployed service did not verify permanent access: {reason}"
-    logger.warning("deploy_grant_intent_failed", task_id=task_id, reason=reason)
+    error_msg = f"Deployed service did not verify generated access: {reason}"
+    logger.warning("deploy_access_proof_failed", task_id=task_id, reason=reason)
     await api_client.patch(
         f"runs/{task_id}",
         json={
@@ -279,7 +345,6 @@ async def _handle_owner_access_failure(
                 smoke_result=result.get("smoke_result"),
                 application_id=application_id,
                 bot_username=result.get("bot_username"),
-                test_identity_slot=_declares_test_identity_slot(result),
                 error_details=reason,
             ).model_dump(mode="json"),
         },

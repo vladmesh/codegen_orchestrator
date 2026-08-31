@@ -1,0 +1,47 @@
+line-length = 100
+indent-width = 4
+target-version = "py311"
+exclude = [
+    "shared/shared/generated/**",
+    "**/generated/**",
+    ".framework/**",
+    ".venv/**",
+    "**/.venv/**",
+    "services/**/migrations/**",
+]
+
+[lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "C4",
+    "S",
+    "PLR",
+    "C901",
+]
+ignore = ["S101"]
+
+[lint.mccabe]
+max-complexity = 10
+
+[lint.pylint]
+max-args = 8
+max-statements = 60
+
+[lint.per-file-ignores]
+"shared/shared/generated/**" = ["PLR0915", "PLR0913", "C901", "B008"]
+"tests/copier/**" = ["S603", "S607"]
+"tests/**" = ["PLR2004"]  # Magic values acceptable in tests
+
+[lint.isort]
+combine-as-imports = true
+force-sort-within-sections = true
+known-first-party = ["services", "shared"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

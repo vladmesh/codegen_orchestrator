@@ -16,7 +16,7 @@ def test_production_template_is_loaded_from_system_config() -> None:
     template = load_production_template()
 
     assert template.source == "gh:vladmesh/service-template"
-    assert template.ref == "0.3.6"
+    assert template.ref == "edf54dfb1c323d60480761e06ceb982bd79ac9d2"
 
 
 def test_stage5_smoke_uses_an_isolated_workspace_and_project_name(tmp_path: Path) -> None:
@@ -157,6 +157,7 @@ def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(Stage5Smoke, "_run_make", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(Stage5Smoke, "_make_workspace_readable", lambda *_args: None)
     monkeypatch.setattr(Stage5Smoke, "_run_worker_start", lambda *_args: None)
+    monkeypatch.setattr(Stage5Smoke, "_exercise_generated_access_lifecycle", lambda *_args: None)
     monkeypatch.setattr(Stage5Smoke, "cleanup", lambda *_args: None)
 
     assert smoke.run() == pinned_sha
@@ -165,6 +166,29 @@ def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.M
         ("copier", pinned_sha),
         ("recorded", pinned_sha),
     ]
+
+
+def test_generated_access_lifecycle_uses_capability_and_bot_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
+    calls: list[tuple[str, str, str]] = []
+
+    def capture_worker(_self: Stage5Smoke, service: str, source: str, *, phase: str) -> None:
+        calls.append((service, source, phase))
+
+    monkeypatch.setattr(Stage5Smoke, "_run_service_python", capture_worker)
+    smoke._exercise_generated_access_lifecycle()
+
+    assert [service for service, _, _ in calls] == ["backend", "tg_bot"]
+    backend_source = calls[0][1]
+    assert "X-Grant-Capability" in backend_source
+    assert '"/grant"' in backend_source
+    assert '"/revoke"' in backend_source
+    assert backend_source.count('"/access?channel=telegram&external_id=8202532144"') == 2
+    assert "USERS_GRANT_CAPABILITY" in backend_source
+    assert "enforce_access" in calls[1][1]
+    assert "ApplicationHandlerStop" in calls[1][1]
 
 
 def test_workspace_is_readable_by_the_generated_non_root_container(tmp_path: Path) -> None:

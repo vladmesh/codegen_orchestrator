@@ -18,6 +18,7 @@ from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
 from shared.contracts.dto.telegram import BotLiveness
+from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
 from shared.contracts.dto.user import UserDTO
 from shared.contracts.dto.users_grant import GrantIntent
 from src.config.settings import get_settings
@@ -145,6 +146,10 @@ class LanggraphAPIClient(InternalAPIClient):
         payload = {"execution_run_id": execution_run_id, "active": active, "detail": detail}
         path = f"projects/{project_id}/users/grant-intents/{intent_id}/complete"
         return await self._post_json(path, json=payload)
+
+    async def get_temporary_access_grant(self, grant_id: str) -> TemporaryAccessGrantDTO:
+        data = await self._get_json(f"temporary-access-grants/{grant_id}")
+        return TemporaryAccessGrantDTO.model_validate(data)
 
     async def list_runs_holding_qa_ssh_grant(
         self, *, limit: int, after: RunDTO | None = None

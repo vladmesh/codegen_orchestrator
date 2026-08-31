@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 import httpx
@@ -31,7 +30,6 @@ from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantCreate,
     TemporaryAccessGrantDTO,
     TemporaryAccessGrantUpdate,
-    TemporaryAccessObservation,
 )
 from shared.contracts.dto.user import UserDTO
 from shared.contracts.dto.users_grant import GrantIntentLifecycleResult
@@ -306,29 +304,9 @@ class SchedulerAPIClient(InternalAPIClient):
         )
         return TemporaryAccessGrantDTO.model_validate(resp.json())
 
-    async def list_temporary_access_grants_under_watch(
-        self, revoked_after: datetime, slot_audit_before: datetime
-    ) -> list[TemporaryAccessGrantDTO]:
-        """Every grant the sweep still has to read, whatever process granted it.
-
-        Three sets in one answer. Every grant that may hold access. The ones
-        closed since *revoked_after*: a closed grant is not holding access as far
-        as the record knows, and the record only knows what was read, so a
-        dispatch that was already on its way can write the value back afterwards
-        and nobody would see it if the readings stopped when the grant closed.
-        And the owner of every closed slot last read before *slot_audit_before*,
-        which is the slow level — the value that came back after the fast watch
-        ended is found there, later but not never.
-        """
-        resp = await self.request(
-            "GET",
-            "temporary-access-grants/",
-            params={
-                "live": "true",
-                "revoked_after": revoked_after.isoformat(),
-                "slot_audit_before": slot_audit_before.isoformat(),
-            },
-        )
+    async def list_temporary_access_grants_under_watch(self) -> list[TemporaryAccessGrantDTO]:
+        """Every capability-backed grant that still needs reconciliation."""
+        resp = await self.request("GET", "temporary-access-grants/", params={"live": "true"})
         return [TemporaryAccessGrantDTO.model_validate(row) for row in resp.json()]
 
     async def get_live_temporary_access_grant_for_run(
@@ -392,24 +370,6 @@ class SchedulerAPIClient(InternalAPIClient):
                 "run_error_message": run_error_message,
                 "run_result": run_result.model_dump(mode="json"),
             },
-        )
-        return TemporaryAccessGrantDTO.model_validate(resp.json())
-
-    async def record_temporary_access_observation(
-        self, grant_id: str, observation: TemporaryAccessObservation
-    ) -> TemporaryAccessGrantDTO:
-        """Hand the record a reading of the running service and read back what it means.
-
-        The caller does not decide whether the grant is closed. It reports what
-        the server showed; the record holds the streak of agreeing readings and
-        the window they have to span, and answers with the grant as it now
-        stands. That way one clear reading cannot end reconciliation, and a
-        reading that finds the value again puts the streak back to the start.
-        """
-        resp = await self.request(
-            "POST",
-            f"temporary-access-grants/{grant_id}/observation",
-            json=observation.model_dump(mode="json"),
         )
         return TemporaryAccessGrantDTO.model_validate(resp.json())
 

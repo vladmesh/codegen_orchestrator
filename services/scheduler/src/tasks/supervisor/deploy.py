@@ -17,10 +17,6 @@ from shared.allocation_disposition import (
     may_terminate_story,
     refusal_routing,
 )
-from shared.contracts.bot_access import (
-    QA_TEST_TELEGRAM_ID,
-    TEST_IDENTITY_ENV_KEY,
-)
 from shared.contracts.dto.project import (
     ProjectPredatesRunOwnership,
     require_initiating_run,
@@ -460,8 +456,8 @@ async def _handle_deploy_success_story(
     plan = QAHandoffPlan(
         qa_message=qa_message,
         access=TemporaryAccessRequest(
-            env_key=TEST_IDENTITY_ENV_KEY,
-            subject=str(QA_TEST_TELEGRAM_ID),
+            target_application_id=application_id,
+            target_base_url=deployed_url,
             head_sha=head_sha,
         )
         if grant_needed

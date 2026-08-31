@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- Regenerated the complete vendored service-template fixture from pinned commit
+  `edf54dfb1c323d60480761e06ceb982bd79ac9d2` with its recorded Copier inputs.
+  The fixture now carries Copier answers and a whole-render digest regression so
+  a renamed stale render cannot pass provenance checks.
+
+- Fenced temporary QA capability operations by their current durable Run and
+  in-flight lifecycle state immediately before each remote call. Recovery now
+  withdraws superseded grant dispatches before fenced cleanup, and cancelled
+  revokes escalate once at the unrevoked deadline instead of churning the queue.
+  Production scaffolding now pins the merged generated-service commit
+  `edf54dfb1c323d60480761e06ceb982bd79ac9d2`; its Stage 5 smoke proves grant,
+  active readback, revoke, inactive readback, and bot admission denial for the
+  same identity.
+
+- Replaced the temporary Telegram environment slot with a durable capability-backed
+  QA lifecycle. Each record binds the central QA identity and exact deployed
+  application, base URL, and SHA before dispatch; grant and revoke require active
+  or inactive generated-service readback. Live legacy slot records now fail closed
+  with operator remediation, while terminal history is retained.
+
+- Hardened temporary QA access recovery. Target contention and legacy
+  preconditions now defer only the affected handoff, stale or missing grant and
+  revoke operations consume durable bounded retries against their immutable
+  target, and exhausted unrevoked cleanup records one administrator escalation
+  without republishing QA access or relabelling its original revoke reason.
+
+- Fixed the temporary QA grant-attempt migration revision so it extends the
+  capability-target migration without colliding with an existing Alembic
+  revision.
+
+- Classified temporary QA records at the API boundary so legacy id collisions
+  fail closed while QA-run recovery still sees their terminal history. Cancelled
+  deploy-lock and fence operations now redispatch the immutable target without
+  consuming grant or revoke proof budget.
+
 - Centralized runtime and deploy diagnostic redaction. Deployer, GitHub-secret,
   and smoke failure surfaces now remove resolved secrets, encoded dotenv
   content, authorization values, and Telegram Bot API tokens before logs,
@@ -35,8 +70,6 @@
   `users.grant` capability. Production deploy resolution persists the capability
   as a generated secret, injects it only through `secret_values`, and requires
   grant plus active readback for the verified project owner after smoke success.
-  The remaining QA temporary-access TTL slot is unchanged because `users.grant`
-  has no revocation or expiry capability.
 
 - Added durable typed `users_grant_intent` deploy metadata for initial owners,
   added users, and incoming owners. Grant dispatch is persisted before publish,

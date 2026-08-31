@@ -50,11 +50,14 @@ class TemporaryAccessGrantRead(TimestampedDTO):
 
     id: str
     project_id: uuid.UUID
-    env_key: str
-    subject: str
+    channel: str | None = None
+    external_id: str | None = None
+    target_application_id: int | None = None
+    target_base_url: str | None = None
     head_sha: str
     qa_run_id: str
     grant_run_id: str
+    grant_attempts: int = 1
     qa_message: QAMessage
     status: TemporaryAccessStatus
     granted_at: datetime
@@ -65,8 +68,3 @@ class TemporaryAccessGrantRead(TimestampedDTO):
     revoke_attempts: int = 0
     escalated_at: datetime | None = None
     last_error: str | None = None
-    observed_at: datetime | None = None
-    observation_id: str | None = None
-    slot_clear_since: datetime | None = None
-    slot_clear_readings: int = 0
-    reopened_at: datetime | None = None

@@ -1,0 +1,29 @@
+version: 2
+services:
+  - name: backend
+    type: python-fastapi
+    description: >
+      FastAPI backend that exposes REST endpoints, owns the database, and powers the rest of the
+      system.
+    dev_template: true
+    depends_on:
+      redis: service_healthy
+  - name: tg_bot
+    type: python-faststream
+    description: >
+      Telegram bot for user interaction and event publishing.
+    dev_template: true
+    depends_on:
+      backend: service_started
+      redis: service_healthy
+  - name: frontend
+    type: node
+    description: >
+      Astro and React frontend placeholder served by the standard Compose layers on port 4321.
+  - name: notifications_worker
+    type: python-faststream
+    description: >
+      Service for notifications (email, telegram).
+    dev_template: true
+    depends_on:
+      redis: service_healthy

@@ -1,0 +1,11 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: 0.4.0-12-gedf54df
+_src_path: gh:vladmesh/service-template
+author_email: dev@example.com
+author_name: Developer
+modules: backend,tg_bot,notifications,frontend
+node_version: '20'
+project_description: A microservice project built with service-template framework
+project_name: env_fixture
+python_version: '3.12'
+task_description: ''

@@ -17,7 +17,8 @@ that build worker base images (`tests/integration/backend/conftest.py`,
 Coverage is derived from the tree and never listed by hand, and everything this module
 cannot read reliably fails the check instead of passing quietly:
 
-* Every Dockerfile in the repository is parsed. One that copies `shared` has to declare
+* Every Dockerfile in the repository is parsed, except the complete vendored service-template
+  fixture. One that copies `shared` has to declare
   `ARG SOURCE_HASH` and the label. A `COPY` whose sources cannot be read — JSON form that
   does not parse, a source built out of a variable, a glob in place of the top directory —
   fails the check naming the file, because "we could not find `shared` in it" is not the
@@ -104,6 +105,8 @@ WALK_SKIP_DIRS = {
     ".pytest_cache",
     ".mypy_cache",
 }
+VENDORED_TEMPLATE_FIXTURE_ROOT = ("shared", "tests", "fixtures")
+VENDORED_TEMPLATE_FIXTURE_PREFIX = "service-template-"
 SHARED_TREE = "shared"
 SHARED_MOUNT_TARGET = "/app/shared"
 GLOB_CHARS = set("*?[")
@@ -241,11 +244,30 @@ def dockerfile_bakes_shared(text: str, where: str) -> bool:
     return bakes
 
 
+def is_vendored_template_fixture(path: Path, root: Path) -> bool:
+    """Whether a path belongs to the rendered generated-product fixture.
+
+    Template compatibility validates that complete product separately. Its Docker
+    build rules are not orchestrator images and must not enter this inventory.
+    """
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return False
+    return (
+        len(parts) > len(VENDORED_TEMPLATE_FIXTURE_ROOT)
+        and parts[: len(VENDORED_TEMPLATE_FIXTURE_ROOT)] == VENDORED_TEMPLATE_FIXTURE_ROOT
+        and parts[len(VENDORED_TEMPLATE_FIXTURE_ROOT)].startswith(VENDORED_TEMPLATE_FIXTURE_PREFIX)
+    )
+
+
 def dockerfiles_baking_shared(root: Path = REPO_ROOT) -> list[str]:
     """Every Dockerfile in the tree that copies `shared` into the image."""
     found = []
     for path in root.glob("**/Dockerfile*"):
-        if WALK_SKIP_DIRS & set(path.parts) or not path.is_file():
+        if WALK_SKIP_DIRS & set(path.parts) or is_vendored_template_fixture(path, root):
+            continue
+        if not path.is_file():
             continue
         name = str(path.relative_to(root))
         if dockerfile_bakes_shared(path.read_text(), name):
@@ -284,7 +306,9 @@ def _compose_documents(root: Path) -> list[tuple[Path, dict]]:
 
     documents = []
     for path in sorted(root.rglob("*.y*ml")):
-        if WALK_SKIP_DIRS & set(path.parts) or not path.is_file():
+        if WALK_SKIP_DIRS & set(path.parts) or is_vendored_template_fixture(path, root):
+            continue
+        if not path.is_file():
             continue
         if path.suffix not in (".yml", ".yaml"):
             continue
