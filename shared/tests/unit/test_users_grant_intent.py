@@ -46,6 +46,13 @@ def test_lifecycle_result_exposes_an_attempt_only_when_this_call_dispatched_it()
     )
     assert applied.execution_run_id is None
 
+    exhausted = GrantIntentLifecycleResult(
+        intent_id="grant-1",
+        status=GrantIntentStatus.FAILED,
+        disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+    )
+    assert exhausted.execution_run_id is None
+
     with pytest.raises(ValidationError, match="only dispatched"):
         GrantIntentLifecycleResult(
             intent_id="grant-1",

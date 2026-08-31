@@ -814,8 +814,157 @@ class TestSuperviseDeployingStories:
         result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["retried"] == 1
-        redis_client._redis.incr.assert_not_awaited()
         api_client.create_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_exhausted_owner_seed_fails_the_story_and_alerts_without_a_new_run(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={
+                "head_sha": "a" * 40,
+                USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
+            },
+            result={"deploy_outcome": DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value},
+        )
+        api_client.resume_initial_owner_grant.return_value = GrantIntentLifecycleResult(
+            intent_id="users-grant-initial_owner-seed",
+            status=GrantIntentStatus.FAILED,
+            disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+        )
+
+        with patch(
+            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+        ) as notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        notify.assert_awaited_once()
+        api_client.create_run.assert_not_awaited()
+        redis_client.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_in_flight_owner_seed_recovery_republishes_nothing(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={
+                "head_sha": "a" * 40,
+                USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
+            },
+            result={"deploy_outcome": DeployOutcome.OWNER_ACCESS_PROOF_FAILED.value},
+        )
+        api_client.resume_initial_owner_grant.return_value = GrantIntentLifecycleResult(
+            intent_id="users-grant-initial_owner-seed",
+            status=GrantIntentStatus.APPLYING,
+            disposition=GrantIntentLifecycleDisposition.IN_FLIGHT,
+        )
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 0
+        api_client.create_run.assert_not_awaited()
+        redis_client.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_exhausted_owner_seed_infrastructure_recovery_fails_without_republishing(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor.deploy import (
+            RefusedDeployAction,
+            _handle_deploy_infrastructure_wait,
+            logger,
+        )
+
+        run = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={
+                "head_sha": "a" * 40,
+                USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
+            },
+            result=refused_deploy_result().model_dump(mode="json"),
+        )
+        api_client.resume_initial_owner_grant.return_value = GrantIntentLifecycleResult(
+            intent_id="users-grant-initial_owner-seed",
+            status=GrantIntentStatus.FAILED,
+            disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+        )
+
+        with (
+            patch(
+                "src.tasks.supervisor.deploy._admissible_target_exists",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+            ) as notify,
+        ):
+            action = await _handle_deploy_infrastructure_wait(
+                api_client,
+                redis_client,
+                "story-1",
+                "00000000-0000-0000-0000-000000000001",
+                run,
+                run.result,
+                logger,
+            )
+
+        assert action is RefusedDeployAction.FAILED
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        notify.assert_awaited_once()
+        api_client.create_run.assert_not_awaited()
+        redis_client.publish_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_exhausted_owner_seed_secret_recovery_fails_without_republishing(
+        self, api_client, redis_client
+    ):
+        from src.tasks.supervisor.deploy import _redispatch_waiting_deploy, logger
+
+        run = _make_run(
+            status=RunStatus.FAILED,
+            run_metadata={
+                "head_sha": "a" * 40,
+                USERS_GRANT_INTENT_KEY: "users-grant-initial_owner-seed",
+            },
+            result=_WAITING_SECRET_RESULT,
+        )
+        api_client.resume_initial_owner_grant.return_value = GrantIntentLifecycleResult(
+            intent_id="users-grant-initial_owner-seed",
+            status=GrantIntentStatus.FAILED,
+            disposition=GrantIntentLifecycleDisposition.EXHAUSTED,
+        )
+
+        with patch(
+            "src.tasks.supervisor.deploy._notify_admin_failure", new_callable=AsyncMock
+        ) as notify:
+            assert not await _redispatch_waiting_deploy(
+                api_client,
+                redis_client,
+                "story-1",
+                "00000000-0000-0000-0000-000000000001",
+                run,
+                logger,
+            )
+
+        api_client.fail_story.assert_awaited_once_with("story-1")
+        notify.assert_awaited_once()
+        api_client.create_run.assert_not_awaited()
+        redis_client.publish_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_applied_owner_seed_infrastructure_recovery_falls_through_to_normal_deploy(

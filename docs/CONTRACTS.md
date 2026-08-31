@@ -52,12 +52,19 @@ failure reacquire that seed through the same lifecycle operation.
 
 `GrantIntentLifecycleResult` is the per-call boundary for that operation. Only
 `dispatched` carries the newly minted Run id and its immutable target;
-`already_applied` and `in_flight` carry neither, even though the durable intent
-retains its safe execution history. PR polling must use that disposition rather
-than an intent's historical execution id. A lost completion response reconciles
-the source deploy through the ordinary successful-deploy handoff without spending
-a retry; infrastructure and user-secret recovery only claim an intent
-redispatch when the result is `dispatched`.
+`already_applied`, `in_flight`, and terminal `exhausted` carry neither, even
+though the durable intent retains its safe execution history. Before a fresh
+`dispatched` admission, the lifecycle locks and evaluates the same
+`deploy.max_deploy_retries` control as the scheduler. Once the number of
+immutable Runs reaches that ceiling, it records the safe terminal `failed`
+outcome and returns `exhausted` without creating or publishing a `(max + 1)`
+Run. Applied and in-flight responses consume no attempt. PR polling and every
+supervisor recovery route use that disposition rather than an intent's
+historical execution id. A lost completion response reconciles the source deploy
+through the ordinary successful-deploy handoff without spending a retry;
+infrastructure and user-secret recovery only claim an intent redispatch when the
+result is `dispatched`, and convert `exhausted` into the normal failed-story and
+admin-alert outcome.
 
 After smoke success, deploy grants through `POST /users/grant` and requires
 `GET /users/access` to report that exact identity active before the API records

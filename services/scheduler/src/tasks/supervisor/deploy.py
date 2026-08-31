@@ -117,6 +117,7 @@ class RefusedDeployAction(StrEnum):
     REDISPATCHED = "redispatched"
     WAITING = "waiting"
     ESCALATED = "escalated"
+    FAILED = "failed"
 
 
 class DeployRetryAction(StrEnum):
@@ -292,7 +293,7 @@ async def supervise_deploying_stories(  # noqa: C901, PLR0912
         "redispatched": redispatched + refused[RefusedDeployAction.REDISPATCHED],
         "waiting": waiting + refused[RefusedDeployAction.WAITING],
         "escalated": refused[RefusedDeployAction.ESCALATED],
-        "failed": failed,
+        "failed": failed + refused[RefusedDeployAction.FAILED],
     }
 
 
@@ -649,7 +650,7 @@ async def _handle_deploy_retry(
     project_id: str,
     run,
     log: structlog.stdlib.BoundLogger,
-) -> bool:
+) -> DeployRetryAction:
     """Deploy failed with RETRY — re-publish deploy message if retries remain.
 
     Returns whether a new attempt was dispatched, an already-completed
@@ -683,6 +684,9 @@ async def _handle_deploy_retry(
                 execution_run_id=lifecycle.execution_run_id,
             )
             return DeployRetryAction.RETRIED
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+            await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+            return DeployRetryAction.FAILED
         return DeployRetryAction.IN_FLIGHT
 
     retry_key = f"{DEPLOY_RETRY_KEY_PREFIX}{story_id}"
@@ -773,6 +777,20 @@ async def _resume_initial_owner_intent(
             project_id, story_id=story_id, head_sha=head_sha
         )
     )
+
+
+async def _fail_exhausted_grant_intent(
+    api_client: SchedulerAPIClient,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Turn API admission exhaustion into the ordinary terminal story outcome."""
+    detail = "grant intent deployment retries exhausted"
+    log.warning("deploy_grant_intent_retries_exhausted", run_id=run.id)
+    await api_client.fail_story(story_id)
+    await _notify_admin_failure(run.id, project_id, detail)
 
 
 async def _route_refused_deploy(
@@ -1014,12 +1032,16 @@ async def _handle_deploy_infrastructure_wait(
         return RefusedDeployAction.ESCALATED
 
     lifecycle = await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha)
-    if (
-        lifecycle is not None
-        and lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED
-    ):
-        log.info("infrastructure_wait_resumed_owner_intent", run_id=run.id)
-        return RefusedDeployAction.REDISPATCHED
+    if lifecycle is not None:
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+            log.info("infrastructure_wait_resumed_owner_intent", run_id=run.id)
+            return RefusedDeployAction.REDISPATCHED
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+            await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+            return RefusedDeployAction.FAILED
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+            log.info("infrastructure_wait_owner_intent_in_flight", run_id=run.id)
+            return RefusedDeployAction.WAITING
 
     new_run_id = f"deploy-infra-{uuid.uuid4().hex[:8]}"
     await api_client.create_run(
@@ -1228,12 +1250,16 @@ async def _redispatch_waiting_deploy(
     await api_client.transition_story(story_id, "deploy")
 
     lifecycle = await _resume_initial_owner_intent(api_client, project_id, story_id, run, head_sha)
-    if (
-        lifecycle is not None
-        and lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED
-    ):
-        log.info("waiting_secret_resumed_owner_intent", run_id=run.id)
-        return True
+    if lifecycle is not None:
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
+            log.info("waiting_secret_resumed_owner_intent", run_id=run.id)
+            return True
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+            await _fail_exhausted_grant_intent(api_client, story_id, project_id, run, log)
+            return False
+        if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+            log.info("waiting_secret_owner_intent_in_flight", run_id=run.id)
+            return True
 
     new_run_id = f"deploy-secret-{uuid.uuid4().hex[:8]}"
     await api_client.create_run(

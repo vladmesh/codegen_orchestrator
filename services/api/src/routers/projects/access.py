@@ -25,7 +25,16 @@ from shared.contracts.dto.users_grant import (
     GrantIntentStatus,
 )
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployTrigger
-from shared.models import Application, Deployment, Project, Repository, Run, User, UsersGrantIntent
+from shared.models import (
+    Application,
+    Deployment,
+    Project,
+    Repository,
+    Run,
+    SystemConfig,
+    User,
+    UsersGrantIntent,
+)
 from shared.queues import DEPLOY_QUEUE
 from shared.redis.client import RedisStreamClient
 
@@ -42,6 +51,8 @@ from ..projects_guards import check_project_access, load_locked_project
 
 router = APIRouter()
 logger = structlog.get_logger()
+DEPLOY_RETRY_CEILING_KEY = "deploy.max_deploy_retries"
+_RETRY_CEILING_EXHAUSTED_DETAIL = "deployment retry ceiling exhausted"
 
 
 class GrantIntentLifecycleRequest(BaseModel):
@@ -133,6 +144,22 @@ async def _execution_is_live(db: AsyncSession, intent: UsersGrantIntent) -> Run 
     return run
 
 
+async def _deploy_retry_ceiling(db: AsyncSession) -> int:
+    """Read and lock the scheduler's retry ceiling for lifecycle admission."""
+    config = await db.scalar(
+        select(SystemConfig).where(SystemConfig.key == DEPLOY_RETRY_CEILING_KEY).with_for_update()
+    )
+    if config is None:
+        raise RuntimeError(f"Missing required system config: {DEPLOY_RETRY_CEILING_KEY}")
+    try:
+        ceiling = int(config.value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{DEPLOY_RETRY_CEILING_KEY} must be an integer") from exc
+    if ceiling < 0:
+        raise RuntimeError(f"{DEPLOY_RETRY_CEILING_KEY} must be non-negative")
+    return ceiling
+
+
 async def _lifecycle(  # noqa: PLR0913
     db: AsyncSession,
     project: Project,
@@ -195,6 +222,11 @@ async def _lifecycle(  # noqa: PLR0913
     live_run = None if rebound else await _execution_is_live(db, intent)
     if live_run is not None:
         return intent, live_run, False, GrantIntentLifecycleDisposition.IN_FLIGHT
+
+    if intent.attempts >= await _deploy_retry_ceiling(db):
+        intent.status = GrantIntentStatus.FAILED.value
+        intent.detail = _RETRY_CEILING_EXHAUSTED_DETAIL
+        return intent, None, created, GrantIntentLifecycleDisposition.EXHAUSTED
 
     run = Run(
         id=f"deploy-grant-{uuid.uuid4().hex}",

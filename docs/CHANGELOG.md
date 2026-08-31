@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bounded durable grant-intent lifecycle admission with the configured deploy
+  retry ceiling. Exhausted owner-access attempts now persist a safe terminal
+  outcome before any new Run or queue message, and supervisor recovery fails
+  and alerts the story instead of deploying indefinitely.
+
 - Reworked permanent generated-service grants into API-owned durable intents,
   separate immutable deploy attempts, stale-target rebinding, and supervisor
   recovery after deploy or access-proof failures. Lifecycle calls now return a

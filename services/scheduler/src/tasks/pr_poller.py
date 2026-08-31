@@ -271,6 +271,19 @@ async def poll_merged_prs(
             if lifecycle.disposition is GrantIntentLifecycleDisposition.DISPATCHED:
                 deployed += 1
                 continue
+            if lifecycle.disposition is GrantIntentLifecycleDisposition.EXHAUSTED:
+                await api_client.fail_story(story_id)
+                await notify_admins_best_effort(
+                    f"Grant intent deployment retries exhausted for story {story_id}",
+                    level="error",
+                    story_id=story_id,
+                )
+                continue
+            if lifecycle.disposition is GrantIntentLifecycleDisposition.IN_FLIGHT:
+                log.info(
+                    "poll_merged_initial_owner_intent_in_flight", intent_id=lifecycle.intent_id
+                )
+                continue
 
         run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
         run_data = {

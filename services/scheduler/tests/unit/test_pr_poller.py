@@ -173,6 +173,42 @@ async def test_first_tg_bot_deploy_uses_api_owned_initial_owner_lifecycle(mock_g
 
 
 @pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_exhausted_initial_owner_lifecycle_fails_without_an_ordinary_deploy(
+    mock_gh_cls, notify
+):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    redis = AsyncMock()
+    story = _make_story(project_id="00000000-0000-0000-0000-000000000001", pr_number=42)
+    api.get_stories_by_status.return_value = [story]
+    api.get_primary_repository.return_value = _make_repo()
+    api.get_stories_by_project.return_value = []
+    api.get_project.return_value = SimpleNamespace(
+        config={"modules": ["backend", "tg_bot"]}, owner_id=7
+    )
+    api.resume_initial_owner_grant.return_value = {
+        "intent_id": "users-grant-initial_owner-00000000000000000000000000000001-84",
+        "disposition": "exhausted",
+        "status": "failed",
+    }
+    gh.get_pull_request.return_value = {
+        "number": 42,
+        "merged_at": "2026-03-20T03:15:00Z",
+        "head": {"sha": "a" * 40},
+    }
+
+    assert await poll_merged_prs(api, redis) == 0
+
+    api.fail_story.assert_awaited_once_with(story.id)
+    notify.assert_awaited_once()
+    api.create_run.assert_not_awaited()
+    redis.publish_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @patch("src.tasks.pr_poller.resolve_project_recipient")
 @patch("src.tasks.pr_poller.GitHubAppClient")
 async def test_applied_initial_owner_intent_does_not_skip_a_later_create_deploy(

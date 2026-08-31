@@ -195,6 +195,69 @@ async def test_initial_owner_lifecycle_returns_only_the_run_dispatched_by_this_c
 
 
 @pytest.mark.asyncio
+async def test_initial_owner_lifecycle_stops_at_the_configured_deploy_retry_ceiling(async_client):
+    """A terminal readback cannot mint or publish the (max + 1) grant Run."""
+    from src.dependencies import get_redis_client
+    from src.main import app
+
+    project_id, _, _, _, _, sha = await _target(async_client)
+    prior = await async_client.get("/api/system-configs/deploy.max_deploy_retries")
+    assert prior.status_code in {200, 404}
+    configured = await async_client.post(
+        "/api/system-configs/",
+        json={
+            "key": "deploy.max_deploy_retries",
+            "value": 2,
+            "category": "deploy",
+        },
+    )
+    assert configured.status_code == 201
+
+    redis = _PublishRedis()
+    app.dependency_overrides[get_redis_client] = lambda: redis
+    try:
+        first = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        assert first.json()["disposition"] == "dispatched"
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{first.json()['intent_id']}/complete",
+            json={"execution_run_id": first.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{first.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        second = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+        assert second.json()["disposition"] == "dispatched"
+        await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/{second.json()['intent_id']}/complete",
+            json={"execution_run_id": second.json()["execution_run_id"], "active": False},
+        )
+        await async_client.patch(
+            f"/api/runs/{second.json()['execution_run_id']}", json={"status": "failed"}
+        )
+        exhausted = await async_client.post(
+            f"/api/projects/{project_id}/users/grant-intents/lifecycle",
+            json={"kind": "initial_owner", "head_sha": sha},
+        )
+    finally:
+        app.dependency_overrides.pop(get_redis_client, None)
+        if prior.status_code == 200:
+            await async_client.post("/api/system-configs/", json=prior.json())
+        else:
+            await async_client.delete("/api/system-configs/deploy.max_deploy_retries")
+
+    assert exhausted.json()["disposition"] == "exhausted"
+    assert exhausted.json()["status"] == GrantIntentStatus.FAILED.value
+    assert exhausted.json()["execution_run_id"] is None
+    assert redis.publish_message.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_transfer_is_atomic_with_active_readback(async_client):
     from src.dependencies import get_redis_client
     from src.main import app
