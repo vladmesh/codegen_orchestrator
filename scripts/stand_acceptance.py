@@ -23,6 +23,7 @@ from typing import Any
 REQUIRED_RUN_FILES = ("junit.xml", "report.tsv", "run.log")
 REMOTE_INVOCATION_LOG = "remote-invocation.log"
 COMBINATION_LOG = re.compile(r"(?:claude|codex)-(?:claude|codex)\.log\Z")
+RUN_EVIDENCE = re.compile(r"run-evidence-[a-z0-9-]+-[0-9T+.]+\.json\Z")
 # A private-key PEM header is sensitive even when its body was reformatted by a
 # traceback or serialized by a logger.  This intentionally does not inspect
 # credential names or assignments, so value-free preflight diagnostics remain
@@ -137,6 +138,8 @@ def _copy_run_outputs(run_dir: Path, output: Path, errors: list[str]) -> None:
     if run_dir.is_dir():
         for source in sorted(run_dir.iterdir()):
             if source.is_file() and COMBINATION_LOG.fullmatch(source.name):
+                shutil.copyfile(source, output / source.name)
+            if source.is_file() and RUN_EVIDENCE.fullmatch(source.name):
                 shutil.copyfile(source, output / source.name)
         source = run_dir / REMOTE_INVOCATION_LOG
         if source.is_file():
@@ -386,7 +389,10 @@ def _scan_artifact_issues(
         valid_combination = COMBINATION_LOG.fullmatch(path.name) and (
             path.parent == artifact or path.parent == artifact / "run"
         )
-        if relative not in allowed and not valid_combination:
+        valid_run_evidence = RUN_EVIDENCE.fullmatch(path.name) and (
+            path.parent == artifact or path.parent == artifact / "run"
+        )
+        if relative not in allowed and not valid_combination and not valid_run_evidence:
             issues.append(AdmissionIssue("candidate contains an unapproved file", relative))
             continue
         if not path.is_file() or path.is_symlink():

@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -87,6 +88,19 @@ def orchestrator_root() -> Path:
     return resolve_repo_root(Path(__file__))
 
 
+LIVE_EVIDENCE_OUTPUT_DIR_ENV = "LIVE_EVIDENCE_OUTPUT_DIR"
+
+
+def evidence_output_directory(root: Path | None = None) -> Path:
+    """Resolve the runner-owned destination before an ephemeral host disappears."""
+    if root is None:
+        configured = os.environ.get(LIVE_EVIDENCE_OUTPUT_DIR_ENV)
+        if configured:
+            return Path(configured)
+        root = orchestrator_root()
+    return root / "docs" / "e2e_results"
+
+
 # The artifact is read by humans and by whatever comes next; a consumer that
 # knows the version knows the field names. Bump it when a field changes meaning.
 # v2: qa.executor_executed reports the executor observed on a QA container, not
@@ -97,7 +111,9 @@ def orchestrator_root() -> Path:
 # v4: a worker whose container was removed is carried by the record the remover
 #     wrote before removing it, so `discovered_by` may be `delete_capture` and
 #     such a record carries an exit code and a log tail like any other.
-EVIDENCE_SCHEMA_VERSION = 4
+# v5: task status, iteration and redacted failure metadata are retained beside
+#     the worker exit/log evidence.
+EVIDENCE_SCHEMA_VERSION = 5
 EVIDENCE_KIND = "worker_failure_attribution"
 
 # The same bounds the remover applies to the tail it persists, so a tail read
@@ -1156,6 +1172,7 @@ def build_artifact(ctx: dict, *, root: Path | None = None, now: datetime | None 
             "story_id": ctx.get("story_id"),
             "task_id": ctx.get("task_id"),
         },
+        "tasks": ctx.get("task_diagnostics", {}),
         "discovery": {
             "run_id": collector.run_id,
             "docker_filters": [f"label={label}" for label in _run_label_filters(collector.run_id)],
@@ -1211,7 +1228,7 @@ def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
     # Resolved here as well as in build_artifact: the live harness calls this with
     # no root, and `None / "docs"` raised inside the fixture's `finally`, failing
     # every combination at teardown and writing no artifact at all.
-    root = root if root is not None else orchestrator_root()
+    artifact_root = root if root is not None else orchestrator_root()
     collector: RunEvidenceCollector = ctx["run_evidence"]
     collector.capture()
     manifest = ctx.get("manifest")
@@ -1224,5 +1241,5 @@ def emit_run_evidence(ctx: dict, *, root: Path | None = None) -> Path:
                 role_from_worker_id(resource.identifier),
                 NEVER_LISTED_REASON,
             )
-    artifact = build_artifact(ctx, root=root)
-    return write_artifact(artifact, root / "docs" / "e2e_results")
+    artifact = build_artifact(ctx, root=artifact_root)
+    return write_artifact(artifact, evidence_output_directory(root))

@@ -7,6 +7,14 @@
   while `matrix` still fetches all four cells. This removes three guaranteed
   missing-file SSH/SCP waits from every single-cell run.
 
+- Retained live worker failure attribution across ephemeral stand teardown.
+  Pytest now writes each bounded, redacted `run-evidence` JSON into the
+  runner-owned directory; the workflow transfers it before deleting the host,
+  admits it through the protected-value scanner, and includes it in the final
+  acceptance artifact. Evidence schema v5 also records bounded task status,
+  iteration, last-event, dependency, and redacted failure metadata so a
+  `waiting_human_review` outcome remains diagnosable after cleanup.
+
 - Completed the remaining free `mega-noop` acceptance tail without invoking an
   LLM: one Story now has two dependency-ordered noop Tasks, asserts that the
   second cannot receive engineering work before the first is done, and records

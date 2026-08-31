@@ -489,6 +489,22 @@ jobs:
               scp -i "${key_path}" ${SSH_OPTS} \
                 root@"${PROD_HOST}":/root/e2e-runs/latest/"${name}" "${run_dir}/${name}" || true
             done
+            # The pytest fixture writes bounded, redacted worker evidence into
+            # the runner directory before cleanup removes its containers. Stream
+            # every evidence file in one SSH round trip; an empty set is a valid
+            # tar, so custom tests that do not create workers do not wait on a
+            # missing wildcard or emit misleading SCP errors.
+            ssh -i "${key_path}" ${SSH_OPTS} root@"${PROD_HOST}" '
+              set -euo pipefail
+              cd /root/e2e-runs/latest
+              shopt -s nullglob
+              files=(run-evidence-*.json)
+              if [ "${#files[@]}" -eq 0 ]; then
+                tar -cf - --files-from=/dev/null
+              else
+                tar -cf - -- "${files[@]}"
+              fi
+            ' | tar -C "${run_dir}" -xf -
           fi
 
       # This is the admission boundary for the inter-job handoff. It derives

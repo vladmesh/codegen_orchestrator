@@ -116,6 +116,13 @@ def test_handoff_collects_only_logs_the_selected_suite_can_produce():
     assert 'for name in "${reports[@]}"' in script
 
 
+def test_worker_failure_evidence_is_copied_before_the_ephemeral_host_is_deleted():
+    collect = _steps()["Record machine manifest"]["run"]
+
+    assert "run-evidence-*.json" in collect
+    assert 'tar -C "${run_dir}" -xf -' in collect
+
+
 def test_the_matrix_fits_in_the_job_timeout():
     """The provisioned stand, four cells, and their cleanup reserve fit strictly."""
     job = _workflow()["jobs"]["e2e"]

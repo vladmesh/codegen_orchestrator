@@ -119,6 +119,7 @@ SUITES: dict[str, Suite] = {
 }
 SUITE_ALIASES = {"mega": "mega-noop", "llm": "mega-llm"}
 LLM_ENV_NAMES = ("LIVE_LLM_QA", "LIVE_QA_AGENT_TYPE", "LIVE_WORKER_AGENT_TYPE")
+LIVE_EVIDENCE_OUTPUT_DIR_ENV = "LIVE_EVIDENCE_OUTPUT_DIR"
 
 
 def resolve_suite(requested_name: str) -> tuple[str, Suite]:
@@ -260,7 +261,15 @@ def run_pytest(
     log_path: Path,
     timeout_seconds: int,
 ) -> bool:
-    run_env = {**os.environ, **env, "LIVE_CONTOUR": "stand"}
+    run_env = {
+        **os.environ,
+        **env,
+        "LIVE_CONTOUR": "stand",
+        # The orchestrator host is disposable. Evidence written under the
+        # checkout disappears with it, so make the runner-owned directory the
+        # durable handoff source while the fixture still owns its containers.
+        LIVE_EVIDENCE_OUTPUT_DIR_ENV: str(log_path.parent),
+    }
     for name in LLM_ENV_NAMES:
         run_env.pop(name, None)
     run_env.update(extra)

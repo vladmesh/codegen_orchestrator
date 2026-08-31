@@ -43,6 +43,37 @@ from shared.live_contour import require_live_contour
 pytestmark = pytest.mark.needs_no_api_credential
 
 
+def test_task_failure_diagnostics_are_bounded_and_redacted(monkeypatch):
+    monkeypatch.setenv("WORKER_BROKER_INTERNAL_TOKEN", "protected-task-detail")
+    ctx = {}
+
+    pipeline_helpers._record_task_diagnostic(
+        ctx,
+        {
+            "id": "task-1",
+            "status": "waiting_human_review",
+            "current_iteration": 3,
+            "max_iterations": 3,
+            "blocked_by_task_id": None,
+            "last_event": "worker_failed",
+            "failure_metadata": {
+                "reason": "worker exited: protected-task-detail",
+                "unrelated": "kept",
+            },
+            "description": "not part of retained diagnostics",
+        },
+    )
+
+    diagnostic = ctx["task_diagnostics"]["task-1"]
+    assert diagnostic["status"] == "waiting_human_review"
+    assert diagnostic["current_iteration"] == 3
+    assert diagnostic["failure_metadata"] == {
+        "reason": "worker exited: [redacted]",
+        "unrelated": "kept",
+    }
+    assert "description" not in diagnostic
+
+
 @pytest.fixture(autouse=True)
 def repository_live_manifests_are_read_only():
     """Offline contract tests must never mutate the live recovery directory."""

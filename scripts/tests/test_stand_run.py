@@ -230,6 +230,7 @@ def test_run_pytest_strips_llm_environment_unless_the_suite_explicitly_sets_it(
 
     assert stand_run.run_pytest("test_target", {}, {}, tmp_path / "pytest.log", 123) is True
     assert captured["timeout"] == 123
+    assert captured["env"][stand_run.LIVE_EVIDENCE_OUTPUT_DIR_ENV] == str(tmp_path)
     for name in stand_run.LLM_ENV_NAMES:
         assert name not in captured["env"]
 

@@ -129,6 +129,28 @@ def test_build_acceptance_artifact_records_observed_lifetime_and_rate_estimate(t
     ]
 
 
+def test_build_and_admission_preserve_redacted_worker_run_evidence(tmp_path):
+    manifest, run_dir, cleanup = _write_inputs(tmp_path)
+    evidence_name = "run-evidence-worker-noop-qa-health-20260831T225500.json"
+    evidence = {
+        "schema_version": 5,
+        "kind": "worker_failure_attribution",
+        "tasks": {
+            "task-1": {
+                "status": "waiting_human_review",
+                "failure_metadata": {"reason": "worker exited 7"},
+            }
+        },
+        "workers": [{"exit_code": {"value": 7}, "log_tail": {"text": "safe tail"}}],
+    }
+    (run_dir / evidence_name).write_text(json.dumps(evidence), encoding="utf-8")
+    output = tmp_path / "acceptance"
+
+    assert build_acceptance_artifact(manifest, run_dir, cleanup, output) is True
+    assert json.loads((output / evidence_name).read_text(encoding="utf-8")) == evidence
+    assert scan_artifact(output, canaries=("not-present",)) == []
+
+
 def test_build_marks_missing_cleanup_observation_incomplete_without_inventing_cost(tmp_path):
     cleanup = {
         "run_tag": "gha-17",
