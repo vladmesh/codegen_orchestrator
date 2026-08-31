@@ -10,8 +10,20 @@ from pathlib import Path
 import yaml
 
 from scripts.stand_acceptance import PROTECTED_STAND_SECRET_NAMES
+from scripts.stand_run import (
+    MATRIX_RUNNER_TIMEOUT_SECONDS,
+    STAND_CLEANUP_JOB_TIMEOUT_MINUTES,
+    STAND_JOB_TIMEOUT_MINUTES,
+    STAND_PROVISIONING_TIMEOUT_SECONDS,
+    SUITES,
+)
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "stand-e2e.yml"
+MAKEFILE = Path(__file__).parents[2] / "Makefile"
+CONTROL_PLANE_PLAYBOOK = (
+    WORKFLOW.parents[2]
+    / "services/infra-service/ansible/playbooks/provision_stand_control_plane.yml"
+)
 
 
 def _workflow() -> dict:
@@ -52,8 +64,26 @@ def test_only_one_e2e_at_a_time():
 def test_every_named_suite_is_offered_plus_an_arbitrary_target():
     options = _workflow()["on"]["workflow_dispatch"]["inputs"]["suite"]["options"]
 
-    assert {"mega", "llm", "matrix"} <= set(options)
+    assert set(options) == {"mega-noop", "mega-llm", "matrix", "custom"}
     assert "custom" in options, "an e2e invented later must be startable without a code change"
+
+
+def test_workflow_suite_names_match_the_runner_canonical_suite_table():
+    options = _workflow()["on"]["workflow_dispatch"]["inputs"]["suite"]["options"]
+
+    assert set(options) - {"custom"} == set(SUITES)
+    assert _workflow()["on"]["workflow_dispatch"]["inputs"]["suite"]["default"] == "mega-noop"
+    assert "inputs.suite" in _workflow()["run-name"]
+
+
+def test_worker_and_qa_inputs_describe_when_the_runner_uses_them():
+    inputs = _workflow()["on"]["workflow_dispatch"]["inputs"]
+
+    for name in ("worker", "qa"):
+        description = inputs[name]["description"]
+        assert "mega-llm" in description
+        assert "matrix" in description
+        assert "mega-noop" in description
 
 
 def test_a_custom_suite_without_a_target_is_refused_before_anything_runs():
@@ -74,10 +104,26 @@ def test_the_machine_manifest_is_collected_and_scanned_before_handoff_upload():
 
 
 def test_the_matrix_fits_in_the_job_timeout():
-    """Four full pipeline runs, each up to 45 minutes by the runner's own cap."""
+    """The provisioned stand, four cells, and their cleanup reserve fit strictly."""
     job = _workflow()["jobs"]["e2e"]
 
-    assert job["timeout-minutes"] >= 180
+    assert job["timeout-minutes"] == STAND_JOB_TIMEOUT_MINUTES
+    assert job["timeout-minutes"] * 60 > (
+        STAND_PROVISIONING_TIMEOUT_SECONDS + MATRIX_RUNNER_TIMEOUT_SECONDS
+    )
+    assert _workflow()["jobs"]["cleanup"]["timeout-minutes"] == STAND_CLEANUP_JOB_TIMEOUT_MINUTES
+
+
+def test_make_targets_preserve_the_canonical_suite_contract():
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert 'test-live-mega-noop:\n\t@echo "Running mega-noop' in makefile
+    assert "pytest tests/live/test_full_pipeline.py::TestFullPipeline -v" in makefile
+    assert "test-live-mega: test-live-mega-noop" in makefile
+    assert 'test-live-mega-llm:\n\t@echo "Running mega-llm' in makefile
+    assert "pytest tests/live/test_full_pipeline.py::TestFullPipelineLLM -v" in makefile
+    assert "test-live-matrix:\n\t@$(MAKE) --no-print-directory stand-run SUITE=matrix" in makefile
+    assert "# Legacy aggregate, not a named suite:" in makefile
 
 
 def test_lifecycle_preflight_and_create_replace_the_static_host():
@@ -194,19 +240,70 @@ def test_selected_suite_runs_through_the_supported_remote_runner_and_preserves_f
 def test_remote_runner_is_provisioned_and_only_runs_after_target_provisioning():
     steps = _steps()
     run = steps["Run selected stand suite"]
-    provision = (
-        WORKFLOW.parents[2] / "services/infra-service/ansible/playbooks/provision_software.yml"
-    ).read_text()
-    provision_vars = (
-        WORKFLOW.parents[2] / "services/infra-service/ansible/group_vars/provision_vars.yml"
-    ).read_text()
+    control_plane = CONTROL_PLANE_PLAYBOOK.read_text()
 
-    assert "Install pinned uv for stand runner" in provision
-    assert "uv_version" in provision_vars
+    assert "Install pinned uv for stand runner" in control_plane
     assert "uv --version" in steps["Bootstrap dynamic orchestrator"]["run"]
     assert run["if"] == "success()"
     assert "remote-invocation.log" in run["run"]
     assert ">/dev/null 2>&1" not in run["run"]
+
+
+def test_control_plane_bootstrap_is_minimal_and_keeps_target_provisioning_separate():
+    """The disposable control plane is not a deploy target.
+
+    Target-only hardening remains owned by the product provisioning path that
+    runs after the stand has registered the separate target machine.
+    """
+    bootstrap = _steps()["Bootstrap dynamic orchestrator"]
+    bootstrap_run = bootstrap["run"]
+    control_plane = CONTROL_PLANE_PLAYBOOK.read_text()
+    target_provision = (
+        WORKFLOW.parents[2] / "services/infra-service/ansible/playbooks/provision_software.yml"
+    ).read_text()
+
+    assert bootstrap["timeout-minutes"] == 15
+    assert "provision_stand_control_plane.yml" in bootstrap_run
+    assert "playbooks/bootstrap.yml" not in bootstrap_run
+    assert "playbooks/provision_software.yml" not in bootstrap_run
+    assert "ansible-galaxy collection install" not in bootstrap_run
+    assert "ANSIBLE_PIPELINING=True" in bootstrap_run
+
+    assert "gather_facts: false" in control_plane
+    assert "Gather control plane facts" in control_plane
+    assert "Wait for any possibly running apt/dpkg processes" in control_plane
+    assert "upgrade: dist" not in control_plane
+    assert "Create runtime user" in control_plane
+    assert "docker-ce" in control_plane
+    assert "docker compose version" in control_plane
+    assert "docker buildx version" in control_plane
+    assert "uv --version" in control_plane
+    assert "Verify runtime user identity" in control_plane
+    assert "/opt/codegen_orchestrator" in control_plane
+    for target_only in (
+        "name: deploy_target",
+        "name: qa_identity",
+        "name: monitoring",
+        "ufw:",
+        "timezone:",
+    ):
+        assert target_only not in control_plane
+
+    for preserved_target_work in (
+        "Upgrade all packages",
+        "upgrade: dist",
+        "name: deploy_target",
+        "name: qa_identity",
+        "name: monitoring",
+    ):
+        assert preserved_target_work in target_provision
+
+    # The root workflow connection is deliberate, while protected material is
+    # still narrowed to the unprivileged runtime identity after bootstrap.
+    bring_up = _steps()["Bring up dynamic orchestrator and wait for API"]["run"]
+    assert "ansible_user=root" in bootstrap_run
+    assert "install -d -m 0700 -o ${RUNTIME_UID} -g ${RUNTIME_GID} /opt/secrets" in bring_up
+    assert "chmod 0400 /opt/secrets/github_app.pem" in bring_up
 
 
 def test_final_evidence_is_built_after_always_cleanup_for_success_failure_and_cancellation():

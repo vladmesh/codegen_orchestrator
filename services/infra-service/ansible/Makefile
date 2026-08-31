@@ -30,6 +30,7 @@ check:
 syntax:
 	ansible-playbook playbooks/site.yml --syntax-check
 	ansible-playbook playbooks/bootstrap.yml --syntax-check
+	ansible-playbook playbooks/provision_stand_control_plane.yml --syntax-check
 
 add-service:
 	@echo "Adding new service to services.yml"
