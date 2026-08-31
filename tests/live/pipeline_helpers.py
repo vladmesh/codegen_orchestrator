@@ -23,11 +23,13 @@ import run_cleanup
 from run_evidence import RunEvidenceCollector
 
 from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.owner_notification import OwnerNotificationState
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunType
 from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
+from shared.contracts.queues.po import POSystemEvent
 from shared.contracts.queues.qa import QAOutcome
 from shared.contracts.service_ports import is_http_health_port_service
 from shared.live_contour import require_live_contour
@@ -63,6 +65,13 @@ DEPLOY_OUTCOME_POLL_INTERVAL = 3
 # check while the service finishes coming up.
 QA_RUN_TIMEOUT = 300
 QA_RUN_POLL_INTERVAL = 5
+# Completion is emitted after QA by the supervisor, then the durable owner
+# notification is delivered to PO.  Undeploy runs over the same bounded deploy
+# consumer path as a normal deployment, but has no GitHub workflow phase.
+STORY_COMPLETION_TIMEOUT = 180
+OWNER_NOTIFICATION_TIMEOUT = 180
+UNDEPLOY_TIMEOUT = 300
+LIFECYCLE_POLL_INTERVAL = 3
 # One owned deploy's teardown: 60s of SSH per target server, plus container start.
 SERVER_CLEANUP_TIMEOUT = 180
 WORKER_REMOVAL_TIMEOUT = 15
@@ -1024,6 +1033,330 @@ async def run_non_llm_qa(
             f"{result.get('summary') or result.get('error')}"
         )
     return {"run_id": run["id"], "status": run["status"], "qa_outcome": outcome}
+
+
+# ── Completed-story and undeploy lifecycle ───────────────────────────────
+
+
+def _redis_json(*args: str) -> object:
+    """Run one JSON Redis command through the stand's own Redis container."""
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "redis", "redis-cli", "--json", *args],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        cwd=ORCHESTRATOR_ROOT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout)
+    return json.loads(result.stdout or "null")
+
+
+def _flat_redis_fields(fields: dict[str, str] | list[str]) -> dict[str, str]:
+    """Normalize redis-cli's RESP3 object and RESP2 flat-array JSON forms."""
+    if isinstance(fields, dict):
+        return {str(key): str(value) for key, value in fields.items()}
+    return dict(zip(fields[::2], fields[1::2], strict=True))
+
+
+def po_input_cursor(*, command: Callable[..., object] = _redis_json) -> str:
+    """Capture the last PO input id before this run can publish an event."""
+    from shared.queues import PO_INPUT_QUEUE
+
+    entries = command("XREVRANGE", PO_INPUT_QUEUE, "+", "-", "COUNT", "1")
+    return str(entries[0][0]) if entries else "0-0"
+
+
+def po_events_after(
+    cursor: str, *, command: Callable[..., object] = _redis_json
+) -> list[POSystemEvent]:
+    """Return typed PO system events strictly newer than a captured cursor."""
+    from shared.queues import PO_INPUT_QUEUE
+
+    entries = command("XRANGE", PO_INPUT_QUEUE, f"({cursor}", "+")
+    events: list[POSystemEvent] = []
+    for _entry_id, fields in entries:
+        flat_fields = _flat_redis_fields(fields)
+        if flat_fields.get("type") == "system_event":
+            events.append(POSystemEvent.model_validate(flat_fields))
+    return events
+
+
+async def wait_story_completed(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = STORY_COMPLETION_TIMEOUT,
+    poll_interval: float = LIFECYCLE_POLL_INTERVAL,
+) -> dict | None:
+    """Wait for this story's terminal completed state and preserve diagnostics."""
+    story_id = ctx["story_id"]
+    deadline = time.monotonic() + timeout
+    last_story = None
+    while time.monotonic() < deadline:
+        response = await api.get(f"/api/stories/{story_id}")
+        response.raise_for_status()
+        last_story = response.json()
+        if last_story.get("status") == StoryStatus.COMPLETED.value:
+            ctx["story_terminal"] = last_story
+            return last_story
+        await asyncio.sleep(poll_interval)
+    ctx["story_terminal_error"] = (
+        f"story {story_id} did not reach {StoryStatus.COMPLETED.value} in {timeout}s; "
+        f"last_status={(last_story or {}).get('status')}"
+    )
+    return None
+
+
+def _matching_completion_event(
+    events: list[POSystemEvent], notification: dict, ctx: dict
+) -> POSystemEvent | None:
+    """Return the one new PO event that is the durable completion record."""
+    matches = [
+        event
+        for event in events
+        if event.event == "story_completed"
+        and event.story_id == ctx["story_id"]
+        and event.project_id == ctx["project_id"]
+        and event.text == notification.get("text")
+        and event.task_id == (notification.get("task_id") or "")
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+async def wait_owner_completion_notification(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = OWNER_NOTIFICATION_TIMEOUT,
+    poll_interval: float = LIFECYCLE_POLL_INTERVAL,
+    events_after: Callable[[str], list[POSystemEvent]] = po_events_after,
+) -> tuple[dict, POSystemEvent] | None:
+    """Prove the durable completion record was accepted by the PO input stream."""
+    story_id = ctx["story_id"]
+    cursor = ctx["po_input_cursor"]
+    deadline = time.monotonic() + timeout
+    last_state = None
+    last_events = 0
+    while time.monotonic() < deadline:
+        response = await api_internal.get(f"/api/stories/{story_id}/owner-notification")
+        response.raise_for_status()
+        notification = response.json()
+        last_state = notification.get("state")
+        events = events_after(cursor)
+        last_events = len(events)
+        event = _matching_completion_event(events, notification, ctx)
+        valid_notification = (
+            notification.get("event") == "story_completed"
+            and notification.get("story_id") == story_id
+            and notification.get("project_id") == ctx["project_id"]
+            and notification.get("terminal_status") == StoryStatus.COMPLETED.value
+            and notification.get("state") == OwnerNotificationState.DELIVERED.value
+            and notification.get("task_id") is None
+            and ctx["deployed_url"] in notification.get("text", "")
+        )
+        if valid_notification and event is not None:
+            ctx["owner_notification"] = notification
+            ctx["owner_notification_po_event"] = event.model_dump(mode="json")
+            return notification, event
+        await asyncio.sleep(poll_interval)
+    ctx["owner_notification_error"] = (
+        f"story {story_id} completion notification was not delivered to PO in {timeout}s; "
+        f"last_state={last_state} events_after_cursor={last_events}"
+    )
+    return None
+
+
+async def wait_service_deployment(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = DEPLOY_OUTCOME_TIMEOUT,
+    poll_interval: float = LIFECYCLE_POLL_INTERVAL,
+) -> dict | None:
+    """Select exactly one successful deployment for this application and SHA."""
+    application_id = ctx["application_id"]
+    project_id = ctx["project_id"]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = await api_internal.get(
+            "/api/service-deployments/",
+            params={"application_id": application_id, "project_id": project_id},
+        )
+        response.raise_for_status()
+        deployments = [
+            deployment
+            for deployment in response.json()
+            if str(deployment.get("application_id")) == str(application_id)
+            and str(deployment.get("project_id")) == str(project_id)
+        ]
+        if len(deployments) > 1:
+            ctx["service_deployment_error"] = (
+                f"ambiguous deployments for application {application_id}, project {project_id}: "
+                f"{[deployment.get('id') for deployment in deployments]}"
+            )
+            return None
+        if len(deployments) == 1:
+            deployment = deployments[0]
+            if (
+                deployment.get("result") == "success"
+                and deployment.get("deployed_sha") == ctx["deploy_head_sha"]
+            ):
+                ctx["service_deployment"] = deployment
+                return deployment
+            ctx["service_deployment_error"] = (
+                f"deployment {deployment.get('id')} for application {application_id} has "
+                f"result={deployment.get('result')} deployed_sha={deployment.get('deployed_sha')}; "
+                f"expected success and {ctx['deploy_head_sha']}"
+            )
+        await asyncio.sleep(poll_interval)
+    ctx.setdefault(
+        "service_deployment_error",
+        f"no successful deployment for application {application_id}, project {project_id} "
+        f"with deployed_sha={ctx['deploy_head_sha']} appeared in {timeout}s",
+    )
+    return None
+
+
+async def probe_health_endpoint(url: str, *, attempts: int = 5, retry_delay: float = 5) -> dict:
+    """Probe the public health endpoint while the application is still running."""
+    last_error = None
+    async with httpx.AsyncClient(timeout=30) as client:
+        for attempt in range(1, attempts + 1):
+            for path in ("/health", "/v1/health"):
+                try:
+                    response = await client.get(f"{url}{path}")
+                except httpx.ConnectError as error:
+                    last_error = f"{type(error).__name__}: {error}"
+                    continue
+                evidence = {
+                    "url": url,
+                    "endpoint": path,
+                    "status_code": response.status_code,
+                    "body": response.text[:200],
+                    "attempt": attempt,
+                }
+                if response.status_code == 200:
+                    return evidence
+                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+            if attempt < attempts:
+                await asyncio.sleep(retry_delay)
+    raise AssertionError(
+        f"health endpoint not reachable at {url} after {attempts} attempts: {last_error}"
+    )
+
+
+async def request_undeploy(
+    api: httpx.AsyncClient, api_internal: httpx.AsyncClient, ctx: dict
+) -> dict:
+    """Request undeploy after snapshotting every prior deploy Run."""
+    require_unscoped_run_observer(api_internal)
+    response = await api_internal.get(
+        "/api/runs/", params={"project_id": ctx["project_id"], "run_type": RunType.DEPLOY.value}
+    )
+    response.raise_for_status()
+    ctx["deploy_run_ids_before_undeploy"] = {run["id"] for run in response.json()}
+    response = await api.post(
+        f"/api/applications/{ctx['application_id']}/undeploy", json={"actor": "live-test"}
+    )
+    response.raise_for_status()
+    application = response.json()
+    ctx["undeploy_request"] = application
+    if application.get("status") != ApplicationStatus.UNDEPLOYING.value:
+        ctx["undeploy_request_error"] = (
+            f"undeploy request for application {ctx['application_id']} returned "
+            f"status={application.get('status')}"
+        )
+    return application
+
+
+async def wait_undeploy_run(
+    api_internal: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = UNDEPLOY_TIMEOUT,
+    poll_interval: float = LIFECYCLE_POLL_INTERVAL,
+) -> dict | None:
+    """Find the one post-request deploy Run bound to this application."""
+    require_unscoped_run_observer(api_internal)
+    before = ctx["deploy_run_ids_before_undeploy"]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = await api_internal.get(
+            "/api/runs/", params={"project_id": ctx["project_id"], "run_type": RunType.DEPLOY.value}
+        )
+        response.raise_for_status()
+        matches = [
+            run
+            for run in response.json()
+            if run["id"] not in before
+            and str((run.get("run_metadata") or {}).get("application_id"))
+            == str(ctx["application_id"])
+        ]
+        if len(matches) > 1:
+            ctx["undeploy_run_error"] = (
+                f"ambiguous new undeploy runs for application {ctx['application_id']}: "
+                f"{[run['id'] for run in matches]}"
+            )
+            return None
+        if len(matches) == 1 and matches[0].get("status") in _TERMINAL_RUN_STATUSES:
+            ctx["undeploy_run"] = matches[0]
+            return matches[0]
+        await asyncio.sleep(poll_interval)
+    ctx["undeploy_run_error"] = (
+        f"no terminal undeploy run for application {ctx['application_id']} appeared in {timeout}s"
+    )
+    return None
+
+
+async def wait_application_not_deployed(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = UNDEPLOY_TIMEOUT,
+    poll_interval: float = LIFECYCLE_POLL_INTERVAL,
+) -> dict | None:
+    """Wait for the lifecycle target to report the product terminal status."""
+    deadline = time.monotonic() + timeout
+    last_application = None
+    while time.monotonic() < deadline:
+        response = await api.get(f"/api/applications/{ctx['application_id']}")
+        response.raise_for_status()
+        last_application = response.json()
+        if last_application.get("status") == ApplicationStatus.NOT_DEPLOYED.value:
+            ctx["application_after_undeploy"] = last_application
+            return last_application
+        await asyncio.sleep(poll_interval)
+    ctx["application_after_undeploy_error"] = (
+        f"application {ctx['application_id']} did not reach {ApplicationStatus.NOT_DEPLOYED.value} "
+        f"in {timeout}s; last_status={(last_application or {}).get('status')}"
+    )
+    return None
+
+
+async def verify_undeploy_residue(api_internal: httpx.AsyncClient, ctx: dict) -> dict | None:
+    """Fail closed unless the exact pre-undeploy port allocation is gone."""
+    response = await api_internal.get(f"/api/servers/{ctx['server_handle']}/ports")
+    response.raise_for_status()
+    owned = [
+        allocation
+        for allocation in response.json()
+        if str(allocation.get("id")) == str(ctx["allocation_id"])
+        or str(allocation.get("application_id")) == str(ctx["application_id"])
+    ]
+    residue = {
+        "application_id": ctx["application_id"],
+        "allocation_id": ctx["allocation_id"],
+        "port_allocation_absent": not owned,
+        "observed_allocations": owned,
+    }
+    ctx["undeploy_residue"] = residue
+    if owned:
+        ctx["undeploy_residue_error"] = (
+            f"undeploy left owned port allocations for application {ctx['application_id']}: {owned}"
+        )
+        return None
+    return residue
 
 
 # ── Cleanup helpers ──────────────────────────────────────────────────────

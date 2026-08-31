@@ -28,6 +28,8 @@ from pipeline_helpers import (
     create_story_and_task,
     ensure_test_user,
     live_worker_agent_type,
+    po_events_after,
+    po_input_cursor,
     trigger_scaffold,
     wait_engineering,
     wait_scaffold,
@@ -88,19 +90,12 @@ def _redis_text(*args: str) -> str:
 
 
 def _stream_cursor(stream: str) -> str:
-    entries = _redis_json("XREVRANGE", stream, "+", "-", "COUNT", "1")
-    return entries[0][0] if entries else "0-0"
+    assert stream == PO_INPUT, "owner-notification proof observes only PO input"
+    return po_input_cursor(command=_redis_json)
 
 
 def _po_events_after(cursor: str) -> list[POSystemEvent]:
-    entries = _redis_json("XRANGE", PO_INPUT, f"({cursor}", "+")
-    events = []
-    for _entry_id, fields in entries:
-        flat_fields = _flat_fields(fields)
-        if flat_fields.get("type") != "system_event":
-            continue
-        events.append(POSystemEvent.model_validate(flat_fields))
-    return events
+    return po_events_after(cursor, command=_redis_json)
 
 
 async def _wait_for_story_status(api, story_id: str, status: StoryStatus) -> dict:

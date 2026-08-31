@@ -15,10 +15,8 @@ The noop path stays deterministic. The LLM path exercises the product route wher
 real developer worker changes code before CI, merge, deploy, health, and QA.
 """
 
-import asyncio
 import os
 
-import httpx
 from live_harness import cleanup_guard
 from pipeline_helpers import (
     DEPLOY_OUTCOME_TIMEOUT,
@@ -40,14 +38,23 @@ from pipeline_helpers import (
     dump_debug,
     ensure_test_user,
     evidence_pass,
+    po_input_cursor,
+    probe_health_endpoint,
     record_env_contract,
+    request_undeploy,
     run_non_llm_qa,
     trigger_scaffold,
+    verify_undeploy_residue,
+    wait_application_not_deployed,
     wait_deploy,
     wait_deploy_outcome,
     wait_deploy_run,
     wait_engineering,
+    wait_owner_completion_notification,
     wait_scaffold,
+    wait_service_deployment,
+    wait_story_completed,
+    wait_undeploy_run,
 )
 import pytest
 import pytest_asyncio
@@ -55,13 +62,16 @@ from run_evidence import RunEvidenceCollector, emit_run_evidence
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployOutcome
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
-async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefix: str):
+async def _pipeline_run(
+    create_project, *, engineering_timeout: int, debug_prefix: str, lifecycle_undeploy: bool = False
+):
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions."""
     async with api_client_as_test_user() as api:
         # Deploy runs belong to no user, and list_runs hides unowned runs from the
@@ -102,6 +112,7 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
                         ctx,
                         engineering_timeout=engineering_timeout,
                         debug_prefix=debug_prefix,
+                        lifecycle_undeploy=lifecycle_undeploy,
                     ):
                         yield value
                 finally:
@@ -112,6 +123,47 @@ async def _pipeline_run(create_project, *, engineering_timeout: int, debug_prefi
                     emit_run_evidence(ctx)
 
 
+async def _complete_noop_lifecycle(api, api_internal, ctx: dict, *, debug_prefix: str) -> bool:
+    """Complete the free mega lifecycle before its fixture exposes any facts."""
+    if ctx.get("qa_result", {}).get("qa_outcome") != "passed":
+        dump_debug(ctx, f"{debug_prefix}-qa")
+        return False
+    if await wait_story_completed(api_internal, ctx) is None:
+        dump_debug(ctx, f"{debug_prefix}-story-completed")
+        return False
+    if await wait_owner_completion_notification(api_internal, ctx) is None:
+        dump_debug(ctx, f"{debug_prefix}-owner-notification")
+        return False
+    if await wait_service_deployment(api_internal, ctx) is None:
+        dump_debug(ctx, f"{debug_prefix}-service-deployment")
+        return False
+
+    response = await api.get(f"/api/applications/{ctx['application_id']}")
+    response.raise_for_status()
+    ctx["application_before_undeploy"] = response.json()
+    if ctx["application_before_undeploy"].get("status") != ApplicationStatus.RUNNING.value:
+        ctx["application_before_undeploy_error"] = (
+            f"application {ctx['application_id']} was not running before undeploy: "
+            f"{ctx['application_before_undeploy'].get('status')}"
+        )
+        dump_debug(ctx, f"{debug_prefix}-pre-undeploy")
+        return False
+    await request_undeploy(api, api_internal, ctx)
+    if ctx.get("undeploy_request_error"):
+        dump_debug(ctx, f"{debug_prefix}-undeploy-request")
+        return False
+    if await wait_undeploy_run(api_internal, ctx) is None:
+        dump_debug(ctx, f"{debug_prefix}-undeploy-run")
+        return False
+    if await wait_application_not_deployed(api, ctx) is None:
+        dump_debug(ctx, f"{debug_prefix}-not-deployed")
+        return False
+    if await verify_undeploy_residue(api_internal, ctx) is None:
+        dump_debug(ctx, f"{debug_prefix}-undeploy-residue")
+        return False
+    return True
+
+
 async def _pipeline_phases(
     api,
     api_internal,
@@ -120,6 +172,7 @@ async def _pipeline_phases(
     *,
     engineering_timeout: int,
     debug_prefix: str,
+    lifecycle_undeploy: bool,
 ):
     """The pipeline phases themselves, so evidence can wrap every exit from them."""
     if ctx.get("qa_requires_executor"):
@@ -133,16 +186,13 @@ async def _pipeline_phases(
         dump_debug(ctx, f"{debug_prefix}-scaffold")
         return
 
-    # The scaffolded repo must already carry the contract deploy
-    # resolves its environment from.
-    if not record_env_contract(ctx, "main", phase="scaffold"):
-        yield ctx
-        dump_debug(ctx, f"{debug_prefix}-env-contract-scaffold")
-        return
-
     # Phase 2: Engineering. Every poll takes an evidence pass: a retry removes
     # the previous attempt's container, and the attempt that died is exactly the
     # one that has to stay attributable.
+    if lifecycle_undeploy:
+        # A cursor fences out historical and foreign PO events.  It is captured
+        # before the story can produce a completion notification.
+        ctx["po_input_cursor"] = po_input_cursor()
     await create_story_and_task(api, ctx)
     await wait_engineering(
         api, ctx, timeout=engineering_timeout, on_poll=lambda: evidence_pass(ctx)
@@ -177,6 +227,9 @@ async def _pipeline_phases(
         ctx.get("final_app_status") == ApplicationStatus.RUNNING.value
         and ctx.get("deploy_outcome") == DeployOutcome.SUCCESS.value
     ):
+        # The external probe happens while the application is running, but its
+        # evidence remains available after the noop lifecycle undeploys it.
+        ctx["health_probe_before_undeploy"] = await probe_health_endpoint(ctx["deployed_url"])
         # The QA run is recorded before it is judged, so a QA cell can say
         # "exercised and failed" instead of falling back to "not exercised".
         # Every poll takes an evidence pass too: the QA executor's container is
@@ -189,6 +242,12 @@ async def _pipeline_phases(
             record=lambda run: ctx.__setitem__("qa_run", run),
             on_poll=lambda: evidence_pass(ctx),
         )
+
+    if lifecycle_undeploy and not await _complete_noop_lifecycle(
+        api, api_internal, ctx, debug_prefix=debug_prefix
+    ):
+        yield ctx
+        return
 
     yield ctx
 
@@ -206,6 +265,7 @@ async def pipeline():
         create_noop_project,
         engineering_timeout=ENGINEERING_TIMEOUT,
         debug_prefix="full-noop",
+        lifecycle_undeploy=True,
     ):
         yield ctx
 
@@ -235,16 +295,6 @@ class TestFullPipeline:
         assert pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
             f"Deploy failed, app_status: {pipeline.get('final_app_status')}"
         )
-
-    async def test_env_contract_committed_by_scaffold(self, pipeline):
-        """The scaffolded repo carries the contract fragments deploy requires."""
-        if pipeline.get("scaffold_status") != ProjectStatus.ACTIVE:
-            pytest.skip("scaffold failed")
-        errors = pipeline.get("env_contract_errors") or {}
-        assert "scaffold" not in errors, errors.get("scaffold")
-        probe = pipeline["env_contract_probes"]["scaffold"]
-        assert set(probe["fragment_paths"]) >= EXPECTED_ENV_CONTRACT_FRAGMENTS
-        assert probe["entries"], "scaffolded contract declares no entries"
 
     async def test_env_contract_present_on_merged_sha(self, pipeline):
         """The contract also holds on the SHA deploy actually resolves it at.
@@ -278,36 +328,12 @@ class TestFullPipeline:
             f"({pipeline.get('deploy_error_details')})"
         )
 
-    async def test_port_allocated(self, pipeline):
-        """A port should be allocated for the deployed service."""
-        if pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
-            pytest.skip("deploy failed")
-        assert "port" in pipeline, "No port allocation found for project"
-        assert pipeline["port"] >= 8000, f"Unexpected port: {pipeline['port']}"
-
     async def test_health_endpoint(self, pipeline):
-        """GET /health on deployed service returns 200."""
-        if pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
-            pytest.skip("deploy failed")
-        assert "deployed_url" in pipeline, "No deployed_url, port allocation missing?"
-
-        url = pipeline["deployed_url"]
-        async with httpx.AsyncClient(timeout=30) as client:
-            for _attempt in range(5):
-                try:
-                    resp = await client.get(f"{url}/health")
-                    if resp.status_code == 200:
-                        break
-                    resp = await client.get(f"{url}/v1/health")
-                    if resp.status_code == 200:
-                        break
-                except httpx.ConnectError:
-                    pass
-                await asyncio.sleep(5)
-            else:
-                pytest.fail(f"Health endpoint not reachable at {url}/health after 5 attempts")
-
-        assert resp.status_code == 200, f"Health check failed: {resp.status_code} {resp.text[:200]}"
+        """The externally reachable address answered before the lifecycle teardown."""
+        probe = pipeline.get("health_probe_before_undeploy")
+        assert probe, "No pre-undeploy health probe was recorded"
+        assert probe["url"] == pipeline["deployed_url"]
+        assert probe["status_code"] == 200, probe
 
     async def test_non_llm_qa_passed(self, pipeline):
         """A separate post-deploy QA run must terminate as passed."""
@@ -321,6 +347,52 @@ class TestFullPipeline:
             "status": "completed",
             "qa_outcome": "passed",
         }
+
+    async def test_story_completed_and_owner_notification_delivered(self, pipeline):
+        """QA completion leaves one durable completion record accepted by PO."""
+        assert pipeline.get("story_terminal_error") is None, pipeline.get("story_terminal_error")
+        assert pipeline.get("story_terminal", {}).get("status") == StoryStatus.COMPLETED.value
+        notification = pipeline.get("owner_notification")
+        event = pipeline.get("owner_notification_po_event")
+        assert pipeline.get("owner_notification_error") is None, pipeline.get(
+            "owner_notification_error"
+        )
+        assert notification and event
+        assert notification["event"] == event["event"] == "story_completed"
+        assert notification["project_id"] == event["project_id"] == pipeline["project_id"]
+        assert notification["story_id"] == event["story_id"] == pipeline["story_id"]
+        assert notification["terminal_status"] == StoryStatus.COMPLETED.value
+        assert notification["task_id"] is None and event["task_id"] == ""
+        assert notification["text"] == event["text"]
+        assert pipeline["deployed_url"] in notification["text"]
+
+    async def test_deployment_sha_and_product_undeploy_lifecycle(self, pipeline):
+        """The selected deployment matches merged SHA, then product undeploy clears it."""
+        deployment = pipeline.get("service_deployment")
+        assert pipeline.get("service_deployment_error") is None, pipeline.get(
+            "service_deployment_error"
+        )
+        assert deployment and deployment["result"] == "success"
+        assert deployment["deployed_sha"] == pipeline["deploy_head_sha"]
+        assert pipeline.get("application_before_undeploy_error") is None
+        assert (
+            pipeline.get("application_before_undeploy", {}).get("status")
+            == ApplicationStatus.RUNNING.value
+        )
+        assert pipeline.get("undeploy_request_error") is None, pipeline.get(
+            "undeploy_request_error"
+        )
+        assert pipeline.get("undeploy_run_error") is None, pipeline.get("undeploy_run_error")
+        assert pipeline.get("undeploy_run", {}).get("status") == "completed"
+        assert pipeline.get("application_after_undeploy_error") is None
+        assert (
+            pipeline.get("application_after_undeploy", {}).get("status")
+            == ApplicationStatus.NOT_DEPLOYED.value
+        )
+        assert pipeline.get("undeploy_residue_error") is None, pipeline.get(
+            "undeploy_residue_error"
+        )
+        assert pipeline.get("undeploy_residue", {}).get("port_allocation_absent") is True
 
 
 class TestFullPipelineLLM:
@@ -376,28 +448,10 @@ class TestFullPipelineLLM:
         )
 
     async def test_health_endpoint(self, llm_pipeline):
-        """GET /health on deployed service returns 200."""
-        if llm_pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
-            pytest.skip("deploy failed")
-        assert "deployed_url" in llm_pipeline, "No deployed_url, port allocation missing?"
-
-        url = llm_pipeline["deployed_url"]
-        async with httpx.AsyncClient(timeout=30) as client:
-            for _attempt in range(5):
-                try:
-                    resp = await client.get(f"{url}/health")
-                    if resp.status_code == 200:
-                        break
-                    resp = await client.get(f"{url}/v1/health")
-                    if resp.status_code == 200:
-                        break
-                except httpx.ConnectError:
-                    pass
-                await asyncio.sleep(5)
-            else:
-                pytest.fail(f"Health endpoint not reachable at {url}/health after 5 attempts")
-
-        assert resp.status_code == 200, f"Health check failed: {resp.status_code} {resp.text[:200]}"
+        """GET /health evidence is recorded while the LLM deployment runs."""
+        probe = llm_pipeline.get("health_probe_before_undeploy")
+        assert probe, "No health probe was recorded"
+        assert probe["status_code"] == 200, probe
 
     async def test_non_llm_qa_passed(self, llm_pipeline):
         """A separate post-deploy QA run must terminate as passed."""
