@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ from shared.contracts.env_usage import (
 
 REPO_ROOT = Path(__file__).parents[3]
 FIXTURES_DIR = Path(__file__).parents[1] / "fixtures"
+GENERATED_FIXTURE_CACHE_DIRS = frozenset({"__pycache__", ".pytest_cache", ".ruff_cache"})
 
 
 def pinned_template_ref() -> str:
@@ -35,6 +37,19 @@ def pinned_template_ref() -> str:
 def template_fixture() -> Path:
     """Return the rendered fixture for the pinned service-template ref."""
     return FIXTURES_DIR / f"service-template-{pinned_template_ref()}"
+
+
+def fixture_tree_digest(root: Path) -> str:
+    """Return a stable digest of every generated fixture path and its content."""
+    digest = sha256()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or GENERATED_FIXTURE_CACHE_DIRS.intersection(path.parts):
+            continue
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(sha256(path.read_bytes()).digest())
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def write_fragment(root: Path, entries: dict[str, dict]) -> None:
@@ -317,7 +332,7 @@ class Settings(BaseSettings):
 
 
 def test_template_fixture_tracks_the_pinned_template_ref():
-    """A fixture rendered from an unpinned ref no longer describes what deploys read."""
+    """The fixture's Copier record must identify the production template revision."""
     fixture = template_fixture()
 
     stale = sorted(
@@ -329,7 +344,32 @@ def test_template_fixture_tracks_the_pinned_template_ref():
         f"no fixture for pinned service-template ref {pinned_template_ref()}; found {stale}"
     )
     assert not stale, f"fixtures left behind for unpinned service-template refs: {stale}"
-    assert f"`{pinned_template_ref()}`" in (fixture / "README.md").read_text()
+    answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
+    assert answers["_src_path"] == "gh:vladmesh/service-template"
+    assert answers["_commit"].endswith(f"g{pinned_template_ref()[:7]}")
+
+
+def test_template_fixture_content_matches_its_pinned_render():
+    """A renamed fixture must not be able to pass provenance with stale rendered files."""
+    fixture = template_fixture()
+    answers = yaml.safe_load((fixture / ".copier-answers.yml").read_text())
+
+    assert answers == {
+        "_commit": "0.4.0-12-gedf54df",
+        "_src_path": "gh:vladmesh/service-template",
+        "author_email": "dev@example.com",
+        "author_name": "Developer",
+        "modules": "backend,tg_bot,notifications,frontend",
+        "node_version": "20",
+        "project_description": "A microservice project built with service-template framework",
+        "project_name": "env_fixture",
+        "python_version": "3.12",
+        "task_description": "",
+    }
+    assert (
+        fixture_tree_digest(fixture)
+        == "38f64c0da45ff6e71064711dc4e54212b91572a3110d2042704056b59ce290b3"
+    )
 
 
 def test_template_fixture_extracts_without_crashing(tmp_path: Path):
@@ -357,15 +397,13 @@ def test_template_fixture_has_known_contract_gaps(tmp_path: Path):
 
     result = check_env_contract_usage(tmp_path)
 
-    # The pinned template declares every environment key it uses, so there are
-    # no undeclared errors left. The only remaining gaps are required keys the
-    # static scan cannot observe because they come from deploy-time secrets.
+    # The full pinned render includes framework tooling that is outside the
+    # generated deployment contract. BACKEND_API_URL is injected at deployment
+    # time, while SERVICE_TEMPLATE_ROOT only drives that bundled tooling.
     undeclared = {message.split()[3] for message in result.errors}
-    assert undeclared == set()
+    assert undeclared == {"SERVICE_TEMPLATE_ROOT"}
     assert result.warnings == (
         "required environment contract key BACKEND_API_URL was not observed",
-        "required environment contract key TELEGRAM_BOT_TOKEN was not observed",
-        "required environment contract key USERS_GRANT_CAPABILITY was not observed",
     )
 
 

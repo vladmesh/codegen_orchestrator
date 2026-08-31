@@ -1,18 +1,106 @@
-Verbatim rendered fixture from service-template commit
-`edf54dfb1c323d60480761e06ceb982bd79ac9d2`,
-generated with backend, tg_bot, notifications, and frontend modules. It keeps
-the generated-project paths and includes Compose files, workflows, entrypoints,
-settings, and environment contract fragments used by the gate.
+# env_fixture
 
-The tag must match `scheduler.service_template_ref` in
-`scripts/system_configs.yaml`; `test_env_usage.py` fails when they drift, because
-a fixture from an unpinned tag stops describing what deploys actually read.
+A microservice project built with service-template framework
 
-Regenerate with:
+## Quick Start
 
-    copier copy gh:vladmesh/service-template <out> --defaults --overwrite \
-      --vcs-ref=<pinned-ref> \
-      --data project_name=env_fixture \
-      --data modules=backend,tg_bot,notifications,frontend
+1. **Setup project** (installs dependencies, generates code, configures git hooks)
+   ```bash
+   make setup
+   ```
+   Fresh generated projects are not importable until this completes because
+   `make setup` creates the generated modules under `shared/shared/generated/`
+   and `services/*/src/generated/`.
 
-then copy the paths listed above into `service-template-<pinned-ref>/`.
+2. **Configure environment**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your settings
+   ```
+
+### Development Ports
+
+`make dev-start` includes `infra/compose.local.yml`, which publishes host ports from `.env`:
+- `BACKEND_PORT` maps the backend HTTP service to container port `8000`.
+- `POSTGRES_HOST_PORT` maps PostgreSQL to container port `5432`.
+- `REDIS_HOST_PORT` maps Redis to container port `6379`.
+- `FRONTEND_PORT` maps the frontend to container port `4321`.
+
+
+Set different host ports when running multiple generated projects on one machine.
+Use `infra/compose.base.yml` plus `infra/compose.dev.yml` without the local layer when services
+should stay reachable only on the Compose network.
+Use `make worker-start`, `make smoke-probe`, `make worker-call`, and `make worker-stop`
+for that port-less worker flow. `worker-call` runs an HTTP request from a one-off
+service container inside the Compose network:
+
+```bash
+make worker-start
+make worker-call url=http://backend:8000/health method=GET
+make worker-stop
+```
+
+`POST /users/grant` and `POST /users/revoke` are deployment capabilities, not worker-call
+commands. They require the single `X-Grant-Capability` request header. The local `.env` fixture
+only makes the generated development stack start; deployment receives its distinct per-project
+value as the backend's `USERS_GRANT_CAPABILITY` generated secret, which is never committed to this
+project.
+
+3. **Start development**
+   ```bash
+   make dev-start
+   ```
+   Use `make ps` to see the current project's Compose stack status.
+   Use `make dev-stop` to stop containers while keeping volumes, and `make dev-clean`
+   to remove this Compose project's containers, network, and volumes.
+
+4. **Run tests**
+   ```bash
+   make tests
+   ```
+   Run `make setup` before `make lint` or `make tests`; those targets expect
+   the root and service virtual environments to exist.
+
+## Modules
+
+This project includes the following modules:
+
+- **backend** - FastAPI REST API with PostgreSQL
+- **tg_bot** - Telegram bot (python-telegram-bot polling)
+- **notifications** - Notification worker (email, telegram)
+- **frontend** - Node.js frontend
+
+
+## Development Workflow
+
+- **Add/modify models:** Edit `shared/spec/models.yaml` → `make generate-from-spec`
+- **Add endpoints:** Edit `services/backend/spec/*.yaml` → `make generate-from-spec`
+- **Add domain operations:** declare them in the spec, then implement their generated controller
+  protocol and repository boundary.
+- **Create database migrations:** add or change ORM models, then run
+  `make makemigrations name="describe_change"`. The target starts the PostgreSQL dev container
+  through the worker compose layer and runs Alembic inside a one-off backend container. It upgrades the database to the current
+  head before autogeneration, and writes the revision to `services/backend/migrations/versions/`.
+  Without Docker, use `uv sync --project services/backend`, make sure PostgreSQL is already
+  reachable, then run `make SKIP_INFRA_START=1 makemigrations name="describe_change"`.
+- **Apply database migrations:** run `make migrate` or `make dev-start`.
+- **Run linter:** `make lint`
+- **Run formatter:** `make format`
+
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System design
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Coding standards
+
+## Tech Stack
+
+- **Python** 3.12
+- **FastAPI** + **Pydantic** (spec-first)
+- **PostgreSQL** + **SQLAlchemy** + **Alembic**
+- **Redis** + **FastStream** (async messaging)
+- **Node.js** 20
+- **Docker Compose** (containerized development)
+
+---
+
+*Generated with [service-template](https://github.com/your-org/service-template)*

@@ -1,0 +1,37 @@
+domain: users
+config:
+  rest:
+    prefix: "/users"
+    tags: ["users"]
+
+operations:
+  grant:
+    input: UserGrant
+    output: UserAccess
+    rest:
+      method: POST
+      path: "/grant"
+      status: 200
+    events:
+      publish_on_success: user_granted
+
+  revoke:
+    input: UserRevoke
+    output: UserAccess
+    rest:
+      method: POST
+      path: "/revoke"
+      status: 200
+
+  resolve:
+    output: UserAccess
+    params:
+      - name: channel
+        type: str
+        source: query
+      - name: external_id
+        type: str
+        source: query
+    rest:
+      method: GET
+      path: "/access"

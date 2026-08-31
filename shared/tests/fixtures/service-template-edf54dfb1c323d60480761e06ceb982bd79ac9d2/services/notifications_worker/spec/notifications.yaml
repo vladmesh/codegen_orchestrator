@@ -1,0 +1,7 @@
+domain: notifications
+
+operations:
+  on_user_granted:
+    input: UserAccess
+    events:
+      subscribe: user_granted

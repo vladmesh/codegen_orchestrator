@@ -1,0 +1,7 @@
+[project]
+name = "env_fixture"
+version = "0.1.0"
+description = "A microservice project built with service-template framework"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []

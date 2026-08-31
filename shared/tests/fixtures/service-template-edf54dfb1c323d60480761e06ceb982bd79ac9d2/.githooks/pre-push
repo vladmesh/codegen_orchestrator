@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Pre-push hook for PRODUCT project (generated from service-template)
+# Only runs checks relevant to changed files
+set -euo pipefail
+
+remote_name="${1-}"
+remote_url="${2-}"
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}"
+
+echo "[pre-push] Verifying push to ${remote_name:-unknown} (${remote_url:-})..."
+
+export DOCKER_BUILDKIT=1
+
+# Detect Docker availability (all checks must pass: binary, compose plugin, daemon)
+DOCKER_AVAILABLE=false
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    DOCKER_AVAILABLE=true
+fi
+
+# Determine what files changed compared to what's already pushed
+changed_files=$(git diff --name-only @{push}...HEAD 2>/dev/null || git diff --name-only origin/main...HEAD 2>/dev/null || git diff --name-only HEAD~1)
+
+if [ -z "$changed_files" ]; then
+  echo "[pre-push] No changes detected, skipping checks"
+  exit 0
+fi
+
+echo "[pre-push] Changed files:"
+echo "$changed_files" | head -20
+[ "$(echo "$changed_files" | wc -l)" -gt 20 ] && echo "  ... and more"
+
+run_lint=false
+run_generate=false
+affected_services=()
+
+# --- Detect affected areas ---
+
+# shared/ or .framework/ affects all services
+if echo "$changed_files" | grep -qE '^(shared/|\.framework/)'; then
+  run_lint=true
+  run_generate=true
+  # Mark all services as affected
+  if [ -f services.yml ]; then
+    while IFS= read -r svc; do
+      [ -n "$svc" ] && affected_services+=("$svc")
+    done < <(grep -E '^\s*-\s*name:\s*' services.yml | sed 's/.*name:\s*//' | tr -d ' ')
+  fi
+fi
+
+# Changes in specific services
+for svc_dir in $(echo "$changed_files" | grep -oE '^services/[^/]+' | sort -u); do
+  svc_name="${svc_dir#services/}"
+  # Check if not already in array
+  if [[ ! " ${affected_services[*]:-} " =~ " ${svc_name} " ]]; then
+    affected_services+=("$svc_name")
+  fi
+done
+
+# infra/ or Makefile
+if echo "$changed_files" | grep -qE '^(infra/|Makefile$)'; then
+  run_lint=true
+fi
+
+# .github workflows
+if echo "$changed_files" | grep -qE '^\.github/'; then
+  run_lint=true
+fi
+
+# --- Execute checks ---
+
+# Native fallback: when Docker is not available, use make lint directly.
+# make lint uses $(VENV)/ruff which resolves .venv/bin/ruff correctly.
+# This covers ruff, xenon, and all other linters defined in the Makefile.
+if ! $DOCKER_AVAILABLE; then
+    echo ""
+    echo "[pre-push] Docker not available, running make lint..."
+    make lint || exit 1
+    echo ""
+    echo "[pre-push] Native lint passed. Full CI will run on GitHub."
+fi
+
+checks_run=0
+
+if $run_generate && make -n generate-from-spec >/dev/null 2>&1; then
+  echo ""
+  echo "[pre-push] Regenerating from spec..."
+  make generate-from-spec
+  if ! git diff --quiet -- shared/shared/generated/ 2>/dev/null; then
+    echo ""
+    echo "ERROR: Generated files are out of date!"
+    echo "Run 'make generate-from-spec' and commit the changes."
+    exit 1
+  fi
+  ((checks_run++)) || true
+fi
+
+if $run_lint && $DOCKER_AVAILABLE; then
+  echo ""
+  echo "[pre-push] Running linters..."
+  make lint
+  ((checks_run++)) || true
+fi
+
+# Check dependency hygiene for affected services
+if [ ${#affected_services[@]} -gt 0 ]; then
+  for svc in "${affected_services[@]}"; do
+    svc_dir="services/$svc"
+    if [ -x "$svc_dir/.venv/bin/deptry" ] && [ -d "$svc_dir/src" ]; then
+      echo ""
+      echo "[pre-push] Checking dependencies: $svc..."
+      (cd "$svc_dir" && .venv/bin/deptry src/) || exit 1
+      ((checks_run++)) || true
+    fi
+  done
+fi
+
+# Run tests only for affected services
+if [ ${#affected_services[@]} -gt 0 ]; then
+  for svc in "${affected_services[@]}"; do
+    echo ""
+    echo "[pre-push] Testing $svc..."
+    make tests "$svc" || exit 1
+    ((checks_run++)) || true
+  done
+else
+  echo ""
+  echo "[pre-push] No service changes detected, skipping service tests"
+fi
+
+if [ "$checks_run" -eq 0 ]; then
+  echo "[pre-push] No relevant checks for changed files (docs only?), skipping"
+fi
+
+echo ""
+echo "[pre-push] ✅ All checks passed!"

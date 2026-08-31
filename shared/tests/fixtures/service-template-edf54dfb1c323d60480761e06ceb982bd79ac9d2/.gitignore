@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+.venv/
+services/*/.venv/
+
+.env
+.env.local
+
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+build/
+dist/
+
+# Worker runtime files (injected by orchestrator, not part of project source)
+REPORT.md
+TASK.md

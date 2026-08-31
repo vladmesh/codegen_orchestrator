@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     app_name: str = Field(validation_alias="APP_NAME")
     environment: str = Field(validation_alias="APP_ENV")
     app_secret_key: str = Field(validation_alias="APP_SECRET_KEY")
+    users_grant_capability: str = Field(min_length=1, validation_alias="USERS_GRANT_CAPABILITY")
     debug: bool = Field(default=False, validation_alias="DEBUG")
     enabled_modules_raw: str = Field(default="", validation_alias="ENABLED_MODULES")
 
@@ -65,12 +66,6 @@ class Settings(BaseSettings):
         if self.async_database_url_override:
             return self.async_database_url_override
         return self._build_postgres_url(self.sqlalchemy_async_driver)
-
-    @property
-    def database_url(self) -> str:
-        """Backward compatible accessor for synchronous SQLAlchemy URL."""
-
-        return self.sync_database_url
 
     def _build_postgres_url(self, driver: str) -> str:
         """Create a SQLAlchemy URL for the configured Postgres instance."""

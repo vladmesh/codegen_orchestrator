@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Regenerated the complete vendored service-template fixture from pinned commit
+  `edf54dfb1c323d60480761e06ceb982bd79ac9d2` with its recorded Copier inputs.
+  The fixture now carries Copier answers and a whole-render digest regression so
+  a renamed stale render cannot pass provenance checks.
+
 - Fenced temporary QA capability operations by their current durable Run and
   in-flight lifecycle state immediately before each remote call. Recovery now
   withdraws superseded grant dispatches before fenced cleanup, and cancelled

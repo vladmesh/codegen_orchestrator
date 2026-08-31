@@ -1,0 +1,32 @@
+[project]
+name = "notifications-worker"
+version = "0.1.0"
+description = "Service for notifications (email, telegram)"
+requires-python = ">=3.12"
+dependencies = [
+    "faststream[redis]>=0.5.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "shared",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.10.0",
+    "types-PyYAML>=6.0",
+    "deptry>=0.22.0",
+]
+
+[tool.uv.sources]
+shared = { path = "../../shared", editable = true }
+
+[tool.deptry]
+ignore_notebooks = true
+
+[tool.deptry.per_rule_ignores]
+# Internal packages (services.*) are not pip dependencies
+DEP001 = ["services"]
+# Transitive deps used directly — structlog via shared
+DEP003 = ["structlog"]

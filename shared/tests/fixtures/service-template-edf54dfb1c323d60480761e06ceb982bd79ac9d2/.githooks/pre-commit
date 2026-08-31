@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Pre-commit hook for PRODUCT project (generated from service-template)
+# Formats code before commit
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}"
+
+echo "[pre-commit] Running make format..."
+make format
+
+echo "[pre-commit] Staging formatting changes..."
+git add -A
