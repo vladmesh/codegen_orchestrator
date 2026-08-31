@@ -91,13 +91,7 @@ class Stage5Smoke:
                 "SMOKE_RUNNER=backend",
                 "SMOKE_URL=http://backend:8000/health",
             )
-            self._run_make(
-                "worker-call",
-                "SMOKE_RUNNER=backend",
-                "url=http://backend:8000/users",
-                "method=POST",
-                'body={"telegram_id":5001}',
-            )
+            self._exercise_generated_access_lifecycle()
             return resolved_commit
         except Exception as caught:
             error = str(caught)
@@ -144,7 +138,7 @@ class Stage5Smoke:
                 "--data",
                 "project_name=stage5-smoke",
                 "--data",
-                "modules=backend",
+                "modules=backend,tg_bot",
                 "--data",
                 "task_description=deterministic local contract smoke",
                 self.template.source,
@@ -255,6 +249,86 @@ class Stage5Smoke:
                 phase="worker-start logs",
             )
             raise RuntimeError(f"{error}\ncompose logs:\n{logs.stdout}\n{logs.stderr}") from error
+
+    def _exercise_generated_access_lifecycle(self) -> None:
+        """Prove generated capability admission and bot denial against this stack."""
+        self._run_service_python(
+            "backend",
+            """
+import json
+import os
+import urllib.request
+
+identity = {"channel": "telegram", "external_id": "8202532144"}
+base_url = "http://backend:8000/users"
+capability = os.environ["USERS_GRANT_CAPABILITY"]
+
+def request(path, *, method="GET", payload=None, privileged=False):
+    data = json.dumps(payload).encode() if payload is not None else None
+    request = urllib.request.Request(f"{base_url}{path}", data=data, method=method)
+    if payload is not None:
+        request.add_header("Content-Type", "application/json")
+    if privileged:
+        request.add_header("X-Grant-Capability", capability)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        assert response.status == 200
+        return json.load(response)
+
+assert request("/grant", method="POST", payload=identity, privileged=True)["status"] == "active"
+assert request("/access?channel=telegram&external_id=8202532144")["status"] == "active"
+assert request("/revoke", method="POST", payload=identity, privileged=True)["status"] == "inactive"
+assert request("/access?channel=telegram&external_id=8202532144")["status"] == "inactive"
+""",
+            phase="generated access grant and revoke",
+        )
+        self._run_service_python(
+            "tg_bot",
+            """
+import asyncio
+
+from telegram.ext import ApplicationHandlerStop
+
+from services.tg_bot.src.main import enforce_access
+
+class User:
+    id = 8202532144
+
+class Update:
+    effective_user = User()
+
+async def verify_denial():
+    try:
+        await enforce_access(Update(), object())
+    except ApplicationHandlerStop:
+        return
+    raise AssertionError("revoked Telegram identity reached bot admission")
+
+asyncio.run(verify_denial())
+""",
+            phase="generated bot denial after revoke",
+        )
+
+    def _run_service_python(self, service: str, source: str, *, phase: str) -> None:
+        self._run(
+            [
+                "docker",
+                "compose",
+                "-p",
+                self.compose_project_name,
+                "-f",
+                "infra/compose.base.yml",
+                "-f",
+                "infra/compose.dev.yml",
+                "exec",
+                "-T",
+                service,
+                "python",
+                "-c",
+                source,
+            ],
+            cwd=self.workspace,
+            phase=phase,
+        )
 
     def _make_workspace_readable(self) -> None:
         for path in (self.workspace, *self.workspace.rglob("*")):

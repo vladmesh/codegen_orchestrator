@@ -1,4 +1,5 @@
-Verbatim rendered fixture from service-template tag `0.3.6` (`15bd61d4`),
+Verbatim rendered fixture from service-template commit
+`edf54dfb1c323d60480761e06ceb982bd79ac9d2`,
 generated with backend, tg_bot, notifications, and frontend modules. It keeps
 the generated-project paths and includes Compose files, workflows, entrypoints,
 settings, and environment contract fragments used by the gate.

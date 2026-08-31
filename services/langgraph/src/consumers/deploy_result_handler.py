@@ -13,7 +13,7 @@ import structlog
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import DeployRunResult
-from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO
+from shared.contracts.dto.temporary_access import TemporaryAccessGrantDTO, TemporaryAccessStatus
 from shared.contracts.dto.users_grant import (
     GrantIntent,
     GrantIntentKind,
@@ -269,26 +269,50 @@ async def _apply_temporary_access_operation(
     grant: TemporaryAccessGrantDTO,
     operation: str,
 ) -> str | None:
-    """Use only this deploy's in-memory capability against the stored target."""
+    """Use this deploy's capability only while its durable operation is current."""
     if (
         grant.project_id != project_id
         or application_id != grant.target_application_id
         or operation not in {"grant", "revoke"}
     ):
         return "temporary_access_target_mismatch"
+    # The grant was read before the deploy began. Recovery can replace it with
+    # cleanup while that deploy is still queued or running, so the durable
+    # operation transition is re-read immediately before the remote effect.
+    # A delayed delivery must never re-grant after a proved revoke.
+    current = await api_client.get_temporary_access_grant(grant.id)
+    expected_run_id = current.grant_run_id if operation == "grant" else current.revoke_run_id
+    expected_status = (
+        TemporaryAccessStatus.GRANTING if operation == "grant" else TemporaryAccessStatus.REVOKING
+    )
+    if current.status is not expected_status or expected_run_id != task_id:
+        logger.info(
+            "temporary_access_operation_superseded",
+            grant_id=grant.id,
+            task_id=task_id,
+            operation=operation,
+            status=current.status.value,
+        )
+        return "temporary_access_operation_superseded"
+    if (
+        current.project_id != project_id
+        or application_id != current.target_application_id
+        or current.head_sha != grant.head_sha
+    ):
+        return "temporary_access_target_mismatch"
     capability = secret_values.get(_USERS_GRANT_CAPABILITY)
     if not isinstance(capability, str) or not capability:
         return "capability_unavailable"
-    client = GeneratedServiceGrantClient(grant.target_base_url)
+    client = GeneratedServiceGrantClient(current.target_base_url)
     if operation == "grant":
         proof = await client.grant_and_resolve(
-            channel=grant.channel, external_id=grant.external_id, capability=capability
+            channel=current.channel, external_id=current.external_id, capability=capability
         )
         if proof.active:
             return None
     else:
         proof = await client.revoke_and_resolve(
-            channel=grant.channel, external_id=grant.external_id, capability=capability
+            channel=current.channel, external_id=current.external_id, capability=capability
         )
         if not proof.active and proof.failure is None:
             return None

@@ -34,19 +34,19 @@ def _make_deploy_msg(**overrides) -> DeployMessage:
     return DeployMessage.model_validate(defaults)
 
 
-def _temporary_grant() -> TemporaryAccessGrantDTO:
+def _temporary_grant(**overrides) -> TemporaryAccessGrantDTO:
     now = datetime.now(UTC)
-    return TemporaryAccessGrantDTO(
-        id="tempaccess-qa-1",
-        project_id="proj-1",
-        channel="telegram",
-        external_id="8202532144",
-        target_application_id=42,
-        target_base_url="https://exact.example.com",
-        head_sha="a" * 40,
-        qa_run_id="qa-1",
-        grant_run_id="temporary-access-grant-1",
-        qa_message={
+    values = {
+        "id": "tempaccess-qa-1",
+        "project_id": "proj-1",
+        "channel": "telegram",
+        "external_id": "8202532144",
+        "target_application_id": 42,
+        "target_base_url": "https://exact.example.com",
+        "head_sha": "a" * 40,
+        "qa_run_id": "qa-1",
+        "grant_run_id": "temporary-access-grant-1",
+        "qa_message": {
             "project_id": "proj-1",
             "initiating_run_id": "deploy-1",
             "telegram_chat_id": "",
@@ -55,10 +55,12 @@ def _temporary_grant() -> TemporaryAccessGrantDTO:
             "acceptance_criteria": "bot admission",
             "run_id": "qa-1",
         },
-        status=TemporaryAccessStatus.GRANTING,
-        granted_at=now,
-        created_at=now,
-    )
+        "status": TemporaryAccessStatus.GRANTING,
+        "granted_at": now,
+        "created_at": now,
+    }
+    values.update(overrides)
+    return TemporaryAccessGrantDTO(**values)
 
 
 def _project() -> ProjectDTO:
@@ -160,11 +162,16 @@ class TestHandleDeploySuccess:
         from src.consumers.deploy_result_handler import _handle_deploy_success
 
         mock_redis = AsyncMock()
+        grant = _temporary_grant(
+            status=TemporaryAccessStatus.REVOKING,
+            revoke_run_id="temporary-access-revoke-1",
+        )
         with (
             patch(f"{_HANDLER_PATCH}.api_client") as mock_api,
             patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client,
         ):
             mock_api.patch = AsyncMock()
+            mock_api.get_temporary_access_grant = AsyncMock(return_value=grant)
             grant_client.return_value.revoke_and_resolve = AsyncMock(
                 return_value=SimpleNamespace(active=False, failure=None)
             )
@@ -174,7 +181,7 @@ class TestHandleDeploySuccess:
                     "secret_values": {"USERS_GRANT_CAPABILITY": "capability-value"},
                 },
                 smoke_result=None,
-                task_id="deploy-1",
+                task_id="temporary-access-revoke-1",
                 project_id="proj-1",
                 project=_project(),
                 callback_stream="cb:1",
@@ -182,7 +189,7 @@ class TestHandleDeploySuccess:
                 story_id="story-1",
                 redis=mock_redis,
                 application_id=42,
-                temporary_access_grant=_temporary_grant(),
+                temporary_access_grant=grant,
                 temporary_access_operation="revoke",
             )
 
@@ -203,6 +210,7 @@ class TestHandleDeploySuccess:
             patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client,
         ):
             mock_api.patch = AsyncMock()
+            mock_api.get_temporary_access_grant = AsyncMock(return_value=_temporary_grant())
             grant_client.return_value.grant_and_resolve = AsyncMock(
                 return_value=SimpleNamespace(
                     active=False, failure=SimpleNamespace(value="inactive")
@@ -236,12 +244,16 @@ class TestHandleDeploySuccess:
     async def test_temporary_grant_requires_exact_target_and_active_readback(self):
         from src.consumers.deploy_result_handler import _apply_temporary_access_operation
 
-        with patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client:
+        with (
+            patch(f"{_HANDLER_PATCH}.api_client") as mock_api,
+            patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client,
+        ):
+            mock_api.get_temporary_access_grant = AsyncMock(return_value=_temporary_grant())
             grant_client.return_value.grant_and_resolve = AsyncMock(
                 return_value=SimpleNamespace(active=True, failure=None)
             )
             mismatch = await _apply_temporary_access_operation(
-                task_id="deploy-1",
+                task_id="temporary-access-grant-1",
                 project_id="proj-1",
                 application_id=41,
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
@@ -249,7 +261,7 @@ class TestHandleDeploySuccess:
                 operation="grant",
             )
             proof = await _apply_temporary_access_operation(
-                task_id="deploy-1",
+                task_id="temporary-access-grant-1",
                 project_id="proj-1",
                 application_id=42,
                 secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
@@ -262,6 +274,85 @@ class TestHandleDeploySuccess:
             channel="telegram", external_id="8202532144", capability="capability-value"
         )
         assert proof is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("operation", "current_grant"),
+        [
+            (
+                "grant",
+                _temporary_grant(
+                    status=TemporaryAccessStatus.REVOKED,
+                    revoked_at=datetime.now(UTC),
+                ),
+            ),
+            (
+                "revoke",
+                _temporary_grant(
+                    status=TemporaryAccessStatus.REVOKED,
+                    revoke_run_id="temporary-access-revoke-1",
+                    revoked_at=datetime.now(UTC),
+                ),
+            ),
+        ],
+    )
+    async def test_temporary_operation_refuses_terminal_or_superseded_record_before_effect(
+        self, operation, current_grant
+    ):
+        from src.consumers.deploy_result_handler import _apply_temporary_access_operation
+
+        attempted = _temporary_grant(
+            revoke_run_id="temporary-access-revoke-1" if operation == "revoke" else None,
+            status=TemporaryAccessStatus.REVOKING
+            if operation == "revoke"
+            else TemporaryAccessStatus.GRANTING,
+        )
+        task_id = attempted.revoke_run_id if operation == "revoke" else attempted.grant_run_id
+        with (
+            patch(f"{_HANDLER_PATCH}.api_client") as mock_api,
+            patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client,
+        ):
+            mock_api.get_temporary_access_grant = AsyncMock(return_value=current_grant)
+
+            refusal = await _apply_temporary_access_operation(
+                task_id=task_id,
+                project_id="proj-1",
+                application_id=42,
+                secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
+                grant=attempted,
+                operation=operation,
+            )
+
+        assert refusal == "temporary_access_operation_superseded"
+        grant_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delayed_grant_cannot_reapply_after_revoke_proved_inactive(self):
+        from src.consumers.deploy_result_handler import _apply_temporary_access_operation
+
+        stale_grant = _temporary_grant()
+        revoked_grant = _temporary_grant(
+            status=TemporaryAccessStatus.REVOKED,
+            revoke_run_id="temporary-access-revoke-1",
+            revoked_at=datetime.now(UTC),
+        )
+        with (
+            patch(f"{_HANDLER_PATCH}.api_client") as mock_api,
+            patch(f"{_HANDLER_PATCH}.GeneratedServiceGrantClient") as grant_client,
+        ):
+            mock_api.get_temporary_access_grant = AsyncMock(return_value=revoked_grant)
+
+            refusal = await _apply_temporary_access_operation(
+                task_id=stale_grant.grant_run_id,
+                project_id="proj-1",
+                application_id=42,
+                secret_values={"USERS_GRANT_CAPABILITY": "capability-value"},
+                grant=stale_grant,
+                operation="grant",
+            )
+
+        assert refusal == "temporary_access_operation_superseded"
+        grant_client.assert_not_called()
 
 
 class TestHandleSmokeFailure:

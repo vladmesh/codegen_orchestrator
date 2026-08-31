@@ -9,6 +9,7 @@ import uuid
 import httpx
 import structlog
 
+from shared.contracts.dto.deploy_dispatch import DispatchWithdrawal
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.run_result import QABlocker, QABlockerCategory, QARunResult
 from shared.contracts.dto.temporary_access import (
@@ -155,7 +156,15 @@ async def supervise_temporary_access(api_client, redis_client: RedisStreamClient
     return counts
 
 
-async def _publish_operation(api_client, redis_client, grant, run_id: str, operation: str) -> None:
+async def _publish_operation(
+    api_client,
+    redis_client,
+    grant,
+    run_id: str,
+    operation: str,
+    *,
+    fence_active_deploys: bool = False,
+) -> None:
     await api_client.create_run(
         {
             "id": run_id,
@@ -179,6 +188,7 @@ async def _publish_operation(api_client, redis_client, grant, run_id: str, opera
             triggered_by=DeployTrigger.ADMIN,
             action=DeployAction.FEATURE,
             head_sha=grant.head_sha,
+            fence_active_deploys=fence_active_deploys,
         ),
     )
 
@@ -272,6 +282,12 @@ async def _retry_grant_operation(api_client, redis_client, grant, detail, counts
             last_error=detail,
         ),
     )
+    # The stored operation id changes before this predecessor is withdrawn.
+    # If its delayed queue entry reaches the executor, that executor re-reads
+    # the record and refuses the obsolete id before any remote grant call.
+    await api_client.withdraw_deploy_dispatch(
+        grant.grant_run_id, "temporary access grant operation superseded"
+    )
     await _publish_operation(api_client, redis_client, grant, run_id, "grant")
     counts["dispatched"] += 1
 
@@ -325,7 +341,21 @@ async def _dispatch_revoke(api_client, redis_client, grant, reason) -> None:
             revoke_attempts=grant.revoke_attempts + 1,
         ),
     )
-    await _publish_operation(api_client, redis_client, grant, run_id, "revoke")
+    # Close the old grant dispatch only after the durable transition says it is
+    # obsolete, and before beginning cleanup. A grant that already crossed the
+    # deploy boundary makes cleanup fenced so Actions cannot later restore it.
+    withdrawal = await api_client.withdraw_deploy_dispatch(
+        grant.grant_run_id, "temporary access cleanup superseded grant operation"
+    )
+    await _publish_operation(
+        api_client,
+        redis_client,
+        grant,
+        run_id,
+        "revoke",
+        fence_active_deploys=getattr(withdrawal, "outcome", None)
+        is DispatchWithdrawal.ALREADY_DISPATCHED,
+    )
 
 
 async def _settle_revoke(api_client, redis_client, grant, counts, log) -> None:
@@ -371,6 +401,14 @@ async def _redispatch_revoke_without_effect(api_client, redis_client, grant, cou
     """Replace a cancelled deploy-lock operation without consuming cleanup budget."""
     if grant.revoke_reason is None:
         raise ValueError("revoking grant has no reason")
+    if _revoke_retries_are_spent(grant):
+        await _escalate_unrevoked(
+            api_client,
+            grant,
+            "revoke capability operation cancelled after unrevoked deadline",
+            counts,
+        )
+        return
     run_id = _new_operation_run_id("revoke")
     await api_client.update_temporary_access_grant(
         grant.id,

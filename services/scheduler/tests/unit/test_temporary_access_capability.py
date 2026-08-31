@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from shared.contracts.dto.deploy_dispatch import DispatchWithdrawal
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.temporary_access import (
     TemporaryAccessGrantDTO,
@@ -259,6 +260,39 @@ async def test_granted_access_starts_cleanup_for_terminal_missing_or_expired_qa(
 
 
 @pytest.mark.asyncio
+async def test_cleanup_transitions_then_withdraws_and_fences_an_old_grant_dispatch() -> None:
+    from src.tasks.temporary_access import supervise_temporary_access
+
+    grant = _grant(status=TemporaryAccessStatus.GRANTED)
+    api = AsyncMock()
+    api.list_temporary_access_grants_under_watch.return_value = [grant]
+    api.get_run_if_missing_returns_none.return_value = _operation_run(RunStatus.COMPLETED)
+    api.withdraw_deploy_dispatch.return_value = SimpleNamespace(
+        outcome=DispatchWithdrawal.ALREADY_DISPATCHED
+    )
+    redis = AsyncMock()
+
+    await supervise_temporary_access(api, redis)
+
+    update_index = next(
+        index
+        for index, call in enumerate(api.method_calls)
+        if call[0] == "update_temporary_access_grant"
+        and call.args[1].status is TemporaryAccessStatus.REVOKING
+    )
+    withdrawal_index = next(
+        index
+        for index, call in enumerate(api.method_calls)
+        if call[0] == "withdraw_deploy_dispatch"
+    )
+    assert update_index < withdrawal_index
+    api.withdraw_deploy_dispatch.assert_awaited_once_with(
+        grant.grant_run_id, "temporary access cleanup superseded grant operation"
+    )
+    assert redis.publish_message.await_args.args[1].fence_active_deploys is True
+
+
+@pytest.mark.asyncio
 async def test_qa_is_released_once_only_after_grant_proof() -> None:
     from src.tasks.temporary_access import supervise_temporary_access
 
@@ -342,6 +376,49 @@ async def test_cancelled_revoke_redispatches_the_exact_target_without_spending_b
     assert publish.head_sha == grant.head_sha
     assert counts["revoke_failed"] == 0
     assert counts["dispatched"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_revoke_at_unrevoked_deadline_escalates_once_without_queue_churn() -> None:
+    from src.tasks.temporary_access import _settle_revoke, _settle_revoke_failed
+
+    expired = _grant(
+        status=TemporaryAccessStatus.REVOKING,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+        revoke_run_id="temporary-access-revoke-cancelled",
+        revoke_attempts=1,
+        granted_at=datetime.now(UTC) - timedelta(minutes=120),
+    )
+    settled = _grant(
+        status=TemporaryAccessStatus.REVOKE_FAILED,
+        revoke_reason=TemporaryAccessRevokeReason.RUN_TERMINAL,
+        revoke_attempts=1,
+        escalated_at=datetime.now(UTC),
+        granted_at=expired.granted_at,
+    )
+    api = AsyncMock()
+    api.get_run_if_missing_returns_none.return_value = _operation_run(
+        RunStatus.CANCELLED, outcome=DeployOutcome.CANCELLED
+    )
+    redis = AsyncMock()
+    counts = {
+        "dispatched": 0,
+        "released": 0,
+        "revoked": 0,
+        "expired": 0,
+        "revoke_failed": 0,
+        "escalated": 0,
+    }
+
+    with patch("src.tasks.temporary_access.notify_admins_best_effort", new=AsyncMock()) as notify:
+        await _settle_revoke(api, redis, expired, counts, AsyncMock())
+        await _settle_revoke_failed(api, redis, settled, counts, AsyncMock())
+
+    api.escalate_temporary_access_grant.assert_awaited_once()
+    notify.assert_awaited_once()
+    redis.publish_message.assert_not_awaited()
+    assert counts["dispatched"] == 0
+    assert counts["escalated"] == 1
 
 
 @pytest.mark.asyncio

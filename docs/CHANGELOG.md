@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fenced temporary QA capability operations by their current durable Run and
+  in-flight lifecycle state immediately before each remote call. Recovery now
+  withdraws superseded grant dispatches before fenced cleanup, and cancelled
+  revokes escalate once at the unrevoked deadline instead of churning the queue.
+  Production scaffolding now pins the merged generated-service commit
+  `edf54dfb1c323d60480761e06ceb982bd79ac9d2`; its Stage 5 smoke proves grant,
+  active readback, revoke, inactive readback, and bot admission denial for the
+  same identity.
+
 - Replaced the temporary Telegram environment slot with a durable capability-backed
   QA lifecycle. Each record binds the central QA identity and exact deployed
   application, base URL, and SHA before dispatch; grant and revoke require active

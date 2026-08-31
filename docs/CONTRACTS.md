@@ -379,7 +379,12 @@ An id-colliding legacy record is never hydrated as a capability record, while a
 narrow QA-run history lookup still sees it so recovery cannot replay its handoff.
 Cancelled deploy-lock or fence operations are redispatched against their stored
 target without consuming a grant or revoke proof budget; failed, missing, and
-stale operations remain independently bounded.
+stale operations remain independently bounded. Immediately before either remote
+operation, the executor re-reads the record and requires its own Run id and
+matching in-flight state. Recovery changes that durable operation authority
+before withdrawing the predecessor and dispatching fenced cleanup, so a delayed
+grant cannot restore access after revoke proof. Cancelled revoke redispatches
+retain their attempt budget only before the absolute unrevoked deadline.
 
 ### QA handoff and restricted access
 

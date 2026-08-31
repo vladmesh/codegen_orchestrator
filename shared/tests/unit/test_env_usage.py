@@ -329,7 +329,7 @@ def test_template_fixture_tracks_the_pinned_template_ref():
         f"no fixture for pinned service-template ref {pinned_template_ref()}; found {stale}"
     )
     assert not stale, f"fixtures left behind for unpinned service-template refs: {stale}"
-    assert f"tag `{pinned_template_ref()}`" in (fixture / "README.md").read_text()
+    assert f"`{pinned_template_ref()}`" in (fixture / "README.md").read_text()
 
 
 def test_template_fixture_extracts_without_crashing(tmp_path: Path):
